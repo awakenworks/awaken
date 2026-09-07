@@ -216,6 +216,14 @@ Spec == Init /\ [][Next]_vars
 \* Recovery fairness is an explicit environmental assumption: a crashed
 \* coordinator restarts and continuously/repeatedly enabled durable progress
 \* eventually runs. Safety invariants do not depend on these assumptions.
+\* W13 adversarial environment: no terminal receipt ever becomes observable.
+\* Exercise delete/restart/partial preparation indefinitely without inventing
+\* an ACK; safety, rather than eventual tombstone, is the required outcome.
+UnconfirmedSpec == Init /\ [][Next /\ UNCHANGED <<physicalActive, returnObserved>>]_vars
+UnconfirmedNeverCompletes ==
+    physicalActive /\ ~returnObserved /\ cleanupPhase # "completed"
+    /\ disposition # "tombstoned" /\ prepared = {} /\ removedTargets = {}
+
 FairSpec ==
     /\ Spec
     /\ WF_vars(Restart)

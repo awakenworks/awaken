@@ -65,6 +65,8 @@ async fn replacement_fences_stale_checkpoint_put_and_delete() {
         dispatch,
         RunClaim::from(&second.lease),
     );
+    // R4 stale reads also fail: no replacement checkpoint leaks to an old claim.
+    assert!(first_store.get("run-fenced-checkpoint").await.is_err());
     assert!(first_store.put(checkpoint("stale")).await.is_err());
     assert!(first_store.delete("run-fenced-checkpoint").await.is_err());
     assert_eq!(
@@ -77,6 +79,14 @@ async fn replacement_fences_stale_checkpoint_put_and_delete() {
         "first",
         "stale checkpoint mutations are ignored"
     );
+    // R5 a current claim for R cannot read/write/delete any other Run, even
+    // with a valid inner store. Wrong-Run rejection precedes every inner effect.
+    let mut foreign = checkpoint("foreign");
+    foreign.run_id = "other-run".into();
+    assert!(second_store.put(foreign).await.is_err());
+    assert!(second_store.get("other-run").await.is_err());
+    assert!(second_store.delete("other-run").await.is_err());
+    assert!(inner.get("other-run").await.unwrap().is_none());
     second_store.put(checkpoint("replacement")).await.unwrap();
     assert_eq!(
         second_store

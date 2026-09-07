@@ -11263,3 +11263,95 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
         }
     }
 }
+
+#[tokio::test]
+async fn recovered_terminal_errors_are_visible_once_without_releasing_active_session() {
+    // C1 Run outcome unknown/error/cancelled/natural; C2 aggregate Running/Idle;
+    // C3 warm/repeated/cold read. R1 unknown/error -> one stable error, R2
+    // cancelled/natural -> none. R3 all -> preserve aggregate authority and
+    // immutable event identity across reads; a logical error is no physical ACK.
+    // The complete C1 x C2 table reuses the real committed projector. Claim-slot
+    // settlement and exact late ACK are covered by lease_semantics, not mocked
+    // as successful cleanup here.
+    for execution in [
+        awaken_session_contract::SessionExecutionState::Running,
+        awaken_session_contract::SessionExecutionState::Idle,
+    ] {
+        for (cause, has_error) in [
+            (EndCause::Indeterminate, true),
+            (
+                EndCause::Error(awaken_agent_contract::agent::run::Failure::StateConflict),
+                true,
+            ),
+            (EndCause::Cancelled, false),
+            (EndCause::NaturalEnd, false),
+        ] {
+            let session_id = "uncertain-terminal";
+            let repository = Arc::new(ephemeral_session_repo());
+            let mut persisted = crate::state::tests::sample_persisted(session_id);
+            persisted.execution = execution;
+            crate::state::test_support::create_session_fixture(
+                repository.as_ref(),
+                DEFAULT_SCOPE,
+                persisted,
+            )
+            .await;
+            let runtime = RehydrateFake::default();
+            let run_id = RunId("uncertain-run".into());
+            runtime.lifecycle.lock().unwrap().extend([
+                lifecycle(
+                    1,
+                    session_id,
+                    &run_id,
+                    RunLifecycleEventKind::Running,
+                    RunState::Running,
+                ),
+                lifecycle(
+                    2,
+                    session_id,
+                    &run_id,
+                    RunLifecycleEventKind::Failed,
+                    RunState::Ended(cause.clone()),
+                ),
+            ]);
+            let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+            let observe = |state: &ManagedState| {
+                state
+                    .list_events(session_id, None, None, false)
+                    .unwrap()
+                    .data
+                    .into_iter()
+                    .filter_map(|event| match event.kind {
+                        OutboundKind::SessionError { error } => {
+                            Some((event.id, error.message, event.processed_at))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            warm.refresh_committed_events(session_id).await.unwrap();
+            let original = observe(&warm);
+            assert_eq!(
+                original.len(),
+                usize::from(has_error),
+                "{cause:?}/{execution:?}"
+            );
+            if cause == EndCause::Indeterminate {
+                assert!(original[0].1.contains("result is unknown"));
+            }
+            warm.refresh_committed_events(session_id).await.unwrap();
+            assert_eq!(observe(&warm), original);
+            let cold = ManagedState::new(runtime).with_session_repo(repository);
+            cold.refresh_committed_events(session_id).await.unwrap();
+            assert_eq!(observe(&cold), original);
+            assert_eq!(
+                cold.application
+                    .session(session_id)
+                    .await
+                    .unwrap()
+                    .execution,
+                execution
+            );
+        }
+    }
+}

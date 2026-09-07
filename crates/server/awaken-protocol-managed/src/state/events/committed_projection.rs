@@ -29,6 +29,42 @@ struct CanonicalizationEvidence<'a> {
 }
 
 impl ManagedState {
+    fn append_root_terminal_error(
+        record: &mut SessionRecord,
+        terminal: &RunLifecycleEvent,
+        outcome_owns_failure: bool,
+    ) {
+        use awaken_agent_contract::agent::run::{EndCause, RunState};
+        if outcome_owns_failure {
+            return;
+        }
+        let error = match &terminal.state {
+            RunState::Ended(EndCause::Error(failure)) => {
+                SessionError::classify(failure.code(), failure.message())
+            }
+            RunState::Ended(EndCause::Indeterminate) => SessionError::classify(
+                "execution_indeterminate",
+                "The execution result is unknown. Do not repeat external actions until their outcome is verified. An active Session remains unavailable for further work until the prior execution is confirmed stopped.",
+            ),
+            _ => return,
+        };
+        let id = managed_multiagent_event_id(
+            &record.session.id,
+            &record.session.id,
+            "root-lifecycle-error",
+            ManagedMultiagentEventProvenance::Lifecycle {
+                cursor: terminal.cursor.0,
+            },
+        );
+        if !record.events.iter().any(|event| event.id == id) {
+            record.events.push(Event {
+                id,
+                kind: OutboundKind::SessionError { error },
+                processed_at: None,
+            });
+        }
+    }
+
     async fn refresh_committed_projection_once(
         &self,
         session_id: &str,
@@ -872,28 +908,13 @@ impl ManagedState {
                 .progress
                 .terminal_cursors
                 .insert(terminal.cursor);
-            if let awaken_agent_contract::agent::run::RunState::Ended(
-                awaken_agent_contract::agent::run::EndCause::Error(failure),
-            ) = &terminal.state
-                && !durable_outcome_projections
+            Self::append_root_terminal_error(
+                record,
+                terminal,
+                durable_outcome_projections
                     .iter()
-                    .any(|projection| projection.owns_failure_run(&terminal.run_id))
-            {
-                record.events.push(Event {
-                    id: managed_multiagent_event_id(
-                        &record.session.id,
-                        &record.session.id,
-                        "root-lifecycle-error",
-                        ManagedMultiagentEventProvenance::Lifecycle {
-                            cursor: terminal.cursor.0,
-                        },
-                    ),
-                    kind: OutboundKind::SessionError {
-                        error: SessionError::classify(failure.code(), failure.message()),
-                    },
-                    processed_at: None,
-                });
-            }
+                    .any(|projection| projection.owns_failure_run(&terminal.run_id)),
+            );
             let stop_reason = Self::public_run_stop_reason(
                 record,
                 None,
@@ -1097,31 +1118,13 @@ impl ManagedState {
             if record.events.iter().any(|event| event.id == idle_id) {
                 continue;
             }
-            if let awaken_agent_contract::agent::run::RunState::Ended(
-                awaken_agent_contract::agent::run::EndCause::Error(failure),
-            ) = &terminal.state
-                && !durable_outcome_projections
+            Self::append_root_terminal_error(
+                record,
+                terminal,
+                durable_outcome_projections
                     .iter()
-                    .any(|projection| projection.owns_failure_run(&terminal.run_id))
-            {
-                let error_id = managed_multiagent_event_id(
-                    &record.session.id,
-                    &record.session.id,
-                    "root-lifecycle-error",
-                    ManagedMultiagentEventProvenance::Lifecycle {
-                        cursor: terminal.cursor.0,
-                    },
-                );
-                if !record.events.iter().any(|event| event.id == error_id) {
-                    record.events.push(Event {
-                        id: error_id,
-                        kind: OutboundKind::SessionError {
-                            error: SessionError::classify(failure.code(), failure.message()),
-                        },
-                        processed_at: None,
-                    });
-                }
-            }
+                    .any(|projection| projection.owns_failure_run(&terminal.run_id)),
+            );
             let stop_reason = Self::public_run_stop_reason(
                 record,
                 None,

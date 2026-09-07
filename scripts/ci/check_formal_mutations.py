@@ -978,7 +978,20 @@ def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
         (source.replace(success, success.replace("/\\ ~physicalActive /\\ prepared = Participants\n                         /\\ removedTargets = PhysicalTargets", "", 1)),
          config, "PhysicalEvidenceRequired"),
     ], dependencies=("SessionCleanupKernel",))
-    print("Cowork lifecycle mutation score: 13/13 killed (worker evidence 3, drain 1, ACP/composition/rollout 5, cleanup evidence 4)")
+    # P0: current errors stay visible under active aggregate authority; neither
+    # error presentation nor a resolving tool reply can authorize new input.
+    source = (ROOT / "formal/tla/SessionRuntimeProjection.tla").read_text()
+    config = (ROOT / "formal/tla/SessionRuntimeProjection.cfg").read_text().replace(
+        "    Safety", "    ErrorIsVisibleWithoutRelease\n    ActiveAggregateNeverAdmits\n    Safety")
+    check_tlc_model_mutations(tlc_jar, "SessionRuntimeProjection", source, config, [
+        (source.replace('ELSE IF phase = "error" THEN "error"',
+                        'ELSE IF phase = "error" THEN aggregate', 1),
+         config, "ErrorIsVisibleWithoutRelease"),
+        (source.replace('CanSend == aggregate = "idle" /\\ phase',
+                        'CanSend == phase', 1),
+         config, "ActiveAggregateNeverAdmits"),
+    ])
+    print("Cowork lifecycle mutation score: 15/15 killed (worker evidence 3, drain 1, ACP/composition/rollout 5, cleanup evidence 4, presentation/admission 2)")
 
 
 def check_observation_rule_mutants(trace_dir: Path, manifest: dict) -> None:

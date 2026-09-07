@@ -28,7 +28,7 @@
     "test:full-chain": "node managed_full_chain_e2e.mjs",
     "pretest": "node harness_process_lifecycle_e2e.mjs && node managed_skill_bundle_pin_e2e.mjs && tsx managed_mcp_hot_swap_e2e.ts && tsx managed_mcp_recovery_e2e.ts",
     "test:deterministic": "../scripts/ci/_provider_environment.sh --exec node deterministic_runner.mjs",
-    "test:runner": "node --test cargo_binary.test.mjs deterministic_runner.test.mjs sqlite.test.mjs thread_commit_fixture.test.mjs && node --experimental-strip-types --test k3d/distributed_control_driver.test.ts",
+    "test:runner": "node --test cargo_binary.test.mjs deterministic_runner.test.mjs sqlite.test.mjs thread_commit_fixture.test.mjs fixtures/sandbox_image.test.mjs && node --experimental-strip-types --test k3d/distributed_control_driver.test.ts",
     "test:aux-windows": "node auxiliary_windows_causal_graph_e2e.mjs",
     "test:aux-windows:live": "cross-env E2E_CAUSAL_LIVE=1 node auxiliary_windows_causal_graph_e2e.mjs",
     "test:dream": "tsx managed_dream_e2e.ts",

@@ -133,6 +133,14 @@ Neither logical cancellation, process/Pod death, lease expiry nor future Drop
 manufactures a physical ACK. Permanent absence of an authoritative return receipt
 therefore remains a blocked physical outcome, not successful automatic recovery.
 
+The one warm/cold Managed lifecycle projector lowers this committed outcome into
+an existing `session.error` event with a stable lifecycle identity. It neither
+publishes a new protocol status nor releases the Session aggregate. The shared
+browser projection presents a current error even when the aggregate remains
+Running/Rescheduling; ordinary message and approval admission still use the
+unchanged aggregate fence. A later committed working boundary changes the
+presentation, while historical error evidence remains in the transcript.
+
 Cold Docker/Podman terminal preparation reuses the existing exact staging-root
 adoption and frozen Memory/Secret participant reconstruction. It does not perform
 ordinary reactivation. Missing roots, invalid mounts or unavailable required
@@ -146,6 +154,10 @@ classification. `SessionDeletion` composes the existing cleanup kernel with
 quiescence, participant preparation and both physical removal targets. Its
 liveness assumes an eventual actual return and recoverable participants; the
 finite model does not verify OS mount identity or provider cancellation APIs.
+`SessionDeletionUnconfirmed.cfg` separately explores permanent absence of a
+return receipt with no return fairness assumption: cleanup cannot complete,
+participants cannot be prepared, and physical targets cannot be removed. This
+safety result deliberately does not certify automatic W13 recovery.
 
 ## 7. Authentication and consistency
 
