@@ -62,6 +62,12 @@ mod kani_proofs {
 
     #[kani::proof]
     fn fallback_selection_preserves_the_complete_publication_pin() {
+        // Test design — Causes: ordinal is primary, either published fallback,
+        // or the first out-of-range value. Effects: selection returns the exact
+        // referenced publication member or fails closed. Constraint: the
+        // selector may not reconstruct or mix any route field. Decision rules:
+        // R1 ordinal 0 -> primary; R2 ordinal 1/2 -> matching fallback;
+        // R3 ordinal 3 -> None.
         let primary = candidate();
         let fallbacks = [candidate(), candidate()];
         let ordinal: usize = kani::any();
@@ -85,6 +91,10 @@ mod kani_proofs {
 
     #[kani::proof]
     fn every_route_pin_axis_participates_in_exact_identity() {
+        // Test design — Causes: exactly one of provider identity, model,
+        // backend, or provisioning differs. Effect: exact route identity is
+        // rejected. Constraint: no axis may be optional. Decision rules R1-R4
+        // each negate one axis and must all produce false.
         let mut axes = [true; 4];
         let axis: u8 = kani::any();
         kani::assume(axis < 4);
