@@ -21,6 +21,16 @@ use tokio::sync::mpsc;
 use crate::progress::McpProgressUpdate;
 use crate::types::{McpPromptDefinition, McpPromptResult, McpResourceDefinition};
 
+/// Final admission rule for the increment-versus-drain race. Both sequentially
+/// consistent observations must name an accepting exact generation.
+#[must_use]
+const fn mcp_call_admitted(
+    accepting_before_increment: bool,
+    accepting_after_increment: bool,
+) -> bool {
+    accepting_before_increment && accepting_after_increment
+}
+
 struct McpCallFenceState {
     accepting: AtomicBool,
     in_flight: AtomicUsize,
@@ -52,12 +62,14 @@ impl McpCallFence {
     /// acceptance check closes the increment-versus-drain race: either this
     /// permit is counted by `close_and_wait`, or the effect never begins.
     pub fn try_enter(&self) -> Option<McpCallPermit> {
-        if !self.0.accepting.load(Ordering::SeqCst) {
+        let accepting_before_increment = self.0.accepting.load(Ordering::SeqCst);
+        if !accepting_before_increment {
             return None;
         }
         self.0.in_flight.fetch_add(1, Ordering::SeqCst);
         let permit = McpCallPermit(self.0.clone());
-        if !self.0.accepting.load(Ordering::SeqCst) {
+        let accepting_after_increment = self.0.accepting.load(Ordering::SeqCst);
+        if !mcp_call_admitted(accepting_before_increment, accepting_after_increment) {
             drop(permit);
             return None;
         }
@@ -359,6 +371,18 @@ mod tests {
     use super::*;
     use awaken_mcp_wire::{CallToolResult, ToolContent};
 
+    #[test]
+    fn call_admission_requires_both_accepting_observations() {
+        // Causes: C1=accepting before the in-flight increment; C2=accepting
+        // after it. Effects: E1=admit a counted permit, E2=reject. Complete
+        // decision table: TT=>E1; TF, FT, FF=>E2. The async race test below
+        // covers the counter rollback and cancellation effects around this rule.
+        assert!(mcp_call_admitted(true, true), "TT/E1");
+        assert!(!mcp_call_admitted(true, false), "TF/E2");
+        assert!(!mcp_call_admitted(false, true), "FT/E2");
+        assert!(!mcp_call_admitted(false, false), "FF/E2");
+    }
+
     struct BlockingTransport {
         entered: Arc<Notify>,
         release: Arc<Notify>,
@@ -515,5 +539,21 @@ mod tests {
         assert!(matches!(result.is_error, Some(false)));
         // No progress was emitted on the fallback path.
         assert!(rx.try_recv().is_err());
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn mcp_call_admission_requires_both_accepting_observations() {
+    let accepting_before_increment = kani::any::<bool>();
+    let accepting_after_increment = kani::any::<bool>();
+    let admitted = mcp_call_admitted(accepting_before_increment, accepting_after_increment);
+
+    assert_eq!(
+        admitted,
+        accepting_before_increment && accepting_after_increment
+    );
+    if !accepting_before_increment || !accepting_after_increment {
+        assert!(!admitted);
     }
 }
