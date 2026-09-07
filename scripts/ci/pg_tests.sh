@@ -18,10 +18,10 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 source scripts/ci/_cargo_target.sh
 awaken_configure_cargo_target "$PWD"
+source scripts/ci/_postgres_recovery_root.sh
 
 require_docker=0
-RECOVERY_PARENT=${TMPDIR:-/tmp}
-[ "$RECOVERY_PARENT" = "/" ] || RECOVERY_PARENT=${RECOVERY_PARENT%/}
+RECOVERY_PARENT=$(postgres_recovery_parent) || exit 2
 
 published_port() {
   local binding="$1"
@@ -31,13 +31,6 @@ published_port() {
     return 0
   fi
   return 1
-}
-
-valid_recovery_root() {
-  case "$1" in
-    "$RECOVERY_PARENT"/awaken-pg-recovery.??????) return 0 ;;
-    *) return 1 ;;
-  esac
 }
 
 self_test() {
@@ -61,6 +54,8 @@ self_test() {
   ! valid_recovery_root "" || return 1
   ! valid_recovery_root "$RECOVERY_PARENT/caller-owned" || return 1
   ! valid_recovery_root "$RECOVERY_PARENT/awaken-pg-recovery.A1b2C3/child" || return 1
+  ! valid_recovery_root "$RECOVERY_PARENT/awaken-pg-recovery.A/../." || return 1
+  scripts/ci/postgres_recovery_drill.sh --self-test || return 1
   # P5: every feature-gated Postgres adapter is compiled as such. P6: test
   # targets whose volatile fixtures are isolated behind `test-support` enable
   # that feature explicitly; Cargo refusing to start a target is a red gate,
@@ -180,7 +175,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-RECOVERY_ROOT=$(mktemp -d "$RECOVERY_PARENT/awaken-pg-recovery.XXXXXX")
+RECOVERY_ROOT=$(mktemp -d "$(postgres_recovery_prefix "$RECOVERY_PARENT")XXXXXX")
 valid_recovery_root "$RECOVERY_ROOT" \
   || { echo "mktemp returned an unexpected PostgreSQL recovery path: $RECOVERY_ROOT" >&2; exit 1; }
 export AWAKEN_RECOVERY_ROOT="$RECOVERY_ROOT"
