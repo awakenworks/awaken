@@ -219,9 +219,11 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             .session_slots
             .read(session_id, |slot| slot.published_snapshot.clone())
             .flatten();
-        let environment_absent = self.host.session_environment(session_id).await.is_none();
-        let has_environment_binding =
-            environment_absent && projection.environment.binding().is_some();
+        // A resident Arc is process-local ownership, not evidence that its
+        // physical Sandbox survived. Revalidate every durable binding through
+        // the one adoption path; Ready reuses that Arc, while closed evidence
+        // follows the existing policy-fenced Rebuild decision.
+        let has_environment_binding = projection.environment.binding().is_some();
         let runtime_authority_resident = self
             .host
             .session_slots
@@ -242,8 +244,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             .environment
             .generation()
             .map(|generation| generation.id.as_str());
-        let adoption = if environment_absent && let Some(binding) = projection.environment.binding()
-        {
+        let adoption = if let Some(binding) = projection.environment.binding() {
             let provider = self
                 .host
                 .projected_session_environment_provider(session_id, None)

@@ -6,6 +6,7 @@ mod claimed_dispatch;
 mod claimed_session;
 #[cfg(test)]
 mod dispatched_mcp_tests;
+mod realization_failure;
 mod resolver;
 mod session_realization;
 #[cfg(test)]
