@@ -63,7 +63,7 @@ async fn compatible_claim_skips_ineligible_work_and_pins_the_incarnation() {
         .await
         .unwrap();
 
-    let mut manifest = WorkerManifest::default();
+    let mut manifest = worker_snapshot("worker", "boot-a", 7).manifest;
     manifest.capabilities.insert("cpu".to_string());
     let fingerprint = manifest.fingerprint().unwrap();
     let worker = WorkerSnapshot {
@@ -119,7 +119,8 @@ async fn exact_backend_capability_claim_conformance(store: &dyn DispatchQueue) {
     }
 
     let worker = |id: &str, backend: &str| {
-        let mut manifest = WorkerManifest::default();
+        let mut manifest = worker_snapshot(id, "boot", 1).manifest;
+        manifest.capabilities.clear();
         manifest.capabilities.insert(backend.to_owned());
         WorkerSnapshot {
             identity: WorkerIdentity::new(id, "boot", 1),
@@ -165,7 +166,12 @@ async fn exact_backend_capability_routes_a_mixed_queue_on_every_local_store() {
 }
 
 fn worker_snapshot(id: &str, boot: &str, generation: u64) -> WorkerSnapshot {
+    // Placement/recovery rows vary capability and incarnation, not protocol.
+    // Explicit current support keeps those causes independently observable;
+    // default/legacy denial is covered by the protocol admission matrix.
     let mut manifest = WorkerManifest::default();
+    manifest.runtime_protocol.min = 1;
+    manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     manifest.capabilities.insert("cpu".to_string());
     let capability_fingerprint = manifest.fingerprint().unwrap();
     WorkerSnapshot {

@@ -36,6 +36,11 @@ pub const TRUSTED_HOST_SANDBOX_BACKEND: &str = "trusted-host";
 
 pub const CURRENT_CONTRACT_VERSION: u32 = 1;
 
+/// Current registered Worker execution protocol. V3 requires request-relative
+/// Session lease receipts; v1/v2 peers cannot safely execute this contract.
+/// Manifest/dispatch envelope versions remain independent and unchanged.
+pub const CURRENT_RUNTIME_PROTOCOL_VERSION: u32 = 3;
+
 /// Inclusive protocol-version range supported by a worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VersionRange {
@@ -148,13 +153,16 @@ impl Default for WorkerManifest {
 }
 
 impl WorkerManifest {
-    /// Whether this immutable manifest explicitly advertises the two-stage
-    /// terminal-cleanup runtime protocol. `VersionRange::ANY` is the serde
-    /// default for historical/omitted manifests, so a zero lower bound cannot
-    /// grant this newer destructive-effect protocol even though it contains v2.
+    /// Whether this incarnation explicitly supports the current execution
+    /// protocol. Historical/omitted `ANY` ranges carry no positive evidence.
+    /// Placement, transport and terminal recovery share this single floor;
+    /// neither an old queued requirement nor a broad default can lower it.
     #[must_use]
-    pub const fn explicitly_supports_terminal_cleanup_v2(&self) -> bool {
-        self.runtime_protocol.min > 0 && self.runtime_protocol.contains(2)
+    pub const fn supports_current_runtime_protocol(&self) -> bool {
+        self.runtime_protocol.min > 0
+            && self
+                .runtime_protocol
+                .contains(CURRENT_RUNTIME_PROTOCOL_VERSION)
     }
 
     /// Content address of immutable capabilities. BTree collections and struct

@@ -2176,7 +2176,10 @@ fn terminal_cleanup_worker(
 
 fn terminal_cleanup_manifest() -> awaken_worker_contract::WorkerManifest {
     awaken_worker_contract::WorkerManifest {
-        runtime_protocol: awaken_worker_contract::VersionRange { min: 1, max: 2 },
+        runtime_protocol: awaken_worker_contract::VersionRange {
+            min: 1,
+            max: awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+        },
         dispatch_contract: awaken_worker_contract::VersionRange::exact(1),
         ..Default::default()
     }

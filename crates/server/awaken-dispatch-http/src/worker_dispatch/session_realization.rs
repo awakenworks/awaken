@@ -60,16 +60,7 @@ pub(super) async fn session_cleanup_claim_next(
         let authority = claim_authority(&service, &worker, Some(&request.identity), false)
             .await
             .map_err(RealizationHttpError::from)?;
-        require_terminal_cleanup_v2(&authority)?;
-        let registry_expiry = authority
-            .snapshot
-            .as_ref()
-            .ok_or_else(|| {
-                RealizationHttpError::from(HostError::internal(
-                    "Worker directory is required for Session cleanup recovery claims",
-                ))
-            })?
-            .expires_at_ms;
+        let registry_expiry = terminal_cleanup_snapshot(&authority)?.expires_at_ms;
         if request.target.reassign_existing_lease
             || request.target.owner != request.identity.worker_id
             || request.target.runtime_incarnation != request.identity.lease_owner()
@@ -113,7 +104,7 @@ pub(super) async fn verify_terminal_cleanup_authority(
     let authority = claim_authority(service, worker, Some(identity), false)
         .await
         .map_err(RealizationHttpError::from)?;
-    require_terminal_cleanup_v2(&authority)?;
+    terminal_cleanup_snapshot(&authority)?;
     // Terminal cleanup is allowed to outlive the ordinary realization expiry:
     // the Session fence prevents reassignment, while this exact generation and
     // the current authenticated Worker incarnation prevent a stale owner from
@@ -126,18 +117,16 @@ pub(super) async fn verify_terminal_cleanup_authority(
     Ok(authority)
 }
 
-fn require_terminal_cleanup_v2(authority: &ClaimAuthority) -> Result<(), RealizationHttpError> {
-    let snapshot = authority.snapshot.as_ref().ok_or_else(|| {
+fn terminal_cleanup_snapshot(
+    authority: &ClaimAuthority,
+) -> Result<&WorkerSnapshot, RealizationHttpError> {
+    // claim_authority already enforces the canonical current protocol floor.
+    // Terminal effects additionally forbid the no-directory local/test path.
+    authority.snapshot.as_ref().ok_or_else(|| {
         RealizationHttpError::from(HostError::internal(
-            "Worker directory is required for terminal-cleanup transport v2",
+            "Worker directory is required for terminal-cleanup transport",
         ))
-    })?;
-    if !snapshot.manifest.explicitly_supports_terminal_cleanup_v2() {
-        return Err(RealizationHttpError::from(HostError::bad_request(
-            "Worker manifest does not explicitly support terminal-cleanup transport v2",
-        )));
-    }
-    Ok(())
+    })
 }
 
 pub(super) async fn session_cleanup_poll(

@@ -14,6 +14,7 @@ pub struct FakeWorkerUpstream {
     request_headers: Arc<Mutex<Vec<String>>>,
     environment_warmups: Arc<Mutex<String>>,
     deregistration_response: Arc<Mutex<Option<String>>>,
+    registration_protocol: Arc<Mutex<Option<String>>>,
     initial_heartbeat_blocked: Arc<AtomicBool>,
     heartbeat_sequences: Arc<Mutex<Vec<u64>>>,
     applied_heartbeat_sequence: Arc<AtomicU64>,
@@ -36,6 +37,11 @@ impl FakeWorkerUpstream {
 
     pub fn start_with_expired_initial_receipt() -> Self {
         Self::start_with_options(None, None, HeartbeatFault::DelayInitial, 60, None)
+    }
+
+    #[allow(dead_code)] // Lifecycle startup admission tests only.
+    pub fn start_with_zero_registry_ttl() -> Self {
+        Self::start_with_options(None, None, HeartbeatFault::None, 0, None)
     }
 
     pub fn start_rejecting_periodic_heartbeat() -> Self {
@@ -104,6 +110,9 @@ impl FakeWorkerUpstream {
         let environment_warmups = Arc::new(Mutex::new("[]".to_owned()));
         let deregistration_response =
             Arc::new(Mutex::new(Some(r#"{"mutation":"applied"}"#.to_owned())));
+        let registration_protocol = Arc::new(Mutex::new(Some(
+            awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION.to_string(),
+        )));
         let heartbeat_sequences = Arc::new(Mutex::new(Vec::new()));
         let initial_heartbeat_blocked = Arc::new(AtomicBool::new(false));
         let applied_heartbeat_sequence = Arc::new(AtomicU64::new(0));
@@ -112,6 +121,7 @@ impl FakeWorkerUpstream {
         let thread_request_headers = request_headers.clone();
         let thread_environment_warmups = environment_warmups.clone();
         let thread_deregistration_response = deregistration_response.clone();
+        let thread_registration_protocol = registration_protocol.clone();
         let thread_heartbeat_sequences = heartbeat_sequences.clone();
         let thread_initial_heartbeat_blocked = initial_heartbeat_blocked.clone();
         let thread_applied_heartbeat_sequence = applied_heartbeat_sequence.clone();
@@ -143,6 +153,7 @@ impl FakeWorkerUpstream {
                                 applied_heartbeat_sequence: &thread_applied_heartbeat_sequence,
                                 environment_warmups: &thread_environment_warmups,
                                 deregistration_response: &thread_deregistration_response,
+                                registration_protocol: &thread_registration_protocol,
                             },
                         );
                     }
@@ -160,6 +171,7 @@ impl FakeWorkerUpstream {
             request_headers,
             environment_warmups,
             deregistration_response,
+            registration_protocol,
             heartbeat_sequences,
             initial_heartbeat_blocked,
             applied_heartbeat_sequence,
@@ -186,6 +198,11 @@ impl FakeWorkerUpstream {
 
     pub fn set_deregistration_response(&self, response: Option<String>) {
         *self.deregistration_response.lock().unwrap() = response;
+    }
+
+    #[allow(dead_code)] // Only lifecycle protocol tests inject legacy declarations.
+    pub fn set_registration_protocol(&self, value: Option<&str>) {
+        *self.registration_protocol.lock().unwrap() = value.map(str::to_owned);
     }
 
     pub fn block_initial_heartbeat(&self, blocked: bool) {
@@ -217,6 +234,7 @@ impl Drop for FakeWorkerUpstream {
 struct HandleContext<'a> {
     initial_heartbeat_blocked: &'a AtomicBool,
     deregistration_response: &'a Mutex<Option<String>>,
+    registration_protocol: &'a Mutex<Option<String>>,
     requests: &'a Mutex<Vec<String>>,
     request_headers: &'a Mutex<Vec<String>>,
     stop: &'a AtomicBool,
@@ -235,6 +253,7 @@ fn handle(mut stream: TcpStream, context: HandleContext<'_>) {
     let HandleContext {
         initial_heartbeat_blocked,
         deregistration_response,
+        registration_protocol,
         requests,
         request_headers,
         stop,
@@ -280,8 +299,14 @@ fn handle(mut stream: TcpStream, context: HandleContext<'_>) {
             let worker_id = json_string_field(body, "worker_id");
             let incarnation_id = json_string_field(body, "incarnation_id");
             let manifest = json_object_field(body, "manifest");
+            let protocol = registration_protocol
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|value| format!(",\"runtime_protocol_version\":{value}"))
+                .unwrap_or_default();
             format!(
-                r#"{{"worker":{{"snapshot":{{"identity":{{"worker_id":"{worker_id}","incarnation_id":"{incarnation_id}","generation":1}},"state":"starting","manifest":{manifest},"capability_fingerprint":"startup-test","in_flight":0,"expires_at_ms":{registry_ttl_ms}}},"heartbeat_sequence":0,"registered_at_ms":0,"heartbeat_at_ms":0,"drain_deadline_ms":null}},"lease_ttl_ms":{registry_ttl_ms}}}"#
+                r#"{{"worker":{{"snapshot":{{"identity":{{"worker_id":"{worker_id}","incarnation_id":"{incarnation_id}","generation":1}},"state":"starting","manifest":{manifest},"capability_fingerprint":"startup-test","in_flight":0,"expires_at_ms":{registry_ttl_ms}}},"heartbeat_sequence":0,"registered_at_ms":0,"heartbeat_at_ms":0,"drain_deadline_ms":null}},"lease_ttl_ms":{registry_ttl_ms}{protocol}}}"#
             )
         }
         "/v1/worker/heartbeat" => {

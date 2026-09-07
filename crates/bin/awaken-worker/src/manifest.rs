@@ -312,7 +312,10 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
             .recovery_capability(),
         sandbox_backends,
         dispatch_contract: VersionRange::exact(1),
-        runtime_protocol: VersionRange { min: 1, max: 2 },
+        runtime_protocol: VersionRange {
+            min: 1,
+            max: awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+        },
         checkpoint_formats: BTreeSet::from(["stream-v1".to_string()])
             .into_iter()
             .chain(inputs.checkpoint_formats)

@@ -366,6 +366,11 @@ async fn claim_authority(
         verify_current_worker_identity(directory.as_ref(), worker, identity, now_ms, require_ready)
             .await
             .map_err(HostError::bad_request)?;
+    if !snapshot.manifest.supports_current_runtime_protocol() {
+        return Err(HostError::bad_request(
+            "Worker manifest does not explicitly support the current runtime protocol",
+        ));
+    }
     Ok(ClaimAuthority {
         owner: identity.lease_owner(),
         lease_ms,
@@ -915,6 +920,15 @@ async fn register_worker(
                 "worker registration requires a bootstrap credential",
             ));
         }
+        if !request
+            .registration
+            .manifest
+            .supports_current_runtime_protocol()
+        {
+            return Err(HostError::bad_request(
+                "Worker manifest does not explicitly support the current runtime protocol",
+            ));
+        }
         let record = match directory(&service)?
             .register(
                 request.registration,
@@ -937,6 +951,7 @@ async fn register_worker(
         Ok(json!({
             "worker": record,
             "lease_ttl_ms": service.registry_ttl_ms,
+            "runtime_protocol_version": awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION,
         }))
     }
     .await;
@@ -954,14 +969,25 @@ async fn heartbeat_worker(
         // Placement evidence is read only to decide whether to nudge the one
         // existing Session lifecycle supervisor. The registry mutation below
         // remains the authority; a rejected heartbeat never publishes a hint.
-        let placement_changed = worker_directory
+        let previous = worker_directory
             .current(&request.identity.worker_id)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?
-            .as_ref()
-            .is_some_and(|previous| {
-                heartbeat_changes_placement(Some(previous), &request.heartbeat)
-            });
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        // The immutable incarnation manifest cannot gain protocol support by
+        // heartbeat. Old incarnations may still drain/deregister, but cannot
+        // extend authority indefinitely across a Control upgrade. A stale
+        // identity keeps the registry's normal non-mutating rejection below.
+        if previous.as_ref().is_some_and(|record| {
+            record.snapshot.identity == request.identity
+                && !record.snapshot.manifest.supports_current_runtime_protocol()
+        }) {
+            return Err(HostError::bad_request(
+                "Worker manifest does not explicitly support the current runtime protocol",
+            ));
+        }
+        let placement_changed = previous.as_ref().is_some_and(|previous| {
+            heartbeat_changes_placement(Some(previous), &request.heartbeat)
+        });
         let mutation = worker_directory
             .heartbeat(
                 &request.identity,

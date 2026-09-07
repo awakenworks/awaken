@@ -22,14 +22,15 @@ pub use awaken_runtime_contract::{
 };
 pub use awaken_session_contract::SessionRunReplacement;
 pub use awaken_worker_contract::{
-    AssignmentRejection, ExecutionLocation, HOST_EXECUTOR_CAPABILITY, LeastLoadedPolicy,
-    PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementContext,
-    PlacementError, PlacementPolicy, REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker,
-    RegisteredWorker, RegistryError, RegistryMutation, SESSION_RESOURCES_CAPABILITY,
-    TRUSTED_HOST_SANDBOX_BACKEND, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
-    WorkerAcpCapabilityObservation, WorkerAcpCapabilityRequirement, WorkerAssignment,
-    WorkerCredentialObservation, WorkerCredentialRevision, WorkerCredentialState, WorkerDirectory,
-    WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRecoveryMode,
+    AssignmentRejection, CURRENT_RUNTIME_PROTOCOL_VERSION, ExecutionLocation,
+    HOST_EXECUTOR_CAPABILITY, LeastLoadedPolicy, PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE,
+    PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementContext, PlacementError, PlacementPolicy,
+    REPOSITORY_CREDENTIALS_CAPABILITY, RankedWorker, RegisteredWorker, RegistryError,
+    RegistryMutation, SESSION_RESOURCES_CAPABILITY, TRUSTED_HOST_SANDBOX_BACKEND,
+    WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerAcpCapabilityObservation,
+    WorkerAcpCapabilityRequirement, WorkerAssignment, WorkerCredentialObservation,
+    WorkerCredentialRevision, WorkerCredentialState, WorkerDirectory, WorkerHeartbeat,
+    WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRecoveryMode,
     WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally,
     place_assignment,
 };

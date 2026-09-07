@@ -3095,6 +3095,10 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
         "R1/E5 Activated"
     );
     let mut manifest = awaken_dispatch::WorkerManifest::default();
+    // R1 assumes an executable current Worker; protocol rejection must not
+    // mask the reservation/physical-realization ordering being exercised.
+    manifest.runtime_protocol.min = 1;
+    manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
     manifest
         .capabilities
         .insert("application:test-session-envelope/v1".into());
