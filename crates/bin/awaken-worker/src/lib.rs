@@ -1488,12 +1488,19 @@ impl WorkerNode {
                 "awaken-worker drain registration exceeded 5s; local admission remains closed"
             ),
         }
-        if !grace.is_zero() {
+        if graceful {
             eprintln!(
                 "awaken-worker draining: finishing in-flight runs (≤{}s)",
                 grace.as_secs()
             );
-            let _ = host.drain_runtime(grace).await;
+            if !host.drain_runtime(grace).await {
+                // A drained admission gate does not stop an in-flight inference
+                // or tool. Reuse the authority-loss cancellation/return observer
+                // before shutting down transport; otherwise an ordinary SIGTERM
+                // discards the only owner able to acknowledge physical return.
+                // Unknown external effects still retain their Dispatch slot.
+                Box::pin(lifecycle::revoke_worker_session_authority(&lifecycle)).await;
+            }
         }
         lifecycle.authority.close();
         heartbeat.abort();

@@ -112,13 +112,33 @@ ADR-0024. A replacement Worker may acquire the new Run claim while it waits, but
 cannot enter model, tool, or Sandbox execution through that Dispatch. If the
 prior process vanished without an ACK, process/Pod termination proves only its
 process-bound tool or Sandbox work stopped. An opaque remote model request also
-requires an authoritative provider cancellation or terminal receipt; registry
-TTL alone is deliberately insufficient.
+requires an authoritative provider cancellation or terminal receipt when it can
+continue external effects independently; registry TTL alone is insufficient.
+A live Native response-only inference is narrower: Runtime can cancel its wait,
+discard the response before any proposed tool crosses the governed tool boundary,
+and return the owned executor. That actual local return permits the exact ACK;
+it does not prove provider computation or billing stopped. Hard process loss
+without that return still leaves the physical slot occupied.
 
-Aborting or dropping the local executor Future is likewise not an ACK: it may
-stop local polling while provider-side work continues. The physical slot remains
-occupied until the Future explicitly returns. No timeout or destructor fabricates
-that terminal fact.
+Aborting or dropping the outer executor Future is not an ACK. The physical slot
+remains occupied until the Future explicitly returns, and uncertain external
+tool cancellation vetoes the ACK even after local return. No timeout or destructor
+fabricates that terminal fact.
+
+On graceful Worker shutdown, local admission closes before the configured drain.
+If that budget expires (including a configured zero), the existing authority-loss
+cleanup cancels the resident attempt through its installed claim and Runtime
+signal, observes a bounded return window, then revokes only local Session
+projections. The existing root authority closes synchronously before async
+cleanup, and the originally selected closed revocation cohort is retained through
+finalization. It must not call the Coordinator-only global queue operations:
+Worker transport cannot list/requeue/cancel those rows, and local shutdown must
+not become a new durable user cancellation authority. AllInOne must continue polling both HTTP surfaces
+throughout that cleanup: keeping an unpolled listener bound cannot serve the
+Worker's cancellation or exact return receipts. One shared shutdown composition
+owns this dependency for signal, Worker completion and process-task failure.
+Opaque work without return remains fenced after cleanup expires. Prompt SIGINT
+and hard SIGKILL do not gain a physical completion guarantee from this policy.
 
 A committed A2A task identity supplies a narrower continuation proof. When the
 complete Run-scoped `TaskReference` matches the immutable remote endpoint, the

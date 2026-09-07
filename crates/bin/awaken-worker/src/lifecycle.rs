@@ -640,7 +640,7 @@ pub(crate) fn spawn_environment_warmup_reconciliation(
     })
 }
 
-async fn revoke_worker_session_authority(lifecycle: &WorkerSupervisor) {
+pub(crate) async fn revoke_worker_session_authority(lifecycle: &WorkerSupervisor) {
     // Root guard closes before selecting slots or awaiting any drain/owner lock.
     // A late/new Session cannot install authority outside this selected cohort.
     lifecycle.authority.close();
@@ -648,14 +648,19 @@ async fn revoke_worker_session_authority(lifecycle: &WorkerSupervisor) {
     let revocation = lifecycle.host.begin_session_realization_revocation();
     lifecycle.host.begin_pool_drain().await;
     // Fail closed without racing terminal sandbox disposal against in-flight
-    // native tools. Cancellation stops each process group (including descendant
-    // containers), and the bounded drain lets those futures release their
-    // workspace handles before the directories are reaped below.
-    lifecycle.host.interrupt_all_session_runs().await;
-    let _ = lifecycle
+    // native tools. Request cancellation and observe bounded executor return
+    // before detaching local projections. Unknown external effects retain their
+    // physical Dispatch slot; durable Session environments are not disposed.
+    let interrupted = lifecycle.host.interrupt_all_session_runs().await;
+    let returned = lifecycle
         .host
         .drain_runtime(std::time::Duration::from_secs(20))
         .await;
+    if !returned {
+        eprintln!(
+            "Worker cancellation drain expired after interrupting {interrupted} local Sessions; unconfirmed physical attempts remain fenced"
+        );
+    }
     if let Err(error) = lifecycle
         .host
         .finish_session_realization_revocation(revocation)

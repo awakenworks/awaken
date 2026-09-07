@@ -209,9 +209,18 @@ type checking are valuable executable evidence, but are not formal proofs.
   executable-test/TCB boundaries; no Rust-to-model refinement is claimed.
   `WorkerDrain.tla` additionally checks eventual acknowledgement under weak
   fairness of claim completion, local admission closure, registry publication
-  and acknowledgement; permanent I/O failure is excluded. Its drain-reopening
-  mutant is rejected. These models do not establish recovery of an abandoned
-  external physical attempt or cold reconstruction of host-bind participants.
+  and acknowledgement; permanent I/O failure is excluded. The same model tracks
+  up to three active attempts through natural return, grace expiry, cancellation,
+  bounded cleanup and exit. It checks that surviving work is never discarded
+  before cancellation/cleanup and that no return is fabricated; eventual exit
+  assumes fair timer/cleanup progress, not eventual opaque-provider return.
+  Four mutants reject reopening admission, disabling drain acknowledgement,
+  skipping cancellation and fabricating quiescence; an ACK witness guards
+  against vacuity. Cleanup completes before the model's existing withdrawal
+  owner returns the process, retaining the startup/withdrawal invariants. Actual Tokio HTTP polling during AllInOne shutdown is verified by
+  a real dual-listener receipt test, not inferred from this abstract model.
+  These models do not establish recovery of an abandoned external physical
+  attempt or cold reconstruction of host-bind participants.
 - Worker credentials, ACP capabilities and their refresh generation now share
   one atomic observation snapshot. Initial and periodic heartbeats freeze that
   snapshot once before projecting wire fields; independent getters and the
