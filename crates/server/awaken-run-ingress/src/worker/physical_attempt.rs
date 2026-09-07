@@ -78,7 +78,10 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 "physical Run attempt is missing its cancellation authority".to_string(),
             ))
         })?;
-        let _thread_execution = self.runtime.acquire_thread_execution(thread_id).await;
+        let _thread_execution = self
+            .runtime
+            .acquire_thread_execution(thread_id, None)
+            .await?;
         let timing = AuthorityLeaseTiming::from_ttl_ms(self.lease_ms);
         loop {
             let admission = match recovery_mode {

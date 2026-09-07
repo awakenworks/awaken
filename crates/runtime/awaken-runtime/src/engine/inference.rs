@@ -207,6 +207,9 @@ pub(super) async fn infer_with_retry_observed(
             .as_ref()
             .is_some_and(|token| token.is_cancelled())
         && !journal.as_deref().is_some_and(|journal| journal.failed())
+        && journal
+            .as_deref()
+            .is_none_or(|journal| journal.context.physical_quiescence.can_acknowledge_return())
         && let Err(error) = ctx.store.delete(&ctx.run_id).await
     {
         tracing::warn!(run_id = %ctx.run_id, %error, "failed to delete spent stream checkpoint");
@@ -348,11 +351,15 @@ async fn infer_with_retry_inner(
                     awaken_runtime_contract::llm::Error::Unauthorized(error.to_string())
                 })?;
         }
+        let quiescence = journal
+            .as_deref()
+            .map(|journal| journal.context.physical_quiescence.clone())
+            .unwrap_or_default();
         let outcome = model_read(
             cancellation,
             tokio::time::timeout(
                 policy.attempt_timeout,
-                llm.infer_streaming(attempt_request, &sink),
+                quiescence.observe_return(llm.infer_streaming(attempt_request, &sink)),
             ),
         )
         .await;
@@ -380,6 +387,14 @@ async fn infer_with_retry_inner(
                 policy.attempt_timeout.as_millis()
             )))
         });
+        if journal
+            .as_deref()
+            .is_some_and(|journal| !journal.context.physical_quiescence.can_acknowledge_return())
+        {
+            // The watchdog abandoned an in-flight executor. Neither a retry,
+            // continuation, nor synthesized tool call may cross this boundary.
+            return attempt_result;
+        }
         match attempt_result {
             Ok(response) => {
                 permit.success();

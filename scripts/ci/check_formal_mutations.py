@@ -1293,6 +1293,23 @@ def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
         (source, witness, "NoConflictedRunHasSettled"),
     ], dependencies=("RunIngressKernel", "SessionActivityKernel", "WorkQueueKernel"))
     print("Resolution conflict: execution mutant killed; terminal settlement reachability witnessed")
+    # Q1 timeout/drop must not clear a slot with unreturned external work.
+    # Q2 require reachable external execution, not a vacuous green model.
+    # The full CI configuration separately explores both Workers and 3 epochs;
+    # this mutation slice uses 1 epoch to isolate the return-ACK boundary.
+    physical_config = (ROOT / "formal/tla/SessionRunProtocol.cfg").read_text()
+    physical_config = physical_config.replace("MaxEpoch = 3", "MaxEpoch = 1")
+    physical_config = physical_config.replace("MaxHeartbeat = 1", "MaxHeartbeat = 0")
+    physical_config = physical_config.replace("MaxTime = 2", "MaxTime = 1")
+    return_guard = r"    /\ <<run, candidate, epoch>> \notin externalAttempts" + "\n"
+    if source.count(return_guard) != 1:
+        raise SystemExit("External return mutation anchor drifted; review the model")
+    check_tlc_model_mutations(tlc_jar, "SessionRunProtocol", source, physical_config, [
+        (source.replace(return_guard, ""), physical_config.replace("    Safety", "    ExternalAttemptRetainsExactSlot\n    Safety"),
+         "ExternalAttemptRetainsExactSlot"),
+        (source, physical_config.replace("    Safety", "    NoExternalExecution\n    Safety"), "NoExternalExecution"),
+    ], dependencies=("RunIngressKernel", "SessionActivityKernel", "WorkQueueKernel"))
+    print("Physical return: unsafe ACK mutant killed; external execution reachable")
 
 
 def check_config_cas_model_mutant(tlc_jar: Path) -> None:

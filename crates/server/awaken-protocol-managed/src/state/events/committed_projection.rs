@@ -34,19 +34,11 @@ impl ManagedState {
         terminal: &RunLifecycleEvent,
         outcome_owns_failure: bool,
     ) {
-        use awaken_agent_contract::agent::run::{EndCause, RunState};
         if outcome_owns_failure {
             return;
         }
-        let error = match &terminal.state {
-            RunState::Ended(EndCause::Error(failure)) => {
-                SessionError::classify(failure.code(), failure.message())
-            }
-            RunState::Ended(EndCause::Indeterminate) => SessionError::classify(
-                "execution_indeterminate",
-                "The execution result is unknown. Do not repeat external actions until their outcome is verified. An active Session remains unavailable for further work until the prior execution is confirmed stopped.",
-            ),
-            _ => return,
+        let Some(error) = SessionError::from_run_state(&terminal.state) else {
+            return;
         };
         let id = managed_multiagent_event_id(
             &record.session.id,
@@ -234,7 +226,7 @@ impl ManagedState {
             .flatten();
         let messages = root_snapshot
             .as_ref()
-            .map(|snapshot| snapshot.messages.clone())
+            .map(|snapshot| snapshot.messages.as_slice())
             .unwrap_or_default();
         let root_run_ids = root_snapshot
             .as_ref()
@@ -247,7 +239,7 @@ impl ManagedState {
             })
             .unwrap_or_default();
         let root_response_coordinates =
-            Self::assistant_response_coordinates(&messages, &root_run_ids);
+            Self::assistant_response_coordinates(messages, &root_run_ids);
         let durable_inbound_projections =
             durable_inbound_projections(session_id, &persisted.event_batches);
         let usage = self
@@ -356,30 +348,38 @@ impl ManagedState {
         // Session revision does not change for Runtime commits. Fence the root
         // Thread prefix again after child/link reads, while ignoring the
         // backend-wide diagnostic cursor advanced by unrelated Threads.
-        let (final_links, final_child_snapshots) =
-            self.coordinated_projection_prefix(session_id).await?;
-        if links != final_links
-            || child_snapshots.len() != final_child_snapshots.len()
-            || child_snapshots.iter().any(|(thread_id, initial)| {
-                !same_thread_projection_prefix(Some(initial), final_child_snapshots.get(thread_id))
-            })
         {
-            return Ok(false);
-        }
-        let final_root_snapshot = self.recovery_snapshot(session_id, session_id).await?;
-        if !same_thread_projection_prefix(root_snapshot.as_ref(), final_root_snapshot.as_ref()) {
-            return Ok(false);
-        }
+            // Validation owns no published payload. Release these second full
+            // snapshots before constructing the candidate's wire events.
+            let (final_links, final_child_snapshots) =
+                self.coordinated_projection_prefix(session_id).await?;
+            if links != final_links
+                || child_snapshots.len() != final_child_snapshots.len()
+                || child_snapshots.iter().any(|(thread_id, initial)| {
+                    !same_thread_projection_prefix(
+                        Some(initial),
+                        final_child_snapshots.get(thread_id),
+                    )
+                })
+            {
+                return Ok(false);
+            }
+            let final_root_snapshot = self.recovery_snapshot(session_id, session_id).await?;
+            if !same_thread_projection_prefix(root_snapshot.as_ref(), final_root_snapshot.as_ref())
+            {
+                return Ok(false);
+            }
 
-        let final_persisted = self
-            .application
-            .session(session_id)
-            .await
-            .map_err(StateError::from)?;
-        if final_persisted.session_id != persisted.session_id
-            || final_persisted.revision != persisted.revision
-        {
-            return Ok(false);
+            let final_persisted = self
+                .application
+                .session(session_id)
+                .await
+                .map_err(StateError::from)?;
+            if final_persisted.session_id != persisted.session_id
+                || final_persisted.revision != persisted.revision
+            {
+                return Ok(false);
+            }
         }
 
         // Build the complete disposable projection on a private result snapshot. A
@@ -409,7 +409,7 @@ impl ManagedState {
             session_id,
             &all_accepted_lifecycle,
             &historical_pending,
-            &messages,
+            messages,
             &transcripts,
         )?;
         let projected_budget_reach = budget_reach_projections
@@ -425,7 +425,7 @@ impl ManagedState {
             record.checkpoint.source.lifecycle_cursor = accepted_cursor;
         }
         let root_pending = root_pending.as_ref();
-        let transcript_evidence = project::committed_transcript_evidence(&messages, root_pending);
+        let transcript_evidence = project::committed_transcript_evidence(messages, root_pending);
         let new_messages = if blocked_transcript_threads.contains(session_id) {
             Vec::new()
         } else {

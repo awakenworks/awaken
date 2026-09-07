@@ -160,12 +160,19 @@ struct ActiveAttemptSnapshot {
     ownership: Option<Arc<dyn AttemptOwnershipVerifier>>,
 }
 
-type ThreadExecutionGates = Arc<Mutex<HashMap<ThreadId, Weak<tokio::sync::Mutex<()>>>>>;
+enum ThreadExecutionEntry {
+    Available(Weak<tokio::sync::Mutex<()>>),
+    /// Queue-less execution has no durable Dispatch slot to retain instead.
+    /// Keep only its safety tombstone, never the transcript or executor.
+    Unconfirmed,
+}
+type ThreadExecutionGates = Arc<Mutex<HashMap<ThreadId, ThreadExecutionEntry>>>;
 
 struct ThreadExecutionGuard {
     thread_id: ThreadId,
     gates: ThreadExecutionGates,
     guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+    direct_quiescence: Option<awaken_runtime_contract::runtime_context::AttemptQuiescence>,
 }
 
 impl Drop for ThreadExecutionGuard {
@@ -173,11 +180,20 @@ impl Drop for ThreadExecutionGuard {
         // Release the owned gate before testing whether any waiter still holds
         // its Arc. Removing only the matching dead Weak cannot split live
         // callers onto two mutexes.
-        self.guard.take();
         let mut gates = self.gates.lock();
+        // Publish a direct attempt's veto before waking a queued acquisition.
+        // Durable attempts retain their Dispatch row instead (None here).
+        if self
+            .direct_quiescence
+            .as_ref()
+            .is_some_and(|q| !q.can_acknowledge_return())
+        {
+            gates.insert(self.thread_id.clone(), ThreadExecutionEntry::Unconfirmed);
+        }
+        self.guard.take();
         if gates
             .get(&self.thread_id)
-            .is_some_and(|gate| gate.upgrade().is_none())
+            .is_some_and(|gate| matches!(gate, ThreadExecutionEntry::Available(weak) if weak.upgrade().is_none()))
         {
             gates.remove(&self.thread_id);
         }
@@ -267,24 +283,52 @@ impl Runtime {
     /// future, including model, tool, and Sandbox calls. Durable ingress also
     /// uses its persisted claim-bound slot; neither authority replaces the
     /// other because their failure domains differ.
-    pub async fn acquire_thread_execution(&self, thread_id: &ThreadId) -> impl Drop + use<> {
+    pub async fn acquire_thread_execution(
+        &self,
+        thread_id: &ThreadId,
+        direct_quiescence: Option<awaken_runtime_contract::runtime_context::AttemptQuiescence>,
+    ) -> awaken_runtime_contract::execution::Result<impl Drop + use<>> {
+        let unconfirmed = || {
+            awaken_runtime_contract::execution::Error::Execution(
+                "prior direct Thread execution has no termination evidence".into(),
+            )
+        };
         let gate = {
             let mut gates = self.thread_execution.lock();
-            match gates.get(thread_id).and_then(Weak::upgrade) {
+            let existing = match gates.get(thread_id) {
+                Some(ThreadExecutionEntry::Unconfirmed) => return Err(unconfirmed()),
+                Some(ThreadExecutionEntry::Available(weak)) => weak.upgrade(),
+                None => None,
+            };
+            match existing {
                 Some(gate) => gate,
                 None => {
                     let gate = Arc::new(tokio::sync::Mutex::new(()));
-                    gates.insert(thread_id.clone(), Arc::downgrade(&gate));
+                    gates.insert(
+                        thread_id.clone(),
+                        ThreadExecutionEntry::Available(Arc::downgrade(&gate)),
+                    );
                     gate
                 }
             }
         };
-        let guard = gate.lock_owned().await;
-        ThreadExecutionGuard {
+        // Own registry cleanup even while waiting. Otherwise cancelling the
+        // last queued acquisition leaves a dead Weak entry with no guard.
+        let mut acquired = ThreadExecutionGuard {
             thread_id: thread_id.clone(),
             gates: self.thread_execution.clone(),
-            guard: Some(guard),
+            guard: None,
+            direct_quiescence: None,
+        };
+        acquired.guard = Some(gate.lock_owned().await);
+        if matches!(
+            self.thread_execution.lock().get(thread_id),
+            Some(ThreadExecutionEntry::Unconfirmed)
+        ) {
+            return Err(unconfirmed());
         }
+        acquired.direct_quiescence = direct_quiescence;
+        Ok(acquired)
     }
 
     /// Set how many extra attempts to make on a retryable inference failure.
@@ -897,6 +941,74 @@ mod thread_execution_tests {
     use super::*;
 
     #[tokio::test]
+    async fn cancelled_last_waiter_does_not_leave_a_dead_registry_entry() {
+        // G4 causes: first guard held; a second acquisition polled Pending;
+        // first returns; last queued Future drops before acquiring. Effect:
+        // remove its dead Weak entry without creating another gate or veto.
+        use std::future::Future as _;
+        let runtime = Runtime::new();
+        let thread = ThreadId("cancelled-last-waiter".into());
+        let first = runtime
+            .acquire_thread_execution(&thread, None)
+            .await
+            .unwrap();
+        let mut waiter = Box::pin(runtime.acquire_thread_execution(&thread, None));
+        std::future::poll_fn(|cx| {
+            assert!(waiter.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(first);
+        drop(waiter);
+        assert!(runtime.thread_execution.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn direct_uncertainty_fences_queued_and_fresh_callers_but_not_other_threads() {
+        // C1 direct/durable guard; C2 uncertainty before drop; C3 queued/fresh
+        // acquisition. E1 direct veto remains in this sole registry; E2 both
+        // waiters fail before executor entry; E3 other Threads stay available;
+        // E4 durable scope leaves exclusion to its Dispatch row. R1=C1direct+
+        // C2+C3=>E1/E2/E3; R2=C1durable=>E4. No payload is retained.
+        let runtime = Arc::new(Runtime::new());
+        for direct in [false, true] {
+            let thread = ThreadId(format!("uncertain-{direct}"));
+            let latch = awaken_runtime_contract::runtime_context::AttemptQuiescence::default();
+            let first = runtime
+                .acquire_thread_execution(&thread, direct.then(|| latch.clone()))
+                .await
+                .unwrap();
+            let waiter = tokio::spawn({
+                let runtime = runtime.clone();
+                let thread = thread.clone();
+                async move {
+                    runtime
+                        .acquire_thread_execution(&thread, None)
+                        .await
+                        .is_ok()
+                }
+            });
+            tokio::task::yield_now().await;
+            latch.mark_uncertain();
+            drop(first);
+            assert_eq!(waiter.await.unwrap(), !direct);
+            assert_eq!(
+                runtime
+                    .acquire_thread_execution(&thread, None)
+                    .await
+                    .is_ok(),
+                !direct
+            );
+        }
+        assert!(
+            runtime
+                .acquire_thread_execution(&ThreadId("unrelated".into()), None)
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
     async fn final_guard_removes_the_thread_gate_without_splitting_waiters() {
         // Decision rules: G1 first acquisition creates one entry; G2 a queued
         // waiter retains that same entry after the first guard drops; G3 the
@@ -904,12 +1016,20 @@ mod thread_execution_tests {
         // respectively size 1, size 1, and size 0—no leak and no parallel gate.
         let runtime = Arc::new(Runtime::new());
         let thread = ThreadId("thread-gate-lifecycle".into());
-        let first = runtime.acquire_thread_execution(&thread).await;
+        let first = runtime
+            .acquire_thread_execution(&thread, None)
+            .await
+            .unwrap();
         assert_eq!(runtime.thread_execution.lock().len(), 1, "G1");
         let waiter = tokio::spawn({
             let runtime = runtime.clone();
             let thread = thread.clone();
-            async move { runtime.acquire_thread_execution(&thread).await }
+            async move {
+                runtime
+                    .acquire_thread_execution(&thread, None)
+                    .await
+                    .unwrap()
+            }
         });
         tokio::task::yield_now().await;
         drop(first);

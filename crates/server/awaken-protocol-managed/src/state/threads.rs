@@ -42,10 +42,29 @@ impl ManagedState {
     pub(crate) fn project_event_for_thread(
         session_id: &str,
         thread_id: &str,
-        mut event: Event,
+        event: Event,
         owner_thread_id: Option<&str>,
         primary_references_event: bool,
     ) -> Option<Event> {
+        Self::project_event_for_thread_cow(
+            session_id,
+            thread_id,
+            std::borrow::Cow::Owned(event),
+            owner_thread_id,
+            primary_references_event,
+        )
+        .map(std::borrow::Cow::into_owned)
+    }
+
+    /// One projection kernel for owned live events and borrowed history. Clone
+    /// only a visible event whose wire perspective actually changes.
+    fn project_event_for_thread_cow<'a>(
+        session_id: &str,
+        thread_id: &str,
+        mut event: std::borrow::Cow<'a, Event>,
+        owner_thread_id: Option<&str>,
+        primary_references_event: bool,
+    ) -> Option<std::borrow::Cow<'a, Event>> {
         if thread_id == session_id {
             let Some(owner_thread_id) = owner_thread_id else {
                 return Some(event);
@@ -53,37 +72,40 @@ impl ManagedState {
             if owner_thread_id == session_id {
                 return Some(event);
             }
-            match &mut event.kind {
+            match &event.kind {
                 // `session.error` is the public failure projection for every
                 // Session-owned Run, including coordinated children. Hiding a
                 // child-owned error while cross-posting its terminal Thread
                 // status would leave the primary Session history causally
                 // incomplete.
                 OutboundKind::SessionError { .. } => return Some(event),
-                OutboundKind::AgentToolUse {
-                    session_thread_id, ..
-                } if primary_references_event => {
-                    *session_thread_id = Some(owner_thread_id.to_string());
-                    return Some(event);
-                }
-                OutboundKind::AgentCustomToolUse {
-                    session_thread_id, ..
-                }
+                OutboundKind::AgentToolUse { .. } if primary_references_event => {}
+                OutboundKind::AgentCustomToolUse { .. }
                 | OutboundKind::AgentToolUse {
                     evaluated_permission: Some(EvaluatedPermission::Ask),
-                    session_thread_id,
                     ..
                 }
                 | OutboundKind::AgentMcpToolUse {
                     evaluated_permission: Some(EvaluatedPermission::Ask),
-                    session_thread_id,
                     ..
-                } => {
-                    *session_thread_id = Some(owner_thread_id.to_string());
-                    return Some(event);
-                }
+                } => {}
                 _ => return None,
             }
+            match &mut event.to_mut().kind {
+                OutboundKind::AgentCustomToolUse {
+                    session_thread_id, ..
+                }
+                | OutboundKind::AgentToolUse {
+                    session_thread_id, ..
+                }
+                | OutboundKind::AgentMcpToolUse {
+                    session_thread_id, ..
+                } => {
+                    *session_thread_id = Some(owner_thread_id.to_string());
+                }
+                _ => unreachable!("only cross-posted tools need a perspective change"),
+            }
+            return Some(event);
         }
         if owner_thread_id == Some(thread_id) {
             return Some(event);
@@ -134,7 +156,7 @@ impl ManagedState {
         ) {
             return Some(event);
         }
-        event.kind = match event.kind {
+        let kind = match &event.kind {
             OutboundKind::AgentThreadMessageSent {
                 to_session_thread_id,
                 content,
@@ -142,7 +164,7 @@ impl ManagedState {
             } if to_session_thread_id == thread_id => OutboundKind::AgentThreadMessageReceived {
                 from_session_thread_id: public_thread_id(session_id, session_id),
                 from_agent_name: None,
-                content,
+                content: content.clone(),
             },
             OutboundKind::AgentThreadMessageReceived {
                 from_session_thread_id,
@@ -151,11 +173,15 @@ impl ManagedState {
             } if from_session_thread_id == thread_id => OutboundKind::AgentThreadMessageSent {
                 to_session_thread_id: public_thread_id(session_id, session_id),
                 to_agent_name: None,
-                content,
+                content: content.clone(),
             },
             _ => return None,
         };
-        Some(event)
+        Some(std::borrow::Cow::Owned(Event {
+            id: event.id.clone(),
+            processed_at: event.processed_at.clone(),
+            kind,
+        }))
     }
 
     const fn thread_status(status: SessionStatus) -> SessionThreadStatus {
@@ -291,28 +317,59 @@ impl ManagedState {
         {
             return Err(StateError::NotFound);
         }
-        let primary_answerable_event_ids = record.primary_answerable_event_ids();
-        let events = record
+        Self::project_event_page(
+            record,
+            id,
+            &internal_thread_id,
+            cursor,
+            limit,
+            false,
+            |_| true,
+        )
+    }
+
+    /// Session and Thread endpoints share filtering, ordering, cursor errors,
+    /// and materialization. The temporary index borrows unchanged payloads;
+    /// only the selected page crosses the owned response boundary.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn project_event_page(
+        record: &SessionRecord,
+        session_id: &str,
+        thread_id: &str,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+        descending: bool,
+        include: impl Fn(&Event) -> bool,
+    ) -> Result<ListEventsResponse, StateError> {
+        let answerable = record.primary_answerable_event_ids();
+        let mut events = record
             .events
             .iter()
-            .cloned()
             .filter_map(|event| {
-                let owner = record.event_thread_owners.get(&event.id);
-                let primary_references_event =
-                    primary_answerable_event_ids.contains(event.id.as_str());
-                Self::project_event_for_thread(
-                    id,
-                    &internal_thread_id,
-                    event,
-                    owner.map(String::as_str),
-                    primary_references_event,
+                Self::project_event_for_thread_cow(
+                    session_id,
+                    thread_id,
+                    std::borrow::Cow::Borrowed(event),
+                    record
+                        .event_thread_owners
+                        .get(&event.id)
+                        .map(String::as_str),
+                    answerable.contains(event.id.as_str()),
                 )
             })
+            .filter(|event| include(event))
             .collect::<Vec<_>>();
+        if descending {
+            events.reverse();
+        }
         let page = paginate_by_id(&events, cursor, limit, |event| event.id.as_str())
             .map_err(|_| RunError::bad_request("unknown pagination cursor"))?;
         Ok(ListEventsResponse {
-            data: page.items.to_vec(),
+            data: page
+                .items
+                .iter()
+                .map(|event| event.as_ref().clone())
+                .collect(),
             next_page: page.next_page,
         })
     }
@@ -395,6 +452,42 @@ impl ManagedState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_projection_borrows_unchanged_payloads_and_hides_before_copying() {
+        // C1 primary/child view; C2 no owner/root/own child/other child;
+        // C3 ordinary large payload (no perspective rewrite). R1 visible =>
+        // Borrowed exact allocation; R2 invisible => None. This guards the
+        // allocation boundary, independently of equal JSON response tests.
+        let event = Event {
+            id: "evt-large".into(),
+            processed_at: None,
+            kind: OutboundKind::AgentMessage {
+                content: vec![ContentBlock::text("x".repeat(1024 * 1024))],
+            },
+        };
+        for (view, owner, visible) in [
+            ("root", None, true),
+            ("root", Some("root"), true),
+            ("root", Some("child"), false),
+            ("child", Some("child"), true),
+            ("child", Some("other"), false),
+            ("child", None, false),
+        ] {
+            let projected = ManagedState::project_event_for_thread_cow(
+                "root",
+                view,
+                std::borrow::Cow::Borrowed(&event),
+                owner,
+                false,
+            );
+            assert_eq!(projected.is_some(), visible, "{view}/{owner:?}");
+            if let Some(projected) = projected {
+                assert!(matches!(projected, std::borrow::Cow::Borrowed(_)));
+                assert!(std::ptr::eq(projected.as_ref(), &event));
+            }
+        }
+    }
 
     #[test]
     fn public_internal_thread_id_codec_follows_the_decision_table() {

@@ -394,6 +394,9 @@ async fn dropped_and_timed_out_model_futures_preserve_distinct_durable_evidence(
     // records TimedOut, never Returned or provider quiescence. Rules:
     // R5=C1=>E1+E2; R6=C2=>E1+E3. The existing Dispatch SIGKILL test owns
     // physical exclusion; this test owns the new model evidence boundary.
+    // R7: retry + failover + outer tolerance enabled must still admit only one
+    // invocation after an abandoned Future; its existing quiescence latch vetoes
+    // the Worker ACK. Timeout ends Indeterminate, not a known provider failure.
     for timeout in [false, true] {
         let durable = Arc::new(MemoryCommitCoordinator::new());
         let entered = Arc::new(tokio::sync::Notify::new());
@@ -401,30 +404,41 @@ async fn dropped_and_timed_out_model_futures_preserve_distinct_durable_evidence(
             durable: durable.clone(),
             entered: entered.clone(),
         });
-        let runtime =
-            Runtime::new()
-                .with_llm(model)
-                .with_retry_policy(awaken_runtime::LlmRetryPolicy {
-                    max_retries: 0,
-                    attempt_timeout: std::time::Duration::from_millis(if timeout {
-                        30
-                    } else {
-                        5000
-                    }),
-                    ..Default::default()
-                });
+        let runtime = Runtime::new()
+            .with_llm(model)
+            .with_retry_policy(awaken_runtime::LlmRetryPolicy {
+                max_retries: 3,
+                attempt_timeout: std::time::Duration::from_millis(if timeout { 30 } else { 5000 }),
+                ..Default::default()
+            })
+            .with_max_consecutive_inference_failures(3);
         let context = RuntimeRunContext::new().with_commit(durable.clone());
-        let driving =
-            tokio::spawn(async move { runtime.execute(activation("catalog-a"), context).await });
+        let quiescence = context.physical_quiescence.clone();
+        let mut request = activation("catalog-a");
+        request
+            .snapshot
+            .resolved_spec
+            .model_candidates
+            .push(ResolvedModelCandidate::host(ModelBinding::new(
+                "fallback", "fallback", "fallback",
+            )));
+        let driving = tokio::spawn(async move { runtime.execute(request, context).await });
         tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
             .await
             .unwrap();
         if timeout {
-            driving.await.unwrap().unwrap();
+            assert_eq!(
+                driving.await.unwrap().unwrap(),
+                RunState::Ended(EndCause::Indeterminate)
+            );
         } else {
             driving.abort();
             assert!(driving.await.unwrap_err().is_cancelled());
         }
+        assert!(
+            !quiescence.can_acknowledge_return(),
+            "R5/R6/R7 no remote ACK"
+        );
         assert_eq!(
             model_operations(&durable)
                 .iter()

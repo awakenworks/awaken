@@ -21,7 +21,7 @@ VARIABLES
     activityEpoch, activeActivityEpochs, settledActivities, nextActivityEpoch,
     workState, workOwner, workEpoch, workHeartbeat, workExpires, workNow,
     realizedOwner, realizedWorkEpoch, releasedWorkEpoch,
-    executionStarted, executionOwner, executionEpoch,
+    executionStarted, executionOwner, executionEpoch, externalAttempts,
     committedDisposition, committedOwner, committedEpoch, committedWorkEpoch,
     sessionObservationApplied
 
@@ -33,7 +33,7 @@ activityVars == <<activityEpoch, activeActivityEpochs, settledActivities,
                   nextActivityEpoch>>
 workVars == <<workState, workOwner, workEpoch, workHeartbeat, workExpires,
               workNow>>
-protocolVars == <<activityVars, workVars, realizedOwner, realizedWorkEpoch,
+protocolVars == <<externalAttempts, activityVars, workVars, realizedOwner, realizedWorkEpoch,
                   releasedWorkEpoch, executionStarted, executionOwner,
                   executionEpoch, committedDisposition,
                   committedOwner, committedEpoch, committedWorkEpoch,
@@ -115,6 +115,7 @@ Init ==
     /\ realizedOwner = NoWorker
     /\ realizedWorkEpoch = 0
     /\ releasedWorkEpoch = 0
+    /\ externalAttempts = {}
     /\ executionStarted = {}
     /\ executionOwner = [run \in Runs |-> NoWorker]
     /\ executionEpoch = [run \in Runs |-> 0]
@@ -127,51 +128,51 @@ Init ==
 ActivateDispatch(run) ==
     \/ /\ run = RootRun
        /\ RootIngress!ActivateReservation
-       /\ UNCHANGED <<childAVars, childBVars>>
+       /\ UNCHANGED <<externalAttempts, childAVars, childBVars>>
     \/ /\ run = ChildRunA
        /\ ChildAIngress!ActivateReservation
-       /\ UNCHANGED <<rootVars, childBVars>>
+       /\ UNCHANGED <<externalAttempts, rootVars, childBVars>>
     \/ /\ run = ChildRunB
        /\ ChildBIngress!ActivateReservation
-       /\ UNCHANGED <<rootVars, childAVars>>
+       /\ UNCHANGED <<externalAttempts, rootVars, childAVars>>
 
 ClaimDispatch(run, candidate) ==
     \/ /\ run = RootRun
        /\ RootIngress!Claim(candidate)
-       /\ UNCHANGED <<childAVars, childBVars>>
+       /\ UNCHANGED <<externalAttempts, childAVars, childBVars>>
     \/ /\ run = ChildRunA
        /\ ChildAIngress!Claim(candidate)
-       /\ UNCHANGED <<rootVars, childBVars>>
+       /\ UNCHANGED <<externalAttempts, rootVars, childBVars>>
     \/ /\ run = ChildRunB
        /\ ChildBIngress!Claim(candidate)
-       /\ UNCHANGED <<rootVars, childAVars>>
+       /\ UNCHANGED <<externalAttempts, rootVars, childAVars>>
 
 SettleAwaitingDispatch(run, candidate, epoch) ==
     \/ /\ run = RootRun
        /\ RootIngress!SettleAwaiting(candidate, epoch)
-       /\ UNCHANGED <<childAVars, childBVars>>
+       /\ UNCHANGED <<externalAttempts, childAVars, childBVars>>
     \/ /\ run = ChildRunA
        /\ ChildAIngress!SettleAwaiting(candidate, epoch)
-       /\ UNCHANGED <<rootVars, childBVars>>
+       /\ UNCHANGED <<externalAttempts, rootVars, childBVars>>
     \/ /\ run = ChildRunB
        /\ ChildBIngress!SettleAwaiting(candidate, epoch)
-       /\ UNCHANGED <<rootVars, childAVars>>
+       /\ UNCHANGED <<externalAttempts, rootVars, childAVars>>
 
 SettleDoneDispatch(run, candidate, epoch) ==
     \/ /\ run = RootRun
        /\ RootIngress!SettleDone(candidate, epoch)
-       /\ UNCHANGED <<childAVars, childBVars>>
+       /\ UNCHANGED <<externalAttempts, childAVars, childBVars>>
     \/ /\ run = ChildRunA
        /\ ChildAIngress!SettleDone(candidate, epoch)
-       /\ UNCHANGED <<rootVars, childBVars>>
+       /\ UNCHANGED <<externalAttempts, rootVars, childBVars>>
     \/ /\ run = ChildRunB
        /\ ChildBIngress!SettleDone(candidate, epoch)
-       /\ UNCHANGED <<rootVars, childAVars>>
+       /\ UNCHANGED <<externalAttempts, rootVars, childAVars>>
 
 OpenActivity(run) ==
     /\ DState(run) = "Reserved"
     /\ ActivityKernel!Open(run)
-    /\ UNCHANGED <<dispatchVars, workVars, realizedOwner,
+    /\ UNCHANGED <<externalAttempts, dispatchVars, workVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch, executionStarted,
                    executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
@@ -184,7 +185,7 @@ ActivateReservation(run) ==
 
 ClaimWork(candidate) ==
     /\ WorkKernel!Claim(candidate, WorkItem)
-    /\ UNCHANGED <<dispatchVars, activityVars, realizedOwner,
+    /\ UNCHANGED <<externalAttempts, dispatchVars, activityVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch, executionStarted,
                    executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
@@ -192,7 +193,7 @@ ClaimWork(candidate) ==
 
 ReclaimWork(candidate) ==
     /\ WorkKernel!Reclaim(candidate, WorkItem)
-    /\ UNCHANGED <<dispatchVars, activityVars, realizedOwner,
+    /\ UNCHANGED <<externalAttempts, dispatchVars, activityVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch, executionStarted,
                    executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
@@ -200,7 +201,7 @@ ReclaimWork(candidate) ==
 
 HeartbeatWork(candidate, expected) ==
     /\ WorkKernel!Heartbeat(candidate, WorkItem, expected)
-    /\ UNCHANGED <<dispatchVars, activityVars, realizedOwner,
+    /\ UNCHANGED <<externalAttempts, dispatchVars, activityVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch, executionStarted,
                    executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
@@ -208,7 +209,7 @@ HeartbeatWork(candidate, expected) ==
 
 AdvanceStoreTime ==
     /\ WorkKernel!AdvanceTime
-    /\ UNCHANGED <<dispatchVars, activityVars, realizedOwner,
+    /\ UNCHANGED <<externalAttempts, dispatchVars, activityVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch, executionStarted,
                    executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
@@ -218,7 +219,7 @@ Realize(candidate) ==
     /\ CurrentWork(candidate)
     /\ realizedOwner' = candidate
     /\ realizedWorkEpoch' = workEpoch[WorkItem]
-    /\ UNCHANGED <<dispatchVars, activityVars, workVars,
+    /\ UNCHANGED <<externalAttempts, dispatchVars, activityVars, workVars,
                    releasedWorkEpoch, executionStarted, executionOwner,
                    executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
@@ -236,7 +237,7 @@ ClaimRun(run, candidate) ==
     /\ CurrentRealization(candidate)
     /\ DState(run) \in {"Pending", "Awaiting"}
     /\ ClaimDispatch(run, candidate)
-    /\ UNCHANGED <<activityVars, workVars, realizedOwner,
+    /\ UNCHANGED <<externalAttempts, activityVars, workVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch,
                    executionStarted, executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
@@ -246,7 +247,7 @@ ReclaimRun(run, candidate) ==
     /\ CurrentRealization(candidate)
     /\ DState(run) = "Leased"
     /\ ClaimDispatch(run, candidate)
-    /\ UNCHANGED <<activityVars, workVars, realizedOwner,
+    /\ UNCHANGED <<externalAttempts, activityVars, workVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch,
                    executionStarted, executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
@@ -262,6 +263,7 @@ StartExecution(run, candidate, epoch) ==
     /\ CurrentRealization(candidate)
     /\ \A peer \in Runs \ {run}:
          RunThread(peer) = RunThread(run) => peer \notin executionStarted
+    /\ externalAttempts' = externalAttempts \cup {<<run, candidate, epoch>>}
     /\ executionStarted' = executionStarted \cup {run}
     /\ executionOwner' = [executionOwner EXCEPT ![run] = candidate]
     /\ executionEpoch' = [executionEpoch EXCEPT ![run] = epoch]
@@ -271,16 +273,29 @@ StartExecution(run, candidate, epoch) ==
                    committedWorkEpoch, sessionObservationApplied>>
 
 FinishExecution(run, candidate, epoch) ==
+    /\ <<run, candidate, epoch>> \notin externalAttempts
     /\ run \in executionStarted
     /\ executionOwner[run] = candidate
     /\ executionEpoch[run] = epoch
     /\ executionStarted' = executionStarted \ {run}
     /\ executionOwner' = [executionOwner EXCEPT ![run] = NoWorker]
     /\ executionEpoch' = [executionEpoch EXCEPT ![run] = 0]
-    /\ UNCHANGED <<dispatchVars, activityVars, workVars, realizedOwner,
+    /\ UNCHANGED <<externalAttempts, dispatchVars, activityVars, workVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch,
                    committedDisposition, committedOwner, committedEpoch,
                    committedWorkEpoch, sessionObservationApplied>>
+
+\* External work is independent of the local Future and mutation lease. Only
+\* observed terminal completion removes this exact (Run, Worker, Epoch) fact;
+\* cancellation, watchdog expiry and process death may stutter indefinitely.
+ObserveExternalReturn(run, candidate, epoch) ==
+    /\ <<run, candidate, epoch>> \in externalAttempts
+    /\ externalAttempts' = externalAttempts \ {<<run, candidate, epoch>>}
+    /\ UNCHANGED <<dispatchVars, activityVars, workVars, realizedOwner, realizedWorkEpoch,
+                  releasedWorkEpoch, executionStarted, executionOwner,
+                  executionEpoch, committedDisposition,
+                  committedOwner, committedEpoch, committedWorkEpoch,
+                  sessionObservationApplied>>
 
 \* ThreadCommit remains the sole Run-disposition writer. This action records
 \* only the committed fact visible under the exact Dispatch and Work fences.
@@ -300,7 +315,7 @@ ObserveCommittedRun(run, disposition, candidate, epoch) ==
     /\ committedEpoch' = [committedEpoch EXCEPT ![run] = epoch]
     /\ committedWorkEpoch' =
          [committedWorkEpoch EXCEPT ![run] = workEpoch[WorkItem]]
-    /\ UNCHANGED <<dispatchVars, activityVars, workVars, realizedOwner,
+    /\ UNCHANGED <<externalAttempts, dispatchVars, activityVars, workVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch,
                    executionStarted, executionOwner, executionEpoch,
                    sessionObservationApplied>>
@@ -310,7 +325,7 @@ ApplySessionObservation(run) ==
     /\ run \notin sessionObservationApplied
     /\ ActivityKernel!Settle(run)
     /\ sessionObservationApplied' = sessionObservationApplied \cup {run}
-    /\ UNCHANGED <<dispatchVars, workVars, realizedOwner,
+    /\ UNCHANGED <<externalAttempts, dispatchVars, workVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch, executionStarted,
                    executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
@@ -326,7 +341,7 @@ ReleaseWork(run, candidate, epoch) ==
     /\ releasedWorkEpoch' = epoch
     /\ realizedOwner' = NoWorker
     /\ realizedWorkEpoch' = 0
-    /\ UNCHANGED <<dispatchVars, activityVars, executionStarted,
+    /\ UNCHANGED <<externalAttempts, dispatchVars, activityVars, executionStarted,
                    executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
                    committedWorkEpoch, sessionObservationApplied>>
@@ -340,7 +355,7 @@ SettleAwaiting(run, candidate, epoch) ==
     /\ RootSettlementReady(run)
     /\ run \notin executionStarted
     /\ SettleAwaitingDispatch(run, candidate, epoch)
-    /\ UNCHANGED <<activityVars, workVars, realizedOwner,
+    /\ UNCHANGED <<externalAttempts, activityVars, workVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch,
                    executionStarted, executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
@@ -352,13 +367,15 @@ SettleDone(run, candidate, epoch) ==
     /\ RootSettlementReady(run)
     /\ run \notin executionStarted
     /\ SettleDoneDispatch(run, candidate, epoch)
-    /\ UNCHANGED <<activityVars, workVars, realizedOwner,
+    /\ UNCHANGED <<externalAttempts, activityVars, workVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch,
                    executionStarted, executionOwner, executionEpoch,
                    committedDisposition, committedOwner, committedEpoch,
                    committedWorkEpoch, sessionObservationApplied>>
 
 Next ==
+    \/ \E run \in Runs, worker \in Workers, epoch \in 1..MaxEpoch:
+         ObserveExternalReturn(run, worker, epoch)
     \/ \E run \in Runs: OpenActivity(run)
     \/ \E run \in Runs: ActivateReservation(run)
     \/ \E worker \in Workers: ClaimWork(worker)
@@ -403,6 +420,7 @@ ConflictedChildCommitEventuallySettles ==
       [](committedDisposition[run] = "Ended" => <>(DState(run) = "Removed"))
 
 TypeOK ==
+    /\ externalAttempts \subseteq (Runs \X Workers \X (1..MaxEpoch))
     /\ ConflictedRuns \subseteq Runs
     /\ RootRun # ChildRunA
     /\ RootRun # ChildRunB
@@ -447,6 +465,21 @@ OnePhysicalAttemptPerThread ==
     \A left, right \in executionStarted:
         RunThread(left) = RunThread(right) => left = right
 
+\* Unlike executionStarted (a set of Runs), these tuples can represent two
+\* old/new physical invocations of the SAME Run. The invariant is not a
+\* consequence of choosing Run as a function key.
+OneExternalAttemptPerThread ==
+    \A left, right \in externalAttempts:
+        RunThread(left[1]) = RunThread(right[1]) => left = right
+
+NoExternalExecution == externalAttempts = {}
+
+ExternalAttemptRetainsExactSlot ==
+    \A operation \in externalAttempts:
+        /\ operation[1] \in executionStarted
+        /\ executionOwner[operation[1]] = operation[2]
+        /\ executionEpoch[operation[1]] = operation[3]
+
 CommittedObservationHasExactReceipts ==
     \A run \in Runs:
         committedDisposition[run] # "None" =>
@@ -471,6 +504,8 @@ ReleasedWorkIsEpochFenced == workState[WorkItem] = "Stopped" =>
     /\ \A run \in Runs: ~AuthoritativeAttempt(run)
 
 Safety ==
+    /\ OneExternalAttemptPerThread
+    /\ ExternalAttemptRetainsExactSlot
     /\ TypeOK
     /\ IngressSafety
     /\ ActivityKernel!Safety

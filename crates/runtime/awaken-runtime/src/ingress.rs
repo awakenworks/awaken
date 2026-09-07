@@ -45,19 +45,7 @@ impl DirectAttemptDriver {
         activation: RunActivation,
         context: RuntimeRunContext,
     ) -> Result<RunState> {
-        let _thread_execution = self
-            .runtime
-            .acquire_thread_execution(&activation.thread_id)
-            .await;
-        let attempt = self.runtime.begin_active_attempt(
-            &activation.run_id,
-            &activation.thread_id,
-            context,
-            self.executor.capabilities().live_input,
-        );
-        self.executor
-            .execute(activation, attempt.context().clone())
-            .await
+        self.drive(activation, None, context).await
     }
 
     pub async fn resume(
@@ -66,18 +54,47 @@ impl DirectAttemptDriver {
         command: ResumeCommand,
         context: RuntimeRunContext,
     ) -> Result<RunState> {
+        self.drive(activation, Some(command), context).await
+    }
+
+    async fn drive(
+        &self,
+        activation: RunActivation,
+        command: Option<ResumeCommand>,
+        mut context: RuntimeRunContext,
+    ) -> Result<RunState> {
+        // Like Durable admission, each new physical attempt receives its own
+        // evidence latch. Inline children still share that attempt's context.
+        context.physical_quiescence = Default::default();
+        let quiescence = context.physical_quiescence.clone();
         let _thread_execution = self
             .runtime
-            .acquire_thread_execution(&activation.thread_id)
-            .await;
+            .acquire_thread_execution(
+                &activation.thread_id,
+                Some(context.physical_quiescence.clone()),
+            )
+            .await?;
         let attempt = self.runtime.begin_active_attempt(
             &activation.run_id,
             &activation.thread_id,
             context,
             self.executor.capabilities().live_input,
         );
-        self.executor
-            .resume(activation, command, attempt.context().clone())
+        quiescence
+            .observe_return(async {
+                match command {
+                    Some(command) => {
+                        self.executor
+                            .resume(activation, command, attempt.context().clone())
+                            .await
+                    }
+                    None => {
+                        self.executor
+                            .execute(activation, attempt.context().clone())
+                            .await
+                    }
+                }
+            })
             .await
     }
 

@@ -325,6 +325,11 @@ async fn infer_step(
         ledger
             .audit
             .push(RunEvent::ModelRequestCompleted(observed.observation).into());
+        if !context.physical_quiescence.can_acknowledge_return() {
+            // A timeout is a local observation, not a terminal provider receipt.
+            // Bypass both model-pool failover and outer failure tolerance.
+            break Ok(InferStepOutcome::Indeterminate);
+        }
         match observed.result {
             Ok(response) => {
                 let has_tool_calls = !response.output.tool_calls().is_empty();
@@ -391,6 +396,7 @@ async fn infer_step(
 
 enum InferStepOutcome {
     EvidenceUnavailable(String),
+    Indeterminate,
     Response {
         response: ChatResponse,
         model_ref: String,
@@ -638,6 +644,13 @@ pub(super) async fn drive(
                 // Neither provider failover nor failure-streak tolerance may
                 // turn an unknown durable write into another invocation.
                 return Err(Error::Commit(error));
+            }
+            Ok(InferStepOutcome::Indeterminate) => {
+                disposition = Some(RunDisposition::ended(
+                    run_id.clone(),
+                    EndCause::Indeterminate,
+                ));
+                break;
             }
             Ok(InferStepOutcome::Response {
                 response,
