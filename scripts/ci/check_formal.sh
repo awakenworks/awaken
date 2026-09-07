@@ -90,6 +90,9 @@ cargo test -p awaken-session-executor --lib background_task::ownership::tests
 cargo test -p awaken-dispatch --features test-support --test pool_memory
 cargo test -p awaken-dispatch --features test-support --test lease_semantics
 cargo test -p awaken-session-executor --lib durable_interrupt_returns_after_intent
+# The epoch kernel assumes the failure CAS actually expires every recoverable
+# assignment; cover Idle hot replacement as well as initial retry at that owner.
+cargo test -p awaken-session-application --lib failed_nonterminal_realization
 cargo test -p awaken-run-executor-acp --lib terminal_business_outcome
 cargo test -p awaken-protocol-acp --features real-acp --lib
 cargo test -p awaken-sandbox-container --features k8s --lib remote_completion_requires_explicit_process_exit_evidence
