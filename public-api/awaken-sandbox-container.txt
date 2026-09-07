@@ -5,6 +5,9 @@ pub use awaken_sandbox_container::SandboxControlPublishError
 pub use awaken_sandbox_container::SandboxControlService
 pub use awaken_sandbox_container::SandboxControlServiceKind
 pub use awaken_sandbox_container::SandboxControlServicePublisher
+pub enum awaken_sandbox_container::ContainerObservationPurpose
+pub awaken_sandbox_container::ContainerObservationPurpose::Recovery
+pub awaken_sandbox_container::ContainerObservationPurpose::TerminalCleanup
 pub enum awaken_sandbox_container::ContainerRealizationIntent
 pub awaken_sandbox_container::ContainerRealizationIntent::Create
 pub awaken_sandbox_container::ContainerRealizationIntent::Rebuild
@@ -94,6 +97,7 @@ pub struct awaken_sandbox_container::ContainerObservationExpectation<'a>
 pub awaken_sandbox_container::ContainerObservationExpectation::adoption_fingerprint: core::option::Option<&'a awaken_provisioning_contract::spec::SandboxRealizationFingerprint>
 pub awaken_sandbox_container::ContainerObservationExpectation::container_id: &'a str
 pub awaken_sandbox_container::ContainerObservationExpectation::effect_fence: core::option::Option<&'a awaken_provisioning_contract::sandbox::runtime::SandboxEffectFence>
+pub awaken_sandbox_container::ContainerObservationExpectation::purpose: awaken_sandbox_container::ContainerObservationPurpose
 pub awaken_sandbox_container::ContainerObservationExpectation::realization_fingerprint: core::option::Option<&'a awaken_provisioning_contract::spec::SandboxRealizationFingerprint>
 pub awaken_sandbox_container::ContainerObservationExpectation::retained_attempt: core::option::Option<&'a awaken_sandbox_container::ContainerCreateAttempt>
 pub awaken_sandbox_container::ContainerObservationExpectation::runtime_handle: core::option::Option<&'a awaken_provisioning_contract::sandbox::runtime::ContainerContinuationHandle>

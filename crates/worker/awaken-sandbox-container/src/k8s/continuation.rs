@@ -607,7 +607,7 @@ enum ClaimDeletionAdmission {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AbsentPodClaimAdmission {
+pub(super) enum AbsentPodClaimAdmission {
     AlreadyAbsent,
     AwaitTerminating,
     UnsafeLiveClaim,
@@ -616,7 +616,7 @@ enum AbsentPodClaimAdmission {
 }
 
 #[must_use]
-const fn absent_pod_claim_admission(
+pub(super) const fn absent_pod_claim_admission(
     present: bool,
     uid_present: bool,
     uid_matches: bool,

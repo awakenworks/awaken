@@ -51,6 +51,7 @@ async fn continuation_handle_kind_is_rejected_before_kubernetes_io() {
     let error = ContainerRuntime::observe(
         &runtime,
         ContainerObservationExpectation {
+            purpose: crate::ContainerObservationPurpose::Recovery,
             retained_attempt: None,
             container_id: "never-read",
             adoption_fingerprint: None,
@@ -66,7 +67,7 @@ async fn continuation_handle_kind_is_rejected_before_kubernetes_io() {
 
 #[test]
 fn continuation_observation_has_one_disposing_authority() {
-    /* Pod/PVC observation table KCO1. Causes: C1 exact source Pod A is
+    /* Terminal-purpose Pod/PVC observation table KCO1. Causes: C1 exact source Pod A is
      * present/absent; C2 A is live/deleting; C3 Awaken's cleanup finalizer is
      * held; C4 durable V2 expects claim P and observes P live/terminating/
      * absent/foreign; C5 the aggregate terminal fence is present; C6 the
@@ -101,7 +102,8 @@ fn continuation_observation_has_one_disposing_authority() {
                     claim_terminating,
                     effect_fenced,
                     fenced_total_absence| {
-        continuation_observation_disposition(ContinuationObservationEvidence {
+        let evidence = ContinuationObservationEvidence {
+            purpose: ContainerObservationPurpose::TerminalCleanup,
             pod_present,
             pod_deleting,
             cleanup_gate_held: cleanup_gate,
@@ -110,7 +112,25 @@ fn continuation_observation_has_one_disposing_authority() {
             observed_terminating: claim_terminating,
             effect_fenced,
             effect_fenced_total_absence: fenced_total_absence,
-        })
+        };
+        let terminal = continuation_observation_disposition(evidence);
+        if pod_present {
+            // Purpose cannot bypass a present source's cleanup gate, deleting
+            // state, or UID mismatch. Cross every present-Pod KCO1 rule with
+            // Recovery as a metamorphic identity; KCO2 owns absent-Pod rows.
+            let recovery = continuation_observation_disposition(ContinuationObservationEvidence {
+                purpose: ContainerObservationPurpose::Recovery,
+                ..evidence
+            });
+            assert_eq!(
+                recovery.map_err(|error| error.to_string()),
+                terminal
+                    .as_ref()
+                    .copied()
+                    .map_err(|error| error.to_string())
+            );
+        }
+        terminal
     };
 
     assert_eq!(
@@ -162,6 +182,60 @@ fn continuation_observation_has_one_disposing_authority() {
         Incompatible,
         "K9"
     );
+}
+
+#[test]
+fn absent_pod_observation_separates_recovery_from_terminal_absence() {
+    /* KCO2 cause-effect graph: purpose + exact retained UID + live/terminating
+     * claim + effect fence -> one continuation disposition. Constraint: Pod is
+     * absent; expected claim P is durable. No API mutations occur here.
+     * Decision table (cross both purposes and both fence values):
+     * R1 exact live P + Recovery => Live (shared observer then reports A absent);
+     * R2 exact live P + TerminalCleanup => error if fenced, else Incompatible;
+     * R3 exact terminating P => Disposing only if fenced, else Incompatible;
+     * R4 foreign P => Incompatible, never recovery or completed cleanup;
+     * R5 absent P => Live only with exact fenced total-absence evidence.
+     * KPV5 attaches these rows to real provider observation, preparation,
+     * disposal and Rebuild; the K3d node-loss scenario checks the Host/Worker
+     * path and retained bytes. A pure classifier pass is not that I/O proof. */
+    use ContainerObservationPurpose::{Recovery, TerminalCleanup};
+    use ContinuationObservationDisposition::{Disposing, Incompatible, Live};
+    for purpose in [Recovery, TerminalCleanup] {
+        for fenced in [false, true] {
+            for terminating in [false, true] {
+                for observed_uid in [Some("p"), Some("foreign"), None] {
+                    for total_absence in [false, true] {
+                        let result =
+                            continuation_observation_disposition(ContinuationObservationEvidence {
+                                purpose,
+                                pod_present: false,
+                                pod_deleting: false,
+                                cleanup_gate_held: false,
+                                expected_uid: Some("p"),
+                                observed_uid,
+                                observed_terminating: terminating,
+                                effect_fenced: fenced,
+                                effect_fenced_total_absence: fenced && total_absence,
+                            });
+                        let expected = match observed_uid {
+                            Some("foreign") => Some(Incompatible),
+                            None if fenced && total_absence => Some(Live),
+                            None => Some(Incompatible),
+                            Some(_) if !terminating && purpose == Recovery => Some(Live),
+                            Some(_) if terminating && fenced => Some(Disposing),
+                            Some(_) if !fenced => Some(Incompatible),
+                            Some(_) => None,
+                        };
+                        assert_eq!(
+                            result.ok(),
+                            expected,
+                            "purpose={purpose:?} fenced={fenced} term={terminating} uid={observed_uid:?} total={total_absence}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]

@@ -545,7 +545,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .adopt_restored_container_with_spec(adoption.spec, adoption.handle)
                 .await;
         }
-        match self.observe_container_adoption(adoption, None).await? {
+        match self
+            .observe_container_adoption(adoption, None, ContainerObservationPurpose::Recovery)
+            .await?
+        {
             pc::SandboxObservation::Ready => {
                 self.adopt_observed_container_with_spec(adoption.handle, adoption.spec)
                     .await
@@ -702,6 +705,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         adoption: ContainerEnvironmentAdoption<'_>,
         effect_fence: Option<&pc::SandboxEffectFence>,
+        purpose: ContainerObservationPurpose,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         if let Some(fence) = effect_fence {
             fence.validate_live_at(container_runtime_unix_now_ms()?)?;
@@ -717,6 +721,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         let mut expectation = ContainerObservationExpectation::from_handle(adoption.handle)?;
         expectation.effect_fence = effect_fence;
         expectation.retained_attempt = adoption.retained_attempt;
+        expectation.purpose = purpose;
         self.runtime.observe(expectation).await.map_err(err)
     }
 
@@ -732,7 +737,11 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .await;
         }
         match self
-            .observe_container_adoption(adoption, Some(effect_fence))
+            .observe_container_adoption(
+                adoption,
+                Some(effect_fence),
+                ContainerObservationPurpose::Recovery,
+            )
             .await?
         {
             pc::SandboxObservation::Ready => {
@@ -788,7 +797,11 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         // policy owner; the runtime re-observes with the terminal fence below.
         let adoption = ContainerEnvironmentAdoption::new(spec, handle);
         match self
-            .observe_container_adoption(adoption, Some(terminal_effect_fence))
+            .observe_container_adoption(
+                adoption,
+                Some(terminal_effect_fence),
+                ContainerObservationPurpose::TerminalCleanup,
+            )
             .await?
         {
             pc::SandboxObservation::Terminal { .. } | pc::SandboxObservation::Ready => self
@@ -854,7 +867,8 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         &self,
         adoption: ContainerEnvironmentAdoption<'_>,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        self.observe_container_adoption(adoption, None).await
+        self.observe_container_adoption(adoption, None, ContainerObservationPurpose::Recovery)
+            .await
     }
 
     async fn observe_environment_for_effect(
@@ -862,8 +876,12 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         adoption: ContainerEnvironmentAdoption<'_>,
         effect_fence: &pc::SandboxEffectFence,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
-        self.observe_container_adoption(adoption, Some(effect_fence))
-            .await
+        self.observe_container_adoption(
+            adoption,
+            Some(effect_fence),
+            ContainerObservationPurpose::Recovery,
+        )
+        .await
     }
 
     async fn adopt_environment(
@@ -982,6 +1000,7 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
         self.observe_container_adoption(
             ContainerEnvironmentAdoption::new(spec, handle),
             Some(effect_fence),
+            ContainerObservationPurpose::Recovery,
         )
         .await
     }
