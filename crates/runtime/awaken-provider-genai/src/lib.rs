@@ -672,7 +672,7 @@ fn to_genai_request_with_adapter(
         if !row_state.should_replay() {
             continue;
         }
-        let parts: Vec<ContentPart> = message
+        let mut parts: Vec<ContentPart> = message
             .content
             .iter()
             .map(|block| to_genai_part(block, dialect))
@@ -680,6 +680,20 @@ fn to_genai_request_with_adapter(
             .into_iter()
             .flatten()
             .collect();
+        // DeepSeek's tool protocol distinguishes an absent reasoning field from
+        // an empty one, including on text-only assistant history. This is wire
+        // metadata only: preserve every recorded reasoning part unchanged and
+        // never mutate the transcript or infer provider identity from a URL/model.
+        if provider_kind == Some("deepseek")
+            && adapter == Some(AdapterKind::OpenAI)
+            && !request.tools.is_empty()
+            && message.role == Role::Assistant
+            && !parts
+                .iter()
+                .any(|part| matches!(part, ContentPart::ReasoningContent(_)))
+        {
+            parts.insert(0, ContentPart::ReasoningContent(String::new()));
+        }
         // A standalone reasoning-only history row is not a complete assistant
         // message and some provider protocols reject it. Reasoning that accompanies
         // text or a tool call remains attached and is replayed by adapters that

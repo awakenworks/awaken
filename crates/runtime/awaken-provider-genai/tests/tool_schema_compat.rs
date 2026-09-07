@@ -139,6 +139,72 @@ fn assert_generated_read_schema(schema: &Value, rule: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deepseek_tool_history_serializes_empty_reasoning_on_the_actual_wire() {
+    // W1 missing Thinking + exact DeepSeek/OpenAI tool request -> the HTTP
+    // assistant row includes reasoning_content="", not null or an omitted key.
+    // W2 present empty/nonempty Thinking -> exact bytes, once. Text-only and
+    // tool-call history both require this field when tools are advertised.
+    // Reuse the existing capture peer; this proves SDK serialization, not a
+    // model-quality verdict. No real transcript or credential enters the test.
+    for reasoning in [None, Some(""), Some("synthetic retained context")] {
+        for with_call in [false, true] {
+            let (base_url, payload) = capture_one_request().await;
+            let executor = GenaiExecutor::from_materialized_provider_endpoint(
+                "deepseek",
+                AdapterKind::OpenAI,
+                base_url,
+                "fixture-secret",
+            )
+            .unwrap()
+            .with_timeout(Duration::from_secs(5));
+            let mut request = request("deepseek-v4-pro", generated_read_descriptor());
+            let mut content = reasoning
+                .map(ContentBlock::thinking)
+                .into_iter()
+                .collect::<Vec<_>>();
+            content.push(if with_call {
+                ContentBlock::tool_use(
+                    "call-1",
+                    "read",
+                    serde_json::json!({"file_path":"fixture.txt"}),
+                )
+            } else {
+                ContentBlock::text("synthetic answer")
+            });
+            request.messages.push(ChatMessage {
+                role: Role::Assistant,
+                content,
+            });
+            if with_call {
+                request.messages.push(ChatMessage {
+                    role: Role::Tool,
+                    content: vec![ContentBlock::tool_result(
+                        "call-1",
+                        vec![ContentBlock::text("fixture result")],
+                    )],
+                });
+            }
+            let _ = executor.infer(request).await;
+            let body = tokio::time::timeout(Duration::from_secs(5), payload)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                body["messages"][1].get("reasoning_content"),
+                Some(&Value::String(reasoning.unwrap_or_default().into()))
+            );
+            assert_eq!(body["model"], "deepseek-v4-pro");
+            assert!(body["messages"][0].get("reasoning_content").is_none());
+            if with_call {
+                assert_eq!(body["messages"][1]["tool_calls"][0]["id"], "call-1");
+                assert_eq!(body["messages"][2]["tool_call_id"], "call-1");
+                assert!(body["messages"][2].get("reasoning_content").is_none());
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn typed_tool_schema_reaches_every_managed_compatibility_wire() {
     // Cause/effect matrix: C1 ReadArgs derives JsonSchema; C2 the descriptor is
     // generated through ToolDescriptor::for_tool; C3 one selected provider wire

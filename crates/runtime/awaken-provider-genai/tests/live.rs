@@ -41,8 +41,9 @@ impl DeltaSink for RecordingDeltas {
 
 fn live_executor() -> (GenaiExecutor, String) {
     let deepseek = std::env::var("DEEPSEEK_API_KEY").ok();
-    let (adapter, base_url, key, default_model) = if let Some(key) = deepseek {
+    let (provider, adapter, base_url, key, default_model) = if let Some(key) = deepseek {
         (
+            "deepseek",
             awaken_provider_genai::AdapterKind::OpenAI,
             "https://api.deepseek.com/v1".to_string(),
             key,
@@ -50,6 +51,7 @@ fn live_executor() -> (GenaiExecutor, String) {
         )
     } else {
         (
+            "openai",
             awaken_provider_genai::AdapterKind::OpenAI,
             "https://api.openai.com/v1".to_string(),
             std::env::var("OPENAI_API_KEY").expect("set OPENAI_API_KEY or DEEPSEEK_API_KEY"),
@@ -58,7 +60,7 @@ fn live_executor() -> (GenaiExecutor, String) {
     };
     let model = std::env::var("AWAKEN_GENAI_MODEL").unwrap_or_else(|_| default_model.to_string());
     (
-        GenaiExecutor::from_materialized_endpoint(adapter, base_url, key)
+        GenaiExecutor::from_materialized_provider_endpoint(provider, adapter, base_url, key)
             .expect("explicit client construction"),
         model,
     )
@@ -77,6 +79,50 @@ fn text_request(model: String, prompt: &str) -> ChatRequest {
             content: vec![ContentBlock::text(prompt)],
         }],
         tools: Vec::new(),
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires network and an explicit DeepSeek API key"]
+async fn live_deepseek_continues_tool_history_without_recorded_reasoning() {
+    // L1 exact DeepSeek + synthetic assistant ToolUse without Thinking + its
+    // correlated result -> ordinary follow-up succeeds, not missing-context 400.
+    // L2 streaming and non-streaming share that wire contract. Existing live
+    // executor selection mirrors production's exact provider materialization;
+    // the API key is injected, never included in history or assertion output.
+    assert!(
+        std::env::var("DEEPSEEK_API_KEY").is_ok(),
+        "requires DeepSeek credential"
+    );
+    for streaming in [false, true] {
+        let (executor, model) = live_executor();
+        let mut request = text_request(model, "核对结果是准备就绪。请只回复已确认。");
+        request.tools = vec![compatibility_tool()];
+        request.messages.push(ChatMessage {
+            role: Role::Assistant,
+            content: vec![ContentBlock::tool_use(
+                "call_fixture",
+                "read_compatibility_fixture",
+                serde_json::json!({"marker":"ready"}),
+            )],
+        });
+        request.messages.push(ChatMessage {
+            role: Role::Tool,
+            content: vec![ContentBlock::tool_result(
+                "call_fixture",
+                vec![ContentBlock::text("ready")],
+            )],
+        });
+        let response = if streaming {
+            executor
+                .infer_streaming(request, &RecordingDeltas::default())
+                .await
+        } else {
+            executor.infer(request).await
+        }
+        .expect("synthetic tool follow-up is accepted");
+        assert!(!response.output.text_content().is_empty());
+        assert!(response.output.tool_calls().is_empty());
     }
 }
 
