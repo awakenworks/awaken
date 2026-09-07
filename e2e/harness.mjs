@@ -205,20 +205,33 @@ let serverBin = null;
 let productionBin = null;
 const initializedInstallationConfigurations = new Set();
 const spawnedServersByPort = new Map();
-const spawnedServerPorts = new WeakMap();
+const spawnedServerStates = new WeakMap();
 
-export function trackSpawnedServer(port, server) {
+export function trackSpawnedServer(port, server, readinessLine = null) {
+  const state = { port, ready: readinessLine === null, onData: null };
+  if (readinessLine !== null) {
+    if (!server.stderr) throw new Error('Scenario readiness requires the child stderr pipe');
+    let pending = '';
+    state.onData = (chunk) => {
+      pending += chunk.toString();
+      const lines = pending.split('\n');
+      pending = lines.pop();
+      if (lines.some(line => line.replace(/\r$/u, '') === readinessLine)) state.ready = true;
+    };
+    server.stderr.on('data', state.onData);
+  }
   spawnedServersByPort.set(port, server);
-  spawnedServerPorts.set(server, port);
+  spawnedServerStates.set(server, state);
   return server;
 }
 
 function untrackSpawnedServer(server) {
-  const port = spawnedServerPorts.get(server);
-  if (port !== undefined && spawnedServersByPort.get(port) === server) {
-    spawnedServersByPort.delete(port);
+  const state = spawnedServerStates.get(server);
+  if (state && spawnedServersByPort.get(state.port) === server) {
+    spawnedServersByPort.delete(state.port);
   }
-  spawnedServerPorts.delete(server);
+  if (state?.onData) server.stderr.off('data', state.onData);
+  spawnedServerStates.delete(server);
 }
 
 // Cause graph: inherited/fixture environment may contain an old listen
@@ -1053,6 +1066,17 @@ export function waitForPort(port, timeoutMs = 900_000, server = null) {
     observedServer?.once('error', onError);
     const attempt = () => {
       if (settled) return;
+      if (observedServer && (observedServer.exitCode !== null || observedServer.signalCode !== null)) {
+        finish(terminalError(`code=${observedServer.exitCode}, signal=${observedServer.signalCode}`));
+        return;
+      }
+      // A reachable foreign listener cannot establish this child's readiness.
+      // ScenarioHost announces only after its own TcpListener::bind succeeds.
+      if (spawnedServerStates.get(observedServer)?.ready === false) {
+        if (performance.now() > deadline) finish(new Error(`server did not listen on ${port}`));
+        else retry = setTimeout(attempt, 200);
+        return;
+      }
       const sock = net.createConnection({ port, host: '127.0.0.1' });
       sock.once('connect', () => {
         sock.destroy();
@@ -1100,24 +1124,16 @@ export async function availablePort(preferred) {
 
 /// Spawn the server in `mode` on `port`, run `fn(baseUrl)`, then stop it.
 export async function withServer(mode, port, fn, extraEnv = {}) {
-  const bin = ensureBuilt();
+  ensureBuilt();
   const listenPort = await availablePort(port);
-  const addr = `127.0.0.1:${listenPort}`;
-  const server = spawn(bin, {
-    // Generic scenario fixtures use the portable Workdir substrate. A test for
-    // Namespace/Container must own that selection explicitly through extraEnv;
-    // this remains the one lifecycle wrapper instead of duplicating spawn/wait/
-    // stop in each substrate-specific scenario.
-    env: preparedServerProcessEnv(addr, {
-      AWAKEN_MODEL_MODE: mode,
-      SESSION_DEPLOYMENT_SANDBOX_TIER: 'local',
-      ...extraEnv,
-    }),
-    stdio: ['pipe', 'inherit', 'inherit'],
+  // Keep the existing portable substrate default and caller mode precedence.
+  const { server, baseUrl } = spawnServer(extraEnv.AWAKEN_MODEL_MODE ?? mode, listenPort, {
+    SESSION_DEPLOYMENT_SANDBOX_TIER: 'local',
+    ...extraEnv,
   });
   try {
     await waitForServer(server, listenPort);
-    return await fn(`http://${addr}`);
+    return await fn(baseUrl);
   } finally {
     await stopServer(server);
   }
@@ -1188,7 +1204,7 @@ export function realServerEnv(behavior, upstream, { mode = 'real', extraEnv = {}
 }
 
 export async function withRealServer(behavior, port, fn, opts = {}) {
-  const bin = ensureBuilt();
+  ensureBuilt();
   // One authoritative fake-provider fixture owns both inference behavior and
   // optional model discovery; callers must not start a parallel `/v1/models`
   // server merely to seed the live catalog.
@@ -1197,28 +1213,16 @@ export async function withRealServer(behavior, port, fn, opts = {}) {
     ...(opts.upstream ?? {}),
   });
   const listenPort = await availablePort(port);
-  const addr = `127.0.0.1:${listenPort}`;
   // When `opts.capture` is set, pipe the child's stdout/stderr so a test can scan
   // the server logs (e.g. the secret-non-leak invariant), teeing them through to
   // this process's streams so behavior is unchanged for a human watching. The
   // accumulated text is exposed to `fn` as a third `{ text() }` argument.
   const capture = opts.capture ? { buf: '' } : null;
-  const server = spawn(bin, {
-    env: preparedServerProcessEnv(addr, realServerEnv(behavior, upstream, opts)),
-    stdio: capture ? ['pipe', 'pipe', 'pipe'] : ['pipe', 'inherit', 'inherit'],
-  });
-  if (capture) {
-    const tee = (chunk, sink) => {
-      const s = chunk.toString();
-      capture.buf += s;
-      sink.write(s);
-    };
-    server.stdout.on('data', (c) => tee(c, process.stdout));
-    server.stderr.on('data', (c) => tee(c, process.stderr));
-  }
+  const env = realServerEnv(behavior, upstream, opts);
+  const { server, baseUrl } = spawnServer(env.AWAKEN_MODEL_MODE, listenPort, env, process.env, capture);
   try {
     await waitForServer(server, listenPort);
-    return await fn(`http://${addr}`, upstream, capture ? { text: () => capture.buf } : null);
+    return await fn(baseUrl, upstream, capture ? { text: () => capture.buf } : null);
   } finally {
     await stopServer(server);
     upstream.close();
@@ -1228,7 +1232,7 @@ export async function withRealServer(behavior, port, fn, opts = {}) {
 // Spawn the server without a fixed lifetime, so a test can stop and restart it
 // (e.g. to verify durable state survives a process restart). `extraEnv` layers on
 // top of the inherited environment — pass `SESSION_DEPLOYMENT_STORAGE_DIR` for durability.
-export function spawnServer(mode, port, extraEnv = {}, inheritedEnvironment = process.env) {
+export function spawnServer(mode, port, extraEnv = {}, inheritedEnvironment = process.env, capture = null) {
   const bin = ensureBuilt();
   const addr = `127.0.0.1:${port}`;
   const server = trackSpawnedServer(
@@ -1239,9 +1243,18 @@ export function spawnServer(mode, port, extraEnv = {}, inheritedEnvironment = pr
         { ...extraEnv, AWAKEN_MODEL_MODE: mode },
         inheritedEnvironment,
       ),
-      stdio: ['pipe', 'inherit', 'inherit'],
+      stdio: ['pipe', capture ? 'pipe' : 'inherit', 'pipe'],
     }),
+    `awaken-coordinator listening on http://${addr}`,
   );
+  // One spawn/capture/readiness owner serves ordinary, real-wire and restart
+  // scenarios. Preserve the exact child logs for secret-non-leak assertions.
+  const tee = (chunk, sink) => {
+    if (capture) capture.buf += chunk.toString();
+    sink.write(chunk);
+  };
+  server.stderr.on('data', chunk => tee(chunk, process.stderr));
+  if (capture) server.stdout.on('data', chunk => tee(chunk, process.stdout));
   return { server, baseUrl: `http://${addr}` };
 }
 

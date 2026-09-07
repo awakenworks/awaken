@@ -1083,7 +1083,7 @@ async function exerciseBetaGaRecovery() {
   // denied-write side effect, memory-only success, stale cache resurrection,
   // or route adapter that changes identity across restart.
   const storageDir = mkdtempSync(resolve(tmpdir(), 'awaken-managed-sdk-recovery-'));
-  const port = await availablePort(38192);
+  const port = await availablePort(Number(process.env.E2E_PORT));
   const upstream = await startUpstream('mcp');
   const servers = [];
   const environment = {

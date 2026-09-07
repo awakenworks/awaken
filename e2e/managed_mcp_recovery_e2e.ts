@@ -31,7 +31,7 @@ import {
 } from './fixtures/managed_mcp_session.ts';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const PREFERRED_PORT = 38208;
+const PREFERRED_PORT = Number(process.env.E2E_PORT);
 const TOKEN_A = 'recovery-token-a'; // awaken-allow: secret
 const TOKEN_B = 'recovery-token-b'; // awaken-allow: secret
 

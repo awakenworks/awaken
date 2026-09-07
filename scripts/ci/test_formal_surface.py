@@ -49,6 +49,10 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
         # L2 only its mod declaration is removed; L3 an exclusion attempts to
         # disguise the same proof as test-only. Effects: L1 passes; L2/L3 reject
         # the actual strict checker, even though the evidence file still exists.
+        # L4 a direct ledger link gains a redundant surface classification ->
+        # reject that exact duplicate; removing only the duplicate passes again.
+        # This is the transition when a previously classified file gains a
+        # production proof, as with the credential secret boundary after rebase.
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             crate = root / "crates/runtime/example"
@@ -76,6 +80,17 @@ class FormalSurfaceProductionSourceTests(unittest.TestCase):
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
+                MODULE.main()
+                classifications = root / "classifications.json"
+                classifications.write_text(json.dumps({"version": 1, "classifications": [{
+                    "path": policy, "obligation_ids": ["example"], "reason": "redundant owner",
+                }]}))
+                message = io.StringIO()
+                with contextlib.redirect_stderr(message), self.assertRaises(SystemExit) as error:
+                    MODULE.main()
+                self.assertEqual(error.exception.code, 1, "L4")
+                self.assertIn("classifications duplicate an exclusion or source-ledger link", message.getvalue(), "L4")
+                classifications.unlink()
                 MODULE.main()
                 (crate / "src/lib.rs").write_text("")
                 with self.assertRaises(SystemExit) as error:

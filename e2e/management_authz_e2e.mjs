@@ -47,10 +47,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
-import { deploymentEnv, spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import { deploymentEnv, availablePort, spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const PORT = 38197;
+const PORT = await availablePort(Number(process.env.E2E_PORT));
 // 64 hex chars = the 32-byte AEAD key typed control_seal_key requires.
 const SEAL_KEY = 'ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100';
 
