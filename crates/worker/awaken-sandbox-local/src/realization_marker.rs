@@ -835,15 +835,27 @@ impl RemovalGuard {
         remove_owned_root_or_stage_locked(&self.root, &self.lock, &self.marker)
     }
 
-    pub(crate) fn finish(mut self) -> Result<(), pc::SandboxError> {
+    pub(crate) fn finish(&mut self) -> Result<(), pc::SandboxError> {
         require_realization_absent(&self.root, &self.lock, &self.marker)?;
         if self.marker.phase == RealizationPhase::Removed {
             return Ok(());
         }
         self.validate_disposal_authorization()?;
-        let previous = self.marker.clone();
-        self.marker.phase = RealizationPhase::Removed;
-        replace_marker_locked(&self.root, &self.lock, &previous, &self.marker)
+        let mut next = self.marker.clone();
+        next.phase = RealizationPhase::Removed;
+        // A failed directory sync/response after rename may have published the
+        // exact intended tombstone. Reconcile only that complete value under
+        // the original lock, and re-run durable publication before reporting
+        // success. Foreign marker content is never accepted as completion.
+        let observed = read_marker_locked(&self.root, &self.lock)?;
+        let expected = if observed.as_ref() == Some(&next) {
+            &next
+        } else {
+            &self.marker
+        };
+        replace_marker_locked(&self.root, &self.lock, expected, &next)?;
+        self.marker = next;
+        Ok(())
     }
 }
 

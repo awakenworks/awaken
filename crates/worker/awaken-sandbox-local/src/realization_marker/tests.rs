@@ -443,7 +443,7 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
         ),
         "T4 marker requires both the opaque incarnation and original handle fence"
     );
-    let (_, replay) = begin_terminal_takeover(
+    let (_, mut replay) = begin_terminal_takeover(
         &root,
         &fingerprint,
         Some(source(&fingerprint, &evidence)),
@@ -454,6 +454,7 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
     .expect("T2 exact terminal reconstruction")
     .expect("T2 participant");
     replay.finish().unwrap();
+    drop(replay);
     assert!(
         begin_terminal_takeover(
             &root,
@@ -539,6 +540,7 @@ fn terminal_takeover_phase_root_fence_and_crash_table_is_total() {
         .expect("T5 aggregate-authorized physical authorization");
     partial.remove_root().unwrap();
     partial.finish().unwrap();
+    drop(partial);
 }
 
 #[test]
@@ -682,7 +684,7 @@ fn terminal_receipt_preflight_distinguishes_incomplete_replay_and_closed() {
         "P3 removed root before tombstone",
     );
 
-    let (_, replay) = begin_terminal_takeover(
+    let (_, mut replay) = begin_terminal_takeover(
         &root,
         &fingerprint,
         None,
@@ -697,6 +699,7 @@ fn terminal_receipt_preflight_distinguishes_incomplete_replay_and_closed() {
         "P3 no remount owner"
     );
     replay.finish().unwrap();
+    drop(replay);
     assert_eq!(
         observe_terminal_receipt(
             &root,
@@ -1242,6 +1245,101 @@ fn provider_preparation_returns_one_immutable_same_generation_predecessor() {
         "P1/E4"
     );
     assert_eq!(removal.marker.effect_fence, higher_e, "P1/E4 zero mutation");
+}
+
+#[test]
+fn removed_marker_retry_retains_the_guard_and_reconciles_only_the_exact_tombstone() {
+    // F2 causes: root present/absent; durable marker exact Removing/foreign
+    // Removed/exact intended Removed after an applied-but-lost response.
+    // Effects: F2a root present => fail without changing in-memory phase;
+    // F2b foreign => preserve both foreign bytes and retained predecessor;
+    // F2c exact lost publication => durably republish then update local state;
+    // F2d repeated finish => idempotent; releasing guard enables cold closed
+    // observation. The lost-response cut is injected with the canonical file
+    // writer; it is not a claim of a real kernel fsync failure experiment.
+    let base = tempfile::tempdir().unwrap();
+    let root = base.path().join("retained-finish");
+    let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec("retained-finish"));
+    let create = fence("create", 1);
+    let mut creation = begin(&root, &fingerprint, &create, None, None).unwrap();
+    creation.prepare_root().unwrap();
+    let evidence = creation.complete(&empty_receipt()).unwrap();
+    let prepared = fence("terminal", 1);
+    let (_, mut removal) = begin_terminal_takeover(
+        &root,
+        &fingerprint,
+        Some(source(&fingerprint, &evidence)),
+        Some(&create),
+        &prepared,
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    removal
+        .authorize_disposal(&disposal_authorization(
+            &prepared,
+            "finish-test",
+            "owner",
+            "runtime",
+            1,
+        ))
+        .unwrap();
+    let previous = removal.marker.clone();
+    assert!(removal.finish().is_err(), "F2a root still present");
+    assert_eq!(
+        removal.marker, previous,
+        "F2a no premature Removed projection"
+    );
+    removal.remove_root().unwrap();
+    let mut intended = previous.clone();
+    intended.phase = RealizationPhase::Removed;
+    let mut foreign = intended.clone();
+    foreign.physical_incarnation = "foreign-incarnation".into();
+    let leaf = marker_leaf(&root).unwrap();
+    let foreign_bytes = encode_marker(&foreign).unwrap();
+    removal
+        .lock
+        .replace_sibling_regular_file_atomic(&leaf, &foreign_bytes)
+        .unwrap();
+    assert!(
+        removal.finish().is_err(),
+        "F2b foreign is not a response-loss receipt"
+    );
+    assert_eq!(
+        removal.marker, previous,
+        "F2b retained predecessor unchanged"
+    );
+    assert_eq!(
+        std::fs::read(marker_path(&root).unwrap()).unwrap(),
+        foreign_bytes,
+        "F2b no overwrite"
+    );
+    // Restore the synthetic fault fixture and publish the exact desired cut.
+    removal
+        .lock
+        .replace_sibling_regular_file_atomic(&leaf, &encode_marker(&previous).unwrap())
+        .unwrap();
+    replace_marker_locked(&root, &removal.lock, &previous, &intended).unwrap();
+    removal.finish().unwrap();
+    assert_eq!(
+        removal.marker, intended,
+        "F2c update only after durable success"
+    );
+    removal.finish().unwrap();
+    drop(removal);
+    assert!(
+        begin_terminal_takeover(
+            &root,
+            &fingerprint,
+            Some(source(&fingerprint, &evidence)),
+            Some(&create),
+            &prepared,
+            None,
+        )
+        .unwrap()
+        .is_none(),
+        "F2d cold replay remains closed"
+    );
 }
 
 #[test]

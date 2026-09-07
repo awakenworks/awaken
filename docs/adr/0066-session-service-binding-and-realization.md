@@ -263,17 +263,37 @@ expired or replaced slot cannot supply a fence; neither can a changed operation,
 owner, incarnation, epoch or regressed expiry. A zero Worker budget denies the
 shared effect callback. Preparation checks run before and after its await, and
 Container retries use that same captured source rather than looking up a new
-slot by Session id. No persistent fields, public interfaces or lease owners are
-added. The unfenced direct-provider entry remains unchanged.
+slot by Session id. No persistent fields or lease owners are added. The
+unfenced direct-provider creation entry remains unchanged.
 
 The captured provider target also exposes the existing synchronous
 `CurrentExecutionAuthority` port with the minimum current Worker/Session
 budget. Both interfaces use one held-lock decision; neither captures a copied
 deadline nor retains the Host or slot map. The common implementation is
 platform-neutral; only scoped process enrollment remains Linux-gated.
-This does not yet connect the port to Memory acknowledgement or every physical
-Provider boundary. Memory acknowledgement's contract-owned wall-clock sample
-and the provider marker/cleanup clock checks still need migration.
+Memory acknowledgement now uses this same authority. The existing
+`CurrentExecutionAuthority::with_current_effect` method binds the assertion to
+the captured operation/generation and supplies a current fence under the same
+guards; its default rejects an execution-only grant. Container's fence-query
+adapter delegates to that method rather than duplicating its identity checks.
+The two Host callers (continuation release and terminal cleanup) capture this
+provider target and forward it through `SessionEnvironment` to the Sandbox.
+Local/Namespace and Container acquire their existing async Memory guard list,
+then the shared `MemoryReconciliationAck` enters Worker -> Session -> ack guards
+before recording/draining. There is no await within that callback. Local marker
+authorization still uses the existing nonblocking filesystem-lock participant.
+Empty evidence and cached same-effect success also require current authority;
+Copy retirement remains idempotent and FUSE remains an ordinary disposal owner.
+
+Reused unchanged: durable Session CAS, materialization ordering, Memory CAS and
+retention, marker/removal identity, and the existing Copy/FUSE lifecycle. Modified:
+the existing authority port, both Host call chains, Sandbox acknowledgement
+signatures, and the shared ack kernel. Added: one feature-gated, explicit
+revocable test fixture shared across provider tests; no production store, timer,
+lease, registry, or alternative cleanup path. The acknowledgement no longer
+compares Control expiry with Worker UTC. Disposal preparation's separate
+`require_for_disposal` gate and provider marker/cleanup clocks still do, so this
+does not establish end-to-end cross-clock physical disposal correctness.
 
 The Host source decision table and barrier tests cover direct/registered
 topologies, same-byte slot replacement, renewal and closure during Worker,
@@ -282,8 +302,81 @@ provider projections in its existing lock/authority kernel; provider-specific
 guard mutants and a pre-readiness reachability witness prevent execution-only
 evidence from standing in for this branch. This bounded model treats a source
 response as a synchronous projection, NOT a grant for later asynchronous
-physical mutation. The independent Provider wall-clock checks and real backend
-effect-boundary authority remain unresolved by this amendment.
+physical mutation. Its Memory extension represents mount-lock wait/release,
+cancellation, current-authority check/commit, and cached acknowledgement replay
+using the same authority transitions. Dedicated mutants bypass the wait, skip
+authority on replay, or drain twice; reachability witnesses require actual ack
+and replay. This is a bounded safety model, not async-lock fairness, Memory CAS
+refinement, OS timing, or real backend availability evidence. Executable tests
+poll a real pending mount-lock future before revoking authority, cover empty,
+new and replay acknowledgements, and retain receipts after response loss.
+The independent Provider wall-clock checks and real backend effect-boundary
+authority remain unresolved by this amendment.
+
+### Control-publication cleanup participant
+
+The disposal preflight must not mistake caller cancellation or a concurrent
+disposer for task completion. `SandboxControlPublicationSlot` remains the sole
+process-local publication registry. Its closed state now retains the original
+participant until join and synchronous cleanup finish; repeated close retrieves
+the same participant, and stale release cannot forget a closing task.
+
+Reused unchanged: Session authority, physical provider disposal, Container channel
+transport/retry, Namespace codec and bounded request JoinSet. Modified: the
+existing publication slot and both provider adapters. Consolidated: the two
+identical cancellation/JoinHandle implementations into
+`SandboxControlPublicationTask` in the existing Sandbox control contract. There
+is no additional registry, durable state machine, supervisor or systemd service.
+
+Dynamic order: reserve -> install the task before asynchronous channel/socket
+setup -> readiness response -> serving. Dropping an unfinished publisher or a
+published handle requests cancellation; a best-effort background join releases
+the exact reservation only after completion. Explicit dispose closes admission,
+joins that same participant, then performs/finishes cleanup in the original slot.
+If a disposal future is cancelled, another caller can resume the retained join.
+Task start is rejected after cancellation. Namespace listener teardown removes
+its recorded inode while the descriptor is still alive, including when the slot
+is closing; the completed slot cannot repeat this cleanup against a later socket.
+Normal Namespace shutdown cancels and drains request children before returning.
+
+Decision tables live beside the contract/provider tests. They cover overlapping
+registry disposers, cancellation/retry, late task start, first-channel setup
+cancellation, handle Drop, task panic, and a real Unix-socket request being drained.
+The existing `SandboxControlPublication` model adds retained cleanup, two callers,
+task start/exit/join, Drop and cancellation/retry. Its safety and conditional
+liveness checks have semantic mutants and reachability witnesses in the existing
+strict gate. Eventual completion assumes task exit and a fair retrying disposer;
+this does not prove OS process-tree termination, Rust/Tokio refinement, remote
+backend cancellation, or survival of a stopped runtime. Without a live runtime,
+Drop cancels but does not claim cleanup; explicit disposal retains responsibility.
+The provider authority-clock and live cloud/platform qualification gaps above
+remain separate from this process-local lifecycle fix.
+Fenced Local and Namespace disposal now borrow the original prepared
+`RemovalGuard` under the existing slot's async mutex rather than taking it out
+across I/O. Namespace authorizes before closing and joining control publication,
+then revalidates before resource release. The same existing teardown helper
+checks authorization after acquiring the Memory-list lock, before each mount,
+and after the last mount before clearing the complete set. An operation already
+admitted may finish after expiry; that completion does not authorize the next
+operation. Denial, failure and cancellation retain the same participant and
+guards for an exact authorized retry. Legacy disposal and ownerless compensation
+reuse this helper without claiming aggregate authority.
+
+Terminal checkpoint cleanup borrows the same participant and keeps the existing
+upload journal. Removed publication changes the in-memory marker only after the
+durable write succeeds; a lost acknowledgement is replayed against the exact
+intended tombstone, never a foreign value. These are extensions to the existing
+Provider and marker, not another store, cleanup service or lifecycle.
+
+Adjacent decision tables exercise competing disposers, cancellation during
+control/Memory/checkpoint waits, expiry across lock and per-mount waits, partial
+teardown, and lost marker/checkpoint acknowledgements. `LocalProcessRecovery`
+composes two callers, retained marker ownership, repeated mount admission and
+physical removal/terminal acknowledgement in the existing boundary model.
+Its fresh-fence bit assumes truthful Provider authorization; it does not prove
+Control/Worker clock correspondence, in-flight backend commit fencing, kernel
+termination or cross-platform deployment. Those remaining qualifications must
+not be inferred from model checks or successful local retries.
 
 ## 2026-08-12 amendment
 

@@ -208,19 +208,14 @@ PublicationExcludesRetiredGenerations ==
     /\ publication[session].publish \subseteq ActiveGenerations
     /\ publication[session].publish \cap publication[session].drain = {}
     /\ (phase[session] \in {"Publishing", "Committing"} =>
-          publication[session].publish = (publication[session].staged \cap ActiveGenerations))
+          /\ publication[session].publish = (publication[session].staged \cap ActiveGenerations)
+          /\ publication[session].drain = {"old"})
 Safety == TypeOK /\ OneDriverPerSession /\ BoundedCrossSessionConcurrency
           /\ PublicationExcludesRetiredGenerations
 
 ResourcesHaveRenewableAuthority ==
   \A session \in Sessions :
     (phase[session] \in {"PreparingResources", "Driving", "Publishing", "Committing"}) = leaseVisible[session]
-
-PublicationUsesActiveReceipts ==
-  \A session \in Sessions : phase[session] \in {"Publishing", "Committing"} =>
-    /\ publication[session].publish = (publication[session].staged \cap ActiveGenerations)
-    /\ publication[session].drain = {"old"}
-    /\ publication[session].publish \cap publication[session].drain = {}
 
 LostActivationCanReplay ==
   \A session \in Sessions :

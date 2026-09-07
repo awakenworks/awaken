@@ -147,9 +147,10 @@ impl SessionEnvironment {
         &self,
         effect_fence: &pc::SandboxEffectFence,
         complete_materializations: &[pc::MemoryMaterializationEvidence],
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         self.sandbox()
-            .acknowledge_memory_reconciliation(effect_fence, complete_materializations)
+            .acknowledge_memory_reconciliation(effect_fence, complete_materializations, authority)
             .await
     }
 

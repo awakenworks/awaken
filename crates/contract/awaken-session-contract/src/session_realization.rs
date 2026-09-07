@@ -1138,7 +1138,7 @@ pub async fn drive_session_realization(
             crate::realization_observation::checkpoint(
                 "projection",
                 session_id,
-                serde_json::json!({"lease": directive.lease, "action": action}),
+                serde_json::json!({"lease": directive.authority.lease, "action": action}),
             )
             .await;
         }
@@ -1257,7 +1257,7 @@ pub async fn drive_session_realization(
                 crate::realization_observation::checkpoint(
                     "complete",
                     session_id,
-                    serde_json::json!({"lease": directive.lease}),
+                    serde_json::json!({"lease": directive.authority.lease}),
                 )
                 .await;
                 return Ok(());
@@ -1271,7 +1271,7 @@ pub async fn drive_session_realization(
             crate::realization_observation::checkpoint(
                 "complete",
                 session_id,
-                serde_json::json!({"lease": directive.lease}),
+                serde_json::json!({"lease": directive.authority.lease}),
             )
             .await;
             return Ok(());

@@ -389,9 +389,14 @@ async fn terminal_takeover_disposes_incomplete_writable_memory_without_inventing
         Some(&[][..]),
         "R1 no invented Memory heads"
     );
-    pc::Sandbox::acknowledge_memory_reconciliation(&terminal_sandbox, &terminal, &[])
-        .await
-        .expect("R1 zero-head reconciliation");
+    pc::Sandbox::acknowledge_memory_reconciliation(
+        &terminal_sandbox,
+        &terminal,
+        &[],
+        &pc::test_support::EffectAuthority::new(&terminal),
+    )
+    .await
+    .expect("R1 zero-head reconciliation");
     terminal_sandbox
         .prepare_disposal_for_effect(&terminal)
         .await
@@ -512,9 +517,14 @@ async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
     )
     .unwrap();
     assert!(
-        pc::Sandbox::acknowledge_memory_reconciliation(&cold, &terminal, &[mismatched],)
-            .await
-            .is_err(),
+        pc::Sandbox::acknowledge_memory_reconciliation(
+            &cold,
+            &terminal,
+            &[mismatched],
+            &pc::test_support::EffectAuthority::new(&terminal)
+        )
+        .await
+        .is_err(),
         "N2 mismatched evidence"
     );
     assert!(
@@ -522,6 +532,7 @@ async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
             &cold,
             &stale,
             std::slice::from_ref(&evidence),
+            &pc::test_support::EffectAuthority::new(&stale),
         )
         .await
         .is_err(),
@@ -532,6 +543,7 @@ async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
         &cold,
         &terminal,
         std::slice::from_ref(&evidence),
+        &pc::test_support::EffectAuthority::new(&terminal),
     )
     .await
     .expect("N1 exact");
@@ -539,6 +551,7 @@ async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
         &cold,
         &terminal,
         std::slice::from_ref(&evidence),
+        &pc::test_support::EffectAuthority::new(&terminal),
     )
     .await
     .expect("N1 replay");
@@ -557,6 +570,7 @@ async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
         &cold,
         &successor,
         std::slice::from_ref(&evidence),
+        &pc::test_support::EffectAuthority::new(&successor),
     )
     .await
     .expect("N4 same-lease successor");
@@ -565,6 +579,7 @@ async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
             &cold,
             &foreign,
             std::slice::from_ref(&evidence),
+            &pc::test_support::EffectAuthority::new(&foreign),
         )
         .await
         .is_err(),

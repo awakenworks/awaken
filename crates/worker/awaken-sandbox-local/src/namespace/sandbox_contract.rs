@@ -255,11 +255,13 @@ impl pc::Sandbox for NamespaceSandbox {
         &self,
         effect_fence: &pc::SandboxEffectFence,
         complete_materializations: &[pc::MemoryMaterializationEvidence],
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         crate::acknowledge_memory_reconciliation(
             &self.memory_reconciliation_ack,
             &self.memory_mounts,
             effect_fence,
+            authority,
             complete_materializations,
             || {
                 let handle = pc::Sandbox::handle(self);
@@ -307,9 +309,8 @@ impl pc::Sandbox for NamespaceSandbox {
             &self.secret_paths,
             &self.terminal_removal,
             authorization,
+            self.control_publication.close_for_dispose(),
         )
-        .await?;
-        self.control_publication.close_for_dispose().await;
-        Ok(())
+        .await
     }
 }

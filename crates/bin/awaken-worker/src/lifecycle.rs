@@ -271,23 +271,28 @@ pub(crate) fn spawn_heartbeat(
         // Independent, single-flight lanes under the same incarnation owner.
         // Neither a slow security probe nor a registry retry can extend the
         // other's proof. Losing either proof irreversibly drains both lanes.
-        supervise_worker_authority(async {
-        tokio::select! {
-            biased;
-            () = async {
-                if let Some(provider) = &lifecycle.session_environment_provider {
-                    environment_evidence::monitor(
-                        tokio::time::Instant::from_std(environment_proof_started),
-                        timing,
-                        || provider.probe_ready(),
-                    ).await;
-                } else {
-                    std::future::pending::<()>().await;
+        supervise_worker_authority(
+            async {
+                tokio::select! {
+                    biased;
+                    () = async {
+                        if let Some(provider) = &lifecycle.session_environment_provider {
+                            environment_evidence::monitor(
+                                tokio::time::Instant::from_std(environment_proof_started),
+                                timing,
+                                || provider.probe_ready(),
+                            ).await;
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
+                    } => {}
+                    () = renew_registry_authority(&lifecycle, sequence).boxed() => {}
                 }
-            } => {}
-            () = renew_registry_authority(&lifecycle, sequence) => {}
-        }
-        }, || revoke_worker_session_authority(&lifecycle)).await;
+            }
+            .boxed(),
+            || revoke_worker_session_authority(&lifecycle).boxed(),
+        )
+        .await;
     })
 }
 
@@ -342,8 +347,6 @@ async fn renew_registry_authority(lifecycle: &WorkerSupervisor, mut sequence: u6
             break;
         };
         let timing = receipt.timing;
-        {
-        }
         let ready = lifecycle.host.pool_can_resume_work().await;
         let heartbeat_timeout = timing
             .request_timeout()
@@ -583,6 +586,7 @@ pub(crate) fn spawn_session_realization_reconciliation(
                     if let Err(error) = lifecycle
                         .host
                         .renew_due_session_realizations(timing)
+                        .boxed()
                         .await
                     {
                         eprintln!(
@@ -605,6 +609,7 @@ pub(crate) fn spawn_session_realization_reconciliation(
                     if let Err(error) = lifecycle
                         .host
                         .recover_terminal_cleanup_assignments(cleanup_target)
+                        .boxed()
                         .await
                     {
                         eprintln!(
@@ -829,6 +834,9 @@ mod tests {
         // P3 stops immediately without retry. Timeouts must neither mint a new
         // proof nor become evidence of physical termination. Pool suspension's
         // in-flight preservation and absorbing drain are owned by its own tests.
+        // Independent lanes can deliver their first heartbeat before P3's
+        // rejecting probe returns. That earlier delivery is valid; require
+        // terminal authority closure, not a scheduler-dependent empty queue.
         use super::*;
         use axum::{Json, Router, routing::post};
         use std::time::Duration;
@@ -854,7 +862,15 @@ mod tests {
                 calls: AtomicUsize::new(0),
             });
             let identity = WorkerIdentity::new("probe-worker", "same-incarnation", 1);
+            let authority = Arc::new(WorkerAuthorityProof::default());
+            authority
+                .apply(
+                    authority_proof_started().unwrap(),
+                    AuthorityLeaseTiming::from_ttl_ms(6000),
+                )
+                .unwrap();
             let lifecycle = Arc::new(WorkerSupervisor {
+                authority: authority.clone(),
                 host: Arc::new(SharedHost::new(
                     Arc::new(awaken_session_executor::NoModelConfiguredExecutor),
                     "none",
@@ -875,7 +891,6 @@ mod tests {
             let task = spawn_heartbeat(
                 lifecycle,
                 1,
-                Instant::now(),
                 AuthorityLeaseTiming::from_ttl_ms(6000),
                 Instant::now(),
             );
@@ -904,10 +919,21 @@ mod tests {
                     .await
                     .unwrap()
                     .unwrap();
-                assert_eq!(
-                    received.try_recv().is_ok(),
-                    mode == 2,
-                    "P2 registry progress cannot refresh environment proof; P3 explicit loss closes both lanes"
+                let mut heartbeats = 0;
+                while received.try_recv().is_ok() {
+                    heartbeats += 1;
+                }
+                if mode == 2 {
+                    assert!(heartbeats >= 1, "P2 registry progressed during slow probes");
+                } else {
+                    assert!(
+                        heartbeats <= 1,
+                        "P3 permits only the concurrent first delivery"
+                    );
+                }
+                assert!(
+                    authority.remaining().is_zero(),
+                    "P2/P3 terminal authority closure"
                 );
                 assert_eq!(
                     provider.calls.load(Ordering::SeqCst),

@@ -30,7 +30,13 @@ fn claim_projection_preserves_policy_across_api_defaulting() {
         .unwrap();
         realization::stamp_realization(&mut expected).unwrap();
         // CP5 delegated defaulting rejects empty and whitespace-only names.
-        for actual in [None, Some("pinned"), Some("default-class"), Some(""), Some("  ")] {
+        for actual in [
+            None,
+            Some("pinned"),
+            Some("default-class"),
+            Some(""),
+            Some("  "),
+        ] {
             let mut observed = expected.clone();
             let spec = observed.spec.as_mut().unwrap();
             spec.storage_class_name = actual.map(str::to_owned);

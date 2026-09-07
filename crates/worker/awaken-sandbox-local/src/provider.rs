@@ -38,6 +38,7 @@ mod checkpoint;
 #[cfg(target_os = "linux")]
 pub(crate) mod execution;
 mod restore_target;
+pub(crate) mod terminal_disposal;
 
 fn err(e: impl ToString) -> pc::SandboxError {
     pc::SandboxError::new(e.to_string())
@@ -703,10 +704,7 @@ impl LocalProvider {
         sandbox.realized = realized;
         sandbox.realization = crate::realization_marker::LiveRealization::Current(realization);
         self.select_execution_boundary(&sandbox)?;
-        *sandbox
-            .terminal_removal
-            .lock()
-            .expect("terminal removal lock poisoned") = Some(removal);
+        *sandbox.terminal_removal.get_mut() = Some(removal);
         if let Some(payload) = durable_payload.as_ref() {
             Self::project_durable_handle_fields(&mut sandbox, payload)?;
         } else {
@@ -961,7 +959,7 @@ impl LocalProvider {
             memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
             continuation_excluded_paths: Vec::new(),
             realization: crate::realization_marker::LiveRealization::LegacyAdopted,
-            terminal_removal: std::sync::Mutex::new(None),
+            terminal_removal: tokio::sync::Mutex::new(None),
             owned_paths: std::sync::Mutex::new(Vec::new()),
             adopted_handle,
             #[cfg(target_os = "linux")]
@@ -1151,9 +1149,9 @@ pub struct LocalSandbox {
     /// One coherent marker/legacy realization authority; current evidence
     /// cannot drift across parallel optional fingerprint/fence/incarnation fields.
     realization: crate::realization_marker::LiveRealization,
-    /// Present only on the cold terminal seam. Holding the guard here keeps the
-    /// one marker lock across prepare -> secret shred -> exact delete -> receipt.
-    terminal_removal: std::sync::Mutex<Option<crate::realization_marker::RemovalGuard>>,
+    /// The exact prepared participant remains here across cancelled waits in
+    /// checkpoint cleanup and physical disposal, until Removed is committed.
+    terminal_removal: tokio::sync::Mutex<Option<crate::realization_marker::RemovalGuard>>,
     /// Complete sandbox-visible trees frozen into the current V2 handle.
     owned_paths: std::sync::Mutex<Vec<String>>,
     /// Exact restore-bound handle retained only for the unpublished/restored
@@ -1238,7 +1236,7 @@ impl LocalSandbox {
     /// Tear down every live memory mount: unmount a FUSE mount, or harvest a writable
     /// copy back to its store. Drains the guard list so a later dispose is a no-op.
     pub async fn release_memory_mounts(&self) -> Result<(), pc::SandboxError> {
-        crate::release_memory_mounts(&self.memory_mounts).await
+        crate::release_memory_mounts(&self.memory_mounts, || Ok(())).await
     }
 
     /// Creation failure has no live Sandbox owner to retain a failed teardown.
@@ -1801,11 +1799,13 @@ impl pc::Sandbox for LocalSandbox {
         &self,
         effect_fence: &pc::SandboxEffectFence,
         complete_materializations: &[pc::MemoryMaterializationEvidence],
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<(), pc::SandboxError> {
         crate::acknowledge_memory_reconciliation(
             &self.memory_reconciliation_ack,
             &self.memory_mounts,
             effect_fence,
+            authority,
             complete_materializations,
             || {
                 let handle = pc::Sandbox::handle(self);
@@ -1853,6 +1853,7 @@ impl pc::Sandbox for LocalSandbox {
             &self.secret_paths,
             &self.terminal_removal,
             authorization,
+            std::future::ready(()),
         )
         .await
     }

@@ -399,30 +399,18 @@ impl LocalSandbox {
     ) -> Result<(), pc::SandboxError> {
         validate_checkpoint_effect(request, expected_effect_fence)?;
         let request_fingerprint = checkpoint_request_fingerprint(request, expected_effect_fence);
-        let removal = self
-            .terminal_removal
-            .lock()
-            .map_err(|_| err("terminal removal lock poisoned"))?
-            .take();
-        if let Some(mut removal) = removal {
-            let result = async {
-                removal.refresh_authorization(terminal_effect_fence)?;
-                removal.bind_checkpoint_expected(expected_effect_fence)?;
-                self.cleanup_checkpoint_with_participant(
+        let mut slot = self.terminal_removal.lock().await;
+        if let Some(removal) = slot.as_mut() {
+            removal.refresh_authorization(terminal_effect_fence)?;
+            removal.bind_checkpoint_expected(expected_effect_fence)?;
+            return self
+                .cleanup_checkpoint_with_participant(
                     request,
                     store,
                     request_fingerprint.as_str(),
-                    &mut removal,
+                    removal,
                 )
-                .await
-            }
-            .await;
-            *self
-                .terminal_removal
-                .lock()
-                .map_err(|_| err("terminal removal lock poisoned while retaining participant"))? =
-                Some(removal);
-            return result;
+                .await;
         }
 
         let evidence = self
