@@ -4,9 +4,17 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionEventAdmission {
-    Accepted { batch_id: String },
-    Closed { batch_id: String },
-    Deleted { deleted_revision: SessionRevision },
+    Accepted {
+        batch_id: String,
+        /// None is a legacy retained receipt with no observation coordinate.
+        operation_ids: Option<Vec<String>>,
+    },
+    Closed {
+        batch_id: String,
+    },
+    Deleted {
+        deleted_revision: SessionRevision,
+    },
 }
 
 impl From<&SessionEventBatch> for SessionEventAdmission {
@@ -18,6 +26,7 @@ impl From<&SessionEventBatch> for SessionEventAdmission {
         } else {
             Self::Accepted {
                 batch_id: batch.batch_id.clone(),
+                operation_ids: Some(batch.operation_ids()),
             }
         }
     }
@@ -30,6 +39,9 @@ pub struct RetainedEventAdmission {
     pub request_fingerprint: String,
     pub batch_id: String,
     pub closed: bool,
+    /// Opaque identities only; never retain original message/tool content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_ids: Option<Vec<String>>,
 }
 
 /// None is an old tombstone with unknown receipt retention. Some(empty) is a
@@ -58,6 +70,7 @@ impl DeletedSessionEventAdmissions {
             }),
             Some(receipt) => Ok(SessionEventAdmission::Accepted {
                 batch_id: receipt.batch_id.clone(),
+                operation_ids: receipt.operation_ids.clone(),
             }),
             None => Ok(SessionEventAdmission::Deleted {
                 deleted_revision: self.deleted_revision,
@@ -106,6 +119,7 @@ mod tests {
                 request_fingerprint: "fp".into(),
                 batch_id: "original".into(),
                 closed,
+                operation_ids: None,
             }]);
             assert_eq!(
                 proof.resolve("key", "changed").unwrap_err().code,
@@ -120,6 +134,7 @@ mod tests {
                 } else {
                     SessionEventAdmission::Accepted {
                         batch_id: "original".into(),
+                        operation_ids: None,
                     }
                 }
             );

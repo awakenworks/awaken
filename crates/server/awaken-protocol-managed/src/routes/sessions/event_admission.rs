@@ -58,13 +58,28 @@ pub async fn close_event_admission(
         })?;
     use awaken_protocol_awaken::{EventAdmissionProof, EventAdmissionStatus};
     let (status, proof) = match admission {
-        awaken_session_contract::SessionEventAdmission::Accepted { batch_id } => (
+        awaken_session_contract::SessionEventAdmission::Accepted {
+            batch_id,
+            operation_ids,
+        } => (
             EventAdmissionStatus::Accepted,
-            EventAdmissionProof::EventBatch { batch_id },
+            EventAdmissionProof::EventBatch {
+                batch_id,
+                event_ids: operation_ids.map(|ids| {
+                    ids.iter()
+                        .map(|operation_id| {
+                            crate::state::durable_inbound_event_id(&id, operation_id)
+                        })
+                        .collect()
+                }),
+            },
         ),
         awaken_session_contract::SessionEventAdmission::Closed { batch_id } => (
             EventAdmissionStatus::Closed,
-            EventAdmissionProof::EventBatch { batch_id },
+            EventAdmissionProof::EventBatch {
+                batch_id,
+                event_ids: Some(vec![]),
+            },
         ),
         awaken_session_contract::SessionEventAdmission::Deleted { deleted_revision } => (
             EventAdmissionStatus::Closed,
