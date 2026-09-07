@@ -1092,6 +1092,21 @@ impl LifecycleRuntime {
 
 #[async_trait]
 impl SessionRuntime for LifecycleRuntime {
+    async fn session_run_state(
+        &self,
+        session_id: &str,
+        run_id: &RunId,
+    ) -> Result<Option<RunState>, RunError> {
+        Ok(self
+            .lifecycle
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|event| event.thread_id.0 == session_id && &event.run_id == run_id)
+            .map(|event| event.state.clone()))
+    }
+
     async fn install_session_projection(
         &self,
         thread: &str,
@@ -4979,6 +4994,144 @@ async fn late_outcome_terminal_uses_its_state_commit_and_preserves_an_issued_pre
             .unwrap(),
         warm_suffix,
         "O4/E4 old cursor suffix"
+    );
+}
+
+#[tokio::test]
+async fn running_user_input_exposes_committed_output_before_completion_on_warm_and_cold_peers() {
+    // Cause/effect table: V1 root accepted, Runtime input/output committed,
+    // Run still Running, root anchor missing -> receipt only. V2 canonical
+    // application reconciliation -> input anchored, output visible without a
+    // processed timestamp or terminal event. V3 cold peer + old receipt cursor
+    // -> identical full history/suffix; repeated reconciliation is inert.
+    // Constraint: install no test-only anchor; exercise the real application
+    // CAS and existing projector together. Neither GET nor recovery executes a
+    // model or invents an input Message. This is local integration, not live E2E.
+    let runtime = LifecycleRuntime::default();
+    runtime
+        .include_runs_in_snapshot
+        .store(true, Ordering::SeqCst);
+    let repository = Arc::new(ephemeral_session_repo());
+    let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+    let session = warm
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent":"coder", "environment_id":"env_local"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let batch = warm
+        .application
+        .append_session_event_batch(
+            &session.id,
+            vec![SessionEventInput::UserMessage {
+                content: vec![ContentBlock::text("show the number line")],
+            }],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    warm.application.begin_activity(&session.id).await.unwrap();
+    let run_id = match &batch.events[0].event {
+        awaken_session_contract::SessionEventCommand::UserMessage { run_id, .. } => run_id.clone(),
+        _ => unreachable!(),
+    };
+    runtime.lifecycle.lock().unwrap().push(lifecycle(
+        2,
+        &session.id,
+        &run_id,
+        RunLifecycleEventKind::Running,
+        RunState::Running,
+    ));
+    runtime.replace_committed_messages(vec![
+        (
+            1,
+            Message::new(
+                MessageId::session_event_input(&session.id, batch.events[0].event.operation_id()),
+                Role::User,
+                vec![ContentBlock::text("show the number line")],
+            ),
+        ),
+        (
+            3,
+            Message::text(
+                MessageId("running-output".into()),
+                Role::Assistant,
+                "Here is the interactive number line.",
+            ),
+        ),
+    ]);
+    warm.refresh_committed_events(&session.id).await.unwrap();
+    let before = warm
+        .list_events(&session.id, None, None, false)
+        .unwrap()
+        .data;
+    assert_eq!(before.len(), 1, "V1");
+    let cursor = before[0].id.clone();
+    warm.application
+        .drive_session_event_batches(&session.id, None)
+        .await
+        .unwrap();
+    warm.refresh_committed_events(&session.id).await.unwrap();
+    let visible = warm
+        .list_events(&session.id, None, None, false)
+        .unwrap()
+        .data;
+    assert!(
+        visible
+            .iter()
+            .any(|event| event.type_str() == "agent.message"),
+        "V2 committed output cannot await Run completion"
+    );
+    assert!(
+        visible
+            .iter()
+            .find(|event| event.id == cursor)
+            .unwrap()
+            .processed_at
+            .is_none(),
+        "V2 processing remains pending"
+    );
+    let suffix = warm
+        .list_events(&session.id, Some(&cursor), None, false)
+        .unwrap();
+    assert!(
+        suffix
+            .data
+            .iter()
+            .any(|event| event.type_str() == "agent.message"),
+        "V2 old cursor observes new output"
+    );
+    let cold = ManagedState::new(runtime).with_session_repo(repository);
+    cold.refresh_committed_events(&session.id).await.unwrap();
+    assert_eq!(
+        cold.list_events(&session.id, None, None, false)
+            .unwrap()
+            .data,
+        visible,
+        "V3"
+    );
+    assert_eq!(
+        cold.list_events(&session.id, Some(&cursor), None, false)
+            .unwrap(),
+        suffix,
+        "V3"
+    );
+    cold.application
+        .drive_session_event_batches(&session.id, None)
+        .await
+        .unwrap();
+    cold.refresh_committed_events(&session.id).await.unwrap();
+    assert_eq!(
+        cold.list_events(&session.id, None, None, false)
+            .unwrap()
+            .data,
+        visible,
+        "V3 idempotent"
     );
 }
 

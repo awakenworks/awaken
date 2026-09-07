@@ -60,6 +60,20 @@ pub(crate) struct EventBatchReconciliation {
     pub quarantined: usize,
 }
 
+#[derive(Clone, Copy)]
+enum EventObservation {
+    InputCommitted(SessionEventProjectionAnchor),
+    Processed(SessionEventProjectionAnchor),
+}
+
+impl EventObservation {
+    fn anchor(self) -> SessionEventProjectionAnchor {
+        match self {
+            Self::InputCommitted(anchor) | Self::Processed(anchor) => anchor,
+        }
+    }
+}
+
 enum EventBatchProgress {
     Advanced,
     Pending,
@@ -90,6 +104,42 @@ enum SessionEventSelection<'a> {
         batch_id: &'a str,
         operation_id: &'a str,
     },
+}
+
+fn committed_message_anchor<'a>(
+    snapshot: &'a awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+    message_id: &MessageId,
+) -> Result<
+    Option<(
+        &'a awaken_agent_contract::agent::message::Message,
+        SessionEventProjectionAnchor,
+    )>,
+    RunError,
+> {
+    if snapshot.messages.len() != snapshot.message_commit_cursors.len() {
+        return Err(RunError::unavailable(
+            "committed Session Event message has no durable commit coordinate",
+        ));
+    }
+    let Some((message, cursor)) = snapshot
+        .messages
+        .iter()
+        .zip(snapshot.message_commit_cursors.iter().copied())
+        .find(|(message, _)| &message.id == message_id)
+    else {
+        return Ok(None);
+    };
+    if cursor == 0 || cursor > snapshot.store_cursor {
+        return Err(RunError::unavailable(
+            "committed Session Event message anchor is outside its snapshot",
+        ));
+    }
+    Ok(Some((
+        message,
+        SessionEventProjectionAnchor {
+            source_commit_cursor: cursor,
+        },
+    )))
 }
 
 impl SessionApplication {
@@ -163,21 +213,7 @@ impl SessionApplication {
                     "committed Session Event message owner is not yet recoverable",
                 )
             })?;
-        if snapshot.messages.len() != snapshot.message_commit_cursors.len() {
-            return Err(RunError::unavailable(
-                "committed Session Event message has no durable commit coordinate",
-            ));
-        }
-        let message_anchor = snapshot
-            .messages
-            .iter()
-            .zip(snapshot.message_commit_cursors.iter().copied())
-            .find_map(|(message, cursor)| {
-                (&message.id == message_id).then_some(SessionEventProjectionAnchor {
-                    source_commit_cursor: cursor,
-                })
-            });
-        if let Some(anchor) = message_anchor {
+        if let Some((_, anchor)) = committed_message_anchor(&snapshot, message_id)? {
             return Ok(anchor);
         }
         if unreplayed_run_may_anchor
@@ -708,11 +744,11 @@ impl SessionApplication {
                     self.settle_superseded_tool_reply_activity(&session.session_id, failed)
                         .await?;
                 }
-                self.mark_session_event_processed(
+                self.observe_session_event(
                     &session.session_id,
                     &batch_id,
                     event.operation_id(),
-                    anchor,
+                    EventObservation::Processed(anchor),
                     superseded_tool_reply.as_ref(),
                 )
                 .await?;
@@ -726,35 +762,11 @@ impl SessionApplication {
                 content,
                 data_subject_id,
             } => Box::pin(async move {
-                match self
-                    .runtime()
-                    .session_run_state(&session.session_id, &run_id)
+                if let Some(progress) = self
+                    .observe_user_run(session, &batch_id, &operation_id, &run_id, &content)
                     .await?
                 {
-                    Some(RunState::Awaiting) | Some(RunState::Ended(_)) => {
-                        let anchor = self
-                            .user_message_projection_anchor(
-                                &session.session_id,
-                                &run_id,
-                                &MessageId::session_event_input(&session.session_id, &operation_id),
-                            )
-                            .await?;
-                        self.settle_event_batch_wake(session, &batch_id).await?;
-                        self.mark_session_event_processed(
-                            &session.session_id,
-                            &batch_id,
-                            &operation_id,
-                            anchor,
-                            None,
-                        )
-                        .await?;
-                        return Ok(EventBatchProgress::Advanced);
-                    }
-                    Some(RunState::Running) => {
-                        self.settle_event_batch_wake(session, &batch_id).await?;
-                        return Ok(EventBatchProgress::Pending);
-                    }
-                    None => {}
+                    return Ok(progress);
                 }
                 if self
                     .another_root_run_blocks_user(&session.session_id, &run_id)
@@ -773,7 +785,7 @@ impl SessionApplication {
                             .to_string(),
                         operation_id: operation_id.clone(),
                         run_id: run_id.clone(),
-                        content,
+                        content: content.clone(),
                         accompanying_system,
                         data_subject_id,
                         traceparent,
@@ -789,33 +801,10 @@ impl SessionApplication {
                         return Ok(EventBatchProgress::Pending);
                     }
                     AdmittedSessionRun::Completed { .. } => {
-                        if matches!(
-                            self.runtime()
-                                .session_run_state(&session.session_id, &run_id)
-                                .await?,
-                            Some(RunState::Awaiting) | Some(RunState::Ended(_))
-                        ) {
-                            let anchor = self
-                                .user_message_projection_anchor(
-                                    &session.session_id,
-                                    &run_id,
-                                    &MessageId::session_event_input(
-                                        &session.session_id,
-                                        &operation_id,
-                                    ),
-                                )
-                                .await?;
-                            self.mark_session_event_processed(
-                                &session.session_id,
-                                &batch_id,
-                                &operation_id,
-                                anchor,
-                                None,
-                            )
-                            .await?;
-                            return Ok(EventBatchProgress::Advanced);
-                        }
-                        return Ok(EventBatchProgress::Pending);
+                        return Ok(self
+                            .observe_user_run(session, &batch_id, &operation_id, &run_id, &content)
+                            .await?
+                            .unwrap_or(EventBatchProgress::Pending));
                     }
                 };
                 match self.runtime().activate_session_run(delivery).await? {
@@ -824,36 +813,10 @@ impl SessionApplication {
                         session_activity_epoch: _,
                     }
                     | SessionRunActivation::RecoveryClaimed => Ok(EventBatchProgress::Pending),
-                    SessionRunActivation::Completed => {
-                        if matches!(
-                            self.runtime()
-                                .session_run_state(&session.session_id, &run_id)
-                                .await?,
-                            Some(RunState::Awaiting) | Some(RunState::Ended(_))
-                        ) {
-                            let anchor = self
-                                .user_message_projection_anchor(
-                                    &session.session_id,
-                                    &run_id,
-                                    &MessageId::session_event_input(
-                                        &session.session_id,
-                                        &operation_id,
-                                    ),
-                                )
-                                .await?;
-                            self.mark_session_event_processed(
-                                &session.session_id,
-                                &batch_id,
-                                &operation_id,
-                                anchor,
-                                None,
-                            )
-                            .await?;
-                            Ok(EventBatchProgress::Advanced)
-                        } else {
-                            Ok(EventBatchProgress::Pending)
-                        }
-                    }
+                    SessionRunActivation::Completed => Ok(self
+                        .observe_user_run(session, &batch_id, &operation_id, &run_id, &content)
+                        .await?
+                        .unwrap_or(EventBatchProgress::Pending)),
                 }
             }),
             SessionEventCommand::SystemMessage {
@@ -891,11 +854,11 @@ impl SessionApplication {
                     )
                     .await?;
                 self.settle_event_batch_wake(session, &batch_id).await?;
-                self.mark_session_event_processed(
+                self.observe_session_event(
                     &session.session_id,
                     &batch_id,
                     &operation_id,
-                    anchor,
+                    EventObservation::Processed(anchor),
                     None,
                 )
                 .await?;
@@ -925,13 +888,13 @@ impl SessionApplication {
                     Err(error) => return Err(error),
                 };
                 self.settle_event_batch_wake(session, &batch_id).await?;
-                self.mark_session_event_processed(
+                self.observe_session_event(
                     &session.session_id,
                     &batch_id,
                     &operation_id,
-                    SessionEventProjectionAnchor {
+                    EventObservation::Processed(SessionEventProjectionAnchor {
                         source_commit_cursor,
-                    },
+                    }),
                     None,
                 )
                 .await?;
@@ -969,11 +932,11 @@ impl SessionApplication {
                     }
                 };
                 self.settle_event_batch_wake(session, &batch_id).await?;
-                self.mark_session_event_processed(
+                self.observe_session_event(
                     &session.session_id,
                     &batch_id,
                     &operation_id,
-                    anchor,
+                    EventObservation::Processed(anchor),
                     None,
                 )
                 .await?;
@@ -1036,13 +999,13 @@ impl SessionApplication {
                     self.settle_superseded_tool_reply_activity(&session.session_id, failed)
                         .await?;
                 }
-                self.mark_session_event_processed(
+                self.observe_session_event(
                     &session.session_id,
                     &batch_id,
                     &operation_id,
-                    SessionEventProjectionAnchor {
+                    EventObservation::Processed(SessionEventProjectionAnchor {
                         source_commit_cursor,
-                    },
+                    }),
                     superseded_tool_reply.as_ref(),
                 )
                 .await?;
@@ -1073,14 +1036,96 @@ impl SessionApplication {
         Ok(())
     }
 
-    async fn mark_session_event_processed(
+    /// Input visibility and command completion are separate observations of
+    /// the same retained command. Running input keeps FIFO blocked and carries
+    /// no processed time; terminal fallback remains owned by the exact Run.
+    async fn observe_user_run(
+        &self,
+        session: &PersistedSession,
+        batch_id: &str,
+        operation_id: &str,
+        run_id: &awaken_agent_contract::agent::run::Id,
+        content: &[awaken_agent_contract::agent::content::ContentBlock],
+    ) -> Result<Option<EventBatchProgress>, RunError> {
+        let Some(state) = self
+            .runtime()
+            .session_run_state(&session.session_id, run_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let message_id = MessageId::session_event_input(&session.session_id, operation_id);
+        let observation = if state == RunState::Running {
+            // The durable root already retained the immutable input coordinate.
+            // Repeated supervisor scans must not reload a growing transcript
+            // merely to re-prove a completed visibility observation.
+            if session.event_batches.iter().any(|batch| {
+                batch.batch_id == batch_id
+                    && batch.events.iter().any(|entry| {
+                        entry.event.operation_id() == operation_id
+                            && entry.projection_anchor.is_some()
+                    })
+            }) {
+                self.settle_event_batch_wake(session, batch_id).await?;
+                return Ok(Some(EventBatchProgress::Pending));
+            }
+            let snapshot = self
+                .runtime()
+                .session_thread_run_recovery_snapshot(
+                    &session.session_id,
+                    &session.session_id,
+                    run_id,
+                )
+                .await?;
+            match snapshot
+                .as_ref()
+                .map(|snapshot| committed_message_anchor(snapshot, &message_id))
+                .transpose()?
+                .flatten()
+            {
+                Some((message, anchor)) => {
+                    if message.role != Role::User || message.content != content {
+                        return Err(RunError::internal(
+                            "committed Session User input conflicts with root command intent",
+                        ));
+                    }
+                    Some(EventObservation::InputCommitted(anchor))
+                }
+                None => None,
+            }
+        } else {
+            Some(EventObservation::Processed(
+                self.user_message_projection_anchor(&session.session_id, run_id, &message_id)
+                    .await?,
+            ))
+        };
+        self.settle_event_batch_wake(session, batch_id).await?;
+        if let Some(observation) = observation {
+            self.observe_session_event(
+                &session.session_id,
+                batch_id,
+                operation_id,
+                observation,
+                None,
+            )
+            .await?;
+        }
+        Ok(Some(if state == RunState::Running {
+            EventBatchProgress::Pending
+        } else {
+            EventBatchProgress::Advanced
+        }))
+    }
+
+    async fn observe_session_event(
         &self,
         session_id: &str,
         batch_id: &str,
         operation_id: &str,
-        projection_anchor: SessionEventProjectionAnchor,
+        observation: EventObservation,
         superseded_tool_reply: Option<&FailedToolReplyCoordinate>,
     ) -> Result<PersistedSession, RunError> {
+        let projection_anchor = observation.anchor();
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner = self.owner(session_id).await.map_err(mutation_run_error)?;
             let mut session = self
@@ -1108,7 +1153,11 @@ impl SessionApplication {
                         "ToolReply supersession requires an exact Interrupt anchor",
                     ));
                 }
-                if entry.processed {
+                if matches!(observation, EventObservation::InputCommitted(_)) {
+                    changed = batch
+                        .anchor_committed_input(operation_id, projection_anchor)
+                        .map_err(|error| RunError::internal(error.to_string()))?;
+                } else if entry.processed {
                     if entry.projection_anchor != Some(projection_anchor) {
                         return Err(RunError::internal(
                             "Session Event replay changed its projection anchor",
@@ -1169,7 +1218,15 @@ impl SessionApplication {
                 return Ok(session);
             }
             match self
-                .commit_session_snapshot(&owner, session, "mark-event-processed", Vec::new())
+                .commit_session_snapshot(
+                    &owner,
+                    session,
+                    match observation {
+                        EventObservation::InputCommitted(_) => "anchor-event-input",
+                        EventObservation::Processed(_) => "mark-event-processed",
+                    },
+                    Vec::new(),
+                )
                 .await
             {
                 Ok(session) => return Ok(session),

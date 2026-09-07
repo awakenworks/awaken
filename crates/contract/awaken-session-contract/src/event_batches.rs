@@ -358,8 +358,8 @@ impl SessionEventCommand {
 }
 
 /// One retained inbound Event and its root-owned publication progress. The
-/// immutable Event remains public-history provenance after processing; only
-/// this flag may change.
+/// immutable Event remains public-history provenance after processing. Its
+/// committed-input anchor may arrive before processing reaches a Run boundary.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SessionEventEntry {
     pub event: SessionEventCommand,
@@ -367,7 +367,7 @@ pub struct SessionEventEntry {
     pub processed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub processed_at_unix_ms: Option<u64>,
-    /// Absent for unprocessed and legacy commands. Such entries remain durable
+    /// Absent for not-yet-committed and legacy commands. Such entries remain durable
     /// provenance but are not listable until the existing effect owner supplies
     /// one immutable commit coordinate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -376,7 +376,7 @@ pub struct SessionEventEntry {
 
 /// Ordered Session Event-batch provenance. Identity, Events, order, optional
 /// admission trace context, and the optional create wake epoch are immutable
-/// after admission; each entry owns only its independent processed marker, while
+/// after admission; each entry owns its input anchor and processed marker, while
 /// completed effects remain authoritative in their existing owners. Ordinary
 /// accepted batches never hold a Session activity while waiting behind an
 /// earlier Run.
@@ -415,6 +415,22 @@ pub struct SessionEventBatch {
 // The sole processed-marker transition, shared by normal processing and
 // terminal resolution. Lookup/command identity remains owned by the batch;
 // this pure reducer owns only its existing metadata fields, with no new state.
+fn anchor_committed_observation(
+    processed: bool,
+    recorded: &mut Option<SessionEventProjectionAnchor>,
+    incoming: SessionEventProjectionAnchor,
+) -> Result<bool, SessionEventBatchError> {
+    match *recorded {
+        Some(anchor) if anchor == incoming => Ok(false),
+        Some(_) => Err(SessionEventBatchError::ProgressMismatch),
+        None if processed => Err(SessionEventBatchError::ProgressMismatch),
+        None => {
+            *recorded = Some(incoming);
+            Ok(true)
+        }
+    }
+}
+
 fn mark_processed_observation(
     processed: &mut bool,
     recorded_anchor: &mut Option<SessionEventProjectionAnchor>,
@@ -428,6 +444,9 @@ fn mark_processed_observation(
         } else {
             Err(SessionEventBatchError::ProgressMismatch)
         };
+    }
+    if recorded_anchor.is_some() && *recorded_anchor != incoming_anchor {
+        return Err(SessionEventBatchError::ProgressMismatch);
     }
     *recorded_anchor = incoming_anchor;
     *recorded_time = Some(now);
@@ -524,6 +543,22 @@ impl SessionEventBatch {
         self.events.iter().all(|entry| entry.processed)
     }
 
+    /// Retain committed input visibility without completing the command. An
+    /// anchor is immutable even while processing remains pending; a late reader
+    /// cannot relocate already published input or upgrade legacy completion.
+    pub fn anchor_committed_input(
+        &mut self,
+        operation_id: &str,
+        anchor: SessionEventProjectionAnchor,
+    ) -> Result<bool, SessionEventBatchError> {
+        let entry = self
+            .events
+            .iter_mut()
+            .find(|entry| entry.event.operation_id() == operation_id)
+            .ok_or(SessionEventBatchError::ProgressMismatch)?;
+        anchor_committed_observation(entry.processed, &mut entry.projection_anchor, anchor)
+    }
+
     /// Mark one exact retained entry processed. Exact replay is a no-op; an
     /// operation outside this immutable batch fails closed.
     pub fn mark_processed(
@@ -558,11 +593,12 @@ impl SessionEventBatch {
         let mut resolved = 0;
         for entry in &mut self.events {
             if !entry.processed {
+                let anchor = entry.projection_anchor.or(projection_anchor);
                 mark_processed_observation(
                     &mut entry.processed,
                     &mut entry.projection_anchor,
                     &mut entry.processed_at_unix_ms,
-                    projection_anchor,
+                    anchor,
                     processed_at_unix_ms,
                 )
                 .expect("an unprocessed entry admits its first observation");
@@ -991,6 +1027,54 @@ mod tests {
             Some(9),
             "R3/E4 processed CAS retains its immutable public-order receipt"
         );
+    }
+
+    #[test]
+    fn committed_input_anchor_is_immutable_before_and_after_completion() {
+        // Cause/effect table: A1 pending+no anchor -> anchor only; A2 same
+        // observation/restart -> no-op; A3 changed anchor or unknown operation
+        // -> atomic rejection; A4 same-anchor completion -> first timestamp;
+        // A5 terminal cleanup -> retain the already published input coordinate;
+        // A6 processed legacy/no anchor -> reject late relocation. Cross A1-A3
+        // with pending/completed state; no row invents a completed Run.
+        let anchor = SessionEventProjectionAnchor {
+            source_commit_cursor: 7,
+        };
+        let changed = SessionEventProjectionAnchor {
+            source_commit_cursor: 9,
+        };
+        for complete in [false, true] {
+            let mut batch = SessionEventBatch::compile("s", "b", vec![user("one")]).unwrap();
+            let op = batch.events[0].event.operation_id().to_owned();
+            assert!(batch.anchor_committed_input(&op, anchor).unwrap(), "A1");
+            assert!(!batch.events[0].processed && batch.events[0].processed_at_unix_ms.is_none());
+            batch = serde_json::from_value(serde_json::to_value(batch).unwrap()).unwrap();
+            if complete {
+                assert!(batch.mark_processed(&op, anchor, 100).unwrap(), "A4");
+            }
+            let before = batch.clone();
+            assert!(!batch.anchor_committed_input(&op, anchor).unwrap(), "A2");
+            assert!(batch.anchor_committed_input(&op, changed).is_err(), "A3");
+            assert!(
+                batch.anchor_committed_input("foreign", anchor).is_err(),
+                "A3"
+            );
+            assert!(batch.mark_processed(&op, changed, 200).is_err(), "A3");
+            assert_eq!(batch, before, "A2-A3 no partial mutation");
+            batch.resolve_terminally(Some(changed), 300);
+            assert_eq!(batch.events[0].projection_anchor, Some(anchor), "A5");
+            assert_eq!(
+                batch.events[0].processed_at_unix_ms,
+                Some(if complete { 100 } else { 300 }),
+                "A4-A5"
+            );
+        }
+        let mut legacy = SessionEventBatch::compile("s", "b", vec![user("one")]).unwrap();
+        let op = legacy.events[0].event.operation_id().to_owned();
+        legacy.resolve_terminally(None, 100);
+        let before = legacy.clone();
+        assert!(legacy.anchor_committed_input(&op, anchor).is_err(), "A6");
+        assert_eq!(legacy, before);
     }
 
     #[test]
@@ -1542,8 +1626,9 @@ mod tests {
 #[cfg(kani)]
 #[kani::proof]
 fn processed_event_time_is_first_observation_or_atomic_rejection() {
-    // E1 pending -> stamp; E2 processed+exact anchor -> inert, including legacy
-    // unknown time; E3 changed anchor -> unchanged rejection. All u64 clocks,
+    // E1 pending+unset/equal anchor -> stamp; E2 processed+exact anchor -> inert,
+    // including legacy unknown time; E3 changed established anchor, including
+    // pending committed input -> unchanged rejection. All u64 clocks,
     // cursors and optional markers are symbolic. Batch lookup/operation identity
     // is tested separately; this calls the production shared metadata reducer.
     let before_processed: bool = kani::any();
@@ -1555,13 +1640,31 @@ fn processed_event_time_is_first_observation_or_atomic_rejection() {
         source_commit_cursor: kani::any(),
     });
     let now: u64 = kani::any();
+    // The same symbolic before-state also covers the non-completing input
+    // observation: no process-local clock participates and a legacy processed
+    // receipt can never gain a late anchor. Any existing anchor is immutable.
+    let incoming = SessionEventProjectionAnchor {
+        source_commit_cursor: kani::any(),
+    };
+    let mut input_anchor = before_anchor;
+    let anchored = anchor_committed_observation(before_processed, &mut input_anchor, incoming);
+    if before_anchor == Some(incoming) {
+        assert_eq!(anchored, Ok(false));
+        assert_eq!(input_anchor, before_anchor);
+    } else if before_anchor.is_some() || before_processed {
+        assert!(anchored.is_err());
+        assert_eq!(input_anchor, before_anchor);
+    } else {
+        assert_eq!(anchored, Ok(true));
+        assert_eq!(input_anchor, Some(incoming));
+    }
     let (mut processed, mut time, mut recorded) = (before_processed, before_time, before_anchor);
     let result = mark_processed_observation(&mut processed, &mut recorded, &mut time, anchor, now);
-    if before_processed {
+    if before_processed || (before_anchor.is_some() && before_anchor != anchor) {
         assert_eq!(processed, before_processed);
         assert_eq!(time, before_time);
         assert_eq!(recorded, before_anchor);
-        if before_anchor == anchor {
+        if before_processed && before_anchor == anchor {
             assert_eq!(result, Ok(false));
         } else {
             assert!(result.is_err());

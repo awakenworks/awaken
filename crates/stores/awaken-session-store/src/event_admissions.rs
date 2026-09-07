@@ -50,8 +50,8 @@ pub(super) fn decode(
                     "invalid retained Session event admission identity",
                 ));
             }
-            if let Some(ids) = &receipt.operation_ids {
-                if (receipt.closed && !ids.is_empty())
+            if let Some(ids) = &receipt.operation_ids
+                && ((receipt.closed && !ids.is_empty())
                     || (!receipt.closed && ids.is_empty())
                     || ids.iter().enumerate().any(|(ordinal, id)| {
                         awaken_session_contract::decode_session_event_batch_operation(id)
@@ -59,12 +59,11 @@ pub(super) fn decode(
                                 coordinate.batch_id != receipt.batch_id
                                     || coordinate.ordinal != ordinal
                             })
-                    })
-                {
-                    return Err(super::corrupt(
-                        "invalid retained Session event observation identity",
-                    ));
-                }
+                    }))
+            {
+                return Err(super::corrupt(
+                    "invalid retained Session event observation identity",
+                ));
             }
         }
     }
