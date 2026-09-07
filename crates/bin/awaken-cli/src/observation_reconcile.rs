@@ -3,42 +3,11 @@
 //! repeated authoring work after a successful reconcile.
 
 use awaken_config_service::PublicationBindingReconciler;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ObservationReconcileEvent {
-    FingerprintObserved { unchanged: bool },
-    PublicationFinished { succeeded: bool },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ObservationReconcileEffect {
-    Coalesce,
-    Publish,
-    AdvanceFence,
-    RetainFence,
-}
-
-/// The sole decision kernel for coalescing an observation and advancing its
-/// successful-publication fence. The mutex-owning gate supplies both events in
-/// order while holding the same lock.
-const fn observation_reconcile_effect(
-    event: ObservationReconcileEvent,
-) -> ObservationReconcileEffect {
-    match event {
-        ObservationReconcileEvent::FingerprintObserved { unchanged: true } => {
-            ObservationReconcileEffect::Coalesce
-        }
-        ObservationReconcileEvent::FingerprintObserved { unchanged: false } => {
-            ObservationReconcileEffect::Publish
-        }
-        ObservationReconcileEvent::PublicationFinished { succeeded: true } => {
-            ObservationReconcileEffect::AdvanceFence
-        }
-        ObservationReconcileEvent::PublicationFinished { succeeded: false } => {
-            ObservationReconcileEffect::RetainFence
-        }
-    }
-}
+use awaken_worker_contract::{
+    WorkerObservationReconcileEffect as ObservationReconcileEffect,
+    WorkerObservationReconcileEvent as ObservationReconcileEvent,
+    worker_observation_reconcile_effect as observation_reconcile_effect,
+};
 
 pub(crate) struct WorkerObservationReconcileGate {
     last_reconciled: tokio::sync::Mutex<Option<String>>,
@@ -389,35 +358,4 @@ mod tests {
             .unwrap();
         assert_eq!(reverted, unchanged, "unchanged evidence still coalesces");
     }
-}
-
-#[cfg(kani)]
-#[kani::proof]
-fn unchanged_observation_coalesces_and_failed_refresh_retains_fence() {
-    // Symbolic form of the phase-specific decision table. Both Boolean domains
-    // are exhausted and no observation can emit a completion effect (or vice
-    // versa).
-    let unchanged = kani::any::<bool>();
-    let observation =
-        observation_reconcile_effect(ObservationReconcileEvent::FingerprintObserved { unchanged });
-    assert_eq!(
-        observation,
-        if unchanged {
-            ObservationReconcileEffect::Coalesce
-        } else {
-            ObservationReconcileEffect::Publish
-        }
-    );
-
-    let succeeded = kani::any::<bool>();
-    let completion =
-        observation_reconcile_effect(ObservationReconcileEvent::PublicationFinished { succeeded });
-    assert_eq!(
-        completion,
-        if succeeded {
-            ObservationReconcileEffect::AdvanceFence
-        } else {
-            ObservationReconcileEffect::RetainFence
-        }
-    );
 }

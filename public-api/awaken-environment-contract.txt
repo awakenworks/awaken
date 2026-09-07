@@ -50,6 +50,7 @@ pub awaken_environment_contract::EnvironmentRegistrationOperation::Withdraw
 pub enum awaken_environment_contract::EnvironmentStoreError
 pub awaken_environment_contract::EnvironmentStoreError::Backend(alloc::string::String)
 pub awaken_environment_contract::EnvironmentStoreError::InvalidConfig(awaken_environment_contract::InvalidEnvironmentConfig)
+pub awaken_environment_contract::EnvironmentStoreError::RevisionConflict
 pub enum awaken_environment_contract::InvalidEnvironmentConfig
 pub awaken_environment_contract::InvalidEnvironmentConfig::PackagesRequirePackageManager
 pub struct awaken_environment_contract::CreateEnvironmentCommand
@@ -58,6 +59,7 @@ pub awaken_environment_contract::CreateEnvironmentCommand::config: awaken_enviro
 pub awaken_environment_contract::CreateEnvironmentCommand::description: core::option::Option<alloc::string::String>
 pub awaken_environment_contract::CreateEnvironmentCommand::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_environment_contract::CreateEnvironmentCommand::name: alloc::string::String
+pub awaken_environment_contract::CreateEnvironmentCommand::sandbox_policy: core::option::Option<awaken_environment_contract::EnvironmentSandboxPolicyRef>
 pub awaken_environment_contract::CreateEnvironmentCommand::scope: core::option::Option<alloc::string::String>
 impl awaken_environment_contract::CreateEnvironmentCommand
 pub fn awaken_environment_contract::CreateEnvironmentCommand::fingerprint(&self) -> alloc::string::String
@@ -129,7 +131,7 @@ pub fn awaken_environment_contract::EnvRegistry::list_all<'life0, 'async_trait>(
 pub fn awaken_environment_contract::EnvRegistry::mark_registration_intent_delivered<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_environment_contract::EnvironmentRegistrationIntent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_environment_contract::EnvironmentStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_environment_contract::EnvRegistry::registration_intent<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_environment_contract::EnvironmentRevision) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_environment_contract::EnvironmentRegistrationIntent>, awaken_environment_contract::EnvironmentStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_environment_contract::EnvRegistry::registration_intents<'life0, 'async_trait>(&'life0 self, awaken_environment_contract::EnvironmentRegistrationIntentFilter) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_environment_contract::EnvironmentRegistrationIntent>, awaken_environment_contract::EnvironmentStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_environment_contract::EnvRegistry::update<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_environment_contract::EnvUpdate) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_environment_contract::EnvItem>, awaken_environment_contract::EnvironmentStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_environment_contract::EnvRegistry::update<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_environment_contract::EnvironmentRevision, awaken_environment_contract::EnvUpdate) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_environment_contract::EnvItem>, awaken_environment_contract::EnvironmentStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_environment_contract::EnvironmentAuthor: core::marker::Send + core::marker::Sync
 pub fn awaken_environment_contract::EnvironmentAuthor::create_environment<'life0, 'async_trait>(&'life0 self, awaken_environment_contract::CreateEnvironmentCommand) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_environment_contract::environment_facts_fingerprint(&impl serde_core::ser::Serialize) -> alloc::string::String

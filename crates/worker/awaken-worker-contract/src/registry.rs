@@ -260,6 +260,64 @@ pub const fn worker_heartbeat_admission(
     }
 }
 
+/// Project the observation fence of one already-admitted heartbeat.
+///
+/// Unchanged evidence keeps its prior fence so ordinary heartbeats coalesce.
+/// Changed evidence must carry a strictly newer heartbeat sequence; rejecting
+/// any non-increase makes a corrupt or downgraded durable record fail closed.
+#[must_use]
+pub const fn worker_observation_sequence_after_heartbeat(
+    current_observation_sequence: u64,
+    heartbeat_sequence: u64,
+    observations_changed: bool,
+) -> Option<u64> {
+    if !observations_changed {
+        Some(current_observation_sequence)
+    } else if heartbeat_sequence > current_observation_sequence {
+        Some(heartbeat_sequence)
+    } else {
+        None
+    }
+}
+
+/// Phase-tagged input to the one Worker-observation publication gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerObservationReconcileEvent {
+    FingerprintObserved { unchanged: bool },
+    PublicationFinished { succeeded: bool },
+}
+
+/// Closed effects of Worker-observation publication reconciliation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerObservationReconcileEffect {
+    Coalesce,
+    Publish,
+    AdvanceFence,
+    RetainFence,
+}
+
+/// Decide whether to publish an observation or advance its successful fence.
+/// The adapter supplies these events in order while holding its one gate lock.
+#[must_use]
+pub const fn worker_observation_reconcile_effect(
+    event: WorkerObservationReconcileEvent,
+) -> WorkerObservationReconcileEffect {
+    match event {
+        WorkerObservationReconcileEvent::FingerprintObserved { unchanged: true } => {
+            WorkerObservationReconcileEffect::Coalesce
+        }
+        WorkerObservationReconcileEvent::FingerprintObserved { unchanged: false } => {
+            WorkerObservationReconcileEffect::Publish
+        }
+        WorkerObservationReconcileEvent::PublicationFinished { succeeded: true } => {
+            WorkerObservationReconcileEffect::AdvanceFence
+        }
+        WorkerObservationReconcileEvent::PublicationFinished { succeeded: false } => {
+            WorkerObservationReconcileEffect::RetainFence
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum RegistryError {
     #[error("worker id and incarnation id must be non-empty")]
@@ -437,6 +495,71 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn observation_sequence_changes_only_to_a_strictly_new_fence() {
+        // Causes: C1 credential/ACP evidence changed; C2 the heartbeat sequence
+        // is strictly newer than the current observation fence. Effects: E1
+        // unchanged evidence preserves the fence; E2 C1+C2 installs the new
+        // sequence; E3 C1+!C2 rejects. Decision rules O1=!C1=>E1,
+        // O2=C1+C2=>E2, and O3=C1+!C2=>E3.
+        assert_eq!(
+            worker_observation_sequence_after_heartbeat(7, 8, false),
+            Some(7),
+            "O1/E1"
+        );
+        assert_eq!(
+            worker_observation_sequence_after_heartbeat(7, 8, true),
+            Some(8),
+            "O2/E2"
+        );
+        assert_eq!(
+            worker_observation_sequence_after_heartbeat(7, 7, true),
+            None,
+            "O3/E3 equal"
+        );
+        assert_eq!(
+            worker_observation_sequence_after_heartbeat(7, 6, true),
+            None,
+            "O3/E3 older"
+        );
+    }
+
+    #[test]
+    fn observation_reconcile_effect_is_phase_total_and_fail_closed() {
+        // Causes: C1 observed fingerprint is unchanged; C2 publication
+        // succeeds. Effects: E1 coalesce, E2 publish, E3 advance the fence, E4
+        // retain it. C1 belongs only to observation and C2 only to completion.
+        // Rules O1=C1=>E1, O2=!C1=>E2, P1=C2=>E3, P2=!C2=>E4.
+        assert_eq!(
+            worker_observation_reconcile_effect(
+                WorkerObservationReconcileEvent::FingerprintObserved { unchanged: true }
+            ),
+            WorkerObservationReconcileEffect::Coalesce,
+            "O1/E1"
+        );
+        assert_eq!(
+            worker_observation_reconcile_effect(
+                WorkerObservationReconcileEvent::FingerprintObserved { unchanged: false }
+            ),
+            WorkerObservationReconcileEffect::Publish,
+            "O2/E2"
+        );
+        assert_eq!(
+            worker_observation_reconcile_effect(
+                WorkerObservationReconcileEvent::PublicationFinished { succeeded: true }
+            ),
+            WorkerObservationReconcileEffect::AdvanceFence,
+            "P1/E3"
+        );
+        assert_eq!(
+            worker_observation_reconcile_effect(
+                WorkerObservationReconcileEvent::PublicationFinished { succeeded: false }
+            ),
+            WorkerObservationReconcileEffect::RetainFence,
+            "P2/E4"
+        );
+    }
 }
 
 #[cfg(kani)]
@@ -471,4 +594,62 @@ fn worker_replacement_and_heartbeat_share_one_non_resurrection_boundary() {
     if worker_slot_is_replaceable(state, expires_at_ms, now_ms) {
         assert_ne!(admission, RegistryMutation::Applied);
     }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn changed_worker_observation_always_mints_a_strictly_fresh_fence() {
+    let current = kani::any::<u64>();
+    let heartbeat = kani::any::<u64>();
+    let changed = kani::any::<bool>();
+    let result = worker_observation_sequence_after_heartbeat(current, heartbeat, changed);
+
+    assert_eq!(
+        result,
+        if changed {
+            (heartbeat > current).then_some(heartbeat)
+        } else {
+            Some(current)
+        }
+    );
+    if changed {
+        assert_eq!(result.is_some(), heartbeat > current);
+        if let Some(next) = result {
+            assert!(next > current);
+        }
+    } else {
+        assert_eq!(result, Some(current));
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn unchanged_observation_coalesces_and_failed_refresh_retains_fence() {
+    let unchanged = kani::any::<bool>();
+    let observation =
+        worker_observation_reconcile_effect(WorkerObservationReconcileEvent::FingerprintObserved {
+            unchanged,
+        });
+    assert_eq!(
+        observation,
+        if unchanged {
+            WorkerObservationReconcileEffect::Coalesce
+        } else {
+            WorkerObservationReconcileEffect::Publish
+        }
+    );
+
+    let succeeded = kani::any::<bool>();
+    let completion =
+        worker_observation_reconcile_effect(WorkerObservationReconcileEvent::PublicationFinished {
+            succeeded,
+        });
+    assert_eq!(
+        completion,
+        if succeeded {
+            WorkerObservationReconcileEffect::AdvanceFence
+        } else {
+            WorkerObservationReconcileEffect::RetainFence
+        }
+    );
 }

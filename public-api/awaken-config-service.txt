@@ -139,6 +139,7 @@ pub awaken_config_service::RuntimeCapability::id: alloc::string::String
 pub awaken_config_service::RuntimeCapability::kind: alloc::string::String
 pub awaken_config_service::RuntimeCapability::label: alloc::string::String
 pub awaken_config_service::RuntimeCapability::local: core::option::Option<awaken_config_service::LocalRuntimeCapability>
+pub awaken_config_service::RuntimeCapability::supports_tool_aliases: bool
 impl awaken_config_service::RuntimeCapability
 pub fn awaken_config_service::RuntimeCapability::acp(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_config_service::RuntimeCapability::native() -> Self

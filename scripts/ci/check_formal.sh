@@ -470,8 +470,6 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness portable_aggregate_revision_is_strictly_monotonic_and_never_wraps \
     --harness resource_lifecycle_timestamps_project_the_exact_transition \
     --harness stale_resource_purge_claim_cannot_commit_receipt
-  run_kani awaken-cli \
-    --harness unchanged_observation_coalesces_and_failed_refresh_retains_fence
   run_kani awaken-mcp-server-core \
     --harness one_request_has_at_most_one_final_response \
     --harness notifications_never_have_a_jsonrpc_response \
@@ -495,6 +493,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness dynamic_evidence_can_only_restrict_ready_worker_admission \
     --harness process_readiness_after_startup_is_probe_independent \
     --harness worker_replacement_and_heartbeat_share_one_non_resurrection_boundary \
+    --harness changed_worker_observation_always_mints_a_strictly_fresh_fence \
+    --harness unchanged_observation_coalesces_and_failed_refresh_retains_fence \
     --harness worker_dynamic_observation_requires_exact_fact_and_half_open_lease
   run_kani awaken-worker \
     --harness observation_batch_is_single_generation_and_never_wraps \

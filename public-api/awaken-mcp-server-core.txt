@@ -43,6 +43,7 @@ pub async fn awaken_mcp_server_core::McpServer<H, C>::handle_notification(&self,
 pub async fn awaken_mcp_server_core::McpServer<H, C>::handle_request(&self, &C, core::option::Option<&serde_json::value::Value>, &str, serde_json::value::Value, &dyn awaken_mcp_server_core::NotifySink) -> core::result::Result<serde_json::value::Value, awaken_mcp_wire::jsonrpc::ServerRequestError>
 pub fn awaken_mcp_server_core::McpServer<H, C>::host(&self) -> &H
 pub fn awaken_mcp_server_core::McpServer<H, C>::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, H) -> Self
+pub fn awaken_mcp_server_core::McpServer<H, C>::new_connection(&self) -> Self where H: core::clone::Clone
 pub fn awaken_mcp_server_core::McpServer<H, C>::with_tools_list_changed(self, bool) -> Self
 pub struct awaken_mcp_server_core::NullSink
 impl awaken_mcp_server_core::NotifySink for awaken_mcp_server_core::NullSink

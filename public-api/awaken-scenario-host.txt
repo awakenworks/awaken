@@ -19,6 +19,8 @@ pub use awaken_scenario_host::memory_stores_router
 pub use awaken_scenario_host::models_router
 pub use awaken_scenario_host::parse_skill_md
 pub use awaken_scenario_host::skills_router
+pub mod awaken_scenario_host::realization_observation
+pub fn awaken_scenario_host::realization_observation::install_from_environment()
 pub struct awaken_scenario_host::CompactionModel
 impl awaken_runtime_contract::llm::LlmExecutor for awaken_scenario_host::CompactionModel
 pub fn awaken_scenario_host::CompactionModel::infer<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ChatRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::llm::Result<awaken_runtime_contract::llm::ChatResponse>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

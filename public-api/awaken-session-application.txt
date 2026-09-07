@@ -129,7 +129,7 @@ pub awaken_session_application::CreateProfiledSessionCommand::metadata: alloc::c
 pub awaken_session_application::CreateProfiledSessionCommand::model: core::option::Option<alloc::string::String>
 pub awaken_session_application::CreateProfiledSessionCommand::mounts: alloc::vec::Vec<awaken_provisioning_contract::vocab::MountRequirement>
 pub awaken_session_application::CreateProfiledSessionCommand::mutation_policy: awaken_session_contract::baseline::SessionMutationPolicy
-pub awaken_session_application::CreateProfiledSessionCommand::network_restriction: core::option::Option<awaken_session_contract::baseline::SessionNetworkPolicy>
+pub awaken_session_application::CreateProfiledSessionCommand::network_restriction: core::option::Option<awaken_session_contract::network_policy::SessionNetworkPolicy>
 pub awaken_session_application::CreateProfiledSessionCommand::owner_scope: alloc::string::String
 pub awaken_session_application::CreateProfiledSessionCommand::prompts: alloc::vec::Vec<alloc::string::String>
 pub awaken_session_application::CreateProfiledSessionCommand::repositories: alloc::vec::Vec<awaken_session_application::ProfiledSessionRepositoryInput>
@@ -194,6 +194,7 @@ pub awaken_session_application::ReplaceSessionResourceManifest::resources: awake
 pub struct awaken_session_application::RepositoryEnvironmentBindingSink
 impl awaken_session_application::RepositoryEnvironmentBindingSink
 pub fn awaken_session_application::RepositoryEnvironmentBindingSink::new(alloc::sync::Arc<dyn awaken_session_contract::session_repo::repository_port::ManagedSessionRepository>) -> Self
+pub fn awaken_session_application::RepositoryEnvironmentBindingSink::with_clock(self, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> Self
 impl awaken_session_contract::session::SessionEnvironmentBindingSink for awaken_session_application::RepositoryEnvironmentBindingSink
 pub fn awaken_session_application::RepositoryEnvironmentBindingSink::authorize<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_session_contract::environment::effect_intent::SessionEnvironmentEffectIntent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::environment::effect_intent::SessionEnvironmentEffectAuthorization, awaken_session_contract::session::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_application::RepositoryEnvironmentBindingSink::persist<'life0, 'async_trait>(&'life0 self, awaken_session_contract::environment::SessionEnvironmentReceipt) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::environment::SessionEnvironmentState, awaken_session_contract::session::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -295,10 +296,12 @@ pub fn awaken_session_application::SessionApplication::deployment_agent_unavaila
 pub async fn awaken_session_application::SessionApplication::deployment_environment(&self, &str) -> core::result::Result<core::option::Option<awaken_environment_contract::EnvItem>, awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError>
 pub fn awaken_session_application::SessionApplication::deployment_unavailable_delegate(&self, &str, &str) -> core::option::Option<alloc::string::String>
 pub async fn awaken_session_application::SessionApplication::dispatch_session_work(&self, &awaken_session_contract::session_repo::persisted_session::PersistedSession) -> core::result::Result<bool, awaken_session_contract::work_queue::WorkQueueError>
+pub fn awaken_session_application::SessionApplication::environment_binding_sink(&self) -> alloc::sync::Arc<dyn awaken_session_contract::session::SessionEnvironmentBindingSink>
 pub fn awaken_session_application::SessionApplication::local_realization_owner(&self) -> &str
 pub fn awaken_session_application::SessionApplication::managed_session_model_refs(&self, &str, &str, core::option::Option<&awaken_executable_agent_contract::session_profile::ExecutableAgentSessionProfile>, &str, core::option::Option<&str>, core::option::Option<&awaken_session_contract::model_resolution::SessionModelPublication>) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_session_contract::session::RunError>
 pub fn awaken_session_application::SessionApplication::new(alloc::sync::Arc<dyn awaken_session_contract::session::SessionRuntime>, alloc::sync::Arc<dyn awaken_session_contract::session::McpAttachmentRealizer>, alloc::sync::Arc<dyn awaken_session_contract::session_repo::repository_port::ManagedSessionRepository>, alloc::sync::Arc<dyn awaken_session_application::SessionEnvironmentSource>) -> Self
 pub fn awaken_session_application::SessionApplication::new_with_configuration(alloc::sync::Arc<dyn awaken_session_contract::session::SessionRuntime>, alloc::sync::Arc<dyn awaken_session_contract::session::McpAttachmentRealizer>, alloc::sync::Arc<dyn awaken_session_contract::session_repo::repository_port::ManagedSessionRepository>, alloc::sync::Arc<dyn awaken_session_application::SessionEnvironmentSource>, awaken_session_application::SessionApplicationConfiguration) -> Self
+pub fn awaken_session_application::SessionApplication::now_unix_ms(&self) -> u64
 pub async fn awaken_session_application::SessionApplication::reconcile_work_dispatches(&self) -> awaken_session_application::WorkDispatchReconciliation
 pub async fn awaken_session_application::SessionApplication::refresh_executable_projections(&self) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_session_application::SessionApplication::replace_environment_source(&mut self, alloc::sync::Arc<dyn awaken_session_application::SessionEnvironmentSource>)
@@ -324,6 +327,7 @@ pub fn awaken_session_application::SessionApplication::set_resource_registry(&mu
 pub fn awaken_session_application::SessionApplication::set_worker_observation_source(&self, alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerObservationSource>) -> core::result::Result<(), &'static str>
 pub fn awaken_session_application::SessionApplication::validate_persisted_session_resource_layout(&self, &str, &awaken_session_contract::session_repo::persisted_session::PersistedSession, alloc::vec::Vec<awaken_resource_contract::input::InputBinding>) -> core::result::Result<(), awaken_session_contract::session::RunError>
 pub fn awaken_session_application::SessionApplication::validate_session_sandbox_layout(&self, &str, &awaken_session_contract::session::SessionSandboxLayout) -> core::result::Result<(), awaken_session_contract::session::RunError>
+pub fn awaken_session_application::SessionApplication::with_clock(self, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>) -> Self
 impl awaken_session_application::SessionApplication
 pub async fn awaken_session_application::SessionApplication::ensure_environment_resident(&self, &str, u64) -> core::result::Result<awaken_session_contract::session_repo::persisted_session::PersistedSession, awaken_session_application::SessionContinuationError>
 pub async fn awaken_session_application::SessionApplication::reconcile_environment_continuation(&self, &str, u64) -> core::result::Result<(), awaken_session_application::SessionContinuationError>

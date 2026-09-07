@@ -121,6 +121,15 @@ pub(crate) fn heartbeat(
     let observations_changed = current.snapshot.credential_observations
         != heartbeat.credential_observations
         || current.snapshot.acp_capability_observations != heartbeat.acp_capability_observations;
+    let Some(observation_sequence) =
+        awaken_worker_contract::worker_observation_sequence_after_heartbeat(
+            current.observation_sequence,
+            heartbeat.sequence,
+            observations_changed,
+        )
+    else {
+        return (None, RegistryMutation::StaleSequence);
+    };
     let mut next = current.clone();
     if !matches!(next.snapshot.state, WorkerState::Draining) {
         next.snapshot.state = if heartbeat.ready {
@@ -133,11 +142,7 @@ pub(crate) fn heartbeat(
     next.snapshot.warm_environment_shapes = heartbeat.warm_environment_shapes;
     next.snapshot.credential_observations = heartbeat.credential_observations;
     next.snapshot.acp_capability_observations = heartbeat.acp_capability_observations;
-    if observations_changed {
-        // The heartbeat sequence is already checked to be strictly newer, so it
-        // is also a non-wrapping generation for dynamic observation changes.
-        next.observation_sequence = heartbeat.sequence;
-    }
+    next.observation_sequence = observation_sequence;
     next.snapshot.expires_at_ms = now_ms.saturating_add(ttl_ms);
     next.heartbeat_sequence = heartbeat.sequence;
     next.heartbeat_at_ms = now_ms;
@@ -370,6 +375,42 @@ mod tests {
         );
         assert_eq!(result, RegistryMutation::Applied);
         assert_eq!(unchanged.unwrap().observation_sequence, 1);
+    }
+
+    #[test]
+    fn changed_observation_rejects_a_nonincreasing_durable_fence() {
+        // Causes: C1 heartbeat admission is otherwise valid; C2 persisted
+        // observation sequence is ahead of the incoming heartbeat; C3 evidence
+        // changes. Effect: C1+C2+C3 rejects without returning a rewritten row,
+        // preventing an ABA-visible fence rollback. The ordinary fresh and
+        // unchanged rules are covered by the sibling credential-observation test.
+        let (mut current, _) = register(None, registration("boot-1"), 10, 100).unwrap();
+        current.observation_sequence = 9;
+        let identity = current.snapshot.identity.clone();
+        let observation = awaken_worker_contract::WorkerCredentialObservation::available(
+            awaken_worker_contract::WorkerCredentialRevision {
+                id: "cred:worker".into(),
+                revision: 1,
+            },
+            20,
+            120,
+        );
+        let (updated, result) = heartbeat(
+            Some(&current),
+            &identity,
+            WorkerHeartbeat {
+                sequence: 1,
+                ready: true,
+                in_flight: 0,
+                warm_environment_shapes: Default::default(),
+                credential_observations: std::collections::BTreeSet::from([observation]),
+                acp_capability_observations: Default::default(),
+            },
+            20,
+            100,
+        );
+        assert!(updated.is_none(), "C1+C2+C3 no rewrite");
+        assert_eq!(result, RegistryMutation::StaleSequence, "C1+C2+C3 reject");
     }
 
     #[test]
