@@ -778,14 +778,14 @@ fn terminal_receipt_preflight_distinguishes_incomplete_replay_and_closed() {
 }
 
 #[test]
-fn expired_terminal_takeover_is_zero_write_for_absent_and_ready() {
+fn exhausted_current_proof_is_zero_write_for_absent_and_ready() {
     // Terminal-expiry decision table. Causes: C1 the terminal successor is
-    // expired; C2 the current state is marker-free/Ready. R1 C1+C2 rejects;
+    // exhausted in current local authority; C2 marker-free/Ready. R1 C1+C2 rejects;
     // R2 marker-free remains marker-free (no Removed tombstone); R3 Ready
     // retains its exact completion and never enters Removing. `acquire` is a
-    // nonblocking try-lock, so there is no honest lock-wait test row; production
-    // additionally repeats this same validator immediately before both first
-    // writes to cover expiry after entry validation.
+    // nonblocking try-lock, so there is no honest lock-wait test row. Both
+    // production entrances hold this same authority callback across the first
+    // write. Far-future Control expiry cannot mask removal of its current gate.
     let base = tempfile::tempdir().unwrap();
     let absent_root = base.path().join("terminal-expiry-absent");
     let ready_root = base.path().join("terminal-expiry-ready");
@@ -798,28 +798,30 @@ fn expired_terminal_takeover_is_zero_write_for_absent_and_ready() {
     ready_creation.prepare_root().unwrap();
     ready_creation.complete(&empty_receipt()).unwrap();
     let terminal =
-        pc::SandboxEffectFence::new("terminal-expired", "owner", "runtime", 2, 0).unwrap();
+        pc::SandboxEffectFence::new("terminal-expired", "owner", "runtime", 2, u64::MAX).unwrap();
+    let authority = pc::test_support::EffectAuthority::new(&terminal);
+    authority.current.lock().unwrap().as_mut().unwrap().1 = std::time::Duration::ZERO;
     assert!(
-        begin_terminal_takeover(
+        pc::with_current_sandbox_effect(&terminal, &authority, || begin_terminal_takeover(
             &absent_root,
             &absent_fingerprint,
             None,
             Some(&source),
             &terminal,
             Some(&TerminalReceiptObservation::Closed),
-        )
+        ))
         .is_err(),
         "R1 marker-free"
     );
     assert!(
-        begin_terminal_takeover(
+        pc::with_current_sandbox_effect(&terminal, &authority, || begin_terminal_takeover(
             &ready_root,
             &ready_fingerprint,
             None,
             Some(&source),
             &terminal,
             Some(&TerminalReceiptObservation::Receipt(empty_receipt())),
-        )
+        ))
         .is_err(),
         "R1 Ready"
     );

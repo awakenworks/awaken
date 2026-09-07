@@ -320,9 +320,9 @@ cover new/cached participants under operation/generation replacement and
 renewal. Container tests poll actual Pending lock/read/write-response futures
 before revocation, renewal or replacement, and verify no subsequent credential
 effect or successful preparation. Already-admitted broker commits remain
-possible; exact writeback identity is retained for retry. Provider marker and
-physical-cleanup clocks still require migration, so this does not establish
-end-to-end cross-clock disposal or backend commit fencing.
+possible; exact writeback identity is retained for retry. The terminal
+marker/physical-removal clock migration is described below; creation/adoption,
+checkpoint WAL admission and backend commit fencing remain separate obligations.
 
 The Host source decision table and barrier tests cover direct/registered
 topologies, same-byte slot replacement, renewal and closure during Worker,
@@ -346,8 +346,8 @@ and cached preparation reachability witnesses exclude vacuous checks. The
 two-effect bound and abstract expiry remain explicit: this checks local
 admission after a response, not cancellation or authorization of an in-flight
 remote commit, unbounded retries or eventual dependency availability.
-The independent Provider wall-clock checks and real backend effect-boundary
-authority remain unresolved by this amendment.
+Provider clock checks outside the migrated terminal physical path and real
+backend effect-boundary authority remain unresolved.
 
 Physical disposal now consumes the same current authority port. Reused unchanged:
 Session preparation/authorization CAS, exact marker/UID identity, retained
@@ -376,8 +376,8 @@ The existing model shares one provider wait across fixed preparation/disposal
 selectors; 26 semantic mutants and 12 reachability witnesses include disposal
 and cached completion. Its two-effect bound does not establish ordering across
 both aggregate phases, callback elapsed time or asynchronous remote commit
-fencing. Provider UTC validation and real cloud/platform qualification remain
-explicit open boundaries. Cold reconstruction now extends this same wiring:
+fencing. Creation/adoption and checkpoint WAL clock admission, plus real
+cloud/platform qualification, remain open. Cold reconstruction extends this wiring:
 the Host captures its existing operation-bound Session/Worker authority before
 calling the Provider, and both public provider ports require it. Local and
 Namespace reuse `prepare_terminal_memory_replay`: exact marker takeover is
@@ -403,6 +403,47 @@ closed by these admission tests. Exact restored-target disposal now uses the
 current-authority port described below; terminal checkpoint cleanup is wired
 below. No new store, timer, lease, registry or state machine is
 introduced by this cold reconstruction change.
+
+### Terminal Provider clock ownership
+
+Current Worker/Session proof is the sole liveness authority for terminal
+preparation, reconstruction and physical removal. Local/Namespace's private
+`RemovalGuard` and terminal receipt preflight keep their exact marker, root,
+preparation and successor comparisons; they no longer compare those Control
+timestamps with Worker UTC. Both production takeover entrances already execute
+the first mutation inside `with_current_sandbox_effect`; subsequent physical
+mutations remain inside that same canonical guard. Memory acknowledgement also
+holds this guard, so reacquiring it inside the marker would deadlock rather
+than strengthen authorization. Container's existing `dispose_authorized` uses
+the same current proof instead of its redundant UTC comparison.
+
+Reused unchanged: Session lease/receipt timing, the current-effect port, Memory
+acknowledgement, marker locks and the disposal state machine. Modified: the
+private terminal marker/preflight checks and Container's physical-removal
+admission. New production mechanisms: none. Control expiry remains unchanged in
+the persisted preparation and authorization: no shifted timestamp, synthetic
+renewal, compatibility clock or second owner is introduced.
+
+The adjacent tests own a cause/effect table crossing past/future Control expiry
+with current, revoked and exhausted proof for resident, cold and absent Local/
+Namespace participants. Denial preserves Ready metadata and bytes (or leaves
+the absent directory marker-free); admitted cleanup retains its exact Control
+coordinates and reaches physical absence. The existing Local 5x5 and Container
+6x5 Pending tables now cross both timestamp classes; Local preparation also
+crosses new/cached ownership. The prior sleep-until-UTC table is consolidated
+into these independent proof/clock rows, not retained as a competing expiry
+oracle. Namespace rows here qualify filesystem lifecycle, not OS confinement.
+
+`SessionExecutionBinding` adds positive admission enabledness alongside stale
+effect safety. Three phase-specific over-denial mutants represent an unrelated
+clock fixed in its rejecting class; the oracle independently expands the
+current authority coordinates. This checks that a fresh provider callback can
+enter, not eventual cleanup, callback duration, Rust refinement, real clock
+conversion or remote commit fencing. The existing two-effect bound is unchanged.
+Creation/adoption, ordinary and terminal checkpoint WAL clock correspondence,
+FUSE cancellation/compensation ownership and real cloud/platform/credential
+qualification still require their own closure; no such guarantee is inferred
+from the physical-removal tests.
 
 ### Exact unpublished restore-target disposal
 

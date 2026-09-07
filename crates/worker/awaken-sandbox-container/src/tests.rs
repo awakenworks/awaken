@@ -1218,8 +1218,9 @@ async fn physical_disposal_rechecks_current_authority_before_delete_release_and_
     use std::time::Duration;
     // C1 Pending participant lock / observation / committed removal response /
     // Memory lock / first or last FUSE teardown; C2 revoke/replace/expire/renew/
-    // cancel. The complete 6x5 table holds every other predicate valid, notably
-    // UTC expiry, and reuses the real disposal + exact-observation call chain.
+    // cancel. Cross the complete 6x5 table with past/future Control timestamps;
+    // only the current local proof governs expiry, never Worker UTC. Reuse the
+    // real disposal + exact-observation call chain.
     // R1 stale authority denies the NEXT effect and Done, retaining staging and
     // every remaining participant. R2 renewal completes. R3 cancellation keeps
     // the same participants for retry; an already committed delete stays gone.
@@ -1231,14 +1232,17 @@ async fn physical_disposal_rechecks_current_authority_before_delete_release_and_
     // R6 every admitted observation, including retry, must be TerminalCleanup:
     // current authority cannot turn Recovery's process absence into proof that
     // retained resources are gone. The backend classifier owns that distinction.
-    for boundary in [
+    for (boundary, expiry) in [
         "participant",
         "observation",
         "remove",
         "memory-lock",
         "first-mount",
         "last-mount",
-    ] {
+    ]
+    .into_iter()
+    .flat_map(|boundary| [100, u64::MAX - 1].map(|expiry| (boundary, expiry)))
+    {
         for change in ["revoke", "replace", "expire", "renew", "cancel"] {
             let runtime = Arc::new(FakeRuntime::default());
             let sandbox = provider(runtime.clone())
@@ -1246,7 +1250,7 @@ async fn physical_disposal_rechecks_current_authority_before_delete_release_and_
                 .await
                 .unwrap();
             let prepared =
-                pc::SandboxEffectFence::new("prepared", "owner", "boot", 1, u64::MAX - 1).unwrap();
+                pc::SandboxEffectFence::new("prepared", "owner", "boot", 1, expiry).unwrap();
             sandbox
                 .prepare_disposal_for_effect(
                     &prepared,

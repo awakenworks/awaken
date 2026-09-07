@@ -1184,7 +1184,7 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
         .dispose_for_effect(
             &disposal,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&disposal).effect_fence(),
+                disposal.effect_fence(),
             ),
         )
         .await
@@ -1313,7 +1313,7 @@ async fn terminal_checkpoint_cancellation_reuses_the_original_guard_and_upload_j
             let authorization = crate::test_disposal_authorization(&terminal);
             let disposal_authority =
                 awaken_provisioning_contract::test_support::EffectAuthority::new(
-                    (&authorization).effect_fence(),
+                    authorization.effect_fence(),
                 );
             let mut disposal =
                 Box::pin(sandbox.dispose_for_effect(&authorization, &disposal_authority));
@@ -1353,7 +1353,7 @@ async fn terminal_checkpoint_cancellation_reuses_the_original_guard_and_upload_j
                 .dispose_for_effect(
                     &crate::test_disposal_authorization(&terminal),
                     &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                        (&crate::test_disposal_authorization(&terminal)).effect_fence(),
+                        crate::test_disposal_authorization(&terminal).effect_fence(),
                     ),
                 )
                 .await
@@ -1433,7 +1433,7 @@ async fn terminal_checkpoint_cleanup_uses_the_hot_ready_guard() {
         .dispose_for_effect(
             &crate::test_disposal_authorization(&terminal),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&crate::test_disposal_authorization(&terminal)).effect_fence(),
+                crate::test_disposal_authorization(&terminal).effect_fence(),
             ),
         )
         .await
@@ -1538,7 +1538,7 @@ async fn terminal_checkpoint_cleanup_uses_the_prepared_removal_guard() {
         .dispose_for_effect(
             &crate::test_disposal_authorization(&terminal),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&crate::test_disposal_authorization(&terminal)).effect_fence(),
+                crate::test_disposal_authorization(&terminal).effect_fence(),
             ),
         )
         .await

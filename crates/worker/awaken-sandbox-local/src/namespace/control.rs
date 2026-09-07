@@ -835,7 +835,7 @@ mod tests {
                 &sandbox,
                 &crate::test_disposal_authorization(&foreign),
                 &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                    (&crate::test_disposal_authorization(&foreign)).effect_fence()
+                    crate::test_disposal_authorization(&foreign).effect_fence()
                 )
             )
             .await
@@ -847,7 +847,7 @@ mod tests {
         );
         let authorization = crate::test_disposal_authorization(&terminal);
         let disposal_authority = awaken_provisioning_contract::test_support::EffectAuthority::new(
-            (&authorization).effect_fence(),
+            authorization.effect_fence(),
         );
         let mut first = Box::pin(pc::Sandbox::dispose_for_effect(
             &sandbox,
@@ -872,7 +872,7 @@ mod tests {
             &sandbox,
             &authorization,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&authorization).effect_fence(),
+                authorization.effect_fence(),
             ),
         )
         .await

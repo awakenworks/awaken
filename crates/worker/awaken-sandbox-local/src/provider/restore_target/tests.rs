@@ -343,7 +343,7 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
         .dispose_for_effect(
             &crate::test_disposal_authorization(&terminal),
             &awaken_provisioning_contract::test_support::EffectAuthority::new(
-                (&crate::test_disposal_authorization(&terminal)).effect_fence(),
+                crate::test_disposal_authorization(&terminal).effect_fence(),
             ),
         )
         .await

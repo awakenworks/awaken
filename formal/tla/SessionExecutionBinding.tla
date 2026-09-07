@@ -186,6 +186,19 @@ BindingTypeOK == RootTypeOK /\ selection \in {"unset", "weak", "scoped"}
   /\ providerWait \in 0..2
 MemoryCopyDrainedOnce == memoryDrains <= 1
 OnlyCurrentBindingCommits == ~badEffect
+(* Independent positive-admission oracle: exact fresh provider authority with
+   no outstanding wait must remain usable. A second Provider UTC gate cannot
+   reject it. No second clock/state machine is introduced: a mutant fixes the
+   unrelated clock in its rejecting class for one provider phase. Executable
+   tables cross actual past/future Control values with current proof. This is
+   enabledness of the next guarded callback, NOT eventual backend completion
+   or a proof of clock conversion, suspension, or arbitrary callback duration. *)
+FreshProviderEffectRemainsEnabled ==
+  (providerSource /\ ~effectHeld /\ effects < 2
+   /\ (~registeredWorker \/ RootCurrent)
+   /\ "Live" = projection /\ sessionExpired = FALSE
+   /\ slotIdentity = boundSlot /\ lease[1] = boundGeneration
+   /\ 1 # memoryWait /\ 1 # providerWait) => ENABLED CheckEffect
 OnlyProbedDeploymentSelected == selection = "scoped" => deploymentReady
 WeakExecutionCannotUpgrade == weakStarted => selection = "weak"
 BindingIsWriteOnce == [][boundSlot # 0 => UNCHANGED <<boundSlot, boundGeneration, boundEnvironment>>]_bindingAll

@@ -1880,11 +1880,11 @@ pub trait ContainerRuntime: Send + Sync {
                 "physical disposal observation differs from its typed successor fence".into(),
             ));
         }
-        effect_fence
-            .validate_live_at(
-                container_runtime_unix_now_ms()
-                    .map_err(|error| RuntimeError::Backend(error.to_string()))?,
-            )
+        // The shared current-effect proof below owns liveness. Repeating a
+        // Worker-UTC comparison would reject valid response-relative authority
+        // (and a persisted assertion may precede a same-effect renewal).
+        authorization
+            .validate()
             .map_err(|error| RuntimeError::Backend(error.to_string()))?;
         // Disposal owns its observation purpose even if the caller constructed
         // a recovery expectation. Process absence alone cannot acknowledge
