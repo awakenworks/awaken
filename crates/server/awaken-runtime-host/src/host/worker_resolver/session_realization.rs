@@ -1580,6 +1580,11 @@ mod tests {
         // replacement. R10=same cut+rebuild => observe, retire exact A, create B,
         // and publish its new handle. Cross both Runtime states with both
         // policies and Ready replay through the real driver, requiring the same B Arc.
+        // C13 a failed synchronization closes that Session generation. R9a a
+        // rebuild-policy change cannot revive it; R10 requires a separately
+        // supplied fresh Control generation. The fixture supplies that receipt
+        // explicitly, never edits Host authority to bypass closed-state admission.
+        let mut recovery_authority = directive.authority.clone();
         for runtime_cached in [false, true] {
             if runtime_cached {
                 host.ctx_for_snapshot(thread, Some("agent-a"), Some(activation.snapshot.clone()))
@@ -1605,7 +1610,9 @@ mod tests {
             );
             let missing_directive = awaken_session_contract::SessionRealizationDirective {
                 projection: control.current_projection(),
-                lease: directive.lease.clone(),
+                // R9 preserves the existing response-relative receipt, not a
+                // second Worker-local deadline synthesized from Control UTC.
+                authority: recovery_authority.clone(),
                 action: awaken_session_contract::SessionRealizationAction::Complete,
             };
             let error = HostWorkerResolver::realize_session(
@@ -1632,6 +1639,45 @@ mod tests {
                 Some(serde_json::to_string(&old_handle).unwrap().as_str()),
                 "R9 zero replacement binding"
             );
+            assert!(
+                matches!(
+                    host.session_slots.read(thread, |slot| slot.realization_authority.clone()),
+                    Some(crate::session_slot::SessionRealizationAuthority::Closed(Some(ref closed)))
+                        if closed == &recovery_authority.lease
+                ),
+                "R9 closes the failed generation"
+            );
+            let rejected_replay = HostWorkerResolver::realize_session(
+                &host,
+                &control,
+                thread,
+                missing_directive.clone(),
+                None,
+                Some(&activation.snapshot),
+                true,
+            )
+            .await
+            .expect_err("R9a policy alone cannot revive a closed grant");
+            assert!(
+                rejected_replay
+                    .to_string()
+                    .contains("time proof is not current")
+            );
+            assert!(Arc::ptr_eq(
+                &retained,
+                &host.session_environment(thread).await.unwrap()
+            ));
+            assert_eq!(
+                control.current_projection().environment.binding(),
+                Some(serde_json::to_string(&old_handle).unwrap().as_str())
+            );
+            let mut next_lease = recovery_authority.lease.clone();
+            next_lease.epoch += 1;
+            recovery_authority = crate::session_slot::test_lease_receipt(next_lease);
+            let missing_directive = awaken_session_contract::SessionRealizationDirective {
+                authority: recovery_authority.clone(),
+                ..missing_directive
+            };
             HostWorkerResolver::realize_session(
                 &host,
                 &control,
@@ -1654,7 +1700,7 @@ mod tests {
             );
             let replay = awaken_session_contract::SessionRealizationDirective {
                 projection: control.current_projection(),
-                lease: directive.lease.clone(),
+                authority: recovery_authority.clone(),
                 action: awaken_session_contract::SessionRealizationAction::Complete,
             };
             HostWorkerResolver::realize_session(
