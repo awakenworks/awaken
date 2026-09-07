@@ -494,7 +494,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness process_readiness_after_startup_is_probe_independent \
     --harness worker_replacement_and_heartbeat_share_one_non_resurrection_boundary \
     --harness changed_worker_observation_always_mints_a_strictly_fresh_fence \
-    --harness unchanged_observation_coalesces_and_failed_refresh_retains_fence \
+    --harness observation_publication_fence_is_success_owned_exact_and_failure_stable \
     --harness worker_dynamic_observation_requires_exact_fact_and_half_open_lease
   run_kani awaken-worker \
     --harness observation_batch_is_single_generation_and_never_wraps \

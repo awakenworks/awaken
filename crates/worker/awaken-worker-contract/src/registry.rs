@@ -280,40 +280,63 @@ pub const fn worker_observation_sequence_after_heartbeat(
     }
 }
 
-/// Phase-tagged input to the one Worker-observation publication gate.
+/// Admission result for one Worker-observation fingerprint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkerObservationReconcileEvent {
-    FingerprintObserved { unchanged: bool },
-    PublicationFinished { succeeded: bool },
-}
-
-/// Closed effects of Worker-observation publication reconciliation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkerObservationReconcileEffect {
+pub enum WorkerObservationPublicationAdmission {
     Coalesce,
     Publish,
-    AdvanceFence,
-    RetainFence,
 }
 
-/// Decide whether to publish an observation or advance its successful fence.
-/// The adapter supplies these events in order while holding its one gate lock.
-#[must_use]
-pub const fn worker_observation_reconcile_effect(
-    event: WorkerObservationReconcileEvent,
-) -> WorkerObservationReconcileEffect {
-    match event {
-        WorkerObservationReconcileEvent::FingerprintObserved { unchanged: true } => {
-            WorkerObservationReconcileEffect::Coalesce
+/// Completion result for one Worker-observation publication attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerObservationPublicationCompletion {
+    Advanced,
+    Retained,
+}
+
+/// The sole successful-publication fence for Worker-observation reconciliation.
+///
+/// The stored fingerprint is private: callers can create an empty fence and can
+/// advance it only through a successful completion. Therefore `Coalesce` always
+/// names an exact fingerprint captured by a prior successful reconciliation;
+/// the reconciler may have published that capture or a later source snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerObservationPublicationFence<Fingerprint> {
+    last_successful: Option<Fingerprint>,
+}
+
+impl<Fingerprint> Default for WorkerObservationPublicationFence<Fingerprint> {
+    fn default() -> Self {
+        Self {
+            last_successful: None,
         }
-        WorkerObservationReconcileEvent::FingerprintObserved { unchanged: false } => {
-            WorkerObservationReconcileEffect::Publish
+    }
+}
+
+impl<Fingerprint: PartialEq> WorkerObservationPublicationFence<Fingerprint> {
+    /// Admit publication unless this exact fingerprint already owns the fence.
+    #[must_use]
+    pub fn observe(&self, fingerprint: &Fingerprint) -> WorkerObservationPublicationAdmission {
+        if self.last_successful.as_ref() == Some(fingerprint) {
+            WorkerObservationPublicationAdmission::Coalesce
+        } else {
+            WorkerObservationPublicationAdmission::Publish
         }
-        WorkerObservationReconcileEvent::PublicationFinished { succeeded: true } => {
-            WorkerObservationReconcileEffect::AdvanceFence
-        }
-        WorkerObservationReconcileEvent::PublicationFinished { succeeded: false } => {
-            WorkerObservationReconcileEffect::RetainFence
+    }
+}
+
+impl<Fingerprint> WorkerObservationPublicationFence<Fingerprint> {
+    /// Complete a publication attempt, retaining the old fence on failure.
+    pub fn complete(
+        &mut self,
+        fingerprint: Fingerprint,
+        succeeded: bool,
+    ) -> WorkerObservationPublicationCompletion {
+        if succeeded {
+            self.last_successful = Some(fingerprint);
+            WorkerObservationPublicationCompletion::Advanced
+        } else {
+            WorkerObservationPublicationCompletion::Retained
         }
     }
 }
@@ -526,38 +549,43 @@ mod tests {
     }
 
     #[test]
-    fn observation_reconcile_effect_is_phase_total_and_fail_closed() {
-        // Causes: C1 observed fingerprint is unchanged; C2 publication
-        // succeeds. Effects: E1 coalesce, E2 publish, E3 advance the fence, E4
-        // retain it. C1 belongs only to observation and C2 only to completion.
-        // Rules O1=C1=>E1, O2=!C1=>E2, P1=C2=>E3, P2=!C2=>E4.
+    fn observation_publication_fence_is_success_owned_exact_and_failure_stable() {
+        // Causes: C1 a successful fingerprint exists; C2 the observation
+        // matches it exactly; C3 the current publication succeeds. Effects: E1
+        // C1+C2 coalesces, E2 !C1|!C2 publishes, E3 C3 advances to the current
+        // fingerprint, E4 !C3 retains the old fence. Decision rules:
+        // R1=!C1=>E2; R2=C1+C2=>E1; R3=C1+!C2=>E2;
+        // R4=C3=>E3; R5=!C3=>E4 with the prior admission unchanged.
+        let mut fence = WorkerObservationPublicationFence::default();
         assert_eq!(
-            worker_observation_reconcile_effect(
-                WorkerObservationReconcileEvent::FingerprintObserved { unchanged: true }
-            ),
-            WorkerObservationReconcileEffect::Coalesce,
-            "O1/E1"
+            fence.observe(&"a"),
+            WorkerObservationPublicationAdmission::Publish,
+            "R1/E2"
         );
         assert_eq!(
-            worker_observation_reconcile_effect(
-                WorkerObservationReconcileEvent::FingerprintObserved { unchanged: false }
-            ),
-            WorkerObservationReconcileEffect::Publish,
-            "O2/E2"
+            fence.complete("a", false),
+            WorkerObservationPublicationCompletion::Retained,
+            "R5/E4"
         );
         assert_eq!(
-            worker_observation_reconcile_effect(
-                WorkerObservationReconcileEvent::PublicationFinished { succeeded: true }
-            ),
-            WorkerObservationReconcileEffect::AdvanceFence,
-            "P1/E3"
+            fence.observe(&"a"),
+            WorkerObservationPublicationAdmission::Publish,
+            "R5 retains R1"
         );
         assert_eq!(
-            worker_observation_reconcile_effect(
-                WorkerObservationReconcileEvent::PublicationFinished { succeeded: false }
-            ),
-            WorkerObservationReconcileEffect::RetainFence,
-            "P2/E4"
+            fence.complete("a", true),
+            WorkerObservationPublicationCompletion::Advanced,
+            "R4/E3"
+        );
+        assert_eq!(
+            fence.observe(&"a"),
+            WorkerObservationPublicationAdmission::Coalesce,
+            "R2/E1"
+        );
+        assert_eq!(
+            fence.observe(&"b"),
+            WorkerObservationPublicationAdmission::Publish,
+            "R3/E2"
         );
     }
 }
@@ -624,32 +652,44 @@ fn changed_worker_observation_always_mints_a_strictly_fresh_fence() {
 
 #[cfg(kani)]
 #[kani::proof]
-fn unchanged_observation_coalesces_and_failed_refresh_retains_fence() {
-    let unchanged = kani::any::<bool>();
-    let observation =
-        worker_observation_reconcile_effect(WorkerObservationReconcileEvent::FingerprintObserved {
-            unchanged,
-        });
+fn observation_publication_fence_is_success_owned_exact_and_failure_stable() {
+    // Symbolic decision table over every u8 prior/current fingerprint and both
+    // completion outcomes. An opaque fence starts empty; therefore Coalesce is
+    // reachable exactly after a successful completion of the same fingerprint.
+    let prior = kani::any::<u8>();
+    let observed = kani::any::<u8>();
+    let prior_succeeded = kani::any::<bool>();
+    let mut fence = WorkerObservationPublicationFence::default();
     assert_eq!(
-        observation,
-        if unchanged {
-            WorkerObservationReconcileEffect::Coalesce
+        fence.complete(prior, prior_succeeded),
+        if prior_succeeded {
+            WorkerObservationPublicationCompletion::Advanced
         } else {
-            WorkerObservationReconcileEffect::Publish
+            WorkerObservationPublicationCompletion::Retained
+        }
+    );
+    assert_eq!(
+        fence.observe(&observed),
+        if prior_succeeded && observed == prior {
+            WorkerObservationPublicationAdmission::Coalesce
+        } else {
+            WorkerObservationPublicationAdmission::Publish
         }
     );
 
-    let succeeded = kani::any::<bool>();
-    let completion =
-        worker_observation_reconcile_effect(WorkerObservationReconcileEvent::PublicationFinished {
-            succeeded,
-        });
+    let before_failure = fence.observe(&observed);
     assert_eq!(
-        completion,
-        if succeeded {
-            WorkerObservationReconcileEffect::AdvanceFence
-        } else {
-            WorkerObservationReconcileEffect::RetainFence
-        }
+        fence.complete(kani::any::<u8>(), false),
+        WorkerObservationPublicationCompletion::Retained
+    );
+    assert_eq!(fence.observe(&observed), before_failure);
+
+    assert_eq!(
+        fence.complete(observed, true),
+        WorkerObservationPublicationCompletion::Advanced
+    );
+    assert_eq!(
+        fence.observe(&observed),
+        WorkerObservationPublicationAdmission::Coalesce
     );
 }
