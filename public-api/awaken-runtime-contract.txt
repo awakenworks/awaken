@@ -194,9 +194,16 @@ pub fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_
 pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::lease_ttl(self) -> core::time::Duration
 pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::proof_window(self) -> core::time::Duration
 pub fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::remaining_proof_after(self, core::time::Duration) -> core::time::Duration
+pub fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::remaining_proof_at(self, awaken_runtime_contract::authority_lease::AuthorityProofStarted, awaken_runtime_contract::authority_lease::AuthorityProofStarted) -> core::option::Option<core::time::Duration>
 pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::renew_interval(self) -> core::time::Duration
 pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::request_timeout(self) -> core::time::Duration
 pub const fn awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::retry_delay(self) -> core::time::Duration
+pub struct awaken_runtime_contract::authority_lease::AuthorityProofStarted
+impl awaken_runtime_contract::authority_lease::AuthorityProofStarted
+pub fn awaken_runtime_contract::authority_lease::AuthorityProofStarted::elapsed_at(self, Self) -> core::option::Option<core::time::Duration>
+pub const fn awaken_runtime_contract::authority_lease::AuthorityProofStarted::elapsed_clock(self) -> core::time::Duration
+pub const fn awaken_runtime_contract::authority_lease::AuthorityProofStarted::from_clock_sample(std::time::Instant, core::time::Duration) -> Self
+pub const fn awaken_runtime_contract::authority_lease::AuthorityProofStarted::scheduled(self) -> std::time::Instant
 pub mod awaken_runtime_contract::boundary
 pub enum awaken_runtime_contract::boundary::BoundaryOutcome
 pub awaken_runtime_contract::boundary::BoundaryOutcome::Await
@@ -718,6 +725,7 @@ pub awaken_runtime_contract::model_operation::ModelOperation::ordinal: core::num
 pub awaken_runtime_contract::model_operation::ModelOperation::phase: awaken_runtime_contract::model_operation::ModelOperationPhase
 impl awaken_runtime_contract::model_operation::ModelOperation
 pub fn awaken_runtime_contract::model_operation::ModelOperation::next(core::option::Option<&Self>, awaken_runtime_contract::resolved::ModelBinding) -> core::option::Option<Self>
+pub fn awaken_runtime_contract::model_operation::ModelOperation::permits_reentry(core::option::Option<&Self>, bool) -> bool
 pub mod awaken_runtime_contract::model_routing
 pub fn awaken_runtime_contract::model_routing::exact_candidate_identity(&awaken_runtime_contract::resolved::ResolvedModelCandidate, &awaken_runtime_contract::resolved::ResolvedModelCandidate) -> bool
 pub fn awaken_runtime_contract::model_routing::pinned_candidate_at<'a>(&'a awaken_runtime_contract::resolved::ResolvedModelCandidate, &'a [awaken_runtime_contract::resolved::ResolvedModelCandidate], usize) -> core::option::Option<&'a awaken_runtime_contract::resolved::ResolvedModelCandidate>

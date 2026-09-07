@@ -186,6 +186,10 @@ legacy `Returned`, decode as `Unknown`. Before checkpoint salvage and every new
 invocation, Runtime checks the prior Run-scoped evidence; Unknown retains the
 physical veto and ends logically as Indeterminate without retry or failover.
 Error taxonomy still owns provider health and routing, never physical safety.
+An existing stream checkpoint also requires predecessor evidence: no journal
+is not equivalent to a fresh call when an interrupted partial exists. Such
+historical checkpoints remain retained and cannot authorize model continuation
+or tool salvage. Fresh inference without a checkpoint still starts normally.
 
 Trusted adapters annotate pre-I/O validation/materialization errors as
 NotDispatched, and errors after validated protocol completion as Terminated.

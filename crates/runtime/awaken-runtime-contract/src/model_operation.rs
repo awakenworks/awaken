@@ -52,6 +52,15 @@ pub struct ModelOperation {
 }
 
 impl ModelOperation {
+    /// A retained partial requires positive predecessor evidence. Absence is
+    /// admissible only for fresh inference, never as a historical stop proof.
+    #[must_use]
+    pub fn permits_reentry(previous: Option<&Self>, recovering_checkpoint: bool) -> bool {
+        previous.map_or(!recovering_checkpoint, |operation| {
+            operation.execution.permits_reentry()
+        })
+    }
+
     /// Sequence allocation never wraps and does not infer quiescence from any
     /// prior phase. Admission/physical exclusion still belongs to Dispatch.
     pub fn next(previous: Option<&Self>, binding: ModelBinding) -> Option<Self> {
@@ -91,6 +100,30 @@ fn model_execution_reentry_requires_positive_evidence() {
         _ => ModelExecutionEvidence::Terminated,
     };
     assert_eq!(evidence.permits_reentry(), selector % 3 != 0);
+    // R3 missing journal + retained checkpoint => deny; R4 neither => fresh
+    // entry allowed. Cross R1..R4 with each local phase: phase cannot authorize.
+    // This exhausts the production decision, not persistence or adapter truth.
+    let present: bool = kani::any();
+    let recovering_checkpoint: bool = kani::any();
+    let phase_selector: u8 = kani::any();
+    let operation = ModelOperation {
+        ordinal: NonZeroU64::MIN,
+        binding: ModelBinding::new("", "", ""),
+        phase: match phase_selector % 3 {
+            0 => ModelOperationPhase::Entered,
+            1 => ModelOperationPhase::Returned,
+            _ => ModelOperationPhase::TimedOut,
+        },
+        execution: evidence,
+    };
+    assert_eq!(
+        ModelOperation::permits_reentry(present.then_some(&operation), recovering_checkpoint),
+        if present {
+            selector % 3 != 0
+        } else {
+            !recovering_checkpoint
+        }
+    );
 }
 
 #[cfg(kani)]

@@ -40,13 +40,11 @@ impl<'a> ModelOperationJournal<'a> {
 
     pub fn verify_reentry(
         &mut self,
+        recovering_checkpoint: bool,
     ) -> awaken_runtime_contract::llm::Result<Option<ModelOperation>> {
         let previous =
             ActiveModelOperation::load(self.store).map_err(|error| self.reject(error))?;
-        if previous
-            .as_ref()
-            .is_some_and(|operation| !operation.execution.permits_reentry())
-        {
+        if !ModelOperation::permits_reentry(previous.as_ref(), recovering_checkpoint) {
             self.context.physical_quiescence.mark_uncertain();
             return Err(awaken_runtime_contract::llm::Error::Provider(
                 "previous model invocation has no termination evidence".into(),
@@ -59,7 +57,7 @@ impl<'a> ModelOperationJournal<'a> {
         &mut self,
         binding: &ModelBinding,
     ) -> awaken_runtime_contract::llm::Result<()> {
-        let previous = self.verify_reentry()?;
+        let previous = self.verify_reentry(false)?;
         let next = ModelOperation::next(previous.as_ref(), binding.clone())
             .ok_or_else(|| self.reject("model operation ordinal exhausted"))?;
         self.persist(next).await

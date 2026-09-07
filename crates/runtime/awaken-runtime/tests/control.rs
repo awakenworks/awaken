@@ -558,8 +558,6 @@ async fn live_cancel_aborts_a_hung_inference() {
 
     let token = CancellationToken::new();
     let context = RuntimeRunContext::new().with_cancellation(token);
-    let quiescence = context.physical_quiescence.clone();
-
     let driver = DirectAttemptDriver::new(runtime.clone());
     let handle = tokio::spawn(async move { driver.start(activation(), context).await });
 
@@ -578,13 +576,11 @@ async fn live_cancel_aborts_a_hung_inference() {
         .expect("join")
         .expect("runs");
     assert_eq!(outcome, RunState::Ended(EndCause::Cancelled));
-    assert!(
-        !quiescence.can_acknowledge_return(),
-        "D2 remote model termination remains unknown"
-    );
     // D2: logical cancellation does not prove the abandoned remote request
     // stopped. The same queue-less Thread must reject a subsequent executor,
     // even after its first guard and active control registration disappeared.
+    // Inspect the actual admission effect, not a clone of the caller's latch:
+    // DirectAttemptDriver intentionally creates a fresh attempt-local latch.
     let driver = DirectAttemptDriver::new(runtime.clone());
     let second = tokio::time::timeout(
         std::time::Duration::from_secs(2),
@@ -593,7 +589,8 @@ async fn live_cancel_aborts_a_hung_inference() {
     .await
     .expect("D2 reject before entering the hung executor");
     assert!(
-        second.is_err(),
+        matches!(second, Err(awaken_runtime_contract::execution::Error::Execution(ref message))
+            if message.contains("no termination evidence")),
         "D2 direct cancellation retains its execution veto"
     );
 }

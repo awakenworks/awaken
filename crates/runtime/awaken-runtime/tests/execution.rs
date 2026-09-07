@@ -53,6 +53,31 @@ async fn interrupted_model_checkpoint() -> (
     (store, checkpoint)
 }
 
+async fn commit_terminated_model(durable: &MemoryCommitCoordinator) {
+    use awaken_runtime_contract::model_operation::{
+        ActiveModelOperation, ModelExecutionEvidence, ModelOperation, ModelOperationPhase,
+    };
+    // A retained checkpoint in the positive/fault tests follows a confirmed
+    // prior termination. Persist that prerequisite through the real state log,
+    // rather than letting an unjournaled legacy partial imply permission.
+    let mut prior = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
+    prior.phase = ModelOperationPhase::Returned;
+    prior.execution = ModelExecutionEvidence::Terminated;
+    awaken_runtime_contract::CommitCoordinator::commit(
+        durable,
+        awaken_runtime_contract::ThreadCommit::assemble(
+            ThreadId("thread-1".into()),
+            awaken_runtime_contract::RunDisposition::running(RunId("run-1".into())),
+            true,
+            Vec::new(),
+            vec![ActiveModelOperation::write(&Some(prior))],
+            Vec::new(),
+        ),
+    )
+    .await
+    .unwrap();
+}
+
 fn committed_model_requests(store: &MemoryCommitCoordinator) -> Vec<ModelRequestObservation> {
     store
         .committed()
@@ -150,8 +175,9 @@ async fn model_evidence_write_faults_never_retry_or_fail_over_execution() {
     // R3 Returned+before => calls=1, phases=[Entered]
     // R4 Returned+lostACK => calls=1, phases=[Entered,Returned]
     // All rows include C3; none may be absorbed as a new inference step.
-    // C4 a prior stream checkpoint exists => E5 preserve it after every
-    // evidence failure; local error return does not mean recovery completed.
+    // C4 a prior stream checkpoint and confirmed predecessor exist => E5
+    // preserve them after every evidence failure. R1..R4 list only NEW writes;
+    // local error return does not mean recovery completed.
     for (phase, lose_ack, calls, expected) in [
         (Entered, false, 0, vec![]),
         (Entered, true, 0, vec![Entered]),
@@ -160,6 +186,7 @@ async fn model_evidence_write_faults_never_retry_or_fail_over_execution() {
     ] {
         let durable = Arc::new(MemoryCommitCoordinator::new());
         let (checkpoints, prior_checkpoint) = interrupted_model_checkpoint().await;
+        commit_terminated_model(&durable).await;
         let model = Arc::new(RetryOnceLlm(AtomicUsize::new(0)));
         let mut request = activation("catalog-a");
         request
@@ -177,6 +204,7 @@ async fn model_evidence_write_faults_never_retry_or_fail_over_execution() {
             .execute(
                 request,
                 RuntimeRunContext::new()
+                    .with_reader(durable.clone())
                     .with_stream_checkpoint(checkpoints.clone())
                     .with_commit(Arc::new(ModelEvidenceFault {
                         durable: durable.clone(),
@@ -194,6 +222,7 @@ async fn model_evidence_write_faults_never_retry_or_fail_over_execution() {
         assert_eq!(
             model_operations(&durable)
                 .iter()
+                .skip(1) // Exclude the confirmed predecessor, not the faulting writes.
                 .map(|op| op.phase)
                 .collect::<Vec<_>>(),
             expected
@@ -228,6 +257,7 @@ async fn cancellation_drains_model_evidence_commit_before_terminalizing() {
     for phase in [Entered, Returned] {
         let durable = Arc::new(MemoryCommitCoordinator::new());
         let (checkpoints, prior_checkpoint) = interrupted_model_checkpoint().await;
+        commit_terminated_model(&durable).await;
         let pause = Arc::new(ModelEvidencePause {
             entered: tokio::sync::Notify::new(),
             release: tokio::sync::Semaphore::new(0),
@@ -237,6 +267,7 @@ async fn cancellation_drains_model_evidence_commit_before_terminalizing() {
         let model = Arc::new(RetryOnceLlm(AtomicUsize::new(0)));
         let runtime = Runtime::new().with_llm(model.clone());
         let context = RuntimeRunContext::new()
+            .with_reader(durable.clone())
             .with_stream_checkpoint(checkpoints.clone())
             .with_cancellation(cancellation.clone())
             .with_commit(Arc::new(ModelEvidenceFault {
@@ -278,6 +309,7 @@ async fn cancellation_drains_model_evidence_commit_before_terminalizing() {
         assert_eq!(
             model_operations(&durable)
                 .iter()
+                .skip(1) // The original confirmed operation survives cancellation.
                 .map(|op| op.phase)
                 .collect::<Vec<_>>(),
             if phase == Entered {
@@ -500,6 +532,7 @@ async fn returned_unknown_model_error_blocks_retry_failover_and_outer_tolerance(
         });
         let durable = Arc::new(MemoryCommitCoordinator::new());
         let (checkpoints, checkpoint) = interrupted_model_checkpoint().await;
+        commit_terminated_model(&durable).await;
         let runtime = Runtime::new()
             .with_llm(model.clone())
             .with_retry_policy(awaken_runtime::LlmRetryPolicy {
@@ -519,6 +552,7 @@ async fn returned_unknown_model_error_blocks_retry_failover_and_outer_tolerance(
             )));
         let context = RuntimeRunContext::new()
             .with_commit(durable.clone())
+            .with_reader(durable.clone())
             .with_stream_checkpoint(checkpoints.clone());
         let quiescence = context.physical_quiescence.clone();
         let result = runtime.execute(request, context).await.unwrap();
@@ -545,37 +579,43 @@ async fn restored_unknown_invocation_blocks_checkpoint_salvage_and_provider_reen
     use awaken_agent_contract::agent::state::{Command, MergePolicy, Scope};
     use awaken_runtime_contract::model_operation::ActiveModelOperation;
     use awaken_runtime_contract::{RunDisposition, ThreadCommit};
-    // U1 legacy phase Entered/Returned/TimedOut * absent/explicit Unknown;
+    // U1 journal absent, or legacy phase Entered/Returned/TimedOut with
+    // absent/explicit Unknown;
     // U2 complete tool JSON in checkpoint. Effects: zero new model invocations,
     // no salvaged tool, retained checkpoint, Indeterminate and physical veto.
     // U1+U2 must behave identically in a fresh Runtime (no surviving local latch).
     // Adjacent coordinate test covers explicit Terminated and cross-Run isolation.
-    for phase in ["Entered", "Returned", "TimedOut"] {
+    for phase in ["Missing", "Entered", "Returned", "TimedOut"] {
         for explicit in [false, true] {
+            if phase == "Missing" && explicit {
+                continue; // No record also means no field; this is one rule.
+            }
             let durable = Arc::new(MemoryCommitCoordinator::new());
             let mut value = serde_json::json!({"ordinal":7,
                 "binding":ModelBinding::new("p", "m", "b"), "phase":phase});
             if explicit {
                 value["execution"] = serde_json::json!("Unknown");
             }
-            awaken_runtime_contract::CommitCoordinator::commit(
-                durable.as_ref(),
-                ThreadCommit::assemble(
-                    ThreadId("thread-1".into()),
-                    RunDisposition::running(RunId("run-1".into())),
-                    true,
-                    Vec::new(),
-                    vec![Command::set(
-                        Scope::Run,
-                        MergePolicy::Disjoint,
-                        ActiveModelOperation::KEY,
-                        value,
-                    )],
-                    Vec::new(),
-                ),
-            )
-            .await
-            .unwrap();
+            if phase != "Missing" {
+                awaken_runtime_contract::CommitCoordinator::commit(
+                    durable.as_ref(),
+                    ThreadCommit::assemble(
+                        ThreadId("thread-1".into()),
+                        RunDisposition::running(RunId("run-1".into())),
+                        true,
+                        Vec::new(),
+                        vec![Command::set(
+                            Scope::Run,
+                            MergePolicy::Disjoint,
+                            ActiveModelOperation::KEY,
+                            value,
+                        )],
+                        Vec::new(),
+                    ),
+                )
+                .await
+                .unwrap();
+            }
             let (checkpoints, mut checkpoint) = interrupted_model_checkpoint().await;
             checkpoint.partial_tools.push(
                 awaken_agent_contract::stream::checkpoint::PartialToolCall {
@@ -607,9 +647,52 @@ async fn restored_unknown_invocation_blocks_checkpoint_salvage_and_provider_reen
                 checkpoints.get(&checkpoint.run_id).await.unwrap(),
                 Some(checkpoint)
             );
-            assert_eq!(model_operations(&durable).last().unwrap().ordinal.get(), 7);
+            if phase == "Missing" {
+                assert!(
+                    model_operations(&durable).is_empty(),
+                    "no fabricated evidence"
+                );
+            } else {
+                assert_eq!(model_operations(&durable).last().unwrap().ordinal.get(), 7);
+            }
         }
     }
+}
+
+#[tokio::test]
+async fn restored_checkpoint_with_confirmed_termination_continues_once() {
+    // P1 persisted predecessor Terminated; P2 retained text checkpoint.
+    // P1+P2 => exact next ordinal, joined response, checkpoint consumed.
+    // This positive control excludes a blanket checkpoint-recovery shutdown;
+    // the adjacent table denies missing/unknown evidence even with tool JSON.
+    let durable = Arc::new(MemoryCommitCoordinator::new());
+    commit_terminated_model(&durable).await;
+    let (checkpoints, checkpoint) = interrupted_model_checkpoint().await;
+    let state = Runtime::new()
+        .with_llm(Arc::new(TextLlm("continued")))
+        .execute(
+            activation("catalog-a"),
+            RuntimeRunContext::new()
+                .with_commit(durable.clone())
+                .with_reader(durable.clone())
+                .with_stream_checkpoint(checkpoints.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    let messages = durable.committed().messages;
+    let assistant: Vec<_> = messages
+        .iter()
+        .filter(|m| m.role == Role::Assistant)
+        .collect();
+    assert_eq!(assistant.len(), 1);
+    assert_eq!(
+        assistant[0].text_content(),
+        format!("{}continued", checkpoint.partial_text)
+    );
+    let operations = model_operations(&durable);
+    assert_eq!(operations.last().unwrap().ordinal.get(), 2);
+    assert!(checkpoints.get(&checkpoint.run_id).await.unwrap().is_none());
 }
 
 struct AdvisorThenTextLlm {

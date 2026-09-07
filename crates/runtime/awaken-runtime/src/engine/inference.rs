@@ -300,7 +300,7 @@ async fn infer_with_retry_inner(
     // Recovery must check the committed invocation before even salvaging a
     // checkpoint's tool arguments. A fresh process has no in-memory latch.
     if let Some(journal) = journal.as_deref_mut() {
-        journal.verify_reentry()?;
+        journal.verify_reentry(resume.is_some())?;
     }
     let model = request.model_binding.model_ref.clone();
     let sink = ContinuationSink::new(sink);
