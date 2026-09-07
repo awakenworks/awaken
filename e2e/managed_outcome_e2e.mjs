@@ -29,6 +29,30 @@ const PORT = Number(process.env.E2E_PORT ?? 38103);
 const BETAS = ['managed-agents-2026-04-01'];
 const STORE_DIR = `/tmp/awaken-outcome-e2e-${process.pid}`;
 
+async function assertTerminalEvaluation(client, run, result) {
+  // O3/O4 cause/effect: satisfied OR budget-exhausted terminal evaluation has
+  // one owning commit. Its public span processed_at and Session completed_at
+  // must agree, be valid RFC3339, and survive repeated reads unchanged. The
+  // production projection test supplies distinct nonmonotonic commit clocks
+  // and checks exact ownership; this SDK seam never invents another clock.
+  const end = run.ends.at(-1);
+  assert.equal(typeof end.processed_at, 'string');
+  assert.match(end.processed_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/u);
+  assert.ok(Number.isFinite(Date.parse(end.processed_at)));
+  const session = await client.beta.sessions.retrieve(run.sessionId, { betas: BETAS });
+  assert.deepEqual(session.outcome_evaluations, [{
+    completed_at: end.processed_at,
+    description: 'finish it',
+    explanation: end.explanation,
+    iteration: end.iteration,
+    outcome_id: run.outcomeId,
+    result,
+    type: 'outcome_evaluation',
+  }]);
+  const replay = await client.beta.sessions.retrieve(run.sessionId, { betas: BETAS });
+  assert.deepEqual(replay.outcome_evaluations, session.outcome_evaluations, 'O4 reads cannot rewrite completion');
+}
+
 async function draftThenOutcome(client, rubric, maxIterations) {
   const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
   const draftReceipt = await client.beta.sessions.events.send(session.id, {
@@ -84,28 +108,14 @@ async function main() {
       assert.ok(satisfied.length >= 2, `expected >=2 rounds, got ${satisfied.length}`);
       assert.equal(satisfied[0].result, 'needs_revision');
       assert.equal(satisfied.at(-1).result, 'satisfied');
-      const satisfiedSession = await client.beta.sessions.retrieve(satisfiedRun.sessionId, { betas: BETAS });
-      assert.equal(satisfiedSession.outcome_evaluations.length, 1);
-      assert.deepEqual(satisfiedSession.outcome_evaluations[0], {
-        completed_at: '2026-01-01T00:00:00Z',
-        description: 'finish it',
-        explanation: satisfied.at(-1).explanation,
-        iteration: satisfied.at(-1).iteration,
-        outcome_id: satisfiedRun.outcomeId,
-        result: 'satisfied',
-        type: 'outcome_evaluation',
-      });
+      await assertTerminalEvaluation(client, satisfiedRun, 'satisfied');
       console.log('  ok: needs_revision -> satisfied');
 
       // Unsatisfiable rubric within the budget -> max_iterations_reached.
       const exhaustedRun = await draftThenOutcome(client, 'NEVER_PRESENT_TOKEN', 2);
       const exhausted = exhaustedRun.ends;
       assert.equal(exhausted.at(-1).result, 'max_iterations_reached', `results: ${exhausted.map((e) => e.result)}`);
-      const exhaustedSession = await client.beta.sessions.retrieve(exhaustedRun.sessionId, { betas: BETAS });
-      assert.equal(exhaustedSession.outcome_evaluations.length, 1);
-      assert.equal(exhaustedSession.outcome_evaluations[0].outcome_id, exhaustedRun.outcomeId);
-      assert.equal(exhaustedSession.outcome_evaluations[0].result, 'max_iterations_reached');
-      assert.ok(exhaustedSession.outcome_evaluations[0].completed_at);
+      await assertTerminalEvaluation(client, exhaustedRun, 'max_iterations_reached');
       console.log('  ok: unsatisfiable rubric -> max_iterations_reached');
 
       console.log('E2E PASS: define_outcome satisfied + max_iterations paths via TS SDK.');

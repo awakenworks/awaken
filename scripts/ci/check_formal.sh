@@ -3,6 +3,7 @@ set -euo pipefail
 
 readonly tlc_version="TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)"
 readonly tlapm_version="763bf3c"
+readonly z3_version="Z3 version 4.8.9 - 64 bit"
 
 cd "$(dirname "$0")/../.."
 source scripts/ci/_cargo_target.sh
@@ -174,6 +175,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness environment_image_build_claim_is_exact_non_wrapping_and_blocked_is_inert \
     --harness environment_image_build_mutation_requires_exact_claim_and_admissible_command
   run_kani awaken-session-contract \
+    --harness public_millisecond_projection_is_exact_bounded_and_nonwrapping \
     --harness session_utc_projection_domain_is_total_exact_and_idempotent \
     --harness realization_generation_authority_requires_every_axis \
     --harness processed_event_time_is_first_observation_or_atomic_rejection \
@@ -338,6 +340,20 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness acp_permission_projection_is_total_exact_and_non_widening \
     --harness acp_session_load_preserves_the_exact_mcp_projection \
     --harness acp_permission_tool_identity_normalization_is_exact
+  # Z3 keeps the full-width division shared in this caller-refinement proof.
+  # This selection remains inside the one strict runner and toolchain receipt.
+  if command -v z3 >/dev/null 2>&1; then
+    actual_z3_version="$(z3 --version)"
+    if [ "$actual_z3_version" != "$z3_version" ]; then
+      echo "unexpected Z3 version: $actual_z3_version" >&2
+      exit 1
+    fi
+    run_kani awaken-protocol-managed --solver z3 \
+      --harness memory_time_filter_compares_visible_milliseconds_without_merging_them
+  else
+    echo "skipped Z3: install the pinned solver on PATH (TLAPS bundles it)"
+    missing=1
+  fi
   run_kani awaken-protocol-managed \
     --harness canonical_event_order_never_depends_on_wall_time \
     --solver kissat \
@@ -374,7 +390,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-sandbox-container --features k8s --solver kissat \
     --harness continuation_claim_selection_is_total_exact_and_non_widening \
     --harness disabled_continuation_has_no_claim_api_obligation_without_durable_evidence \
-    --harness continuation_claim_deletion_requires_exact_uid_and_resource_version
+    --harness continuation_claim_deletion_requires_exact_uid_and_resource_version \
+    --harness absent_pod_claim_admission_is_total_and_never_starts_deletion
   run_kani awaken-store-schema \
     --harness dense_migration_versions_are_strictly_increasing \
     --harness migration_step_never_rolls_back_or_skips_a_version \

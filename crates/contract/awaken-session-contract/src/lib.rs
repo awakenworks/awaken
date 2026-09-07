@@ -167,7 +167,7 @@ pub use run_admission::{
 pub use run_application::{
     CursorParams, EventForwardingSink, HistoryPage, RunApplication, RunApplicationError, RunResume,
     SessionRunBackgroundApplication, SessionRunReplacementApplication, blocks_text,
-    epoch_millis_to_rfc3339, paginate_history, rfc3339_to_epoch_millis,
+    epoch_millis_to_rfc3339, paginate_history, project_epoch_millis, rfc3339_to_epoch_millis,
 };
 pub use session::{
     AgentCapabilities, BuiltinTool, CommittedOutcomeProjection, CustomTool, DelegatedRun,

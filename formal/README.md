@@ -699,15 +699,22 @@ The production bridge remains layered around that direct trace check:
 
 ## Running locally and from CI
 
-Bootstrap the repository-pinned Kani toolchain, install TLAPS and Java 11+,
+Bootstrap the repository-pinned Kani toolchain, install TLAPS, Z3 4.8.9 and Java 11+,
 obtain `tla2tools.jar`, then run:
 
 ```sh
 scripts/ci/bootstrap_kani.sh
 TLA2TOOLS_JAR=/path/to/tla2tools.jar \
 TLAPM_BIN=/path/to/tlapm \
+PATH="/path/to/z3/bin:$PATH" \
 scripts/ci/check_formal.sh --require-tools
 ```
+
+Z3 is used for the full-width Memory timestamp caller proof; the other Kani
+selections retain their existing solvers. The TLAPS installation bundles the
+pinned Z3 executable under `lib/tlapm/backends/bin`; adding that directory to
+`PATH` reuses it. The gate checks its version and binds it in the existing
+execution receipt.
 
 The bootstrap is pinned to a reviewed Kani source revision using Rust 1.97
 nightly because the published Kani 0.67 bundle embeds Rust 1.93, while the
@@ -724,7 +731,7 @@ checks them; no checked-in hand-authored trace can become stale.
 
 The repository-wide CI entry point runs the strict formal-verification gate.
 `check-all.sh` passes `--require-tools`, so missing Kani,
-TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
+TLAPS, Z3, Java, or `tla2tools.jar` fails instead of producing a false green.
 
 PR, main, manual, and tag release qualification reuse the single `quality.yml`
 workflow, whose named self-hosted runner contract supplies the required tools

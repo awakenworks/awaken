@@ -351,6 +351,7 @@ test('the release canary reaches both official TypeScript and Python SDK oracles
     'python_empty_omission',
     'observed_empty_omissions == expected_empty_omissions',
     'actual == omission["expected"]',
+    'exercise_declared_request_witnesses(',
     'exercise_sync(bundle)',
     'exercise_async(bundle)',
   ]) {

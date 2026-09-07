@@ -521,13 +521,18 @@ async fn stronger_isolation_than_the_backend_offers_is_rejected() {
 }
 
 #[tokio::test]
-async fn runtime_attach_and_process_reattach_are_unsupported_locally() {
+async fn runtime_attach_copies_resolved_files_but_process_reattach_remains_unsupported() {
     let tmp = tempfile::tempdir().unwrap();
     let sandbox = LocalProvider::new(tmp.path())
         .create(&spec("t-unsup"))
         .await
         .unwrap();
-    let req = pc::MountRequirement {
+    // R1 text/binary resolved bytes + RW => copy, exact receipt and process read.
+    // R2 hash mismatch or unresolved File reference => reject before overwriting
+    // the previous file. R3 missing process/artifact => error. Read-only,
+    // trusted-host and create-time overlap partitions remain owned by provider::workdir_helper_tests; late File attach
+    // is supported and must not be conflated with cross-owner process reattach.
+    let mut req = pc::MountRequirement {
         mount_id: "late".into(),
         source: pc::MountSource::Inline {
             contents: "x".into(),
@@ -537,7 +542,63 @@ async fn runtime_attach_and_process_reattach_are_unsupported_locally() {
         lifetime: pc::MountLifetime::PerRun,
         required: false,
     };
-    assert!(sandbox.attach(req).await.is_err());
+    for (source, expected) in [
+        (
+            pc::MountSource::Inline {
+                contents: "x".into(),
+            },
+            b"x".to_vec(),
+        ),
+        (
+            pc::MountSource::InlineBytes {
+                contents: vec![0, 255],
+                content_hash: None,
+            },
+            vec![0, 255],
+        ),
+    ] {
+        req.source = source;
+        let receipt = sandbox.attach(req.clone()).await.unwrap();
+        assert_eq!(receipt.mount_id, "late", "R1");
+        assert_eq!(receipt.mount_path, "/workspace/late.txt", "R1");
+        assert_eq!(receipt.realization, pc::Realization::Copy, "R1");
+        assert_eq!(
+            receipt.content_hash,
+            Some(awaken_sandbox_local::content_fingerprint(&expected)),
+            "R1"
+        );
+        for source in [
+            pc::MountSource::InlineBytes {
+                contents: b"must-not-overwrite".to_vec(),
+                content_hash: Some("sha256:wrong".into()),
+            },
+            pc::MountSource::File {
+                file_id: "unresolved".into(),
+                content_hash: None,
+            },
+        ] {
+            let mut invalid = req.clone();
+            invalid.source = source;
+            assert!(sandbox.attach(invalid).await.is_err(), "R2");
+        }
+        let proc = sandbox
+            .spawn(sh(
+                r#"cat workspace/late.txt > "$AWAKEN_OUTPUTS_DIR/late.bin""#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(proc.wait().await.unwrap().code, Some(0), "R1/R2");
+        let artifacts = sandbox.artifacts().await.unwrap();
+        let copy = artifacts
+            .iter()
+            .find(|artifact| artifact.path.ends_with("/late.bin"))
+            .unwrap();
+        assert_eq!(
+            sandbox.read_artifact(&copy.id).await.unwrap(),
+            expected,
+            "R1/R2"
+        );
+    }
     assert!(sandbox.process("proc-1").await.is_err());
     assert!(sandbox.read_artifact("no-such-id").await.is_err());
 }

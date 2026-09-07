@@ -53,6 +53,7 @@ def proof_toolchain(repository: Path) -> dict:
         "kani_backend": constant(bootstrap, "kani_backend_version"),
         "tlc": constant(gate, "tlc_version"),
         "tlaps": constant(gate, "tlapm_version"),
+        "z3": constant(gate, "z3_version"),
     }
 
 

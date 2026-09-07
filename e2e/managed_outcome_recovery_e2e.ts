@@ -431,6 +431,14 @@ async function recoverAfterJudgeCrash(port: number) {
 
     // R4/C2-C3: restart once more after terminal settlement. The completed
     // aggregate and an unrelated inactive Session must drive no Provider work.
+    // R4-time: terminal span and Session readback share the owning evaluation
+    // commit time. A cold process must preserve both identity AND completion
+    // time, not replace it with process startup or the latest unrelated commit.
+    const terminalSession = await client.beta.sessions.retrieve(session.id, { betas: BETAS });
+    const terminalEvaluation = terminalSession.outcome_evaluations.find((value) => value.outcome_id === accepted.outcome_id);
+    const terminalEnd = outcomeEnds(recoveredEvents, accepted.outcome_id).at(-1);
+    assert.ok(terminalEvaluation?.completed_at && terminalEnd?.processed_at);
+    assert.equal(terminalEvaluation.completed_at, terminalEnd.processed_at);
     const receivedAtTerminal = upstream.received;
     await stopServer(spawned.server);
     spawned = spawnServer('outcome-matrix', port, environment);
@@ -444,6 +452,8 @@ async function recoverAfterJudgeCrash(port: number) {
       'satisfied',
     );
     await client.beta.sessions.retrieve(inactive.id, { betas: BETAS });
+    const coldSession = await client.beta.sessions.retrieve(session.id, { betas: BETAS });
+    assert.deepEqual(coldSession.outcome_evaluations, terminalSession.outcome_evaluations, 'R4-time restart preserves the exact durable evaluation');
     await new Promise((resolve) => setTimeout(resolve, 300));
     assert.equal(upstream.received, receivedAtTerminal, 'R4 terminal/inactive restart performs no work');
     assert.deepEqual(

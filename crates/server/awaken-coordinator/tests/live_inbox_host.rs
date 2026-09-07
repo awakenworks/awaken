@@ -57,7 +57,7 @@ fn harness() -> Harness {
         started: started_tx,
         permits: Mutex::new(permit_rx),
     };
-    let host = Arc::new(SharedHost::new(Arc::new(llm), "gated"));
+    let host = awaken_scenario_host::build_unmounted_host(Arc::new(llm), "gated");
     let _runtime = ManagedHost::new(host.clone()).install_dispatch_session_runtime();
     Harness {
         host,
@@ -80,7 +80,7 @@ fn user(id: &str, text: &str) -> Message {
 }
 
 /// Cause/effect design: C0 the Host installs the canonical dispatch Session
-/// Runtime; C1 a native Run is gated mid-inference with its inbox
+/// Runtime and canonical Resources (including empty artifact capture); C1 a native Run is gated mid-inference with its inbox
 /// open; C2 a follow-up is offered before the natural-end boundary; C3 both
 /// inference Steps are released. Effects: E1 the same Run folds the follow-up
 /// into its final reply; E2 the inbox closes; E3 the injection commits under a

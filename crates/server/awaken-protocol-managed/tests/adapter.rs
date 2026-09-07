@@ -149,20 +149,6 @@ async fn post_session_with_idempotency(
     (status, body)
 }
 
-/// Session-create idempotency cause/effect decision table.
-///
-/// | Rule | Key | Payload | Effect |
-/// |---|---|---|---|
-/// | I1 | absent | same | ordinary independent Sessions |
-/// | I2 | valid, repeated | same | one Session id and one durable aggregate |
-/// | I3 | valid, repeated | changed | 409 idempotency mismatch |
-/// | I4 | empty/overlong | any | 400 before Session creation |
-/// | I5 | same key, different owner | same | distinct owner-scoped Sessions |
-/// | I6 | valid, repeated | same non-empty initial Events | one Session and one durable batch |
-/// | I7 | valid key and exact owner | same | exported prediction equals the server-selected Session id |
-// Test design: session_create_idempotency_replays_one_canonical_session
-// Cause/effect graph: the owner-scoped key and payload select one canonical Session identity.
-// Decision table: same key+payload=replay; changed payload=409; invalid key=400; different owner=independent.
 #[tokio::test]
 async fn native_event_admission_close_preserves_standard_events_and_owner_isolation() {
     // Decision table: N1 close unseen K/F => durable Closed, late standard POST
@@ -335,17 +321,22 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
     );
 }
 
+/// Session-create idempotency cause/effect decision table.
+///
+/// | Rule | Key | Payload | Effect |
+/// |---|---|---|---|
+/// | I1 | absent | same | ordinary independent Sessions |
+/// | I2 | valid, repeated | same | one Session id and one durable aggregate |
+/// | I3 | valid, repeated | changed | 409 idempotency mismatch |
+/// | I4 | empty/overlong | any | 400 before Session creation |
+/// | I5 | same key, different owner | same | distinct owner-scoped Sessions |
+/// | I6 | valid, repeated | same non-empty initial Events | one Session and one durable batch |
+/// | I7 | valid key and exact owner | same | exported prediction equals the server-selected Session id |
+// Test design: session_create_idempotency_replays_one_canonical_session
+// Cause/effect graph: the owner-scoped key and payload select one canonical Session identity.
+// Decision table: same key+payload=replay; changed payload=409; invalid key=400; different owner=independent.
 #[tokio::test]
 async fn session_create_idempotency_replays_one_canonical_session() {
-    // Causes: the fixtures below establish `session create idempotency replays one canonical
-    // session` with the concrete inputs, state, dependencies, and failure triggers used by this
-    // case.
-    // Effects: the observable result `all output, state, side-effect, error, and terminal
-    // assertions below hold together` and every asserted state transition or side effect must hold.
-    // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
-    // stores and committed facts remain the single behavior authority.
-    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
-    // selects only its stated effect and preserves the authority constraint.
     let app = router(Arc::new(ManagedState::new(EchoFake::default())));
     let first = post_session_with_idempotency(&app, Some("design-project-a"), "Project A").await;
     let replay = post_session_with_idempotency(&app, Some("design-project-a"), "Project A").await;

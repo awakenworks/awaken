@@ -1,9 +1,23 @@
 pub mod awaken_protocol_awaken
+pub enum awaken_protocol_awaken::EventAdmissionProof
+pub awaken_protocol_awaken::EventAdmissionProof::EventBatch
+pub awaken_protocol_awaken::EventAdmissionProof::EventBatch::batch_id: alloc::string::String
+pub awaken_protocol_awaken::EventAdmissionProof::EventBatch::event_ids: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub awaken_protocol_awaken::EventAdmissionProof::SessionDeleted
+pub awaken_protocol_awaken::EventAdmissionProof::SessionDeleted::deleted_revision: u64
+pub enum awaken_protocol_awaken::EventAdmissionStatus
+pub awaken_protocol_awaken::EventAdmissionStatus::Accepted
+pub awaken_protocol_awaken::EventAdmissionStatus::Closed
 pub enum awaken_protocol_awaken::ProfiledSessionMode
 pub awaken_protocol_awaken::ProfiledSessionMode::Interactive
 pub awaken_protocol_awaken::ProfiledSessionMode::WorkUnit
 impl awaken_protocol_awaken::ProfiledSessionMode
 pub const fn awaken_protocol_awaken::ProfiledSessionMode::mutation_policy(self) -> awaken_session_contract::baseline::SessionMutationPolicy
+pub struct awaken_protocol_awaken::EventAdmissionReceipt
+pub awaken_protocol_awaken::EventAdmissionReceipt::idempotency_key: alloc::string::String
+pub awaken_protocol_awaken::EventAdmissionReceipt::proof: awaken_protocol_awaken::EventAdmissionProof
+pub awaken_protocol_awaken::EventAdmissionReceipt::session_id: alloc::string::String
+pub awaken_protocol_awaken::EventAdmissionReceipt::status: awaken_protocol_awaken::EventAdmissionStatus
 pub struct awaken_protocol_awaken::FileOutputCapture
 pub awaken_protocol_awaken::FileOutputCapture::file_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_protocol_awaken::FileOutputCapture::revision: alloc::string::String
@@ -71,4 +85,5 @@ pub fn awaken_protocol_awaken::live_inbox_router(alloc::sync::Arc<dyn awaken_ses
 pub fn awaken_protocol_awaken::profiled_session_release_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub fn awaken_protocol_awaken::profiled_session_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub fn awaken_protocol_awaken::profiled_session_run_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+pub fn awaken_protocol_awaken::session_event_admission_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub fn awaken_protocol_awaken::session_resource_manifest_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static

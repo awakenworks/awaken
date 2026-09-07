@@ -511,6 +511,16 @@ pub awaken_session_contract::SessionEnvironmentTransitionError::NotRestoring
 pub awaken_session_contract::SessionEnvironmentTransitionError::NotSuspending
 pub awaken_session_contract::SessionEnvironmentTransitionError::ReceiptMismatch
 pub awaken_session_contract::SessionEnvironmentTransitionError::WrongPhase
+pub enum awaken_session_contract::SessionEventAdmission
+pub awaken_session_contract::SessionEventAdmission::Accepted
+pub awaken_session_contract::SessionEventAdmission::Accepted::batch_id: alloc::string::String
+pub awaken_session_contract::SessionEventAdmission::Accepted::operation_ids: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub awaken_session_contract::SessionEventAdmission::Closed
+pub awaken_session_contract::SessionEventAdmission::Closed::batch_id: alloc::string::String
+pub awaken_session_contract::SessionEventAdmission::Deleted
+pub awaken_session_contract::SessionEventAdmission::Deleted::deleted_revision: awaken_session_contract::SessionRevision
+impl core::convert::From<&awaken_session_contract::SessionEventBatch> for awaken_session_contract::SessionEventAdmission
+pub fn awaken_session_contract::SessionEventAdmission::from(&awaken_session_contract::SessionEventBatch) -> Self
 pub enum awaken_session_contract::SessionEventBatchError
 pub awaken_session_contract::SessionEventBatchError::EmptyBatch
 pub awaken_session_contract::SessionEventBatchError::EmptyBatchId
@@ -519,6 +529,7 @@ pub awaken_session_contract::SessionEventBatchError::EmptyOutcomeDescription
 pub awaken_session_contract::SessionEventBatchError::EmptyOutcomeRubric
 pub awaken_session_contract::SessionEventBatchError::EmptySessionId
 pub awaken_session_contract::SessionEventBatchError::InvalidBatchRevision
+pub awaken_session_contract::SessionEventBatchError::InvalidClosedAdmission
 pub awaken_session_contract::SessionEventBatchError::InvalidIdempotencyCoordinate
 pub awaken_session_contract::SessionEventBatchError::InvalidInterruptTargets
 pub awaken_session_contract::SessionEventBatchError::InvalidOutcomeIterations
@@ -931,6 +942,11 @@ pub awaken_session_contract::DelegatedRunSnapshot::coordinated_thread_ids: alloc
 pub awaken_session_contract::DelegatedRunSnapshot::delegated_runs: alloc::vec::Vec<awaken_session_contract::DelegatedRun>
 pub awaken_session_contract::DelegatedRunSnapshot::runtime_commit_cursor: u64
 pub awaken_session_contract::DelegatedRunSnapshot::watermark: u64
+pub struct awaken_session_contract::DeletedSessionEventAdmissions
+pub awaken_session_contract::DeletedSessionEventAdmissions::admissions: core::option::Option<alloc::vec::Vec<awaken_session_contract::RetainedEventAdmission>>
+pub awaken_session_contract::DeletedSessionEventAdmissions::deleted_revision: awaken_session_contract::SessionRevision
+impl awaken_session_contract::DeletedSessionEventAdmissions
+pub fn awaken_session_contract::DeletedSessionEventAdmissions::resolve(&self, &str, &str) -> core::result::Result<awaken_session_contract::SessionEventAdmission, awaken_session_contract::RunError>
 pub struct awaken_session_contract::Dream
 pub awaken_session_contract::Dream::archived_at: core::option::Option<alloc::string::String>
 pub awaken_session_contract::Dream::created_at: alloc::string::String
@@ -1310,6 +1326,12 @@ pub awaken_session_contract::RestoreReceipt::effect_id: alloc::string::String
 pub awaken_session_contract::RestoreReceipt::generation_id: alloc::string::String
 impl awaken_session_contract::RestoreReceipt
 pub fn awaken_session_contract::RestoreReceipt::verify(&self, &awaken_session_contract::SessionEnvironmentOperation, &awaken_session_contract::SandboxGeneration, &awaken_provisioning_contract::sandbox::runtime::SandboxCheckpointRef) -> core::result::Result<(), awaken_session_contract::SessionEnvironmentTransitionError>
+pub struct awaken_session_contract::RetainedEventAdmission
+pub awaken_session_contract::RetainedEventAdmission::batch_id: alloc::string::String
+pub awaken_session_contract::RetainedEventAdmission::closed: bool
+pub awaken_session_contract::RetainedEventAdmission::key: alloc::string::String
+pub awaken_session_contract::RetainedEventAdmission::operation_ids: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub awaken_session_contract::RetainedEventAdmission::request_fingerprint: alloc::string::String
 pub struct awaken_session_contract::RunError
 pub awaken_session_contract::RunError::code: alloc::string::String
 pub awaken_session_contract::RunError::kind: awaken_session_contract::RunErrorKind
@@ -1524,6 +1546,7 @@ pub fn awaken_session_contract::SessionEnvironmentReceipt::from_intent(&awaken_s
 pub fn awaken_session_contract::SessionEnvironmentReceipt::new(impl core::convert::Into<alloc::string::String>, awaken_session_contract::SessionEnvironmentEffectKind, impl core::convert::Into<alloc::string::String>, core::option::Option<awaken_session_contract::SessionRealizationLease>) -> Self
 pub fn awaken_session_contract::SessionEnvironmentReceipt::verify(&self) -> core::result::Result<(), awaken_session_contract::SessionEnvironmentReceiptError>
 pub struct awaken_session_contract::SessionEventBatch
+pub awaken_session_contract::SessionEventBatch::admission_closed: bool
 pub awaken_session_contract::SessionEventBatch::admitted_revision: awaken_session_contract::SessionRevision
 pub awaken_session_contract::SessionEventBatch::batch_id: alloc::string::String
 pub awaken_session_contract::SessionEventBatch::events: alloc::vec::Vec<awaken_session_contract::SessionEventEntry>
@@ -1533,11 +1556,17 @@ pub awaken_session_contract::SessionEventBatch::traceparent: core::option::Optio
 pub awaken_session_contract::SessionEventBatch::wake_activity_epoch: core::option::Option<u64>
 impl awaken_session_contract::SessionEventBatch
 pub fn awaken_session_contract::SessionEventBatch::bind_idempotency(&mut self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<(), awaken_session_contract::SessionEventBatchError>
+pub fn awaken_session_contract::SessionEventBatch::closed_admission(alloc::string::String, awaken_session_contract::SessionRevision, alloc::string::String, alloc::string::String) -> core::result::Result<Self, awaken_session_contract::SessionEventBatchError>
 pub fn awaken_session_contract::SessionEventBatch::compile(&str, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_session_contract::SessionEventInput>) -> core::result::Result<Self, awaken_session_contract::SessionEventBatchError>
 pub fn awaken_session_contract::SessionEventBatch::compile_attributed(&str, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_session_contract::SessionEventInput>, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> core::result::Result<Self, awaken_session_contract::SessionEventBatchError>
 pub fn awaken_session_contract::SessionEventBatch::is_complete(&self) -> bool
 pub fn awaken_session_contract::SessionEventBatch::mark_processed(&mut self, &str, awaken_session_contract::SessionEventProjectionAnchor, u64) -> core::result::Result<bool, awaken_session_contract::SessionEventBatchError>
+pub fn awaken_session_contract::SessionEventBatch::operation_ids(&self) -> alloc::vec::Vec<alloc::string::String>
+pub fn awaken_session_contract::SessionEventBatch::require_accepted(&self) -> core::result::Result<(), awaken_session_contract::RunError>
 pub fn awaken_session_contract::SessionEventBatch::resolve_terminally(&mut self, core::option::Option<awaken_session_contract::SessionEventProjectionAnchor>, u64) -> usize
+pub fn awaken_session_contract::SessionEventBatch::verify_admission(&self) -> core::result::Result<(), awaken_session_contract::SessionEventBatchError>
+impl core::convert::From<&awaken_session_contract::SessionEventBatch> for awaken_session_contract::SessionEventAdmission
+pub fn awaken_session_contract::SessionEventAdmission::from(&awaken_session_contract::SessionEventBatch) -> Self
 pub struct awaken_session_contract::SessionEventBatchOperation<'a>
 pub awaken_session_contract::SessionEventBatchOperation::batch_id: &'a str
 pub awaken_session_contract::SessionEventBatchOperation::ordinal: usize
@@ -2053,6 +2082,7 @@ pub fn awaken_session_contract::ManagedSessionRepository::commit_mutation<'life0
 pub fn awaken_session_contract::ManagedSessionRepository::complete_lifecycle<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::SessionRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_contract::ManagedSessionRepository::count_environment_phase<'life0, 'async_trait>(&'life0 self, awaken_session_contract::SessionEnvironmentPhase) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<u64, awaken_session_contract::SessionRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_session_contract::ManagedSessionRepository::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_session_contract::PersistedSession, awaken_session_contract::IdempotencyRecord, alloc::vec::Vec<awaken_session_contract::ManagedLifecycleFact>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::SessionCreateResult, awaken_session_contract::SessionRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_contract::ManagedSessionRepository::deleted_event_admissions<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_session_contract::DeletedSessionEventAdmissions>, awaken_session_contract::SessionRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::ManagedSessionRepository::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::PersistedSession, awaken_session_contract::SessionRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_contract::ManagedSessionRepository::idempotency_receipt<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_session_contract::SessionIdempotencyReceipt>, awaken_session_contract::SessionRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::ManagedSessionRepository::list_by_owner<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_session_contract::PersistedSession>, awaken_session_contract::SessionRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -2209,6 +2239,7 @@ pub async fn awaken_session_contract::drive_session_realization(&str, core::opti
 pub async fn awaken_session_contract::drive_session_terminal_cleanup(&str, &awaken_session_contract::SessionRealizationLease, &dyn awaken_session_contract::SessionRealizationControl, &dyn awaken_session_contract::SessionRuntime) -> core::result::Result<awaken_session_contract::SessionTerminalCleanupDriveOutcome, awaken_session_contract::SessionRealizationDriveError>
 pub fn awaken_session_contract::ensure_typed_mcp_toolset_policies(&mut alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>, &[awaken_runtime_contract::agent_bindings::AgentMcpServerBinding], bool) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_session_contract::epoch_millis_to_rfc3339(u64) -> alloc::string::String
+pub fn awaken_session_contract::event_admission_conflict() -> awaken_session_contract::RunError
 pub fn awaken_session_contract::frozen_agent_publication_decision(&awaken_session_contract::SessionBaseline, core::option::Option<&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>) -> awaken_session_contract::FrozenAgentPublicationDecision
 pub fn awaken_session_contract::frozen_sandbox_layout_publication_decision(&awaken_session_contract::SessionSandboxLayout, core::option::Option<&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>) -> awaken_session_contract::FrozenAgentPublicationDecision
 pub fn awaken_session_contract::is_agent_toolset_member(&str) -> bool
@@ -2217,6 +2248,7 @@ pub fn awaken_session_contract::legacy_agent_publication_decision(&str, core::op
 pub fn awaken_session_contract::paginate_history<'a>(&'a [awaken_agent_contract::agent::message::Message], core::option::Option<&str>, core::option::Option<usize>) -> core::result::Result<awaken_agent_contract::page::HistoryPage<'a, awaken_agent_contract::agent::message::Message>, awaken_agent_contract::page::UnknownCursor>
 pub fn awaken_session_contract::preserve_runtime_agent_overrides(&[awaken_agent_contract::toolset::ToolsetPolicy], &mut alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>, &alloc::collections::btree::set::BTreeSet<alloc::string::String>)
 pub fn awaken_session_contract::project_effective_agent_publication(core::option::Option<&awaken_session_contract::SessionModelOverride>, &awaken_session_contract::SessionSystemPromptSelection, &str, awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_session_contract::RunError>
+pub fn awaken_session_contract::project_epoch_millis(u128) -> u64
 pub fn awaken_session_contract::realization_generation_authorizes(&awaken_session_contract::McpGenerationRef, &awaken_session_contract::McpGenerationRef) -> bool
 pub fn awaken_session_contract::realization_lease_authorizes(&awaken_session_contract::SessionRealizationLease, &awaken_session_contract::SessionRealizationLease, u64) -> bool
 pub fn awaken_session_contract::realization_lease_generation_authorizes(&awaken_session_contract::SessionRealizationLease, &awaken_session_contract::SessionRealizationLease) -> bool

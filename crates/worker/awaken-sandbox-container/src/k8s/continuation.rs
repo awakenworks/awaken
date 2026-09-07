@@ -689,6 +689,35 @@ fn continuation_claim_selection_is_total_exact_and_non_widening() {
 
 #[cfg(kani)]
 #[kani::proof]
+fn absent_pod_claim_admission_is_total_and_never_starts_deletion() {
+    // KAP-proof: all 16 raw observations, including malformed combinations,
+    // refine the existing KAP1 decision table. Only an exact already-terminating
+    // incarnation can be awaited; a live claim always rejects. API effects
+    // remain checked by KPV5/KPV6, not asserted by this pure-kernel proof.
+    let present = kani::any::<bool>();
+    let uid_present = kani::any::<bool>();
+    let uid_matches = kani::any::<bool>();
+    let terminating = kani::any::<bool>();
+    let decision = absent_pod_claim_admission(present, uid_present, uid_matches, terminating);
+    use AbsentPodClaimAdmission::*;
+    assert_eq!(matches!(decision, AlreadyAbsent), !present);
+    assert_eq!(matches!(decision, MissingUid), present && !uid_present);
+    assert_eq!(
+        matches!(decision, StaleUid),
+        present && uid_present && !uid_matches
+    );
+    assert_eq!(
+        matches!(decision, AwaitTerminating),
+        present && uid_present && uid_matches && terminating
+    );
+    assert_eq!(
+        matches!(decision, UnsafeLiveClaim),
+        present && uid_present && uid_matches && !terminating
+    );
+}
+
+#[cfg(kani)]
+#[kani::proof]
 fn continuation_claim_deletion_requires_exact_uid_and_resource_version() {
     let uid_present = kani::any::<bool>();
     let uid_matches = kani::any::<bool>();

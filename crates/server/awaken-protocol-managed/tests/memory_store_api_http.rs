@@ -815,3 +815,85 @@ async fn memory_store_router_exposes_only_the_anthropic_resource_contract() {
         );
     }
 }
+
+#[tokio::test]
+async fn store_time_filters_match_wire_precision_before_pagination_and_lifecycle_filtering() {
+    use awaken_resource_contract::{
+        ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, RegisterMemoryStore,
+        ResourceState, ResourceTimestamps,
+    };
+    // C1 two distinct visible milliseconds within one second; C2 Active/Suspended/
+    // Archived/Deleted; C3 include_archived false/true; C4 equal inclusive bounds;
+    // C5 limit=1 and cursor. E1 exact public millisecond selection; E2 only allowed
+    // lifecycle states; E3 no page omissions/duplicates. Cross C1*C2*C3, then drain
+    // every page. Seed through the canonical Registry port with literal timestamps
+    // so the former second-truncating implementation deterministically fails.
+    let resources = support::resources::ephemeral_resources();
+    let registry = resources.authorities().resource_registry();
+    for millis in [100_u64, 101] {
+        for (label, state) in [
+            ("active", ResourceState::Active),
+            ("suspended", ResourceState::Suspended),
+            ("archived", ResourceState::Archived),
+            ("deleted", ResourceState::Deleted),
+        ] {
+            let id = format!("store-{millis}-{label}");
+            registry
+                .register_memory_store(RegisterMemoryStore {
+                    definition: MemoryStoreDefinition {
+                        id: id.clone().into(),
+                        workspace_id: "test".into(),
+                        name: id.clone(),
+                        description: String::new(),
+                        metadata: Default::default(),
+                        state,
+                        current_config_version: ConfigVersion::INITIAL,
+                        timestamps: ResourceTimestamps::created(millis * 1_000_000 + 999_999),
+                    },
+                    initial_config: MemoryStoreConfigVersion {
+                        memory_store_id: id.into(),
+                        version: ConfigVersion::INITIAL,
+                        retention_policy: Default::default(),
+                    },
+                })
+                .unwrap();
+        }
+    }
+    let router = memory_stores_router(
+        resources.authorities().memory_repository(),
+        resources.memory_stores(),
+    );
+    for include_archived in [false, true] {
+        for (millis, wire) in [
+            (100, "1970-01-01T00:00:00.1Z"),
+            (101, "1970-01-01T00:00:00.101Z"),
+        ] {
+            let mut ids = Vec::new();
+            let mut cursor = String::new();
+            loop {
+                let (status, page) = call(&router, "GET", &format!(
+                    "/v1/memory_stores?created_at%5Bgte%5D={wire}&created_at%5Blte%5D={wire}&include_archived={include_archived}&limit=1{cursor}"), None).await;
+                assert_eq!(status, StatusCode::OK, "{page}");
+                for row in page["data"].as_array().unwrap() {
+                    assert_eq!(row["created_at"], wire);
+                    ids.push(row["id"].as_str().unwrap().to_string());
+                }
+                assert!(ids.len() <= 3, "cursor cannot repeat a visible row");
+                match page["next_page"].as_str() {
+                    Some(next) => cursor = format!("&page={next}"),
+                    None => break,
+                }
+            }
+            let mut expected = vec![
+                format!("store-{millis}-active"),
+                format!("store-{millis}-suspended"),
+            ];
+            if include_archived {
+                expected.push(format!("store-{millis}-archived"));
+            }
+            ids.sort();
+            expected.sort();
+            assert_eq!(ids, expected);
+        }
+    }
+}

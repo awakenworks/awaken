@@ -8,6 +8,7 @@ import importlib
 import io
 import inspect
 import itertools
+import json
 import os
 import re
 import types
@@ -24,22 +25,13 @@ TRANSPORT_PARAMETERS = frozenset(
     {"betas", "extra_headers", "extra_query", "extra_body", "timeout"}
 )
 UPLOAD_MARKER = "__managed_python_upload_kind__"
-MANAGED_SDK_ANCHOR_VERSIONS = frozenset({
-    "0.92.0",
-    "0.100.0",
-    "0.109.0",
-    "0.115.0",
-    "0.116.0",
-    "0.117.1",
-    "0.118.0",
-    "0.121.0",
-    "0.124.0",
-    "0.125.0",
-    "1.0.0",
-    "1.1.0",
-    "1.2.0",
-    "1.3.0",
-})
+# The generated oracle owns the reviewed version inventory. Behavior-boundary
+# sets below remain explicit reviewed contracts, not another SDK selection list.
+MANAGED_SDK_ANCHOR_VERSIONS = frozenset(
+    row["version"] for row in json.loads(
+        (Path(__file__).resolve().parents[2] / "contracts/anthropic-managed/python-upstream-oracle.generated.json").read_text(encoding="utf-8")
+    )["anchors"]
+)
 WORKSPACE_RESPONSE_CONTEXT_VERSIONS = frozenset({
     "0.124.0",
     "0.125.0",
@@ -47,6 +39,7 @@ WORKSPACE_RESPONSE_CONTEXT_VERSIONS = frozenset({
     "1.1.0",
     "1.2.0",
     "1.3.0",
+    "1.4.0",
 })
 CREDENTIAL_PROVIDER_VERSIONS = MANAGED_SDK_ANCHOR_VERSIONS - {"0.92.0"}
 ENVIRONMENT_HELPER_VERSIONS = MANAGED_SDK_ANCHOR_VERSIONS - {"0.92.0", "0.100.0"}
@@ -93,7 +86,7 @@ UNICODE_WORKER_HEADER_REJECTING_VERSIONS = frozenset(
         "0.125.0",
     }
 )
-MULTIPART_HEADER_NAME_REJECTING_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0"})
+MULTIPART_HEADER_NAME_REJECTING_VERSIONS = frozenset({"1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0"})
 HTTP_FIELD_NAME = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
 
 
@@ -543,10 +536,10 @@ def _invalid_multipart_header_field(
     version: str,
     keyword: dict[str, object],
 ) -> str | None:
-    # 1.0 through 1.2 expose the four-part FileTypes declaration unchanged but
-    # httpx2 rejects a non-token custom multipart header name before transport.
-    # 0.x httpx accepts the witness; 1.3 derives a basename for a tuple whose
-    # filename is absent and normalizes the upload representation.
+    # Every reviewed 1.x wheel preserves custom multipart headers in file[2:];
+    # httpx2 rejects non-token names before transport. The 1.3 basename change
+    # affects file[0] only, so it cannot remove this rejection. 0.x httpx accepts
+    # the witness. Both the current oracle and historical matrix run this rule.
     if version not in MULTIPART_HEADER_NAME_REJECTING_VERSIONS:
         return None
     matches = [
@@ -573,7 +566,7 @@ def exercise_declared_request_witnesses(
     transport_module: Any,
     operations: list[dict[str, Any]],
 ) -> int:
-    # Historical declaration causal graph:
+    # Current/historical declaration causal graph:
     # exact wheel source/hash -> get_type_hints -> finite one-factor witnesses
     # -> official sync serializer -> semantic Request authority
     # -> official async serializer -> exact semantic equality.

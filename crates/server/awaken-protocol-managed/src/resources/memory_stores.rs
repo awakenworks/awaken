@@ -39,9 +39,9 @@ use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate, paginate_by};
 use super::managed_resource_error as err;
 
 fn timestamp(nanos: u128) -> String {
-    awaken_session_contract::epoch_millis_to_rfc3339(
-        (nanos / 1_000_000).min(u64::MAX as u128) as u64
-    )
+    awaken_session_contract::epoch_millis_to_rfc3339(awaken_session_contract::project_epoch_millis(
+        nanos / 1_000_000,
+    ))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -555,9 +555,7 @@ async fn list_stores(
                 ResourceState::Archived => query.include_archived.unwrap_or(false),
                 ResourceState::Active | ResourceState::Suspended => true,
             };
-            let created_at =
-                i64::try_from(definition.timestamps.created_unix_nanos / 1_000_000_000)
-                    .unwrap_or(i64::MAX);
+            let created_at = projected_time(definition.timestamps.created_unix_nanos.into());
             state_matches
                 && created_at_gte.is_none_or(|lower| created_at >= lower)
                 && created_at_lte.is_none_or(|upper| created_at <= upper)
@@ -985,13 +983,35 @@ fn version_operation_name(operation: MemoryVersionOperation) -> &'static str {
     }
 }
 
-fn parse_version_time(value: &str, field: &str) -> Result<i64, String> {
+fn parse_version_time(value: &str, field: &str) -> Result<i128, String> {
     chrono::DateTime::parse_from_rfc3339(value)
-        // The public projection is second-precision, so filtering must compare
-        // the same value clients observe. Comparing hidden sub-second store
-        // precision would incorrectly exclude a row at an inclusive `lte`.
-        .map(|value| value.timestamp())
+        .map(|time| {
+            i128::from(time.timestamp()) * 1_000_000_000 + i128::from(time.timestamp_subsec_nanos())
+        })
         .map_err(|_| format!("{field} must be an RFC 3339 timestamp"))
+}
+
+fn projected_time(nanos: u128) -> i128 {
+    // The public formatter and filter share one numeric projection authority.
+    // Compare in nanoseconds so query bounds keep their own precision; hidden
+    // store nanoseconds must not split rows with the same visible millisecond.
+    let millis = nanos / 1_000_000;
+    i128::from(awaken_session_contract::project_epoch_millis(millis)) * 1_000_000
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn memory_time_filter_compares_visible_milliseconds_without_merging_them() {
+    // Direct production-kernel proof over every u128 stored timestamp. The
+    // independent UTC maximum below specifies the public millisecond domain;
+    // no assumptions hide overflow or submillisecond inputs. Exact quantization
+    // means equal buckets cannot split and distinct unsaturated buckets cannot
+    // merge. Parser/time-zone and HTTP edges remain executable test obligations.
+    let nanos: u128 = kani::any();
+    let millis = nanos / 1_000_000;
+    let expected = i128::from(millis.min(253_402_300_799_999) as u64) * 1_000_000;
+    let visible = projected_time(nanos);
+    assert_eq!(visible, expected);
 }
 
 fn filter_versions(
@@ -1011,8 +1031,7 @@ fn filter_versions(
     Ok(versions
         .into_iter()
         .filter(|version| {
-            let created_at =
-                i64::try_from(version.created_unix_nanos / 1_000_000_000).unwrap_or(i64::MAX);
+            let created_at = projected_time(version.created_unix_nanos);
             let actor_matches = optional_query(query, "api_key_id").is_none_or(|expected| {
                 matches!(&version.created_by, Some(DomainMemoryActor::ApiActor { api_key_id }) if api_key_id == expected)
             }) && optional_query(query, "session_id").is_none_or(|expected| {
@@ -1191,6 +1210,112 @@ mod tests {
             redacted_by: None,
         };
         assert_eq!(filter_versions(vec![version], &query).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn version_time_filters_preserve_public_precision_and_query_boundaries() {
+        // Causes: C1 public millisecond bucket (100/101/999/1000), C2 hidden
+        // nanoseconds (start/end of bucket), C3 lower/upper/equal/inverted bounds,
+        // C4 UTC/equivalent offset, C5 sub-millisecond or pre-epoch query, C6 invalid
+        // timestamp. Effects: E1 retain exactly matching visible instants, E2
+        // inclusive equality, E3 same public bucket remains inseparable, E4 invalid
+        // bound rejects the request. Cross C1*C2*C3 in the table below; C4 must be
+        // metamorphically equivalent. Expected membership uses literal millis,
+        // independent of the production formatter/parser. No wall-clock sleeps.
+        let rows = [100_u128, 101, 999, 1000]
+            .into_iter()
+            .flat_map(|ms| {
+                [0, 999_999].into_iter().map(move |hidden| {
+                    (
+                        ms,
+                        MemoryVersion {
+                            id: format!("{ms}-{hidden}"),
+                            memory_id: "mem".into(),
+                            operation: MemoryVersionOperation::Created,
+                            path: "/m".into(),
+                            content: None,
+                            created_unix_nanos: ms * 1_000_000 + hidden,
+                            created_by: None,
+                            redacted_unix_nanos: None,
+                            redacted_by: None,
+                        },
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        for (lower, upper, expected_millis) in [
+            (None, None, vec![100, 101, 999, 1000]),
+            (
+                Some("1970-01-01T00:00:00.1Z"),
+                Some("1970-01-01T00:00:00.1Z"),
+                vec![100],
+            ),
+            (
+                Some("1970-01-01T01:00:00.100+01:00"),
+                Some("1969-12-31T19:00:00.100-05:00"),
+                vec![100],
+            ),
+            (
+                Some("1970-01-01T00:00:00.100000001Z"),
+                None,
+                vec![101, 999, 1000],
+            ),
+            (
+                None,
+                Some("1970-01-01T00:00:00.999999999Z"),
+                vec![100, 101, 999],
+            ),
+            (
+                Some("1970-01-01T00:00:00.101Z"),
+                Some("1970-01-01T00:00:00.100Z"),
+                vec![],
+            ),
+            (None, Some("1969-12-31T23:59:59.999Z"), vec![]),
+            (Some("1970-01-01T00:00:01Z"), None, vec![1000]),
+        ] {
+            let query = [("created_at[gte]", lower), ("created_at[lte]", upper)]
+                .into_iter()
+                .filter_map(|(k, v)| v.map(|v| (k.into(), v.into())))
+                .collect();
+            let expected = rows
+                .iter()
+                .filter(|(ms, _)| expected_millis.contains(ms))
+                .map(|(_, v)| v.id.clone())
+                .collect::<Vec<_>>();
+            let actual = filter_versions(rows.iter().map(|(_, v)| v.clone()).collect(), &query)
+                .unwrap()
+                .into_iter()
+                .map(|v| v.id)
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "lower={lower:?}, upper={upper:?}");
+        }
+        // C7 bridge the actual Memory wire formatter back to query comparison,
+        // across bucket edges and both integer narrowing boundaries. The Kani
+        // kernels prove numeric projection; this checks their codec call wiring.
+        for nanos in [
+            0,
+            999_999,
+            1_000_000,
+            100_999_999,
+            101_000_000,
+            253_402_300_799_999_999_999,
+            253_402_300_800_000_000_000,
+            u128::from(u64::MAX) * 1_000_000,
+            u128::MAX,
+        ] {
+            assert_eq!(
+                parse_version_time(&timestamp(nanos), "created_at").unwrap(),
+                projected_time(nanos),
+                "C7 nanos={nanos}"
+            );
+        }
+        for key in ["created_at[gte]", "created_at[lte]"] {
+            let query = std::collections::HashMap::from([(key.into(), "not-a-time".into())]);
+            assert!(
+                filter_versions(vec![], &query).unwrap_err().contains(key),
+                "C6/E4"
+            );
+        }
     }
 
     #[test]

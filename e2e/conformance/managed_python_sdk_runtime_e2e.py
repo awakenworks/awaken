@@ -494,7 +494,7 @@ def main() -> None:
     parser.add_argument("state", nargs="?", type=Path)
     args = parser.parse_args()
     assert_locked_environment()
-    assert anthropic.__version__ == "1.3.0"
+    assert anthropic.__version__ == json.loads(PYTHON_ORACLE.read_text(encoding="utf-8"))["current"]["version"]
     if args.mode != "full":
         if args.state is None:
             raise AssertionError(f"{args.mode} requires a state path")

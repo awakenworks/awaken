@@ -12,6 +12,7 @@ import anthropic
 import httpx2
 
 from managed_python_sdk_wire import normalized_name, semantic_request
+from managed_python_sdk_request_contract import exercise_declared_request_witnesses
 
 DISCOVER_VARIANCES = os.environ.get("AWAKEN_MANAGED_REQUEST_DISCOVER_VARIANCES") == "1"
 
@@ -414,6 +415,53 @@ async def exercise_async(bundle: dict[str, Any]) -> tuple[int, int]:
     return invocations, len(requests)
 
 
+async def exercise_client_header_parameters() -> None:
+    # H1-H5 current-wheel change-point decision table, crossed over sync/async
+    # and workspace/user-profile headers: no default+omission=>absent;
+    # default+omission=>default; explicit param=>request value; extra header=>
+    # explicit override; a later omitted request=>unchanged client default.
+    # The installed official client, not a hand-written merger, builds each
+    # request. MockTransport observes only bytes; real IAM context is owned by
+    # managed_python_sdk_auth_context_e2e.py and is not duplicated here.
+    for asynchronous in (False, True):
+        for field in ("workspace_id", "user_profile_id"):
+            header = "anthropic-" + field.replace("_", "-")
+            for default in (None, "client-default"):
+                observed = []
+
+                def respond(request: object) -> object:
+                    observed.append(request.headers.get(header))
+                    return httpx2.Response(200, json={"data": [], "has_more": False})
+
+                http_client = (httpx2.AsyncClient if asynchronous else httpx2.Client)(transport=httpx2.MockTransport(respond))
+                client = (anthropic.AsyncAnthropic if asynchronous else anthropic.Anthropic)(
+                    api_key="header-contract",  # awaken-allow: secret
+                    http_client=http_client,
+                    max_retries=0,
+                    default_headers={} if default is None else {header: default},
+                )
+                try:
+                    method = client.beta.sessions.with_raw_response.list if field == "workspace_id" else client.beta.messages.batches.with_raw_response.create
+                    base = {} if field == "workspace_id" else {"requests": []}
+                    for arguments, expected in (
+                        ({}, default),
+                        ({field: "request-value"}, "request-value"),
+                        ({field: "request-value", "extra_headers": {header: "explicit-header"}}, "explicit-header"),
+                        ({field: anthropic.omit}, default),
+                        ({}, default),
+                    ):
+                        before = len(observed)
+                        result = method(**base, **arguments)
+                        if inspect.isawaitable(result):
+                            await result
+                        assert len(observed) == before + 1, "H1-H5 exactly one request"
+                        assert observed[-1] == expected, (asynchronous, field, default, arguments, observed[-1])
+                finally:
+                    closed = client.close()
+                    if inspect.isawaitable(closed):
+                        await closed
+
+
 def main() -> None:
     contracts = Path(os.environ["AWAKEN_MANAGED_PYTHON_REQUEST_CONTRACTS"])
     bundle = json.loads(contracts.read_text(encoding="utf-8"))
@@ -422,6 +470,17 @@ def main() -> None:
     assert len({witness["python_operation_id"] for witness in bundle["witnesses"]}) == 127
     sync_invocations, sync_requests = exercise_sync(bundle)
     async_invocations, async_requests = asyncio.run(exercise_async(bundle))
+    asyncio.run(exercise_client_header_parameters())
+    # Version-axis rule V1: the current wheel must pass the same declaration-
+    # derived serializer partitions as a historical anchor. Promotion/demotion
+    # changes its role, never whether malformed multipart/path/header witnesses
+    # execute. Cross-language parity above owns a different input partition.
+    oracle = json.loads((Path(__file__).resolve().parents[2] /
+        "contracts/anthropic-managed/python-upstream-oracle.generated.json").read_text())
+    assert oracle["current"]["version"] == anthropic.__version__
+    declared_witnesses = exercise_declared_request_witnesses(
+        anthropic, httpx2, oracle["current"]["operations"])
+
     expected_invocations = bundle["witness_count"] + len(bundle["upstream_rejections"])
     empty_path_rejections = sum(
         witness["python_rejection"] is not None for witness in bundle["witnesses"]
@@ -441,6 +500,7 @@ def main() -> None:
         f"+ {multipart_empty_omissions} derived empty-multipart omissions "
         f"+ {empty_path_rejections} exact Python empty-path rejections "
         f"+ {len(bundle['upstream_rejections'])} exact upstream rejections per client mode, "
+        f"{declared_witnesses} current-wheel declaration witnesses, "
         "exact TS/Python path+query+header+JSON+multipart semantics"
     )
 
