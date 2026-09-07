@@ -132,6 +132,28 @@ export function qualifyOfficialSdkCandidateDelta(delta, qualifications) {
   });
 }
 
+// The qualification catalog also retains regression obligations after promotion.
+// Walk only incoming upgrade edges for the selected version; future/unrelated
+// candidates cannot require unavailable features, and a shared owner runs once.
+export function assertRetainedOfficialSdkBehaviorOwners(version, qualifications, completed) {
+  const pending = [version];
+  const visited = new Set();
+  const owners = new Set();
+  while (pending.length > 0) {
+    const selected = pending.pop();
+    if (visited.has(selected)) continue;
+    visited.add(selected);
+    for (const entry of qualifications.filter(({ candidate_version }) => candidate_version === selected)) {
+      pending.push(entry.baseline_version);
+      for (const { owner } of entry.evidence_groups) owners.add(owner);
+    }
+  }
+  for (const owner of owners) {
+    if (!completed.has(owner)) throw new Error(`retained SDK behavior owner did not complete: ${owner}`);
+  }
+  return Object.freeze([...owners].sort());
+}
+
 export function assertLatestRuntimeOwnsCandidateDelta(delta) {
   // This canary executes every existing Beta/GA Files and Skills method plus all
   // recognized Webhook helpers. New or removed operations/declaration files need

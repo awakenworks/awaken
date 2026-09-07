@@ -23,6 +23,8 @@ import {
   extractResponseContractsFromPackageRoot,
 } from '../../packages/managed-sdk-oracle/src/extract-wire-contracts.mjs';
 import { managedExportFingerprintFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-exports.mjs';
+import { managedRuntimeFingerprintFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-runtime.mjs';
+import { managedTypeFingerprintFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-types.mjs';
 import { resolveSdkPackage } from '../../packages/managed-sdk-oracle/src/package-source.mjs';
 import {
   availablePort,
@@ -41,6 +43,7 @@ import {
 import { officialBetaResourceProjection } from './official_sdk_resource_projection.mjs';
 import {
   officialSdkCandidateDelta,
+  assertRetainedOfficialSdkBehaviorOwners,
   qualifyOfficialSdkCandidateDelta,
 } from './official_sdk_candidate_delta.mjs';
 import { compileOfficialSdkChangePoints } from './official_sdk_change_point_compile.mjs';
@@ -72,7 +75,7 @@ const qualificationCatalog = JSON.parse(readFileSync(
   resolve(HERE, 'official_sdk_candidate_qualifications.json'),
   'utf8',
 ));
-const qualification = qualifyOfficialSdkCandidateDelta(
+qualifyOfficialSdkCandidateDelta(
   candidateDelta,
   qualificationCatalog.qualifications,
 );
@@ -130,13 +133,18 @@ const candidateRecordingFetch = recordingFetch(
   globalThis.fetch.bind(globalThis),
   (receipt) => candidateReceipts.push(receipt),
 );
-const runtimeChanged = (runtimePath) => candidateDelta.runtime.changed.some(
-  ({ path }) => path === runtimePath,
+// Promotion cause/effect table: C1 reviewed candidate with a nonempty delta;
+// C2 the same bytes promoted to current, so delta becomes empty; C3 a module
+// remains in the selected SDK's complete Managed dependency closure. E1 C1+C3
+// and C2+C3 both execute the same regression owner. Delta qualification still
+// owns upgrade admission; it must not decide whether existing behavior is tested.
+// The current-version canary exercises C2 with zero delta and real owner calls.
+const runtimeFiles = managedRuntimeFingerprintFromPackageRoot(packageRoot, scope).files;
+const runtimePaths = new Set(runtimeFiles.map(({ path }) => path));
+const hasRuntime = (runtimePath) => runtimePaths.has(runtimePath);
+const declarationPaths = new Set(
+  managedTypeFingerprintFromPackageRoot(packageRoot, scope).files.map(({ path }) => path),
 );
-const runtimeAdded = (runtimePath) => candidateDelta.runtime.added.some(
-  ({ path }) => path === runtimePath,
-);
-const declarationChanged = new Set(candidateDelta.declarations.changed.map(({ path }) => path));
 const managedTypeChangePaths = [
   'beta/agents/agents.d.ts',
   'beta/deployment-runs.d.ts',
@@ -147,10 +155,11 @@ const managedTypeChangePaths = [
   'beta/sessions/sessions.d.ts',
   'beta/user-profiles.d.ts',
 ];
-const managedTypesV123 = managedTypeChangePaths.every((path) => declarationChanged.has(path));
-const workspaceRuntimeChanges = candidateDelta.runtime.changed
+const managedTypesV123 = managedTypeChangePaths.every((path) => declarationPaths.has(path));
+const workspaceRuntimeModules = runtimeFiles
   .map(({ path }) => path)
-  .filter((path) => path.startsWith('resources/'));
+  .filter((path) => path.startsWith('resources/')
+    && /\bworkspace_id\b/u.test(readFileSync(resolve(packageRoot, path), 'utf8')));
 const MISSING_FILE_ID = 'file_missing';
 const webhookProfile = exerciseOfficialWebhookContract(Anthropic);
 completeBehaviorOwner('candidate.webhook-helpers');
@@ -160,7 +169,7 @@ compileOfficialSdkChangePoints(packageRoot, {
   parseUnverified: webhookProfile.parseUnverified,
   resolveSkillVersion: hasResolveSkillVersion,
   managedTypesV123,
-  workspaceRouting: workspaceRuntimeChanges.length > 0,
+  workspaceRouting: workspaceRuntimeModules.length > 0,
 });
 completeBehaviorOwner('candidate.typescript-change-points');
 if (managedTypesV123) completeBehaviorOwner('candidate.managed-type-change-points');
@@ -233,16 +242,17 @@ async function exerciseSdkCoreTransport() {
 }
 
 async function exerciseWorkspaceRequestRouting() {
-  if (workspaceRuntimeChanges.length === 0) return;
-  // Cause/effect graph: C1 each changed generated Resource module accepts one
-  // request-scoped Workspace; C2 credentials may address multiple Workspaces;
+  if (workspaceRuntimeModules.length === 0) return;
+  // Cause/effect graph: C1 each Workspace-capable generated Resource module
+  // accepts one request-scoped Workspace; C2 credentials may address multiple Workspaces;
   // C3 the selector is absent from query/body transport. Effects: E1 every
-  // changed module sends the exact header once; E2 no URL leaks the selector.
-  // Decision rule W1=C1+C2+C3=>E1+E2. The changed-module inventory is derived
-  // from the reviewed package delta, so a missing or extra probe fails closed.
+  // selected module sends the exact header once; E2 no URL leaks the selector.
+  // Decision rule W1=C1+C2+C3=>E1+E2. The module inventory is derived
+  // from the selected SDK's complete Managed runtime closure, so a missing or
+  // extra probe fails closed.
   const workspaceID = 'workspace_candidate_request';
   const observed = [];
-  for (const runtimePath of workspaceRuntimeChanges) {
+  for (const runtimePath of workspaceRuntimeModules) {
     const source = readFileSync(resolve(packageRoot, runtimePath), 'utf8');
     const destructures = source.match(
       /const \{[^}]*\bworkspace_id\b[^}]*\} = params(?: \?\? \{\})?;/gu,
@@ -313,8 +323,8 @@ async function exerciseWorkspaceRequestRouting() {
   ]);
   assert.deepEqual(
     [...probes.keys()].sort(),
-    [...workspaceRuntimeChanges].sort(),
-    'W1 every changed generated Resource module has one runtime probe',
+    [...workspaceRuntimeModules].sort(),
+    'W1 every Workspace-capable generated Resource module has one runtime probe',
   );
   for (const invoke of probes.values()) await invoke();
   assert.equal(observed.length, probes.size, 'W1 every probe reached transport once');
@@ -323,7 +333,7 @@ async function exerciseWorkspaceRequestRouting() {
 }
 
 async function exerciseStreamingBufferViews() {
-  if (!runtimeChanged('core/streaming.mjs')) return;
+  if (!hasRuntime('core/streaming.mjs')) return;
   // Cause/effect graph: C1 multiple complete SSE frames share one byte buffer;
   // C2 parsing advances through non-copying subarray views. Effects: E1 frames
   // remain exact; E2 ordering is preserved. Decision rule S1=C1+C2=>E1+E2;
@@ -348,7 +358,7 @@ async function exerciseStreamingBufferViews() {
 }
 
 async function exerciseSdkNodeRuntimeFacade() {
-  const changedPaths = [
+  const facadePaths = [
     'core/credentials.mjs',
     'internal/file-store.mjs',
     'lib/credentials/credential-chain.mjs',
@@ -359,8 +369,8 @@ async function exerciseSdkNodeRuntimeFacade() {
     'tools/agent-toolset/memories.mjs',
     'tools/agent-toolset/skills.mjs',
   ];
-  if (!runtimeAdded('internal/node.mjs')
-    && !changedPaths.some((runtimePath) => runtimeChanged(runtimePath))) return;
+  if (!hasRuntime('internal/node.mjs')
+    && !facadePaths.some((runtimePath) => hasRuntime(runtimePath))) return;
 
   // Cause/effect graph: C1 the candidate centralizes every Node builtin behind
   // internal/node; C2 credential/profile readers, confined file stores, atomic
@@ -450,7 +460,7 @@ async function exerciseSdkNodeRuntimeFacade() {
     const atomicPath = resolve(root, 'atomic.txt');
     await atomicWriteFile(atomicPath, 'atomic-candidate');
     assert.equal(readFileSync(atomicPath, 'utf8'), 'atomic-candidate', 'N1 atomic tool write');
-    if (runtimeChanged('tools/agent-toolset/fs-util.mjs')) {
+    if (hasRuntime('tools/agent-toolset/fs-util.mjs')) {
       assert.equal(DIR_CREATE_MODE, 0o700, 'N2 owner-only directory creation');
       assert.equal(FILE_CREATE_MODE, 0o600, 'N2 owner-only file creation');
       const privateDirectory = resolve(root, 'private-directory');
@@ -501,7 +511,7 @@ function sseResponse(events) {
 }
 
 async function exerciseRefusalFallbackMiddleware() {
-  if (!runtimeChanged('lib/middleware.mjs')) return;
+  if (!hasRuntime('lib/middleware.mjs')) return;
 
   // Cause/effect decision table:
   // | input history / fallback hop                 | expected effect |
@@ -648,7 +658,7 @@ async function exerciseSdkHelperRuntime() {
     delta: { index: 0, content: { type: 'text', text: 'candidate' } },
   });
   assert.equal(accumulated.content[0].text, 'candidate', 'H1 known Session accumulation');
-  if (runtimeChanged('lib/sessions/accumulate.mjs')) {
+  if (hasRuntime('lib/sessions/accumulate.mjs')) {
     const future = { type: 'session.future_event', id: 'future_candidate' };
     assert.equal(
       accumulateManagedAgentsEvent(accumulated, future),
@@ -665,7 +675,7 @@ async function exerciseSdkHelperRuntime() {
       ['bash', 'edit', 'glob', 'grep', 'read', 'write'],
       'H2 complete Agent Toolset registration',
     );
-    if (runtimeChanged('tools/agent-toolset/node.mjs')) {
+    if (hasRuntime('tools/agent-toolset/node.mjs')) {
       assert.equal(
         Object.hasOwn(agentToolset, 'resolveSkillVersion'),
         false,
@@ -701,7 +711,7 @@ async function exerciseSdkHelperRuntime() {
     rmSync(workdir, { recursive: true, force: true });
   }
 
-  if (runtimeChanged('internal/errors.mjs')) {
+  if (hasRuntime('internal/errors.mjs')) {
     const foreignAbort = {
       name: 'AbortError',
       message: 'foreign abort',
@@ -724,7 +734,7 @@ async function exerciseSdkHelperRuntime() {
     completeBehaviorOwner('candidate.error-classification');
   }
 
-  if (runtimeChanged('internal/uploads.mjs')) {
+  if (hasRuntime('internal/uploads.mjs')) {
     const requestUrls = [];
     const client = new Anthropic({
       apiKey: 'transport-only', // awaken-allow: secret
@@ -759,7 +769,7 @@ async function exerciseSdkHelperRuntime() {
     );
   }
 
-  if (runtimeChanged('core/middleware.mjs') || runtimeChanged('internal/parse.mjs')) {
+  if (hasRuntime('core/middleware.mjs') || hasRuntime('internal/parse.mjs')) {
     const errors = [];
     const logger = {
       debug() {},
@@ -941,7 +951,7 @@ async function exerciseBetaSkills(client) {
   // S1->E1+E3; S2->E2+E3. The operation signature is the only discriminator.
   const document = '---\nname: latest-beta-canary\ndescription: first\n---\nFirst.';
   const revised = '---\nname: latest-beta-canary\ndescription: second\n---\nSecond.';
-  if (runtimeChanged('internal/uploads.mjs')) {
+  if (hasRuntime('internal/uploads.mjs')) {
     await assert.rejects(
       () => client.beta.skills.create({
         ...(betaSkills.projection === 'beta'
@@ -1062,7 +1072,7 @@ async function exerciseBetaSkills(client) {
   );
   await client.beta.skills.delete(peer.id);
   completeBehaviorOwner('candidate.skills-runtime');
-  if (runtimeChanged('internal/uploads.mjs')) {
+  if (hasRuntime('internal/uploads.mjs')) {
     completeBehaviorOwner('candidate.upload-admission');
   }
 }
@@ -1239,7 +1249,7 @@ async function exerciseBetaGaRecovery() {
       skill_id: skill.id,
     });
     assert.match(await archive.text(), /Recovered\./u, 'P3/E5 immutable Version bytes');
-    if (runtimeChanged('tools/agent-toolset/skills.mjs')) {
+    if (hasRuntime('tools/agent-toolset/skills.mjs')) {
       const helperWorkdir = mkdtempSync(resolve(tmpdir(), 'awaken-candidate-skill-helper-'));
       try {
         const cleanup = await setupSkills({
@@ -1344,7 +1354,7 @@ await withRealServer('echo', Number(process.env.E2E_PORT), async (baseURL) => {
       'R1 candidate SSE and accumulator reconstruct the canonical Agent message',
     );
     assert.ok(replaySnapshot.content.length > 0, 'R1 accumulated Agent message is non-empty');
-    if (runtimeChanged('lib/sessions/accumulate.mjs')) {
+    if (hasRuntime('lib/sessions/accumulate.mjs')) {
       completeBehaviorOwner('candidate.session-accumulator');
     }
   } finally {
@@ -1489,9 +1499,9 @@ const coveredIds = new Set(candidateResourceOperations.map(({ sdkMethod }) => sd
 for (const { id } of candidateDelta.operations.changed) {
   assert.ok(coveredIds.has(id), `changed candidate operation lacks runtime owner: ${id}`);
 }
-for (const owner of qualification.requiredBehaviorOwners) {
-  assert.ok(completedBehaviorOwners.has(owner), `candidate behavior owner did not complete: ${owner}`);
-}
+const retainedBehaviorOwners = assertRetainedOfficialSdkBehaviorOwners(
+  manifest.version, qualificationCatalog.qualifications, completedBehaviorOwners,
+);
 
 console.log(
   `SDK LATEST RUNTIME CANARY PASS: @anthropic-ai/sdk ${manifest.version}; `
@@ -1501,5 +1511,6 @@ console.log(
   + `resource_operations=${coveredCandidateOperations}, `
   + `operation_changes=${candidateDelta.operations.changed.length}, `
   + `declaration_changes=${candidateDelta.declarations.changed.length}, `
-  + `runtime_changes=${candidateDelta.runtime.changed.length}.`,
+  + `runtime_changes=${candidateDelta.runtime.changed.length}, `
+  + `completed_behavior_owners=${completedBehaviorOwners.size}, retained_behavior_owners=${retainedBehaviorOwners.length}.`,
 );
