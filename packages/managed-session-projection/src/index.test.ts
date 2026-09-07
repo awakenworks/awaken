@@ -541,6 +541,18 @@ describe("Managed Session Runtime and admission decision table", () => {
     expect(managedSessionPresentationPhase(idle, "running")).toBe("running");
     expect(managedSessionPresentationPhase(running, "idle")).toBe("running");
     expect(managedSessionPresentationPhase(failed, "idle")).toBe("error");
+    // E1 committed error remains visible under active/missing aggregate;
+    // E2 display never releases message/tool gates; E3 terminal still wins.
+    // Decision rows: Running/Rescheduling/Unknown x error => visible + fenced.
+    for (const status of ["running", "rescheduling", undefined] as const) {
+      expect(managedSessionPresentationPhase(failed, status)).toBe("error");
+      expect(managedSessionAdmission(failed, status).canSendMessage).toBe(false);
+      expect(managedSessionAdmission(failed, status).canResolveTools).toBe(false);
+    }
+    expect(managedSessionPresentationPhase(failed, "terminated")).toBe("terminated");
+    // E4 a later committed running boundary supersedes the historical error.
+    const resumed = projectManagedSessionRuntime([failed.latestError!, event({id:"new-run",type:"session.status_running"})]);
+    expect(managedSessionPresentationPhase(resumed, "running")).toBe("running");
     expect(managedSessionPresentationPhase(idle)).toBe("unknown");
     expect(managedSessionPresentationPhase(running, "terminated")).toBe("terminated");
   });

@@ -4,10 +4,10 @@ EXTENDS Naturals, TLC
 CONSTANTS ToolIds, ErrorIds, MaxSourceVersion
 
 VARIABLES phase, pending, resolving, lastError,
-          sourceVersion, projectedVersion, refreshSucceeded, history
+          sourceVersion, projectedVersion, refreshSucceeded, history, aggregate
 
 vars == <<phase, pending, resolving, lastError,
-          sourceVersion, projectedVersion, refreshSucceeded, history>>
+          sourceVersion, projectedVersion, refreshSucceeded, history, aggregate>>
 NoError == "none"
 
 HistoryValue(awaitingCommitted, terminalCommitted,
@@ -19,6 +19,7 @@ HistoryValue(awaitingCommitted, terminalCommitted,
 
 Init ==
     /\ phase = "unknown"
+    /\ aggregate = "unknown"
     /\ pending = {}
     /\ resolving = {}
     /\ lastError = NoError
@@ -33,37 +34,37 @@ Running ==
     /\ phase' = "running"
     /\ pending' = {}
     /\ resolving' = {}
-    /\ UNCHANGED <<lastError, projectionVars, history>>
+    /\ UNCHANGED <<lastError, projectionVars, history, aggregate>>
 
 RequiresAction(ids) ==
     /\ ids \subseteq ToolIds
     /\ phase' = "idle"
     /\ pending' = ids
     /\ resolving' = {}
-    /\ UNCHANGED <<lastError, projectionVars, history>>
+    /\ UNCHANGED <<lastError, projectionVars, history, aggregate>>
 
 AcceptReply(id) ==
     /\ id \in pending
     /\ pending' = pending \ {id}
     /\ resolving' = resolving \cup {id}
-    /\ UNCHANGED <<phase, lastError, projectionVars, history>>
+    /\ UNCHANGED <<phase, lastError, projectionVars, history, aggregate>>
 
 ProcessReply(id) ==
     /\ id \in resolving
     /\ resolving' = resolving \ {id}
-    /\ UNCHANGED <<phase, pending, lastError, projectionVars, history>>
+    /\ UNCHANGED <<phase, pending, lastError, projectionVars, history, aggregate>>
 
 ObserveToolResult(id) ==
     /\ id \in pending \cup resolving
     /\ pending' = pending \ {id}
     /\ resolving' = resolving \ {id}
-    /\ UNCHANGED <<phase, lastError, projectionVars, history>>
+    /\ UNCHANGED <<phase, lastError, projectionVars, history, aggregate>>
 
 IdleTerminal ==
     /\ phase' = "idle"
     /\ pending' = {}
     /\ resolving' = {}
-    /\ UNCHANGED <<lastError, projectionVars, history>>
+    /\ UNCHANGED <<lastError, projectionVars, history, aggregate>>
 
 Error(errorId) ==
     /\ errorId \in ErrorIds
@@ -71,7 +72,7 @@ Error(errorId) ==
     /\ pending' = {}
     /\ resolving' = {}
     /\ lastError' = errorId
-    /\ UNCHANGED <<projectionVars, history>>
+    /\ UNCHANGED <<projectionVars, history, aggregate>>
 
 \* Any correlation, lifecycle, interval, outcome, or canonicalization failure
 \* occurs before the one final swap and is therefore an abstract stuttering
@@ -84,14 +85,14 @@ CommittedPrefixAdvances ==
     /\ sourceVersion' = sourceVersion + 1
     /\ refreshSucceeded' = FALSE
     /\ UNCHANGED <<phase, pending, resolving, lastError,
-                    projectedVersion, history>>
+                    projectedVersion, history, aggregate>>
 
 \* A successful refresh consumes the stable source suffix and advances the
 \* result/checkpoint pair to the exact observed committed prefix.
 RefreshSuccess ==
     /\ projectedVersion' = sourceVersion
     /\ refreshSucceeded' = TRUE
-    /\ UNCHANGED <<phase, pending, resolving, lastError, sourceVersion, history>>
+    /\ UNCHANGED <<phase, pending, resolving, lastError, sourceVersion, history, aggregate>>
 
 \* The lifecycle feed and audit snapshot may both be read only after a remote
 \* wait has already closed. The committed Awaiting target remains the source of
@@ -100,27 +101,35 @@ CommitHistoricalAwaiting ==
     /\ ~history.awaitingCommitted
     /\ history' = HistoryValue(TRUE, history.terminalCommitted,
                                history.pendingProjected, history.terminalProjected)
-    /\ UNCHANGED <<phase, pending, resolving, lastError, projectionVars>>
+    /\ UNCHANGED <<phase, pending, resolving, lastError, projectionVars, aggregate>>
 
 CommitHistoricalTerminal ==
     /\ history.awaitingCommitted /\ ~history.terminalCommitted
     /\ history' = HistoryValue(TRUE, TRUE,
                                history.pendingProjected, history.terminalProjected)
-    /\ UNCHANGED <<phase, pending, resolving, lastError, projectionVars>>
+    /\ UNCHANGED <<phase, pending, resolving, lastError, projectionVars, aggregate>>
 
 ProjectHistoricalPending ==
     /\ history.awaitingCommitted /\ ~history.pendingProjected
     /\ history' = HistoryValue(TRUE, history.terminalCommitted,
                                TRUE, history.terminalProjected)
-    /\ UNCHANGED <<phase, pending, resolving, lastError, projectionVars>>
+    /\ UNCHANGED <<phase, pending, resolving, lastError, projectionVars, aggregate>>
 
 ProjectHistoricalTerminal ==
     /\ history.terminalCommitted /\ history.pendingProjected
     /\ ~history.terminalProjected
     /\ history' = HistoryValue(TRUE, TRUE, TRUE, TRUE)
-    /\ UNCHANGED <<phase, pending, resolving, lastError, projectionVars>>
+    /\ UNCHANGED <<phase, pending, resolving, lastError, projectionVars, aggregate>>
+
+AggregateStatuses == {"unknown", "idle", "running", "rescheduling", "terminated"}
+ObserveAggregate(status) ==
+    /\ status \in AggregateStatuses
+    /\ aggregate' = status
+    /\ UNCHANGED <<phase, pending, resolving, lastError,
+                    sourceVersion, projectedVersion, refreshSucceeded, history>>
 
 Next ==
+    \/ \E status \in AggregateStatuses: ObserveAggregate(status)
     \/ Running
     \/ \E ids \in SUBSET ToolIds: RequiresAction(ids)
     \/ \E id \in ToolIds: AcceptReply(id)
@@ -139,6 +148,7 @@ Next ==
 Spec == Init /\ [][Next]_vars
 
 TypeOK ==
+    /\ aggregate \in AggregateStatuses
     /\ phase \in {"unknown", "running", "idle", "error"}
     /\ pending \subseteq ToolIds
     /\ resolving \subseteq ToolIds
@@ -156,9 +166,20 @@ PendingAndResolvingAreDisjoint == pending \intersect resolving = {}
 TerminalFrameClearsPending ==
     phase \in {"running", "error"} => pending = {} /\ resolving = {}
 ErrorProjectionHasEvidence == phase = "error" => lastError # NoError
-CanSend == phase = "idle" /\ pending = {}
-AcceptedReplyDoesNotBlockFollowup ==
-    phase = "idle" /\ pending = {} /\ resolving # {} => CanSend
+\* C1 aggregate authority; C2 committed event phase; C3 pending/resolving.
+\* Presentation of an error does not release any admission authority.
+CanSend == aggregate = "idle" /\ phase \in {"unknown", "idle", "error"}
+           /\ pending = {} /\ resolving = {}
+PresentedPhase == IF aggregate = "terminated" THEN "terminated"
+                  ELSE IF phase = "error" THEN "error"
+                  ELSE IF phase = "running" THEN "running"
+                  ELSE IF aggregate \in {"running", "rescheduling"} THEN aggregate
+                  ELSE IF aggregate = "idle" THEN "idle" ELSE "unknown"
+AcceptedReplyBlocksFollowupUntilProcessed == resolving # {} => ~CanSend
+ActiveAggregateNeverAdmits == aggregate # "idle" => ~CanSend
+ErrorIsVisibleWithoutRelease ==
+    (phase = "error" /\ aggregate \in {"running", "rescheduling"})
+        => (PresentedPhase = "error" /\ ~CanSend)
 ProjectionNeverInventsSourcePrefix == projectedVersion <= sourceVersion
 SuccessfulRefreshReachesObservedSourcePrefix ==
     refreshSucceeded => projectedVersion = sourceVersion
@@ -174,7 +195,9 @@ Safety ==
     /\ PendingAndResolvingAreDisjoint
     /\ TerminalFrameClearsPending
     /\ ErrorProjectionHasEvidence
-    /\ AcceptedReplyDoesNotBlockFollowup
+    /\ AcceptedReplyBlocksFollowupUntilProcessed
+    /\ ActiveAggregateNeverAdmits
+    /\ ErrorIsVisibleWithoutRelease
     /\ ProjectionNeverInventsSourcePrefix
     /\ SuccessfulRefreshReachesObservedSourcePrefix
     /\ HistoricalProjectionPreservesCausalOrder

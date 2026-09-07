@@ -277,7 +277,10 @@ type checking are valuable executable evidence, but are not formal proofs.
 - The committed-event Runtime projection has one closed pending-tool reducer.
   `SessionRuntimeProjection.tla` checks replacement, accepted-but-unprocessed
   reply classification, per-id processing, terminal clearing, and error
-  evidence. Within the configured finite prefix domain (`0..3`), it also checks
+  evidence. Its aggregate/event composition keeps current errors visible under
+  active aggregate authority without admitting messages; accepted-but-unprocessed
+  replies block follow-up until their committed receipt arrives. Two additional
+  mutants cover hidden errors and presentation accidentally releasing admission. Within the configured finite prefix domain (`0..3`), it also checks
   that a successful refresh advances the paired result and source checkpoint to
   the observed committed prefix, while a failed refresh stutters. Browser tests
   cover the production TypeScript
@@ -345,7 +348,10 @@ type checking are valuable executable evidence, but are not formal proofs.
   Session cleanup phases are exact and monotonic; physical deletion additionally
   requires hidden disposition, terminal execution, and verified completion in
   both store adapters. `SessionDeletion.tla` checks crash/retry, Work retirement,
-  stable effect identity, single fact emission, and tombstone ordering. Database
+  stable effect identity, single fact emission, and tombstone ordering. The
+  `SessionDeletionUnconfirmed.cfg` configuration removes the eventual-return
+  assumption and checks permanent-unknown safety; it asserts no automatic
+  tombstone or external completion in that environment. Database
   engine atomicity and the truth of remote cleanup/retirement effects remain
   adapter claims.
 - Worker replacement and heartbeat now consume one non-resurrection kernel:

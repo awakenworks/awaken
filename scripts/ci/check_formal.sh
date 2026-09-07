@@ -660,6 +660,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/session-deletion" \
     -config formal/tla/SessionDeletion.cfg formal/tla/SessionDeletion.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-deletion-unconfirmed" \
+    -config formal/tla/SessionDeletionUnconfirmed.cfg formal/tla/SessionDeletion.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/workspace-path-projection" \
     -config formal/tla/WorkspacePathProjection.cfg \
     formal/tla/WorkspacePathProjection.tla
