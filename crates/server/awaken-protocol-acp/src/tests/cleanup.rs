@@ -103,3 +103,82 @@ async fn cleanup_drains_trailing_output_but_never_infers_exit_from_eof() {
         remote.await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn signal_errors_require_later_exit_evidence_within_the_same_reap_budget() {
+    // D10 TERM fails + a later poll proves exit => success without KILL.
+    // D11 TERM fails + no exit => error, no fabricated receipt or escalation.
+    // D12 TERM succeeds, KILL fails + wait proves exit => success.
+    // D13 KILL fails + wait hangs/errors => bounded error. A successful signal
+    // alone is never evidence. Both terminal and cancellation cleanup reuse
+    // this ladder; no backend-specific ESRCH text is interpreted as success.
+    struct SignalRace {
+        failure: pc::Signal,
+        evidence: &'static str,
+        polls: std::sync::atomic::AtomicUsize,
+        signals: std::sync::Mutex<Vec<pc::Signal>>,
+    }
+    #[async_trait]
+    impl pc::ProcessHandle for SignalRace {
+        fn id(&self) -> &str {
+            "same-owned-process"
+        }
+        async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
+            let signalled = !self.signals.lock().unwrap().is_empty();
+            let ready = signalled
+                && self.evidence == "poll"
+                && self.polls.fetch_add(1, Ordering::SeqCst) >= 2;
+            Ok(ready.then_some(pc::ExitStatus {
+                code: Some(0),
+                signaled: false,
+            }))
+        }
+        async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
+            match self.evidence {
+                "wait" => Ok(pc::ExitStatus {
+                    code: Some(0),
+                    signaled: false,
+                }),
+                "error" => Err(pc::SandboxError::new("exit evidence unavailable")),
+                _ => std::future::pending().await,
+            }
+        }
+        async fn signal(&self, signal: pc::Signal) -> Result<(), pc::SandboxError> {
+            self.signals.lock().unwrap().push(signal);
+            if signal == self.failure {
+                Err(pc::SandboxError::new("signal failed"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    for (failure, evidence, expected) in [
+        (pc::Signal::Term, "poll", Some(false)),
+        (pc::Signal::Term, "none", None),
+        (pc::Signal::Kill, "wait", Some(true)),
+        (pc::Signal::Kill, "none", None),
+        (pc::Signal::Kill, "error", None),
+    ] {
+        let process = SignalRace {
+            failure,
+            evidence,
+            polls: Default::default(),
+            signals: Default::default(),
+        };
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            Supervisor::reap(&process, Duration::from_millis(20)),
+        )
+        .await
+        .expect("D10-D13 remain bounded");
+        assert_eq!(result.ok(), expected, "{failure:?}/{evidence}");
+        assert_eq!(
+            *process.signals.lock().unwrap(),
+            if failure == pc::Signal::Term {
+                vec![pc::Signal::Term]
+            } else {
+                vec![pc::Signal::Term, pc::Signal::Kill]
+            }
+        );
+    }
+}
