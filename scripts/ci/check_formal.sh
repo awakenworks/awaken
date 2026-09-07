@@ -456,6 +456,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness trace_capture_clamp_is_exact_and_never_widens_persisted_content \
     --harness configured_capture_redactor_selection_is_total_and_exact \
     --harness session_resource_replacement_requires_newer_or_authority_amended_generation \
+    --harness explicit_empty_resource_manifest_revokes_without_activation \
     --harness session_realization_renewal_failure_disposition_is_total_exact_and_fail_closed \
     --harness container_hand_residency_recovery_mapping_is_total_exact_and_non_widening \
     --harness mcp_credential_realization_preserves_the_request_target_exactly \

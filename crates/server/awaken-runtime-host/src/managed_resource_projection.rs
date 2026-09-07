@@ -10,6 +10,8 @@ use awaken_session_contract::RunError;
 
 use crate::skill_catalog::skill_store_run_error;
 
+mod transition;
+
 /// One compiled projection from the frozen Session manifest. Standard mounts
 /// and optional automatic-memory candidates travel together so installation
 /// cannot publish one generation with bindings from another.
@@ -634,6 +636,11 @@ impl crate::ManagedHost {
             return Ok(());
         }
         let desired_manifest = desired_manifest.clone();
+        let projection_change = transition::live_resource_projection_change(
+            transition.previous() != transition.desired(),
+            !desired_manifest.resources.inputs().is_empty(),
+            !desired_manifest.resources.skills().is_empty(),
+        );
         let old_memory: Vec<_> = previous_manifest
             .resources
             .inputs()
@@ -871,7 +878,7 @@ impl crate::ManagedHost {
             // manifest. Every operation is idempotent, so a failed attempt leaves
             // the prior manifest authoritative and the persisted pending generation
             // can safely retry without mistaking an unrealized mount for success.
-            if transition.previous() != transition.desired() {
+            if projection_change.removes_previous() {
                 environment
                     .remove_projection_path(crate::skills::DELIVERED_SKILLS_SUBDIR)
                     .await
@@ -898,61 +905,67 @@ impl crate::ManagedHost {
                     .await
                     .map_err(|error| RunError::internal(error.to_string()))?;
             }
-            for input in desired_manifest.resources.inputs() {
-                if reconciliation == crate::session_slot::EnvironmentResourceReconciliation::None
-                    && previous_manifest
-                        .resources
-                        .inputs()
-                        .iter()
-                        .any(|candidate| candidate == input)
-                {
-                    continue;
-                }
-                let path = crate::managed_resource_projection::resolved_input_effect_path(input);
-                match &input.source {
-                    awaken_session_contract::ResolvedInputSource::File { .. }
-                    | awaken_session_contract::ResolvedInputSource::MemoryStore { .. } => {
-                        let mount = new
-                            .mounts
+            if projection_change.installs_desired()
+                || reconciliation != crate::session_slot::EnvironmentResourceReconciliation::None
+            {
+                for input in desired_manifest.resources.inputs() {
+                    if reconciliation
+                        == crate::session_slot::EnvironmentResourceReconciliation::None
+                        && previous_manifest
+                            .resources
+                            .inputs()
                             .iter()
-                            .find(|mount| mount.mount_path == path)
-                            .ok_or_else(|| {
-                                RunError::internal(format!(
-                                    "compiled Resource mount `{path}` is missing"
-                                ))
-                            })?;
-                        if reconciliation
-                            == crate::session_slot::EnvironmentResourceReconciliation::Adopted
-                            || (reconciliation
-                                == crate::session_slot::EnvironmentResourceReconciliation::Fresh
-                                && crate::provisioning::resource_mount_is_create_time(mount))
-                        {
-                            continue;
-                        }
-                        environment
-                            .attach_mount(mount.clone())
-                            .await
-                            .map_err(|error| RunError::internal(error.to_string()))?;
+                            .any(|candidate| candidate == input)
+                    {
+                        continue;
                     }
-                    awaken_session_contract::ResolvedInputSource::Repository { .. } => {
-                        let repository = new
-                            .repositories
-                            .iter()
-                            .find(|repository| repository.plan.mount_path == path)
-                            .ok_or_else(|| {
-                                RunError::internal(format!(
-                                    "compiled Repository activation `{path}` is missing"
-                                ))
-                            })?;
-                        self.host
-                            .realize_repository_activation(
-                                thread,
-                                repository,
-                                &new.binding_checks,
-                                environment.as_ref(),
-                            )
-                            .await
-                            .map_err(|error| RunError::internal(error.to_string()))?;
+                    let path =
+                        crate::managed_resource_projection::resolved_input_effect_path(input);
+                    match &input.source {
+                        awaken_session_contract::ResolvedInputSource::File { .. }
+                        | awaken_session_contract::ResolvedInputSource::MemoryStore { .. } => {
+                            let mount = new
+                                .mounts
+                                .iter()
+                                .find(|mount| mount.mount_path == path)
+                                .ok_or_else(|| {
+                                    RunError::internal(format!(
+                                        "compiled Resource mount `{path}` is missing"
+                                    ))
+                                })?;
+                            if reconciliation
+                                == crate::session_slot::EnvironmentResourceReconciliation::Adopted
+                                || (reconciliation
+                                    == crate::session_slot::EnvironmentResourceReconciliation::Fresh
+                                    && crate::provisioning::resource_mount_is_create_time(mount))
+                            {
+                                continue;
+                            }
+                            environment
+                                .attach_mount(mount.clone())
+                                .await
+                                .map_err(|error| RunError::internal(error.to_string()))?;
+                        }
+                        awaken_session_contract::ResolvedInputSource::Repository { .. } => {
+                            let repository = new
+                                .repositories
+                                .iter()
+                                .find(|repository| repository.plan.mount_path == path)
+                                .ok_or_else(|| {
+                                    RunError::internal(format!(
+                                        "compiled Repository activation `{path}` is missing"
+                                    ))
+                                })?;
+                            self.host
+                                .realize_repository_activation(
+                                    thread,
+                                    repository,
+                                    &new.binding_checks,
+                                    environment.as_ref(),
+                                )
+                                .await
+                                .map_err(|error| RunError::internal(error.to_string()))?;
+                        }
                     }
                 }
             }
