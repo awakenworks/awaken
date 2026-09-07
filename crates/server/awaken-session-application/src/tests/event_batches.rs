@@ -620,6 +620,158 @@ fn running_session_with_activity(session_id: &str, epoch: u64) -> PersistedSessi
 }
 
 #[tokio::test]
+async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo() {
+    // A running command can expose durable progress only after its exact input
+    // exists. Anchoring alone must neither complete it nor activate queued work.
+    for has_input in [false, true] {
+        let session_id = if has_input {
+            "running-anchored"
+        } else {
+            "running-no-input"
+        };
+        let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+        );
+        let session = planned_session(
+            session_id,
+            vec![
+                SessionEventInput::UserMessage {
+                    content: vec![ContentBlock::text("first")],
+                },
+                SessionEventInput::UserMessage {
+                    content: vec![ContentBlock::text("queued")],
+                },
+            ],
+        );
+        let (run_id, operation_id) = match &session.event_batches[0].events[0].event {
+            SessionEventCommand::UserMessage {
+                run_id,
+                operation_id,
+                ..
+            } => (run_id.clone(), operation_id.clone()),
+            _ => unreachable!(),
+        };
+        create(repository.as_ref(), session).await;
+        let runtime = Arc::new(EventBatchRuntime::default());
+        runtime
+            .states
+            .lock()
+            .unwrap()
+            .insert(run_id.0.clone(), RunState::Running);
+        *runtime.latest_run.lock().unwrap() = Some(run_id.clone());
+        if has_input {
+            runtime.committed.lock().unwrap().push(Message::new(
+                MessageId::session_event_input(session_id, &operation_id),
+                Role::User,
+                vec![ContentBlock::text("first")],
+            ));
+        }
+        let app = application_with_runtime(
+            runtime.clone(),
+            repository.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        // The actual model gate, not a manually scheduled recovery interval,
+        // must wake publication for this exact pending primary input.
+        assert!(
+            awaken_session_contract::SessionAgentCoordination::admit_session_model_request(
+                &app,
+                session_id,
+                &ThreadId(session_id.into()),
+                &RunId("not-the-current-run".into()),
+            )
+            .await
+            .is_err()
+        );
+        awaken_session_contract::SessionAgentCoordination::admit_session_model_request(
+            &app,
+            session_id,
+            &ThreadId("event-child".into()),
+            &run_id,
+        )
+        .await
+        .unwrap();
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                app.lifecycle_wakeup.notified(),
+            )
+            .await
+            .is_err(),
+            "neither an invalid Run nor a child request may wake the primary input"
+        );
+        awaken_session_contract::SessionAgentCoordination::admit_session_model_request(
+            &app,
+            session_id,
+            &ThreadId(session_id.into()),
+            &run_id,
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            app.lifecycle_wakeup.notified(),
+        )
+        .await
+        .expect("model admission must wake the existing supervisor before completion");
+        app.drive_session_event_batches(session_id, None)
+            .await
+            .unwrap();
+        let first = repository.get(session_id).await.unwrap();
+        let entries = &first.event_batches[0].events;
+        assert_eq!(
+            entries[0].projection_anchor.map(|a| a.source_commit_cursor),
+            has_input.then_some(1)
+        );
+        assert!(entries.iter().all(|entry| !entry.processed));
+        assert!(entries[1].projection_anchor.is_none());
+        assert!(runtime.activated.lock().unwrap().is_empty());
+        app.drive_session_event_batches(session_id, None)
+            .await
+            .unwrap();
+        let replay = repository.get(session_id).await.unwrap();
+        assert_eq!(
+            first.revision, replay.revision,
+            "anchor replay must not mutate the root"
+        );
+        if has_input {
+            awaken_session_contract::SessionAgentCoordination::admit_session_model_request(
+                &app,
+                session_id,
+                &ThreadId(session_id.into()),
+                &run_id,
+            )
+            .await
+            .unwrap();
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(10),
+                    app.lifecycle_wakeup.notified(),
+                )
+                .await
+                .is_err(),
+                "subsequent requests must not wake recovery for an already anchored input"
+            );
+            runtime.end(&run_id);
+            app.drive_session_event_batches(session_id, None)
+                .await
+                .unwrap();
+            let ended = repository.get(session_id).await.unwrap();
+            assert!(ended.event_batches[0].events[0].processed);
+            assert_eq!(
+                ended.event_batches[0].events[0].projection_anchor,
+                entries[0].projection_anchor
+            );
+            assert_eq!(
+                runtime.activated.lock().unwrap().len(),
+                1,
+                "queued work starts only after the first Run ends"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn unreplayed_user_run_anchors_its_receipt_without_inventing_a_message() {
     // Cause/effect graph: C1 accepted User command owns exact Run R; C2 R
     // commits Cancelled before input, or Indeterminate after opaque ACP claim
