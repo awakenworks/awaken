@@ -304,18 +304,25 @@ def mutate_disconnected_product_feature(case_root: Path) -> None:
 
 class MutationOracleTests(unittest.TestCase):
     def test_tlc_launch_keeps_the_resource_bound_and_strict_timeout(self) -> None:
-        # R1 same collector as check_formal.sh + explicit 512m/60s bounds:
-        # run the full model, never substitute a smaller state configuration.
-        # R2 a timeout still escapes as a failed run, never a semantic kill.
+        # R1 default and R2 explicit composed-model budgets reach every child
+        # invocation. Both still require a green baseline and the exact named
+        # invariant counterexample; no timeout or merely nonzero exit is a kill.
+        # R3 both budgets keep the canonical collector and full configuration;
+        # R4 a timeout escapes as failed verification, never a semantic kill.
         green = subprocess.CompletedProcess([], 0, "Model checking completed. No error has been found.")
-        with patch("subprocess.run", return_value=green) as run:
-            check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", "config", [])
-        args, kwargs = run.call_args
-        self.assertEqual(args[0][:4], ["java", "-Xmx512m", "-XX:+UseParallelGC", "-jar"])
-        self.assertEqual(kwargs["timeout"], 60)
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("java", 60)):
-            with self.assertRaises(subprocess.TimeoutExpired):
-                check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", "config", [])
+        rejected = subprocess.CompletedProcess([], 12, "Invariant ExactRule is violated")
+        for budget, heap, timeout in (({}, "-Xmx512m", 60),
+                                     ({"heap_mb": 2048, "timeout_seconds": 180}, "-Xmx2048m", 180)):
+            with self.subTest(budget=budget), patch("subprocess.run", side_effect=[green, rejected]) as runner:
+                check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", "config",
+                                          [("mutant", "config", "ExactRule")], **budget)
+                self.assertEqual(runner.call_count, 2)
+                for call in runner.call_args_list:
+                    self.assertEqual(call.args[0][:4], ["java", heap, "-XX:+UseParallelGC", "-jar"])
+                    self.assertEqual(call.kwargs["timeout"], timeout)
+            with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("java", timeout)):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", "config", [], **budget)
 
     def test_constant_trace_refutation_requires_exact_name_and_status(self) -> None:
         # Q1 TLC rejects a false constant invariant before state exploration:
@@ -1151,11 +1158,11 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
     for anchor, broken, invariant in [
         ('CurrentBinding == /\\ ExecutionRootCurrent', 'CurrentBinding == /\\ TRUE', "OnlyCurrentBindingCommits"),
         ('/\\ projection = "Live" /\\ ~sessionExpired', '/\\ TRUE /\\ ~sessionExpired', "OnlyCurrentBindingCommits"),
-        ('/\\ ~sessionExpired\n  /\\ selection', '/\\ TRUE\n  /\\ selection', "OnlyCurrentBindingCommits"),
+        ('/\\ ~sessionExpired\n  /\\ boundSlot', '/\\ TRUE\n  /\\ boundSlot', "OnlyCurrentBindingCommits"),
         ('/\\ boundSlot = slotIdentity', '/\\ TRUE', "OnlyCurrentBindingCommits"),
         ('/\\ boundGeneration = lease[1]', '/\\ TRUE', "OnlyCurrentBindingCommits"),
         ('/\\ boundEnvironment = environmentIdentity', '/\\ TRUE', "OnlyCurrentBindingCommits"),
-        ('/\\ environmentPhase \\in {"candidate", "resident"}\n\nSelect', '/\\ TRUE\n\nSelect', "OnlyCurrentBindingCommits"),
+        ('/\\ environmentPhase \\in {"candidate", "resident"}))\n\nSelect', '/\\ TRUE))\n\nSelect', "OnlyCurrentBindingCommits"),
         ('/\\ ~effectHeld /\\ UNCHANGED bindingVars', '/\\ UNCHANGED bindingVars', "OnlyCurrentBindingCommits"),
         ('Select == /\\ selection = "unset"', 'Select == /\\ selection \\in {"unset", "weak"}', "WeakExecutionCannotUpgrade"),
         ('/\\ boundSlot = 0 /\\ projection', '/\\ projection', "BindingIsWriteOnce"),
@@ -1165,15 +1172,32 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
             raise SystemExit(f"Session execution binding mutation anchor drifted: {anchor}")
         property_kind = "PROPERTY" if invariant == "BindingIsWriteOnce" else "INVARIANTS"
         mutations.append((source.replace(anchor, broken), header + property_kind + " " + invariant, invariant))
+    # P1-P6 bypass each shared guard ONLY for a pre-Environment provider
+    # callback. Execution-mode counterexamples cannot kill these mutants;
+    # this prevents the new branch from borrowing the old branch's proof.
+    for anchor, broken in [
+        ('CurrentBinding == /\\ ExecutionRootCurrent', 'CurrentBinding == /\\ (providerSource \\/ ExecutionRootCurrent)'),
+        ('/\\ projection = "Live" /\\ ~sessionExpired', '/\\ (providerSource \\/ projection = "Live") /\\ ~sessionExpired'),
+        ('/\\ ~sessionExpired\n  /\\ boundSlot', '/\\ (providerSource \\/ ~sessionExpired)\n  /\\ boundSlot'),
+        ('/\\ boundSlot = slotIdentity', '/\\ (providerSource \\/ boundSlot = slotIdentity)'),
+        ('/\\ boundGeneration = lease[1]', '/\\ (providerSource \\/ boundGeneration = lease[1])'),
+        ('/\\ ~effectHeld /\\ UNCHANGED bindingVars', '/\\ (providerSource \\/ ~effectHeld) /\\ UNCHANGED bindingVars'),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit(f"Provider fence source mutation anchor drifted: {anchor}")
+        invariant = "OnlyCurrentBindingCommits"
+        mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
     # Both topology paths must reach actual effects. Otherwise an accidental
     # mandatory Worker guard could make all direct-local safety checks vacuous.
     for witness in ("NoCandidateEffectReached", "NoResidentEffectReached",
-                    "NoLocalEffectReached", "NoRegisteredEffectReached"):
+                    "NoLocalEffectReached", "NoRegisteredEffectReached",
+                    "NoProviderEffectReached", "NoUnreadyProviderEffectReached"):
         mutations.append((source, header + "INVARIANTS " + witness, witness))
     check_tlc_model_mutations(tlc_jar, "SessionExecutionBinding", source, config, mutations,
                               dependencies=("SessionRealizationAuthority", "WorkerExecutionAuthority"),
-                              action_properties={"BindingIsWriteOnce"})
-    print("Session execution binding: 11/11 mutants killed; candidate/resident and local/registered effects reachable")
+                              action_properties={"BindingIsWriteOnce"},
+                              heap_mb=2048, timeout_seconds=180)
+    print("Session execution binding: 17/17 mutants killed; candidate/resident, local/registered and pre-environment provider projections reachable")
 
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
@@ -1733,7 +1757,9 @@ def check_realization_trace_mutants(tlc_jar: Path, trace_dir: Path, manifest: di
 
 def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str,
                               mutations: list[tuple[str, str, str]], *,
-                              dependencies: tuple[str, ...] = (), artifact_directory: Path | None = None) -> None:
+                              dependencies: tuple[str, ...] = (),
+                              artifact_directory: Path | None = None,
+                              heap_mb: int = 512, timeout_seconds: int = 60) -> None:
     # One TLC invocation/oracle for every model mutation family. Validate both
     # the process result and semantic outcome; always establish the green base.
     cases = [(source, config, None), *mutations]
@@ -1752,10 +1778,10 @@ def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str
                     if source_path.is_file(): shutil.copy2(source_path, artifact_directory / source_path.name)
             try:
                 result = subprocess.run(
-                    ["java", "-Xmx512m", "-XX:+UseParallelGC", "-jar", str(tlc_jar.resolve()),
+                    ["java", f"-Xmx{heap_mb}m", "-XX:+UseParallelGC", "-jar", str(tlc_jar.resolve()),
                      "-metadir", str(directory / "states"), "-config", str(config_path), str(model)],
                     cwd=directory, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    timeout=60, check=False,
+                    timeout=timeout_seconds, check=False,
                 )
             except (subprocess.TimeoutExpired, OSError) as error:
                 if artifact_directory: (artifact_directory / "tlc.log").write_text(f"proof tool failed: {error}")
