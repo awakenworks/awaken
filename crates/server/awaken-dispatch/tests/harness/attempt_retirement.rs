@@ -1,5 +1,6 @@
 use awaken_dispatch::{
-    AttemptAdmission as A, DispatchQueue, RunClaim, RunDispatch, SettleOutcome as S,
+    AttemptAdmission as A, DispatchQueue, LeaseRenewalOutcome as L, RunClaim, RunDispatch,
+    SettleOutcome as S,
 };
 
 /// One oracle for Memory, SQLite and PostgreSQL; real stores, no shadow reducer.
@@ -10,7 +11,8 @@ pub async fn assert_retirement(store: &impl DispatchQueue, now: u64) {
     // R2 finish then same-epoch begin/handoff => Fenced (prevents ACK ABA).
     // R3 duplicate ACK => Applied with no new execution.
     // R4 new claim epoch => may execute; old ACK => Fenced, slot preserved.
-    // R5 new epoch while predecessor is active => Blocked until exact ACK.
+    // R5 exact B renewal => Current; after its zero-duration lease expires, a
+    // new epoch remains Blocked while B's physical attempt is still active.
     // R6 another Thread => independent admission. No rule grants replay of an
     // unknown external effect; these tests own only physical identity retirement.
     store
@@ -83,7 +85,11 @@ pub async fn assert_retirement(store: &impl DispatchQueue, now: u64) {
         "R6"
     );
     assert_eq!(store.finish_attempt(&c).await.unwrap(), S::Applied);
-    assert!(store.renew_lease(&b, 0, now).await.unwrap());
+    assert_eq!(
+        store.renew_lease(&b, 0, now).await.unwrap(),
+        L::Current,
+        "R5 exact current claim receives the typed renewal outcome"
+    );
     // Expire through the store-owned lease clock; expiry must retain B's slot.
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     let d = store

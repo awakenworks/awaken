@@ -919,12 +919,12 @@ async fn renew_lease_returns_typed_loss_over_the_wire_when_the_lease_was_stolen(
     assert_eq!(a.lease.epoch, 1);
     // While A still holds it, a renew succeeds — the TRUE path, as a control.
     clock.store(100, Ordering::SeqCst);
-    assert!(
+    assert_eq!(
         queue_a
             .renew_lease(&RunClaim::from(&a.lease), 1_000, 100)
             .await
-            .unwrap()
-            .is_current(),
+            .unwrap(),
+        awaken_dispatch::LeaseRenewalOutcome::Current,
         "the current owner renews its own live lease"
     );
 

@@ -1133,12 +1133,9 @@ async fn renewal_keeps_a_slow_owner_across_multiple_lease_periods() {
     // Three heartbeats, each firing before the current lease expires (60<100,
     // 120<160, 180<220), each extending the lease a full period ahead.
     for (renew_at, poke_at) in [(60u64, 120u64), (120, 180), (180, 240)] {
-        assert!(
-            store
-                .renew_lease(&claim, lease, renew_at)
-                .await
-                .unwrap()
-                .is_current(),
+        assert_eq!(
+            store.renew_lease(&claim, lease, renew_at).await.unwrap(),
+            awaken_dispatch::LeaseRenewalOutcome::Current,
             "the exact claim renewed A's in-flight lease"
         );
         assert!(

@@ -377,12 +377,12 @@ async fn db_less_worker_drives_runs_over_real_http() {
         awaken_dispatch::LeaseRenewalOutcome::Lost,
         "the authenticated owner cannot renew an epoch it does not hold",
     );
-    assert!(
+    assert_eq!(
         queue
             .renew_lease(&original_claim, 30_000, 1_000)
             .await
-            .expect("renew over http")
-            .is_current(),
+            .expect("renew over http"),
+        awaken_dispatch::LeaseRenewalOutcome::Current,
         "the owner renews its live lease"
     );
 

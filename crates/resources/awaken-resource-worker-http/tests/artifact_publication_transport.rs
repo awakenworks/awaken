@@ -14,8 +14,8 @@ use awaken_resource_worker_http::{
     HttpArtifactPublisher, WorkerArtifactPublicationService, worker_artifact_publication_router,
 };
 use awaken_dispatch::{
-    ArtifactPublicationFence, DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch,
-    WorkerIdentity,
+    ArtifactPublicationFence, DispatchQueue as _, LeaseRenewalOutcome, MemoryDispatchStore,
+    RunClaim, RunDispatch, WorkerIdentity,
 };
 use awaken_dispatch_testkit::worker_http as support;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
@@ -1872,16 +1872,16 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
         "R11 parent output unchanged"
     );
 
-    // R10 a retained exact epoch with an expired lease still authorizes no
-    // capture I/O. Advance the isolated fixture to that state without sleeping.
+    // R10 a retained exact epoch with an expired lease first returns the typed
+    // Current renewal outcome, but still authorizes no capture I/O. This exact
+    // match preserves the distinction from CancellationRequested and Lost.
+    // Advance the isolated fixture to that state without sleeping.
     let reads = counting.capture_reads.load(Ordering::SeqCst);
     let replacements = counting.capture_replaces.load(Ordering::SeqCst);
-    assert!(
-        dispatch
-            .renew_lease(&claim, 0, 0)
-            .await
-            .unwrap()
-            .is_current()
+    assert_eq!(
+        dispatch.renew_lease(&claim, 0, 0).await.unwrap(),
+        LeaseRenewalOutcome::Current,
+        "R10 exact current claim receives the typed renewal outcome"
     );
     assert!(
         publisher
