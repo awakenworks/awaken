@@ -468,7 +468,12 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
     drop(sandbox);
 
     let adopted = provider
-        .adopt_sandbox_for_effect(&sandbox_spec, &handle, &realization)
+        .adopt_sandbox_for_effect(
+            &sandbox_spec,
+            &handle,
+            &realization,
+            &pc::test_support::EffectAuthority::new(&realization),
+        )
         .await
         .expect("adopt fenced namespace");
     adopted

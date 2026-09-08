@@ -145,7 +145,12 @@ async fn cross_node_adopt(tier: Tier, can_exec: bool) {
     let recovered: pc::SandboxHandle = serde_json::from_str(&wire).unwrap();
     let host_b = provider(tier, base.path());
     let sandbox_b = host_b
-        .adopt_for_effect(&sandbox_spec, &recovered, &realization_fence)
+        .adopt_for_effect(
+            &sandbox_spec,
+            &recovered,
+            &realization_fence,
+            &pc::test_support::EffectAuthority::new(&realization_fence),
+        )
         .await
         .unwrap_or_else(|e| panic!("{tier:?}: a second host must adopt the handle: {e:?}"));
 

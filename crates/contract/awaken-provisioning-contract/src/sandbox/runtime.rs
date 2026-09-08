@@ -1329,12 +1329,15 @@ pub trait SandboxProvider: Send + Sync {
 
     /// Adopt only after revalidating the exact aggregate-owned effect fence.
     /// The legacy port remains available for explicitly unfenced callers; a
-    /// durable Session must use this fail-closed edge.
+    /// durable Session must use this fail-closed edge. Re-enter the supplied
+    /// current authority after waits and before subsequent effects or success;
+    /// the durable fence alone is not a process-local clock or admission proof.
     async fn adopt_for_effect(
         &self,
         _spec: &SandboxSpec,
         _handle: &SandboxHandle,
         _effect_fence: &SandboxEffectFence,
+        _authority: &dyn crate::CurrentExecutionAuthority,
     ) -> Result<Box<dyn Sandbox>, SandboxError> {
         Err(SandboxError::new(
             "sandbox provider does not implement fenced adoption",

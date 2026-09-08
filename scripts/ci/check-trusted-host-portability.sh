@@ -38,6 +38,10 @@ cargo test -p awaken-session-executor --lib local_and_namespace_restart_replay_e
 # existing terminal group once; it includes the former single Memory row and
 # the provider-fence regression, without a parallel list of disposal cases.
 cargo test -p awaken-session-executor --lib terminal_
+# Current-proof projection and Host adoption waits are platform-neutral. Select
+# their existing test module once on every OS; the terminal filter above does
+# not include these source/ABA rows, and provider unit tests cannot prove wiring.
+cargo test -p awaken-session-executor --lib fence_source_tests
 cargo test -p awaken-session-executor --lib \
   trusted_host_filesystem_view_maps_workspace_relative_cwd_once
 cargo test -p awaken-session-executor --lib trusted_host_installed_hand

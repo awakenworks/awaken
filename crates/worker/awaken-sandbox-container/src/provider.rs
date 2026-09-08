@@ -542,7 +542,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         if adoption.handle.restoration().is_some() {
             return self
-                .adopt_restored_container_with_spec(adoption.spec, adoption.handle)
+                .adopt_restored_container_with_spec(adoption.spec, adoption.handle, &|| Ok(()))
                 .await;
         }
         match self
@@ -715,7 +715,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         purpose: ContainerObservationPurpose,
     ) -> Result<pc::SandboxObservation, pc::SandboxError> {
         if let Some(fence) = effect_fence {
-            fence.validate_live_at(container_runtime_unix_now_ms()?)?;
+            fence.validate_identity()?;
         }
         if let Some(stored) = adoption.handle.container_adoption_fingerprint()? {
             let (_, expected) = self.adoption_plan(adoption.spec)?;
@@ -736,11 +736,13 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         adoption: ContainerEnvironmentAdoption<'_>,
         effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
+        let admit = || pc::with_current_sandbox_effect(effect_fence, authority, || Ok(()));
+        admit()?;
         if adoption.handle.restoration().is_some() {
-            effect_fence.validate_live_at(container_runtime_unix_now_ms()?)?;
             return self
-                .adopt_restored_container_with_spec(adoption.spec, adoption.handle)
+                .adopt_restored_container_with_spec(adoption.spec, adoption.handle, &admit)
                 .await;
         }
         match self
@@ -752,7 +754,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             .await?
         {
             pc::SandboxObservation::Ready => {
-                self.adopt_observed_container_with_spec(adoption.handle, adoption.spec, &|| Ok(()))
+                self.adopt_observed_container_with_spec(adoption.handle, adoption.spec, &admit)
                     .await
             }
             pc::SandboxObservation::Provisioning => Err(pc::SandboxError::new(
@@ -910,14 +912,21 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         &self,
         adoption: ContainerEnvironmentAdoption<'_>,
         effect_fence: Option<&ContainerEffectFence>,
+        authority: Option<&dyn pc::CurrentExecutionAuthority>,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
         // `adopt_container` re-observes the exact durable incarnation at this
         // effect edge. It never deletes or replaces; a concurrent transition to
         // Gone is surfaced to the Host for a separately authorized Rebuild.
         Ok(Arc::new(match effect_fence {
             Some(effect_fence) => {
-                self.adopt_container_with_adoption_for_effect(adoption, effect_fence)
-                    .await?
+                self.adopt_container_with_adoption_for_effect(
+                    adoption,
+                    effect_fence,
+                    authority.ok_or_else(|| {
+                        pc::SandboxError::new("adoption has no current authority")
+                    })?,
+                )
+                .await?
             }
             None => self.adopt_container_with_adoption(adoption).await?,
         }))
@@ -1033,11 +1042,13 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
         effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
         Ok(Box::new(
             self.adopt_container_with_adoption_for_effect(
                 ContainerEnvironmentAdoption::new(spec, handle),
                 effect_fence,
+                authority,
             )
             .await?,
         ))

@@ -584,8 +584,9 @@ impl LocalProvider {
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
         effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<LocalSandbox, pc::SandboxError> {
-        self.adopt_sandbox_inner(Some(spec), handle, Some(effect_fence))
+        self.adopt_sandbox_inner(Some(spec), handle, Some((effect_fence, authority)))
             .await
     }
 
@@ -742,8 +743,15 @@ impl LocalProvider {
         &self,
         spec: Option<&pc::SandboxSpec>,
         handle: &pc::SandboxHandle,
-        effect_fence: Option<&pc::SandboxEffectFence>,
+        effect: Option<(&pc::SandboxEffectFence, &dyn pc::CurrentExecutionAuthority)>,
     ) -> Result<LocalSandbox, pc::SandboxError> {
+        let effect_fence = effect.map(|(fence, _)| fence);
+        let admit = || {
+            effect.map_or(Ok(()), |(fence, authority)| {
+                pc::with_current_sandbox_effect(fence, authority, || Ok(()))
+            })
+        };
+        admit()?;
         let payload = handle.local_payload()?;
         #[cfg(target_os = "linux")]
         if self.execution_deployment.is_some() && spec.is_none() {
@@ -817,6 +825,7 @@ impl LocalProvider {
                 sandbox.root.root(),
                 current_evidence.as_ref(),
                 effect_fence,
+                effect.map(|(_, authority)| authority),
                 spec,
                 receipt,
                 handle,
@@ -833,6 +842,7 @@ impl LocalProvider {
                 .unwrap_or_default()
                 .to_vec();
         }
+        admit()?;
         Ok(sandbox)
     }
 
@@ -1067,9 +1077,10 @@ impl pc::SandboxProvider for LocalProvider {
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
         effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
         Ok(Box::new(
-            self.adopt_sandbox_for_effect(spec, handle, effect_fence)
+            self.adopt_sandbox_for_effect(spec, handle, effect_fence, authority)
                 .await?,
         ))
     }

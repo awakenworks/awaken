@@ -701,9 +701,10 @@ impl pc::SandboxProvider for NamespaceProvider {
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
         effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
         Ok(Box::new(
-            self.adopt_sandbox_for_effect(spec, handle, effect_fence)
+            self.adopt_sandbox_for_effect(spec, handle, effect_fence, authority)
                 .await?,
         ))
     }
@@ -1124,8 +1125,9 @@ impl NamespaceProvider {
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
         effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<NamespaceSandbox, pc::SandboxError> {
-        self.adopt_sandbox_inner(Some(spec), handle, Some(effect_fence), None)
+        self.adopt_sandbox_inner(Some(spec), handle, Some((effect_fence, authority)), None)
             .await
     }
 
@@ -1255,9 +1257,16 @@ impl NamespaceProvider {
         &self,
         spec: Option<&pc::SandboxSpec>,
         handle: &pc::SandboxHandle,
-        effect_fence: Option<&pc::SandboxEffectFence>,
+        effect: Option<(&pc::SandboxEffectFence, &dyn pc::CurrentExecutionAuthority)>,
         requested_control_services: Option<&std::collections::BTreeSet<SandboxControlServiceKind>>,
     ) -> Result<NamespaceSandbox, pc::SandboxError> {
+        let effect_fence = effect.map(|(fence, _)| fence);
+        let admit = || {
+            effect.map_or(Ok(()), |(fence, authority)| {
+                pc::with_current_sandbox_effect(fence, authority, || Ok(()))
+            })
+        };
+        admit()?;
         let payload = handle.namespace_payload(Self::provider_kind())?;
         let requested_control_services = spec
             .map(|spec| &spec.control_services)
@@ -1355,6 +1364,7 @@ impl NamespaceProvider {
                 &raw_root,
                 current_evidence.as_ref(),
                 effect_fence,
+                effect.map(|(_, authority)| authority),
                 spec,
                 receipt,
                 handle,
@@ -1383,6 +1393,7 @@ impl NamespaceProvider {
         {
             layout.push(private_control_mount(directory));
         }
+        admit()?;
         Ok(NamespaceSandbox {
             id: handle.sandbox_id.clone(),
             realization_root: raw_root,

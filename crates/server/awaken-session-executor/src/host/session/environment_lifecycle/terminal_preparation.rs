@@ -125,6 +125,11 @@ impl SharedHost {
             effect_fence,
         } = installation;
         let adopted = resident.is_none();
+        let authority = self.session_slots.provider_effect_authority(
+            thread,
+            effect_fence,
+            self.execution_authority.as_ref(),
+        )?;
         let environment = match resident {
             Some(environment) => environment,
             None => match mode {
@@ -138,6 +143,7 @@ impl SharedHost {
                                 )
                             })?,
                             Some(effect_fence),
+                            Some(&authority),
                         )
                         .await
                         .map_err(|error| {
@@ -149,11 +155,6 @@ impl SharedHost {
                 ),
                 BoundEnvironmentPreparationMode::Terminal
                 | BoundEnvironmentPreparationMode::TerminalDisposal => {
-                    let authority = self.session_slots.provider_effect_authority(
-                        thread,
-                        effect_fence,
-                        self.execution_authority.as_ref(),
-                    )?;
                     let Some(environment) = provider
                         .prepare_terminal_effective_for_effect(
                             spec,

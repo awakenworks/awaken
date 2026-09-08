@@ -1264,7 +1264,7 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
     for phase, selector in (("disposal", "physicalDisposal"),
                             ("reconstruction", "coldReconstruction"),
                             ("restore-disposal", "restoredDisposal"),
-                            ("checkpoint", "checkpointUpload")):
+                            ("checkpoint", "checkpointUpload"), ("adoption", "liveAdoption")):
         for anchor, broken in [
             ('/\\ providerWait # 1\n', '/\\ (' + selector + ' \\/ providerWait # 1)\n'),
             ('/\\ effects < 2 /\\ CurrentBinding', '/\\ effects < 2 /\\ ((' + selector + ' /\\ providerWait = 2) \\/ CurrentBinding)'),
@@ -1281,7 +1281,7 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
     anchor = 'CheckEffect == /\\ ~effectHeld /\\ effects < 2 /\\ CurrentBinding'
     if source.count(anchor) != 1:
         raise SystemExit("Provider clock over-denial mutation anchor drifted")
-    for phase in ("preparation", "disposal", "reconstruction", "checkpoint"):
+    for phase in ("preparation", "disposal", "reconstruction", "checkpoint", "adoption"):
         broken = anchor + '\n  /\\ ~(providerSource /\\ providerPhase = "' + phase + '")'
         invariant = "FreshProviderEffectRemainsEnabled"
         mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
@@ -1295,15 +1295,16 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
                     "NoPhysicalDisposalReached", "NoCachedDisposalReached",
                     "NoColdReconstructionReached", "NoColdReconstructionReplayReached",
                     "NoRestoredDisposalReached", "NoRestoredDisposalReplayReached",
-                    "NoCheckpointUploadReached", "NoCheckpointReplayReached"):
+                    "NoCheckpointUploadReached", "NoCheckpointReplayReached",
+                    "NoLiveAdoptionReached", "NoLiveAdoptionReplayReached"):
         mutations.append((source, header + "INVARIANTS " + witness, witness))
     check_tlc_model_mutations(tlc_jar, "SessionExecutionBinding", source, config, mutations,
                               dependencies=("SessionRealizationAuthority", "WorkerExecutionAuthority"),
-                              # Five phase classes retain the same complete
+                              # Six phase classes retain the same complete
                               # two-effect state space; raise tool resources,
                               # never truncate exploration to fit the old budget.
                               heap_mb=4096, timeout_seconds=600)
-    print("Session execution binding: 39/39 mutants killed; 18 witnesses cover execution, provider projection, Memory, preparation, physical/restored disposal, cold reconstruction and checkpoint upload/replay; fresh provider admission cannot be suppressed by a second clock")
+    print("Session execution binding: 43/43 mutants killed; 20 witnesses cover execution, provider projection, Memory, preparation, physical/restored disposal, cold reconstruction, live adoption and checkpoint upload/replay; fresh provider admission cannot be suppressed by a second clock")
 
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
