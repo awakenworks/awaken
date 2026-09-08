@@ -25,16 +25,60 @@ fn call(id: &str, args: serde_json::Value) -> ToolCall {
 
 #[tokio::test]
 async fn read_returns_file_contents() {
+    // Causes: known UTF-8 input is empty/plain/CSV/script/Skill; requested view
+    // is full or partial. R1 every full read returns exact bytes (including CJK,
+    // CRLF and a missing final newline), without encoding or shell probes.
+    // R2 an explicit range returns only that range, never evidence of a full
+    // Skill load. Adjacent missing/binary tests cover the failure effect R3.
+    // These are execution checks for the public reader guidance, not proof
+    // that a model chooses this tool; Cowork's real-model E4/UX gate owns that.
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("note.txt");
-    std::fs::write(&path, "hello\nworld").expect("write");
-
-    let out = tool("read")
-        .invoke(call("read", serde_json::json!({ "path": path })))
+    let reader = tool_at("read", dir.path());
+    for (name, content) in [
+        ("empty.txt", ""),
+        ("note.txt", "hello\nworld"),
+        ("客户.csv", "客户,金额\r\n张三,0\r\n"),
+        ("generate.py", "print('资料')\n"),
+        ("SKILL.md", "---\nname: office\n---\n完整交付规则\n末尾约束"),
+    ] {
+        std::fs::write(dir.path().join(name), content).expect("write");
+        let out = reader
+            .invoke(call("read", serde_json::json!({ "file_path": name })))
+            .await
+            .expect("R1 full read");
+        assert_eq!(out.text(), content, "R1 {name}");
+        assert!(!out.is_error);
+    }
+    let partial = reader
+        .invoke(call(
+            "read",
+            serde_json::json!({
+                "file_path": "SKILL.md", "view_range": [4, 4]
+            }),
+        ))
         .await
-        .expect("read");
-    assert_eq!(out.text(), "hello\nworld");
-    assert!(!out.is_error);
+        .expect("R2 explicit range");
+    assert_eq!(partial.text(), "完整交付规则");
+}
+
+#[tokio::test]
+async fn read_does_not_decode_non_utf8_files() {
+    // R3 invalid UTF-8 bytes -> typed failure, never a lossy successful text
+    // result; the input remains unchanged. Format-specific extraction belongs
+    // to document/OCR tools, not a second path inside the text reader.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bytes = b"PK\x03\x04\xff\xfe";
+    let path = dir.path().join("document.docx");
+    std::fs::write(&path, bytes).expect("binary fixture");
+    let err = tool_at("read", dir.path())
+        .invoke(call(
+            "read",
+            serde_json::json!({ "file_path": "document.docx" }),
+        ))
+        .await
+        .expect_err("R3 binary decoding is unavailable");
+    assert!(matches!(err, ToolError::Execution(_)));
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
 }
 
 #[tokio::test]
