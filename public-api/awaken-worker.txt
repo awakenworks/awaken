@@ -24,6 +24,7 @@ pub struct awaken_worker::WorkerBootstrap
 pub awaken_worker::WorkerBootstrap::admin_listen: core::option::Option<alloc::string::String>
 pub awaken_worker::WorkerBootstrap::build_digest: core::option::Option<alloc::string::String>
 pub awaken_worker::WorkerBootstrap::capabilities: alloc::vec::Vec<alloc::string::String>
+pub awaken_worker::WorkerBootstrap::credential_envelope_keys_file: core::option::Option<std::path::PathBuf>
 pub awaken_worker::WorkerBootstrap::credential_material_root: std::path::PathBuf
 pub awaken_worker::WorkerBootstrap::credential_observation_ttl_secs: u64
 pub awaken_worker::WorkerBootstrap::credential_probe_interval_secs: u64
@@ -41,6 +42,7 @@ pub struct awaken_worker::WorkerBootstrapInput
 pub awaken_worker::WorkerBootstrapInput::admin_listen: core::option::Option<alloc::string::String>
 pub awaken_worker::WorkerBootstrapInput::build_digest: core::option::Option<alloc::string::String>
 pub awaken_worker::WorkerBootstrapInput::capabilities: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub awaken_worker::WorkerBootstrapInput::credential_envelope_keys_file: core::option::Option<std::path::PathBuf>
 pub awaken_worker::WorkerBootstrapInput::credential_material_root: core::option::Option<std::path::PathBuf>
 pub awaken_worker::WorkerBootstrapInput::credential_observation_ttl_secs: core::option::Option<u64>
 pub awaken_worker::WorkerBootstrapInput::credential_probe_interval_secs: core::option::Option<u64>
