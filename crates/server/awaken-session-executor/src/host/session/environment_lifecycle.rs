@@ -459,17 +459,29 @@ impl SharedHost {
                 SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(
                     candidate,
                 )) => (None, Some(candidate.clone())),
-                owner => (owner.terminal_bound_environment(), None),
+                SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+                    cause: SessionEnvironmentRetirementCause::RealizationRevocation,
+                    owned: RetiringEnvironmentOwner::Unbound(candidate),
+                }) => (
+                    Some((candidate.binding.clone(), candidate.environment.clone())),
+                    None,
+                ),
+                owner => (
+                    owner
+                        .terminal_bound_environment()
+                        .map(|owned| (owned.binding, owned.environment)),
+                    None,
+                ),
             })
             .unwrap_or_default();
         let resident = retained
-            .map(|owned| {
-                if owned.binding != encoded {
+            .map(|(binding, environment)| {
+                if binding != encoded {
                     return Err(HostError::internal(
                         "Session Environment retry conflicts with its retained binding",
                     ));
                 }
-                Ok(owned.environment)
+                Ok(environment)
             })
             .transpose()?;
         if let Some(candidate) = &candidate
@@ -653,29 +665,34 @@ impl SharedHost {
         let (handle, spec, mut resident, candidate) =
             self.validated_session_environment_adoption(thread, encoded, provider, None)?;
         // Realization revocation permanently closed the old process-level Hand,
-        // but a durable owner still names the physical Sandbox. Retain its exact
-        // fence through typed observation; only Ready may move it back to
-        // AwaitingAdoption so the canonical constructors bind a fresh Hand
-        // around the same physical owner, handle and root. LegacyDirect is
+        // but the retained owner still names the physical Sandbox. Retain its
+        // exact fence through typed observation; only Ready may enroll a fresh
+        // Candidate over the same physical owner, handle and root. A missing
+        // commit response requires aggregate adoption authority. LegacyDirect is
         // excluded: its claimed recovery owns physical disposal and same-id
         // creation instead.
-        let revoked_durable = self
+        let revoked_owner = self
             .session_slots
             .read(thread, |slot| match &slot.environment_owner {
                 SessionEnvironmentOwner::Retiring(retiring)
-                    if matches!(
-                        (&retiring.cause, &retiring.owned),
-                        (
-                            SessionEnvironmentRetirementCause::RealizationRevocation,
-                            RetiringEnvironmentOwner::Bound(BoundSessionEnvironment {
-                                identity: BoundSessionEnvironmentIdentity::Durable { .. },
-                                binding,
-                                ..
-                            }),
-                        ) if binding == encoded
-                    ) =>
+                    if retiring.cause
+                        == SessionEnvironmentRetirementCause::RealizationRevocation =>
                 {
-                    Some(retiring.clone())
+                    let matches = match &retiring.owned {
+                        RetiringEnvironmentOwner::Bound(owned)
+                            if matches!(
+                                &owned.identity,
+                                BoundSessionEnvironmentIdentity::Durable { .. }
+                            ) =>
+                        {
+                            owned.binding == encoded
+                        }
+                        RetiringEnvironmentOwner::Unbound(candidate) => {
+                            candidate.binding == encoded
+                        }
+                        _ => false,
+                    };
+                    matches.then(|| retiring.clone())
                 }
                 _ => None,
             })
@@ -698,6 +715,15 @@ impl SharedHost {
                 &authorized
             }
         };
+        if revoked_owner
+            .as_ref()
+            .is_some_and(|retiring| matches!(&retiring.owned, RetiringEnvironmentOwner::Unbound(_)))
+            && effect.provider_fence.is_none()
+        {
+            return Err(HostError::internal(
+                "unacknowledged Candidate recovery requires current aggregate adoption authority",
+            ));
+        }
         if let awaken_session_contract::SessionEnvironmentEffectAuthorization::AlreadyApplied {
             binding,
         } = &effect.authorization
@@ -772,7 +798,7 @@ impl SharedHost {
         // no rule.
         match observation {
             awaken_provisioning_contract::SandboxObservation::Ready => {
-                if revoked_durable.is_some() {
+                if revoked_owner.is_some() {
                     // Keep the Retiring owner in its slot until a fresh wrapper
                     // exists. Failure/cancellation must preserve the only local
                     // create-attempt and cleanup participants for a later retry.
@@ -790,7 +816,7 @@ impl SharedHost {
                         .await?
                     }
                     (None, None) => {
-                        let rebound = match revoked_durable.as_ref() {
+                        let rebound = match revoked_owner.as_ref() {
                             Some(retiring) => provider
                                 .rebind_retained(&spec, &handle, &retiring.owned.environment(),
                                     effect.provider_fence.as_ref(),
@@ -809,12 +835,12 @@ impl SharedHost {
                                 "session_environment_adoption_indeterminate", error.to_string(),
                             )
                         })?);
-                        if let Some(retiring) = revoked_durable.as_ref() {
-                            // No await separates this exact phase transition
-                            // from staging the replacement Candidate below.
+                        if let Some(retiring) = revoked_owner.as_ref() {
+                            // Atomically retain the fresh Candidate before its
+                            // canonical binding/publication edge can suspend.
                             self.session_slots.update(thread, |slot| {
                                 slot.environment_owner
-                                    .prepare_retiring_realization_adoption(retiring)
+                                    .prepare_retiring_realization_adoption(retiring, environment.clone())
                             })?;
                         }
                         self.publish_session_environment_under_lifecycle(
@@ -865,7 +891,7 @@ impl SharedHost {
                         binding: encoded,
                         source_generation_id,
                         pending_adoption,
-                        revoked_durable: revoked_durable.as_ref(),
+                        revoked_durable: revoked_owner.as_ref(),
                         policy: unavailable_policy,
                         provider,
                         handle: &handle,
@@ -990,7 +1016,7 @@ impl SharedHost {
                 let environment = match &slot.environment_owner {
                     SessionEnvironmentOwner::Resident(owned) => &owned.environment,
                     SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(candidate))
-                        if candidate.durable_identity().is_some() => &candidate.environment,
+                        => &candidate.environment,
                     SessionEnvironmentOwner::Retiring(retiring)
                         if retiring.cause == SessionEnvironmentRetirementCause::RealizationRevocation =>
                         return Some(retiring.owned.environment()),
@@ -1256,15 +1282,27 @@ impl SharedHost {
         &self,
         thread: &str,
     ) -> Result<bool, HostError> {
-        self.session_slots.modify(thread, |slot| {
-            // Physical retirement of an Unowned LegacyDirect environment is
-            // not loss of a never-installed Control lease. Preserve that
-            // existing rebuild path. Explicit Worker/Session revocation has
-            // already closed admission, including Closed(None), before waiting.
-            if slot.realization_authority.lease().is_some() {
-                slot.close_realization_authority(None);
-            }
-        });
+        let retained_realization_owner = self
+            .session_slots
+            .modify(thread, |slot| {
+                // Physical retirement of an Unowned LegacyDirect environment is
+                // not loss of a never-installed Control lease. Preserve that
+                // existing rebuild path. Explicit Worker/Session revocation has
+                // already closed admission, including Closed(None), before waiting.
+                // Closed retains provenance, not execution permission. A
+                // repeated revocation must not reinterpret that same Managed
+                // Candidate as an Unowned disposable legacy creation.
+                let retained = matches!(
+                    &slot.realization_authority,
+                    crate::session_slot::SessionRealizationAuthority::Live(_)
+                        | crate::session_slot::SessionRealizationAuthority::Closed(Some(_))
+                );
+                if slot.realization_authority.lease().is_some() {
+                    slot.close_realization_authority(None);
+                }
+                retained
+            })
+            .unwrap_or(false);
         let cause = SessionEnvironmentRetirementCause::RealizationRevocation;
         let retirement = match self.retire_current_environment(
             thread,
@@ -1291,11 +1329,15 @@ impl SharedHost {
         self.drain_mcp_projections(thread, &[]).await?;
         let retirement_result = match retirement {
             Some(retirement) => match &retirement.owned {
-                RetiringEnvironmentOwner::Unbound(_) => {
+                RetiringEnvironmentOwner::Unbound(_) if !retained_realization_owner => {
                     self.dispose_and_confirm_retirement(thread, &retirement)
                         .await
                 }
-                RetiringEnvironmentOwner::Bound(_) => retirement
+                // An absent response is not proof that the Session root did
+                // not commit. Retain Managed Candidates for current-authority
+                // adoption or canonical terminal cleanup; never dispose them
+                // merely because revocation raced receipt delivery.
+                _ => retirement
                     .owned
                     .environment()
                     .stop_bound_processes()

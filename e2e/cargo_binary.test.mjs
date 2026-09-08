@@ -3,15 +3,18 @@ import path from 'node:path';
 import { test } from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   cargoArguments,
+  cargoExecutable,
+  cargoScenarioHostBundle,
   checkoutLocalCargoEnvironment,
   parseCargoExecutable,
   renderedCargoDiagnostics,
   requirePrebuiltExecutable,
 } from './cargo_binary.mjs';
+import { withoutAmbientProviderKeys } from './process_environment.mjs';
 
 // Cargo-target isolation cause/effect graph: C1 no target is selected, C2 an
 // explicit target is selected, C3 checkout roots differ. Effects: E1 default to
@@ -163,4 +166,168 @@ if (process.env.MODE === 'failed') {
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }
+});
+
+// Snapshot decision table: C1 prebuilt supplied, C2 companion present,
+// C3 exact Cargo build required, C4 concurrent feature changes, C5 build fails.
+// P1 C1+C2 => independent colocated copies, no Cargo or source mutation;
+// P2 C1+!C2 => reject, never fabricate a companion or rebuild silently.
+// P3 C3+C4 => each caller executes its own feature bytes, ordinary shared
+// target is untouched, intermediate cache remains Cargo-selected.
+// P4 C3+C5 => reject, clean only the invocation-owned staging directory.
+// P5 copy destination is occupied => reject, retain that occupant and clean
+// staging; no shared target or successful snapshot is fabricated on failure.
+// Native paths with spaces/Unicode and executable suffixes are intentional;
+// these cases run on Windows/macOS/Linux, not a POSIX shell stand-in.
+test('prebuilt snapshot bundle is independent and refuses missing companions', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'cargo-prebuilt-'));
+  try {
+    const suffix = process.platform === 'win32' ? '.exe' : '';
+    const source = path.join(temp, `awaken-scenario-host${suffix}`);
+    const companion = path.join(temp, `awaken-sandbox${suffix}`);
+    fs.writeFileSync(source, 'host');
+    const options = { cwd: temp, environment: { PATH: '', FIXTURE_HOST: source },
+      prebuiltEnvironmentName: 'FIXTURE_HOST', snapshotDirectory: path.join(temp, '快照 space') };
+    assert.throws(() => cargoScenarioHostBundle(options), /requires sibling/, 'P2');
+    fs.writeFileSync(companion, 'hand');
+    const bundle = cargoScenarioHostBundle(options);
+    fs.writeFileSync(source, 'replaced');
+    fs.writeFileSync(companion, 'replaced');
+    assert.equal(fs.readFileSync(bundle.scenarioHost, 'utf8'), 'host', 'P1');
+    assert.equal(fs.readFileSync(bundle.handCompanion, 'utf8'), 'hand', 'P1');
+    assert.equal(path.dirname(bundle.scenarioHost), path.dirname(bundle.handCompanion));
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
+});
+
+test('real concurrent Cargo builds pin feature bytes before exposing snapshots', async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'cargo-concurrent-'));
+  const children = [];
+  try {
+    fs.mkdirSync(path.join(temp, 'src'));
+    fs.writeFileSync(path.join(temp, 'Cargo.toml'),
+      '[package]\nname="snapshot-fixture"\nversion="0.0.0"\nedition="2021"\n[features]\nsecond=[]\n[workspace]\n');
+    fs.writeFileSync(path.join(temp, 'src/main.rs'),
+      'fn main() { println!("{}", if cfg!(feature="second") { "second" } else { "first" }); }\n');
+    const target = path.join(temp, 'shared target');
+    const cache = path.join(temp, 'intermediate cache');
+    const environment = { ...withoutAmbientProviderKeys(process.env), RUSTC_WRAPPER: '',
+      CARGO_TARGET_DIR: target, CARGO_BUILD_BUILD_DIR: cache };
+    const options = { cwd: temp, environment, packageName: 'snapshot-fixture', targetName: 'snapshot-fixture' };
+    const shared = cargoExecutable(options);
+    const sharedBytes = fs.readFileSync(shared);
+    const resolver = new URL('./cargo_binary.mjs', import.meta.url).href;
+    const destinations = Array.from({ length: 4 }, (_, i) => path.join(temp, `snapshot ${i} 路径`,
+      process.platform === 'win32' ? 'fixture.exe' : 'fixture'));
+    const results = await Promise.all(destinations.map((destination, i) => new Promise((resolve) => {
+      const child = spawn(process.execPath, ['--input-type=module', '-e',
+        `import {cargoExecutable} from ${JSON.stringify(resolver)};
+        cargoExecutable(${JSON.stringify({ cwd: temp, packageName: options.packageName,
+          targetName: options.targetName, snapshotDestination: destination,
+          features: i % 2 ? ['second'] : [] })});`], { env: environment, stdio: ['ignore', 'pipe', 'pipe'] });
+      children.push(child);
+      let stderr = '';
+      child.stderr.on('data', (data) => { stderr += data; });
+      child.on('error', (error) => resolve({ error }));
+      child.on('close', (code, signal) => resolve({ code, signal, stderr }));
+    })));
+    for (const [i, result] of results.entries()) {
+      assert.equal(result.code, 0, JSON.stringify(result));
+      const run = spawnSync(destinations[i], [], { encoding: 'utf8' });
+      assert.equal(run.status, 0, run.stderr);
+      assert.equal(run.stdout.trim(), i % 2 ? 'second' : 'first', 'P3');
+      assert.equal(fs.readdirSync(path.dirname(destinations[i])).length, 1, 'staging cleaned');
+    }
+    assert.deepEqual(fs.readFileSync(shared), sharedBytes, 'P3: shared final output was not republished');
+    assert.ok(fs.existsSync(cache), 'P3: selected intermediate cache reused');
+    const failed = path.join(temp, 'failed', 'snapshot');
+    assert.throws(() => cargoExecutable({ ...options, features: ['nonexistent'], snapshotDestination: failed }),
+      /cargo build failed/, 'P4');
+    assert.deepEqual(fs.readdirSync(path.dirname(failed)), [], 'P4: no failed snapshot or abandoned staging');
+    assert.deepEqual(fs.readFileSync(shared), sharedBytes, 'P4: unrelated output survives failure');
+    fs.mkdirSync(failed);
+    fs.writeFileSync(path.join(failed, 'occupant'), 'preserve');
+    assert.throws(() => cargoExecutable({ ...options, snapshotDestination: failed }), /cargo build failed/, 'P5');
+    assert.deepEqual(fs.readdirSync(path.dirname(failed)), ['snapshot'], 'P5: staging removed');
+    assert.equal(fs.readFileSync(path.join(failed, 'occupant'), 'utf8'), 'preserve', 'P5');
+  } finally {
+    // All child exits are joined above before removing this test's own tree.
+    await Promise.all(children.filter((child) => child.exitCode === null && child.signalCode === null)
+      .map((child) => new Promise((resolve) => child.once('close', resolve))));
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+// Metadata authority refusal: M1 malformed JSON, M2 missing directory,
+// M3 relative directory => all fail before build/staging. No guessed cache
+// location or alternate Cargo build may conceal an incompatible toolchain.
+test('snapshot builds reject missing or invalid Cargo directory authority', { skip: process.platform === 'win32' }, () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'cargo-metadata-'));
+  try {
+    fs.writeFileSync(path.join(temp, 'cargo'), `#!/usr/bin/env node
+if (process.argv[2] !== 'metadata') throw new Error('unexpected build after invalid metadata');
+console.log(process.env.METADATA);
+`, { mode: 0o755 });
+    for (const metadata of ['invalid', '{}', '{"build_directory":"relative"}']) {
+      assert.throws(() => cargoExecutable({ cwd: temp, packageName: 'fixture', targetName: 'fixture',
+        environment: { ...withoutAmbientProviderKeys(process.env), PATH: `${temp}:${process.env.PATH}`, METADATA: metadata },
+        snapshotDestination: path.join(temp, 'snapshot', 'fixture') }), /cargo build failed/);
+      assert.equal(fs.existsSync(path.join(temp, 'snapshot')), false, metadata);
+    }
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
+});
+
+// Bounded formal transition model of the build/copy boundary, attached to its
+// executable regression authority. Two callers request different feature bytes;
+// Cargo serializes each remove+publish pair in one build-directory lock. Copy
+// happens after releasing that lock; cleanup/cancellation may follow publication.
+// Explore ALL interleavings, not random schedules. Invariant: every returned
+// snapshot contains its requesting caller's bytes. Positive witness: both return.
+// TCB: mkdtemp gives disjoint paths, no external actor mutates private outputs,
+// Cargo publishes the requested build before exit, copy is independent. This is
+// bounded model checking, not a proof of Cargo/filesystem internals or arbitrary
+// hostile mutations. Mutant M1 aliases final outputs: must yield a counterexample
+// (missing/wrong bytes); M2 omits cleanup isolation: must also be detected.
+test('exhaustively checks build/copy/cancel interleavings and rejects shared-output mutants', () => {
+  function explore(shared, foreignCleanup = false) {
+    const seen = new Set();
+    let completed = false;
+    let violation = false;
+    function visit(state) {
+      const key = JSON.stringify(state);
+      if (seen.has(key)) return;
+      seen.add(key);
+      if (state.returned.every(Boolean)) completed = true;
+      for (const actor of [0, 1]) {
+        const next = structuredClone(state);
+        const output = shared ? 0 : actor;
+        switch (state.pc[actor]) {
+          case 0: // Cargo acquires shared cache lock and removes old final path.
+            if (state.lock !== null) continue;
+            next.lock = actor; next.files[output] = null; break;
+          case 1: // Cargo publishes exact features and releases its lock.
+            next.files[output] = actor; next.lock = null; break;
+          case 2: { // Cancellation before copy still cleans only this owner.
+            const cancelled = structuredClone(state);
+            cancelled.pc[actor] = 3;
+            visit(cancelled);
+            if (state.files[output] !== actor) { violation = true; continue; }
+            next.returned[actor] = true; break;
+          }
+          case 3: // finally after copy or cancellation
+            next.files[foreignCleanup ? 1 - output : output] = null; break;
+          default: continue;
+        }
+        next.pc[actor] += 1;
+        visit(next);
+      }
+    }
+    visit({ pc: [0, 0], files: [null, null], lock: null, returned: [false, false] });
+    return { violation, completed, states: seen.size };
+  }
+  const correct = explore(false);
+  assert.equal(correct.violation, false);
+  assert.equal(correct.completed, true, 'non-vacuous two-caller completion');
+  assert.ok(correct.states > 20);
+  assert.equal(explore(true).violation, true, 'M1 shared outputs must be rejected');
+  assert.equal(explore(false, true).violation, true, 'M2 cross-owner cleanup must be rejected');
 });

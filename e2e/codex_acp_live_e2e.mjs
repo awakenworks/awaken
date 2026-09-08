@@ -40,7 +40,6 @@ import Anthropic from '@anthropic-ai/sdk';
 import { waitForVerifiedAcpCapability } from './fixtures/acp_capability.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
-import { snapshotExecutable } from './executable_snapshot.mjs';
 import { availablePort, FAKE_KEY, startUpstream, initializeE2EInstallation, waitForSessionEventReceipt, stopServer as stop, hardKillServer } from './harness.mjs';
 import { installHostResourceFixture, verifyAgentResources } from './fixtures/trusted_host_resources.mjs';
 
@@ -78,11 +77,12 @@ function managedContainerIds() {
   return new Set(result.stdout.trim().split(/\s+/).filter(Boolean));
 }
 
-function awakenBin() {
+function awakenBin(snapshotDestination) {
   return cargoExecutable({
     cwd: ROOT,
     packageName: 'awaken-cli',
     targetName: 'awaken',
+    snapshotDestination,
     // The resource mission uses a local bare Git remote. Reuse the existing
     // test-support transport aperture; production remains HTTPS-only. Do not
     // accept an unqualified prebuilt binary with unknown feature provenance.
@@ -131,15 +131,16 @@ async function startHostLoginProfile() {
   // Artifact race rule: another scenario may rebuild target/debug/awaken with
   // different features while doctor/initialization or a restart is pending.
   // Reuse the runner's copy snapshot so EVERY launch keeps the selected bytes.
-  const binary = snapshotExecutable(awakenBin(), path.join(temp, 'product',
+  const binary = awakenBin(path.join(temp, 'product',
     process.platform === 'win32' ? 'awaken.exe' : 'awaken'));
-  snapshotExecutable(cargoExecutable({
+  cargoExecutable({
     cwd: ROOT, packageName: 'awaken-sandbox', targetName: 'awaken-sandbox',
     // Scoped Repository I/O runs in this companion, not the Control binary.
     // Give only this fixture build the SAME local-Git test aperture; production
     // companion builds continue to reject anonymous non-HTTPS transports.
     features: ['hand', ...(scopedHost ? ['awaken-sandbox-local/test-support'] : [])],
-  }), path.join(path.dirname(binary), process.platform === 'win32' ? 'awaken-sandbox.exe' : 'awaken-sandbox'));
+    snapshotDestination: path.join(path.dirname(binary), process.platform === 'win32' ? 'awaken-sandbox.exe' : 'awaken-sandbox'),
+  });
   const environment = profile === 'host-fixture'
     ? await installHostResourceFixture(ROOT, temp, path.join(temp, 'data'), runtime)
     : process.env;

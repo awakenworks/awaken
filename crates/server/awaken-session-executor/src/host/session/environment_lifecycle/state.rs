@@ -417,6 +417,14 @@ impl SessionEnvironmentOwner {
                                 }
                             }
                         }
+                        RetiringEnvironmentOwner::Unbound(_)
+                            if retiring.cause
+                                == SessionEnvironmentRetirementCause::RealizationRevocation =>
+                        {
+                            // The exact binding check above confirms only the
+                            // physical target. Keep it Unbound: current Adopt
+                            // sink readback, not projection, supplies identity.
+                        }
                         RetiringEnvironmentOwner::Unbound(_) => {
                             return Err(HostError::internal(
                                 "durable projection cannot promote an unpublished retirement",
@@ -731,13 +739,14 @@ impl SessionEnvironmentOwner {
             Err(error) => Err(error),
         }
     }
-    /// Move only an exact durable owner revoked by realization loss back to
-    /// its canonical adoption phase. The physical Sandbox remains untouched;
-    /// the retained physical owner supplies the fresh Hand wrapper. LegacyDirect
+    /// Enroll the fresh wrapper for an exact owner revoked by realization loss.
+    /// The physical Sandbox remains untouched. Preserve known durable identity,
+    /// but never invent one for an unacknowledged Candidate. LegacyDirect
     /// retirement is owned by the separate typed physical-rebuild path.
     pub(super) fn prepare_retiring_realization_adoption(
         &mut self,
         expected: &RetiringSessionEnvironment,
+        environment: Arc<crate::session_environment::SessionEnvironment>,
     ) -> Result<(), HostError> {
         let Self::Retiring(current) = self else {
             return Err(HostError::internal(
@@ -751,23 +760,47 @@ impl SessionEnvironmentOwner {
                 "Session Environment re-adoption lost its exact revocation fence",
             ));
         }
-        let RetiringEnvironmentOwner::Bound(owned) = &current.owned else {
-            return Err(HostError::internal(
-                "an unpersisted Environment candidate cannot be re-adopted",
-            ));
+        let binding = serde_json::to_string(&environment.handle())
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        let (expected_binding, origin) = match &current.owned {
+            RetiringEnvironmentOwner::Bound(owned)
+                if matches!(
+                    &owned.identity,
+                    BoundSessionEnvironmentIdentity::Durable { .. }
+                ) =>
+            {
+                (
+                    &owned.binding,
+                    UnboundSessionEnvironmentOrigin::DurableAdoption(owned.identity.clone()),
+                )
+            }
+            RetiringEnvironmentOwner::Unbound(candidate) => (
+                &candidate.binding,
+                UnboundSessionEnvironmentOrigin::Adoption,
+            ),
+            _ => {
+                return Err(HostError::internal(
+                    "LegacyDirect revocation requires typed physical rebuild",
+                ));
+            }
         };
-        if !matches!(
-            &owned.identity,
-            BoundSessionEnvironmentIdentity::Durable { .. }
-        ) {
+        if &binding != expected_binding
+            || environment.handle() != current.owned.environment().handle()
+        {
             return Err(HostError::internal(
-                "LegacyDirect revocation requires typed physical rebuild",
+                "Session Environment re-adoption changed its exact physical target",
             ));
         }
-        *self = Self::Preparing(SessionEnvironmentPreparation::AwaitingAdoption {
-            identity: owned.identity.clone(),
-            binding: owned.binding.clone(),
-        });
+        // One atomic owner replacement, not an ownerless AwaitingAdoption /
+        // Vacant interval. The existing publication edge binds this Candidate
+        // once and persists its authorized Adopt before exposing a Resident.
+        *self = Self::Preparing(SessionEnvironmentPreparation::Candidate(
+            UnboundSessionEnvironment {
+                origin,
+                binding,
+                environment,
+            },
+        ));
         Ok(())
     }
 }

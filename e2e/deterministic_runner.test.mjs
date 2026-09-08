@@ -54,6 +54,8 @@ test('filters inherited provider keys without removing files or later fixtures',
 // is executable; E3 bytes are independent. Rule S1 C1+C2+C3 => E1+E2+E3.
 // A content copy plus post-copy source mutation is the smallest deterministic
 // oracle for all three effects and remains valid on single-filesystem CI hosts.
+// POSIX mode bits are not a Windows executable-admission contract. Windows
+// launchability is exercised by the real Cargo snapshot test, not a 0755 mask.
 test('snapshots an independent executable without filesystem-link assumptions', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-executable-snapshot-'));
   try {
@@ -62,7 +64,9 @@ test('snapshots an independent executable without filesystem-link assumptions', 
     fs.writeFileSync(source, 'first');
     assert.equal(snapshotExecutable(source, destination), destination);
     assert.equal(fs.readFileSync(destination, 'utf8'), 'first');
-    assert.equal(fs.statSync(destination).mode & 0o777, 0o755);
+    if (process.platform !== 'win32') {
+      assert.equal(fs.statSync(destination).mode & 0o777, 0o755);
+    }
     fs.writeFileSync(source, 'second');
     assert.equal(fs.readFileSync(destination, 'utf8'), 'first');
   } finally {
