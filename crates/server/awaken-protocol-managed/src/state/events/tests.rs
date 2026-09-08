@@ -9936,6 +9936,171 @@ async fn synthetic_pending_tool_uses_the_awaiting_commit_as_its_projection_ancho
 }
 
 #[tokio::test]
+async fn closed_permission_wait_retains_aliased_call_on_warm_and_cold_reads() {
+    // Causes: H1 ToolUse uses a public alias, AwaitTarget its internal name;
+    // H2 cancellation/failure clears the live ticket before the first read;
+    // H3 a sibling intent has no result or ticket. Effects: the historical ask
+    // retains its source-qualified identity and alias, H3 stays invisible,
+    // and repeated/cold reads agree without fabricating a tool result.
+    // Decision table: alias={same,different} x terminal={cancelled,error};
+    // Cross with observed={before close,after close}: all eight rules require
+    // one Ask and the real terminal, zero fabricated ToolResults.
+    for alias in ["bash", "Bash"] {
+        for failed in [false, true] {
+            for observed_before_close in [false, true] {
+                let runtime = LifecycleRuntime::default();
+                let repository = Arc::new(ephemeral_session_repo());
+                let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+                let session = warm
+                    .create_session(
+                        serde_json::from_value(serde_json::json!({
+                            "agent":"coder", "environment_id":"env_local"
+                        }))
+                        .unwrap(),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                let run = RunId("closed-permission".into());
+                let input = serde_json::json!({"command":"echo approved"});
+                runtime.replace_committed_messages(vec![(
+                    1,
+                    Message::new(
+                        MessageId(format!("{}-assistant-0", run.0)),
+                        Role::Assistant,
+                        vec![
+                            ContentBlock::tool_use("approved", alias, input.clone()),
+                            ContentBlock::tool_use("unclassified", alias, input.clone()),
+                        ],
+                    ),
+                )]);
+                let target = awaken_agent_contract::agent::awaiting::AwaitTarget::ToolCall {
+                    reason: awaken_agent_contract::agent::awaiting::ToolAwaitReason::Permission,
+                    call_id: "approved".into(),
+                    tool: awaken_agent_contract::agent::awaiting::PendingTool {
+                        tool_id: "bash".into(),
+                        arguments: input,
+                    },
+                    authority:
+                        awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
+                };
+                let reason = target.reason();
+                let draft: awaken_agent_contract::audit::draft::Draft =
+                    awaken_agent_contract::audit::run_event::RunEvent::RunStateChanged {
+                        state: RunState::Awaiting,
+                        await_reason: Some(reason.clone()),
+                        await_target: Some(target),
+                    }
+                    .into();
+                runtime.audit_events.lock().unwrap().push(
+                    awaken_agent_contract::audit::record::Record {
+                        sequence: 2,
+                        run_id: run.clone(),
+                        kind: draft.kind,
+                        payload: draft.payload,
+                    },
+                );
+                let mut awaiting = lifecycle(
+                    2,
+                    &session.id,
+                    &run,
+                    RunLifecycleEventKind::Awaiting,
+                    RunState::Awaiting,
+                );
+                awaiting.await_reason = Some(reason);
+                let terminal = if failed {
+                    EndCause::Error(awaken_agent_contract::agent::run::Failure::StateConflict)
+                } else {
+                    EndCause::Cancelled
+                };
+                runtime.lifecycle.lock().unwrap().extend([
+                    lifecycle(
+                        1,
+                        &session.id,
+                        &run,
+                        RunLifecycleEventKind::Running,
+                        RunState::Running,
+                    ),
+                    awaiting,
+                    lifecycle(
+                        3,
+                        &session.id,
+                        &run,
+                        if failed {
+                            RunLifecycleEventKind::Failed
+                        } else {
+                            RunLifecycleEventKind::Cancelled
+                        },
+                        RunState::Ended(terminal),
+                    ),
+                ]);
+                runtime
+                    .include_runs_in_snapshot
+                    .store(true, Ordering::SeqCst);
+                if observed_before_close {
+                    let terminal = runtime.lifecycle.lock().unwrap().pop().unwrap();
+                    *runtime.pending.lock().unwrap() = Some(Pending {
+                        tool_use_id: "approved".into(),
+                        name: "bash".into(),
+                        input: serde_json::json!({"command":"echo approved"}),
+                        client_executed: false,
+                    });
+                    warm.refresh_committed_events(&session.id).await.unwrap();
+                    *runtime.pending.lock().unwrap() = None;
+                    runtime.lifecycle.lock().unwrap().push(terminal);
+                }
+                let cold = ManagedState::new(runtime).with_session_repo(repository);
+                let mut prior = None;
+                for state in [&warm, &warm, &cold] {
+                    state.refresh_committed_events(&session.id).await.unwrap();
+                    let events = state
+                        .list_events(&session.id, None, None, false)
+                        .unwrap()
+                        .data;
+                    let calls = events
+                        .iter()
+                        .filter(|event| matches!(event.kind, OutboundKind::AgentToolUse { .. }))
+                        .collect::<Vec<_>>();
+                    assert_eq!(calls.len(), 1, "H1-H3 {alias}/{failed}");
+                    assert!(
+                        matches!(&calls[0].kind, OutboundKind::AgentToolUse { name, evaluated_permission: Some(EvaluatedPermission::Ask), .. } if name == alias)
+                    );
+                    assert!(events.iter().any(|event| matches!(&event.kind,
+                    OutboundKind::SessionThreadStatusIdle { stop_reason: StopReason::RequiresAction { event_ids }, .. }
+                    if event_ids == &vec![calls[0].id.clone()])));
+                    assert!(
+                        !events
+                            .iter()
+                            .any(|event| event.kind.type_str().ends_with("tool_result")),
+                        "no invented execution result"
+                    );
+                    // This Runtime-only fixture does not install Session activity
+                    // settlement receipts. Compare the tool and Run history owned
+                    // by this change; aggregate interval conformance has its own
+                    // committed-activity fixtures below.
+                    let history = events
+                        .iter()
+                        .filter(|event| {
+                            matches!(
+                                event.kind,
+                                OutboundKind::AgentToolUse { .. }
+                                    | OutboundKind::SessionThreadStatusIdle { .. }
+                                    | OutboundKind::SessionError { .. }
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let wire = serde_json::to_value(history).unwrap();
+                    if let Some(prior) = &prior {
+                        assert_eq!(prior, &wire);
+                    }
+                    prior = Some(wire);
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn closed_remote_wait_projects_its_answerable_event_before_terminal_history() {
     // Cause C1: a remote-input Awaiting fact commits without a ToolUse message.
     // Cause C2: cancellation closes the same Run before Managed first observes

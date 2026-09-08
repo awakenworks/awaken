@@ -476,6 +476,7 @@ impl CommittedTranscriptEvidence {
         message: &awaken_agent_contract::agent::message::Message,
         projected_tool_sources: &std::collections::HashSet<(String, String)>,
         pending_source_id: Option<&str>,
+        pending_history: &[&Pending],
     ) -> CommittedMessageProjection {
         use awaken_agent_contract::agent::content::ContentBlock;
 
@@ -488,7 +489,7 @@ impl CommittedTranscriptEvidence {
             .iter()
             .enumerate()
             .filter_map(|(block_ordinal, block)| {
-                let ContentBlock::ToolUse { id, .. } = block else {
+                let ContentBlock::ToolUse { id, name, input } = block else {
                     return Some(block.clone());
                 };
                 if self
@@ -503,11 +504,28 @@ impl CommittedTranscriptEvidence {
                     block_ordinal,
                     call_id: id.clone(),
                 };
-                let disposition = self
+                let mut disposition = self
                     .dispositions
                     .get(&key)
                     .copied()
                     .unwrap_or(CommittedToolDisposition::Unclassified);
+                // A closed wait remains committed classification evidence even
+                // when failure/cancellation removed its current ResumeTicket.
+                // The caller has scoped history to this Thread/Run/message;
+                // preserve unmatched sibling intents as Unclassified.
+                if disposition == CommittedToolDisposition::Unclassified
+                    && let Some(historical) = pending_history.iter().find(|pending| {
+                        pending.tool_use_id == *id
+                            && pending.name == *name
+                            && pending.input == *input
+                    })
+                {
+                    disposition = if historical.client_executed {
+                        CommittedToolDisposition::PendingClient
+                    } else {
+                        CommittedToolDisposition::PendingBuiltin
+                    };
+                }
                 let is_pending = matches!(
                     disposition,
                     CommittedToolDisposition::PendingClient
@@ -1104,7 +1122,8 @@ mod tests {
         };
         let prefix = vec![first, first_result, current.clone()];
         let evidence = committed_transcript_evidence(&prefix, Some(&pending));
-        let selected = evidence.project_message(&current, &std::collections::HashSet::new(), None);
+        let selected =
+            evidence.project_message(&current, &std::collections::HashSet::new(), None, &[]);
         assert!(!selected.fully_classified, "F1/E3");
         assert!(selected.pending_occurrence, "F1/E2");
         assert!(selected.retained_pending_occurrence, "F1/E2");
@@ -1123,6 +1142,7 @@ mod tests {
             &current,
             &std::collections::HashSet::from([(current.id.0.clone(), "same".to_string())]),
             None,
+            &[],
         );
         assert!(!selected.fully_classified, "F2/E3");
         assert!(selected.pending_occurrence, "F2/E4 source remains known");
@@ -1145,7 +1165,8 @@ mod tests {
         ]
         .concat();
         let evidence = committed_transcript_evidence(&completed, None);
-        let selected = evidence.project_message(&current, &std::collections::HashSet::new(), None);
+        let selected =
+            evidence.project_message(&current, &std::collections::HashSet::new(), None, &[]);
         assert!(selected.fully_classified, "F3/E5");
         assert_eq!(
             selected
