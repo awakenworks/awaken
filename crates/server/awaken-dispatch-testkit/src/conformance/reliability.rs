@@ -45,11 +45,11 @@ pub async fn record_dispatch_recovery_history(
         .expect("R1 claimable");
     let first_claim = RunClaim::from(&first.lease);
     let first_attempt = store
-        .begin_attempt(&first_claim, 0)
+        .begin_attempt(&first_claim, 0, None)
         .await
         .expect("R1 begin attempt");
     assert_eq!(
-        store.begin_attempt(&first_claim, 0).await.unwrap(),
+        store.begin_attempt(&first_claim, 0, None).await.unwrap(),
         AttemptAdmission::AlreadyApplied,
         "R4 lost begin response retries admission, not execution"
     );
@@ -73,7 +73,7 @@ pub async fn record_dispatch_recovery_history(
         .expect("R2 expired claim recovers");
     let recovered_claim = RunClaim::from(&recovered.lease);
     let blocked_successor = store
-        .begin_attempt(&recovered_claim, recovery_now)
+        .begin_attempt(&recovered_claim, recovery_now, None)
         .await
         .expect("R2 successor admission");
     // R2b: even an exact current claim may commit logical truth, but its
@@ -116,7 +116,7 @@ pub async fn record_dispatch_recovery_history(
     );
     guard.release().await.unwrap();
     let successor_attempt = store
-        .begin_attempt(&recovered_claim, recovery_now)
+        .begin_attempt(&recovered_claim, recovery_now, None)
         .await
         .expect("R3 successor admission");
     assert_eq!(
@@ -126,7 +126,7 @@ pub async fn record_dispatch_recovery_history(
     );
     assert_eq!(
         store
-            .begin_attempt(&recovered_claim, recovery_now)
+            .begin_attempt(&recovered_claim, recovery_now, None)
             .await
             .unwrap(),
         AttemptAdmission::AlreadyApplied,
@@ -253,7 +253,7 @@ async fn occupied_recovery_does_not_starve_other_threads(
                 let first_claim = RunClaim::from(&first.lease);
                 if occupied {
                     assert_eq!(
-                        store.begin_attempt(&first_claim, 0).await.unwrap(),
+                        store.begin_attempt(&first_claim, 0, None).await.unwrap(),
                         AttemptAdmission::Applied
                     );
                 }
@@ -308,7 +308,7 @@ async fn occupied_recovery_does_not_starve_other_threads(
                     );
                     assert_eq!(
                         store
-                            .begin_attempt(&RunClaim::from(&recovered.lease), now)
+                            .begin_attempt(&RunClaim::from(&recovered.lease), now, None)
                             .await
                             .unwrap(),
                         AttemptAdmission::Blocked,

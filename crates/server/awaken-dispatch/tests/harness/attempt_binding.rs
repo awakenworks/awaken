@@ -1,0 +1,305 @@
+use awaken_dispatch::{
+    AttemptAdmission as A, AttemptExecutionBinding, PhysicalAttempt, SettleOutcome as S,
+};
+use awaken_dispatch::{
+    DispatchQueue, PlacementRequirements, RunClaim, RunDispatch, WorkerIdentity, WorkerSnapshot,
+};
+
+pub async fn bound_claim(
+    store: &impl DispatchQueue,
+    name: &str,
+) -> (RunClaim, AttemptExecutionBinding, WorkerSnapshot) {
+    let (directory, identity) = awaken_dispatch_testkit::worker_http::ready_worker(name).await;
+    let mut worker = directory
+        .current(&identity.worker_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .snapshot;
+    worker.identity = WorkerIdentity::new(format!("{name}:1"), "boot", 1);
+    store
+        .enqueue(
+            RunDispatch::new(super::activation_on(name, name))
+                .with_placement(PlacementRequirements::remote_required()),
+        )
+        .await
+        .unwrap();
+    let claim = store
+        .claim_compatible(&worker, 60_000, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    let binding = AttemptExecutionBinding::new(
+        worker.identity.clone(),
+        "kubernetes-installation-a",
+        "pod-uid/container-id/start-time",
+    )
+    .unwrap();
+    (RunClaim::from(&claim.lease), binding, worker)
+}
+
+/// Shared decision table, executed against all three stores and Any delegation.
+pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
+    // C1 exact registered Worker tuple (not merely its owner string); C2 empty,
+    // same-claim or predecessor slot; C3 absent/equal/changed provider coordinate;
+    // C4 current/new/retired epoch; C5 ordinary begin or durable handoff.
+    // B1 empty + C1 + binding => freeze with admission; B2 !C1 => zero mutation.
+    // B3 same claim + same binding + either C5 => idempotent.
+    // B4 same claim + changed/removed/added binding => reject, zero mutation.
+    // B5 newer claim cannot overwrite an occupied predecessor on begin.
+    // B6 exact old ACK clears binding and slot together; delayed ACK cannot
+    // clear a successor. B7 trusted durable handoff replaces both coordinates.
+    // B8 ACK retires identity even when the old binding is supplied again.
+    // B9 an unregistered owner string cannot substitute for C1.
+    // No rule proves provider provenance, process stop, or remote termination.
+    let (a, binding_a, worker_a) = bound_claim(store, "bound-attempt").await;
+    assert_eq!(store.load_physical_attempt(&a.run_id).await.unwrap(), None);
+    // Different structured identities can share the legacy owner encoding.
+    let collision = AttemptExecutionBinding::new(
+        WorkerIdentity::new("bound-attempt", "1:boot", 1),
+        "kubernetes-installation-a",
+        "wrong-process",
+    )
+    .unwrap();
+    assert_eq!(collision.worker().lease_owner(), a.owner);
+    assert!(
+        store.begin_attempt(&a, 0, Some(&collision)).await.is_err(),
+        "B2"
+    );
+    assert_eq!(
+        store.load_physical_attempt(&a.run_id).await.unwrap(),
+        None,
+        "B2 no slot"
+    );
+    assert_eq!(
+        store.begin_attempt(&a, 0, Some(&binding_a)).await.unwrap(),
+        A::Applied,
+        "B1"
+    );
+    let expected_a = Some(PhysicalAttempt {
+        claim: a.clone(),
+        binding: Some(binding_a.clone()),
+    });
+    assert_eq!(
+        store.load_physical_attempt(&a.run_id).await.unwrap(),
+        expected_a
+    );
+    for handoff in [false, true] {
+        let retry = if handoff {
+            store.handoff_attempt(&a, 0, Some(&binding_a)).await
+        } else {
+            store.begin_attempt(&a, 0, Some(&binding_a)).await
+        };
+        assert_eq!(retry.unwrap(), A::AlreadyApplied, "B3");
+        let other_provider = AttemptExecutionBinding::new(
+            worker_a.identity.clone(),
+            "other-installation",
+            binding_a.execution_ref(),
+        )
+        .unwrap();
+        let other_instance = AttemptExecutionBinding::new(
+            worker_a.identity.clone(),
+            binding_a.provider_id(),
+            "replacement-uid",
+        )
+        .unwrap();
+        for changed in [
+            None,
+            Some(&other_provider),
+            Some(&other_instance),
+            Some(&collision),
+        ] {
+            let result = if handoff {
+                store.handoff_attempt(&a, 0, changed).await
+            } else {
+                store.begin_attempt(&a, 0, changed).await
+            };
+            assert!(result.is_err(), "B2/B4");
+            assert_eq!(
+                store.load_physical_attempt(&a.run_id).await.unwrap(),
+                expected_a,
+                "B4 immutable"
+            );
+        }
+    }
+    store.renew_lease(&a, 0, 0).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let mut worker_b = worker_a.clone();
+    worker_b.identity = WorkerIdentity::new(&worker_a.identity.worker_id, "boot-b", 2);
+    let b = store
+        .claim_compatible(&worker_b, 60_000, 1)
+        .await
+        .unwrap()
+        .unwrap();
+    let b = RunClaim::from(&b.lease);
+    let binding_b = AttemptExecutionBinding::new(
+        worker_b.identity.clone(),
+        "kubernetes-installation-a",
+        "container-b",
+    )
+    .unwrap();
+    assert_eq!(
+        store.begin_attempt(&b, 1, Some(&binding_b)).await.unwrap(),
+        A::Blocked,
+        "B5"
+    );
+    assert_eq!(
+        store.load_physical_attempt(&a.run_id).await.unwrap(),
+        expected_a,
+        "new assignment preserves old domain"
+    );
+    assert_eq!(store.finish_attempt(&a).await.unwrap(), S::Applied, "B6");
+    assert_eq!(store.load_physical_attempt(&a.run_id).await.unwrap(), None);
+    assert_eq!(
+        store.finish_attempt(&a).await.unwrap(),
+        S::Applied,
+        "ACK response-loss retry"
+    );
+    assert_eq!(
+        store.begin_attempt(&b, 1, Some(&binding_b)).await.unwrap(),
+        A::Applied
+    );
+    assert_eq!(
+        store.finish_attempt(&a).await.unwrap(),
+        S::Fenced,
+        "B6 old evidence"
+    );
+    assert_eq!(
+        store
+            .load_physical_attempt(&b.run_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .binding,
+        Some(binding_b)
+    );
+
+    store.renew_lease(&b, 0, 1).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let mut worker_c = worker_b;
+    worker_c.identity = WorkerIdentity::new(&worker_c.identity.worker_id, "boot-c", 3);
+    let c = store
+        .claim_compatible(&worker_c, 60_000, 2)
+        .await
+        .unwrap()
+        .unwrap();
+    let c = RunClaim::from(&c.lease);
+    let binding_c = AttemptExecutionBinding::new(
+        worker_c.identity.clone(),
+        "kubernetes-installation-b",
+        "container-c",
+    )
+    .unwrap();
+    assert_eq!(
+        store
+            .handoff_attempt(&c, 2, Some(&binding_c))
+            .await
+            .unwrap(),
+        A::Replaced,
+        "B7"
+    );
+    assert_eq!(
+        store.load_physical_attempt(&c.run_id).await.unwrap(),
+        Some(PhysicalAttempt {
+            claim: c.clone(),
+            binding: Some(binding_c.clone())
+        })
+    );
+    assert_eq!(store.finish_attempt(&b).await.unwrap(), S::Fenced);
+    assert_eq!(store.finish_attempt(&c).await.unwrap(), S::Applied);
+    assert_eq!(
+        store.begin_attempt(&c, 2, Some(&binding_c)).await.unwrap(),
+        A::Fenced,
+        "B8"
+    );
+    assert_eq!(store.relinquish_claim(&c).await.unwrap(), S::Applied);
+    let d = store
+        .claim_compatible(&worker_c, 60_000, 2)
+        .await
+        .unwrap()
+        .unwrap();
+    let d = RunClaim::from(&d.lease);
+    assert_eq!(store.begin_attempt(&d, 2, None).await.unwrap(), A::Applied);
+    assert!(
+        store.begin_attempt(&d, 2, Some(&binding_c)).await.is_err(),
+        "B4 no post-effect backfill"
+    );
+    assert!(
+        store
+            .handoff_attempt(&d, 2, Some(&binding_c))
+            .await
+            .is_err(),
+        "B4 no handoff backfill"
+    );
+    assert_eq!(
+        store
+            .load_physical_attempt(&d.run_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .binding,
+        None
+    );
+    assert_eq!(store.finish_attempt(&d).await.unwrap(), S::Applied);
+
+    store
+        .enqueue(RunDispatch::new(super::activation_on(
+            "unregistered-binding",
+            "unregistered-thread",
+        )))
+        .await
+        .unwrap();
+    let local = store
+        .claim(
+            &worker_c.identity.lease_owner(),
+            60_000,
+            2,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let local = RunClaim::from(&local.lease);
+    assert!(
+        store
+            .begin_attempt(&local, 2, Some(&binding_c))
+            .await
+            .is_err(),
+        "B9"
+    );
+    assert_eq!(
+        store.load_physical_attempt(&local.run_id).await.unwrap(),
+        None
+    );
+
+    // B14 concurrent same-claim requests with different coordinates: one wins
+    // the slot transaction, the other conflicts; observation equals the winner.
+    // B15 concurrent exact retries: both stutter, neither replaces the binding.
+    let (race, left, _) = bound_claim(store, "binding-race").await;
+    let right =
+        AttemptExecutionBinding::new(left.worker().clone(), left.provider_id(), "other-instance")
+            .unwrap();
+    let (a, b) = tokio::join!(
+        store.begin_attempt(&race, 0, Some(&left)),
+        store.begin_attempt(&race, 0, Some(&right)),
+    );
+    let winner = match (a, b) {
+        (Ok(A::Applied), Err(awaken_dispatch::DispatchError::Conflict(_))) => left,
+        (Err(awaken_dispatch::DispatchError::Conflict(_)), Ok(A::Applied)) => right,
+        other => panic!("B14 unexpected race outcomes: {other:?}"),
+    };
+    assert_eq!(
+        store.load_physical_attempt(&race.run_id).await.unwrap(),
+        Some(PhysicalAttempt {
+            claim: race.clone(),
+            binding: Some(winner.clone())
+        })
+    );
+    let (a, b) = tokio::join!(
+        store.begin_attempt(&race, 0, Some(&winner)),
+        store.handoff_attempt(&race, 0, Some(&winner)),
+    );
+    assert_eq!(a.unwrap(), A::AlreadyApplied, "B15");
+    assert_eq!(b.unwrap(), A::AlreadyApplied, "B15");
+    assert_eq!(store.finish_attempt(&race).await.unwrap(), S::Applied);
+}

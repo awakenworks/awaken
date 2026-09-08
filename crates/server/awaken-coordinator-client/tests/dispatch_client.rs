@@ -280,7 +280,7 @@ async fn begin_attempt(
     let claim: RunClaim = serde_json::from_value(req["claim"].clone()).expect("claim");
     let admission = state
         .store
-        .begin_attempt(&claim, state.now_ms.load(Ordering::SeqCst))
+        .begin_attempt(&claim, state.now_ms.load(Ordering::SeqCst), None)
         .await
         .expect("begin attempt");
     Json(json!({ "admission": admission }))
@@ -298,7 +298,7 @@ async fn handoff_attempt(
     let claim: RunClaim = serde_json::from_value(req["claim"].clone()).expect("claim");
     let admission = state
         .store
-        .handoff_attempt(&claim, state.now_ms.load(Ordering::SeqCst))
+        .handoff_attempt(&claim, state.now_ms.load(Ordering::SeqCst), None)
         .await
         .expect("handoff attempt");
     Json(json!({ "admission": admission }))
@@ -466,6 +466,48 @@ async fn spawn_stalled_server() -> (String, Arc<ScriptedBindState>) {
         axum::serve(listener, app).await.unwrap();
     });
     (format!("http://{address}"), state)
+}
+
+#[tokio::test]
+async fn worker_transport_cannot_silently_erase_an_execution_binding() {
+    // B16 Some binding + either admission verb => local Rejected, zero wire
+    // calls, even if a server would acknowledge it. B17 unsupported observation
+    // => error, never None (which would falsely describe an empty slot).
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let app = Router::new().fallback(move || {
+        observed.fetch_add(1, Ordering::SeqCst);
+        async { Json(json!({"outcome":"applied"})) }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let identity = WorkerIdentity::new("worker-A", "boot-A", 1);
+    let claim = RunClaim {
+        run_id: RunId("bound-wire".into()),
+        owner: identity.lease_owner(),
+        epoch: 1,
+    };
+    let binding =
+        awaken_dispatch::AttemptExecutionBinding::new(identity.clone(), "cluster-a", "pod-a")
+            .unwrap();
+    let queue = HttpDispatchQueue::new(format!("http://{address}"), identity);
+    assert!(matches!(
+        queue.begin_attempt(&claim, 0, Some(&binding)).await,
+        Err(DispatchError::Rejected(_))
+    ));
+    assert!(matches!(
+        queue.handoff_attempt(&claim, 0, Some(&binding)).await,
+        Err(DispatchError::Rejected(_))
+    ));
+    assert!(queue.load_physical_attempt(&claim.run_id).await.is_err());
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "B16-B17 no downgrade or fabricated observation"
+    );
+    server.abort();
+    let _ = server.await;
 }
 
 #[tokio::test]
@@ -760,18 +802,24 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     );
     let claim = RunClaim::from(&claimed.lease);
     assert_eq!(
-        queue.begin_attempt(&claim, 0).await.expect("D4 begin"),
+        queue
+            .begin_attempt(&claim, 0, None)
+            .await
+            .expect("D4 begin"),
         AttemptAdmission::Applied,
         "D4/E5"
     );
     assert_eq!(
-        queue.begin_attempt(&claim, 0).await.expect("D4 retry"),
+        queue
+            .begin_attempt(&claim, 0, None)
+            .await
+            .expect("D4 retry"),
         AttemptAdmission::AlreadyApplied,
         "D4/E5 response-loss retry"
     );
     assert_eq!(
         queue
-            .handoff_attempt(&claim, 0)
+            .handoff_attempt(&claim, 0, None)
             .await
             .expect("D4 handoff transport retry"),
         AttemptAdmission::AlreadyApplied,
@@ -854,7 +902,7 @@ async fn continuation_handoff_preserves_replacement_provenance_over_http() {
         .expect("A claims");
     let claim_a = RunClaim::from(&a.lease);
     assert_eq!(
-        queue_a.begin_attempt(&claim_a, 0).await.unwrap(),
+        queue_a.begin_attempt(&claim_a, 0, None).await.unwrap(),
         AttemptAdmission::Applied,
         "H1 A installs the fresh slot"
     );
@@ -867,12 +915,15 @@ async fn continuation_handoff_preserves_replacement_provenance_over_http() {
         .expect("B recovers");
     let claim_b = RunClaim::from(&b.lease);
     assert_eq!(
-        queue_b.begin_attempt(&claim_b, 2_000).await.unwrap(),
+        queue_b.begin_attempt(&claim_b, 2_000, None).await.unwrap(),
         AttemptAdmission::Blocked,
         "H1/E1 ordinary recovery cannot inherit A's slot"
     );
     assert_eq!(
-        queue_b.handoff_attempt(&claim_b, 2_000).await.unwrap(),
+        queue_b
+            .handoff_attempt(&claim_b, 2_000, None)
+            .await
+            .unwrap(),
         AttemptAdmission::Replaced,
         "H2/E2 replacement provenance survives JSON"
     );

@@ -44,6 +44,15 @@ use awaken_worker_transport_security::{WorkerRequestAuthorizer, WorkerUpstream};
 const IDEMPOTENT_TRANSPORT_ATTEMPTS: usize = 3;
 const IDEMPOTENT_TRANSPORT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
+fn reject_worker_supplied_execution_binding(
+    binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
+) -> Result<(), DispatchError> {
+    if binding.is_some() {
+        return Err(DispatchError::Rejected("execution domain binding requires a trusted Coordinator provider; Worker JSON cannot establish it".into()));
+    }
+    Ok(())
+}
+
 fn installed_worker_credential_capabilities(
     worker: &WorkerSnapshot,
 ) -> Result<awaken_runtime_contract::CredentialRealizationCapabilities, DispatchError> {
@@ -764,7 +773,9 @@ impl DispatchQueue for HttpDispatchQueue {
         &self,
         claim: &RunClaim,
         now_ms: u64,
+        binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
+        reject_worker_supplied_execution_binding(binding)?;
         let value = self
             .post_idempotent(
                 "/v1/worker/dispatch/attempt/begin",
@@ -789,7 +800,9 @@ impl DispatchQueue for HttpDispatchQueue {
         &self,
         claim: &RunClaim,
         now_ms: u64,
+        binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
+        reject_worker_supplied_execution_binding(binding)?;
         let value = self
             .post_idempotent(
                 "/v1/worker/dispatch/attempt/handoff",

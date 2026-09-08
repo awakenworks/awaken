@@ -173,7 +173,7 @@ async fn assert_native_uncertainty_retains_physical_slot(return_unknown_error: b
         .unwrap();
     assert_eq!(
         store
-            .begin_attempt(&RunClaim::from(&replacement.lease), 91)
+            .begin_attempt(&RunClaim::from(&replacement.lease), 91, None)
             .await
             .unwrap(),
         awaken_dispatch::AttemptAdmission::Blocked
@@ -1845,7 +1845,11 @@ async fn non_quiescing_attempt_blocks_replacement_after_lease_takeover() {
     );
     assert_eq!(
         store
-            .begin_attempt(&awaken_dispatch::RunClaim::from(&replacement.lease), 31)
+            .begin_attempt(
+                &awaken_dispatch::RunClaim::from(&replacement.lease),
+                31,
+                None
+            )
             .await
             .unwrap(),
         awaken_dispatch::AttemptAdmission::Blocked,
@@ -1908,7 +1912,11 @@ async fn aborting_a_drive_never_fabricates_remote_quiescence() {
         .expect("RG10 B mutation claim");
     assert_eq!(
         store
-            .begin_attempt(&awaken_dispatch::RunClaim::from(&replacement.lease), 31)
+            .begin_attempt(
+                &awaken_dispatch::RunClaim::from(&replacement.lease),
+                31,
+                None
+            )
             .await
             .expect("RG10 B physical admission"),
         awaken_dispatch::AttemptAdmission::Blocked,

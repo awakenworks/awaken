@@ -8,6 +8,8 @@ struct PersistedAttemptFacts {
     active_owner: Option<String>,
     active_epoch: Option<i64>,
     retired_epoch: i64,
+    binding: Option<String>,
+    assignment: Option<String>,
 }
 
 impl SqliteDispatchStore {
@@ -16,8 +18,10 @@ impl SqliteDispatchStore {
         claim: &RunClaim,
         now_ms: u64,
         handoff: bool,
+        binding: Option<&AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         let claim = claim.clone();
+        let binding = binding.cloned();
         self.with_conn(move |conn, p| {
             let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
             let tx = conn
@@ -27,7 +31,7 @@ impl SqliteDispatchStore {
                 .query_row(
                     &format!(
                         "SELECT status, lease_owner, lease_epoch, lease_until, \
-                         active_attempt_owner, active_attempt_epoch, retired_attempt_epoch \
+                         active_attempt_owner, active_attempt_epoch, retired_attempt_epoch, active_attempt_binding, worker_assignment \
                          FROM {p}_dispatch WHERE run_id = ?1"
                     ),
                     params![claim.run_id.0],
@@ -40,6 +44,8 @@ impl SqliteDispatchStore {
                             active_owner: row.get(4)?,
                             active_epoch: row.get(5)?,
                             retired_epoch: row.get(6)?,
+                            binding: row.get(7)?,
+                            assignment: row.get(8)?,
                         })
                     },
                 )
@@ -77,6 +83,15 @@ impl SqliteDispatchStore {
                          AND (peer.active_attempt_owner IS NOT NULL OR peer.active_attempt_epoch IS NOT NULL))"
                     ), params![claim.run_id.0], |row| row.get::<_, bool>(0)).map_err(store_error)?
                 )?;
+            let stored = crate::dispatch::decode_physical_attempt(
+                &claim.run_id, current.active_owner, active_epoch, current.binding,
+            )?;
+            let assignment: Option<WorkerAssignment> = current.assignment
+                .map(|json| serde_json::from_str(&json).map_err(DispatchError::unavailable)).transpose()?;
+            crate::dispatch::verify_physical_attempt_binding(
+                transition, &claim, assignment.as_ref(), binding.as_ref(),
+                stored.as_ref().and_then(|a| a.binding.as_ref()),
+            )?;
             if matches!(
                 transition,
                 PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Replace
@@ -84,9 +99,9 @@ impl SqliteDispatchStore {
                 tx.execute(
                     &format!(
                         "UPDATE {p}_dispatch SET active_attempt_owner = ?2, \
-                             active_attempt_epoch = ?3 WHERE run_id = ?1"
+                             active_attempt_epoch = ?3, active_attempt_binding = ?4 WHERE run_id = ?1"
                     ),
-                    params![claim.run_id.0, claim.owner, epoch],
+                    params![claim.run_id.0, claim.owner, epoch, binding.as_ref().map(serde_json::to_string).transpose().map_err(DispatchError::unavailable)?],
                 )
                 .map_err(store_error)?;
             }

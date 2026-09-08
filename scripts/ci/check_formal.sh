@@ -403,6 +403,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness pre_start_no_effect_ack_requires_fresh_install_admission \
     --harness lease_renewal_observation_preserves_claim_and_attempt_fences \
     --harness physical_attempt_slot_installs_and_clears_only_exact_authority \
+    --harness physical_binding_cannot_change_on_admission_retry \
     --harness retired_epoch_cannot_admit_another_execution \
     --harness thread_physical_peer_vetoes_begin_and_handoff \
     --harness physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair

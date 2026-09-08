@@ -19,10 +19,11 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    AttemptAdmission, AttemptCredentialBinding, CasOutcome, ClaimCredentialOperation, Claimed,
-    CommitEpochGuard, ContinuationAdmission, CredentialRealizationReceipt, DispatchCompletion,
-    DispatchError, DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, ExactClaimMode,
-    Inbox, Lease, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, RunClaim,
+    AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CasOutcome,
+    ClaimCredentialOperation, Claimed, CommitEpochGuard, ContinuationAdmission,
+    CredentialRealizationReceipt, DispatchCompletion, DispatchError, DispatchOutcome,
+    DispatchQueue, DispatchState, DispatchSummary, ExactClaimMode, Inbox, Lease,
+    LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, PhysicalAttempt, RunClaim,
     RunIdentityDecision, SessionChildAdmission, SessionRunReservationActivation,
     SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome,
     StoredRunIdentity, SubmitOptions, can_admit_claim_credentials, claim_credential_operation,
@@ -48,6 +49,7 @@ use awaken_dispatch_contract::{
 };
 
 mod outbox;
+mod physical_attempt;
 mod store;
 pub use store::MemoryDispatchStore;
 
@@ -84,6 +86,7 @@ struct Row {
     /// part of the Dispatch claim aggregate and deliberately survives a lease
     /// reclaim until that predecessor acknowledges quiescence.
     active_attempt: Option<RunClaim>,
+    active_attempt_binding: Option<AttemptExecutionBinding>,
     retired_attempt_epoch: u64,
 }
 
@@ -770,6 +773,7 @@ fn enqueue_new_local(
             credential_bindings: Vec::new(),
             credential_receipts: Vec::new(),
             active_attempt: None,
+            active_attempt_binding: None,
             retired_attempt_epoch: 0,
         },
     );
@@ -826,57 +830,6 @@ fn claim_next_local(
         return Ok(None);
     };
     claim_exact(state, &run_id, owner, lease_ms, now_ms, None, capabilities)
-}
-
-impl MemoryDispatchStore {
-    async fn admit_physical_attempt(
-        &self,
-        claim: &RunClaim,
-        now_ms: u64,
-        handoff: bool,
-    ) -> Result<AttemptAdmission, DispatchError> {
-        let _authority = self.authority.lock().await;
-        let mut state = lock(&self.state)?;
-        let Some(row) = state.rows.get(&claim.run_id) else {
-            return Ok(AttemptAdmission::Fenced);
-        };
-        let peer_occupied = state.rows.iter().any(|(id, peer)| {
-            id != &claim.run_id
-                && peer.request.thread_id() == row.request.thread_id()
-                && peer.active_attempt.is_some()
-        });
-        let current = awaken_dispatch_contract::attempt_epoch_is_open(
-            claim.epoch,
-            row.retired_attempt_epoch,
-        ) && row.state == DispatchState::Leased
-            && row.lease_epoch == claim.epoch
-            && row
-                .lease
-                .as_ref()
-                .is_some_and(|lease| lease.owner == claim.owner && lease.expires_ms >= now_ms);
-        let slot = match row.active_attempt.as_ref() {
-            None => PhysicalAttemptSlot::Empty,
-            Some(active) if active == claim => PhysicalAttemptSlot::ExactClaim,
-            Some(_) => PhysicalAttemptSlot::OtherClaim,
-        };
-        let (transition, admission) = crate::dispatch::decide_physical_attempt_admission(
-            current,
-            slot,
-            handoff,
-            peer_occupied,
-        )?;
-        if matches!(
-            transition,
-            PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Replace
-        ) {
-            state
-                .rows
-                .get_mut(&claim.run_id)
-                .expect("locked row")
-                .active_attempt = Some(claim.clone());
-        }
-        Ok(admission)
-    }
 }
 
 #[async_trait]
@@ -1539,16 +1492,20 @@ impl DispatchQueue for MemoryDispatchStore {
         &self,
         claim: &RunClaim,
         now_ms: u64,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
-        self.admit_physical_attempt(claim, now_ms, false).await
+        self.admit_physical_attempt(claim, now_ms, false, _binding)
+            .await
     }
 
     async fn handoff_attempt(
         &self,
         claim: &RunClaim,
         now_ms: u64,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
-        self.admit_physical_attempt(claim, now_ms, true).await
+        self.admit_physical_attempt(claim, now_ms, true, _binding)
+            .await
     }
 
     async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
@@ -1565,9 +1522,23 @@ impl DispatchQueue for MemoryDispatchStore {
         let (transition, outcome) = crate::dispatch::decide_physical_attempt_finish(slot)?;
         if transition == PhysicalAttemptTransition::Clear {
             row.active_attempt = None;
+            row.active_attempt_binding = None;
             row.retired_attempt_epoch = claim.epoch;
         }
         Ok(outcome)
+    }
+
+    async fn load_physical_attempt(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<PhysicalAttempt>, DispatchError> {
+        let state = lock(&self.state)?;
+        Ok(state.rows.get(run_id).and_then(|row| {
+            row.active_attempt.as_ref().map(|claim| PhysicalAttempt {
+                claim: claim.clone(),
+                binding: row.active_attempt_binding.clone(),
+            })
+        }))
     }
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {

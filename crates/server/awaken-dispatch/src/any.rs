@@ -548,20 +548,29 @@ impl DispatchQueue for AnyDispatchStore {
         &self,
         claim: &RunClaim,
         now_ms: u64,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<crate::AttemptAdmission, DispatchError> {
-        delegate!(self, begin_attempt(claim, now_ms))
+        delegate!(self, begin_attempt(claim, now_ms, _binding))
     }
 
     async fn handoff_attempt(
         &self,
         claim: &RunClaim,
         now_ms: u64,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<crate::AttemptAdmission, DispatchError> {
-        delegate!(self, handoff_attempt(claim, now_ms))
+        delegate!(self, handoff_attempt(claim, now_ms, _binding))
     }
 
     async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
         delegate!(self, finish_attempt(claim))
+    }
+
+    async fn load_physical_attempt(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<crate::dispatch::PhysicalAttempt>, DispatchError> {
+        delegate!(self, load_physical_attempt(run_id))
     }
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {

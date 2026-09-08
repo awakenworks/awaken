@@ -6,6 +6,84 @@
 mod harness;
 
 #[tokio::test]
+async fn sqlite_execution_binding_survives_reopen_without_the_worker() {
+    // B11 admitted binding -> all store handles dropped -> reopen => exact
+    // provider/Worker/physical coordinates remain. B12 raw SQL cannot clear
+    // only the slot; the canonical finish clears slot+binding atomically.
+    // B13 persisted malformed binding => observation errors, never false empty.
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("bound-attempt.db");
+    let path = path.to_str().unwrap();
+    let store = SqliteDispatchStore::open(path).unwrap();
+    let (claim, binding, _) =
+        harness::attempt_binding::bound_claim(&store, "reopened-binding").await;
+    store
+        .begin_attempt(&claim, 0, Some(&binding))
+        .await
+        .unwrap();
+    drop(store);
+    let reopened = SqliteDispatchStore::open(path).unwrap();
+    let expected = Some(awaken_dispatch::PhysicalAttempt {
+        claim: claim.clone(),
+        binding: Some(binding.clone()),
+    });
+    assert_eq!(
+        reopened.load_physical_attempt(&claim.run_id).await.unwrap(),
+        expected,
+        "B11"
+    );
+    let connection = rusqlite::Connection::open(path).unwrap();
+    assert!(
+        connection
+            .execute(
+                "UPDATE runtime_dispatch SET active_attempt_owner=NULL, active_attempt_epoch=NULL",
+                []
+            )
+            .is_err(),
+        "B12 orphan binding"
+    );
+    connection
+        .execute(
+            "UPDATE runtime_dispatch SET active_attempt_binding='null'",
+            [],
+        )
+        .unwrap();
+    assert!(
+        reopened.load_physical_attempt(&claim.run_id).await.is_err(),
+        "B13 malformed is not absence"
+    );
+    connection
+        .execute(
+            "UPDATE runtime_dispatch SET active_attempt_binding=?1",
+            [serde_json::to_string(&binding).unwrap()],
+        )
+        .unwrap();
+    assert_eq!(
+        reopened.finish_attempt(&claim).await.unwrap(),
+        awaken_dispatch::SettleOutcome::Applied
+    );
+    drop(reopened);
+    assert_eq!(
+        SqliteDispatchStore::open(path)
+            .unwrap()
+            .load_physical_attempt(&claim.run_id)
+            .await
+            .unwrap(),
+        None,
+        "B12 persisted release"
+    );
+    assert!(
+        connection
+            .execute(
+                "UPDATE runtime_dispatch SET active_attempt_binding='{}'",
+                []
+            )
+            .is_err(),
+        "B12 cannot leave orphan metadata"
+    );
+}
+
+#[tokio::test]
 async fn sqlite_ack_retirement_survives_reopen_and_sql_bypass_is_rejected() {
     // R8 ACK commit then process/store loss => the same claim cannot reenter.
     // R9 bypassing admission SQL => CHECK rejects retired or future watermarks.
@@ -25,12 +103,12 @@ async fn sqlite_ack_retirement_survives_reopen_and_sql_bypass_is_rejected() {
         .unwrap()
         .unwrap();
     let a = RunClaim::from(&a.lease);
-    assert_eq!(store.begin_attempt(&a, 0).await.unwrap(), A::Applied);
+    assert_eq!(store.begin_attempt(&a, 0, None).await.unwrap(), A::Applied);
     assert_eq!(store.finish_attempt(&a).await.unwrap(), S::Applied);
     drop(store);
     let reopened = SqliteDispatchStore::open(path).unwrap();
     assert_eq!(
-        reopened.begin_attempt(&a, 0).await.unwrap(),
+        reopened.begin_attempt(&a, 0, None).await.unwrap(),
         A::Fenced,
         "R8"
     );

@@ -67,6 +67,11 @@ impl DispatchError {
 
 include!("dispatch/settlement.rs");
 
+mod attempt_binding;
+pub use attempt_binding::{
+    AttemptExecutionBinding, PhysicalAttempt, attempt_binding_retry_is_exact,
+};
+
 /// A lease over one claimed dispatch: the single owner allowed to execute this
 /// run until `expires_ms`. An expired lease is reclaimable (recovery).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

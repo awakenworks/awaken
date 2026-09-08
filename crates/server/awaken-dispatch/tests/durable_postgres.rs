@@ -41,6 +41,30 @@ struct BlockingCommit {
 }
 
 #[tokio::test]
+async fn postgres_execution_binding_is_frozen_with_the_physical_slot() {
+    // B1-B9 use PostgreSQL's authoritative clock, not the caller's clock.
+    // B10 raw SQL cannot leave binding metadata on an unoccupied row.
+    let Some(pool) = harness::schema_pool("t_pg_attempt_binding").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .unwrap();
+    harness::attempt_binding::assert_binding_lifecycle(&store).await;
+    let error = sqlx::query(
+        "UPDATE runtime_dispatch SET active_attempt_binding = '{}' WHERE run_id = 'bound-attempt'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap_err();
+    assert_eq!(
+        error.as_database_error().unwrap().code().as_deref(),
+        Some("23514"),
+        "B10"
+    );
+}
+
+#[tokio::test]
 async fn postgres_returned_attempt_epoch_is_not_reused() {
     // Execute shared R1-R6 with PostgreSQL's own transaction clock. An explicit
     // AWAKEN_TEST_DATABASE_URL makes database unavailability fail this gate.
@@ -859,7 +883,7 @@ async fn physical_attempt_admission_uses_the_postgres_authority_clock() {
 
     assert_eq!(
         store
-            .begin_attempt(&RunClaim::from(&claimed.lease), u64::MAX)
+            .begin_attempt(&RunClaim::from(&claimed.lease), u64::MAX, None)
             .await
             .expect("physical admission"),
         awaken_dispatch::AttemptAdmission::Applied,

@@ -215,9 +215,31 @@ controller-synthesized Failed, synthetic ContainerStatusUnknown, missing legacy
 bindings and name reuse never establish termination. The subject-bound result
 has private fields and cannot be deserialized as an incoming receipt.
 
-This is a provider observation, not a Native recovery command. Dispatch does
-not yet persist this binding in its physical slot or consume the result; the
-current restartable Worker Pod profile is not admitted by this adapter.
+This is a provider observation, not a Native recovery command. Dispatch now
+freezes an optional `AttemptExecutionBinding` with its physical slot, in the
+same admission transaction. It contains the exact registered Worker identity,
+provider identity and opaque physical reference. The shared admission validator
+checks the structured Worker assignment, not just the encoded lease-owner
+string. Same-claim retries must preserve even an absent binding; late backfill
+cannot manufacture pre-effect provenance. Continuation handoff replaces the
+slot and binding together; exact finish clears both and retires the epoch.
+Memory, SQLite and PostgreSQL use this same validator. The existing Dispatch
+port supplies a narrow `load_physical_attempt` read, not another current-state
+store. Converged schema V5 leaves historical bindings absent and prevents an
+orphan binding without an occupied owner/epoch pair.
+
+The value is a coordinate, not a receipt or proof of provider provenance. Trusted
+in-process composition may supply it to `DispatchWorker` before admission;
+the HTTP client rejects supplied coordinates instead of silently discarding them
+or accepting Worker JSON as provider authority. The existing wire schema is
+unchanged. Provider-backed Coordinator binding and independent stop-result
+consumption are not wired yet; the current restartable Worker Pod profile is
+not admitted by the Kubernetes adapter. Therefore the new persisted coordinate
+alone cannot authorize crash recovery or clear a slot. B1-B22 test comments own
+the binding lifecycle, transaction-race, reopen, corruption and transport
+decision table, including the Native tool-entry boundary and historical upgrade.
+The binding retry Kani harness proves only its finite Boolean
+immutability predicate, not database linearizability or physical termination.
 No remote model/MCP stop capability or historical evidence repair is implied.
 The authenticated API, kubelet/runtime exit-report honesty, private process
 confinement and non-restart semantics remain the trusted infrastructure boundary.
