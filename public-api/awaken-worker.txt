@@ -2,6 +2,10 @@ pub mod awaken_worker
 pub enum awaken_worker::WorkerShutdown
 pub awaken_worker::WorkerShutdown::Graceful
 pub awaken_worker::WorkerShutdown::Prompt
+pub enum awaken_worker::WorkerUpstreamSecurity<'a>
+pub awaken_worker::WorkerUpstreamSecurity::Local
+pub awaken_worker::WorkerUpstreamSecurity::Remote
+pub awaken_worker::WorkerUpstreamSecurity::Remote::server_ca_certificate: core::option::Option<&'a [u8]>
 pub struct awaken_worker::RegisteredWorkerContext
 impl awaken_worker::RegisteredWorkerContext
 pub fn awaken_worker::RegisteredWorkerContext::identity(&self) -> &awaken_worker_contract::registry::WorkerIdentity
@@ -31,6 +35,7 @@ pub awaken_worker::WorkerBootstrap::worker_id: alloc::string::String
 pub awaken_worker::WorkerBootstrap::zone: core::option::Option<alloc::string::String>
 impl awaken_worker::WorkerBootstrap
 pub fn awaken_worker::WorkerBootstrap::resolve(awaken_worker::WorkerBootstrapInput, &std::path::Path) -> core::result::Result<Self, alloc::string::String>
+pub fn awaken_worker::WorkerBootstrap::upstream(&self, impl core::convert::Into<alloc::string::String>, awaken_worker::WorkerUpstreamSecurity<'_>) -> core::result::Result<awaken_worker_transport_security::WorkerUpstream, alloc::string::String>
 pub struct awaken_worker::WorkerBootstrapInput
 pub awaken_worker::WorkerBootstrapInput::admin_listen: core::option::Option<alloc::string::String>
 pub awaken_worker::WorkerBootstrapInput::build_digest: core::option::Option<alloc::string::String>
@@ -47,11 +52,11 @@ pub awaken_worker::WorkerBootstrapInput::zone: core::option::Option<alloc::strin
 pub struct awaken_worker::WorkerCredentialFileResolver
 impl awaken_worker::WorkerCredentialFileResolver
 pub fn awaken_worker::WorkerCredentialFileResolver::holder(&self) -> &awaken_credential_contract::PlaintextHolder
-pub fn awaken_worker::WorkerCredentialFileResolver::material_directory(&self, awaken_credential_contract::CredentialMaterialRequest<'_>) -> std::path::PathBuf
+pub fn awaken_worker::WorkerCredentialFileResolver::material_directory(&self, awaken_credential_contract::material_resolution::CredentialMaterialRequest<'_>) -> std::path::PathBuf
 pub fn awaken_worker::WorkerCredentialFileResolver::new(impl core::convert::Into<std::path::PathBuf>, impl core::convert::Into<alloc::string::String>) -> Self
-impl awaken_credential_contract::CredentialMaterialResolver for awaken_worker::WorkerCredentialFileResolver
-pub fn awaken_worker::WorkerCredentialFileResolver::material_capabilities(&self) -> alloc::collections::btree::set::BTreeSet<awaken_credential_contract::CredentialMaterialCapability>
-pub fn awaken_worker::WorkerCredentialFileResolver::resolve_exact<'life0, 'life1, 'async_trait>(&'life0 self, awaken_credential_contract::CredentialMaterialRequest<'life1>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_credential_contract::ResolvedCredentialMaterial, awaken_credential_contract::CredentialMaterialError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_credential_contract::material_resolution::CredentialMaterialResolver for awaken_worker::WorkerCredentialFileResolver
+pub fn awaken_worker::WorkerCredentialFileResolver::material_capabilities(&self) -> alloc::collections::btree::set::BTreeSet<awaken_credential_contract::material_resolution::CredentialMaterialCapability>
+pub fn awaken_worker::WorkerCredentialFileResolver::resolve_exact<'life0, 'life1, 'async_trait>(&'life0 self, awaken_credential_contract::material_resolution::CredentialMaterialRequest<'life1>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_credential_contract::material_resolution::ResolvedCredentialMaterial, awaken_credential_contract::material_resolution::CredentialMaterialError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_worker::WorkerDaemonConfig
 pub awaken_worker::WorkerDaemonConfig::worker: awaken_worker::WorkerBootstrap
 impl awaken_worker::WorkerDaemonConfig
@@ -99,7 +104,7 @@ pub fn awaken_worker::WorkerNodeBuilder::with_web_search_provider_registry(self,
 pub fn awaken_worker::WorkerNodeBuilder::with_worker_local_credential_resolver(self, alloc::sync::Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::without_admin_surface(self) -> Self
 pub fn awaken_worker::relay_hand_executor_factory() -> alloc::sync::Arc<dyn awaken_session_executor::session_environment::session_hand::HandExecutorFactory>
-pub async fn awaken_worker::run_with_inference_and_credential_resolver<R>(&str, alloc::sync::Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>, alloc::sync::Arc<R>) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>> where R: awaken_credential_contract::CredentialMaterialResolver + awaken_credential_contract::WorkerLocalCredentialResolver + 'static
+pub async fn awaken_worker::run_with_inference_and_credential_resolver<R>(&str, alloc::sync::Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>, alloc::sync::Arc<R>) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>> where R: awaken_credential_contract::material_resolution::CredentialMaterialResolver + awaken_credential_contract::WorkerLocalCredentialResolver + 'static
 pub async fn awaken_worker::run_with_inference_materializer(&str, alloc::sync::Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub async fn awaken_worker::run_with_inference_materializer_until<F>(&str, alloc::sync::Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>, F) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>> where F: core::future::future::Future<Output = core::result::Result<awaken_worker::WorkerShutdown, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>>
 pub type awaken_worker::RegisteredAttemptDecoratorFactory = alloc::sync::Arc<(dyn core::ops::function::Fn(&awaken_worker::RegisteredWorkerContext) -> core::result::Result<awaken_session_executor::host::AttemptExecutorDecorator, alloc::string::String> + core::marker::Send + core::marker::Sync)>

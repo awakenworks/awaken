@@ -5,6 +5,7 @@ pub awaken_worker_transport_security::RemoteCredentialPosture::Invalid
 pub awaken_worker_transport_security::RemoteCredentialPosture::Missing
 pub awaken_worker_transport_security::RemoteCredentialPosture::MtlsOnly
 pub awaken_worker_transport_security::RemoteCredentialPosture::Multiple
+pub awaken_worker_transport_security::RemoteCredentialPosture::PodBoundToken
 pub awaken_worker_transport_security::RemoteCredentialPosture::UnsignedHeader
 pub enum awaken_worker_transport_security::RemoteEndpointPosture
 pub awaken_worker_transport_security::RemoteEndpointPosture::EmbeddedAuthority
@@ -54,6 +55,7 @@ pub struct awaken_worker_transport_security::RemoteWorkerTransportSelection
 impl awaken_worker_transport_security::RemoteWorkerTransportSelection
 pub const fn awaken_worker_transport_security::RemoteWorkerTransportSelection::binds_exact_worker_id(self) -> bool
 pub const fn awaken_worker_transport_security::RemoteWorkerTransportSelection::requires_https(self) -> bool
+pub const fn awaken_worker_transport_security::RemoteWorkerTransportSelection::requires_pod_bound_token(self) -> bool
 pub const fn awaken_worker_transport_security::RemoteWorkerTransportSelection::requires_signed_credential(self) -> bool
 pub struct awaken_worker_transport_security::SignedWorkerAuthenticator
 impl awaken_worker_transport_security::SignedWorkerAuthenticator

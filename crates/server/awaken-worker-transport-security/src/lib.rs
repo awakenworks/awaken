@@ -5,6 +5,9 @@
 //! and test compositions behind a trusted network. Managed deployments replace it
 //! with WorkerLease/mTLS verification without changing dispatch semantics.
 
+#[cfg(feature = "kubernetes")]
+pub mod kubernetes;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -678,7 +681,7 @@ impl WorkerRequestAuthenticator for MtlsWorkerAuthenticator {
 /// production Worker transport constructor.
 ///
 /// Six values are intentional: together with the credential and identity
-/// classifications they make the complete 6 x 6 x 6 admission space finite.
+/// classifications they make the complete 6 x 7 x 6 admission space finite.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteEndpointPosture {
     Https,
@@ -693,6 +696,7 @@ pub enum RemoteEndpointPosture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteCredentialPosture {
     ExactlyOneSigned,
+    PodBoundToken,
     Missing,
     Multiple,
     UnsignedHeader,
@@ -713,11 +717,11 @@ pub enum RemoteIdentityPosture {
 
 /// The only authority-bearing transport posture admitted for a remote Worker.
 /// Its fields are deliberately not configurable: admission always preserves
-/// all three security requirements.
+/// HTTPS and exact identity, with one explicit credential verification mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RemoteWorkerTransportSelection {
     require_https: bool,
-    require_signed_credential: bool,
+    credential: RemoteCredentialPosture,
     bind_exact_worker_id: bool,
 }
 
@@ -729,7 +733,12 @@ impl RemoteWorkerTransportSelection {
 
     #[must_use]
     pub const fn requires_signed_credential(self) -> bool {
-        self.require_signed_credential
+        matches!(self.credential, RemoteCredentialPosture::ExactlyOneSigned)
+    }
+
+    #[must_use]
+    pub const fn requires_pod_bound_token(self) -> bool {
+        matches!(self.credential, RemoteCredentialPosture::PodBoundToken)
     }
 
     #[must_use]
@@ -739,7 +748,8 @@ impl RemoteWorkerTransportSelection {
 }
 
 /// Select the production remote transport from the complete finite posture
-/// algebra. Exactly one of the 216 combinations is admitted.
+/// algebra. Exactly two of the 252 combinations are admitted. This selects a
+/// verification mode; it does not itself validate signatures or Pod tokens.
 #[must_use]
 pub const fn select_remote_worker_transport(
     endpoint: RemoteEndpointPosture,
@@ -749,11 +759,11 @@ pub const fn select_remote_worker_transport(
     match (endpoint, credential, identity) {
         (
             RemoteEndpointPosture::Https,
-            RemoteCredentialPosture::ExactlyOneSigned,
+            RemoteCredentialPosture::ExactlyOneSigned | RemoteCredentialPosture::PodBoundToken,
             RemoteIdentityPosture::Exact,
         ) => Some(RemoteWorkerTransportSelection {
             require_https: true,
-            require_signed_credential: true,
+            credential,
             bind_exact_worker_id: true,
         }),
         _ => None,
@@ -814,6 +824,36 @@ pub struct WorkerUpstream {
 }
 
 impl WorkerUpstream {
+    fn http_client_for_ca(ca: Option<&[u8]>) -> Result<reqwest::Client, String> {
+        let mut builder = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(30));
+        if let Some(ca) = ca {
+            // Rustls-backed `from_pem` merely stores the bytes; an empty PEM
+            // iteration also succeeds when building the client. A configured
+            // private CA must actually add at least one validated certificate.
+            let certificates = reqwest::Certificate::from_pem_bundle(ca)
+                .map_err(|_| "invalid Worker server CA certificate encoding".to_owned())?;
+            if certificates.is_empty() {
+                return Err("Worker server CA contains no certificates".into());
+            }
+            for certificate in certificates {
+                builder = builder.add_root_certificate(certificate);
+            }
+        }
+        builder
+            .build()
+            .map_err(|error| format!("build Worker upstream TLS client: {error}"))
+    }
+
+    fn with_server_ca(self, ca: Option<&[u8]>) -> Result<Self, String> {
+        match ca {
+            Some(_) => Ok(self.with_client(Self::http_client_for_ca(ca)?)),
+            None => Ok(self),
+        }
+    }
     /// Connect to the private Worker-to-Coordinator plane without inheriting
     /// workstation or container egress proxies. Deployments that intentionally
     /// proxy this channel can still supply an explicit client with
@@ -822,11 +862,7 @@ impl WorkerUpstream {
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
-            client: reqwest::Client::builder()
-                .no_proxy()
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
+            client: Self::http_client_for_ca(None)
                 .expect("the default Worker upstream HTTP client should build"),
             request_authorizer: Arc::new(HeaderWorkerRequestAuthorizer),
             worker_id: "awaken-worker".to_string(),
@@ -880,16 +916,7 @@ impl WorkerUpstream {
         ca_certificate_pem: &[u8],
     ) -> Result<Self, String> {
         let upstream = Self::remote(base_url, worker_id, credentials)?;
-        let certificate = reqwest::Certificate::from_pem(ca_certificate_pem)
-            .map_err(|error| format!("parse Worker server CA certificate: {error}"))?;
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .connect_timeout(std::time::Duration::from_secs(5))
-            .timeout(std::time::Duration::from_secs(30))
-            .add_root_certificate(certificate)
-            .build()
-            .map_err(|error| format!("build Worker upstream TLS client: {error}"))?;
-        Ok(upstream.with_client(client))
+        upstream.with_server_ca(Some(ca_certificate_pem))
     }
 
     #[must_use]
@@ -991,6 +1018,7 @@ fn remote_credential_from_index(index: u8) -> RemoteCredentialPosture {
         2 => RemoteCredentialPosture::Multiple,
         3 => RemoteCredentialPosture::UnsignedHeader,
         4 => RemoteCredentialPosture::MtlsOnly,
+        6 => RemoteCredentialPosture::PodBoundToken,
         _ => RemoteCredentialPosture::Invalid,
     }
 }
@@ -1007,16 +1035,16 @@ fn remote_identity_from_index(index: u8) -> RemoteIdentityPosture {
     }
 }
 
-/// Exhaustively covers the finite 6 x 6 x 6 posture algebra and proves that
-/// only HTTPS + one signed credential + exact identity is admitted.
+/// Exhaustively covers the finite 6 x 7 x 6 posture algebra. Only HTTPS + one
+/// supported credential-verification mode + exact identity is admitted.
 #[cfg(kani)]
 #[kani::proof]
-fn worker_transport_selector_admits_only_three_exact_postures() {
+fn worker_transport_selector_admits_only_supported_exact_postures() {
     let endpoint_index: u8 = kani::any();
     let credential_index: u8 = kani::any();
     let identity_index: u8 = kani::any();
     kani::assume(endpoint_index < 6);
-    kani::assume(credential_index < 6);
+    kani::assume(credential_index < 7);
     kani::assume(identity_index < 6);
 
     let endpoint = remote_endpoint_from_index(endpoint_index);
@@ -1024,13 +1052,16 @@ fn worker_transport_selector_admits_only_three_exact_postures() {
     let identity = remote_identity_from_index(identity_index);
     let admitted = select_remote_worker_transport(endpoint, credential, identity);
     let exact = endpoint == RemoteEndpointPosture::Https
-        && credential == RemoteCredentialPosture::ExactlyOneSigned
+        && matches!(
+            credential,
+            RemoteCredentialPosture::ExactlyOneSigned | RemoteCredentialPosture::PodBoundToken
+        )
         && identity == RemoteIdentityPosture::Exact;
     assert_eq!(admitted.is_some(), exact);
 }
 
 /// Any admitted remote selection retains every required security property; no
-/// state can downgrade TLS/signing or broaden the Worker identity binding.
+/// state can downgrade TLS, omit verification or broaden identity binding.
 #[cfg(kani)]
 #[kani::proof]
 fn remote_transport_never_downgrades_or_widens_identity() {
@@ -1038,7 +1069,7 @@ fn remote_transport_never_downgrades_or_widens_identity() {
     let credential_index: u8 = kani::any();
     let identity_index: u8 = kani::any();
     kani::assume(endpoint_index < 6);
-    kani::assume(credential_index < 6);
+    kani::assume(credential_index < 7);
     kani::assume(identity_index < 6);
 
     if let Some(selection) = select_remote_worker_transport(
@@ -1047,10 +1078,13 @@ fn remote_transport_never_downgrades_or_widens_identity() {
         remote_identity_from_index(identity_index),
     ) {
         assert!(selection.requires_https());
-        assert!(selection.requires_signed_credential());
+        assert_ne!(
+            selection.requires_signed_credential(),
+            selection.requires_pod_bound_token()
+        );
         assert!(selection.binds_exact_worker_id());
         assert_eq!(endpoint_index, 0);
-        assert_eq!(credential_index, 0);
+        assert!(credential_index == 0 || credential_index == 6);
         assert_eq!(identity_index, 0);
     }
 }
@@ -1304,6 +1338,97 @@ mod tests {
         ] {
             assert!(rejected.is_err());
         }
+        // CA1 absent/private-CA modes share TLS policy; CA2 a configured empty,
+        // non-certificate, invalid PEM or invalid DER bundle fails at startup.
+        // Valid CA and no-CA construction are exercised in the redirect test.
+        for pem in [
+            "",
+            "not a certificate",
+            "-----BEGIN CERTIFICATE-----\n!invalid!\n-----END CERTIFICATE-----",
+            "-----BEGIN CERTIFICATE-----\nYQ==\n-----END CERTIFICATE-----",
+            "-----BEGIN PRIVATE KEY-----\nYQ==\n-----END PRIVATE KEY-----", // awaken-allow: secret -- invalid one-byte DER fixture, not a key
+        ] {
+            assert!(
+                WorkerUpstream::remote_with_ca_certificate(
+                    "https://coordinator.invalid",
+                    "worker-signed",
+                    vec![credential("ca")],
+                    pem.as_bytes()
+                )
+                .is_err(),
+                "CA2"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_http_client_never_follows_authorized_redirects() {
+        // D1 GET/POST + any standard redirect (same-origin too) => return the
+        // redirect itself, zero target calls. Following even a same-origin
+        // redirect could forward a Pod bearer to a different authority route.
+        // D2 both public-root and private-CA clients use the same client factory.
+        // Reuse the repository's TLS identity fixture, not a second certificate
+        // generator. This test requires its existing Node/OpenSSL prerequisites.
+        // No custom client
+        // override is installed here because it is an explicit embedding TCB.
+        let calls = Arc::new(AtomicU64::new(0));
+        let target_calls = calls.clone();
+        let router = axum::Router::new()
+            .route(
+                "/redirect/{code}",
+                axum::routing::any(
+                    |axum::extract::Path(code): axum::extract::Path<u16>| async move {
+                        (
+                            StatusCode::from_u16(code).unwrap(),
+                            [(axum::http::header::LOCATION, "/target")],
+                        )
+                    },
+                ),
+            )
+            .route(
+                "/target",
+                axum::routing::any(move || {
+                    target_calls.fetch_add(1, Ordering::SeqCst);
+                    async { StatusCode::NO_CONTENT }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../e2e/fixtures/tls_identity_fixture.mjs");
+        let generated = std::process::Command::new("node")
+            .arg(fixture)
+            .arg(directory.path())
+            .args(["worker-transport-test", "localhost", "DNS:localhost"])
+            .output()
+            .expect("existing TLS fixture requires Node and OpenSSL");
+        assert!(generated.status.success(), "TLS fixture generation failed");
+        let ca = std::fs::read(directory.path().join("worker-test-ca.pem")).unwrap();
+        for ca in [None, Some(ca.as_slice())] {
+            let upstream = WorkerUpstream::new(format!("http://{address}"))
+                .with_server_ca(ca)
+                .unwrap();
+            for method in [reqwest::Method::GET, reqwest::Method::POST] {
+                for code in [301, 302, 303, 307, 308] {
+                    let response = upstream
+                        .client()
+                        .request(method.clone(), format!("http://{address}/redirect/{code}"))
+                        .bearer_auth("fixture-token")
+                        .send()
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status().as_u16(), code, "D1 {method}");
+                }
+            }
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "D1 no credential forwarding"
+        );
+        server.abort();
     }
 
     fn signed_parts(

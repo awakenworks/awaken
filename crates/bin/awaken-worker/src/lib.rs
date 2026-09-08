@@ -40,7 +40,9 @@ use manifest::{
 };
 
 pub use attempt_decorator::{RegisteredAttemptDecoratorFactory, RegisteredWorkerContext};
-pub use bootstrap::{WorkerBootstrap, WorkerBootstrapInput, WorkerDaemonConfig};
+pub use bootstrap::{
+    WorkerBootstrap, WorkerBootstrapInput, WorkerDaemonConfig, WorkerUpstreamSecurity,
+};
 pub use credential_files::WorkerCredentialFileResolver;
 pub use lifecycle::WorkerShutdown;
 pub use manifest::StandardManifestConfig;
