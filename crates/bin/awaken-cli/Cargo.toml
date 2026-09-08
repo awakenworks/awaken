@@ -159,6 +159,9 @@ container-docker = ["awaken-session-executor/container-docker"]
 container-podman = ["awaken-session-executor/container-podman"]
 container-k8s = ["awaken-session-executor/container-k8s"]
 
+[build-dependencies]
+serde_json.workspace = true
+
 [dev-dependencies]
 awaken-credential.workspace = true
 awaken-session-application = { workspace = true, features = ["test-support"] }
