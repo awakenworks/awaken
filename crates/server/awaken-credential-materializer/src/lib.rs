@@ -33,6 +33,7 @@ use std::sync::Mutex;
 mod admission;
 mod ambient_environment;
 mod claimed_materialization;
+mod material_capabilities;
 use admission::{ExpectedProviderTarget, admit_exact_adapter, unix_time_ms};
 pub use ambient_environment::{AmbientApiKeyEnvironmentError, reject_ambient_api_key_environment};
 #[cfg(feature = "authority")]
@@ -52,8 +53,7 @@ use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidat
 use awaken_runtime_contract::{
     CredentialAccess, CredentialMaterialBinding, CredentialMaterialError,
     CredentialMaterialRequest, CredentialMaterialResolver, CredentialMaterialSource,
-    CredentialRealizationCapabilities, CredentialRealizationKind, CredentialUsage, PlaintextHolder,
-    ResolvedCredentialMaterial,
+    CredentialRealizationKind, CredentialUsage, PlaintextHolder, ResolvedCredentialMaterial,
 };
 
 #[derive(Clone)]
@@ -196,25 +196,6 @@ impl PinnedCredentialMaterializer {
             .collect()
     }
 
-    /// Installed source evidence used by standard Worker manifest derivation.
-    #[must_use]
-    pub fn material_source_capabilities(
-        &self,
-    ) -> (std::collections::BTreeSet<CredentialMaterialSource>, bool) {
-        let mut sources = std::collections::BTreeSet::new();
-        if self.has_local_stores() {
-            sources.insert(CredentialMaterialSource::ControlPlaneReference);
-        }
-        let envelopes = self
-            .external_material_resolver
-            .as_ref()
-            .is_some_and(|resolver| {
-                sources.extend(resolver.supported_material_sources());
-                resolver.supports_recipient_bound_envelopes()
-            });
-        (sources, envelopes)
-    }
-
     fn has_local_stores(&self) -> bool {
         #[cfg(feature = "authority")]
         {
@@ -224,66 +205,6 @@ impl PinnedCredentialMaterializer {
         {
             false
         }
-    }
-
-    fn realization_capabilities(
-        &self,
-        holder: PlaintextHolder,
-        realization: CredentialRealizationKind,
-    ) -> CredentialRealizationCapabilities {
-        let (material_sources, recipient_bound_envelopes) = self.material_source_capabilities();
-        CredentialRealizationCapabilities {
-            holders: [holder].into_iter().collect(),
-            material_sources,
-            realization_kinds: [realization].into_iter().collect(),
-            recipient_bound_envelopes,
-            extension_consumers: if realization == CredentialRealizationKind::WorkerRelay {
-                self.extension_capabilities()
-            } else {
-                Default::default()
-            },
-            alternatives: Vec::new(),
-        }
-    }
-
-    /// Exact evidence for a Worker-held mediated transport/material adapter.
-    #[must_use]
-    pub fn worker_relay_capabilities(&self) -> CredentialRealizationCapabilities {
-        self.realization_capabilities(
-            PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Worker,
-                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
-            ),
-            CredentialRealizationKind::WorkerRelay,
-        )
-    }
-
-    /// Exact evidence for the Worker-side Native provider adapter.
-    ///
-    /// This adapter consumes a publication-pinned provider credential inside
-    /// the Worker process. It is independent of sandbox secret-egress support:
-    /// provider plaintext never enters the sandbox on this path.
-    #[must_use]
-    pub fn provider_adapter_capabilities(&self) -> CredentialRealizationCapabilities {
-        self.realization_capabilities(
-            PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Worker,
-                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
-            ),
-            CredentialRealizationKind::WorkerProviderAdapter,
-        )
-    }
-
-    /// Exact evidence for a Workload process-secret adapter.
-    #[must_use]
-    pub fn process_secret_capabilities(&self) -> CredentialRealizationCapabilities {
-        self.realization_capabilities(
-            PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Workload,
-                awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
-            ),
-            CredentialRealizationKind::ProcessSecretEnvironment,
-        )
     }
 
     /// Resolve and dispatch one exact extension binding without exposing its
@@ -400,13 +321,11 @@ impl PinnedCredentialMaterializer {
         ) {
             return Err("published credential injection contract is invalid".to_string());
         }
-        let (material_sources, recipient_bound_envelopes) = self.material_source_capabilities();
         admit_exact_adapter(
             credential,
             selected_holder,
             realization,
-            material_sources,
-            recipient_bound_envelopes,
+            &self.realization_capabilities(selected_holder.clone(), realization),
         )
         .map_err(|error| error.to_string())?;
         let resolved = self
@@ -448,13 +367,11 @@ impl PinnedCredentialMaterializer {
         if !matches!(credential.usage, CredentialUsage::HttpHeader { .. }) {
             return Err("remote credential injection contract is not an HTTP header".into());
         }
-        let (material_sources, recipient_bound_envelopes) = self.material_source_capabilities();
         admit_exact_adapter(
             credential,
             selected_holder,
             realization,
-            material_sources,
-            recipient_bound_envelopes,
+            &self.realization_capabilities(selected_holder.clone(), realization),
         )
         .map_err(|error| error.to_string())?;
         let resolved = self
@@ -498,27 +415,20 @@ impl PinnedCredentialMaterializer {
             &access.usage,
         )
         .map_err(|_| CredentialMaterialError::BindingMismatch)?;
-        let external_supports_source =
-            self.external_material_resolver
-                .as_ref()
-                .is_some_and(|resolver| {
-                    resolver
-                        .supported_material_sources()
-                        .contains(&access.material_source)
-                });
+        let external_request = awaken_runtime_contract::CredentialMaterialCapability {
+            holder: selected_holder.clone(),
+            source: access.material_source,
+            envelope: access.envelope.is_some(),
+        };
         if access.envelope.is_some()
             || access.material_source == CredentialMaterialSource::WorkerReference
-            || (!self.has_local_stores() && external_supports_source)
+            || !self.has_local_stores()
         {
             let resolver = self
                 .external_material_resolver
                 .as_ref()
                 .ok_or(CredentialMaterialError::Unavailable)?;
-            if !resolver
-                .supported_material_sources()
-                .contains(&access.material_source)
-                || (access.envelope.is_some() && !resolver.supports_recipient_bound_envelopes())
-            {
+            if !resolver.material_capabilities().contains(&external_request) {
                 return Err(CredentialMaterialError::Unavailable);
             }
             let resolved = resolver
@@ -633,13 +543,11 @@ impl PinnedCredentialMaterializer {
         workspace: &str,
         target: &impl serde::Serialize,
     ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
-        let (material_sources, recipient_bound_envelopes) = self.material_source_capabilities();
         admit_exact_adapter(
             access,
             selected_holder,
             realization,
-            material_sources,
-            recipient_bound_envelopes,
+            &self.realization_capabilities(selected_holder.clone(), realization),
         )
         .map_err(|_| CredentialMaterialError::Unavailable)?;
         self.resolve_validated(
@@ -663,13 +571,11 @@ impl PinnedCredentialMaterializer {
         provider: &str,
         target: &impl serde::Serialize,
     ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
-        let (material_sources, recipient_bound_envelopes) = self.material_source_capabilities();
         admit_exact_adapter(
             access,
             selected_holder,
             realization,
-            material_sources,
-            recipient_bound_envelopes,
+            &self.realization_capabilities(selected_holder.clone(), realization),
         )
         .map_err(|_| CredentialMaterialError::Unavailable)?;
         self.resolve_validated(
@@ -735,12 +641,10 @@ pub enum CredentialExtensionRegistryError {
 
 #[async_trait::async_trait]
 impl CredentialMaterialResolver for PinnedCredentialMaterializer {
-    fn supported_material_sources(&self) -> std::collections::BTreeSet<CredentialMaterialSource> {
-        self.material_source_capabilities().0
-    }
-
-    fn supports_recipient_bound_envelopes(&self) -> bool {
-        self.material_source_capabilities().1
+    fn material_capabilities(
+        &self,
+    ) -> std::collections::BTreeSet<awaken_runtime_contract::CredentialMaterialCapability> {
+        self.installed_material_capabilities()
     }
 
     async fn resolve_exact(
@@ -774,6 +678,7 @@ mod tests {
         CredentialCreateParams, CredentialError, CredentialKind, InMemorySecretStore, SecretRef,
         SecretStore,
     };
+    use awaken_runtime_contract::CredentialRealizationCapabilities;
     use awaken_runtime_contract::{
         CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterial, CredentialRef,
         CredentialRefreshAccess, CredentialUsage, InferenceEndpoint, ModelBinding,
@@ -789,17 +694,35 @@ mod tests {
 
     #[async_trait::async_trait]
     impl CredentialMaterialResolver for ExactExternalResolver {
-        fn supported_material_sources(
+        fn material_capabilities(
             &self,
-        ) -> std::collections::BTreeSet<CredentialMaterialSource> {
-            std::collections::BTreeSet::from([
-                CredentialMaterialSource::ControlPlaneReference,
-                CredentialMaterialSource::WorkerReference,
-            ])
-        }
-
-        fn supports_recipient_bound_envelopes(&self) -> bool {
-            true
+        ) -> std::collections::BTreeSet<awaken_runtime_contract::CredentialMaterialCapability>
+        {
+            let mut profiles = std::collections::BTreeSet::new();
+            for holder in [
+                awaken_runtime_contract::PlaintextHolder::new(
+                    awaken_runtime_contract::PlaintextBoundary::Worker,
+                    "awaken.worker",
+                ),
+                awaken_runtime_contract::PlaintextHolder::new(
+                    awaken_runtime_contract::PlaintextBoundary::Workload,
+                    "awaken.workload.acp",
+                ),
+            ] {
+                for source in [
+                    awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                    awaken_runtime_contract::CredentialMaterialSource::WorkerReference,
+                ] {
+                    for envelope in [false, true] {
+                        profiles.insert(awaken_runtime_contract::CredentialMaterialCapability {
+                            holder: holder.clone(),
+                            source,
+                            envelope,
+                        });
+                    }
+                }
+            }
+            profiles
         }
 
         async fn resolve_exact(

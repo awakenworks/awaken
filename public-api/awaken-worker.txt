@@ -50,9 +50,8 @@ pub fn awaken_worker::WorkerCredentialFileResolver::holder(&self) -> &awaken_cre
 pub fn awaken_worker::WorkerCredentialFileResolver::material_directory(&self, awaken_credential_contract::CredentialMaterialRequest<'_>) -> std::path::PathBuf
 pub fn awaken_worker::WorkerCredentialFileResolver::new(impl core::convert::Into<std::path::PathBuf>, impl core::convert::Into<alloc::string::String>) -> Self
 impl awaken_credential_contract::CredentialMaterialResolver for awaken_worker::WorkerCredentialFileResolver
+pub fn awaken_worker::WorkerCredentialFileResolver::material_capabilities(&self) -> alloc::collections::btree::set::BTreeSet<awaken_credential_contract::CredentialMaterialCapability>
 pub fn awaken_worker::WorkerCredentialFileResolver::resolve_exact<'life0, 'life1, 'async_trait>(&'life0 self, awaken_credential_contract::CredentialMaterialRequest<'life1>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_credential_contract::ResolvedCredentialMaterial, awaken_credential_contract::CredentialMaterialError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_worker::WorkerCredentialFileResolver::supported_material_sources(&self) -> alloc::collections::btree::set::BTreeSet<awaken_credential_contract::CredentialMaterialSource>
-pub fn awaken_worker::WorkerCredentialFileResolver::supports_recipient_bound_envelopes(&self) -> bool
 pub struct awaken_worker::WorkerDaemonConfig
 pub awaken_worker::WorkerDaemonConfig::worker: awaken_worker::WorkerBootstrap
 impl awaken_worker::WorkerDaemonConfig

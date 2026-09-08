@@ -22,6 +22,7 @@ pub use awaken_runtime_contract::CredentialExtensionReceipt
 pub use awaken_runtime_contract::CredentialExtensionRequest
 pub use awaken_runtime_contract::CredentialMaterial
 pub use awaken_runtime_contract::CredentialMaterialBinding
+pub use awaken_runtime_contract::CredentialMaterialCapability
 pub use awaken_runtime_contract::CredentialMaterialError
 pub use awaken_runtime_contract::CredentialMaterialRequest
 pub use awaken_runtime_contract::CredentialMaterialResolver

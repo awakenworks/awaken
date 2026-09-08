@@ -158,9 +158,11 @@ mod tests {
             )
             .await
             .unwrap_err();
+            // R1 must retain the typed physical uncertainty and tool identity;
+            // a generic execution error is not an equivalent recovery signal.
             assert!(
-                matches!(old, ToolError::Execution(_)),
-                "R1 must not authorize replacement/replay"
+                matches!(old, ToolError::Indeterminate(ref tool) if tool == "echo"),
+                "R1 must preserve indeterminate identity, got {old:?}"
             );
             let new = with_tool_operation_context(
                 ToolOperationContext::for_run("run", "new"),

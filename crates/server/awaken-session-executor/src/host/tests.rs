@@ -10827,16 +10827,25 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
 
     #[async_trait::async_trait]
     impl CredentialMaterialResolver for ExactTargetResolver {
-        fn supported_material_sources(
+        fn material_capabilities(
             &self,
-        ) -> std::collections::BTreeSet<CredentialMaterialSource> {
-            [CredentialMaterialSource::ControlPlaneReference]
-                .into_iter()
-                .collect()
-        }
-
-        fn supports_recipient_bound_envelopes(&self) -> bool {
-            true
+        ) -> std::collections::BTreeSet<awaken_runtime_contract::CredentialMaterialCapability>
+        {
+            let mut profiles = std::collections::BTreeSet::new();
+            for holder in [self.holder.clone()] {
+                for source in
+                    [awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference]
+                {
+                    for envelope in [false, true] {
+                        profiles.insert(awaken_runtime_contract::CredentialMaterialCapability {
+                            holder: holder.clone(),
+                            source,
+                            envelope,
+                        });
+                    }
+                }
+            }
+            profiles
         }
 
         async fn resolve_exact(

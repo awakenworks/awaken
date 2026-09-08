@@ -72,12 +72,7 @@ export async function scenarioMemoryStore(client, headers) {
   }
   return store;
 }
-// Canonical secret-free evidence for a test driver that stands in for the
-// installed Native provider adapter while it claims (but never executes) a
-// production-authored seed dispatch. Keep the wire encoding here so fixtures do
-// not grow independently ordered copies of the credential capability contract.
-export const WORKER_PROVIDER_CREDENTIAL_CAPABILITY =
-  'credential-realization.awaken.dev/v1:{"holders":[{"boundary":"worker","trust_domain":"awaken.worker"}],"material_sources":["control_plane_reference"],"realization_kinds":["worker_provider_adapter"],"recipient_bound_envelopes":false}';
+export { WORKER_PROVIDER_CREDENTIAL_CAPABILITY } from './fixtures/worker_manifest_fixture.mjs';
 // Match scripts/ci/_cargo_target.sh: a caller-owned coverage/isolated target
 // wins; otherwise keep this worktree's Cargo artifacts out of any user-level
 // shared target that can contain same-name packages from another worktree.

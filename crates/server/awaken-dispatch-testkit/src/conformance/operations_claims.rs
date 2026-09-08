@@ -396,6 +396,7 @@ async fn exact_claim_recovery_and_fencing(
             .into_iter()
             .collect(),
         recipient_bound_envelopes: false,
+        envelope_required: false,
         extension_consumers: Default::default(),
         alternatives: Vec::new(),
     };

@@ -1,3 +1,10 @@
+// Canonical secret-free evidence for a test driver that stands in for the
+// installed Native provider adapter while it claims (but never executes) a
+// production-authored seed dispatch. Keep the wire encoding here so fixtures do
+// not grow independently ordered copies of the credential capability contract.
+export const WORKER_PROVIDER_CREDENTIAL_CAPABILITY =
+  'credential-realization.awaken.dev/v2:{"holders":[{"boundary":"worker","trust_domain":"awaken.worker"}],"material_sources":["control_plane_reference"],"realization_kinds":["worker_provider_adapter"],"recipient_bound_envelopes":false,"envelope_required":false}';
+
 // One raw registration manifest for external E2E drivers that emulate a
 // database-less workdir Worker. Callers own the capability evidence and build
 // identity; this fixture owns only the repeated wire shape and applies no

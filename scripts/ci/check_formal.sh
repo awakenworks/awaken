@@ -309,6 +309,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness management_effect_retirement_requires_present_matching_receipt
   run_kani awaken-credential-contract \
     --harness credential_envelope_issuance_accepts_exactly_the_complete_claim \
+    --harness credential_profile_admission_requires_one_complete_material_tuple \
     --harness durable_credential_material_source_has_no_inline_plaintext_class \
     --harness environment_credential_custody_selects_exactly_one_authorized_profile \
     --harness named_material_shape_is_exact_and_non_widening \
@@ -898,7 +899,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/managed-credential-creation" \
     -config formal/tla/ManagedCredentialCreation.cfg \
     formal/tla/ManagedCredentialCreation.tla
-  python3 scripts/ci/check_formal_mutations.py --credential-removal-model-mutant "$tla_jar"
+  python3 scripts/ci/check_formal_mutations.py --credential-creation-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/verified-profile-admission" \
     -config formal/tla/VerifiedProfileAdmission.cfg formal/tla/VerifiedProfileAdmission.tla
