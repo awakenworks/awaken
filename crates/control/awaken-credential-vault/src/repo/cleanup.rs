@@ -188,7 +188,11 @@ impl PendingManagedCredentialMutation {
         )
         .await
     }
-    fn is_unpublished_at(
+    /// Compare the complete pre-publication pair under the caller's repository
+    /// lock or transaction. Shared by begin, commit, abort and completion; this
+    /// value comparison neither acquires authority nor performs storage IO.
+    #[must_use]
+    pub fn is_unpublished_at(
         &self,
         source: Option<&CredentialSource>,
         child: Option<&ManagedVaultCredential>,
