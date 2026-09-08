@@ -12,6 +12,7 @@
 
 mod common;
 mod k8s_common;
+mod pod_process_termination;
 #[path = "common/process.rs"]
 mod process_lifecycle;
 

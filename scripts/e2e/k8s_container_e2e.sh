@@ -16,6 +16,7 @@ awaken_configure_cargo_target "$PWD"
 . e2e/k3d/harness.sh
 
 CLUSTER="${AWAKEN_K8S_CLUSTER:-awaken-k8s-e2e}"
+export AWAKEN_K3D_CLUSTER="$CLUSTER"
 FIXTURE_IMAGE="${AWAKEN_K8S_FIXTURE_IMAGE:-awaken-bb:1}"
 export AWAKEN_K8S_FIXTURE_IMAGE="$FIXTURE_IMAGE"
 SESSION_IMAGE="${AWAKEN_K8S_SESSION_IMAGE:-awaken-sandbox:local}"
