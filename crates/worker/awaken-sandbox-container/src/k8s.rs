@@ -70,6 +70,7 @@ mod sandbox_control;
 #[cfg(test)]
 use channel::accept_reverse_on;
 use client::K8sClients;
+pub use client::connect_control_client;
 pub(crate) use client::install_rustls_crypto_provider;
 use continuation::{rebuild_claim_admission, rebuild_continuation_expectation};
 use error::api_not_found;
@@ -90,7 +91,9 @@ pub(crate) use pod_security::{has_forbidden_sandbox_namespace_shape, sandbox_net
 use process::{K8sExecProcess, K8sExecState, k8s_exec_argv, k8s_live_file_result};
 #[cfg(test)]
 use process::{k8s_exit_status, signal_effect_is_complete};
-pub use process_termination::{ObservedPodProcessExit, PodProcessBinding, PodProcessTermination};
+pub use process_termination::{
+    ObservedPodProcessExit, PodProcessBinding, PodProcessObserver, PodProcessTermination,
+};
 use realization::{PodReadiness, create_or_verify, pod_readiness, stamp_pod_realization};
 pub(crate) use realization::{create_or_verify_exact, stamp_realization};
 pub use sandbox_control::{

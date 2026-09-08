@@ -13,6 +13,13 @@ pub(crate) fn install_rustls_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
+/// One authenticated control client for read-only infrastructure adapters. It
+/// creates no Sandbox resources or NetworkPolicies and retains finite deadlines.
+pub async fn connect_control_client() -> Result<Client, RuntimeError> {
+    install_rustls_crypto_provider();
+    Client::try_default().await.map_err(backend)
+}
+
 pub(super) struct K8sClients {
     pub(super) control: Client,
     pub(super) streaming: Client,

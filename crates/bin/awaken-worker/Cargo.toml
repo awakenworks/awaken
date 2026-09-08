@@ -32,7 +32,7 @@ path = "src/main.rs"
 # sessions inside containers/Pods. Off by default (bwrap namespace tier).
 container-docker = ["awaken-session-executor/container-docker"]
 container-podman = ["awaken-session-executor/container-podman"]
-container-k8s = ["awaken-session-executor/container-k8s"]
+container-k8s = ["awaken-session-executor/container-k8s", "awaken-worker-transport-security/kubernetes"]
 
 [dependencies]
 awaken-protocol-mcp.workspace = true

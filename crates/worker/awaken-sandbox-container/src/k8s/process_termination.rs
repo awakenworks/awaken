@@ -8,7 +8,7 @@ use k8s_openapi::api::core::v1::{ContainerStatus, Pod};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use serde::{Deserialize, Serialize};
 
-use super::{K8sRuntime, api_not_found, backend, has_forbidden_sandbox_namespace_shape};
+use super::{api_not_found, backend, has_forbidden_sandbox_namespace_shape};
 use crate::RuntimeError;
 
 /// Freeze this identity before admitting effects. Namespace/name are lookup
@@ -60,15 +60,39 @@ impl ObservedPodProcessExit {
     }
 }
 
-impl K8sRuntime {
+/// Read-only process observer. Unlike Sandbox runtime startup, construction does
+/// not create NetworkPolicies or other execution resources. The Coordinator may
+/// share this exact authenticated client with its Pod TokenReview adapter.
+pub struct PodProcessObserver {
+    pods: kube::Api<Pod>,
+    namespace: String,
+}
+
+impl PodProcessObserver {
+    pub fn new(client: kube::Client, namespace: &str) -> Result<Self, RuntimeError> {
+        if namespace.trim().is_empty() || namespace.trim() != namespace {
+            return Err(backend("Pod process observer requires an exact namespace"));
+        }
+        Ok(Self {
+            pods: kube::Api::namespaced(client, namespace),
+            namespace: namespace.into(),
+        })
+    }
     /// Obtain the exact running process coordinate through the existing control
     /// client. The caller must persist it before allowing any external effects.
     /// Every ordinary container is included. The first profile rejects init,
     /// ephemeral and independently restartable containers instead of silently
     /// omitting them from its proof domain.
-    pub async fn bind_pod_process(&self, name: &str) -> Result<PodProcessBinding, RuntimeError> {
-        let pod = self.pods().get(name).await.map_err(backend)?;
-        bind(&self.namespace, name, &pod)
+    pub async fn bind_pod_process(
+        &self,
+        name: &str,
+        expected_uid: &str,
+    ) -> Result<PodProcessBinding, RuntimeError> {
+        if expected_uid.is_empty() {
+            return Err(backend("Pod process binding requires an authenticated UID"));
+        }
+        let pod = self.pods.get(name).await.map_err(backend)?;
+        bind(&self.namespace, name, expected_uid, &pod)
     }
 
     /// Can be called by a different live owner after the original process died.
@@ -82,7 +106,7 @@ impl K8sRuntime {
         if binding.namespace != self.namespace {
             return Err(backend("Pod process binding belongs to another namespace"));
         }
-        match self.pods().get(&binding.name).await {
+        match self.pods.get(&binding.name).await {
             Ok(pod) => Ok(observe(binding, &pod)),
             Err(error) if api_not_found(&error) => Ok(PodProcessTermination::Unknown),
             Err(error) => Err(backend(error)),
@@ -155,11 +179,18 @@ fn coordinate(value: Option<&str>) -> Option<String> {
     value.filter(|value| !value.is_empty()).map(str::to_owned)
 }
 
-fn bind(namespace: &str, name: &str, pod: &Pod) -> Result<PodProcessBinding, RuntimeError> {
+fn bind(
+    namespace: &str,
+    name: &str,
+    expected_uid: &str,
+    pod: &Pod,
+) -> Result<PodProcessBinding, RuntimeError> {
     let binding = (|| {
         if pod.metadata.deletion_timestamp.is_some()
             || pod.metadata.namespace.as_deref() != Some(namespace)
             || pod.metadata.name.as_deref() != Some(name)
+            || expected_uid.is_empty()
+            || pod.metadata.uid.as_deref() != Some(expected_uid)
             || pod.status.as_ref()?.phase.as_deref() != Some("Running")
         {
             return None;

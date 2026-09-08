@@ -29,6 +29,7 @@ pub awaken_worker::WorkerBootstrap::credential_observation_ttl_secs: u64
 pub awaken_worker::WorkerBootstrap::credential_probe_interval_secs: u64
 pub awaken_worker::WorkerBootstrap::credential_trust_domain: alloc::string::String
 pub awaken_worker::WorkerBootstrap::drain_grace_secs: u64
+pub awaken_worker::WorkerBootstrap::kubernetes_identity_directory: core::option::Option<std::path::PathBuf>
 pub awaken_worker::WorkerBootstrap::max_concurrent: core::option::Option<u32>
 pub awaken_worker::WorkerBootstrap::request_credential_file: core::option::Option<std::path::PathBuf>
 pub awaken_worker::WorkerBootstrap::worker_id: alloc::string::String
@@ -45,6 +46,7 @@ pub awaken_worker::WorkerBootstrapInput::credential_observation_ttl_secs: core::
 pub awaken_worker::WorkerBootstrapInput::credential_probe_interval_secs: core::option::Option<u64>
 pub awaken_worker::WorkerBootstrapInput::credential_trust_domain: core::option::Option<alloc::string::String>
 pub awaken_worker::WorkerBootstrapInput::drain_grace_secs: core::option::Option<u64>
+pub awaken_worker::WorkerBootstrapInput::kubernetes_identity_directory: core::option::Option<std::path::PathBuf>
 pub awaken_worker::WorkerBootstrapInput::max_concurrent: core::option::Option<u32>
 pub awaken_worker::WorkerBootstrapInput::request_credential_file: core::option::Option<std::path::PathBuf>
 pub awaken_worker::WorkerBootstrapInput::worker_id: core::option::Option<alloc::string::String>

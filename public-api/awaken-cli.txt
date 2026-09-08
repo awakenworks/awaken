@@ -75,6 +75,11 @@ pub struct awaken_cli::config::ExecutableAgentRegistrationConfig
 impl awaken_cli::config::ExecutableAgentRegistrationConfig
 pub fn awaken_cli::config::ExecutableAgentRegistrationConfig::control_credentials(&self) -> core::result::Result<(&str, alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>), alloc::string::String>
 pub fn awaken_cli::config::ExecutableAgentRegistrationConfig::coordinator_authenticator(&self) -> core::result::Result<alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>, alloc::string::String>
+pub struct awaken_cli::config::KubernetesWorkerTransport
+pub awaken_cli::config::KubernetesWorkerTransport::audience: alloc::string::String
+pub awaken_cli::config::KubernetesWorkerTransport::namespace: alloc::string::String
+pub awaken_cli::config::KubernetesWorkerTransport::provider_id: alloc::string::String
+pub awaken_cli::config::KubernetesWorkerTransport::service_account: alloc::string::String
 pub struct awaken_cli::config::ResolvedDeployment
 pub awaken_cli::config::ResolvedDeployment::admin_listen: core::option::Option<alloc::string::String>
 pub awaken_cli::config::ResolvedDeployment::ai_sdk_browser_cors: awaken_coordinator::browser_cors::AiSdkBrowserCors
@@ -94,7 +99,7 @@ pub awaken_cli::config::ResolvedDeployment::expected_platform_workspace_id: core
 pub awaken_cli::config::ResolvedDeployment::iam_workspaces: alloc::vec::Vec<alloc::string::String>
 pub awaken_cli::config::ResolvedDeployment::identity_mode: awaken_control::authz::ManagementIdentityMode
 pub awaken_cli::config::ResolvedDeployment::internal_bind: core::option::Option<alloc::string::String>
-pub awaken_cli::config::ResolvedDeployment::local_acp_observations: alloc::vec::Vec<awaken_acp_application::host_discovery::AcpHostObservation>
+pub awaken_cli::config::ResolvedDeployment::local_acp_observations: alloc::vec::Vec<awaken_run_executor_acp::host::host_discovery::AcpHostObservation>
 pub awaken_cli::config::ResolvedDeployment::mcp_bearer_token: core::option::Option<alloc::string::String>
 pub awaken_cli::config::ResolvedDeployment::mode: awaken_cli::config::OperatingMode
 pub awaken_cli::config::ResolvedDeployment::no_browser: bool
@@ -108,10 +113,11 @@ pub awaken_cli::config::ResolvedDeployment::runtime: awaken_session_executor::de
 pub awaken_cli::config::ResolvedDeployment::seal_key: awaken_cli::config::SealKeySource
 pub awaken_cli::config::ResolvedDeployment::suite_hub_url: core::option::Option<alloc::string::String>
 pub awaken_cli::config::ResolvedDeployment::worker: awaken_worker::bootstrap::WorkerBootstrap
+pub awaken_cli::config::ResolvedDeployment::worker_kubernetes: core::option::Option<awaken_cli::config::KubernetesWorkerTransport>
 pub awaken_cli::config::ResolvedDeployment::worker_server: core::option::Option<alloc::string::String>
 pub awaken_cli::config::ResolvedDeployment::worker_trust_credentials_file: core::option::Option<std::path::PathBuf>
 impl awaken_cli::config::ResolvedDeployment
-pub fn awaken_cli::config::ResolvedDeployment::apply_local_acp_observations(&mut self, alloc::vec::Vec<awaken_acp_application::host_discovery::AcpHostObservation>, alloc::vec::Vec<alloc::string::String>) -> core::result::Result<(), alloc::string::String>
+pub fn awaken_cli::config::ResolvedDeployment::apply_local_acp_observations(&mut self, alloc::vec::Vec<awaken_run_executor_acp::host::host_discovery::AcpHostObservation>, alloc::vec::Vec<alloc::string::String>) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_cli::config::ResolvedDeployment::ensure_data_layout(&self) -> core::result::Result<(), alloc::string::String>
 impl awaken_cli::config::ResolvedDeployment
 pub async fn awaken_cli::config::ResolvedDeployment::doctor_report(&self, bool) -> alloc::string::String
