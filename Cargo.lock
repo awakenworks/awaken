@@ -2122,6 +2122,7 @@ dependencies = [
  "blake3",
  "bollard",
  "futures-util",
+ "http",
  "k8s-openapi",
  "kube",
  "rustls",
@@ -2132,6 +2133,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "tower",
 ]
 
 [[package]]

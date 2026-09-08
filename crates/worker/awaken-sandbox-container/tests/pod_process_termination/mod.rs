@@ -1,6 +1,7 @@
 use super::*;
 use awaken_sandbox_container::k8s::{
-    ObservedPodProcessExit, PodProcessBinding, PodProcessObserver, PodProcessTermination,
+    ObservedPodProcessExit, PodProcessBinding, PodProcessObserver, PodProcessStopper,
+    PodProcessTermination, WORKER_PROCESS_EVIDENCE_FINALIZER,
 };
 
 async fn wait_for_binding(
@@ -20,42 +21,25 @@ async fn wait_for_binding(
     .expect("process binding before fault")
 }
 
-async fn delete_and_observe(
-    pods: &kube::Api<k8s_openapi::api::core::v1::Pod>,
-    observer: &PodProcessObserver,
-    pod: &str,
-    expected_uid: &str,
+async fn stop_and_observe(
+    stopper: &PodProcessStopper,
     binding: &PodProcessBinding,
 ) -> ObservedPodProcessExit {
-    let current = pods.get(pod).await.unwrap();
-    assert_eq!(current.metadata.uid.as_deref(), Some(expected_uid));
-    pods.delete(
-        pod,
-        &kube::api::DeleteParams::default()
-            .grace_period(1)
-            .preconditions(kube::api::Preconditions {
-                uid: Some(expected_uid.into()),
-                resource_version: current.metadata.resource_version,
-            }),
-    )
-    .await
-    .unwrap();
-    // The DELETE reply is never the exit oracle. The test-owned finalizer keeps
-    // status available until the independent production observer sees all exits.
+    // Exercise the real provider command, including exact-CAS retries. An API
+    // error or accepted DELETE never satisfies the positive exit oracle.
+    let mut last_error = None;
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
-            if let PodProcessTermination::Observed(receipt) = observer
-                .observe_pod_process_termination(binding)
-                .await
-                .unwrap()
-            {
-                break receipt;
+            match stopper.request_stop(binding).await {
+                Ok(PodProcessTermination::Observed(receipt)) => break receipt,
+                Ok(PodProcessTermination::Unknown) => {}
+                Err(error) => last_error = Some(error.to_string()),
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     })
     .await
-    .expect("independent exact exit observation")
+    .unwrap_or_else(|_| panic!("independent exact exit observation: {last_error:?}"))
 }
 
 #[tokio::test]
@@ -68,6 +52,7 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
     // KPT6 same-name replacement => old UID cannot bind, old query is Unknown;
     // KPT7 delayed DELETE carrying only the old UID => API conflict, successor
     // stays live; KPT8 successor exit => only its fresh binding yields evidence.
+    // KPT9 adding retention after the old binding cannot authorize its stop.
     // KPT5/6/8 correspond to ExactCompleteObservation in the existing three-
     // generation K8sProcessObservation model. KPT7 tests the API's UID-precondition
     // trusted boundary, not a new Dispatch retirement or replay implementation.
@@ -103,9 +88,10 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
     let pods: kube::Api<k8s_openapi::api::core::v1::Pod> =
         kube::Api::namespaced(client.clone(), &namespace);
     let observer = PodProcessObserver::new(client, &namespace).unwrap();
-    let finalizer = "test.awaken.dev/retain-process-stop-evidence";
-    k8s_common::set_test_finalizer(&pods, &pod, finalizer, true).await;
+    let finalizer = WORKER_PROCESS_EVIDENCE_FINALIZER;
     let uid = pods.get(&pod).await.unwrap().metadata.uid.unwrap();
+    let unretained = wait_for_binding(&observer, &pod, &uid).await;
+    k8s_common::set_test_finalizer(&pods, &pod, finalizer, true).await;
     let binding = wait_for_binding(&observer, &pod, &uid).await;
     assert_eq!(
         observer
@@ -166,6 +152,16 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
         &namespace,
     )
     .unwrap();
+    let stopper = PodProcessStopper::new(
+        PodProcessObserver::new(
+            awaken_sandbox_container::k8s::connect_control_client()
+                .await
+                .unwrap(),
+            &namespace,
+        )
+        .unwrap(),
+    );
+    assert!(stopper.request_stop(&unretained).await.is_err(), "KPT9");
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             let current = pods.get(&pod).await.unwrap();
@@ -195,7 +191,7 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
         PodProcessTermination::Unknown,
         "KPT2 still-live projector vetoes whole-domain proof"
     );
-    let receipt = delete_and_observe(&pods, &observer, &pod, &uid, &binding).await;
+    let receipt = stop_and_observe(&stopper, &binding).await;
     let status = pods.get(&pod).await.unwrap().status.unwrap();
     let exit = status
         .container_statuses
@@ -251,6 +247,11 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
     assert_ne!(replacement_uid, uid, "KPT6 different physical domain");
     k8s_common::set_test_finalizer(&pods, &pod, finalizer, true).await;
     let replacement_binding = wait_for_binding(&observer, &pod, &replacement_uid).await;
+    assert_eq!(
+        stopper.request_stop(&binding).await.unwrap(),
+        PodProcessTermination::Unknown,
+        "KPT6 stale stop command"
+    );
     assert!(observer.bind_pod_process(&pod, &uid).await.is_err(), "KPT6");
     assert_eq!(
         observer
@@ -288,14 +289,7 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
             .success(),
         "KPT7 successor still executes"
     );
-    let replacement_receipt = delete_and_observe(
-        &pods,
-        &observer,
-        &pod,
-        &replacement_uid,
-        &replacement_binding,
-    )
-    .await;
+    let replacement_receipt = stop_and_observe(&stopper, &replacement_binding).await;
     assert_eq!(replacement_receipt.binding(), &replacement_binding, "KPT8");
     assert_ne!(replacement_receipt.binding(), receipt.binding(), "KPT8");
     assert_eq!(

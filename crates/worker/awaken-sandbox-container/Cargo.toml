@@ -64,3 +64,5 @@ awaken-tool-relay.workspace = true
 awaken-memory-store = { workspace = true, features = ["test-support"] }
 awaken-sandbox-memoryd.workspace = true
 tempfile = "3"
+http = "1"
+tower = { version = "0.5", features = ["util"] }

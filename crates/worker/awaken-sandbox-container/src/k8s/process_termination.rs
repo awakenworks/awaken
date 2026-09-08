@@ -11,6 +11,14 @@ use serde::{Deserialize, Serialize};
 use super::{api_not_found, backend, has_forbidden_sandbox_namespace_shape};
 use crate::RuntimeError;
 
+mod stop;
+pub use stop::PodProcessStopper;
+
+/// Installed by the trusted Worker deployment before execution admission, and
+/// retained until the exact attempt evidence has been durably consumed. This is
+/// not the Session continuation-cleanup finalizer and must not release its PVCs.
+pub const WORKER_PROCESS_EVIDENCE_FINALIZER: &str = "awaken.dev/worker-process-evidence";
+
 /// Freeze this identity before admitting effects. Namespace/name are lookup
 /// coordinates only; UID, node, container ID and start time identify execution.
 /// Deserializing a binding never establishes termination or execution authority.
@@ -22,6 +30,10 @@ pub struct PodProcessBinding {
     uid: String,
     node: String,
     containers: Vec<ContainerProcessBinding>,
+    /// Legacy/unretained coordinates cannot acquire stop-command capability by
+    /// adding a finalizer after the original admission.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    retained: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,6 +191,14 @@ fn coordinate(value: Option<&str>) -> Option<String> {
     value.filter(|value| !value.is_empty()).map(str::to_owned)
 }
 
+fn evidence_is_retained(pod: &Pod) -> bool {
+    pod.metadata.finalizers.as_ref().is_some_and(|values| {
+        values
+            .iter()
+            .any(|value| value == WORKER_PROCESS_EVIDENCE_FINALIZER)
+    })
+}
+
 fn bind(
     namespace: &str,
     name: &str,
@@ -215,36 +235,55 @@ fn bind(
             uid: coordinate(pod.metadata.uid.as_deref())?,
             node: coordinate(pod.spec.as_ref()?.node_name.as_deref())?,
             containers,
+            retained: evidence_is_retained(pod),
         })
     })();
     binding.ok_or_else(|| backend("Pod has no exact non-restarting private process binding"))
 }
 
+/// One exact process-set comparison for observation and stop admission. Neither
+/// a copied Pod name nor replacement container statuses can redirect a command.
+fn matching_statuses<'a>(
+    binding: &PodProcessBinding,
+    pod: &'a Pod,
+) -> Option<Vec<&'a ContainerStatus>> {
+    let statuses = process_statuses(pod)?;
+    if pod.metadata.namespace.as_deref() != Some(binding.namespace.as_str())
+        || pod.metadata.name.as_deref() != Some(binding.name.as_str())
+        || pod.metadata.uid.as_deref() != Some(binding.uid.as_str())
+        || pod.spec.as_ref()?.node_name.as_deref() != Some(binding.node.as_str())
+        || statuses.len() != binding.containers.len()
+    {
+        return None;
+    }
+    for (status, expected) in statuses.iter().zip(&binding.containers) {
+        let state = status.state.as_ref()?;
+        let started = match (&state.running, &state.terminated, &state.waiting) {
+            (Some(running), None, None) => running.started_at.as_ref()?,
+            (None, Some(terminated), None) => terminated.started_at.as_ref()?,
+            _ => return None,
+        };
+        if status.name != expected.name
+            || status.container_id.as_deref() != Some(expected.container_id.as_str())
+            || started != &expected.started_at
+        {
+            return None;
+        }
+    }
+    Some(statuses)
+}
+
 fn observe(binding: &PodProcessBinding, pod: &Pod) -> PodProcessTermination {
     let proof = (|| {
-        let statuses = process_statuses(pod)?;
-        let spec = pod.spec.as_ref()?;
-        if pod.metadata.namespace.as_deref() != Some(binding.namespace.as_str())
-            || pod.metadata.name.as_deref() != Some(binding.name.as_str())
-            || pod.metadata.uid.as_deref() != Some(binding.uid.as_str())
-            || spec.node_name.as_deref() != Some(binding.node.as_str())
-            || statuses.len() != binding.containers.len()
-            || !matches!(
-                pod.status.as_ref()?.phase.as_deref(),
-                Some("Succeeded" | "Failed")
-            )
-        {
+        let statuses = matching_statuses(binding, pod)?;
+        if !matches!(
+            pod.status.as_ref()?.phase.as_deref(),
+            Some("Succeeded" | "Failed")
+        ) {
             return None;
         }
         for (status, expected) in statuses.into_iter().zip(&binding.containers) {
             let state = status.state.as_ref()?;
-            if status.name != expected.name
-                || status.container_id.as_deref() != Some(expected.container_id.as_str())
-                || state.running.is_some()
-                || state.waiting.is_some()
-            {
-                return None;
-            }
             let terminated = state.terminated.as_ref()?;
             // Node-loss controllers may synthesize Failed/ContainerStatusUnknown.
             // Require an exact runtime exit, not a phase or a synthetic exit code.
@@ -252,7 +291,6 @@ fn observe(binding: &PodProcessBinding, pod: &Pod) -> PodProcessTermination {
                 terminated.reason.as_deref(),
                 Some("Completed" | "Error" | "OOMKilled")
             ) || terminated.container_id.as_deref() != Some(expected.container_id.as_str())
-                || terminated.started_at.as_ref()? != &expected.started_at
                 || terminated.finished_at.as_ref()? < terminated.started_at.as_ref()?
             {
                 return None;
