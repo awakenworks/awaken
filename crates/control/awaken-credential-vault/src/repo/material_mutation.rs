@@ -461,6 +461,33 @@ mod tests {
             assert_eq!(credential_material_recovery_action(&fence, now), expected);
         }
     }
+
+    #[test]
+    fn expired_writer_takeover_can_abort_but_never_publish_original_material() {
+        // C1 before/at expiry; C2 valid/expired successor lease; C3 epoch
+        // available/exhausted. R1 live => no claim; R2 invalid lease or epoch
+        // overflow => error; R3 exact expiry => successor may abort, never
+        // Ready/publish. The original attempt namespace survives takeover;
+        // repository CAS, not this value operation, retires the old authority.
+        let mut original = fence(CredentialMaterialMutationPhase::Writing, 10);
+        original.writer_token = original.attempt_id.clone();
+        assert!(original.claim_after_expiry(9, 20).unwrap().is_none());
+        assert!(original.claim_after_expiry(10, 10).is_err());
+        let claimed = original.claim_after_expiry(10, 20).unwrap().unwrap();
+        assert_eq!(claimed.writer_epoch, 2);
+        assert_eq!(claimed.attempt_id, original.attempt_id);
+        assert_eq!(claimed.writer_lease_expires_at_unix_ms, 20);
+        assert!(claimed.ready().is_err());
+        assert!(claimed.reclaiming().is_err());
+        let aborted = claimed.reclaiming_abort().unwrap();
+        assert_eq!(aborted.reclaiming_abort().unwrap(), aborted);
+        assert!(aborted.ready().is_err());
+        assert!(aborted.reclaiming().is_err());
+        let published = original.ready().unwrap().reclaiming().unwrap();
+        assert!(published.reclaiming_abort().is_err());
+        original.writer_epoch = u64::MAX;
+        assert!(original.claim_after_expiry(10, 20).is_err());
+    }
 }
 
 #[cfg(kani)]
@@ -482,5 +509,103 @@ fn credential_material_attempt_requires_owner_and_exact_physical_namespace() {
     }
     if admitted && writes_new_material {
         assert!(new_refs_bound_to_attempt);
+    }
+}
+
+#[cfg(kani)]
+mod phase_proofs {
+    use super::*;
+
+    fn phase() -> CredentialMaterialMutationPhase {
+        match kani::any::<u8>() % 4 {
+            0 => CredentialMaterialMutationPhase::Writing,
+            1 => CredentialMaterialMutationPhase::Ready,
+            2 => CredentialMaterialMutationPhase::Reclaiming,
+            _ => CredentialMaterialMutationPhase::ReclaimingAbort,
+        }
+    }
+
+    fn identity() -> String {
+        match kani::any::<u8>() % 3 {
+            0 => String::new(),
+            1 => "a".into(),
+            _ => "b".into(),
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn credential_material_phase_transitions_preserve_exact_writer_fence() {
+        // Causes: all phases, independent empty/equal/foreign token and
+        // attempt identities, arbitrary u64 epoch/deadline and u8 format.
+        // R1 Ready iff original owned Writing; R2 publication iff Ready;
+        // R3 abort iff not already publishing. Every accepted transition
+        // changes phase alone; every rejected transition leaves input intact.
+        // This calls the real String-bearing methods. Identity strings are
+        // bounded to {empty,a,b}; neither arbitrary String refinement nor
+        // repository transaction admission is asserted by this harness.
+        use CredentialMaterialMutationPhase::*;
+        let input = CredentialMaterialMutationFence {
+            format_version: kani::any(),
+            phase: phase(),
+            attempt_id: identity(),
+            writer_token: identity(),
+            writer_epoch: kani::any(),
+            writer_lease_expires_at_unix_ms: kani::any(),
+        };
+        let snapshot = input.clone();
+        let ready = input.ready();
+        let original_writer = input.writer_epoch == 1
+            && !input.writer_token.is_empty()
+            && input.writer_token == input.attempt_id
+            && input.writer_lease_expires_at_unix_ms != 0;
+        assert_eq!(ready.is_ok(), input.phase == Writing && original_writer);
+        let published = input.reclaiming();
+        assert_eq!(published.is_ok(), input.phase == Ready);
+        let aborted = input.reclaiming_abort();
+        assert_eq!(aborted.is_ok(), input.phase != Reclaiming);
+        for (result, expected_phase) in [
+            (ready, Ready),
+            (published, Reclaiming),
+            (aborted, ReclaimingAbort),
+        ] {
+            if let Ok(mut result) = result {
+                assert_eq!(result.phase, expected_phase);
+                // Normalize only the permitted state coordinate, then require
+                // equality of every remaining field (including future fields).
+                result.phase = input.phase;
+                assert_eq!(result, snapshot);
+            }
+        }
+        assert_eq!(input, snapshot);
+    }
+
+    #[kani::proof]
+    fn credential_material_recovery_action_is_total_and_expiry_exact() {
+        // C1 all four durable phases; C2 arbitrary full-width now/deadline,
+        // including zero and MAX. R1 only live Writing is skipped; R2 at or
+        // after expiry Writing aborts; R3 Ready publishes; R4/R5 terminal
+        // phases select their own cleanup. Empty owner fields deliberately
+        // avoid assuming envelope validation: this is dispatch, not admission.
+        use CredentialMaterialMutationPhase::*;
+        use CredentialMaterialRecoveryAction::*;
+        let input = CredentialMaterialMutationFence {
+            phase: phase(),
+            writer_lease_expires_at_unix_ms: kani::any(),
+            ..Default::default()
+        };
+        let now = kani::any::<u64>();
+        let action = credential_material_recovery_action(&input, now);
+        assert_eq!(action == PublishReady, input.phase == Ready);
+        assert_eq!(action == CleanupPublished, input.phase == Reclaiming);
+        assert_eq!(action == CleanupAborted, input.phase == ReclaimingAbort);
+        assert_eq!(
+            action == SkipLiveWriting,
+            input.phase == Writing && now < input.writer_lease_expires_at_unix_ms
+        );
+        assert_eq!(
+            action == AbortExpiredWriting,
+            input.phase == Writing && now >= input.writer_lease_expires_at_unix_ms
+        );
     }
 }
