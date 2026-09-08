@@ -393,45 +393,40 @@ async fn wait_for_session_events(
 ) -> Vec<Value> {
     // Causes: C1 POST durably accepts a command and returns its last Event id;
     // C2 the lifecycle supervisor has not yet projected that Run's idle boundary;
-    // C3 it has projected the anchor and that boundary; C4 the deadline expires.
-    // Effects: E1 read/yield/retry; E2 return the complete committed projection;
-    // E3 fail with the latest projection. Constraints: K1 this integration-test
-    // observer performs GETs only and can neither execute nor reconcile a Run;
-    // K2 anchoring excludes an idle Event from an earlier Run; K3 no sleep or
-    // second lifecycle driver is permitted. Decision rules: W1=C1+C2=>E1;
-    // W2=C1+C3=>E2; W3=C4=>E3.
-    let receipt_anchor = accepted_receipt["data"]
-        .as_array()
-        .and_then(|events| events.last())
-        .and_then(|event| event["id"].as_str())
-        .unwrap_or_else(|| panic!("accepted Event receipt has no anchor: {accepted_receipt}"));
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    // C3 one read is rejected by the product's exact mixed-prefix seqlock error;
+    // C4 it has projected the anchor and that boundary; C5 the deadline expires.
+    // Effects: E1 read/yield/retry; E2 retry only the side-effect-free GET; E3
+    // return the complete committed projection; E4 fail with the latest exact
+    // response. Constraints: K1 this integration-test observer performs GETs
+    // only and can neither execute nor reconcile a Run; K2 anchoring excludes an
+    // idle Event from an earlier Run; K3 other HTTP errors fail immediately; K4
+    // no sleep or second lifecycle driver is permitted. Decision rules:
+    // W1=C1+C2=>E1; W2=C1+C3&&!C5=>E2; W3=C1+C4=>E3; W4=C5=>E4.
     let uri = format!("/v1/sessions/{session}/events?limit=500");
-
-    loop {
-        let (status, list) = call(app, "GET", &uri, None).await;
-        assert_eq!(status, StatusCode::OK, "GET {uri}: {list}");
-        let events = list["data"]
-            .as_array()
-            .unwrap_or_else(|| panic!("GET {uri} has no Event data: {list}"));
-        let causal_events = events
-            .iter()
-            .position(|event| event["id"] == receipt_anchor)
-            .map(|position| &events[position..]);
-        if causal_events.is_some_and(|events| {
+    let app = app.clone();
+    let list = awaken_protocol_managed::test_support::wait_for_session_events(
+        Some(accepted_receipt),
+        std::time::Duration::from_secs(10),
+        expectation,
+        move || {
+            let app = app.clone();
+            let uri = uri.clone();
+            async move {
+                let (status, list) = call(&app, "GET", &uri, None).await;
+                (status.as_u16(), list)
+            }
+        },
+        |events| {
             events
                 .iter()
                 .any(|event| event["type"] == "session.status_idle")
-        }) {
-            return events.clone();
-        }
-
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "timed out waiting for {expectation} after receipt {receipt_anchor}; latest projection: {list}"
-        );
-        tokio::task::yield_now().await;
-    }
+        },
+    )
+    .await;
+    list["data"]
+        .as_array()
+        .expect("Managed Event projection data")
+        .clone()
 }
 
 /// The text of every `agent.message` event, in order.
@@ -548,11 +543,13 @@ async fn session_inline_mcp_server_with_vault_credential_converses_across_runs()
 async fn published_agent_mcp_binding_takes_effect_without_session_inline_servers() {
     // Causes: C1 the immutable Agent snapshot owns the MCP server binding; C2
     // the Session selects the exact Vault; C3 POST returns before asynchronous
-    // lifecycle projection. Effects: E1 the Run invokes the published MCP tool;
-    // E2 its result/final answer contain 5; E3 observation completes only after
-    // the receipt-anchored idle boundary. Constraints: K1 no inline Session MCP
-    // server may supply a parallel binding; K2 the observer is read-only.
-    // Decision rule P1=C1+C2+C3=>E1+E2+E3.
+    // lifecycle projection; C4 a concurrent committed-prefix read may return the
+    // exact fail-closed seqlock 503. Effects: E1 the Run invokes the published MCP
+    // tool; E2 its result/final answer contain 5; E3 observation completes only
+    // after the receipt-anchored idle boundary; E4 C4 retries only GET within the
+    // same deadline. Constraints: K1 no inline Session MCP server may supply a
+    // parallel binding; K2 the observer is read-only. Decision rules:
+    // P1=C1+C2+C3&&!C4=>E1+E2+E3; P2=C1+C2+C3+C4=>E1+E2+E3+E4.
     let url = mock_calc_mcp().await;
     let app = build_all_in_one_router().await;
     let vault_id = vault_with_calc_credential(&app, &url).await;

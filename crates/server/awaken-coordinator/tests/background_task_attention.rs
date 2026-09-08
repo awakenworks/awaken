@@ -145,7 +145,7 @@ fn background_snapshot(model_ref: &str) -> ExecutableAgentSnapshot {
         .build()
 }
 
-async fn call(app: &Router, method: &str, uri: &str, body: Value) -> Value {
+async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
     let request = Request::builder()
         .method(method)
         .uri(uri)
@@ -170,6 +170,11 @@ async fn call(app: &Router, method: &str, uri: &str, body: Value) -> Value {
             String::from_utf8_lossy(&bytes)
         )
     });
+    (status, value)
+}
+
+async fn ok(app: &Router, method: &str, uri: &str, body: Value) -> Value {
+    let (status, value) = call(app, method, uri, body).await;
     assert_eq!(status, StatusCode::OK, "{method} {uri}: {value}");
     value
 }
@@ -195,34 +200,41 @@ fn completion_is_observed(events: &[Value]) -> bool {
         .any(|event| event["type"] == "session.status_idle")
 }
 
-async fn wait_for_completion(app: &Router, session_id: &str, timeout: Duration) -> Value {
-    let deadline = tokio::time::Instant::now() + timeout;
+async fn wait_for_completion(
+    app: &Router,
+    session_id: &str,
+    accepted_receipt: &Value,
+    timeout: Duration,
+) -> Value {
     let uri = format!("/v1/sessions/{session_id}/events?limit=500");
-    loop {
-        let events = call(app, "GET", &uri, Value::Null).await;
-        if events["data"]
-            .as_array()
-            .is_some_and(|events| completion_is_observed(events))
-        {
-            return events;
-        }
-        if let Some(error) = events["data"].as_array().and_then(|events| {
-            events
+    let app = app.clone();
+    awaken_protocol_managed::test_support::wait_for_session_events(
+        Some(accepted_receipt),
+        timeout,
+        "BackgroundTask completion attention",
+        move || {
+            let app = app.clone();
+            let uri = uri.clone();
+            async move {
+                let (status, events) = call(&app, "GET", &uri, Value::Null).await;
+                (status.as_u16(), events)
+            }
+        },
+        |events| {
+            if let Some(error) = events
                 .iter()
                 .rev()
                 .find(|event| event["type"] == "session.error")
-        }) {
-            panic!(
-                "model-backed Session failed before completion attention: {}",
-                error["error"]
-            );
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "timed out waiting for BackgroundTask completion attention: {events}"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+            {
+                panic!(
+                    "model-backed Session failed before completion attention: {}",
+                    error["error"]
+                );
+            }
+            completion_is_observed(events)
+        },
+    )
+    .await
 }
 
 async fn exercise_background_attention(
@@ -235,7 +247,7 @@ async fn exercise_background_attention(
         model_ref,
         [background_snapshot(model_ref)],
     );
-    let session = call(
+    let session = ok(
         &app,
         "POST",
         "/v1/sessions",
@@ -248,7 +260,7 @@ async fn exercise_background_attention(
         .as_str()
         .expect("Session id")
         .to_string();
-    call(
+    let accepted_receipt = ok(
         &app,
         "POST",
         &format!("/v1/sessions/{session}/events"),
@@ -261,7 +273,7 @@ async fn exercise_background_attention(
         }]}),
     )
     .await;
-    let events = wait_for_completion(&app, &session, timeout).await;
+    let events = wait_for_completion(&app, &session, &accepted_receipt, timeout).await;
     assert!(
         host.drain_runtime(Duration::from_secs(2)).await,
         "BackgroundTask execution and attention publication drain"

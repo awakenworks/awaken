@@ -1,6 +1,7 @@
 //! Prefix-stable entrypoint for the warm/cold committed projection.
 
 use super::*;
+use crate::state::constants::COMMITTED_PREFIX_READ_CONFLICT;
 
 impl ManagedState {
     /// Refresh this process's disposable event projection from the Runtime's one
@@ -47,7 +48,7 @@ impl ManagedState {
             "Managed projection read budget exhausted"
         );
         Err(StateError::Run(RunError::unavailable(
-            "Managed projection sources changed while reading one committed prefix",
+            COMMITTED_PREFIX_READ_CONFLICT,
         )))
     }
 }

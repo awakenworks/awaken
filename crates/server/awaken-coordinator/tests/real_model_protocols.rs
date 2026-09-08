@@ -84,18 +84,51 @@ fn recalled(reply: &str) -> bool {
 // Managed protocol (/v1/sessions)
 // ---------------------------------------------------------------------------
 
+async fn managed_events_after(
+    app: &Router,
+    session: &str,
+    accepted_receipt: &Value,
+    expectation: &str,
+    predicate: impl Fn(&[Value]) -> bool,
+) -> Value {
+    let uri = format!("/v1/sessions/{session}/events");
+    let app = app.clone();
+    awaken_protocol_managed::test_support::wait_for_session_events(
+        Some(accepted_receipt),
+        std::time::Duration::from_secs(90),
+        expectation,
+        move || {
+            let app = app.clone();
+            let uri = uri.clone();
+            async move {
+                let (status, body) = call(&app, "GET", &uri, Value::Null).await;
+                let value = serde_json::from_str(&body).unwrap_or_else(|error| {
+                    panic!("GET {uri} returned non-JSON ({error}): {body}")
+                });
+                (status.as_u16(), value)
+            }
+        },
+        predicate,
+    )
+    .await
+}
+
 /// The concatenated text of the last agent message in the session's committed
-/// event log (read after the adapter drives the Run).
-async fn managed_last_reply(app: &Router, session: &str) -> String {
-    let (status, body) = call(
+/// event log after the exact accepted command reaches its idle boundary.
+async fn managed_last_reply(app: &Router, session: &str, accepted_receipt: &Value) -> String {
+    let value = managed_events_after(
         app,
-        "GET",
-        &format!("/v1/sessions/{session}/events"),
-        Value::Null,
+        session,
+        accepted_receipt,
+        "live Managed reply",
+        |events| {
+            events.iter().any(|event| event["type"] == "agent.message")
+                && events
+                    .iter()
+                    .any(|event| event["type"] == "session.status_idle")
+        },
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "managed events read failed: {body}");
-    let value: Value = serde_json::from_str(&body).unwrap();
     value["data"]
         .as_array()
         .cloned()
@@ -120,7 +153,8 @@ async fn managed_run(app: &Router, session: &str, text: &str) -> String {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "managed Run failed: {body}");
-    managed_last_reply(app, session).await
+    let receipt = serde_json::from_str::<Value>(&body).expect("Managed Event receipt");
+    managed_last_reply(app, session, &receipt).await
 }
 
 /// Cause/effect design: C1 a live Managed Session first receives the fixed SET
@@ -331,21 +365,30 @@ async fn multi_agent_graded_outcome_runs_a_judge_subagent() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "define_outcome failed: {body}");
+    let receipt = serde_json::from_str::<Value>(&body).expect("outcome Event receipt");
 
     // The worker run produced a deliverable and a judge sub-agent graded it: read
     // the committed event log and look for the outcome-evaluation span (the judge
     // sub-run) plus an agent message.
-    let (_, events_body) = call(
+    let events_page = managed_events_after(
         &app,
-        "GET",
-        &format!("/v1/sessions/{session}/events"),
-        Value::Null,
+        &session,
+        &receipt,
+        "live outcome evaluation",
+        |events| {
+            events.iter().any(|event| event["type"] == "agent.message")
+                && events.iter().any(|event| {
+                    event["type"]
+                        .as_str()
+                        .is_some_and(|kind| kind.contains("outcome"))
+                })
+                && events
+                    .iter()
+                    .any(|event| event["type"] == "session.status_idle")
+        },
     )
     .await;
-    let events = serde_json::from_str::<Value>(&events_body).unwrap()["data"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let events = events_page["data"].as_array().cloned().unwrap_or_default();
     let types: Vec<&str> = events
         .iter()
         .map(|e| e["type"].as_str().unwrap_or("?"))
@@ -353,7 +396,7 @@ async fn multi_agent_graded_outcome_runs_a_judge_subagent() {
     eprintln!("[multi-agent] event types: {types:?}");
     assert!(
         types.contains(&"agent.message"),
-        "the worker run should produce an agent message: {events_body}"
+        "the worker run should produce an agent message: {events_page}"
     );
     assert!(
         types.iter().any(|t| t.contains("outcome")),

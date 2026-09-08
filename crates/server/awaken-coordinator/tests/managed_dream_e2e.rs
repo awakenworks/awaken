@@ -225,14 +225,23 @@ fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_plane(
             None,
         )
         .await;
-        let auxiliary_events = ok(
-            &app,
-            "GET",
-            &format!(
-                "/v1/sessions/{}/events",
-                terminal["session_id"].as_str().unwrap()
-            ),
+        let auxiliary_uri = format!(
+            "/v1/sessions/{}/events",
+            terminal["session_id"].as_str().unwrap()
+        );
+        let auxiliary_events = awaken_protocol_managed::test_support::wait_for_session_events(
             None,
+            std::time::Duration::from_secs(10),
+            "Dream auxiliary write",
+            || async {
+                let (status, events) = call(&app, "GET", &auxiliary_uri, None).await;
+                (status.as_u16(), events)
+            },
+            |events| {
+                events
+                    .iter()
+                    .any(|event| event["type"] == "agent.tool_use" && event["name"] == "write")
+            },
         )
         .await;
         assert_eq!(source["data"][0]["content"], "# Existing\n- Keep me.\n");
