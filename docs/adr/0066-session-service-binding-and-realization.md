@@ -1089,9 +1089,9 @@ This cutover is full-stop and forward-only. It does not adopt or backfill an old
 profiled metadata fingerprint or its default aggregate-payload create receipt.
 After upgrade, retrying such an old deterministic profiled identity returns the
 typed HTTP 409 conflict; Flow creates a new post-cutover identity. Ordinary
-public Managed metadata-backed replay remains unchanged. There is no
-rolling-write compatibility mode, guessed receipt equivalence, or Cloud-side
-migration owner.
+public Managed and Deployment creates use the same atomic repository receipt;
+mutable Session metadata is not a replay authority, and old metadata-only
+identities are not read or backfilled. There is no compatibility or migration path.
 
 ### Cause-effect decision table
 

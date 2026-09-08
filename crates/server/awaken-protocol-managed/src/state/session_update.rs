@@ -147,6 +147,6 @@ impl ManagedState {
             Err(error) => return Err(Self::map_update_error(error)),
         };
         self.project_update_outcome(&outcome)?;
-        Ok((self.get_session(id)?, outcome.command_revision))
+        self.get_session_with_revision(id)
     }
 }

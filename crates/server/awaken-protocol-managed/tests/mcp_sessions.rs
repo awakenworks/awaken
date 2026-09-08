@@ -1828,7 +1828,7 @@ async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
 /// |---|---|---|---|---|
 /// | I1 | new | same | exact | apply once + ETag + internal durable receipt |
 /// | I2 | same | same | omitted | replay; revision/effects unchanged |
-/// | I2b | same | same | later root revision | replay original command revision + current body |
+/// | I2b | same | same | later root revision | replay receipt + current body/current root ETag |
 /// | I2c | pre-upgrade namespace/hash | same | omitted | replay remains compatible |
 /// | I3 | same | different | omitted | 409; no effect |
 /// | I4 | absent | - | stale | 409 before Runtime effect |
@@ -1944,11 +1944,9 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
         );
     }
 
-    // I2b setup reads the current root fence. The command response/replay ETag
-    // deliberately names the durable receipt revision, while MCP realization
-    // has advanced the same aggregate through later root revisions. Reusing
-    // that historical receipt as a new-command precondition would correctly
-    // select I4 instead of establishing I2b's later durable fact.
+    // I2b setup reads the current root fence. The command receipt remains the
+    // application-layer idempotency authority, while every wire response pairs
+    // its current body with the current root revision from one cache snapshot.
     let durable_after_replay = h.repo.get(id).await.expect("I2b durable root");
     assert!(
         durable_after_replay.revision > legacy_receipt.committed_revision,
@@ -1956,8 +1954,8 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     );
     assert_eq!(
         applied_headers["etag"].to_str().unwrap(),
-        format!("\"{}\"", legacy_receipt.committed_revision.0),
-        "I2b response ETag names the durable receipt"
+        format!("\"{}\"", durable_after_replay.revision.0),
+        "I2b response ETag names the current durable root"
     );
     let (status, current_headers, current) =
         call_with_headers(&h.app, "GET", &format!("/v1/sessions/{id}"), None, &[]).await;
@@ -1993,7 +1991,7 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     )
     .await;
     assert_eq!(status, StatusCode::OK, "I2b");
-    assert_eq!(historical_headers["etag"], applied_etag, "I2b");
+    assert_eq!(historical_headers["etag"], later_headers["etag"], "I2b");
     assert_eq!(historical["title"], "later root fact", "I2b current body");
 
     let (status, _, _) = call_with_headers(
@@ -2078,6 +2076,82 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
         state.replaced_tools[0].1.client_tools[0].name,
         "review_plan"
     );
+}
+
+#[tokio::test]
+async fn create_conflict_after_root_commit_returns_one_recoverable_session() {
+    // Create-response cause/effect graph. C1 the public request has no key/a
+    // stable key; C2 the root create receipt is committed; C3 every bounded
+    // begin-realization CAS observes Conflict; C4 a stable-key retry has the
+    // same/different payload. Effects: E1 the original POST returns the exact
+    // durable Session instead of 503; E2 its DTO and ETag name one cached root
+    // snapshot; E3 exact replay returns the same identity/snapshot without a
+    // second root; E4 conflicting payload returns 409. Constraint: the route
+    // never retries a non-idempotent POST; the application recovers only by its
+    // repository-owned create receipt and leaves pending realization to the
+    // canonical lifecycle driver.
+    //
+    // | Rule | Public key | Root receipt | Realization | Retry payload | Effect |
+    // |---|---|---|---|---|---|
+    // | P1 | absent | exact internal | conflict | - | E1+E2 |
+    // | P2 | stable | exact public | conflict | same | E1+E2+E3 |
+    // | P3 | stable | exact public | conflict | changed | E4 |
+    for (rule, key) in [("P1", None), ("P2", Some("create-conflict"))] {
+        let inner = Arc::new(
+            SqliteManagedSessionRepository::open_in_memory()
+                .expect("open create-conflict repository"),
+        );
+        let conflicts = Arc::new(ScheduledConflictRepository::new(inner));
+        let h = hot_harness_with_repo(conflicts.clone());
+        conflicts.conflicts_on_next(&[1, 2, 3]);
+        let headers = key.map_or_else(Vec::new, |key| vec![("idempotency-key", key)]);
+        let (status, response_headers, created) = call_with_headers(
+            &h.app,
+            "POST",
+            "/v1/sessions",
+            Some(json!({"agent": "create-conflict-agent", "title": "stable"})),
+            &headers,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{rule}/E1: {created}");
+        let id = created["id"].as_str().expect("E1 Session id");
+        let durable = h.repo.get(id).await.expect("E1 durable root");
+        assert_eq!(
+            response_headers["etag"].to_str().unwrap(),
+            format!("\"{}\"", durable.revision.0),
+            "{rule}/E2"
+        );
+        assert_eq!(
+            durable.execution,
+            SessionExecutionState::Preparing,
+            "{rule}/E1 canonical recovery remains pending"
+        );
+
+        if let Some(key) = key {
+            let (replay_status, replay_headers, replayed) = call_with_headers(
+                &h.app,
+                "POST",
+                "/v1/sessions",
+                Some(json!({"agent": "create-conflict-agent", "title": "stable"})),
+                &[("idempotency-key", key)],
+            )
+            .await;
+            assert_eq!(replay_status, StatusCode::OK, "P2/E3");
+            assert_eq!(replayed["id"], created["id"], "P2/E3");
+            assert_eq!(replay_headers["etag"], response_headers["etag"], "P2/E3");
+
+            let (mismatch_status, _, _) = call_with_headers(
+                &h.app,
+                "POST",
+                "/v1/sessions",
+                Some(json!({"agent": "create-conflict-agent", "title": "changed"})),
+                &[("idempotency-key", key)],
+            )
+            .await;
+            assert_eq!(mismatch_status, StatusCode::CONFLICT, "P3/E4");
+            assert_eq!(h.repo.get(id).await.unwrap(), durable, "P3/E4");
+        }
+    }
 }
 
 /// Post-commit Runtime projection FMECA. C1 durable tool policy commits; C2 the
@@ -2321,13 +2395,13 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "C3 exact receipt replay repairs");
-    assert_eq!(
-        replay_headers["etag"].to_str().unwrap(),
-        format!("\"{}\"", committed_receipt.committed_revision.0),
-        "C3 replay keeps the original command revision"
-    );
     assert_eq!(updated["agent"]["mcp_servers"], json!([replacement]), "C3");
     let durable = h.repo.get(id).await.unwrap();
+    assert_eq!(
+        replay_headers["etag"].to_str().unwrap(),
+        format!("\"{}\"", durable.revision.0),
+        "C3 replay pairs the current body with its current root revision"
+    );
     assert_eq!(
         durable.mcp.attachments.len(),
         2,

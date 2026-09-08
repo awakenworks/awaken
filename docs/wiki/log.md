@@ -182,8 +182,9 @@
   manifest replacement before any Vault or lowering side effect.
 - Kept the beta cutover full-stop and forward-only: old profiled metadata/default
   receipts are neither adopted nor backfilled, their deterministic retry returns
-  409, and Flow creates a new post-cutover identity. Ordinary public Managed
-  metadata replay stays compatible.
+  409, and Flow creates a new post-cutover identity. Ordinary public Managed and
+  Deployment create replay now use the Session repository's atomic receipt;
+  mutable metadata is not a replay authority.
 - Made Session-created Repository Registry and Vault work explicit
   `Applied | Replayed` participants in the existing root command. Pre-root
   failure consults durable adoption and compensates only unreferenced Applied
