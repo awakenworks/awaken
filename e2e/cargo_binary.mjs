@@ -182,33 +182,35 @@ export function scenarioHandCompanionPath(scenarioHost) {
   return path.join(path.dirname(scenarioHost), `awaken-sandbox${suffix}`);
 }
 
-// Scenario-host companion build decision table:
+// Execution-host companion build decision table:
 // C1 an immutable scenario-host snapshot is supplied; C2 source build is
-// required. Effects: E1 require the release-layout sibling to exist without
+// required (production CLI or scenario host). Effects: E1 require the release-layout sibling to exist without
 // re-evaluating its capability; E2 build the existing `hand` feature and the
 // scenario host into one Cargo target directory. Rules: B1 C1=>E1;
 // B2 C2=>E2. The runtime remains the sole capability owner through its
 // `awaken-sandbox hand --check`; this helper owns only artifact colocation.
-export function cargoScenarioHostBundle({
+export function cargoExecutionBundle({
+  packageName,
+  targetName,
   cwd,
   environment = process.env,
-  prebuiltEnvironmentName = SCENARIO_HOST_BIN_ENV,
+  prebuiltEnvironmentName,
   snapshotDirectory,
 }) {
   const suffix = process.platform === 'win32' ? '.exe' : '';
-  const destination = snapshotDirectory && path.join(snapshotDirectory, `awaken-scenario-host${suffix}`);
+  const destination = snapshotDirectory && path.join(snapshotDirectory, `${targetName}${suffix}`);
   const prebuilt = requirePrebuiltExecutable(prebuiltEnvironmentName, environment);
   if (prebuilt) {
     const handCompanion = scenarioHandCompanionPath(prebuilt);
     if (!fs.statSync(handCompanion, { throwIfNoEntry: false })?.isFile()) {
       throw new Error(
-        `${prebuiltEnvironmentName} requires sibling scenario companion: ${handCompanion}`,
+        `${prebuiltEnvironmentName} requires sibling execution companion: ${handCompanion}`,
       );
     }
     return destination ? {
-      scenarioHost: snapshotExecutable(prebuilt, destination),
+      executable: snapshotExecutable(prebuilt, destination),
       handCompanion: snapshotExecutable(handCompanion, scenarioHandCompanionPath(destination)),
-    } : { scenarioHost: prebuilt, handCompanion };
+    } : { executable: prebuilt, handCompanion };
   }
 
   const handCompanion = cargoExecutable({
@@ -219,20 +221,31 @@ export function cargoScenarioHostBundle({
     environment,
     snapshotDestination: destination && scenarioHandCompanionPath(destination),
   });
-  const scenarioHost = cargoExecutable({
+  const executable = cargoExecutable({
     cwd,
-    packageName: 'awaken-scenario-host',
-    targetName: 'awaken-scenario-host',
+    packageName,
+    targetName,
     environment,
     snapshotDestination: destination,
   });
-  const expectedCompanion = scenarioHandCompanionPath(scenarioHost);
+  const expectedCompanion = scenarioHandCompanionPath(executable);
   if (path.resolve(handCompanion) !== path.resolve(expectedCompanion)) {
     throw new Error(
-      `scenario host and hand companion are not siblings: ${scenarioHost}, ${handCompanion}`,
+      `execution host and hand companion are not siblings: ${executable}, ${handCompanion}`,
     );
   }
-  return { scenarioHost, handCompanion };
+  return { executable, handCompanion };
+}
+
+// Scenario-specific naming is a thin adapter over the same execution bundle.
+export function cargoScenarioHostBundle(options) {
+  const { executable, handCompanion } = cargoExecutionBundle({
+    ...options,
+    packageName: 'awaken-scenario-host',
+    targetName: 'awaken-scenario-host',
+    prebuiltEnvironmentName: options.prebuiltEnvironmentName ?? SCENARIO_HOST_BIN_ENV,
+  });
+  return { scenarioHost: executable, handCompanion };
 }
 
 // Shell scenarios share the same target parser, build invocation and failure
