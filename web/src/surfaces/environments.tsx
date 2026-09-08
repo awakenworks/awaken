@@ -1,3 +1,4 @@
+import { Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 // Workspace · Environments: the reusable execution templates sessions run in
 // (Managed Agents `/v1/environments`). A session references one by
 // `environment_id`. cloud = platform-managed; self_hosted = your own worker.
@@ -16,7 +17,7 @@ import type {
   WorkQueueStats,
 } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { Button, Card, Modal, Pill, Segmented, TechnicalId, TextAreaField, TextField, useConfirm, useToast } from "../components/ui";
+import { Modal, Pill, TechnicalId, TextAreaField, TextField, useConfirm, useToast } from "../components/ui";
 
 const PACKAGE_MANAGERS = ["apt", "cargo", "gem", "go", "npm", "pip"] as const;
 type PackageManager = typeof PACKAGE_MANAGERS[number];
@@ -133,7 +134,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
         <TextField label={app.t("Name", "名称")} value={name} onChange={(e) => setName(e.target.value)} placeholder="claude-sandbox-github" />
         <TextField label={app.t("Description", "描述")} value={description} onChange={(e) => setDescription(e.target.value)} placeholder={app.t("What this Environment is for", "这个 Environment 的用途")} />
 
-        <div className="field">
+        <div className="ui-field">
           <label>{app.t("Placement", "运行位置")}</label>
           <Segmented
             options={[
@@ -151,7 +152,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
         </div>
 
         {placement === "cloud" && (
-            <div className="field">
+            <div className="ui-field">
               <label>{app.t("Networking", "网络")}</label>
               <Segmented
                 options={[
@@ -163,7 +164,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
               />
               {net === "limited" && (
                 <>
-                  <input className="input mono" placeholder="api.example.com, *.foo.com" value={hosts} onChange={(e) => setHosts(e.target.value)} />
+                  <input className="ui-input mono" placeholder="api.example.com, *.foo.com" value={hosts} onChange={(e) => setHosts(e.target.value)} />
                   <label className="row"><input type="checkbox" checked={allowMcpServers} onChange={(event) => setAllowMcpServers(event.target.checked)} />{app.t("Allow configured MCP servers", "允许已配置的 MCP Server")}</label>
                   <label className="row"><input type="checkbox" checked={allowPackageManagers} onChange={(event) => setAllowPackageManagers(event.target.checked)} />{app.t("Allow public package registries", "允许公共 Package Registry")}</label>
                 </>
@@ -174,7 +175,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
         {placement === "cloud" && <PackageFields value={packages} onChange={setPackages} />}
 
         {placement === "self_hosted" && (
-          <div className="field">
+          <div className="ui-field">
             <label>{app.t("Sandbox creation", "Sandbox 创建时机")}</label>
             <Segmented
               options={[
@@ -241,9 +242,9 @@ function EditModal({ environment, onClose }: { environment: Environment; onClose
     >
       <div className="stack">
         <div className="grid-2"><TextField label={app.t("Name", "名称")} value={name} onChange={(event) => setName(event.target.value)} /><TextField label={app.t("Description", "描述")} value={description} onChange={(event) => setDescription(event.target.value)} /></div>
-        <div className="field"><label>{app.t("Placement", "运行位置")}</label><Segmented value={placement} onChange={setPlacement} options={[{ value: "cloud", label: app.t("cloud", "云托管") }, { value: "self_hosted", label: app.t("self-hosted", "自管") }]} /></div>
+        <div className="ui-field"><label>{app.t("Placement", "运行位置")}</label><Segmented value={placement} onChange={setPlacement} options={[{ value: "cloud", label: app.t("cloud", "云托管") }, { value: "self_hosted", label: app.t("self-hosted", "自管") }]} /></div>
         {placement === "cloud" && <>
-          <div className="field"><label>{app.t("Networking", "网络")}</label><Segmented value={net} onChange={setNet} options={[{ value: "unrestricted", label: app.t("unrestricted", "不限") }, { value: "limited", label: app.t("limited", "白名单") }]} />
+          <div className="ui-field"><label>{app.t("Networking", "网络")}</label><Segmented value={net} onChange={setNet} options={[{ value: "unrestricted", label: app.t("unrestricted", "不限") }, { value: "limited", label: app.t("limited", "白名单") }]} />
           {net === "limited" && <><TextField label={app.t("Allowed hosts", "允许的 Host")} mono value={hosts} onChange={(event) => setHosts(event.target.value)} /><label className="row"><input type="checkbox" checked={allowMcpServers} onChange={(event) => setAllowMcpServers(event.target.checked)} />{app.t("Allow configured MCP servers", "允许已配置的 MCP Server")}</label><label className="row"><input type="checkbox" checked={allowPackageManagers} onChange={(event) => setAllowPackageManagers(event.target.checked)} />{app.t("Allow public package registries", "允许公共 Package Registry")}</label></>}</div>
           <PackageFields value={packages} onChange={setPackages} />
         </>}
@@ -295,7 +296,7 @@ export default function EnvironmentsSurface() {
       </div>
       {envs.error instanceof Error && <div className="err">{envs.error.message}</div>}
       <Card className="responsive-table-card" style={{ padding: 0 }}>
-        <table className="table">
+        <table className="ui-data-grid__table">
           <thead>
             <tr>
               <th>{app.t("Environment", "运行环境")}</th>

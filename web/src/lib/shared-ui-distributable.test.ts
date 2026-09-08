@@ -2,8 +2,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { SuiteSwitcher } from "@awaken/ui";
 import { describe, expect, it } from "vitest";
 
-const runtimeIndexUrl = new URL("../../vendor/awaken-ui/dist/index.js", import.meta.url);
-const typeIndexUrl = new URL("../../vendor/awaken-ui/dist/index.d.ts", import.meta.url);
+const runtimeIndexUrl = new URL("../../node_modules/@awaken/ui/dist/index.js", import.meta.url);
+const typeIndexUrl = new URL("../../node_modules/@awaken/ui/dist/index.d.ts", import.meta.url);
 const relativeExport = /^\s*export(?:\s+type)?\s+(?:\*|\{[^}]*\})\s+from\s+["'](\.[^"']+\.js)["'];?/gm;
 
 function filesBelow(url: URL): URL[] {
@@ -24,10 +24,10 @@ function missingRelativeExports(source: string, indexUrl: URL, types: boolean): 
   });
 }
 
-describe("vendored @awaken/ui distributable closure", () => {
+describe("pinned @awaken/ui distributable closure", () => {
   /**
    * Cause/effect table: C1 the runtime or type index exports a relative module;
-   * C2 the corresponding `.js` or `.d.ts` target is present; C3 the workspace
+   * C2 the corresponding `.js` or `.d.ts` target is present; C3 the installed
    * consumer resolves that same package. E1=C1+C2+C3 closes both source and
    * installed projections; E2=C1+missing target reports that exact export.
    *
@@ -61,10 +61,13 @@ describe("vendored @awaken/ui distributable closure", () => {
   });
 
   it("does not publish dangling source-map references", () => {
-    const dist = new URL("../../vendor/awaken-ui/dist/", import.meta.url);
+    const dist = new URL("../../node_modules/@awaken/ui/dist/", import.meta.url);
     const dangling = filesBelow(dist)
       .filter((url) => /\.(?:js|d\.ts)$/.test(url.pathname))
-      .filter((url) => readFileSync(url, "utf8").includes("sourceMappingURL="));
+      // R1 no map -> standalone module; R2 published map -> resolves locally;
+      // R3 reference without map -> reject incomplete package extraction.
+      .filter((url) => [...readFileSync(url, "utf8").matchAll(/sourceMappingURL=(\S+)/g)]
+        .some((match) => !existsSync(new URL(match[1], url))));
     expect(dangling.map((url) => url.pathname)).toEqual([]);
   });
 });

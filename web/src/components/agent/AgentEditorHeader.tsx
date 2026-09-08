@@ -1,4 +1,5 @@
-import { Button, Pill, TechnicalId } from "../ui";
+import { Button } from "@awaken/ui";
+import { Pill, TechnicalId } from "../ui";
 import { useApp } from "../../lib/app-state";
 import { entityDisplayName, identifierLabel } from "../../lib/presentation";
 import type { ReviewStatus } from "./useAgentDraftReview";

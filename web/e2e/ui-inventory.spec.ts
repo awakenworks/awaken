@@ -7,6 +7,9 @@ const VIEWPORTS = [
   { label: "desktop", width: 1280, height: 900 },
 ] as const;
 
+// Decision table: mobile/tablet/desktop × each navigation destination ->
+// one heading, no pending skeleton/error, and no horizontal document overflow.
+// Modal selectors use public dialog semantics after deleting local recipes.
 // User-perspective smoke inventory: every rail destination must render a usable main
 // surface, avoid an error state, and remain horizontally usable at each release
 // breakpoint. The attached inventory and screenshot make the audit evidence useful
@@ -19,8 +22,8 @@ for (const item of NAV) {
       const main = page.locator("main");
       await expect(main).toBeVisible();
       await expect(main.locator("h1")).toHaveCount(1);
-      await expect(main.locator(".skeleton")).toHaveCount(0);
-      await expect(main.locator(".err")).toHaveCount(0);
+      await expect(main.locator(".ui-skeleton-bar, .ui-state--loading")).toHaveCount(0);
+      await expect(main.locator(".err, .ui-state--danger")).toHaveCount(0);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 
       const inventory = await main.evaluate((root) => ({
@@ -84,7 +87,8 @@ test("Agent configuration exposes every controllable capability by user intent",
   await page.getByRole("tab", { name: "Tools & permissions", exact: true }).click();
   // Typed ToolSet authoring owns permissions after the legacy editor removal.
   await expect(page.getByText("Permission preset", { exact: true })).toBeVisible();
-  await expect(page.getByRole("checkbox", { name: /bash Run a shell command/ })).toBeVisible();
+  // The tool ID is stable; its current catalog description is product copy.
+  await expect(page.getByRole("checkbox", { name: /^bash\b/ })).toBeVisible();
   // Advanced policies are collapsed initially; expansion exposes the same
   // canonical tool controls without adding another authoring surface.
   await page.getByText("Advanced tool presentation and background policies", { exact: true }).click();
@@ -121,7 +125,7 @@ test("Primary create flows disclose their required configuration before commit",
   for (const flow of flows) {
     await page.goto(flow.path);
     await page.getByRole("button", { name: flow.button }).click();
-    const modal = page.locator(".modal");
+    const modal = page.getByRole("dialog");
     await expect(modal.getByRole("heading", { name: flow.heading })).toBeVisible();
     await expect(modal.locator("input,textarea,select,button").first()).toBeVisible();
   }
@@ -166,4 +170,24 @@ test("Protocol connection addresses stay readable on a narrow viewport", async (
   await expect(page.locator(".protocol-endpoint").first().getByRole("button", { name: "Copy endpoint" })).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
     .toBe(true);
+});
+
+test("shared command dialog preserves search, navigation and dismissal", async ({ page }) => {
+  // R1 open -> focused input + bounded shared dialog; R2 query -> matching
+  // product route; R3 Escape -> closed; R4 selection -> navigation + closed.
+  await page.goto("/w/default/agents");
+  const trigger = page.getByRole("button", { name: /Search/ }).first();
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Command palette" });
+  const search = dialog.getByPlaceholder("Search pages and workflows…");
+  await expect(search).toBeFocused();
+  await search.fill("Sessions");
+  await expect(dialog.getByRole("button", { name: /Sessions/ })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await trigger.click();
+  await search.fill("Sessions");
+  await dialog.getByRole("button", { name: /Sessions/ }).click();
+  await expect(page).toHaveURL(/\/sessions$/);
+  await expect(dialog).toHaveCount(0);
 });

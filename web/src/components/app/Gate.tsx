@@ -1,3 +1,4 @@
+import { Skeleton } from "@awaken/ui";
 // Presentational wrapper over a GateState: renders a skeleton while loading, the
 // a user-facing capability state when absent, an error line on other failures,
 // and delegates to `children(data)` when the face is live. Surfaces stay declarative:
@@ -7,7 +8,6 @@
 import type { ReactNode } from "react";
 import type { GateState } from "../../lib/useGate";
 import { useApp } from "../../lib/app-state";
-import { Skeleton } from "../ui";
 
 export default function Gate<T>({
   state,

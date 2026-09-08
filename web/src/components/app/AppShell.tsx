@@ -1,15 +1,11 @@
 import { Suspense, useEffect, useLayoutEffect, useState } from "react";
-import {
-  DialogSurface,
-  useCommandPalette,
-  useCommandPaletteShortcut,
-} from "@awaken/ui";
+import { Dialog, LoadingState, useCommandPalette, useCommandPaletteShortcut, ConfirmProvider } from "@awaken/ui";
 import { Outlet, useLocation, useNavigate } from "react-router";
 import { DEFAULT_WS, useApp } from "../../lib/app-state";
 import { workspaceFromPath } from "../../lib/api/client";
 import { navPath, visibleNavigation } from "../../lib/navigation/paths";
 import { useConfigCapabilities } from "../../lib/useConfigCapabilities";
-import { ConfirmProvider } from "../ui/Confirm";
+
 import { ToastProvider } from "../ui/Toast";
 import AssistantFab from "./AssistantFab";
 import PageIntentHeader from "./PageIntentHeader";
@@ -53,16 +49,15 @@ function CommandPalette() {
   });
   if (!open) return null;
   return (
-    <DialogSurface
-      ariaLabel={app.t("Command palette", "命令面板")}
+    <Dialog
+      title={app.t("Command palette", "命令面板")}
+      closeLabel={app.t("Close", "关闭")}
       onOpenChange={setOpen}
       open={open}
-      panelClassName="modal"
-      rootClassName="overlay"
     >
         <input
           ref={palette.inputRef}
-          className="input"
+          className="ui-input"
           placeholder={app.t("Search pages and workflows…", "搜索页面与流程…")}
           value={palette.query}
           onChange={(e) => palette.setQuery(e.target.value)}
@@ -88,7 +83,7 @@ function CommandPalette() {
             <span className="mut">{app.t("Try a page name or workflow such as Build, Run, or Connect.", "可尝试页面名称，或“构建”“运行”“连接”等流程。")}</span>
           </div>
         )}
-    </DialogSurface>
+    </Dialog>
   );
 }
 
@@ -121,9 +116,7 @@ function RouteScrollReset() {
 function RouteFallback() {
   const app = useApp();
   return (
-    <div className="skeleton" style={{ height: 160 }} role="status">
-      <span className="sr-only">{app.t("Loading page…", "正在加载页面…")}</span>
-    </div>
+    <LoadingState label={app.t("Loading page…", "正在加载页面…")} />
   );
 }
 

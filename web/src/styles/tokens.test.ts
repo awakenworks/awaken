@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 
 const css = readFileSync(new URL("./tokens.css", import.meta.url), "utf8");
 const base = readFileSync(new URL("./base.css", import.meta.url), "utf8");
+const sharedForms = readFileSync(new URL("../../node_modules/@awaken/ui/dist/styles/components-forms-data.css", import.meta.url), "utf8");
+const sharedCore = readFileSync(new URL("../../node_modules/@awaken/ui/dist/styles/components-core.css", import.meta.url), "utf8");
+const sharedContract = readFileSync(new URL("../../node_modules/@awaken/ui/dist/styles/contract.css", import.meta.url), "utf8");
 const html = readFileSync(new URL("../../index.html", import.meta.url), "utf8");
 const chrome = readFileSync(new URL("../components/app/TopChrome.tsx", import.meta.url), "utf8");
 const favicon = readFileSync(new URL("../../public/favicon.svg", import.meta.url), "utf8");
@@ -49,7 +52,9 @@ describe("theme browser integration", () => {
   // same compact information architecture at a legible 14px base.
   it("reserves faint text for metadata and keeps readable copy on the soft tier", () => {
     expect(base).toMatch(/body\s*\{[^}]*font-size:\s*14px[^}]*text-rendering:\s*optimizeLegibility/s);
-    expect(base).toMatch(/\.field\s*>\s*label\s*\{[^}]*font-size:\s*12px[^}]*color:\s*var\(--fg2\)/s);
+    // The shared recipe owns label typography; the product supplies color tokens.
+    expect(sharedForms).toContain("font-size: var(--ui-font-size-xs)");
+    expect(sharedContract).toContain("--ui-font-size-xs: 0.75rem");
     expect(base).toMatch(/\.readiness-item small,[^{]+settings-link small\s*\{[^}]*color:\s*var\(--fg2\)[^}]*font-size:\s*12px/s);
     expect(base).toMatch(/\.mut\s*\{[^}]*color:\s*var\(--fg2\)[^}]*font-size:\s*12\.5px/s);
   });
@@ -74,20 +79,19 @@ describe("theme browser integration", () => {
   // even though the page itself reports no horizontal overflow.
   it("bounds topbar icons and preserves comfortable mobile actions", () => {
     expect(base).toMatch(/\.search-box svg,[^{]+\.chrome-btn svg\s*\{[^}]*width:\s*16px[^}]*height:\s*16px/s);
-    expect(base).toMatch(/@media \(max-width:\s*520px\)[\s\S]*?\.btn\s*\{[^}]*min-height:\s*36px/s);
+    expect(base).toMatch(/@media \(max-width:\s*520px\)[\s\S]*?:root\s*\{[^}]*--ui-control-height-sm:\s*36px/s);
     expect(base).toMatch(/@media \(max-width:\s*520px\)[\s\S]*?\.chrome-btn\s*\{[^}]*width:\s*40px[^}]*height:\s*40px/s);
-    expect(base).toMatch(/@media \(max-width:\s*520px\)[\s\S]*?input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\)[\s\S]*?min-height:\s*40px/s);
-    expect(base).toMatch(/@media \(max-width:\s*520px\)[\s\S]*?select\.input,[\s\S]*?min-height:\s*40px/s);
+    expect(base).toMatch(/@media \(max-width:\s*520px\)[\s\S]*?--ui-control-height-md:\s*40px/);
     expect(base).toMatch(/\.empty-inline a\s*\{[^}]*min-height:\s*40px/s);
     expect(base).toMatch(/\.empty-inline a\s*\{[^}]*display:\s*inline-flex[^}]*min-height:\s*32px/s);
-    expect(base).toMatch(/\.ui-data-grid__search\.input\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/s);
+    expect(sharedCore).toMatch(/\.ui-data-grid__search\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/s);
     expect(base).toMatch(/\.main\s*\{[^}]*min-width:\s*0[^}]*min-height:\s*0/s);
-    expect(base).toMatch(/\.card:has\(> \.table\),[\s\S]*?\{[^}]*overflow-x:\s*auto !important/s);
+    expect(base).toMatch(/\.ui-card:has\(> \.ui-data-grid__table\),[\s\S]*?\{[^}]*overflow-x:\s*auto !important/s);
     expect(base).toMatch(/@media \(max-width:\s*760px\)[\s\S]*?\.mobile-nav\s*\{[^}]*display:\s*grid/s);
     expect(base).toMatch(/@media \(max-width:\s*760px\)[\s\S]*?\.assistant-fab,[\s\S]*?\.assistant-fab-panel\s*\{[^}]*display:\s*none/s);
-    expect(base).toMatch(/@media \(max-width:\s*760px\)[\s\S]*?\.responsive-table-card \.table td\[colspan\]\s*\{[^}]*display:\s*block/s);
+    expect(base).toMatch(/@media \(max-width:\s*760px\)[\s\S]*?\.responsive-table-card \.ui-data-grid__table td\[colspan\]\s*\{[^}]*display:\s*block/s);
     expect(base).toMatch(/@media \(max-width:\s*980px\)[\s\S]*?\.page-purpose\s*\{[^}]*grid-template-columns:\s*1fr/s);
-    expect(base).toMatch(/@media \(max-width:\s*980px\)[\s\S]*?\.btn\s*\{[^}]*min-height:\s*32px/s);
+    expect(base).toMatch(/@media \(max-width:\s*980px\)[\s\S]*?:root\s*\{[^}]*--ui-control-height-md:\s*32px/s);
     expect(base).toMatch(/\.manage-link\s*\{[^}]*min-height:\s*32px/s);
   });
 });

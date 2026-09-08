@@ -1,3 +1,4 @@
+import { Button, Card } from "@awaken/ui";
 // Workspace · Runtime secrets: tool/integration credentials only. Inference
 // credentials have one separate authority in the model supply domain.
 // MCP OAuth (auto-refreshed), static bearer, and env-var secrets,
@@ -9,7 +10,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useConfirm } from "../components/ui/Confirm";
 import { useToast } from "../components/ui/Toast";
-import { Button, Card, Modal, Pill, SecretField, TechnicalId, TextField } from "../components/ui";
+import { Modal, Pill, SecretField, TechnicalId, TextField } from "../components/ui";
 import { api, ws } from "../lib/api/client";
 import type { Page, Vault, VaultCredential } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
@@ -128,7 +129,7 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
   return (
     <Card style={{ padding: 0 }}>
       <div className="row" style={{ padding: "12px 16px" }}>
-        {renaming ? <span className="row"><input className="input" aria-label={app.t("Vault name", "Vault 名称")} value={vaultName} onChange={(event) => setVaultName(event.target.value)} /><Button disabled={rename.isPending || !vaultName.trim()} onClick={() => rename.mutate()}>{app.t("Save", "保存")}</Button></span> : <div><strong>{entityDisplayName(name, app.t("Unnamed vault", "未命名 Vault"))}</strong><TechnicalId value={id} /></div>}
+        {renaming ? <span className="row"><input className="ui-input" aria-label={app.t("Vault name", "Vault 名称")} value={vaultName} onChange={(event) => setVaultName(event.target.value)} /><Button disabled={rename.isPending || !vaultName.trim()} onClick={() => rename.mutate()}>{app.t("Save", "保存")}</Button></span> : <div><strong>{entityDisplayName(name, app.t("Unnamed vault", "未命名 Vault"))}</strong><TechnicalId value={id} /></div>}
         <span style={{ flex: 1 }} />
         {!renaming && <Button variant="ghost" onClick={() => setRenaming(true)}>{app.t("Rename", "重命名")}</Button>}
         <Button variant="ghost" onClick={() => setAdding(true)}>
@@ -139,7 +140,7 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
         </Button>
       </div>
       {rows.length > 0 && (
-        <table className="table">
+        <table className="ui-data-grid__table">
           <tbody>
             {rows.map((c) => (
               <CredentialRow key={c.id} vaultId={id} cred={c} />
@@ -237,19 +238,19 @@ export default function VaultsSurface() {
           )}
         </span>
         <form className="row" style={{ alignItems: "flex-end" }} onSubmit={(event) => { event.preventDefault(); create.mutate(); }}>
-          <div className="field">
+          <div className="ui-field">
             <label htmlFor="new-vault-category">{app.t("Category", "分类")}</label>
-            <select id="new-vault-category" className="input" value={vaultCategory} onChange={(event) => setVaultCategory(event.target.value)}>
+            <select id="new-vault-category" className="ui-input" value={vaultCategory} onChange={(event) => setVaultCategory(event.target.value)}>
               <option value="Integrations">{app.t("Integrations", "集成")}</option>
               <option value="Sandbox environment">{app.t("Sandbox environment", "Sandbox 环境")}</option>
               <option value="Shared runtime">{app.t("Shared runtime", "共享运行环境")}</option>
             </select>
           </div>
-          <div className="field">
+          <div className="ui-field">
             <label htmlFor="new-vault-name">{app.t("Vault name", "Vault 名称")}</label>
             <input
               id="new-vault-name"
-              className="input"
+              className="ui-input"
               style={{ width: 160 }}
               value={vaultName}
               onChange={(e) => setVaultName(e.target.value)}

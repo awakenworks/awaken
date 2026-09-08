@@ -107,3 +107,8 @@
   /* Awaken Agents density = compact (row-height 34px). */
   --row-h: 34px;
 }
+
+:root {
+  --ui-dialog-width-md: 560px;
+  --ui-drawer-width-md: 640px;
+}

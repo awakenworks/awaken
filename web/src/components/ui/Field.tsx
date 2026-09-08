@@ -29,8 +29,7 @@ export function TextField({
     <SharedTextField
       {...props}
       action={action}
-      className={cx("input", mono && "mono", className)}
-      fieldClassName="field"
+      className={cx(mono && "mono", className)}
       help={hint}
       helpClassName="mut"
       labelClassName={action ? "row" : undefined}
@@ -48,8 +47,7 @@ export function TextAreaField({ hint, mono, className, ...props }: TextAreaField
   return (
     <SharedTextAreaField
       {...props}
-      className={cx("input", mono && "mono", className)}
-      fieldClassName="field"
+      className={cx(mono && "mono", className)}
       help={hint}
       helpClassName="mut"
     />
@@ -74,8 +72,7 @@ export function SelectField({
     <SharedSelectField
       {...props}
       action={action}
-      className={cx("input", mono && "mono", className)}
-      fieldClassName="field"
+      className={cx(mono && "mono", className)}
       labelClassName={action ? "row" : undefined}
     >
       {children}

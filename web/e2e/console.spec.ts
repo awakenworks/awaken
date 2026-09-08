@@ -113,9 +113,11 @@ test("Workspace overview exposes one live readiness path instead of a client ros
 test("agent editor Build/Advanced stages are data-driven from /v1/capabilities", async ({ page }) => {
   await page.goto("/w/default/agents/new");
   await openBuild(page, "Tools & permissions");
-  const picker = page.locator(".check-picker").first();
+  // R1 server-projected tools use shared picker semantics; local class adapters
+  // are deleted. R2 tool ID matching remains stable when descriptions change.
+  const picker = page.locator(".ui-check-picker").first();
   await expect(picker).toBeVisible();
-  await expect(picker.locator(".check-row").first()).toBeVisible();
+  await expect(picker.getByRole("checkbox").first()).toBeVisible();
 
   await openBuild(page, "Instructions");
   await expect(page.locator(".behavior-card", { hasText: "Auto-compaction" })).toBeVisible();
@@ -228,7 +230,7 @@ test("ACP authoring disables tools without a verified bridge before publication"
   await expect(page.getByText(/needs a verified tool bridge/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Refresh status" })).toBeVisible();
   await openBuild(page, "Tools & permissions");
-  await expect(page.getByRole("checkbox", { name: /read/i })).toBeDisabled();
+  await expect(page.getByRole("checkbox", { name: /^read\b/i })).toBeDisabled();
   await expect(page.getByText(/Awaken via ACP bridge.*needs verification/i).first()).toBeVisible();
 });
 
@@ -238,7 +240,7 @@ test("Models gives one actionable ACP installation, login and bridge status view
   // Host CLI discovery is deliberately outside this UI projection fixture.
   await mockAcpCapabilities(page);
   await page.goto("/w/default/models");
-  const runtimes = page.locator(".card", { hasText: "Agent runtimes & harnesses" });
+  const runtimes = page.locator(".ui-card", { hasText: "Agent runtimes & harnesses" });
   await expect(runtimes).toBeVisible();
   await expect(runtimes.getByText("Native Awaken", { exact: true }).first()).toBeVisible();
   await expect(runtimes.getByText(/Codex|Claude|Gemini/).first()).toBeVisible();
@@ -382,7 +384,7 @@ test("Quickstart publishes, starts a durable Session, and hands its exact SDK co
   await page.getByLabel("Task sent to the new Session").fill(task);
   await page.getByRole("button", { name: /Review, publish & run/ }).click();
 
-  const modal = page.locator(".modal");
+  const modal = page.getByRole("dialog");
   await expect(modal.getByRole("heading", { name: /Review the first real run/ })).toBeVisible();
   await expect(modal).toContainText(environment.id);
   await expect(modal).toContainText(task);
@@ -612,7 +614,7 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   const publication = page.waitForResponse((response) =>
     response.request().method() === "POST"
       && isApiRequest(response.url(), `/v1/config/agents/${id}/publish`));
-  await page.locator(".modal").getByRole("button", { name: "Publish", exact: false }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Publish", exact: false }).click();
   expect((await publication).ok()).toBe(true);
   expect((await request.get(await workspaceApiPath(request, `/v1/config/agents/${id}`))).ok()).toBe(true);
 
@@ -661,12 +663,12 @@ test("new session sends the official synchronous MCP override", async ({ page })
   });
   await page.goto("/w/default/sessions");
   await page.getByRole("button", { name: /New session/ }).click();
-  await page.locator(".modal select").first().selectOption({ index: 1 });
+  await page.getByRole("dialog").locator("select").first().selectOption({ index: 1 });
   await page.getByText("Advanced runtime overrides", { exact: true }).click();
   await page.getByRole("button", { name: /Add temporary server/ }).click();
   await page.getByPlaceholder("name").fill("docs");
   await page.getByPlaceholder("https://…").fill("https://docs.test/mcp");
-  await page.locator(".modal").getByRole("button", { name: /Create/ }).click();
+  await page.getByRole("dialog").getByRole("button", { name: /Create/ }).click();
   await expect.poll(() => posted).toBeTruthy();
   expect(posted).toMatchObject({
     agent: {
@@ -788,7 +790,7 @@ test("a specialist is created inside its primary Agent, published first, and hid
   await page.getByRole("button", { name: "Save draft", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/agents/${specialist}\\?parent=${primary}$`));
   await page.getByRole("button", { name: "Publish", exact: false }).first().click();
-  const modal = page.locator(".modal");
+  const modal = page.getByRole("dialog");
   await expect(modal.getByRole("heading", { name: "Publish changes?" })).toBeVisible();
   await expect(modal.getByText("Execution plan", { exact: true })).toBeVisible();
   await modal.getByRole("button", { name: "Publish", exact: false }).click();
@@ -973,6 +975,8 @@ test("Session recovery interrupts committed pending tools through the shared eve
   // U4 actual browser layout: long tool title x desktop/narrow viewport x
   // normal/200% text size. The type badge must remain visible outside the
   // aria-hidden rail, with no horizontal page overflow or rail overlap.
+  // The mobile column must constrain its content width before shared controls
+  // wrap; align-items:flex-start otherwise lets intrinsic widths escape it.
   const traceText = page.locator(".trace, .trace *");
   const originalFonts = await traceText.evaluateAll((nodes) => nodes.map((node) => ({
     inline: (node as HTMLElement).style.fontSize,
@@ -1620,7 +1624,7 @@ test("author an agent, publish when runnable, and see the truthful outcome", asy
     .then(() => true)
     .catch(() => false);
   if (canPublish) {
-    await page.locator(".modal").getByRole("button", { name: /Publish/ }).click();
+    await page.getByRole("dialog").getByRole("button", { name: /Publish/ }).click();
     await expect(page.locator(".ui-toast").filter({ hasText: /Published|已发布/ })).toBeVisible();
   } else {
     await expect(page.getByText(/cannot resolve model publication|无法解析模型发布/)).toBeVisible();
@@ -1674,7 +1678,7 @@ test("Publish saves the Draft, validates it, and withholds confirmation when inv
   await page.getByRole("button", { name: /^Review & publish/ }).click();
   await expect(page.getByText(/Needs input|需要处理/).first()).toBeVisible();
   expect((await request.get(await workspaceApiPath(request, `/v1/config/agents/${id}`))).ok()).toBe(true);
-  await expect(page.locator(".modal")).toHaveCount(0);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
 });
 
 test("Agent-authored fields and the State Machine behavior are highlighted after Draft refresh", async ({ page, request }) => {
@@ -1729,7 +1733,7 @@ test("publish preview shows the config diff, domain-labeled", async ({ page, req
   await expect(page.getByLabel("System instructions")).toHaveValue("original");
   await page.getByLabel("System instructions").fill("edited instructions");
   await page.getByRole("button", { name: /^Review & publish/ }).click();
-  const modal = page.locator(".modal");
+  const modal = page.getByRole("dialog");
   await expect(modal.getByText("System instructions", { exact: true })).toBeVisible();
   await expect(modal).toContainText("original → edited instructions");
   await expect(modal.getByRole("button", { name: /^Publish/ })).toBeEnabled();

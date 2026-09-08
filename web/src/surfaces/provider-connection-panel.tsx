@@ -1,12 +1,7 @@
+import { Button, Card } from "@awaken/ui";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import {
-  Button,
-  Card,
-  SecretField,
-  SelectField,
-  TextField,
-} from "../components/ui";
+import { SecretField, SelectField, TextField } from "../components/ui";
 import { api, workspaceFields, ws } from "../lib/api/client";
 import type {
   CredentialSource,
@@ -288,7 +283,7 @@ export default function ProviderConnectionPanel({
                 }}
               />
             ))}
-          <span className="field">
+          <span className="ui-field">
             <label>{app.t("Authentication", "认证方式")}</label>
             <span className="row">
               {(selectedDescriptor?.auth_methods ?? []).map((method) => (
@@ -343,9 +338,9 @@ export default function ProviderConnectionPanel({
             </>
           )}
           {authMode === "oauth" && (
-            <span className="field">
+            <span className="ui-field">
               <label>{app.t("OAuth helper", "OAuth 辅助程序")}</label>
-              <span className="input mono">gcloud · active account</span>
+              <span className="ui-input mono">gcloud · active account</span>
             </span>
           )}
           {authMode === "existing" && (

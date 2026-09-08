@@ -22,7 +22,7 @@ export interface PillProps extends HTMLAttributes<HTMLSpanElement> {
 
 export function Pill({ tone = "neutral", dot, className, children, ...props }: PillProps) {
   return (
-    <StatusPill {...props} tone={TONE[tone]} className={cx("pill", tone, className)}>
+    <StatusPill {...props} tone={TONE[tone]} className={className}>
       {dot ? <span className="dot" /> : null}
       {children}
     </StatusPill>

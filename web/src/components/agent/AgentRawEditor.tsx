@@ -26,7 +26,7 @@ export default function AgentRawEditor({
       </div>
       <textarea
         aria-label={app.t("Agent JSON", "Agent JSON")}
-        className="input mono"
+        className="ui-input mono"
         value={draft}
         onChange={(event) => {
           const raw = event.target.value;

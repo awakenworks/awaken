@@ -1,3 +1,4 @@
+import { Button, Card } from "@awaken/ui";
 // Workspace · Access: embedded-IAM token management. The mint response is the
 // ONLY time the cleartext is visible — surfaced once with a copy affordance.
 
@@ -10,7 +11,7 @@ import { useApp } from "../lib/app-state";
 import { protocolHelpPath } from "../lib/navigation/paths";
 import { entityDisplayName, identifierLabel } from "../lib/presentation";
 import GatedPage from "../components/app/GatedPage";
-import { Button, Card, CopyButton, Pill, TechnicalId, TextField, SelectField, useConfirm, useToast } from "../components/ui";
+import { CopyButton, Pill, TechnicalId, TextField, SelectField, useConfirm, useToast } from "../components/ui";
 
 function roleLabel(role: string | undefined, t: (en: string, zh: string) => string) {
   switch (role) {
@@ -141,7 +142,7 @@ export default function AccessSurface() {
         </Link>
       </Card>
       <Card className="responsive-table-card" style={{ padding: 0 }}>
-        <table className="table">
+        <table className="ui-data-grid__table">
           <thead>
             <tr>
               <th>{app.t("Service principal", "服务主体")}</th>

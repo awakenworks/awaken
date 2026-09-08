@@ -1,3 +1,4 @@
+import { Button, Card, Switch } from "@awaken/ui";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
@@ -20,7 +21,7 @@ import {
 } from "../../lib/agent-collaboration";
 import { useApp } from "../../lib/app-state";
 import { authoredAgents } from "../../lib/visible-agents";
-import { Button, Card, Pill, SelectField, Switch, TextField } from "../ui";
+import { Pill, SelectField, TextField } from "../ui";
 
 const BALANCED: DelegationLimits = { max_depth: 3, max_parallel: 4, max_total: 16 };
 
@@ -237,7 +238,7 @@ export default function AgentCollaborationEditor({
           + {app.t("Add", "添加")}
         </Button>
         {config.id.trim() && config.generation !== undefined && (
-          <Link className="btn" to={`/w/${app.workspaceId}/agents/new?parent=${encodeURIComponent(config.id.trim())}`}>
+          <Link className="ui-button" to={`/w/${app.workspaceId}/agents/new?parent=${encodeURIComponent(config.id.trim())}`}>
             + {app.t("New specialist", "新建专属辅助 Agent")}
           </Link>
         )}

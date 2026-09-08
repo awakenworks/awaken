@@ -1,6 +1,7 @@
+import { Card } from "@awaken/ui";
 import { useNavigate, useParams } from "react-router";
 import { useApp } from "../lib/app-state";
-import { Card } from "../components/ui";
+
 import { useConfigCapabilities } from "../lib/useConfigCapabilities";
 import { hasSurface } from "../lib/navigation/paths";
 

@@ -1,23 +1,17 @@
+import { Button, ChatComposer, ChatMarkdown, ChatMessage, ChatMessageList, ChatThinking, ToolCallCard } from "@awaken/ui";
 // Protocol-specific Preview adapters and their bounded event inspector. Both
 // adapters use one Session-bound Application Access Token; management cookies
 // and service API keys never enter this browser transport.
 
 import type { BaseEvent, HttpAgent, Message as AgUiMessage } from "@ag-ui/client";
-import {
-  ChatComposer,
-  ChatMarkdown,
-  ChatMessage,
-  ChatMessageList,
-  ChatThinking,
-  ToolCallCard,
-} from "@awaken/ui";
+
 import { useEffect, useState } from "react";
 import {
   applicationProtocolFetch,
   type IssuedApplicationAccessToken,
 } from "../../lib/api/client";
 import { useApp } from "../../lib/app-state";
-import { Button, EmptyState } from "../ui";
+import { EmptyState } from "../ui";
 
 export interface PreviewAccess {
   token: IssuedApplicationAccessToken;

@@ -1,3 +1,4 @@
+import { Button, SegmentedControl as Segmented } from "@awaken/ui";
 // Workspace · Agents: the config-plane authoring list (GET /v1/config/agents).
 // The console authors the rich agent object here directly — our own management
 // API — rather than the SDK-facing /v1/agents registry. Publish (in the editor)
@@ -6,7 +7,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import { DataGrid, type Column } from "../components/ui/DataGrid";
-import { Button, Pill, Segmented, TechnicalId } from "../components/ui";
+import { Pill, TechnicalId } from "../components/ui";
 import AgentCollaborationsOverview from "../components/agent/AgentCollaborationsOverview";
 import { api, ws } from "../lib/api/client";
 import type { AgentConfig, AgentConfigItem, AgentConfigList } from "../lib/api/types";

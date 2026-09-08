@@ -1,3 +1,4 @@
+import { Button, Card } from "@awaken/ui";
 // Workspace · Deployments: schedule an Agent to run on a cron
 // (Managed Agents `/v1/deployments`). Each firing creates a session from the
 // deployment's initial_events, running the agent in its environment.
@@ -5,7 +6,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useParams } from "react-router";
-import { Button, Card, Modal, Pill, SelectField, TechnicalId, TextAreaField, TextField, useConfirm, useToast } from "../components/ui";
+import { Modal, Pill, SelectField, TechnicalId, TextAreaField, TextField, useConfirm, useToast } from "../components/ui";
 import { api, ws } from "../lib/api/client";
 import type { AgentConfigList, CursorPage, Deployment, DeploymentRun, Environment, Page } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
@@ -126,9 +127,9 @@ function CreateModal({ onClose }: { onClose: () => void }) {
             </option>
           ))}
         </SelectField>
-        <div className="field">
+        <div className="ui-field">
           <label>{app.t("Cron expression", "Cron 表达式")}</label>
-          <input className="input mono" value={expression} onChange={(e) => setExpression(e.target.value)} placeholder="0 20 * * 5" />
+          <input className="ui-input mono" value={expression} onChange={(e) => setExpression(e.target.value)} placeholder="0 20 * * 5" />
           <span className="mut">
             {cronScheduleLabel(expression, app.locale)} · {app.t("Each firing creates a separate Session.", "每次触发都会创建独立会话。")}
           </span>
@@ -223,7 +224,7 @@ export default function DeploymentsSurface() {
         </div>
       )}
       <Card className="responsive-table-card" style={{ padding: 0 }}>
-        <table className="table">
+        <table className="ui-data-grid__table">
           <thead>
             <tr>
               <th>{app.t("Deployment", "部署")}</th>
@@ -296,7 +297,7 @@ export default function DeploymentsSurface() {
       </div>
       {runs.error instanceof Error && <div className="err">{runs.error.message}</div>}
       <Card className="responsive-table-card" style={{ padding: 0 }}>
-        <table className="table">
+        <table className="ui-data-grid__table">
           <thead>
             <tr>
               <th>{app.t("Deployment", "部署")}</th>

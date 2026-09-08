@@ -1,3 +1,5 @@
+import { Skeleton, Button, Card } from "@awaken/ui";
+
 // Workspace credential sources: one secret-in / secret-free-out materialization
 // surface shared by model providers, MCP servers, and A2A remotes. Consumers bind
 // the source by id; none of them owns OAuth refresh behavior.
@@ -13,7 +15,7 @@ import type {
 } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { useConfigCapabilities } from "../lib/useConfigCapabilities";
-import { Button, Card, Modal, Pill, SecretField, Skeleton, useConfirm, useToast } from "../components/ui";
+import { Modal, Pill, SecretField, useConfirm, useToast } from "../components/ui";
 import { credentialKindLabel, statusLabel } from "../lib/presentation";
 
 const CLAUDE_CODE_SETUP_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
@@ -183,7 +185,7 @@ export default function CredentialsSurface() {
         </span>
       </div>
       <Card className="responsive-table-card" style={{ padding: 0 }}>
-        <table className="table">
+        <table className="ui-data-grid__table">
           <thead>
             <tr>
               <th>{app.t("Credential", "凭证")}</th>

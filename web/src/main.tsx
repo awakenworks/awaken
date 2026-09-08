@@ -5,9 +5,9 @@ import { RouterProvider } from "react-router";
 import { AppProvider } from "./lib/app-state";
 import LocalSetupGate from "./components/app/LocalSetupGate";
 import { router } from "./routes";
-import "./styles/tokens.css";
 import "@awaken/ui/styles.css";
 import "@awaken/ui/styles/themes/awaken.css";
+import "./styles/tokens.css";
 import "./styles/base.css";
 
 const queryClient = new QueryClient({

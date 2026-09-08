@@ -1,3 +1,4 @@
+import { Button } from "@awaken/ui";
 // Agent default inputs (ADR-0063): typed File/Memory/Repository identities composed
 // with temporary Session attachments. Skills are configured under Build / Skills & MCP and
 // outputs belong to the Environment, so neither appears in this input editor.
@@ -5,7 +6,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { Button, EmptyState, SelectField, TextAreaField, TextField } from "../ui";
+import { EmptyState, SelectField, TextAreaField, TextField } from "../ui";
 import { useToast } from "../ui/Toast";
 import { api, ws } from "../../lib/api/client";
 import type {
@@ -86,7 +87,7 @@ export default function ResourcesTab({
   return (
     <>
       <input ref={fileInput} type="file" style={{ display: "none" }} onChange={onFileChosen} />
-      <div className="field">
+      <div className="ui-field">
         <label>{app.t("Resources mounted for this agent", "本 agent 挂载的资源")}</label>
         <span className="mut">
           {app.t(
@@ -148,7 +149,7 @@ export default function ResourcesTab({
             </SelectField>
           )}
           {r.target.kind === "file" && (
-            <div className="field">
+            <div className="ui-field">
               <label>{app.t("File", "文件")}</label>
               <Button style={{ height: 26 }} onClick={() => pickFile(i)}>
                 {fileLabels[r.binding_id] || r.target.id || app.t("Upload…", "上传…")}

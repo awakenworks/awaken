@@ -1,3 +1,4 @@
+import { Button, Card } from "@awaken/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { isManagedSessionActiveStatus } from "@awaken/managed-session-projection";
 import { useMemo, useState } from "react";
@@ -11,7 +12,7 @@ import type {
 import { api } from "../../lib/api/client";
 import { useApp } from "../../lib/app-state";
 import { statusLabel } from "../../lib/presentation";
-import { Button, Card, EmptyState, Pill, usageTotal, useConfirm, useToast } from "../ui";
+import { EmptyState, Pill, usageTotal, useConfirm, useToast } from "../ui";
 
 function eventText(event: SessionEvent): string {
   if (event.type === "agent.message" && "content" in event && Array.isArray(event.content)) {

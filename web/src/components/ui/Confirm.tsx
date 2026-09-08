@@ -1,8 +1,7 @@
 import {
-  ConfirmProvider as SharedConfirmProvider,
   useConfirm as useSharedConfirm,
 } from "@awaken/ui";
-import { useCallback, type ReactNode } from "react";
+import { useCallback } from "react";
 import { useApp } from "../../lib/app-state";
 
 export interface ConfirmOpts {
@@ -26,8 +25,4 @@ export function useConfirm(): ConfirmFn {
     cancelLabel: options.cancelLabel ?? app.t("Cancel", "取消"),
     danger: options.danger,
   }), [app, confirm]);
-}
-
-export function ConfirmProvider({ children }: { readonly children: ReactNode }) {
-  return <SharedConfirmProvider>{children}</SharedConfirmProvider>;
 }

@@ -435,7 +435,7 @@ test("Deployment: create in the UI, run once, and open its resulting Session", a
 
   await page.goto("/w/default/deployments");
   await page.getByRole("button", { name: /New deployment/ }).click();
-  const modal = page.locator(".modal");
+  const modal = page.getByRole("dialog");
   await modal.getByPlaceholder("nightly-report").fill(name);
   await modal.getByLabel("Agent", { exact: true }).selectOption(agent);
   await modal.getByLabel("Environment", { exact: true }).selectOption(environmentId);

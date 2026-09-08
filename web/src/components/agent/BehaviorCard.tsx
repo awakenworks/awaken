@@ -1,3 +1,4 @@
+import { Card, Switch } from "@awaken/ui";
 // One runtime behavior as a named card (agent-editor Behavior section): a title +
 // description + enable toggle, and — when enabled — its config as a friendly
 // schema-driven form (reusing `SchemaForm`) with an "Advanced (raw JSON)" escape hatch
@@ -7,7 +8,7 @@
 // unknown plugin falls back to its id (its config still renders).
 
 import { useState } from "react";
-import { Card, Pill, SchemaForm, Switch } from "../ui";
+import { Pill, SchemaForm } from "../ui";
 import type { JsonSchema } from "../ui";
 import { useApp } from "../../lib/app-state";
 import StateMachineEditor from "./StateMachineEditor";
@@ -94,7 +95,7 @@ export default function BehaviorCard({
   const jsonBox = (
     <>
       <textarea
-        className="input mono"
+        className="ui-input mono"
         rows={5}
         value={draft ?? JSON.stringify(config ?? {}, null, 2)}
         onChange={(e) => commitJson(e.target.value)}

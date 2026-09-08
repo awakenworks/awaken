@@ -1,3 +1,5 @@
+import { CheckPicker, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
+
 import type {
   AgentConfig,
   AgentToolsetCap,
@@ -18,14 +20,7 @@ import {
   withSelectedAgentTools,
 } from "../../lib/agent-toolsets";
 import type { JsonSchema } from "../ui";
-import {
-  Button,
-  Card,
-  CheckPicker,
-  Segmented,
-  TextAreaField,
-  TextField,
-} from "../ui";
+import { TextAreaField, TextField } from "../ui";
 import { useApp } from "../../lib/app-state";
 import type { BuilderSection } from "./agent-editor-navigation";
 import AgentIntegrationsEditor from "./AgentIntegrationsEditor";
@@ -196,20 +191,20 @@ export default function AgentBuilder({
       {section === "instructions" && (
         <Card>
           <div className="row">
-            <div className={`field${changed("id") ? " agent-change-highlight" : ""}`} style={{ flex: 1 }}>
+            <div className={`ui-field${changed("id") ? " agent-change-highlight" : ""}`} style={{ flex: 1 }}>
               <label>{app.t("Agent id", "Agent id")}</label>
               <input
-                className="input mono"
+                className="ui-input mono"
                 value={config.id}
                 disabled={!isNew}
                 placeholder="coding-agent"
                 onChange={(event) => onPatch({ id: event.target.value })}
               />
             </div>
-            <div className={`field${changed("name") ? " agent-change-highlight" : ""}`} style={{ flex: 1 }}>
+            <div className={`ui-field${changed("name") ? " agent-change-highlight" : ""}`} style={{ flex: 1 }}>
               <label>{app.t("Name", "名称")}</label>
               <input
-                className="input"
+                className="ui-input"
                 value={config.name ?? ""}
                 placeholder="Coding Assistant"
                 onChange={(event) => onPatch({ name: event.target.value })}
@@ -265,7 +260,7 @@ export default function AgentBuilder({
               value={config.max_steps}
               onChange={(event) => onPatch({ max_steps: Math.max(1, Number(event.target.value) || 1) })}
             />
-            <div className="field" style={{ flex: 1 }}>
+            <div className="ui-field" style={{ flex: 1 }}>
               <label>{app.t("Context window policy", "上下文窗口策略")}</label>
               <Segmented
                 options={[
@@ -300,7 +295,7 @@ export default function AgentBuilder({
             )}
           </div>
           {behavior("compact") && (
-            <div className="field" style={{ marginTop: 14 }}>
+            <div className="ui-field" style={{ marginTop: 14 }}>
               <label>{app.t("Context management", "上下文管理")}</label>
               {renderBehavior("compact")}
             </div>
@@ -310,7 +305,7 @@ export default function AgentBuilder({
 
       {section === "tools" && (
         <Card>
-          <div className="field">
+          <div className="ui-field">
             <label>{app.t("Executable tools", "可执行工具")}</label>
             <span className="mut">{app.t(
               "Choose the tools this Agent may call. Tools supplied by connected MCP servers also appear here after discovery.",
@@ -392,7 +387,7 @@ export default function AgentBuilder({
                   return <label className="simple-tool-permission-row" role="listitem" key={toolId}>
                     <span className="mono">{toolId}</span>
                     <select
-                      className="input"
+                      className="ui-input"
                       aria-label={app.t(`${toolId} permission`, `${toolId} 权限`)}
                       value={permission}
                       onChange={(event) => onPatch({ tools: withAgentToolPermission(config.tools, toolId, { type: event.target.value as "always_allow" | "always_ask" }) })}
@@ -405,7 +400,7 @@ export default function AgentBuilder({
               </div>
             )}
           </div>
-          <div className="field">
+          <div className="ui-field">
             <label>{app.t("Permission preset", "权限预设")}</label>
             <span className="mut">{app.t(
               `Controlled modifications are projected by the server from its typed ${controlledMemberDescription} authority when you save.`,
@@ -423,7 +418,7 @@ export default function AgentBuilder({
           </div>
           <details className="advanced-tool-settings">
             <summary>{app.t("Advanced tool presentation and background policies", "高级工具呈现与后台策略")}</summary>
-            <div className="field">
+            <div className="ui-field">
             <label>{app.t("Tool behavior policies", "工具行为策略")}</label>
             <span className="mut">{app.t(
               "Use one canonical tool id to configure presentation and background eligibility. State-machine rules use the same ids and patterns under Advanced → Orchestration.",
@@ -462,7 +457,7 @@ export default function AgentBuilder({
             </div>
           </details>
           {behavior("web_search") && (
-            <div className="field">
+            <div className="ui-field">
               <label>{app.t("Web capability", "网页能力")}</label>
               {renderBehavior("web_search")}
             </div>
@@ -503,7 +498,7 @@ export default function AgentBuilder({
             </Card>
           )}
           {behavior("memory") && (
-            <div className="field">
+            <div className="ui-field">
               <label>{app.t("Memory behavior", "Memory 行为")}</label>
               {renderBehavior("memory")}
             </div>

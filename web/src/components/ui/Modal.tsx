@@ -28,8 +28,8 @@ export default function Modal({
       title={title}
       closeLabel={app.t("Close", "关闭")}
       footer={footer}
-      className={["modal", className].filter(Boolean).join(" ")}
-      style={{ width: width ?? "min(560px, 92vw)" }}
+      className={className}
+      style={width ? { width } : undefined}
     >
       {children}
     </Dialog>

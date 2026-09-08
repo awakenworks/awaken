@@ -1,3 +1,5 @@
+import { CheckPicker, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
+
 // Workspace · Sessions: the scoped session list (GET /v1/sessions,
 // tenant-scoped via ws()). Human titles stay primary; technical ids remain
 // available on demand. Tenancy fences the list by the active workspace (ADR-0051);
@@ -11,7 +13,7 @@ import {
 import { useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
-import { Button, Card, Modal, Pill, Segmented, TechnicalId, TextField, useConfirm, useToast } from "../components/ui";
+import { Modal, Pill, TechnicalId, TextField, useConfirm, useToast } from "../components/ui";
 import {
   BUILTIN_LOCAL_ENVIRONMENT_ID,
   api,
@@ -42,7 +44,7 @@ export function StatusPill({ session }: { session: Session }) {
   const status = managedSessionStatusPresentation(session.status);
   if (status === "running") {
     return (
-      <span className="pill agent">
+      <span className="ui-status-pill ui-status-pill--agent">
         <span className="dot pulse" style={{ background: "var(--agent)" }} />
         {app.t("running", "运行中")}
       </span>
@@ -98,14 +100,14 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
   return (
     <>
       <Modal title={<>{app.t("New session", "新建会话")} · {app.workspaceName}</>} onClose={onClose}>
-        <div className="field">
+        <div className="ui-field">
           <label className="row" style={{ justifyContent: "space-between" }}>
             <span>Agent</span>
             <button className="manage-link" onClick={() => setManage("agents")}>
               {app.t("Manage ↗", "管理 ↗")}
             </button>
           </label>
-          <select className="input" aria-label="Agent" value={agent} onChange={(e) => setAgent(e.target.value)}>
+          <select className="ui-input" aria-label="Agent" value={agent} onChange={(e) => setAgent(e.target.value)}>
             <option value="">{app.t("Select a published Agent…", "选择已发布的 Agent…")}</option>
             {visibleAgents(agents.data?.data).filter((a) => a.published).map((a) => (
               <option key={a.id} value={a.id}>
@@ -117,7 +119,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
             <div className="banner warn"><span>→</span><span>{app.t("No published Agent is available. Create and publish an Agent before starting a Session.", "没有可用的已发布 Agent。请先创建并发布 Agent，再启动会话。")}</span></div>
           )}
         </div>
-        <div className="field">
+        <div className="ui-field">
           <label className="row" style={{ justifyContent: "space-between" }}>
             <span>{app.t("Environment", "运行环境")}</span>
             <button className="manage-link" onClick={() => setManage("environments")}>
@@ -125,7 +127,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
             </button>
           </label>
           <select
-            className="input"
+            className="ui-input"
             aria-label={app.t("Environment", "运行环境")}
             value={environmentId}
             onChange={(e) => setEnvironmentId(e.target.value)}
@@ -153,31 +155,32 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
         <details>
           <summary>{app.t("Advanced runtime overrides", "高级运行覆盖")}</summary>
           <p className="mut">{app.t("Usually leave these empty. The Agent's published MCP and resource configuration is included automatically.", "通常无需设置。Agent 已发布的 MCP 与资源配置会自动包含。")}</p>
-          <div className="field">
+          <div className="ui-field">
             <label>{app.t("Runtime Secret Vaults for this Session", "本次会话使用的运行时凭证 Vault")}</label>
             <span className="mut">{app.t("Select only Vaults whose tools or processes are needed for this run.", "只选择本次运行所需工具或进程对应的 Vault。")}</span>
-            <div className="check-picker">
-              {(vaults.data?.data ?? []).filter((vault) => !vault.archived_at).map((vault) => (
-                <label key={vault.id} className="check-row">
-                  <input type="checkbox" checked={vaultIds.includes(vault.id)} onChange={(event) => setVaultIds(event.target.checked ? [...vaultIds, vault.id] : vaultIds.filter((id) => id !== vault.id))} />
-                  <span style={{ display: "flex", flexDirection: "column" }}>{vault.display_name || app.t("Unnamed Vault", "未命名 Vault")}<small className="mono mut">{vault.id}</small></span>
-                </label>
-              ))}
-              {!vaults.isLoading && (vaults.data?.data ?? []).filter((vault) => !vault.archived_at).length === 0 && <span className="mut">{app.t("No Runtime Secret Vaults are available.", "没有可用的运行时凭证 Vault。")}</span>}
-            </div>
+            <CheckPicker
+              selected={vaultIds}
+              onChange={setVaultIds}
+              options={(vaults.data?.data ?? []).filter((vault) => !vault.archived_at).map((vault) => ({
+                id: vault.id,
+                label: vault.display_name || app.t("Unnamed Vault", "未命名 Vault"),
+                description: <small className="mono mut">{vault.id}</small>,
+              }))}
+              empty={vaults.isLoading ? null : app.t("No Runtime Secret Vaults are available.", "没有可用的运行时凭证 Vault。")}
+            />
           </div>
-          <div className="field">
+          <div className="ui-field">
           <label>{app.t("Temporary MCP servers for this Session", "仅用于本次会话的临时 MCP 服务器")}</label>
           {mcp.map((m, i) => (
             <div className="row" key={i}>
               <input
-                className="input"
+                className="ui-input"
                 placeholder="name"
                 value={m.name}
                 onChange={(e) => setMcp(mcp.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))}
               />
               <input
-                className="input mono"
+                className="ui-input mono"
                 style={{ flex: 1 }}
                 placeholder="https://…"
                 value={m.url}
@@ -293,7 +296,7 @@ export default function SessionsSurface() {
       </div>
       {sessions.error instanceof Error && <div className="err">{sessions.error.message}</div>}
       <Card className="responsive-table-card" style={{ padding: 0 }}>
-        <table className="table">
+        <table className="ui-data-grid__table">
           <thead>
             <tr>
               <th>{app.t("Session", "会话")}</th>
@@ -349,7 +352,7 @@ export default function SessionsSurface() {
       <details>
         <summary>{app.t("Open a Session by ID", "按 ID 打开会话")}</summary>
         <div className="row" style={{ marginTop: 8 }}>
-          <input className="input mono" aria-label={app.t("Session ID", "会话 ID")} style={{ width: 320 }} placeholder="sesn_…" value={openId} onChange={(e) => setOpenId(e.target.value)} />
+          <input className="ui-input mono" aria-label={app.t("Session ID", "会话 ID")} style={{ width: 320 }} placeholder="sesn_…" value={openId} onChange={(e) => setOpenId(e.target.value)} />
           <Button disabled={!openId.trim()} onClick={() => nav(`/w/${wsId}/sessions/${openId.trim()}`)}>{app.t("Open Session", "打开会话")}</Button>
         </div>
       </details>

@@ -1,3 +1,4 @@
+import { Button, Card } from "@awaken/ui";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router";
@@ -5,7 +6,7 @@ import type { Agent, AgentConfigItem, Page } from "../../lib/api/types";
 import { api, ws } from "../../lib/api/client";
 import { projectCollaborations, rosterOf } from "../../lib/agent-collaboration";
 import { useApp } from "../../lib/app-state";
-import { Button, Card, EmptyState, Pill, TextField } from "../ui";
+import { EmptyState, Pill, TextField } from "../ui";
 
 export default function AgentCollaborationsOverview({ agents }: { agents: AgentConfigItem[] }) {
   const app = useApp();

@@ -1,3 +1,4 @@
+import { Button, Card } from "@awaken/ui";
 // Route-level gated page: probes the endpoint via useGate. Absent → the gate
 // banner; live → a raw JSON view of the payload (a real, if minimal, surface)
 // until a dedicated UI is built. Both the probe and the banner are shared with
@@ -6,7 +7,7 @@
 import { useGate } from "../../lib/useGate";
 import { useApp } from "../../lib/app-state";
 import { useNavigate, useParams } from "react-router";
-import { Button, Card } from "../ui";
+
 import Gate from "./Gate";
 
 export default function GatedPage({

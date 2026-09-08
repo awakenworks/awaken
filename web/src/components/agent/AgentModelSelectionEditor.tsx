@@ -1,3 +1,4 @@
+import { Button as SharedButton } from "@awaken/ui";
 import type { AgentConfig, ModelSelection, RuntimeCap } from "../../lib/api/types";
 import {
   acpModelChoices,
@@ -88,7 +89,7 @@ export default function AgentModelSelectionEditor({
 
   return (
     <div className="runtime-selection-editor">
-      <div className="field runtime-selection-field">
+      <div className="ui-field runtime-selection-field">
       <div className="row" style={{ justifyContent: "space-between" }}>
         <label htmlFor={runtimeSelectId}>{app.t("Execution runtime", "执行 Runtime")}</label>
         {runtimeId === "awaken" ? (
@@ -103,7 +104,7 @@ export default function AgentModelSelectionEditor({
       </div>
       <select
         id={runtimeSelectId}
-        className="input"
+        className="ui-input"
         aria-label={app.t("Execution runtime", "执行 Runtime")}
         value={runtimeId}
         onChange={(event) => {
@@ -151,14 +152,14 @@ export default function AgentModelSelectionEditor({
       </span>
       </div>
 
-      <div className="field runtime-selection-field">
+      <div className="ui-field runtime-selection-field">
       <label htmlFor={modelSelectId}>
         {runtimeId === "awaken" ? app.t("Model", "模型") : app.t("Harness model", "Harness 模型")}
       </label>
       {runtimeId === "awaken" && (providerModels.length > 0) ? (
         <select
           id={modelSelectId}
-          className="input mono"
+          className="ui-input mono"
           aria-label={app.t("Model", "模型")}
           value={selectionValue(model)}
           onChange={(event) => onChange(JSON.parse(event.target.value) as AgentConfig["model"])}
@@ -176,7 +177,7 @@ export default function AgentModelSelectionEditor({
       ) : runtimeId !== "awaken" && choices.length > 0 ? (
         <select
           id={modelSelectId}
-          className="input mono"
+          className="ui-input mono"
           aria-label={app.t("Harness model", "Harness 模型")}
           value={harnessModelValue(model)}
           onChange={(event) => {
@@ -205,10 +206,10 @@ export default function AgentModelSelectionEditor({
       {selected && runtime?.local?.negotiated && (
         <div className="row" style={{ marginTop: 10, alignItems: "flex-start" }}>
           {runtime.local.negotiated.modes.length > 0 && (
-            <div className="field" style={{ flex: 1 }}>
+            <div className="ui-field" style={{ flex: 1 }}>
               <label>{app.t("ACP mode", "ACP 模式")}</label>
               <select
-                className="input mono"
+                className="ui-input mono"
                 aria-label={app.t("ACP mode", "ACP 模式")}
                 value={selected.configuration?.mode ?? ""}
                 onChange={(event) => setConfiguration({
@@ -226,10 +227,10 @@ export default function AgentModelSelectionEditor({
           {runtime.local.negotiated.config_options
             .filter((option) => option.native_id !== "model")
             .map((option) => (
-              <div className="field" style={{ flex: 1 }} key={option.native_id}>
+              <div className="ui-field" style={{ flex: 1 }} key={option.native_id}>
                 <label>{option.name}</label>
                 <select
-                  className="input mono"
+                  className="ui-input mono"
                   aria-label={option.name}
                   value={selected.configuration?.options?.[option.native_id] ?? ""}
                   onChange={(event) => {
@@ -251,7 +252,7 @@ export default function AgentModelSelectionEditor({
         </div>
       )}
       {selected && (
-        <div className="field acp-working-directory" style={{ marginTop: 10 }}>
+        <div className="ui-field acp-working-directory" style={{ marginTop: 10 }}>
           <div className="field-label-row">
             <label htmlFor={workingDirectoryId}>{app.t("ACP working directory", "ACP 工作目录")}</label>
             <span className="field-optional">{app.t("Optional", "可选")}</span>
@@ -259,7 +260,7 @@ export default function AgentModelSelectionEditor({
           <div className="input-with-action">
             <input
               id={workingDirectoryId}
-              className="input mono"
+              className="ui-input mono"
               aria-label={app.t("ACP working directory", "ACP 工作目录")}
               placeholder="repo/subdirectory"
               value={workingDirectory}
@@ -274,11 +275,11 @@ export default function AgentModelSelectionEditor({
               }}
             />
             {workingDirectory && (
-              <button
+              <SharedButton
                 type="button"
-                className="btn ghost compact"
-                onClick={() => setConfiguration({ ...(selected.configuration ?? {}), working_directory: null })}
-              >{app.t("Use workspace root", "使用工作区根目录")}</button>
+                className="ui-button compact" data-variant="ghost"
+                onClick={() => setConfiguration({ ...(selected.configuration ?? {}), working_directory: null })} variant="ghost"
+              >{app.t("Use workspace root", "使用工作区根目录")}</SharedButton>
             )}
           </div>
           <span id={workingDirectoryHelpId} className="mut" style={{ fontSize: 12 }}>

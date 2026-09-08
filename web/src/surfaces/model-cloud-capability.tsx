@@ -1,4 +1,5 @@
-import { Button, Pill } from "../components/ui";
+import { Button } from "@awaken/ui";
+import { Pill } from "../components/ui";
 import type { ConfigCapabilitiesView } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 

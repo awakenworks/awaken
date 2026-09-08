@@ -1,19 +1,9 @@
+import { Button, Card } from "@awaken/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useApp } from "../lib/app-state";
 import { api, ws } from "../lib/api/client";
-import {
-  Button,
-  Card,
-  CopyButton,
-  EmptyState,
-  Pill,
-  TechnicalId,
-  TextAreaField,
-  TextField,
-  useConfirm,
-  useToast,
-} from "../components/ui";
+import { CopyButton, EmptyState, Pill, TechnicalId, TextAreaField, TextField, useConfirm, useToast } from "../components/ui";
 
 export interface WebhookSubscription {
   id: string;
@@ -189,7 +179,7 @@ export default function WebhooksSurface() {
       </Card>
 
       <Card className="responsive-table-card" style={{ padding: 0 }}>
-        <table className="table">
+        <table className="ui-data-grid__table">
           <thead>
             <tr>
               <th>{app.t("Endpoint", "端点")}</th>

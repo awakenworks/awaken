@@ -21,7 +21,7 @@ export function CopyButton({
 }: CopyButtonProps) {
   return (
     <SharedCopyButton
-      className={cx("btn", "ghost", "copy-btn", className)}
+      className={cx("copy-btn", className)}
       copiedIcon={<span aria-hidden="true">{visibleCopiedLabel ?? copiedLabel}</span>}
       copiedLabel={copiedLabel}
       icon={<span aria-hidden="true">{visibleLabel ?? label}</span>}
