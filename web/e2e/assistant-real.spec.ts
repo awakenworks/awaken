@@ -258,7 +258,7 @@ test("Publish hands an invalid Draft to KIMI, highlights the repair, then asks o
   await expect(page.getByLabel("System instructions")).toHaveValue(/release questions/);
   await page.getByRole("button", { name: /Publish/ }).click();
 
-  const modal = page.locator(".modal");
+  const modal = page.getByRole("dialog");
   const failed = page.getByText(/Run failed|运行失败|Needs input|需要处理/).first();
   await expect(modal.or(failed)).toBeVisible({ timeout: 90_000 });
   if (await failed.isVisible()) throw new Error(`KIMI did not repair the Draft: ${await failed.textContent()}`);

@@ -1,7 +1,8 @@
+import { Button } from "@awaken/ui";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router";
 import { DataGrid, type Column } from "../components/ui/DataGrid";
-import { Button, Pill } from "../components/ui";
+import { Pill } from "../components/ui";
 import { api, ws } from "../lib/api/client";
 import type { AgentConfigList } from "../lib/api/types";
 import {

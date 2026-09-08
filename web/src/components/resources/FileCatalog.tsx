@@ -1,8 +1,9 @@
+import { Button, SegmentedControl as Segmented } from "@awaken/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { DataGrid, type Column } from "../ui/DataGrid";
-import { Button, Pill, Segmented, TechnicalId } from "../ui";
+import { Pill, TechnicalId } from "../ui";
 import { useToast } from "../ui/Toast";
 import { api, ws } from "../../lib/api/client";
 import type { FileArtifact, FileListResponse } from "../../lib/api/types";
@@ -202,9 +203,9 @@ export default function FileCatalog({ purpose }: { purpose: "input" | "artifact"
             ? "Agent 写入输出挂载目录的文件会显示在这里。"
             : "上传文件后，可在 Agent 的 Memory 与资源中绑定。",
         )}
-      /> : <div className="card responsive-table-card" style={{ padding: 0, overflow: "hidden" }}>
+      /> : <div className="ui-card responsive-table-card" style={{ padding: 0, overflow: "hidden" }}>
         <div className="mut" style={{ padding: "10px 14px", borderBottom: "1px solid var(--line)" }}>{app.t("Names containing / are grouped into folders for easier browsing. Moving between folder and list views does not change the files.", "名称中的 / 会显示为目录，便于浏览。切换目录或列表视图不会修改文件。")}</div>
-        <table className="table"><thead><tr><th>{app.t("Folder / file", "目录 / 文件")}</th><th>{app.t("Type", "类型")}</th><th>{app.t("Size", "大小")}</th>{purpose === "artifact" && <th />}</tr></thead><tbody>
+        <table className="ui-data-grid__table"><thead><tr><th>{app.t("Folder / file", "目录 / 文件")}</th><th>{app.t("Type", "类型")}</th><th>{app.t("Size", "大小")}</th>{purpose === "artifact" && <th />}</tr></thead><tbody>
           {tree.map((row) => row.directory ? <tr key={row.key}><td colSpan={purpose === "artifact" ? 4 : 3} className="mono mut" style={{ paddingLeft: 14 + row.depth * 18 }}>▾ {row.path.split("/").at(-1)}/</td></tr> : row.file && <tr key={row.key}><td data-label={app.t("Folder / file", "目录 / 文件")} style={{ paddingLeft: 14 + row.depth * 18 }}><strong>└ {row.path.split("/").at(-1)}</strong><TechnicalId value={row.file.id} /></td><td data-label={app.t("Type", "类型")} className="mut">{row.file.mime_type || "—"}</td><td data-label={app.t("Size", "大小")} className="mut">{bytesLabel(row.file.size_bytes)}</td>{purpose === "artifact" && <td className="responsive-table-actions" style={{ textAlign: "right" }}><Button variant="ghost" disabled={row.file.downloadable === false} onClick={() => void download(row.file!)}>↓ {app.t("Download", "下载")}</Button></td>}</tr>)}
           {!files.isLoading && tree.length === 0 && <tr><td colSpan={purpose === "artifact" ? 4 : 3}>
             <div className="empty-inline">

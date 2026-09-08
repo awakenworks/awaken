@@ -1,3 +1,4 @@
+import { Button, Card } from "@awaken/ui";
 // The session's associated resources + output artifacts (Anthropic Managed Agents
 // parity): the memory stores / files / repos MOUNTED for this session
 // (`GET /v1/sessions/:id/resources`), and the files the agent PRODUCED under `outputs/`
@@ -6,7 +7,7 @@
 // session's memory write-back (a backend side effect of the reverse channel).
 
 import { useQuery } from "@tanstack/react-query";
-import { Button, Card, EmptyState, Pill } from "../ui";
+import { EmptyState, Pill } from "../ui";
 import { useToast } from "../ui/Toast";
 import { api, ws } from "../../lib/api/client";
 import type {

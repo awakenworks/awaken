@@ -1,3 +1,4 @@
+import { Button, Card, Switch } from "@awaken/ui";
 // Complete Agent tool authoring beyond the ordinary catalog checklist: dynamic
 // catalog patterns, client-executed tools, typed toolset policy, and bounded
 // recovery behavior. All values remain part of the same reviewed draft.
@@ -5,7 +6,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { AgentConfig, AgentManagedToolset, AgentToolsetConfig, CustomClientTool } from "../../lib/api/types";
 import { isAgentToolset, isMcpToolset } from "../../lib/agent-toolsets";
-import { Button, Card, Switch, TextAreaField, TextField } from "../ui";
+import { TextAreaField, TextField } from "../ui";
 import { useApp } from "../../lib/app-state";
 
 type RecoveryPolicy = { mode: "never_replay" | "replay_safe" | "idempotent" | "durable_request"; max_attempts: number };
@@ -116,7 +117,7 @@ export default function AgentAdvancedToolsEditor({
         onChange={(event) => onPatch({ tool_patterns: event.target.value.split("\n").map((value) => value.trim()).filter(Boolean) })}
       />
 
-      <div className="field">
+      <div className="ui-field">
         <label>{app.t("Custom tools · client executed", "Custom Tool · 客户端执行")}</label>
         <span className="mut">{app.t(
           "The model may request these tools, but the Session waits for the trusted application client to return the result.",
@@ -154,7 +155,7 @@ export default function AgentAdvancedToolsEditor({
         ], toolsets)}>+ {app.t("Custom tool", "Custom Tool")}</Button>
       </div>
 
-      <div className="field">
+      <div className="ui-field">
         <label>{app.t("Built-in Agent ToolSet", "内置 Agent ToolSet")}</label>
         <span className="mut">{app.t(
           "Set the default for Awaken's built-in Agent tools, then override named tools only where needed. MCP policies live with their server under MCP integrations.",
@@ -169,14 +170,14 @@ export default function AgentAdvancedToolsEditor({
           return (
             <div className="agent-config-card" key={index} style={{ padding: 12, marginTop: 8 }}>
               <div className="row" style={{ alignItems: "flex-end" }}>
-                <label className="field">
+                <label className="ui-field">
                   <span>{app.t("Default permission", "默认权限")}</span>
-                  <select className="input" value={defaults.permission_policy?.type ?? "always_allow"} onChange={(event) => setToolset(index, { default_config: { ...defaults, permission_policy: { type: event.target.value as "always_allow" | "always_ask" } } })}>
+                  <select className="ui-input" value={defaults.permission_policy?.type ?? "always_allow"} onChange={(event) => setToolset(index, { default_config: { ...defaults, permission_policy: { type: event.target.value as "always_allow" | "always_ask" } } })}>
                     <option value="always_allow">always_allow</option>
                     <option value="always_ask">always_ask</option>
                   </select>
                 </label>
-                <label className="field">
+                <label className="ui-field">
                   <span>{app.t("Enabled by default", "默认启用")}</span>
                   <Switch checked={defaults.enabled !== false} onChange={(event) => setToolset(index, { default_config: { ...defaults, enabled: event.target.checked } })} />
                 </label>
@@ -185,8 +186,8 @@ export default function AgentAdvancedToolsEditor({
               {configs.map((entry, configIndex) => (
                 <div className="row" style={{ alignItems: "flex-end" }} key={configIndex}>
                   <TextField label={app.t("Tool override", "覆盖工具")} mono value={entry.name} onChange={(event) => setConfig(configIndex, { name: event.target.value })} />
-                  <label className="field"><span>{app.t("Permission", "权限")}</span><select className="input" value={entry.permission_policy?.type ?? "always_allow"} onChange={(event) => setConfig(configIndex, { permission_policy: { type: event.target.value as "always_allow" | "always_ask" } })}><option value="always_allow">always_allow</option><option value="always_ask">always_ask</option></select></label>
-                  <label className="field"><span>{app.t("Enabled", "启用")}</span><Switch checked={entry.enabled !== false} onChange={(event) => setConfig(configIndex, { enabled: event.target.checked })} /></label>
+                  <label className="ui-field"><span>{app.t("Permission", "权限")}</span><select className="ui-input" value={entry.permission_policy?.type ?? "always_allow"} onChange={(event) => setConfig(configIndex, { permission_policy: { type: event.target.value as "always_allow" | "always_ask" } })}><option value="always_allow">always_allow</option><option value="always_ask">always_ask</option></select></label>
+                  <label className="ui-field"><span>{app.t("Enabled", "启用")}</span><Switch checked={entry.enabled !== false} onChange={(event) => setConfig(configIndex, { enabled: event.target.checked })} /></label>
                   <Button variant="ghost" onClick={() => setToolset(index, { configs: configs.filter((_, current) => current !== configIndex) })}>✕</Button>
                 </div>
               ))}
@@ -200,7 +201,7 @@ export default function AgentAdvancedToolsEditor({
         }])}>+ {app.t("Configure built-in ToolSet", "配置内置 ToolSet")}</Button>}
       </div>
 
-      <div className="field">
+      <div className="ui-field">
         <label>{app.t("Crash recovery by tool", "按工具配置崩溃恢复")}</label>
         <span className="mut">{app.t(
           "Recovery never grants a tool. Safer replay modes are accepted only when the executable tool advertises the matching guarantee.",
@@ -209,7 +210,7 @@ export default function AgentAdvancedToolsEditor({
         {Object.entries(recovery).map(([toolId, policy], index) => (
           <div className="row" style={{ alignItems: "flex-end" }} key={`${toolId}-${index}`}>
             <TextField label={app.t("Canonical tool id", "规范工具 ID")} mono value={toolId} onChange={(event) => replaceRecoveryKey(toolId, event.target.value)} />
-            <label className="field"><span>{app.t("Recovery mode", "恢复模式")}</span><select className="input" value={policy.mode} onChange={(event) => onPatch({ recovery_policies: { ...recovery, [toolId]: { ...policy, mode: event.target.value as RecoveryPolicy["mode"] } } })}><option value="never_replay">never_replay</option><option value="replay_safe">replay_safe</option><option value="idempotent">idempotent</option><option value="durable_request">durable_request</option></select></label>
+            <label className="ui-field"><span>{app.t("Recovery mode", "恢复模式")}</span><select className="ui-input" value={policy.mode} onChange={(event) => onPatch({ recovery_policies: { ...recovery, [toolId]: { ...policy, mode: event.target.value as RecoveryPolicy["mode"] } } })}><option value="never_replay">never_replay</option><option value="replay_safe">replay_safe</option><option value="idempotent">idempotent</option><option value="durable_request">durable_request</option></select></label>
             <TextField label={app.t("Maximum attempts", "最大尝试次数")} type="number" min={1} value={policy.max_attempts} onChange={(event) => onPatch({ recovery_policies: { ...recovery, [toolId]: { ...policy, max_attempts: Math.max(1, Number(event.target.value) || 1) } } })} />
             <Button variant="ghost" onClick={() => { const next = { ...recovery }; delete next[toolId]; onPatch({ recovery_policies: next }); }}>✕</Button>
           </div>

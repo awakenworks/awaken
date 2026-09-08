@@ -1,3 +1,4 @@
+import { Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 // Workspace · Memory stores: persistent memory that survives
 // across sessions (Managed Agents `/v1/memory_stores`). A session mounts one
 // via a `resources[]` entry.
@@ -8,7 +9,7 @@ import { useSearchParams } from "react-router";
 import { api, ws } from "../lib/api/client";
 import type { MemoryStore, Page } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { Button, Card, EmptyState, Modal, Pill, Segmented, SkeletonRows, TechnicalId, TextField, useConfirm, useToast } from "../components/ui";
+import { EmptyState, Modal, Pill, SkeletonRows, TechnicalId, TextField, useConfirm, useToast } from "../components/ui";
 import MemoryStoreDrawer from "../components/memory/MemoryStoreDrawer";
 import DreamList from "../components/memory/DreamList";
 import { entityDisplayName, identifierLabel } from "../lib/presentation";
@@ -121,7 +122,7 @@ export default function MemorySurface() {
           />
         </Card>
       ) : <Card className="responsive-table-card" style={{ padding: 0 }}>
-        <table className="table">
+        <table className="ui-data-grid__table">
           <thead>
             <tr>
               <th>{app.t("Memory store", "记忆库")}</th>

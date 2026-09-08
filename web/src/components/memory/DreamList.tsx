@@ -1,3 +1,4 @@
+import { Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
@@ -5,7 +6,7 @@ import type { DreamPage, DreamStatus } from "../../lib/api/types";
 import { api, ws } from "../../lib/api/client";
 import { dreamMemoryStoreId, dreamSessionIds } from "../../lib/dreams";
 import { useApp } from "../../lib/app-state";
-import { Button, Card, EmptyState, Pill, Segmented, SkeletonRows, TechnicalId, TextField } from "../ui";
+import { EmptyState, Pill, SkeletonRows, TechnicalId, TextField } from "../ui";
 import DreamCreateModal from "./DreamCreateModal";
 import { dateTimeLabel, identifierLabel, statusLabel } from "../../lib/presentation";
 
@@ -61,7 +62,7 @@ export default function DreamList({ storeId }: { storeId?: string }) {
       {(createdAfter || createdBefore) && <Button onClick={() => { setCreatedAfter(""); setCreatedBefore(""); }}>{app.t("Clear dates", "清除时间")}</Button>}
     </div>
     <Card className="responsive-table-card" style={{ padding: 0, overflow: "hidden" }}>
-      <div className="grid-scroll"><table className="table">
+      <div className="grid-scroll"><table className="ui-data-grid__table">
         <thead><tr><th>Dream</th><th>{app.t("Status", "状态")}</th><th>{app.t("Source", "来源")}</th><th>{app.t("Sessions", "会话")}</th><th>{app.t("Model", "模型")}</th><th>{app.t("Created", "创建时间")}</th><th>{app.t("Output", "输出")}</th></tr></thead>
         {dreams.isLoading ? <SkeletonRows rows={4} cols={7} /> : <tbody>
           {rows.map((dream) => <tr key={dream.id} data-click="true" onClick={() => nav(`/w/${wsId}/memory/dreams/${dream.id}`)}>

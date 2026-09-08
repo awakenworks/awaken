@@ -1,3 +1,4 @@
+import { Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 // Session detail: header actions (rename/archive/interrupt) + an
 // agent/properties aside around the shared TranscriptView. This surface owns
 // exactly one live SessionLog; header, chat, approvals, and trace consume it.
@@ -10,7 +11,7 @@ import TraceView from "../components/session/TraceView";
 import SessionFiles from "../components/session/SessionFiles";
 import SessionIntegrations from "../components/session/SessionIntegrations";
 import SessionThreads from "../components/session/SessionThreads";
-import { Button, Card, Modal, Pill, Segmented, TechnicalId, TextField, useConfirm, useToast } from "../components/ui";
+import { Modal, Pill, TechnicalId, TextField, useConfirm, useToast } from "../components/ui";
 import { api, ws } from "../lib/api/client";
 import type { Environment, Page, Session, SessionAgent } from "../lib/api/types";
 import { mcpToolsetPolicySummary, type McpToolsetPolicySummary } from "../lib/agent-toolsets";
@@ -341,7 +342,7 @@ export default function SessionDetailSurface() {
       )}
 
       <div className="session-detail-layout" style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
-        <div style={{ flex: 1.8, minWidth: 0 }}>
+        <div className="session-detail-main" style={{ flex: 1.8, minWidth: 0 }}>
           {session.error instanceof Error && <div className="err">{session.error.message}</div>}
           <Segmented
             className="segmented"

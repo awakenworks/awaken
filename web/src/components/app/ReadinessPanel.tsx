@@ -1,7 +1,9 @@
+import { Skeleton, Card } from "@awaken/ui";
+
 import { useNavigate } from "react-router";
 import { useApp } from "../../lib/app-state";
 import { useWorkspaceReadiness } from "../../lib/readiness";
-import { Card, Pill, Skeleton } from "../ui";
+import { Pill } from "../ui";
 
 export default function ReadinessPanel({ compact = false }: { compact?: boolean }) {
   const app = useApp();

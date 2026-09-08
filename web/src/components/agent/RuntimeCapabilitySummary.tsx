@@ -1,3 +1,4 @@
+import { Button } from "@awaken/ui";
 import type { AgentConfig, RuntimeCap } from "../../lib/api/types";
 import { isAcpModelSelection } from "../../lib/agent-model-selection";
 import {
@@ -7,7 +8,7 @@ import {
 import { useApp } from "../../lib/app-state";
 import { protocolHelpPath } from "../../lib/navigation/paths";
 import { Link } from "react-router";
-import { Button, Pill } from "../ui";
+import { Pill } from "../ui";
 
 interface SupportRow {
   capability: string;
@@ -167,7 +168,7 @@ export default function RuntimeCapabilitySummary({
         <div className="runtime-capability-actions">
           {updatedAt ? <span className="mut">{app.t("Last checked", "上次检查")} {new Date(updatedAt).toLocaleTimeString()}</span> : null}
           {onRefresh && <Button variant="ghost" onClick={onRefresh}>{app.t("Refresh status", "刷新状态")}</Button>}
-          <Link className="btn ghost" to={protocolHelpPath(app.workspaceId, "acp")}>{app.t("Open ACP setup", "打开 ACP 设置")}</Link>
+          <Link className="ui-button" data-variant="ghost" to={protocolHelpPath(app.workspaceId, "acp")}>{app.t("Open ACP setup", "打开 ACP 设置")}</Link>
         </div>
       )}
     </section>

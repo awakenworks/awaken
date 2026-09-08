@@ -1,10 +1,11 @@
+import { Button, Card, Switch } from "@awaken/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import type { DreamPolicy, DreamPolicyConfig, ManagedModelPage, PlatformCapabilities } from "../../lib/api/types";
 import { api, ws } from "../../lib/api/client";
 import { readyDreamModels } from "../../lib/dreams";
 import { useApp } from "../../lib/app-state";
-import { Button, Card, SelectField, Switch, TextAreaField, TextField, useToast } from "../ui";
+import { SelectField, TextAreaField, TextField, useToast } from "../ui";
 
 export default function DreamPolicyPanel({ storeId }: { storeId: string }) {
   const app = useApp();

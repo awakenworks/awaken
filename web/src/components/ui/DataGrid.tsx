@@ -1,11 +1,12 @@
 import {
   DataGrid as SharedDataGrid,
+  Skeleton,
   type DataGridColumn,
 } from "@awaken/ui";
 import type { ReactNode } from "react";
 import { useApp } from "../../lib/app-state";
 import type { ListState } from "../../lib/useListState";
-import { EmptyState, Skeleton, SkeletonRows } from "./primitives";
+import { EmptyState, SkeletonRows } from "./primitives";
 
 export type Column<Row> = DataGridColumn<Row>;
 
@@ -34,17 +35,6 @@ export function DataGrid<Row>({
   return (
     <SharedDataGrid
       {...props}
-      classes={{
-        button: "btn ghost",
-        muted: "mut",
-        pager: "row",
-        range: "mut",
-        scroll: "card grid-scroll",
-        search: "input",
-        table: "table",
-        toolbar: "row",
-        toolbarLead: "row",
-      }}
       labels={{
         formatRange: ({ from, to, total }) =>
           app.t(`${from}–${to} of ${total}`, `${from}–${to} / ${total}`),
@@ -61,7 +51,7 @@ export function DataGrid<Row>({
         />
       )}
       renderLoading={(columns) => <SkeletonRows cols={columns} rows={4} />}
-      renderMobileLoading={() => <div className="card" style={{ padding: 12 }}><Skeleton height={48} /></div>}
+      renderMobileLoading={() => <div className="ui-card" style={{ padding: 12 }}><Skeleton height={48} /></div>}
     />
   );
 }

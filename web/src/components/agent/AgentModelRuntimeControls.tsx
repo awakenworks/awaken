@@ -1,9 +1,10 @@
+import { Button, Card } from "@awaken/ui";
 // Provider-neutral inference and fallback routing controls. These values are
 // authored with the Agent and frozen into its published revision; they are not
 // provider credentials and never belong on the model-connection page.
 
 import type { AgentConfig, InferenceOptions, ModelCandidate } from "../../lib/api/types";
-import { Button, Card, TextField } from "../ui";
+import { TextField } from "../ui";
 import { useApp } from "../../lib/app-state";
 
 const EFFORTS: NonNullable<InferenceOptions["effort"]>[] = ["low", "medium", "high", "xhigh", "max"];
@@ -52,30 +53,30 @@ export default function AgentModelRuntimeControls({
           )}</span>
         </div>
       ) : <div className="grid-3">
-        <label className="field">
+        <label className="ui-field">
           <span>{app.t("Reasoning effort", "推理强度")}</span>
-          <select className="input" value={inference.effort ?? ""} onChange={(event) => setInference("effort", event.target.value as InferenceOptions["effort"] | "")}>
+          <select className="ui-input" value={inference.effort ?? ""} onChange={(event) => setInference("effort", event.target.value as InferenceOptions["effort"] | "")}>
             <option value="">{app.t("Model default", "模型默认")}</option>
             {EFFORTS.map((value) => <option value={value} key={value}>{value}</option>)}
           </select>
         </label>
-        <label className="field">
+        <label className="ui-field">
           <span>{app.t("Inference speed", "推理速度")}</span>
-          <select className="input" value={inference.speed ?? ""} onChange={(event) => setInference("speed", event.target.value as InferenceOptions["speed"] | "")}>
+          <select className="ui-input" value={inference.speed ?? ""} onChange={(event) => setInference("speed", event.target.value as InferenceOptions["speed"] | "")}>
             <option value="">{app.t("Model default", "模型默认")}</option>
             {SPEEDS.map((value) => <option value={value} key={value}>{value}</option>)}
           </select>
         </label>
-        <label className="field">
+        <label className="ui-field">
           <span>{app.t("Processing geography", "推理处理地域")}</span>
-          <select className="input" value={inference.inference_geo ?? ""} onChange={(event) => setInference("inference_geo", event.target.value as InferenceOptions["inference_geo"] | "")}>
+          <select className="ui-input" value={inference.inference_geo ?? ""} onChange={(event) => setInference("inference_geo", event.target.value as InferenceOptions["inference_geo"] | "")}>
             <option value="">{app.t("No extra constraint", "不额外限制")}</option>
             {GEOGRAPHIES.map((value) => <option value={value} key={value}>{value.toUpperCase()}</option>)}
           </select>
         </label>
       </div>}
 
-      <div className="field" style={{ marginTop: 16 }}>
+      <div className="ui-field" style={{ marginTop: 16 }}>
         <label>{app.t("Fallback model routes", "备用模型路由")}</label>
         <span className="mut">{app.t(
           "Tried in order only after the primary route fails cleanly. Every identity is explicit; Awaken never guesses a provider account.",

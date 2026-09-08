@@ -1,6 +1,7 @@
+import { Button, Card } from "@awaken/ui";
 import type { AgentConfig, AgentToolsetMemberCap, InputBinding, PluginCap, RuntimeCap } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
-import { Button, Card, Modal } from "../ui";
+import { Modal } from "../ui";
 import ConfigDiff from "./ConfigDiff";
 import PublicationSnapshotSummary from "./PublicationSnapshotSummary";
 

@@ -1,10 +1,11 @@
+import { Skeleton, Button, Card } from "@awaken/ui";
+
 import type { ReactNode } from "react";
 import { useNavigate, useParams } from "react-router";
 import type { ConfigCapabilitiesView } from "../../lib/api/types";
 import { hasSurface } from "../../lib/navigation/paths";
 import { useConfigCapabilities } from "../../lib/useConfigCapabilities";
 import { useApp } from "../../lib/app-state";
-import { Button, Card, Skeleton } from "../ui";
 
 export default function SurfaceRoute({
   surface,

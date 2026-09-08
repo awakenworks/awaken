@@ -1,9 +1,11 @@
+import { Skeleton, Button, Card } from "@awaken/ui";
+
 // Workspace Models: Provider → ProtocolEndpoint → Offering, profiles and dry-run resolve.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fragment, useEffect, useRef, useState } from "react";
 import Transcript from "../components/session/Transcript";
-import { Button, Card, Modal, Pill, Skeleton, UsageBadges } from "../components/ui";
+import { Modal, Pill, UsageBadges } from "../components/ui";
 import {
   BUILTIN_LOCAL_ENVIRONMENT_ID,
   api,
@@ -453,7 +455,7 @@ export default function ModelsSurface() {
             {refreshCloudModels.error.message}
           </div>
         )}
-        <table className="table">
+        <table className="ui-data-grid__table">
           <thead>
             <tr>
               <th>{app.t("Model", "模型")}</th>

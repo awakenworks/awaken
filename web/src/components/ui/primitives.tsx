@@ -1,11 +1,8 @@
+import { Skeleton, EmptyState as SharedEmptyState, JsonInspector as SharedJsonInspector } from "@awaken/ui";
 // Small stateless display primitives used across Awaken surfaces.
 
 import { type ReactNode } from "react";
-import {
-  EmptyState as SharedEmptyState,
-  JsonInspector as SharedJsonInspector,
-  Skeleton as SharedSkeleton,
-} from "@awaken/ui";
+
 import { useApp } from "../../lib/app-state";
 import type { SessionUsage } from "../../lib/api/types";
 
@@ -39,17 +36,17 @@ export function UsageBadges({
   return (
     <span className="row" style={{ gap: 6, flexWrap: "wrap" }}>
       {hasTokens && (
-        <span className="pill neutral" title="input → output tokens">
+        <span className="ui-status-pill ui-status-pill--neutral" title="input → output tokens">
           {usage!.input_tokens}↑ {usage!.output_tokens}↓
         </span>
       )}
       {cache > 0 && (
-        <span className="pill neutral" title="cache read + creation tokens">
+        <span className="ui-status-pill ui-status-pill--neutral" title="cache read + creation tokens">
           ⚡ {cache} cache
         </span>
       )}
       {latencyMs != null && (
-        <span className="pill neutral" title="round-trip latency">
+        <span className="ui-status-pill ui-status-pill--neutral" title="round-trip latency">
           {latencyMs < 1000 ? `${latencyMs}ms` : `${(latencyMs / 1000).toFixed(1)}s`}
         </span>
       )}
@@ -63,13 +60,6 @@ export function JsonInspector({ value, collapsed = false }: { value: unknown; co
   return (
     <SharedJsonInspector
       collapsed={collapsed}
-      classes={{
-        root: "json-inspector",
-        header: "row",
-        toggle: "btn ghost",
-        copy: "btn ghost",
-        body: "json-body mono",
-      }}
       labels={{
         copy: app.t("Copy", "复制"),
         copied: app.t("Copied", "已复制"),
@@ -83,8 +73,7 @@ export function JsonInspector({ value, collapsed = false }: { value: unknown; co
 export function EmptyState({ title, hint, action }: { title: string; hint?: string; action?: ReactNode }) {
   return (
     <SharedEmptyState
-      className="empty-state"
-      title={<span className="empty-title">{title}</span>}
+      title={title}
       body={hint ? <span className="mut">{hint}</span> : undefined}
       actions={action}
     />
@@ -102,9 +91,6 @@ export function TechnicalId({ value }: { value: string }) {
 }
 
 // ---- skeletons ----
-export function Skeleton({ width = "100%", height = 12 }: { width?: number | string; height?: number }) {
-  return <SharedSkeleton className="skeleton" width={width} height={height} />;
-}
 export function SkeletonRows({ rows = 4, cols = 4 }: { rows?: number; cols?: number }) {
   return (
     <tbody>

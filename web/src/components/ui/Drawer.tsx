@@ -21,7 +21,6 @@ export default function Drawer({
       }}
       title={title}
       closeLabel={app.t("Close", "关闭")}
-      className="drawer"
     >
       {children}
     </SharedDrawer>

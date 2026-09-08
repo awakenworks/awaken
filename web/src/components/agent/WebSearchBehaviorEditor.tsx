@@ -1,3 +1,4 @@
+import { Button as SharedButton } from "@awaken/ui";
 import type { CredentialSource } from "../../lib/api/types";
 import { SchemaForm, SelectField, type JsonSchema } from "../ui";
 import { useApp } from "../../lib/app-state";
@@ -140,7 +141,7 @@ export default function WebSearchBehaviorEditor({
               : undefined;
             const fallbackEligible = eligibleFor(fallbackProvider.id);
             return (
-              <div key={index} className="card" style={{ padding: 10 }}>
+              <div key={index} className="ui-card" style={{ padding: 10 }}>
                 <SelectField
                   label={app.t(`Fallback ${index + 1}`, `备用 ${index + 1}`)}
                   value={fallbackProvider.id}
@@ -167,20 +168,20 @@ export default function WebSearchBehaviorEditor({
                   </SelectField>
                 )}
                 <SchemaForm schema={fallbackProvider.optionsSchema} value={fallback.options ?? {}} onChange={(options) => updateFallback(index, { ...fallback, provider_id: fallbackProvider.id, options })} />
-                <button type="button" className="btn" onClick={() => updateFallback(index, null)}>{app.t("Remove fallback", "移除备用")}</button>
+                <SharedButton type="button" className="ui-button" onClick={() => updateFallback(index, null)}>{app.t("Remove fallback", "移除备用")}</SharedButton>
               </div>
             );
           })}
-          <button
+          <SharedButton
             type="button"
-            className="btn"
+            className="ui-button"
             onClick={() => {
               const provider = providers.find((candidate) => candidate.realization === "host_executed");
               if (provider) onChange({ ...value, fallbacks: [...fallbacks, { provider_id: provider.id, options: {} }] });
             }}
           >
             {app.t("Add fallback account", "添加备用账户")}
-          </button>
+          </SharedButton>
         </div>
       )}
     </div>

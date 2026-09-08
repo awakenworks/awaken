@@ -10,9 +10,8 @@ const ROOT = fileURLToPath(new URL("../src", import.meta.url));
 const FETCH_ALLOWED = new Set(["lib/api/client.ts"]);
 const SESSION_CREATE_ALLOWED = new Set(["lib/api/client.ts"]);
 // Secret entry must go through the write-only SecretField seam (ADR-0038 invariant:
-// a stored secret is never read back into the UI). Only SecretField itself may host a
-// raw password input.
-const SECRET_ALLOWED = new Set(["components/ui/SecretField.tsx"]);
+// a stored secret is never read back into the UI). @awaken/ui owns the only
+// raw password control; the product adapter supplies copy only.
 const MAX_LINES = 600;
 
 let failed = false;
@@ -42,7 +41,7 @@ function walk(dir) {
       console.error(`no-session-preparation-track: ${rel} opts into a parallel async create protocol`);
       failed = true;
     }
-    if (!SECRET_ALLOWED.has(rel) && /type=["']password["']/.test(text)) {
+    if (/type=["']password["']/.test(text)) {
       console.error(`no-raw-secret-input: ${rel} hosts a raw password input — use <SecretField>`);
       failed = true;
     }
