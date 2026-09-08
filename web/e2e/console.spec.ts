@@ -855,6 +855,32 @@ test("gated Observe page is truth-driven: probes the endpoint and shows the gate
   await expect(page.getByText(/optional capability is not available in this deployment|当前部署未开放这项可选能力/)).toBeVisible();
 });
 
+// R1 failed read -> shared danger notice with a reachable product-owned retry;
+// R2 successful retry -> notice disappears without writing a domain command;
+// R3 narrow viewport -> both copy and action stay inside the page. Background
+// read failures remain non-interrupting; urgency is a product decision.
+test("shared notice retries the same Workspace read on mobile", async ({ page }) => {
+  let unavailable = true;
+  let reads = 0;
+  await page.route(/\/v1(?:\/workspaces\/[^/]+)?\/sessions(?:\?|$)/, async (route) => {
+    reads += 1;
+    if (unavailable) return route.fulfill({ status: 503, json: { error: { type: "unavailable", message: "Session list unavailable" } } });
+    await route.continue();
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/w/default/overview");
+  const notice = page.locator('.workspace-overview .ui-inline-notice[data-tone="danger"]');
+  await expect(notice).toBeVisible();
+  await expect(notice).not.toHaveAttribute("role", "alert");
+  await expect(notice.getByRole("button", { name: "Try again" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 2)).toBe(true);
+  const before = reads;
+  unavailable = false;
+  await notice.getByRole("button", { name: "Try again" }).click();
+  await expect(notice).toHaveCount(0);
+  expect(reads).toBeGreaterThan(before);
+});
+
 test("session detail toggles Chat ⇄ Trace (the log read as spans)", async ({ page, request }) => {
   const stamp = Date.now();
   const model = `trace-model-${stamp}`;
@@ -885,11 +911,22 @@ test("session detail toggles Chat ⇄ Trace (the log read as spans)", async ({ p
   // Chat/Trace projection; the child-run story below owns stop-state behavior.
   await expect(page.getByRole("button", { name: /Stop run/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /Archive/ })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Chat", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Trace", exact: true }).click();
+  await expect(page.getByRole("link", { name: "Chat", exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "Trace", exact: true }).click();
   await expect(page.getByText(/No spans yet|暂无 span/)).toBeVisible();
-  await page.getByRole("button", { name: "Child runs", exact: true }).click();
+  await page.getByRole("link", { name: "Child runs", exact: true }).click();
   await expect(page.getByText("No child runs in this Session")).toBeVisible();
+  await expect(page.locator(".primary-thread-row")).toContainText(agent);
+  // N1 direct links advertise real destinations; N2 click -> URL/current view;
+  // N3 Back/Forward and reload restore that URL without a parallel view state.
+  const views = page.getByRole("navigation", { name: "Session views" });
+  await expect(views.getByRole("link", { name: "Child runs" })).toHaveAttribute("aria-current", "page");
+  await expect(views.getByRole("link", { name: "Trace", exact: true })).toHaveAttribute("href", `/w/default/sessions/${sid}?view=trace`);
+  await page.goBack();
+  await expect(views.getByRole("link", { name: "Trace", exact: true })).toHaveAttribute("aria-current", "page");
+  await page.goForward();
+  await page.reload();
+  await expect(views.getByRole("link", { name: "Child runs" })).toHaveAttribute("aria-current", "page");
   await expect(page.locator(".primary-thread-row")).toContainText(agent);
 });
 
@@ -964,7 +1001,7 @@ test("Session recovery interrupts committed pending tools through the shared eve
   await page.goto(`/w/default/sessions/${sessionId}`);
   await expect(page.getByText("Pending tools 1", { exact: true })).toBeVisible();
   await expect(page.getByText("Can send message no", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Trace", exact: true }).click();
+  await page.getByRole("link", { name: "Trace", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/sessions/${sessionId}\\?view=trace$`, "u"));
   await expect(page.getByText("Tool diagnostics", { exact: true })).toBeVisible();
   await expect(page.locator(".trace-tool-summary")).toContainText("bash");
@@ -1129,7 +1166,7 @@ test("Session Child runs exposes a delegated thread, its projected events, and a
   });
 
   await page.goto(`/w/default/sessions/${sessionId}`);
-  await page.getByRole("button", { name: "Child runs", exact: true }).click();
+  await page.getByRole("link", { name: "Child runs", exact: true }).click();
   const child = page.locator(".thread-node-child", { hasText: "Research Agent" });
   await expect(child).toContainText("34");
   await expect(child).toContainText("12.5s");
@@ -1182,7 +1219,7 @@ test("Session Integrations shows only the durable active MCP projection", async 
   await expect(page.getByRole("navigation", { name: "Open current Agent configuration" })
     .getByRole("link", { name: "MCP integrations · 1 →" }))
     .toHaveAttribute("href", "/w/default/agents/mcp-agent?stage=build&section=integrations");
-  await page.locator(".segmented").getByRole("button", { name: "Integrations", exact: true }).click();
+  await page.getByRole("navigation", { name: "Session views" }).getByRole("link", { name: "Integrations", exact: true }).click();
   await expect(page.getByRole("heading", { name: "MCP connections used by this Session" })).toBeVisible();
   await expect(page.getByText("https://mcp.example.test/docs")).toBeVisible();
   await expect(page.getByText("remote Skills")).toBeVisible();
@@ -1748,7 +1785,7 @@ test("validation issues are field-routed to their section", async ({ page, reque
   await expect(page.getByLabel("System instructions")).toHaveValue("hi"); // wait for load
   await page.getByRole("button", { name: "Check draft", exact: true }).click();
   // The first backend-owned structured issue is projected with its section…
-  await expect(page.locator(".banner").filter({ hasText: "Model" })).toBeVisible();
+  await expect(page.locator(".ui-inline-notice").filter({ hasText: "Model" })).toBeVisible();
   // …and routes the user there (no client-side rule was re-derived).
   await page.getByRole("button", { name: /Open field/ }).click();
   await expect(page.getByRole("tab", { name: "Build", exact: true })).toHaveAttribute("aria-selected", "true");

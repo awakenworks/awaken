@@ -1,4 +1,4 @@
-import { Button, ChatComposer, ChatMarkdown, ChatMessage, ChatMessageList, ChatThinking, ToolCallCard } from "@awaken/ui";
+import { InlineNotice, Button, ChatComposer, ChatMarkdown, ChatMessage, ChatMessageList, ChatThinking, ToolCallCard } from "@awaken/ui";
 // Protocol-specific Preview adapters and their bounded event inspector. Both
 // adapters use one Session-bound Application Access Token; management cookies
 // and service API keys never enter this browser transport.
@@ -319,12 +319,11 @@ export function AgUiConversation({
         stopIcon={<span>{app.t("Stop", "停止")}</span>}
         hint={app.t("Enter to send · Shift+Enter for a new line", "Enter 发送 · Shift+Enter 换行")}
       /> : (
-        <div className="banner info" role="status">
-          <span>↻</span>
+        <InlineNotice tone="info" icon={<span>↻</span>} role="status">
           <span>{app.t("Loading the shared Session history for AG-UI…", "正在为 AG-UI 加载同一个 Session 的历史…")}</span>
-        </div>
+        </InlineNotice>
       )}
-      {error && <div className="banner err" role="alert"><span>✕</span><span>{error}</span></div>}
+      {error && <InlineNotice tone="danger" icon={<span>✕</span>} role="alert"><span>{error}</span></InlineNotice>}
     </div>
   );
 }

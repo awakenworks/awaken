@@ -1,4 +1,4 @@
-import { Card } from "@awaken/ui";
+import { InlineNotice, Card } from "@awaken/ui";
 import { Link } from "react-router";
 import { EmptyState, Pill } from "../ui";
 import type { Session } from "../../lib/api/types";
@@ -31,13 +31,20 @@ export default function SessionIntegrations({ session, workspaceId }: { session?
         </Pill>
       </div>
       {agentHref && (
-        <div className="banner info" style={{ marginTop: 10 }}>
+        <InlineNotice
+          tone="info"
+          actions={
+            <>
+              <Link to={agentHref}>{app.t("Open current MCP configuration →", "打开当前 MCP 配置 →")}</Link>
+            </>
+          }
+          style={{ marginTop: 10 }}
+        >
           <span>{app.t(
             "These connections are the immutable Session snapshot. Editing the current Agent affects only future Sessions after publication.",
             "这些连接来自不可变的 Session 快照。编辑当前 Agent 只会在重新发布后影响新的 Session。",
           )}</span>
-          <Link to={agentHref}>{app.t("Open current MCP configuration →", "打开当前 MCP 配置 →")}</Link>
-        </div>
+        </InlineNotice>
       )}
       {servers.length === 0 ? (
         <EmptyState

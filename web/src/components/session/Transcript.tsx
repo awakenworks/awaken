@@ -1,4 +1,4 @@
-import { Button, ChatApproval, ChatComposer, ChatMarkdown, ChatMessage, ChatMessageList, ChatThinking, ToolCallCard as SharedToolCallCard } from "@awaken/ui";
+import { InlineNotice, Button, ChatApproval, ChatComposer, ChatMarkdown, ChatMessage, ChatMessageList, ChatThinking, ToolCallCard as SharedToolCallCard } from "@awaken/ui";
 // The session transcript: a pure view over one SessionLog owner, with inline
 // HITL and a composer. The default export is the thin standalone owner used by
 // isolated chats; parent surfaces can render TranscriptView with their existing
@@ -292,9 +292,9 @@ export function TranscriptView({
       )}
       {loadError && !projectionError && <div className="err">{loadError.message}</div>}
       {projectionError && (
-        <div className="banner err">
+        <InlineNotice tone="danger">
           {app.t("Committed Session history is inconsistent; input is disabled until the projection is reloaded.", "已提交的 Session 历史不一致；重新加载投影前已禁止输入。")}
-        </div>
+        </InlineNotice>
       )}
       <ChatMessageList
         className="transcript-chat-list"
@@ -359,27 +359,25 @@ export function TranscriptView({
             const sr = ("stop_reason" in ev ? ev.stop_reason : { type: "?" }) as { type: string };
             if (sr.type === "end_turn") return null;
             return (
-              <div
+              <InlineNotice
                 key={ev.id}
-                className={`banner ${sr.type === "retries_exhausted" ? "warn" : "gate"}`}
+                tone={sr.type === "retries_exhausted" ? "warning" : "neutral"} icon={<span>{sr.type === "requires_action" ? "⚠" : "✕"}</span>}
               >
-                <span>{sr.type === "requires_action" ? "⚠" : "✕"}</span>
                 <span className="mono" style={{ fontSize: 11.5 }}>
                   {sr.type}
                 </span>
-              </div>
+              </InlineNotice>
             );
           }
           case "session.error":
             return (
-              <div key={ev.id} className="banner warn" style={{ alignItems: "flex-start" }}>
-                <span>✕</span>
+              <InlineNotice key={ev.id} tone="warning" icon={<span>✕</span>} style={{ alignItems: "flex-start" }}>
                 <span>
                   <strong>{app.t("Run failed", "运行失败")}</strong>
                   <br />
                   {userFacingRunError(sessionErrorText(ev), app.locale === "zh")}
                 </span>
-              </div>
+              </InlineNotice>
             );
           case "span.outcome_evaluation_start":
           case "span.outcome_evaluation_end":

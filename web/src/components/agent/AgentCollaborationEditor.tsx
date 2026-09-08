@@ -1,4 +1,4 @@
-import { Button, Card, Switch } from "@awaken/ui";
+import { InlineNotice, Button, Card, Switch } from "@awaken/ui";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
@@ -248,13 +248,12 @@ export default function AgentCollaborationEditor({
       </div>
       {authored.error instanceof Error && <div className="err">{app.t("Agent catalog could not load.", "无法加载 Agent 目录。")} {authored.error.message}</div>}
       {!authored.isLoading && available.length === 0 && delegates.length === 0 && (
-        <div className="banner info">
-          <span>ⓘ</span>
+        <InlineNotice tone="info" icon={<span>ⓘ</span>}>
           <span>{app.t(
             "The built-in auxiliary is ready. Create a specialist here only when it needs a different model, prompt, tools, or permissions.",
             "内置辅助 Agent 已可使用。仅在需要不同模型、提示词、工具或权限时，再创建专属辅助 Agent。",
           )}</span>
-        </div>
+        </InlineNotice>
       )}
 
       <div className="recursive-control">
@@ -322,13 +321,12 @@ export default function AgentCollaborationEditor({
 
       {validationErrors.map((error) => <div role="alert" className="err" key={error}>{error}</div>)}
       {delegates.some((target) => catalogById.get(targetId(target, config.id))?.published !== true) && (
-        <div className="banner warn">
-          <span>!</span>
+        <InlineNotice tone="warning" icon={<span>!</span>}>
           <span>{app.t(
             "One or more referenced Agents are missing or not published. The existing reference is preserved, but publish validation may reject it.",
             "一个或多个被引用的 Agent 缺失或尚未发布。现有引用会保留，但发布校验可能拒绝它。",
           )}</span>
-        </div>
+        </InlineNotice>
       )}
     </Card>
   );

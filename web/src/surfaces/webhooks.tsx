@@ -1,4 +1,4 @@
-import { Button, Card } from "@awaken/ui";
+import { InlineNotice, Button, Card } from "@awaken/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useApp } from "../lib/app-state";
@@ -119,16 +119,23 @@ export default function WebhooksSurface() {
   return (
     <div className="stack">
       {created && (
-        <div className="banner warn webhook-secret-banner">
-          <span>🔑</span>
+        <InlineNotice
+          tone="warning"
+          className="webhook-secret-banner"
+          icon={<span>🔑</span>}
+          actions={
+            <>
+              <CopyButton value={created.secret} label={app.t("Copy secret", "复制密钥")} copiedLabel={app.t("Copied", "已复制")} />
+              <Button variant="ghost" aria-label={app.t("Dismiss", "关闭")} onClick={() => setCreated(null)}>✕</Button>
+            </>
+          }
+        >
           <span className="webhook-secret-copy">
             <strong>{app.t("Signing secret shown once", "签名密钥仅显示一次")}</strong>
             <code>{created.secret}</code>
             <small>{app.t("Store it as ANTHROPIC_WEBHOOK_SIGNING_KEY in your receiver. Awaken cannot show it again.", "请在接收端保存为 ANTHROPIC_WEBHOOK_SIGNING_KEY；Awaken 不会再次显示。")}</small>
           </span>
-          <CopyButton value={created.secret} label={app.t("Copy secret", "复制密钥")} copiedLabel={app.t("Copied", "已复制")} />
-          <Button variant="ghost" aria-label={app.t("Dismiss", "关闭")} onClick={() => setCreated(null)}>✕</Button>
-        </div>
+        </InlineNotice>
       )}
 
       <Card>

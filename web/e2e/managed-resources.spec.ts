@@ -387,7 +387,7 @@ test("Session Inputs and Artifacts are separate backend projections", async ({ p
   expect(run.ok(), await run.text()).toBe(true);
 
   await page.goto(`/w/default/sessions/${sid}`);
-  await page.getByRole("button", { name: "Inputs", exact: true }).click();
+  await page.getByRole("link", { name: "Inputs", exact: true }).click();
   await expect(page.getByText(derivedMountPath)).toBeVisible(); // mounted resource path
   await expect(page.getByRole("main").getByText("Memory", { exact: true })).toBeVisible();
   const resourcesResponse = await request.get(await workspaceApiPath(request, `/v1/sessions/${sid}/resources`), {
@@ -401,7 +401,7 @@ test("Session Inputs and Artifacts are separate backend projections", async ({ p
     mount_path: derivedMountPath,
   }));
   await expect(page.getByText(/stay the same for the life|本次 Session 中保持不变/)).toBeVisible();
-  await page.locator(".segmented").getByRole("button", { name: "Artifacts", exact: true }).click();
+  await page.getByRole("navigation", { name: "Session views" }).getByRole("link", { name: "Artifacts", exact: true }).click();
   await expect(page.getByText(/No artifacts yet|还没有产物/)).toBeVisible(); // live artifacts read
 });
 

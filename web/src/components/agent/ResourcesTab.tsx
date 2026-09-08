@@ -1,4 +1,4 @@
-import { Button } from "@awaken/ui";
+import { InlineNotice, Button } from "@awaken/ui";
 // Agent default inputs (ADR-0063): typed File/Memory/Repository identities composed
 // with temporary Session attachments. Skills are configured under Build / Skills & MCP and
 // outputs belong to the Environment, so neither appears in this input editor.
@@ -98,13 +98,12 @@ export default function ResourcesTab({
       </div>
 
       {!defaultMounts && (
-        <div className="banner warn">
-          <span>⚠</span>
+        <InlineNotice tone="warning" icon={<span>⚠</span>}>
           <span>{app.t(
             "Resource mount defaults are unavailable. Adding resources and changing kinds are disabled.",
             "资源挂载默认值不可用；已禁用新增资源和切换类型。",
           )}</span>
-        </div>
+        </InlineNotice>
       )}
 
       {rows.length === 0 && (
