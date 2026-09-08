@@ -159,12 +159,7 @@ impl CredentialMaterialMutationFence {
         before: Option<&CredentialSource>,
         after: &CredentialSource,
     ) -> (bool, bool) {
-        // Membership needs no temporary Vec/sort from BTreeSet::from_iter.
-        let mut before_refs = BTreeSet::new();
-        before_refs.extend(before.into_iter().flat_map(CredentialSource::material_refs));
-        let mut new_refs = after
-            .material_refs()
-            .filter(|reference| !before_refs.contains(reference));
+        let mut new_refs = new_material_refs(before, after);
         let Some(first_new) = new_refs.next() else {
             return (false, !self.attempt_id().is_empty());
         };
@@ -316,6 +311,21 @@ const fn credential_material_attempt_admitted(
     !current_format
         || (((!writing && !writes_new_material) || valid_owner)
             && (!writes_new_material || new_refs_bound_to_attempt))
+}
+
+/// One borrowed candidate delta for preparation, admission and Ready recovery.
+/// Retention is reference identity, independent of slot. Candidate order and
+/// aliases are preserved because read recovery observes each candidate in order.
+pub(super) fn new_material_refs<'a>(
+    before: Option<&'a CredentialSource>,
+    after: &'a CredentialSource,
+) -> impl Iterator<Item = &'a crate::SecretRef> {
+    // Extend avoids the temporary Vec/sort in BTreeSet::from_iter.
+    let mut before_refs = BTreeSet::new();
+    before_refs.extend(before.into_iter().flat_map(CredentialSource::material_refs));
+    after
+        .material_refs()
+        .filter(move |reference| !before_refs.contains(reference))
 }
 
 pub(super) fn namespace_new_material_refs(
@@ -497,6 +507,8 @@ mod material_input_proofs {
         // all new refs must bind to the nonempty attempt; R3 empty delta is
         // vacuously bound only with a nonempty attempt. The indexed oracle
         // never calls BTreeSet, material_refs, strip_suffix or ends_with from production.
+        // R4 candidate order and repeated new aliases survive filtering; Ready
+        // recovery must retain its missing-then-unavailable observation order.
         let before = has_before.then(|| source_with_slots([slots[0], slots[1]]));
         let after = source_with_slots([slots[2], slots[3]]);
         let fence = CredentialMaterialMutationFence {
@@ -509,13 +521,27 @@ mod material_input_proofs {
         };
         let mut expected_new = false;
         let mut expected_bound = has_attempt;
+        #[cfg(test)]
+        let mut expected_delta = Vec::new();
         for index in [slots[2], slots[3]] {
             let is_new = index != 0 && (!has_before || (index != slots[0] && index != slots[1]));
             expected_new |= is_new;
+            #[cfg(test)]
+            if is_new {
+                expected_delta.push(reference(index).unwrap());
+            }
             if is_new && index != 2 && index != 3 {
                 expected_bound = false;
             }
         }
+        #[cfg(test)]
+        assert_eq!(
+            new_material_refs(before.as_ref(), &after)
+                .cloned()
+                .collect::<Vec<_>>(),
+            expected_delta,
+            "R4: exact ordered candidate delta"
+        );
         assert_eq!(
             fence.material_input_facts(before.as_ref(), &after),
             (expected_new, expected_bound)

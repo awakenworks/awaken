@@ -224,6 +224,8 @@ second WAL or physical ref.
 Source and Managed command/recovery validation derive new-material membership
 and exact attempt binding through the same material-fence projection. Retained
 references remain retained when moved between primary and auxiliary slots.
+Preparation, admission and Ready recovery consume the same borrowed candidate-delta
+iterator; it preserves candidate order and aliases while excluding retained refs.
 Ready recovery likewise uses one candidate-read decision: it skips retained
 references, aborts missing candidate material, and retries unavailable reads.
 Material lifecycle sets use the byte-lexical identity order of `SecretRef`;

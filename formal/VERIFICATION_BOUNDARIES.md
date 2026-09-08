@@ -553,9 +553,12 @@ validation paths, replacing four copies of reference-set/attempt-suffix logic.
 Material lifecycle sets use the byte-lexical order derived by `SecretRef`, so
 cleanup's ordered union already supplies unique sorted deletion references;
 the former HashSet-plus-Vec-sort path is removed.
-The input projection extends its predecessor set directly, without the
-FromIterator temporary Vec/sort, and consumes the new-reference iterator once
-for both facts. Exact suffix checks borrow the attempt and fixed separator,
+Preparation, input admission and Ready recovery share the same borrowed
+candidate-delta iterator. It extends its predecessor set directly, without the
+FromIterator temporary Vec/sort, and preserves candidate order and repeated new
+aliases. The independent 5,184-row executable oracle checks this exact sequence;
+input admission consumes it once for both facts. Exact suffix checks borrow the
+attempt and fixed separator,
 without allocating a formatted suffix. The no-predecessor Kani harness executes
 the actual BTreeSet/BTreeMap/String projection with primary and one auxiliary
 candidate slot, six reference classes and optional attempt. The corresponding

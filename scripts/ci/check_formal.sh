@@ -355,7 +355,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness managed_rollout_ack_requires_converged_progress
   # Two-slot material collections do not need the string comparison's loop
   # budget. Keep every unwinding assertion; only builtin memcmp gets 16.
-  run_kani awaken-credential-vault -Z unstable-options \
+  # The owned predecessor-set iterator uses the bundled MiniSAT backend.
+  run_kani awaken-credential-vault -Z unstable-options --solver minisat \
     --harness credential_material_input_facts_without_predecessor \
     --cbmc-args --unwindset memcmp.0:16
   run_kani awaken-tool-relay \
