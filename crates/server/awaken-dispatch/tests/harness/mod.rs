@@ -2158,7 +2158,7 @@ pub async fn assert_relinquish_claim<S: awaken_dispatch::Dispatch>(store: &S) {
 /// | A6 | replacement C | stale A | finish A | applied; slot empty |
 /// | A7 | current C | empty | begin C | applied; A cannot clear C |
 /// | A8 | current C | empty after finish C | finish C retry, then settle | applied; remains empty; old Run terminal |
-/// | A9 | replacement E | stale D | handoff E with executor proof | applied; slot=E |
+/// | A9 | replacement E | stale D | handoff E with executor proof | replaced; slot=E |
 /// | A10 | current E | E | handoff retry / finish D | already-applied / fenced |
 ///
 /// Constraints: lease expiry can replace the mutation claim but is not proof
@@ -2375,7 +2375,7 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
             .handoff_attempt(&claim_e, replacement_now)
             .await
             .expect("A9 continuation handoff"),
-        AttemptAdmission::Applied,
+        AttemptAdmission::Replaced,
         "A9 executor-proved continuation atomically replaces D"
     );
     assert_eq!(

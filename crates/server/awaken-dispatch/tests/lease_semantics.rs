@@ -20,7 +20,7 @@
 mod harness;
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
@@ -30,8 +30,8 @@ use awaken_dispatch::{
     AttemptAdmission, DispatchOutcome, DispatchQueue, DispatchWorker, MemoryDispatchStore,
     PendingInput, RunClaim, RunDispatch, SqliteDispatchStore,
 };
-use awaken_runtime_contract::execution::RunExecutor;
-use awaken_runtime_contract::resume::ResumeResult;
+use awaken_runtime_contract::execution::{AttemptRecoveryMode, RunAttemptExecutor, RunExecutor};
+use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
@@ -40,6 +40,216 @@ use harness::{
 };
 
 const LEASE: u64 = 1_000;
+
+struct ContinuationOnlyAttemptExecutor {
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl RunExecutor for ContinuationOnlyAttemptExecutor {
+    async fn execute(
+        &self,
+        _activation: awaken_runtime_contract::RunActivation,
+        _context: RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<RunState> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(RunState::Ended(EndCause::NaturalEnd))
+    }
+}
+
+#[async_trait::async_trait]
+impl RunAttemptExecutor for ContinuationOnlyAttemptExecutor {
+    fn physical_attempt_recovery(
+        &self,
+        _activation: &awaken_runtime_contract::RunActivation,
+        _context: &RuntimeRunContext,
+    ) -> AttemptRecoveryMode {
+        AttemptRecoveryMode::ContinueDurableRemoteOperation
+    }
+
+    async fn resume(
+        &self,
+        activation: awaken_runtime_contract::RunActivation,
+        _command: ResumeCommand,
+        context: RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<RunState> {
+        self.execute(activation, context).await
+    }
+}
+
+#[tokio::test]
+async fn pre_start_cancellation_acknowledges_only_a_freshly_installed_slot() {
+    // Cause/effect graph: C1 cancellation is already observable before the
+    // executor Future is built; C2 admission installs an empty slot, stutters an
+    // exact response-loss retry, or replaces a predecessor through continuation
+    // handoff. Effects: E1 no executor call; E2 fresh install is cleared as a
+    // known no-effect attempt; E3 stutter/replacement retains the inherited
+    // obligation and reports Indeterminate. Decision table: R1=C1+Install ->
+    // E1+E2. R2=C1+Stutter -> E1+E3. R3=C1+Replace -> E1+E3.
+    let fresh_token = tokio_util::sync::CancellationToken::new();
+    fresh_token.cancel();
+    let fresh_store = Arc::new(MemoryDispatchStore::new());
+    let fresh_commit = Arc::new(MemoryCommitCoordinator::new());
+    let fresh_executor = Arc::new(ContinuationOnlyAttemptExecutor {
+        calls: AtomicUsize::new(0),
+    });
+    let fresh_worker = DispatchWorker::new(
+        text_runtime(),
+        fresh_store.clone(),
+        fresh_commit,
+        "fresh-owner",
+    )
+    .with_context(RuntimeRunContext::new().with_cancellation(fresh_token));
+    fresh_worker.install_attempt_executor(fresh_executor.clone());
+    let fresh_error = fresh_worker
+        .start_run(
+            RunDispatch::new(activation("pre-start-fresh")),
+            harness::clock(0),
+        )
+        .await
+        .expect_err("R1 cancellation prevents executor entry");
+    assert!(
+        fresh_error
+            .to_string()
+            .contains("lost before physical attempt start"),
+        "R1 returns the pre-start authority-loss cause: {fresh_error}"
+    );
+    assert_eq!(fresh_executor.calls.load(Ordering::SeqCst), 0, "R1/E1");
+    assert!(
+        !fresh_store.list_dispatches().await.unwrap()[0].physical_attempt_active,
+        "R1/E2 the exact fresh no-effect slot is acknowledged"
+    );
+
+    let stutter_token = tokio_util::sync::CancellationToken::new();
+    stutter_token.cancel();
+    let stutter_store = Arc::new(MemoryDispatchStore::new());
+    let stutter_commit = Arc::new(MemoryCommitCoordinator::new());
+    stutter_store
+        .enqueue(RunDispatch::new(activation("pre-start-stutter")))
+        .await
+        .unwrap();
+    let stutter_claimed = stutter_store
+        .claim("stutter-owner", LEASE, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("stutter claim");
+    let stutter_claim = RunClaim::from(&stutter_claimed.lease);
+    assert_eq!(
+        stutter_store
+            .begin_attempt(&stutter_claim, 0)
+            .await
+            .unwrap(),
+        AttemptAdmission::Applied,
+        "R2 fixture models a lost Install response"
+    );
+    let stutter_executor = Arc::new(ContinuationOnlyAttemptExecutor {
+        calls: AtomicUsize::new(0),
+    });
+    let stutter_worker = DispatchWorker::new(
+        text_runtime(),
+        stutter_store.clone(),
+        stutter_commit.clone(),
+        "stutter-owner",
+    )
+    .with_lease_ms(LEASE)
+    .with_context(RuntimeRunContext::new().with_cancellation(stutter_token));
+    stutter_worker.install_attempt_executor(stutter_executor.clone());
+    let stutter_processed = stutter_worker
+        .drive_claimed(stutter_claimed, harness::clock(0))
+        .await
+        .expect("R2 commits the existing Indeterminate terminal path");
+    assert!(
+        stutter_processed.is_none(),
+        "R2 occupied slot prevents settlement"
+    );
+    assert_eq!(stutter_executor.calls.load(Ordering::SeqCst), 0, "R2/E1");
+    assert!(
+        stutter_store.list_dispatches().await.unwrap()[0].physical_attempt_active,
+        "R2/E3 response-loss stutter retains the possible prior effect"
+    );
+    assert_eq!(
+        stutter_store.finish_attempt(&stutter_claim).await.unwrap(),
+        awaken_dispatch::SettleOutcome::Applied,
+        "R2 fixture cleanup uses the exact retained owner"
+    );
+
+    let inherited_token = tokio_util::sync::CancellationToken::new();
+    inherited_token.cancel();
+    let inherited_store = Arc::new(MemoryDispatchStore::new());
+    let inherited_commit = Arc::new(MemoryCommitCoordinator::new());
+    inherited_store
+        .enqueue(RunDispatch::new(activation("pre-start-inherited")))
+        .await
+        .unwrap();
+    let predecessor = inherited_store
+        .claim("predecessor", LEASE, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("predecessor claim");
+    let predecessor_claim = RunClaim::from(&predecessor.lease);
+    assert_eq!(
+        inherited_store
+            .begin_attempt(&predecessor_claim, 0)
+            .await
+            .unwrap(),
+        AttemptAdmission::Applied,
+        "R3 fixture installs the predecessor slot"
+    );
+    let replacement = inherited_store
+        .claim("replacement", LEASE, LEASE + 1, &Default::default())
+        .await
+        .unwrap()
+        .expect("replacement claim");
+    let replacement_claim = RunClaim::from(&replacement.lease);
+    let inherited_executor = Arc::new(ContinuationOnlyAttemptExecutor {
+        calls: AtomicUsize::new(0),
+    });
+    let inherited_worker = DispatchWorker::new(
+        text_runtime(),
+        inherited_store.clone(),
+        inherited_commit.clone(),
+        "replacement",
+    )
+    .with_lease_ms(LEASE)
+    .with_context(RuntimeRunContext::new().with_cancellation(inherited_token));
+    inherited_worker.install_attempt_executor(inherited_executor.clone());
+    let processed = inherited_worker
+        .drive_claimed(replacement, harness::clock(LEASE + 1))
+        .await
+        .expect("R3 commits the existing Indeterminate terminal path");
+    assert!(processed.is_none(), "R3 occupied slot prevents settlement");
+    assert_eq!(inherited_executor.calls.load(Ordering::SeqCst), 0, "R3/E1");
+    assert!(
+        inherited_store.list_dispatches().await.unwrap()[0].physical_attempt_active,
+        "R3/E3 inherited responsibility remains visible"
+    );
+    assert_eq!(
+        CommittedThreadView::run(
+            inherited_commit.as_ref(),
+            &RunId("pre-start-inherited".into())
+        )
+        .expect("R3 terminal fact")
+        .state,
+        RunState::Ended(EndCause::Indeterminate),
+        "R3/E3 cancellation cannot be reported as confirmed"
+    );
+    assert_eq!(
+        inherited_store
+            .finish_attempt(&predecessor_claim)
+            .await
+            .unwrap(),
+        awaken_dispatch::SettleOutcome::Fenced,
+        "R3 replacement provenance cannot be erased by the predecessor"
+    );
+    assert_eq!(
+        inherited_store
+            .finish_attempt(&replacement_claim)
+            .await
+            .unwrap(),
+        awaken_dispatch::SettleOutcome::Applied,
+        "R3 fixture cleanup uses only the exact inherited owner"
+    );
+}
 
 #[tokio::test]
 async fn a_returned_unknown_tool_result_cannot_release_the_durable_physical_slot() {

@@ -105,7 +105,12 @@ SQLite and PostgreSQL load one locked snapshot, call that adapter, and apply the
 returned mutation within their existing lock or transaction. Their clocks and
 storage operations remain backend responsibilities, not duplicate domain rules.
 HTTP authentication precedes this same store path and adds no second reducer.
-No new table, receipt store, public API or wire format is introduced.
+No new table, receipt store, endpoint or recovery authority is introduced. The
+existing admission result preserves the reducer's three successful origins:
+`Applied` for `Install`, `AlreadyApplied` for `Stutter`, and `Replaced` for
+continuation handoff. Because an older Worker cannot decode `Replaced`, this
+internal Control/Worker contract follows the coordinated maintenance cutover in
+D4 rather than retaining a flattened legacy result.
 
 The shared recovery conformance trace checks duplicate admission, lost-ACK
 retry, and an old ACK arriving after successor admission against the same
@@ -220,6 +225,13 @@ process A crashes while polling -> lease expires -> claim B
 executor B proves exact committed continuation
 handoff B replaces slot A -> tasks/get (never message:send) -> finish B
 ```
+
+If cancellation is already visible after admission but before B constructs its
+executor Future, only `Applied` proves that B installed an empty slot and may ACK
+its own known no-effect attempt. `AlreadyApplied` may be a lost-response retry,
+and `Replaced` inherits A's remote responsibility; both retain the slot and take
+the existing Indeterminate path. Local "not started" is not evidence that an
+earlier caller or remote operation never started.
 
 The A2A executor also uses the Runtime's same attempt-local return observer.
 Send/resume failures, a failed reference commit before a remote boundary,

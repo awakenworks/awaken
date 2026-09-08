@@ -92,7 +92,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             .acquire_thread_execution(thread_id, None)
             .await?;
         let timing = AuthorityLeaseTiming::from_ttl_ms(self.lease_ms);
-        loop {
+        let admission = loop {
             let admission = match recovery_mode {
                 AttemptRecoveryMode::RequirePredecessorQuiescence => {
                     self.store.begin_attempt(&claim, clock.now_ms()).await?
@@ -102,7 +102,9 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 }
             };
             match admission {
-                AttemptAdmission::Applied | AttemptAdmission::AlreadyApplied => break,
+                AttemptAdmission::Applied
+                | AttemptAdmission::AlreadyApplied
+                | AttemptAdmission::Replaced => break admission,
                 AttemptAdmission::Blocked => {
                     if claimed.cancellation_requested {
                         // R4: cancellation revokes mutation authority but cannot
@@ -130,9 +132,21 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     ));
                 }
             }
-        }
+        };
 
         if cancellation.is_cancelled() {
+            if !admission.permits_pre_start_no_effect_ack() {
+                // Causes: C1 cancellation arrives before this invocation builds
+                // the executor Future; C2 admission freshly installed an empty
+                // slot, stuttered an earlier admission, or replaced a predecessor.
+                // Effects: E1 fresh install may ACK this invocation's known
+                // no-effect slot; E2 stutter/replacement retains the inherited
+                // responsibility and reports it as unconfirmed. Decision table:
+                // R1=C1+Applied -> E1; R2=C1+(AlreadyApplied|Replaced) -> E2.
+                // In particular, local "not started" cannot prove that a prior
+                // caller or handed-off remote operation did not start.
+                return Ok(PhysicalAttemptOutcome::PredecessorUnconfirmed);
+            }
             let _ = self.finish_observed_attempt(&claim, &timing).await?;
             return Err(Error::Execution(
                 awaken_runtime_contract::execution::Error::Execution(
