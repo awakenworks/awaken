@@ -156,7 +156,6 @@ pub struct DispatchPool<S> {
 /// all mutations still go through the existing Dispatch aggregate.
 pub struct DispatchReconciler {
     shutdown: CancellationToken,
-    wake: Arc<dyn WakeSignal>,
     task: Option<JoinHandle<()>>,
 }
 
@@ -170,12 +169,11 @@ impl DispatchReconciler {
         completion: Option<Arc<dyn CompletionSink>>,
     ) -> Self {
         let shutdown = CancellationToken::new();
-        let reconciliation_wake = Arc::new(Notify::new());
         let task = tokio::spawn(reconciliation_loop(ReconciliationContext {
             store,
             clock,
             wake: wake.clone(),
-            reconciliation_wake,
+            reconciliation_wake: wake,
             shutdown: shutdown.clone(),
             config,
             resolver,
@@ -183,14 +181,12 @@ impl DispatchReconciler {
         }));
         Self {
             shutdown,
-            wake,
             task: Some(task),
         }
     }
 
     pub async fn shutdown(mut self) {
         self.shutdown.cancel();
-        let _ = self.wake.publish().await;
         if let Some(task) = self.task.take() {
             let _ = task.await;
         }
@@ -460,7 +456,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         let owner = owner.into();
         let shutdown = CancellationToken::new();
         let admission = Arc::new(PoolAdmission::new(config.max_attempts));
-        let reconciliation_wake = Arc::new(Notify::new());
+        let reconciliation_wake = Arc::new(LocalWakeSignal::new());
         let drains = (0..concurrency.max(1))
             .map(|_| {
                 tokio::spawn(drain_loop(
@@ -618,7 +614,6 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         }
         self.shutdown.cancel();
         drop(admission);
-        let _ = self.wake.publish().await;
     }
 
     /// Whether a drain has been requested (the drain tasks are stopping/stopped).
@@ -636,7 +631,6 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
     /// Stop every task and wait for the in-flight drains to finish.
     pub async fn shutdown(self) {
         self.shutdown.cancel();
-        let _ = self.wake.publish().await;
         for drain in self.drains {
             let _ = drain.await;
         }
@@ -784,23 +778,23 @@ mod drain_error_proofs {
 async fn wake_coordinator_loop(
     wake: Arc<dyn WakeSignal>,
     admission: Arc<PoolAdmission>,
-    reconciliation_wake: Arc<Notify>,
+    reconciliation_wake: Arc<LocalWakeSignal>,
     shutdown: CancellationToken,
     poll_interval: Duration,
 ) {
     // One initial authoritative poll recovers work that predated this process.
     admission.wake.notify_one();
-    reconciliation_wake.notify_one();
+    let _ = reconciliation_wake.publish().await;
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => break,
             _ = wake.wait() => {
                 admission.wake.notify_one();
-                reconciliation_wake.notify_one();
+                let _ = reconciliation_wake.publish().await;
             },
             _ = tokio::time::sleep(poll_interval) => {
                 admission.wake.notify_one();
-                reconciliation_wake.notify_one();
+                let _ = reconciliation_wake.publish().await;
             },
         }
     }
@@ -970,7 +964,9 @@ struct ReconciliationContext<S> {
     store: Arc<S>,
     clock: Arc<dyn Clock>,
     wake: Arc<dyn WakeSignal>,
-    reconciliation_wake: Arc<Notify>,
+    // Standalone: the external port. Pool: its sole listener's local fan-out.
+    // Both reuse WakeSignal; do not add a competing external subscription.
+    reconciliation_wake: Arc<dyn WakeSignal>,
     shutdown: CancellationToken,
     config: DispatchServiceConfig,
     resolver: Arc<dyn WorkerResolver<S>>,
@@ -1003,7 +999,12 @@ async fn reconciliation_loop<S: Dispatch + 'static>(context: ReconciliationConte
         // than at the next poll.
         let relayed = store.relay().await.unwrap_or(0);
         if relayed > 0 {
-            let _ = wake.publish().await;
+            // Relay is already durable. Only its best-effort notification may
+            // be abandoned on shutdown; storage and observation work is joined.
+            tokio::select! {
+                _ = shutdown.cancelled() => break,
+                _ = wake.publish() => {}
+            }
         }
         if let Some(interval) = config.terminal_reconciliation_interval
             && tokio::time::Instant::now() >= next_terminal_reconciliation
@@ -1027,7 +1028,9 @@ async fn reconciliation_loop<S: Dispatch + 'static>(context: ReconciliationConte
         }
         tokio::select! {
             _ = shutdown.cancelled() => break,
-            _ = reconciliation_wake.notified() => {},
+            _ = reconciliation_wake.wait() => {},
+            _ = tokio::time::sleep_until(next_terminal_reconciliation),
+                if config.terminal_reconciliation_interval.is_some() => {},
             _ = tokio::time::sleep(config.poll_interval) => {}
         }
     }
@@ -1176,6 +1179,99 @@ mod in_flight_tests {
         assert!(!counts_toward_execution_capacity(true, true), "PC4/E2+E3");
     }
 
+    /// Terminal observation has its own cadence, independent of queue polling.
+    #[tokio::test(start_paused = true)]
+    async fn terminal_reconciliation_deadline_is_not_delayed_by_queue_poll() {
+        // T1 terminal interval 5s < queue poll 60s; T2 first observation fails.
+        // E1 startup observes once; E2 no early retry; E3 the terminal deadline
+        // retries at 5s even without any wake. Advancing virtual time proves
+        // cadence independently of the ordinary 60s fallback.
+        let resolver = Arc::new(ReconciliationResolver {
+            calls: AtomicUsize::new(0),
+            fail_first: true,
+        });
+        let completion = Arc::new(RecordingCompletion::default());
+        let reconciler = DispatchReconciler::spawn(
+            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(ManualClock::new(0)),
+            Arc::new(LocalWakeSignal::new()),
+            DispatchServiceConfig {
+                poll_interval: Duration::from_secs(60),
+                terminal_reconciliation_interval: Some(Duration::from_secs(5)),
+                ..Default::default()
+            },
+            resolver.clone(),
+            Some(completion.clone()),
+        );
+        tokio::task::yield_now().await;
+        assert_eq!(resolver.calls.load(Ordering::SeqCst), 1, "E1");
+        tokio::time::advance(Duration::from_secs(4)).await;
+        assert_eq!(resolver.calls.load(Ordering::SeqCst), 1, "E2");
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(resolver.calls.load(Ordering::SeqCst), 2, "E3");
+        assert_eq!(completion.values.lock().unwrap().len(), 1, "E3");
+        reconciler.shutdown().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconciler_shutdown_joins_in_flight_observation_without_cancelling_it() {
+        // J1 observation entered before shutdown; J2 external response delayed.
+        // E1 shutdown must not drop the observation Future or claim success;
+        // J3 exact response arrives => E2 join completes, no next observation.
+        struct BlockedObservation {
+            entered: Notify,
+            release: Notify,
+            calls: AtomicUsize,
+        }
+        #[async_trait]
+        impl WorkerResolver<MemoryDispatchStore> for BlockedObservation {
+            async fn worker_for(
+                &self,
+                _: &ThreadId,
+                _: Option<&str>,
+            ) -> Result<Arc<DispatchWorker<MemoryDispatchStore>>, Error> {
+                unreachable!()
+            }
+            async fn reconcile_committed_terminals(
+                &self,
+                _: Arc<dyn Clock>,
+                _: usize,
+            ) -> Result<Vec<(RunId, RunState)>, Error> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.entered.notify_one();
+                self.release.notified().await;
+                Ok(Vec::new())
+            }
+        }
+        let resolver = Arc::new(BlockedObservation {
+            entered: Notify::new(),
+            release: Notify::new(),
+            calls: AtomicUsize::new(0),
+        });
+        let reconciler = DispatchReconciler::spawn(
+            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(ManualClock::new(0)),
+            Arc::new(LocalWakeSignal::new()),
+            DispatchServiceConfig::default(),
+            resolver.clone(),
+            None,
+        );
+        resolver.entered.notified().await;
+        let stopped = tokio::spawn(reconciler.shutdown());
+        tokio::task::yield_now().await;
+        assert!(
+            !stopped.is_finished(),
+            "E1 must retain the in-flight Future"
+        );
+        resolver.release.notify_one();
+        tokio::time::timeout(Duration::from_millis(1), stopped)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolver.calls.load(Ordering::SeqCst), 1, "E2");
+    }
+
     /// Cause/effect decision table for process-level terminal maintenance:
     ///
     /// | Rule | Interval | Resolver result | Expected effect |
@@ -1201,7 +1297,7 @@ mod in_flight_tests {
             store: store.clone(),
             clock: clock.clone(),
             wake: wake.clone(),
-            reconciliation_wake: Arc::new(Notify::new()),
+            reconciliation_wake: Arc::new(LocalWakeSignal::new()),
             shutdown: disabled_shutdown.clone(),
             config: DispatchServiceConfig {
                 poll_interval: Duration::from_millis(2),
@@ -1226,7 +1322,7 @@ mod in_flight_tests {
             store,
             clock,
             wake,
-            reconciliation_wake: Arc::new(Notify::new()),
+            reconciliation_wake: Arc::new(LocalWakeSignal::new()),
             shutdown: enabled_shutdown.clone(),
             config: DispatchServiceConfig {
                 poll_interval: Duration::from_millis(2),

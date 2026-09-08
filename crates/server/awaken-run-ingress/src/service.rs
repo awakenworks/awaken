@@ -130,7 +130,6 @@ impl<S: Dispatch + 'static> DispatchService<S> {
     /// Stop the daemon and wait for the in-flight drain to finish.
     pub async fn shutdown(self) {
         self.shutdown.cancel();
-        let _ = self.wake.publish().await;
         let _ = self.handle.await;
     }
 }
@@ -191,6 +190,8 @@ async fn run_loop<S: Dispatch + 'static>(
         tokio::select! {
             _ = shutdown.cancelled() => break,
             _ = wake.wait() => {}
+            _ = tokio::time::sleep_until(next_terminal_reconciliation),
+                if config.terminal_reconciliation_interval.is_some() => {}
             _ = tokio::time::sleep(config.poll_interval) => {}
         }
     }
