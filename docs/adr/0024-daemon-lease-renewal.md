@@ -216,6 +216,21 @@ controller-synthesized Failed, synthetic ContainerStatusUnknown, missing legacy
 bindings and name reuse never establish termination. The subject-bound result
 has private fields and cannot be deserialized as an incoming receipt.
 
+`PodProcessStopper` adds the independent provider command, not a second observer
+or cleanup owner. Trusted deployment must install
+`awaken.dev/worker-process-evidence` before binding; the opaque binding freezes
+that retention fact. Missing legacy retention stays false and serializes exactly
+as before. Adding a finalizer later cannot upgrade an already admitted binding.
+The command reads the exact private non-restarting process set, requires the held
+retention marker, and submits UID/resourceVersion-conditional Pod deletion.
+Neither acceptance nor an already-deleting Pod proves exit; retries observe the
+same bound domain, and only the original exit validator may return its receipt.
+CAS conflicts and response loss retry without retargeting a replacement. The
+adapter never removes the finalizer or deletes Session/PVC participants. Its
+whole-Worker scope requires trusted recovery composition, not per-Run cancellation.
+Production deployment installation and post-retirement release of retention,
+Coordinator stop-result consumption and remote-participant proof remain unwired.
+
 This is a provider observation, not a Native recovery command. Dispatch now
 freezes an optional `AttemptExecutionBinding` with its physical slot, in the
 same admission transaction. It contains the exact registered Worker identity,
@@ -268,13 +283,15 @@ The authenticated API, kubelet/runtime exit-report honesty, private process
 confinement and non-restart semantics remain the trusted infrastructure boundary.
 The provider-only three-generation/two-container model deliberately does not
 duplicate Dispatch. A real k3d test uses exact-container CRI hard stop, observes
-the live projector veto, drains the full Pod behind a test-owned finalizer,
+the live projector veto, drains the full Pod through the independent stopper
+behind a fixture-installed production retention finalizer,
 checks delayed exec rejection and then verifies that removed history is unknown.
 It also recreates the same Pod name through the canonical provider: the old UID
 cannot bind or delete the live successor, and the successor's later exit proves
-only its fresh binding. The stale DELETE rule checks Kubernetes UID preconditions,
-not a production independent-stop command. Six model mutants and three positive
-exit/binding witnesses cover the finite observation boundary; neither those
+only its fresh binding. The stale DELETE rule checks Kubernetes UID preconditions;
+the provider stop command separately rejects that old binding without a write.
+Ten model mutants and five positive observation/stop witnesses cover the finite
+provider boundary; neither those
 checks nor the live test establish whole-attempt recovery or evidence retention
 after API history is removed.
 Cooperative cancellation may cause a verified return; dropping or aborting a

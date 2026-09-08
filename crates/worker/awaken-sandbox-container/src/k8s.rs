@@ -92,7 +92,8 @@ use process::{K8sExecProcess, K8sExecState, k8s_exec_argv, k8s_live_file_result}
 #[cfg(test)]
 use process::{k8s_exit_status, signal_effect_is_complete};
 pub use process_termination::{
-    ObservedPodProcessExit, PodProcessBinding, PodProcessObserver, PodProcessTermination,
+    ObservedPodProcessExit, PodProcessBinding, PodProcessObserver, PodProcessStopper,
+    PodProcessTermination, WORKER_PROCESS_EVIDENCE_FINALIZER,
 };
 use realization::{PodReadiness, create_or_verify, pod_readiness, stamp_pod_realization};
 pub(crate) use realization::{create_or_verify_exact, stamp_realization};

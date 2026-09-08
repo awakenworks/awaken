@@ -1,7 +1,7 @@
 use super::*;
 use serde_json::{Value, json};
 
-fn running() -> Value {
+pub(super) fn running() -> Value {
     json!({
         "metadata": {"namespace":"ns", "name":"worker", "uid":"uid-a", "resourceVersion":"1"},
         "spec": {
@@ -18,7 +18,7 @@ fn running() -> Value {
     })
 }
 
-fn terminal() -> Value {
+pub(super) fn terminal() -> Value {
     let mut pod = running();
     pod["metadata"]["resourceVersion"] = json!("2");
     pod["status"]["phase"] = json!("Failed");
@@ -29,7 +29,7 @@ fn terminal() -> Value {
     pod
 }
 
-fn decode(pod: Value) -> Pod {
+pub(super) fn decode(pod: Value) -> Pod {
     serde_json::from_value(pod).unwrap()
 }
 
