@@ -64,6 +64,10 @@ pub const fn claim_credential_operation(
 #[cfg(kani)]
 #[kani::proof]
 fn claim_credential_operation_is_total_and_terminal_dominates() {
+    // Cause/effect decision table: C1 terminal repair, C2 cancellation request.
+    // R1 C1=* -> TerminalResolution; R2 !C1+C2 -> Cancel;
+    // R3 !C1+!C2 -> Execute. The rules are disjoint and exhaustive, and R1
+    // proves terminal repair cannot accidentally materialize credentials.
     let terminal_resolution: bool = kani::any();
     let cancellation_requested: bool = kani::any();
     let operation = claim_credential_operation(terminal_resolution, cancellation_requested);
