@@ -108,6 +108,62 @@ fn exclusive_file_lock_is_one_inode_one_writer_and_drop_releases() {
 
 #[test]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+fn sibling_file_transform_streams_into_the_same_atomic_replace_boundary() {
+    use std::io::{Read as _, Write as _};
+
+    // Causes: C1 a transform streams successfully; C2 it fails after writing a
+    // partial stage. Effects: E1 C1 atomically publishes only the complete new
+    // file; E2 C2 preserves the old file and removes its private stage.
+    // Decision table: R1=C1->E1; R2=C2->E2. Both the byte convenience method and
+    // large-log migration reuse this single inode-check/publication authority.
+    let root = std::env::temp_dir().join(format!(
+        "awaken-sandbox-transform-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let _owned = OwnedDirectory(root.clone());
+    let lock = try_lock_exclusive(&root.join("lifecycle.lock")).unwrap();
+    let data = root.join("data");
+    std::fs::write(&data, b"alpha\nbeta\n").unwrap();
+
+    lock.transform_sibling_regular_file_atomic(Path::new("data"), |source, stage| {
+        let mut buffer = [0_u8; 3];
+        loop {
+            let read = source.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            buffer[..read].make_ascii_uppercase();
+            stage.write_all(&buffer[..read])?;
+        }
+        Ok(())
+    })
+    .expect("R1/E1");
+    assert_eq!(std::fs::read(&data).unwrap(), b"ALPHA\nBETA\n", "R1/E1");
+
+    let error = lock
+        .transform_sibling_regular_file_atomic(Path::new("data"), |_, stage| {
+            stage.write_all(b"partial")?;
+            Err(std::io::Error::other("injected transform failure"))
+        })
+        .expect_err("R2/E2");
+    assert_eq!(error.kind(), std::io::ErrorKind::Other);
+    assert_eq!(std::fs::read(&data).unwrap(), b"ALPHA\nBETA\n", "R2/E2");
+    assert!(
+        lock.sibling_names()
+            .unwrap()
+            .iter()
+            .all(|name| !name.to_string_lossy().contains("awaken-file-stage")),
+        "R2/E2"
+    );
+}
+
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn retained_parent_sibling_effects_fail_closed_after_parent_replacement() {
     // Retained-parent cause/effect table: C1 configured parent still names
     // the retained inode/replaced inode; C2 sibling operation is classify,

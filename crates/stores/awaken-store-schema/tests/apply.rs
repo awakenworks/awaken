@@ -103,7 +103,7 @@ fn bundle_applies_on_real_sqlite() {
         .expect("runner")
         .run_bundle(&conn, &bundle)
         .expect("apply bundle on sqlite");
-    assert_eq!(applied.len(), 9, "all nine migrations applied");
+    assert_eq!(applied.len(), 10, "all ten migrations applied");
 
     for table in TABLES {
         let count: i64 = conn
@@ -229,6 +229,137 @@ fn every_sqlite_historical_prefix_migrates_to_full() {
             assert_eq!(count, 1, "H1/H2/H3 {table} prefix={prefix_len}");
         }
     }
+}
+
+#[test]
+fn sqlite_v10_canonicalizes_only_historical_audit_kind_values() {
+    // Causes: C1 v9 contains RunPhaseChanged; C2 it contains RunWaiting; C3 it
+    // contains either current spelling; C4 it contains an unknown/corrupt value;
+    // C5 the full bundle is retried. Effects: E1 C1/C2 become their current
+    // names; E2 C3/C4 remain byte-for-byte values; E3 v10 is recorded once and
+    // retry is a no-op. Decision table: R1=C1->E1, R2=C2->E1, R3=C3|C4->E2,
+    // R4=C5->E3. Exact-match updates avoid turning migration into a decoder.
+    let connection = Connection::open_in_memory().unwrap();
+    let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
+    let full = commit_bundle().unwrap();
+    let v9 = awaken_scoped_migration::MigrationBundle::new(
+        COMMIT_BUNDLE_ID,
+        full.migrations()[..9].to_vec(),
+    )
+    .unwrap();
+    runner.run_bundle(&connection, &v9).unwrap();
+    for (sequence, kind) in [
+        (1, "\"RunPhaseChanged\""),
+        (2, "\"RunWaiting\""),
+        (3, "\"RunStateChanged\""),
+        (4, "\"RunAwaiting\""),
+        (5, "\"UnknownHistoricalValue\""),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO runtime_event (sequence, run_id, kind, payload) VALUES (?1, 'run', ?2, 'null')",
+                rusqlite::params![sequence, kind],
+            )
+            .unwrap();
+    }
+
+    let applied = runner.run_bundle(&connection, &full).unwrap();
+    assert_eq!(
+        applied
+            .iter()
+            .map(|migration| migration.version)
+            .collect::<Vec<_>>(),
+        [10],
+        "R1/R2/R3"
+    );
+    let mut statement = connection
+        .prepare("SELECT kind FROM runtime_event ORDER BY sequence")
+        .unwrap();
+    let kinds = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        kinds,
+        [
+            "\"RunStateChanged\"",
+            "\"RunAwaiting\"",
+            "\"RunStateChanged\"",
+            "\"RunAwaiting\"",
+            "\"UnknownHistoricalValue\"",
+        ],
+        "R1/R2/E1 and R3/E2"
+    );
+    assert!(
+        runner.run_bundle(&connection, &full).unwrap().is_empty(),
+        "R4/E3"
+    );
+}
+
+#[test]
+fn sqlite_v10_rolls_back_both_updates_and_its_ledger_row() {
+    // Causes: C1 v9 contains both historical values; C2 the second UPDATE is
+    // forced to fail; C3 the failure is removed and startup retries. Effects:
+    // E1 neither the first UPDATE nor v10's ledger row survives C2; E2 C3 applies
+    // both updates once. Decision table: R1=C1+C2->E1; R2=C1+C3->E2. This pins
+    // the two-statement data upgrade to the existing runner transaction.
+    let connection = Connection::open_in_memory().unwrap();
+    let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
+    let full = commit_bundle().unwrap();
+    let v9 = awaken_scoped_migration::MigrationBundle::new(
+        COMMIT_BUNDLE_ID,
+        full.migrations()[..9].to_vec(),
+    )
+    .unwrap();
+    runner.run_bundle(&connection, &v9).unwrap();
+    connection
+        .execute(
+            "INSERT INTO runtime_event (sequence, run_id, kind, payload) VALUES (1, 'run', '\"RunPhaseChanged\"', 'null'), (2, 'run', '\"RunWaiting\"', 'null')",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER reject_waiting_upgrade BEFORE UPDATE ON runtime_event \
+             WHEN OLD.kind = '\"RunWaiting\"' BEGIN SELECT RAISE(ABORT, 'injected v10 failure'); END;",
+        )
+        .unwrap();
+
+    assert!(runner.run_bundle(&connection, &full).is_err(), "R1");
+    let kinds: String = connection
+        .query_row(
+            "SELECT group_concat(kind, ',') FROM runtime_event ORDER BY sequence",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(kinds, "\"RunPhaseChanged\",\"RunWaiting\"", "R1/E1");
+    let v10_rows: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM runtime_schema_migrations WHERE bundle_id=?1 AND version=10",
+            [COMMIT_BUNDLE_ID],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(v10_rows, 0, "R1/E1");
+
+    connection
+        .execute("DROP TRIGGER reject_waiting_upgrade", [])
+        .unwrap();
+    assert_eq!(
+        runner.run_bundle(&connection, &full).unwrap().len(),
+        1,
+        "R2/E2"
+    );
+    let kinds: String = connection
+        .query_row(
+            "SELECT group_concat(kind, ',') FROM runtime_event ORDER BY sequence",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(kinds, "\"RunStateChanged\",\"RunAwaiting\"", "R2/E2");
 }
 
 #[test]
@@ -412,6 +543,71 @@ async fn postgres_failed_migration_rolls_back_schema_and_ledger_rows()
     Ok(())
 }
 
+#[tokio::test]
+async fn postgres_v10_canonicalizes_historical_kinds_and_rolls_back_as_one_unit()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Causes: C1 a v9 PostgreSQL store contains both historical Audit Kinds; C2
+    // a database constraint rejects the second canonical value; C3 the blocking
+    // condition is removed and migration retries. Effects: E1 C2 rolls back the
+    // first UPDATE, the second UPDATE, and v10's ledger row; E2 C3 publishes both
+    // canonical values; E3 a repeat is a no-op. Decision table:
+    // R1=C1+C2->E1; R2=C1+C3->E2; R3=R2+repeat->E3.
+    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+        return Ok(());
+    };
+    let (admin, pool, schema) = isolated_postgres_pool(&url, "audit_kind_v10").await?;
+    let runner =
+        awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)?;
+    let full = commit_bundle()?;
+    let v9 = awaken_scoped_migration::MigrationBundle::new(
+        COMMIT_BUNDLE_ID,
+        full.migrations()[..9].to_vec(),
+    )?;
+    runner.run_bundle(&v9).await?;
+    sqlx::query(
+        "INSERT INTO runtime_event (sequence, run_id, kind, payload) VALUES \
+         (1, 'run', '\"RunPhaseChanged\"'::jsonb, 'null'::jsonb), \
+         (2, 'run', '\"RunWaiting\"'::jsonb, 'null'::jsonb)",
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "ALTER TABLE runtime_event ADD CONSTRAINT reject_run_awaiting \
+         CHECK (kind <> '\"RunAwaiting\"'::jsonb)",
+    )
+    .execute(&pool)
+    .await?;
+
+    assert!(runner.run_bundle(&full).await.is_err(), "R1");
+    let kinds: Vec<String> =
+        sqlx::query_scalar("SELECT kind::text FROM runtime_event ORDER BY sequence")
+            .fetch_all(&pool)
+            .await?;
+    assert_eq!(kinds, ["\"RunPhaseChanged\"", "\"RunWaiting\""], "R1/E1");
+    let v10_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM runtime_schema_migrations WHERE bundle_id=$1 AND version=10",
+    )
+    .bind(COMMIT_BUNDLE_ID)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(v10_rows, 0, "R1/E1");
+
+    sqlx::query("ALTER TABLE runtime_event DROP CONSTRAINT reject_run_awaiting")
+        .execute(&pool)
+        .await?;
+    assert_eq!(runner.run_bundle(&full).await?.len(), 1, "R2/E2");
+    let kinds: Vec<String> =
+        sqlx::query_scalar("SELECT kind::text FROM runtime_event ORDER BY sequence")
+            .fetch_all(&pool)
+            .await?;
+    assert_eq!(kinds, ["\"RunStateChanged\"", "\"RunAwaiting\""], "R2/E2");
+    assert!(runner.run_bundle(&full).await?.is_empty(), "R3/E3");
+
+    drop(runner);
+    drop_postgres_pool(admin, pool, &schema).await?;
+    Ok(())
+}
+
 // The bundle applies against a real Postgres (skip-on-unreachable), rendering the
 // portable tokens to Postgres's concrete forms: `{json}` → JSONB, `{timestamptz}`
 // → TIMESTAMPTZ, `{pk_autoinc}` → BIGSERIAL, `{now}` → now() (asserted via a
@@ -463,7 +659,7 @@ async fn bundle_applies_on_real_postgres() {
             .run_bundle(&bundle)
             .await
             .expect("apply bundle on postgres");
-    assert_eq!(applied.len(), 9, "all nine migrations applied");
+    assert_eq!(applied.len(), 10, "all ten migrations applied");
 
     // Column types rendered to Postgres forms (information_schema.columns).
     let legacy_phase_type: String = sqlx::query(
