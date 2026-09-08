@@ -52,22 +52,12 @@ impl HostWorkerResolver {
         request_started: awaken_runtime_contract::authority_lease::AuthorityProofStarted,
     ) -> Result<(), awaken_dispatch::Error> {
         let claim = claimed.map(|claimed| awaken_dispatch::RunClaim::from(&claimed.lease));
-        let published_snapshot = claimed.and_then(|claimed| {
-            (claimed.request.thread_id().0 == session_id)
-                .then_some(&claimed.request.activation.snapshot)
-        });
-        let rebuild_unavailable_environment = claimed.is_some_and(|claimed| {
-            claimed.request.placement.recovery
-                == awaken_dispatch::WorkerRecoveryMode::RebuildFromCommittedTruth
-        });
-        let claimed_environment_binding = claimed.and_then(|claimed| claimed.sandbox.as_deref());
-        let synchronizer = WorkerProjectionSynchronizer::for_directive(
+        let synchronizer = WorkerProjectionSynchronizer::for_claimed(
             host,
+            session_id,
             &directive,
+            claimed,
             claim.as_ref(),
-            published_snapshot,
-            rebuild_unavailable_environment,
-            claimed_environment_binding,
         );
         Self::drive_session_realization_with_synchronizer(
             control,
@@ -332,15 +322,29 @@ mod tests {
             )
             .await
             .expect("enqueue invalid projection");
-        let error = store
+        // C3 is filtered by the queue's canonical credential-admission
+        // selector before a claim exists. An ineligible row is not a queue
+        // transport error; C4 a later eligible row must still be claimable.
+        assert!(
+            store
+                .claim("worker-a", 1_000, now, &Default::default())
+                .await
+                .expect("C3 invalid projection is skipped before claim")
+                .is_none()
+        );
+        store
+            .enqueue(awaken_dispatch::RunDispatch::new(test_activation(
+                "cold-after-invalid",
+                "run-after-invalid",
+            )))
+            .await
+            .unwrap();
+        let eligible = store
             .claim("worker-a", 1_000, now, &Default::default())
             .await
-            .expect_err("C3 malformed runtime projection must fail claim admission");
-        assert!(
-            error
-                .to_string()
-                .contains("Session runtime credential projection is invalid")
-        );
+            .unwrap()
+            .expect("C4 malformed row cannot starve an eligible Run");
+        assert_eq!(eligible.request.activation.run_id.0, "run-after-invalid");
         assert!(
             host.session_environment("cold-invalid").await.is_none(),
             "C3"

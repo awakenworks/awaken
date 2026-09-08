@@ -51,15 +51,27 @@ impl UnboundSessionEnvironment {
                 awaken_session_contract::SessionEnvironmentEffectKind::Create
             }
             UnboundSessionEnvironmentOrigin::Adoption
+            | UnboundSessionEnvironmentOrigin::AdoptionFrom(_)
             | UnboundSessionEnvironmentOrigin::DurableAdoption(_) => {
                 awaken_session_contract::SessionEnvironmentEffectKind::Adopt
             }
         }
     }
 
+    pub(crate) fn source_binding(&self) -> Option<&str> {
+        matches!(
+            self.effect_kind(),
+            awaken_session_contract::SessionEnvironmentEffectKind::Adopt
+        )
+        .then_some(self.binding.as_str())
+    }
+
+    /// Known source or committed identity for this exact physical owner.
+    /// AdoptionFrom proves the source, not completion of the current Adopt.
     pub(crate) fn durable_identity(&self) -> Option<&BoundSessionEnvironmentIdentity> {
         match &self.origin {
             UnboundSessionEnvironmentOrigin::DurableCreate(identity)
+            | UnboundSessionEnvironmentOrigin::AdoptionFrom(identity)
             | UnboundSessionEnvironmentOrigin::DurableAdoption(identity) => Some(identity),
             UnboundSessionEnvironmentOrigin::New | UnboundSessionEnvironmentOrigin::Adoption => {
                 None
@@ -77,6 +89,9 @@ impl UnboundSessionEnvironment {
 pub(crate) enum UnboundSessionEnvironmentOrigin {
     New,
     Adoption,
+    /// A durable source is being adopted; its receipt predates this Adopt.
+    /// Preserve it for revocation/cleanup until the current receipt is read.
+    AdoptionFrom(BoundSessionEnvironmentIdentity),
     /// The Session root committed the Create receipt, but a later derivative
     /// dispatch-cache write was fenced before the exact Arc could be published.
     /// This remains a hidden Candidate and preserves Create retry semantics.
@@ -340,6 +355,7 @@ impl SessionEnvironmentOwner {
                 }
                 RetiringEnvironmentOwner::Unbound(candidate) => match &candidate.origin {
                     UnboundSessionEnvironmentOrigin::DurableCreate(_)
+                    | UnboundSessionEnvironmentOrigin::AdoptionFrom(_)
                     | UnboundSessionEnvironmentOrigin::Adoption
                     | UnboundSessionEnvironmentOrigin::DurableAdoption(_) => {
                         Some(candidate.binding.as_str())
@@ -350,6 +366,7 @@ impl SessionEnvironmentOwner {
             Self::Preparing(SessionEnvironmentPreparation::Candidate(candidate)) => matches!(
                 &candidate.origin,
                 UnboundSessionEnvironmentOrigin::DurableCreate(_)
+                    | UnboundSessionEnvironmentOrigin::AdoptionFrom(_)
                     | UnboundSessionEnvironmentOrigin::Adoption
                     | UnboundSessionEnvironmentOrigin::DurableAdoption(_)
             )

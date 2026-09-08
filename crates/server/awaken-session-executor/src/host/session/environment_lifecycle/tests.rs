@@ -2079,7 +2079,7 @@ async fn durable_adoption_without_an_owning_sink_preserves_exact_projected_ident
             .expect("C2 hidden adoption candidate");
         assert_eq!(
             candidate.origin,
-            UnboundSessionEnvironmentOrigin::DurableAdoption(expected.clone()),
+            UnboundSessionEnvironmentOrigin::AdoptionFrom(expected.clone()),
             "C1+C2"
         );
         let actual = host
@@ -2188,6 +2188,257 @@ async fn durable_projection_cannot_publish_a_hidden_candidate() {
         )
         .expect("C3 Store-read publication");
     assert!(Arc::ptr_eq(&published, &environment), "E2");
+}
+
+#[tokio::test]
+async fn adopted_candidate_retains_successor_receipt_after_dispatch_fencing() {
+    // Cause/effect sequence: C1 cold projection or warm revoked owner names
+    // source receipt A; C2 adoption keeps its physical generation and Arc;
+    // C3 root commits receipt B but derivative dispatch binding is fenced.
+    // A1 C1+C2+C3 => retain B hidden, never confuse source A with committed B.
+    // A2 replay B => unchanged owner; A3 a later different receipt/generation
+    // after B => reject without mutation. Publication consumes only exact B.
+    // This covers the omitted cross-boundary commit/readback/fence prefix;
+    // existing terminal tests own disposal, not this source-to-receipt edge.
+    for warm in [false, true] {
+        let thread = "adopt-successor-receipt";
+        let root = tempfile::tempdir().unwrap();
+        let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+        let environment = environment(&provider, thread).await;
+        let binding = serde_json::to_string(&environment.handle()).unwrap();
+        let source = identity(thread);
+        let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+        host.install_session_environment_owner_projection(
+            thread,
+            "workspace",
+            &awaken_session_contract::SessionEnvironmentState::Resident {
+                binding,
+                effect_id: Some(format!("effect-{thread}")),
+                generation: Some(generation(thread)),
+                idle_since_unix_ms: None,
+            },
+        )
+        .unwrap();
+        let candidate = host
+            .begin_session_environment_adoption(thread, environment.clone())
+            .unwrap();
+        if warm {
+            host.publish_prepared_session_environment(thread, &candidate, source.clone())
+                .unwrap();
+            host.session_slots.update(thread, |slot| {
+                let retiring = slot
+                    .environment_owner
+                    .begin_retirement(
+                        SessionEnvironmentRetirementCause::RealizationRevocation,
+                        state::RetirementSelection::Current,
+                    )
+                    .unwrap()
+                    .unwrap();
+                slot.environment_owner
+                    .prepare_retiring_realization_adoption(&retiring, environment.clone())
+                    .unwrap();
+            });
+        }
+        let candidate = host.prepared_session_environment(thread).unwrap();
+        let successor = BoundSessionEnvironmentIdentity::Durable {
+            effect_id: "successor-adopt".into(),
+            generation: generation(thread),
+        };
+        // A4 a source with a foreign physical generation cannot be relabelled,
+        // whether dispatch succeeded (publish) or failed (retain).
+        let foreign = BoundSessionEnvironmentIdentity::Durable {
+            effect_id: "successor-adopt".into(),
+            generation: generation("different-physical-owner"),
+        };
+        for publish in [false, true] {
+            let result = if publish {
+                host.publish_prepared_session_environment(thread, &candidate, foreign.clone())
+                    .map(|_| ())
+            } else {
+                host.retain_committed_session_environment_candidate(
+                    thread,
+                    &candidate,
+                    foreign.clone(),
+                )
+                .map(|_| ())
+            };
+            assert!(result.is_err(), "A4");
+            assert!(
+                host.prepared_session_environment(thread)
+                    .unwrap()
+                    .exact_matches(&candidate)
+            );
+        }
+        let retained = host
+            .retain_committed_session_environment_candidate(thread, &candidate, successor.clone())
+            .expect("A1 source receipt is not this adoption's committed receipt");
+        assert_eq!(retained.durable_identity(), Some(&successor));
+        assert!(Arc::ptr_eq(&retained.environment, &environment));
+        assert!(host.session_environment(thread).await.is_none());
+        let replay = host
+            .retain_committed_session_environment_candidate(thread, &retained, successor.clone())
+            .unwrap();
+        assert!(replay.exact_matches(&retained), "A2");
+        assert!(
+            host.retain_committed_session_environment_candidate(thread, &retained, source)
+                .is_err(),
+            "A3"
+        );
+        assert!(
+            host.prepared_session_environment(thread)
+                .unwrap()
+                .exact_matches(&retained)
+        );
+        assert!(
+            host.publish_prepared_session_environment(thread, &retained, foreign)
+                .is_err(),
+            "A3 publication uses the same receipt guard"
+        );
+        let published = host
+            .publish_prepared_session_environment(thread, &retained, successor)
+            .unwrap();
+        assert!(Arc::ptr_eq(&published, &environment));
+    }
+}
+
+#[tokio::test]
+async fn adoption_root_commit_and_stale_dispatch_retry_use_one_candidate_identity() {
+    use crate::host::worker_resolver::test_support::{BlockingBindingSink, claim};
+    use awaken_dispatch::DispatchQueue;
+    use awaken_session_contract::{SessionEnvironmentBindingSink, SessionRuntime};
+    // Boundary decision table B: C1 source root receipt A; C2 owning sink
+    // commits Adopt B; C3 SQLite dispatch claim current/stale; C4 retry count.
+    // B1 C1+C2+stale => dispatch_claim_stale (never internal), same Arc hidden
+    // with B. B2 repeat stale twice => exact B, no publication/new physical I/O.
+    // B3 install current claim => exact same Arc becomes Resident with B and
+    // dispatch binds the same handle. Cross B with direct success to require
+    // identical durable identity irrespective of the derivative-write outcome.
+    // Sink is the existing deterministic receipt fixture, not a root CAS proof;
+    // the real SQLite queue owns claim replacement and binding admission here.
+    for fenced in [false, true] {
+        let thread = "adoption-dispatch-retry";
+        let root = tempfile::tempdir().unwrap();
+        let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+        let environment = environment(&provider, thread).await;
+        let binding = serde_json::to_string(&environment.handle()).unwrap();
+        let store =
+            Arc::new(awaken_dispatch::AnyDispatchStore::open_sqlite_in_memory().unwrap());
+        let host = Arc::new(
+            SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub")
+                .with_dispatch_store(store.clone()),
+        );
+        let sink = Arc::new(BlockingBindingSink::blocked());
+        sink.unblock();
+        crate::ManagedHost::new(host.clone()).install_environment_binding_sink(sink.clone());
+        let source_intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
+            thread,
+            awaken_session_contract::SessionEnvironmentEffectKind::Create,
+            None,
+        );
+        let source = sink
+            .persist(
+                awaken_session_contract::SessionEnvironmentReceipt::from_intent(
+                    &source_intent,
+                    binding.clone(),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        host.install_session_environment_owner_projection(thread, "workspace", &source)
+            .unwrap();
+        let old = claim(&store, thread, "adoption-run", "worker-old", 1).await;
+        let current = if fenced {
+            store
+                .claim("worker-current", 60_000, 2_002, &Default::default())
+                .await
+                .unwrap()
+                .unwrap()
+        } else {
+            old.clone()
+        };
+        host.session_slots.update(thread, |slot| {
+            slot.session_dispatch = true;
+            slot.dispatch_claim = Some(awaken_dispatch::RunClaim::from(&old.lease));
+        });
+        let effect = host
+            .authorize_environment_effect_before_io(
+                thread,
+                awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
+                Some(&binding),
+            )
+            .await
+            .unwrap();
+        let result = host
+            .publish_session_environment_under_lifecycle(
+                thread,
+                environment.clone(),
+                &effect,
+                crate::session_slot::EnvironmentResourceReconciliation::Adopted,
+            )
+            .await;
+        if fenced {
+            let error = result.err().expect("B1 derivative fence");
+            assert_eq!(error.code, "dispatch_claim_stale");
+            let candidate = host.prepared_session_environment(thread).unwrap();
+            let expected = candidate.durable_identity().cloned().unwrap();
+            assert!(
+                matches!(&expected, BoundSessionEnvironmentIdentity::Durable { effect_id, .. } if effect_id == effect.intent.effect_id())
+            );
+            for _ in 0..2 {
+                let error = host
+                    .retry_session_environment_candidate_under_lifecycle(thread)
+                    .await
+                    .err()
+                    .expect("B2 repeated fence");
+                assert_eq!(error.code, "dispatch_claim_stale");
+                assert!(
+                    host.prepared_session_environment(thread)
+                        .unwrap()
+                        .exact_matches(&candidate)
+                );
+                assert!(host.session_environment(thread).await.is_none());
+            }
+            host.session_slots.update(thread, |slot| {
+                slot.dispatch_claim = Some(awaken_dispatch::RunClaim::from(&current.lease));
+            });
+            let published = host
+                .retry_session_environment_candidate_under_lifecycle(thread)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(Arc::ptr_eq(&published, &environment), "B3");
+            assert!(
+                host.session_slots
+                    .read(thread, |slot| matches!(&slot.environment_owner,
+                SessionEnvironmentOwner::Resident(owned) if owned.identity == expected))
+                    .unwrap()
+            );
+        } else {
+            assert!(
+                Arc::ptr_eq(&result.unwrap(), &environment),
+                "B direct success"
+            );
+        }
+        assert!(host.session_slots.read(thread, |slot| matches!(&slot.environment_owner,
+            SessionEnvironmentOwner::Resident(owned) if matches!(&owned.identity,
+                BoundSessionEnvironmentIdentity::Durable { effect_id, generation }
+                    if effect_id == effect.intent.effect_id() && Some(generation) == source.generation()
+            ) && owned.binding == binding
+        )).unwrap(), "B direct/fenced paths publish the same current receipt");
+        // Observe the persisted binding through the next claim; calling
+        // bind_sandbox again here could repair a missing write and mask a bug.
+        let readback = store
+            .claim("worker-readback", 60_000, 62_003, &Default::default())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            readback.sandbox.as_deref(),
+            Some(binding.as_str()),
+            "B3 durable dispatch binding"
+        );
+    }
 }
 
 #[tokio::test]
@@ -3675,6 +3926,22 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
     .expect("first Session");
     let handle = first_ctx.env.as_ref().expect("first Environment").handle();
     let binding = serde_json::to_string(&handle).unwrap();
+    // The source projection must carry the first sink's actual generation;
+    // inventing another generation hid invalid adoption in the old publisher.
+    let source_identity = first
+        .session_slots
+        .read(thread, |slot| match &slot.environment_owner {
+            SessionEnvironmentOwner::Resident(owned) => owned.identity.clone(),
+            _ => panic!("first committed resident"),
+        })
+        .unwrap();
+    let BoundSessionEnvironmentIdentity::Durable {
+        effect_id,
+        generation,
+    } = source_identity
+    else {
+        panic!("first sink must return generated identity");
+    };
     drop(first_ctx);
     drop(first_managed);
     drop(first);
@@ -3704,14 +3971,8 @@ async fn cancelled_adoption_retries_the_same_hidden_candidate_without_readopting
         "workspace",
         &awaken_session_contract::SessionEnvironmentState::Resident {
             binding: binding.clone(),
-            effect_id: Some("prior-effect".into()),
-            generation: Some(awaken_session_contract::SandboxGeneration::new(
-                thread,
-                1,
-                u64::MAX,
-                "environment",
-                "image",
-            )),
+            effect_id: Some(effect_id),
+            generation: Some(generation),
             idle_since_unix_ms: None,
         },
     )

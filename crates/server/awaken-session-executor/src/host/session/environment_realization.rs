@@ -646,16 +646,12 @@ impl SharedHost {
         let Some(candidate) = candidate else {
             return Ok(None);
         };
-        let source_binding = match &candidate.origin {
-            crate::session_slot::UnboundSessionEnvironmentOrigin::New
-            | crate::session_slot::UnboundSessionEnvironmentOrigin::DurableCreate(_) => None,
-            crate::session_slot::UnboundSessionEnvironmentOrigin::Adoption
-            | crate::session_slot::UnboundSessionEnvironmentOrigin::DurableAdoption(_) => {
-                Some(candidate.binding.as_str())
-            }
-        };
         let effect = self
-            .authorize_environment_effect_before_io(thread, candidate.effect_kind(), source_binding)
+            .authorize_environment_effect_before_io(
+                thread,
+                candidate.effect_kind(),
+                candidate.source_binding(),
+            )
             .await?;
         let identity = match self
             .persist_authorized_environment_before_publish(thread, &candidate, &effect)
@@ -677,6 +673,7 @@ impl SharedHost {
                 crate::session_slot::EnvironmentResourceReconciliation::Fresh
             }
             crate::session_slot::UnboundSessionEnvironmentOrigin::Adoption
+            | crate::session_slot::UnboundSessionEnvironmentOrigin::AdoptionFrom(_)
             | crate::session_slot::UnboundSessionEnvironmentOrigin::DurableAdoption(_) => {
                 crate::session_slot::EnvironmentResourceReconciliation::Adopted
             }

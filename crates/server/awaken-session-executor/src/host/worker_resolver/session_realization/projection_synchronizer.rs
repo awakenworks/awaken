@@ -16,6 +16,34 @@ pub(super) struct WorkerProjectionSynchronizer<'a> {
 }
 
 impl<'a> WorkerProjectionSynchronizer<'a> {
+    /// Project claim-owned inputs at the same adapter boundary as directive
+    /// inputs. The parent drives phases; this adapter alone maps claim fields.
+    pub(super) fn for_claimed(
+        host: &'a SharedHost,
+        session_id: &str,
+        directive: &awaken_session_contract::SessionRealizationDirective,
+        claimed: Option<&'a awaken_dispatch::Claimed>,
+        claim: Option<&'a awaken_dispatch::RunClaim>,
+    ) -> Self {
+        let published_snapshot = claimed.and_then(|claimed| {
+            (claimed.request.thread_id().0 == session_id)
+                .then_some(&claimed.request.activation.snapshot)
+        });
+        let rebuild_unavailable_environment = claimed.is_some_and(|claimed| {
+            claimed.request.placement.recovery
+                == awaken_dispatch::WorkerRecoveryMode::RebuildFromCommittedTruth
+        });
+        let claimed_environment_binding = claimed.and_then(|claimed| claimed.sandbox.as_deref());
+        Self::for_directive(
+            host,
+            directive,
+            claim,
+            published_snapshot,
+            rebuild_unavailable_environment,
+            claimed_environment_binding,
+        )
+    }
+
     /// Build the one Worker effect adapter from an already-frozen directive and
     /// its optional claimed-dispatch authority. The directive remains the owner
     /// of MCP stage intent; this adapter derives only the physical ordering bit.
