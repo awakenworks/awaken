@@ -270,6 +270,13 @@ The provider-only three-generation/two-container model deliberately does not
 duplicate Dispatch. A real k3d test uses exact-container CRI hard stop, observes
 the live projector veto, drains the full Pod behind a test-owned finalizer,
 checks delayed exec rejection and then verifies that removed history is unknown.
+It also recreates the same Pod name through the canonical provider: the old UID
+cannot bind or delete the live successor, and the successor's later exit proves
+only its fresh binding. The stale DELETE rule checks Kubernetes UID preconditions,
+not a production independent-stop command. Six model mutants and three positive
+exit/binding witnesses cover the finite observation boundary; neither those
+checks nor the live test establish whole-attempt recovery or evidence retention
+after API history is removed.
 Cooperative cancellation may cause a verified return; dropping or aborting a
 nested Future does not prove an opaque remote request stopped. Task abort, process crash, Lease
 expiry, and heartbeat expiry therefore leave the slot occupied. Recovery waits

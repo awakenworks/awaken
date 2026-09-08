@@ -103,6 +103,9 @@ ExactCompleteObservation == observation # 0 =>
 NoObservedExit == observation = 0
 BindingMatchesAuthenticatedPod == \A pair \in bound : pair[1] = pair[2]
 NoReplacementBinding == <<2, 2>> \notin bound
+\* A fresh successor must also be able to produce its own exact exit evidence;
+\* merely allowing its binding would not exclude permanently denied recovery.
+NoReplacementExit == observation # 2
 Safety == TypeOK /\ ExactCompleteObservation /\ BindingMatchesAuthenticatedPod
 Spec == Init /\ [][Next]_vars
 =============================================================================
