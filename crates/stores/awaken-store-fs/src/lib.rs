@@ -10,6 +10,8 @@
 //! Crash safety: a torn final line (a write interrupted mid-append) fails to
 //! parse and is discarded on open, so recovery keeps exactly the committed
 //! prefix. Whole committed lines are durable (fsynced) before acknowledgement.
+//! A retained OS lock makes one coordinator the directory owner across processes;
+//! format upgrades replace the log atomically before publishing their version.
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -37,9 +39,14 @@ use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadV
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
+use awaken_sandbox_fs::{ExclusiveFileLock, PathEntry, try_lock_exclusive};
 use awaken_store_inmem::MemoryCommitCoordinator;
 
 const LOG_FILE: &str = "commits.ndjson";
+const LOG_LOCK_FILE: &str = "commits.lock";
+const LOG_VERSION_FILE: &str = "commits.version";
+const PREVIOUS_LOG_VERSION: &[u8] = b"1\n";
+const CURRENT_LOG_VERSION: &[u8] = b"2\n";
 static CHECKPOINT_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -63,6 +70,180 @@ pub struct FsCommitCoordinator {
     log: Mutex<File>,
     inner: MemoryCommitCoordinator,
     write_lock: tokio::sync::Mutex<()>,
+    // The OS lock is retained for the complete coordinator lifetime. Migration,
+    // replay, append admission, and append acknowledgement therefore share one
+    // cross-process ownership boundary instead of racing through separate locks.
+    _lifecycle_lock: ExclusiveFileLock,
+}
+
+fn invalid_log(message: impl Into<String>) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message.into())
+}
+
+fn read_next_log_entry<R: BufRead>(
+    reader: &mut R,
+    record: &mut Vec<u8>,
+    durable_len: &mut u64,
+    normalize_historical_wire: bool,
+) -> std::io::Result<Option<StoredCommitLogEntry>> {
+    loop {
+        record.clear();
+        let read = reader.read_until(b'\n', record)?;
+        if read == 0 || !record.ends_with(b"\n") {
+            return Ok(None);
+        }
+
+        let offset = *durable_len;
+        *durable_len += read as u64;
+        let payload = record.strip_suffix(b"\n").unwrap_or(record);
+        let payload = payload.strip_suffix(b"\r").unwrap_or(payload);
+        if payload.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let mut value: serde_json::Value = serde_json::from_slice(payload).map_err(|error| {
+            invalid_log(format!(
+                "invalid newline-terminated commit log record at byte {offset}: {error}"
+            ))
+        })?;
+        if normalize_historical_wire {
+            normalize_historical_log_entry(&mut value)?;
+        }
+        return serde_json::from_value(value).map(Some).map_err(|error| {
+            invalid_log(format!(
+                "invalid newline-terminated commit log record at byte {offset}: {error}"
+            ))
+        });
+    }
+}
+
+fn normalize_historical_log_entry(value: &mut serde_json::Value) -> std::io::Result<()> {
+    let is_operation = value
+        .as_object()
+        .is_some_and(|object| object.contains_key("operation_id"));
+    let commit = if is_operation {
+        value
+            .get_mut("commit")
+            .ok_or_else(|| invalid_log("historical commit operation has no commit payload"))?
+    } else {
+        value
+    };
+    let object = commit
+        .as_object_mut()
+        .ok_or_else(|| invalid_log("historical ThreadCommit is not an object"))?;
+
+    if let Some(waiting) = object.remove("waiting") {
+        if object.contains_key("resume_ticket") {
+            return Err(invalid_log(
+                "historical ThreadCommit contains both waiting and resume_ticket",
+            ));
+        }
+        object.insert("resume_ticket".to_string(), waiting);
+    }
+    if let Some(events) = object
+        .get_mut("events")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for event in events {
+            let Some(kind) = event.get_mut("kind") else {
+                continue;
+            };
+            match kind.as_str() {
+                Some("RunPhaseChanged") => {
+                    *kind = serde_json::Value::String("RunStateChanged".to_string());
+                }
+                Some("RunWaiting") => {
+                    *kind = serde_json::Value::String("RunAwaiting".to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn canonicalize_log(
+    source: &mut File,
+    stage: &mut File,
+    normalize_historical_wire: bool,
+) -> std::io::Result<()> {
+    let mut reader = BufReader::new(source);
+    let mut record = Vec::new();
+    let mut durable_len = 0_u64;
+    while let Some(entry) = read_next_log_entry(
+        &mut reader,
+        &mut record,
+        &mut durable_len,
+        normalize_historical_wire,
+    )? {
+        serde_json::to_writer(&mut *stage, &entry)
+            .map_err(|error| invalid_log(format!("serialize migrated commit log: {error}")))?;
+        stage.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
+fn migrate_log_if_needed(lock: &ExclusiveFileLock) -> std::io::Result<()> {
+    let version_leaf = Path::new(LOG_VERSION_FILE);
+    let previous_version = match lock.classify_sibling_nofollow(version_leaf)? {
+        PathEntry::RegularFile => {
+            let version = lock.read_sibling_regular_file_nofollow(version_leaf)?;
+            if version == CURRENT_LOG_VERSION {
+                return match lock.classify_sibling_nofollow(Path::new(LOG_FILE))? {
+                    PathEntry::RegularFile => Ok(()),
+                    PathEntry::Absent => Err(invalid_log(
+                        "filesystem commit log version exists without its commit log",
+                    )),
+                    _ => Err(invalid_log("filesystem commit log is not a regular file")),
+                };
+            }
+            if version == PREVIOUS_LOG_VERSION {
+                true
+            } else {
+                return Err(invalid_log(format!(
+                    "unsupported filesystem commit log version `{}`",
+                    String::from_utf8_lossy(&version).trim()
+                )));
+            }
+        }
+        PathEntry::Absent => false,
+        _ => {
+            return Err(invalid_log(
+                "filesystem commit log version is not a regular file",
+            ));
+        }
+    };
+
+    let log_leaf = Path::new(LOG_FILE);
+    let log_existed = match lock.classify_sibling_nofollow(log_leaf)? {
+        PathEntry::Absent => false,
+        PathEntry::RegularFile => true,
+        _ => return Err(invalid_log("filesystem commit log is not a regular file")),
+    };
+    if previous_version && !log_existed {
+        return Err(invalid_log(
+            "filesystem commit log version exists without its commit log",
+        ));
+    }
+
+    // Publication order is the crash protocol: the canonical log becomes
+    // durable before its version. A crash before replacement leaves the old log;
+    // a crash after replacement but before the marker leaves an idempotently
+    // re-migratable current log. No state can claim the version before the data.
+    if log_existed {
+        lock.transform_sibling_regular_file_atomic(log_leaf, |source, stage| {
+            // A v1 marker proves phase 1 already emitted only current wire names.
+            // Unversioned logs are normalized structurally before the current-only
+            // domain decoder runs; no retired enum alias participates.
+            canonicalize_log(source, stage, !previous_version)
+        })?;
+    } else {
+        lock.publish_sibling_file_noreplace(log_leaf, b"")?;
+    }
+    if previous_version {
+        lock.replace_sibling_regular_file_atomic(version_leaf, CURRENT_LOG_VERSION)
+    } else {
+        lock.publish_sibling_file_noreplace(version_leaf, CURRENT_LOG_VERSION)
+    }
 }
 
 impl FsCommitCoordinator {
@@ -72,38 +253,22 @@ impl FsCommitCoordinator {
         let dir = dir.as_ref();
         std::fs::create_dir_all(dir)?;
         let path: PathBuf = dir.join(LOG_FILE);
+        let lifecycle_lock = try_lock_exclusive(&dir.join(LOG_LOCK_FILE))?;
+        migrate_log_if_needed(&lifecycle_lock)?;
 
         let inner = MemoryCommitCoordinator::new();
         let mut durable_len = 0_u64;
         if let Ok(file) = File::open(&path) {
             let mut reader = BufReader::new(file);
             let mut record = Vec::new();
-            loop {
-                record.clear();
-                let read = reader.read_until(b'\n', &mut record)?;
-                if read == 0 {
-                    break;
-                }
-
-                // A successful append always writes the newline before fsync and
-                // acknowledgement. Any final bytes without that delimiter belong
-                // to an interrupted, unacknowledged append, even when they happen
-                // to form valid JSON. They must be removed before the next append.
-                if !record.ends_with(b"\n") {
-                    break;
-                }
-
-                let payload = record.strip_suffix(b"\n").unwrap_or(&record);
-                let payload = payload.strip_suffix(b"\r").unwrap_or(payload);
-                if payload.iter().all(u8::is_ascii_whitespace) {
-                    durable_len += read as u64;
-                    continue;
-                }
-                match serde_json::from_slice::<StoredCommitLogEntry>(payload) {
-                    Ok(StoredCommitLogEntry {
+            while let Some(entry) =
+                read_next_log_entry(&mut reader, &mut record, &mut durable_len, false)?
+            {
+                match entry {
+                    StoredCommitLogEntry {
                         entry: CommitLogEntry::Commit(commit),
                         committed_at_unix_ms,
-                    }) => {
+                    } => {
                         // Replaying through the tested read model reconstructs the
                         // same committed state (and sequence) the writer produced.
                         inner
@@ -111,29 +276,16 @@ impl FsCommitCoordinator {
                             .await
                             .map_err(|err| std::io::Error::other(err.to_string()))?;
                     }
-                    Ok(StoredCommitLogEntry {
+                    StoredCommitLogEntry {
                         entry: CommitLogEntry::Operation(operation),
                         committed_at_unix_ms,
-                    }) => {
+                    } => {
                         inner
                             .commit_operation_at(operation, committed_at_unix_ms)
                             .await
                             .map_err(|err| std::io::Error::other(err.to_string()))?;
                     }
-                    Err(err) => {
-                        // A newline-terminated bad record cannot be produced by a
-                        // torn final append: the append protocol writes the complete
-                        // JSON before its newline. Silently skipping it would turn
-                        // durable middle corruption into an apparently valid prefix.
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!(
-                                "invalid newline-terminated commit log record at byte {durable_len}: {err}"
-                            ),
-                        ));
-                    }
                 }
-                durable_len += read as u64;
             }
         }
 
@@ -154,6 +306,7 @@ impl FsCommitCoordinator {
             log: Mutex::new(log),
             inner,
             write_lock: tokio::sync::Mutex::new(()),
+            _lifecycle_lock: lifecycle_lock,
         })
     }
 
@@ -200,11 +353,10 @@ impl Coordinator for FsCommitCoordinator {
         // inner's own run-fact scan enforces.
         //
         // This read is process-LOCAL (the inner in-memory model), which is correct
-        // here because the fs store is single-writer / single-process by
-        // construction (one process owns the append-only log; the fleet uses
+        // because the retained lifecycle lock makes this coordinator the one
+        // process allowed to replay and append in the directory. The fleet uses
         // Postgres, whose guard is instead a durable in-transaction
-        // `SELECT ... FOR UPDATE` on the shared DB). Do not assume this fs fence
-        // holds across processes sharing a log directory.
+        // `SELECT ... FOR UPDATE` on the shared DB.
         if self
             .inner
             .run(commit.run_id())

@@ -390,13 +390,11 @@ impl RunLifecycleFeed for SqliteCommitCoordinator {
                                 (SELECT prior.payload FROM {NS}_event AS prior \
                                  WHERE prior.run_id = event.run_id \
                                    AND prior.sequence < event.sequence \
-                                   AND prior.kind IN ('\"RunStateChanged\"', '\"RunPhaseChanged\"') \
+                                   AND prior.kind = '\"RunStateChanged\"' \
                                  ORDER BY prior.sequence DESC LIMIT 1) AS previous_payload \
                          FROM {NS}_event AS event \
                          JOIN {NS}_run_record AS run ON run.run_id = event.run_id \
-                         WHERE event.kind IN (\
-                             '\"RunStateChanged\"', '\"RunPhaseChanged\"', '\"RunRescheduled\"'\
-                         )\
+                         WHERE event.kind IN ('\"RunStateChanged\"', '\"RunRescheduled\"')\
                      ) \
                      SELECT sequence, run_id, thread_id, kind, payload, previous_payload \
                      FROM lifecycle WHERE sequence > ?1 ORDER BY sequence LIMIT ?2"

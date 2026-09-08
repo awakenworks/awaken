@@ -69,64 +69,65 @@ impl RunDisposition {
         }
     }
 
-    fn from_legacy(
+    fn from_wire(
         fact: crate::thread::commit::run_fact::RunFact,
         ticket: Option<crate::agent::awaiting::ResumeTicket>,
     ) -> Result<Self, ValidationError> {
         use crate::agent::run::RunState;
         let ticket_shape = match &ticket {
-            None => LegacyTicketShape::Absent,
-            Some(ticket) if ticket.run_id == fact.run_id => LegacyTicketShape::Matching,
-            Some(_) => LegacyTicketShape::Mismatched,
+            None => WireTicketShape::Absent,
+            Some(ticket) if ticket.run_id == fact.run_id => WireTicketShape::Matching,
+            Some(_) => WireTicketShape::Mismatched,
         };
-        if !legacy_shape_is_valid(&fact.state, ticket_shape) {
+        if !wire_shape_is_valid(&fact.state, ticket_shape) {
             return Err(match (&fact.state, ticket_shape) {
-                (RunState::Awaiting, LegacyTicketShape::Absent) => {
+                (RunState::Awaiting, WireTicketShape::Absent) => {
                     ValidationError("Awaiting requires a resume ticket".to_string())
                 }
                 (RunState::Running | RunState::Ended(_), _) => {
                     ValidationError("only Awaiting may carry a resume ticket".to_string())
                 }
-                (RunState::Awaiting, LegacyTicketShape::Mismatched) => {
+                (RunState::Awaiting, WireTicketShape::Mismatched) => {
                     ValidationError("resume ticket run_id does not match commit run_id".to_string())
                 }
-                _ => unreachable!("all legal legacy shapes passed the guard"),
+                _ => unreachable!("all legal wire shapes passed the guard"),
             });
         }
         match (fact.state, ticket) {
             (RunState::Running, None) => Ok(Self::running(fact.run_id)),
             (RunState::Awaiting, Some(ticket)) => Ok(Self::awaiting(ticket)),
             (RunState::Ended(cause), None) => Ok(Self::ended(fact.run_id, cause)),
-            _ => unreachable!("the legacy-shape guard rejected every illegal combination"),
+            _ => unreachable!("the wire-shape guard rejected every illegal combination"),
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LegacyTicketShape {
+enum WireTicketShape {
     Absent,
     Matching,
     Mismatched,
 }
 
-fn legacy_shape_is_valid(state: &crate::agent::run::RunState, ticket: LegacyTicketShape) -> bool {
+fn wire_shape_is_valid(state: &crate::agent::run::RunState, ticket: WireTicketShape) -> bool {
     use crate::agent::run::RunState;
     matches!(
         (state, ticket),
-        (RunState::Running, LegacyTicketShape::Absent)
-            | (RunState::Awaiting, LegacyTicketShape::Matching)
-            | (RunState::Ended(_), LegacyTicketShape::Absent)
+        (RunState::Running, WireTicketShape::Absent)
+            | (RunState::Awaiting, WireTicketShape::Matching)
+            | (RunState::Ended(_), WireTicketShape::Absent)
     )
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ThreadCommitWire {
     thread_id: crate::agent::thread::Id,
     run_fact: crate::thread::commit::run_fact::RunFact,
     messages: Vec<crate::agent::message::Message>,
     state: Vec<crate::agent::state::Command>,
     events: Vec<crate::audit::draft::Draft>,
-    #[serde(default, alias = "waiting")]
+    #[serde(default)]
     resume_ticket: Option<crate::agent::awaiting::ResumeTicket>,
 }
 
@@ -156,7 +157,7 @@ impl Serialize for ThreadCommit {
 impl<'de> Deserialize<'de> for ThreadCommit {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let wire = ThreadCommitWire::deserialize(deserializer)?;
-        let run = RunDisposition::from_legacy(wire.run_fact, wire.resume_ticket)
+        let run = RunDisposition::from_wire(wire.run_fact, wire.resume_ticket)
             .map_err(D::Error::custom)?;
         let commit = Self {
             thread_id: wire.thread_id,
@@ -513,10 +514,9 @@ mod assemble_tests {
     }
 
     #[test]
-    fn invalid_legacy_cross_run_is_rejected_and_cross_thread_fails_validation() {
-        // Legacy journals carried `run_fact` and `waiting` separately. Their old
-        // wire shape remains readable, but an invalid pairing is rejected while
-        // decoding rather than entering the typed domain model.
+    fn invalid_wire_cross_run_is_rejected_and_cross_thread_fails_validation() {
+        // Current wire reconstruction validates the run/ticket relationship
+        // before it can enter the typed domain model.
         let invalid = serde_json::json!({
             "thread_id": "t",
             "run_fact": {
@@ -526,7 +526,7 @@ mod assemble_tests {
             "messages": [],
             "state": [],
             "events": [],
-            "waiting": ticket("other", "t")
+            "resume_ticket": ticket("other", "t")
         });
         assert!(serde_json::from_value::<ThreadCommit>(invalid).is_err());
 
@@ -541,14 +541,12 @@ mod assemble_tests {
     }
 
     #[test]
-    fn legacy_waiting_field_with_current_phase_enters_the_typed_model() {
-        // Cause/effect graph: C1 a historical commit uses the `waiting` field;
-        // C2 its RunState tag is the current `Awaiting` spelling. E1 the field
-        // alias enters the sole typed RunDisposition; E2 serialization emits
-        // only `resume_ticket` and the current state tag. Constraint: this
-        // field-shape compatibility is independent of retired RunState tags.
-        // Decision table: R1=C1+C2 -> E1+E2.
-        let legacy = serde_json::json!({
+    fn only_current_resume_ticket_field_enters_the_domain() {
+        // Causes: C1 a current commit carries `resume_ticket`; C2 a retired
+        // `waiting` field bypasses the store migration boundary. Effects: E1 C1
+        // enters and round-trips through the sole typed RunDisposition; E2 C2 is
+        // rejected. Decision table: R1=C1->E1; R2=C2->E2.
+        let current = serde_json::json!({
             "thread_id": "t",
             "run_fact": {
                 "run_id": "r",
@@ -557,9 +555,9 @@ mod assemble_tests {
             "messages": [],
             "state": [],
             "events": [],
-            "waiting": ticket("r", "t")
+            "resume_ticket": ticket("r", "t")
         });
-        let commit: ThreadCommit = serde_json::from_value(legacy).unwrap();
+        let commit: ThreadCommit = serde_json::from_value(current.clone()).unwrap();
         assert_eq!(commit.run_state(), RunState::Awaiting);
         assert!(commit.resume_ticket().is_some());
 
@@ -568,6 +566,31 @@ mod assemble_tests {
         assert!(encoded.get("resume_ticket").is_some());
         assert!(encoded.get("waiting").is_none());
         assert!(encoded.get("run").is_none());
+
+        let mut retired = current;
+        let ticket = retired
+            .as_object_mut()
+            .unwrap()
+            .remove("resume_ticket")
+            .unwrap();
+        retired
+            .as_object_mut()
+            .unwrap()
+            .insert("waiting".to_string(), ticket);
+        assert!(serde_json::from_value::<ThreadCommit>(retired).is_err());
+
+        let retired_null = serde_json::json!({
+            "thread_id": "t",
+            "run_fact": { "run_id": "r", "phase": "Running" },
+            "messages": [],
+            "state": [],
+            "events": [],
+            "waiting": null
+        });
+        assert!(
+            serde_json::from_value::<ThreadCommit>(retired_null).is_err(),
+            "R2/E2: even a retired null field is not silently ignored"
+        );
     }
 
     #[test]
@@ -585,11 +608,11 @@ mod assemble_tests {
         assert!(terminal.validate().is_ok());
     }
 
-    /// Finite model check for the legacy boundary: of the nine combinations of
+    /// Finite model check for the wire boundary: of the nine combinations of
     /// lifecycle class and ticket shape, exactly the three domain-valid shapes
     /// enter `RunDisposition`.
     #[test]
-    fn legacy_state_ticket_product_accepts_exactly_the_legal_shapes() {
+    fn wire_state_ticket_product_accepts_exactly_the_legal_shapes() {
         use crate::agent::run::EndCause;
         use crate::thread::commit::run_fact::RunFact;
 
@@ -605,7 +628,7 @@ mod assemble_tests {
                     1 => Some(ticket("r", "t")),
                     _ => Some(ticket("other", "t")),
                 };
-                let accepted = RunDisposition::from_legacy(
+                let accepted = RunDisposition::from_wire(
                     RunFact {
                         run_id: RunId("r".into()),
                         state: state.clone(),
@@ -654,17 +677,17 @@ mod kani_proofs {
         }
     }
 
-    /// Covers the complete 3×3 legacy lifecycle/ticket product symbolically.
+    /// Covers the complete 3×3 wire lifecycle/ticket product symbolically.
     #[kani::proof]
-    fn legacy_wire_accepts_exactly_the_legal_dispositions() {
+    fn wire_accepts_exactly_the_legal_dispositions() {
         let state = symbolic_state(kani::any());
         let ticket_shape = kani::any::<u8>() % 3;
         let shape = match ticket_shape {
-            0 => LegacyTicketShape::Absent,
-            1 => LegacyTicketShape::Matching,
-            _ => LegacyTicketShape::Mismatched,
+            0 => WireTicketShape::Absent,
+            1 => WireTicketShape::Matching,
+            _ => WireTicketShape::Mismatched,
         };
-        let accepted = legacy_shape_is_valid(&state, shape);
+        let accepted = wire_shape_is_valid(&state, shape);
         let expected = matches!(
             (&state, ticket_shape),
             (RunState::Running, 0) | (RunState::Awaiting, 1) | (RunState::Ended(_), 0)

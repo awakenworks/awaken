@@ -245,7 +245,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   }
   run_kani awaken-agent-contract \
     --harness ended_is_absorbing_for_every_next_state \
-    --harness legacy_wire_accepts_exactly_the_legal_dispositions \
+    --harness wire_accepts_exactly_the_legal_dispositions \
     --harness run_identity_binding_is_exactly_run_scoped \
     --harness exclusive_state_conflict_requires_every_exact_precondition \
     --harness state_materialization_effect_is_total_and_exact \

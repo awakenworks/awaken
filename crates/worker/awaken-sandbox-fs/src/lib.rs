@@ -409,6 +409,25 @@ impl ExclusiveFileLock {
         destination_leaf: &Path,
         contents: &[u8],
     ) -> std::io::Result<()> {
+        self.transform_sibling_regular_file_atomic(destination_leaf, |_, stage| {
+            stage.write_all(contents)
+        })
+    }
+
+    /// Transform one regular sibling through a private, durable stage and then
+    /// atomically replace it.
+    ///
+    /// The callback receives the opened source and stage files so callers can
+    /// keep memory bounded while re-encoding large data. Publication retains the
+    /// same no-follow inode checks as [`Self::replace_sibling_regular_file_atomic`].
+    pub fn transform_sibling_regular_file_atomic<F>(
+        &self,
+        destination_leaf: &Path,
+        transform: F,
+    ) -> std::io::Result<()>
+    where
+        F: FnOnce(&mut File, &mut File) -> std::io::Result<()>,
+    {
         let destination_leaf = validate_sibling_leaf(destination_leaf)?;
         self.validate_parent_path()?;
         let descriptor = rustix::fs::openat(
@@ -418,7 +437,8 @@ impl ExclusiveFileLock {
             rustix::fs::Mode::empty(),
         )
         .map_err(io_error)?;
-        let opened = rustix::fs::fstat(&descriptor).map_err(io_error)?;
+        let mut source = File::from(descriptor);
+        let opened = rustix::fs::fstat(&source).map_err(io_error)?;
         if rustix::fs::FileType::from_raw_mode(opened.st_mode) != rustix::fs::FileType::RegularFile
             || opened.st_nlink != 1
         {
@@ -427,8 +447,10 @@ impl ExclusiveFileLock {
                 "replacement sibling is not one unaliased regular file",
             ));
         }
-        let stage = self.write_sibling_file_stage(destination_leaf, contents)?;
+        let (stage, mut stage_file) = self.create_sibling_file_stage(destination_leaf)?;
         let result = (|| {
+            transform(&mut source, &mut stage_file)?;
+            stage_file.sync_all()?;
             let named = rustix::fs::statat(
                 &self.parent,
                 destination_leaf,

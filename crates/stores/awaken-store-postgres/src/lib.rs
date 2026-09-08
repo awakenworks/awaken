@@ -1106,13 +1106,11 @@ impl RunLifecycleFeed for PostgresCommitCoordinator {
                         (SELECT prior.payload FROM {prefix}_event AS prior \
                          WHERE prior.run_id = event.run_id \
                            AND prior.sequence < event.sequence \
-                           AND prior.kind::text IN ('\"RunStateChanged\"', '\"RunPhaseChanged\"') \
+                           AND prior.kind::text = '\"RunStateChanged\"' \
                          ORDER BY prior.sequence DESC LIMIT 1) AS previous_payload \
                  FROM {prefix}_event AS event \
                  JOIN {prefix}_run_record AS run ON run.run_id = event.run_id \
-                 WHERE event.kind::text IN (\
-                     '\"RunStateChanged\"', '\"RunPhaseChanged\"', '\"RunRescheduled\"'\
-                 )\
+                 WHERE event.kind::text IN ('\"RunStateChanged\"', '\"RunRescheduled\"')\
              ) \
              SELECT sequence, run_id, thread_id, kind, payload, previous_payload \
              FROM lifecycle WHERE sequence > $1 ORDER BY sequence LIMIT $2"

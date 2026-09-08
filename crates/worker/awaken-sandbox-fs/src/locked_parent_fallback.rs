@@ -43,6 +43,17 @@ impl ExclusiveFileLock {
         self.unsupported("sibling file replacement")
     }
 
+    pub fn transform_sibling_regular_file_atomic<F>(
+        &self,
+        _destination_leaf: &Path,
+        _transform: F,
+    ) -> std::io::Result<()>
+    where
+        F: FnOnce(&mut File, &mut File) -> std::io::Result<()>,
+    {
+        self.unsupported("sibling file transformation")
+    }
+
     pub fn remove_sibling_regular_file_nofollow(&self, _leaf: &Path) -> std::io::Result<()> {
         self.unsupported("sibling file removal")
     }
