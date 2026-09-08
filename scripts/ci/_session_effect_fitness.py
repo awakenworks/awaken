@@ -249,9 +249,15 @@ REQUIRED = {
         "SessionDeleteCommand::new(id)",
         ".delete_session(awaken_session_application::SessionDeleteCommand::new(id))",
     ),
-    SESSION_STORE: ("SessionRepositoryError::Unavailable", "SessionRepositoryError::Corrupt"),
-    SQLITE_SESSION_STORE: ("current_session.admits_tombstone(",),
-    POSTGRES_SESSION_STORE: ("current_session.admits_tombstone(",),
+    SESSION_STORE: (
+        "SessionRepositoryError::Unavailable",
+        "SessionRepositoryError::Corrupt",
+        "fn validate_current_mutation(",
+        "current.admits_tombstone(",
+        ".validate_observation_replacement(replacement)",
+    ),
+    SQLITE_SESSION_STORE: ("validate_current_mutation(",),
+    POSTGRES_SESSION_STORE: ("validate_current_mutation(",),
     RUNTIME_HOST: (
         "async fn prepare_terminal_cleanup_for_effect",
         "async fn acknowledge_terminal_cleanup_preparation",
@@ -1183,6 +1189,23 @@ fn recover_terminal_receipts() {
     assert repository_publication_writer_violations(canonical) == [], (
         "canonical Repository publication writer"
     )
+
+    # Current-row admission decision table: C1 shared tombstone authorization;
+    # C2 shared observation preservation; C3 SQLite calls the shared gate;
+    # C4 Postgres calls it. R1 all true => canonical source passes above;
+    # R2-R5 remove each edge => reject that exact missing guard. These source
+    # checks supplement real SQL/Kani mutants; they do not prove SQL semantics.
+    for owner, marker in (
+        (SESSION_STORE, "current.admits_tombstone("),
+        (SESSION_STORE, ".validate_observation_replacement(replacement)"),
+        (SQLITE_SESSION_STORE, "validate_current_mutation("),
+        (POSTGRES_SESSION_STORE, "validate_current_mutation("),
+    ):
+        mutant = dict(canonical)
+        assert marker in mutant[owner]
+        mutant[owner] = mutant[owner].replace(marker, "")
+        expected = f"{owner}: missing Session external-effect guard {marker!r}"
+        assert expected in session_effect_violations(mutant), expected
 
     # G48 cause/effect rules: C1 one expected-prior declaration reaches the
     # sole local Git writer under an exact ref lease; C2 the shared cleanup

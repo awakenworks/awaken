@@ -247,6 +247,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness environment_image_build_claim_is_exact_non_wrapping_and_blocked_is_inert \
     --harness environment_image_build_mutation_requires_exact_claim_and_admissible_command
   run_kani awaken-session-contract \
+    --harness session_root_replacement_preserves_creation_and_monotonic_update_observations \
     --harness public_millisecond_projection_is_exact_bounded_and_nonwrapping \
     --harness session_utc_projection_domain_is_total_exact_and_idempotent \
     --harness realization_generation_authority_requires_every_axis \
@@ -355,7 +356,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness managed_rollout_ack_requires_converged_progress
   # Two-slot material collections do not need the string comparison's loop
   # budget. Keep every unwinding assertion; only builtin memcmp gets 16.
-  run_kani awaken-credential-vault -Z unstable-options \
+  # The owned predecessor-set iterator uses the bundled MiniSAT backend.
+  run_kani awaken-credential-vault -Z unstable-options --solver minisat \
     --harness credential_material_input_facts_without_predecessor \
     --cbmc-args --unwindset memcmp.0:16
   run_kani awaken-tool-relay \
@@ -380,6 +382,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness publication_revision_decision_is_target_safe_fail_closed_and_replay_first
   run_kani awaken-config-store \
     --harness management_effect_retirement_requires_present_matching_receipt
+  run_kani awaken-credential-contract --solver minisat \
+    --harness managed_rollout_identity_requires_every_payload_field
   run_kani awaken-credential-contract \
     --harness credential_envelope_issuance_accepts_exactly_the_complete_claim \
     --harness credential_profile_admission_requires_one_complete_material_tuple \

@@ -528,6 +528,7 @@ pub awaken_session_contract::SessionEventBatchError::EmptyMessageContent
 pub awaken_session_contract::SessionEventBatchError::EmptyOutcomeDescription
 pub awaken_session_contract::SessionEventBatchError::EmptyOutcomeRubric
 pub awaken_session_contract::SessionEventBatchError::EmptySessionId
+pub awaken_session_contract::SessionEventBatchError::InvalidAcceptedAdmission
 pub awaken_session_contract::SessionEventBatchError::InvalidBatchRevision
 pub awaken_session_contract::SessionEventBatchError::InvalidClosedAdmission
 pub awaken_session_contract::SessionEventBatchError::InvalidIdempotencyCoordinate
@@ -648,6 +649,7 @@ pub awaken_session_contract::SessionMutationResult::Replayed
 pub awaken_session_contract::SessionMutationResult::Replayed::new_revision: awaken_session_contract::SessionRevision
 pub enum awaken_session_contract::SessionMutationValidationError
 pub awaken_session_contract::SessionMutationValidationError::ActiveActivityStateMismatch
+pub awaken_session_contract::SessionMutationValidationError::CreationObservationChanged
 pub awaken_session_contract::SessionMutationValidationError::EmptyIdempotencyKey
 pub awaken_session_contract::SessionMutationValidationError::EmptyPayloadHash
 pub awaken_session_contract::SessionMutationValidationError::EmptySessionId
@@ -657,6 +659,7 @@ pub awaken_session_contract::SessionMutationValidationError::RevisionExhausted
 pub awaken_session_contract::SessionMutationValidationError::RuntimeIntervalFactMismatch
 pub awaken_session_contract::SessionMutationValidationError::RuntimeIntervalStateMismatch
 pub awaken_session_contract::SessionMutationValidationError::TombstoneRevisionMismatch
+pub awaken_session_contract::SessionMutationValidationError::UpdateObservationRegressed
 pub enum awaken_session_contract::SessionNetworkPolicy
 pub awaken_session_contract::SessionNetworkPolicy::Allowlist
 pub awaken_session_contract::SessionNetworkPolicy::Allowlist::hosts: alloc::vec::Vec<alloc::string::String>
@@ -1277,6 +1280,8 @@ pub fn awaken_session_contract::PersistedSession::begin_runtime_interval(&mut se
 pub fn awaken_session_contract::PersistedSession::close_runtime_interval(&mut self, u64) -> core::option::Option<awaken_session_contract::SessionRuntimeInterval>
 pub fn awaken_session_contract::PersistedSession::effective_runtime_active_millis(&self, u64) -> u64
 pub fn awaken_session_contract::PersistedSession::observe_runtime_interval(&mut self, awaken_session_contract::SessionRuntimeIntervalObservation) -> bool
+impl awaken_session_contract::PersistedSession
+pub fn awaken_session_contract::PersistedSession::validate_observation_replacement(&self, &Self) -> core::result::Result<(), awaken_session_contract::SessionMutationValidationError>
 pub struct awaken_session_contract::QuiescenceReceipt
 pub awaken_session_contract::QuiescenceReceipt::activity_epoch: u64
 pub awaken_session_contract::QuiescenceReceipt::effect_id: alloc::string::String
@@ -1551,6 +1556,7 @@ pub fn awaken_session_contract::SessionEnvironmentReceipt::new(impl core::conver
 pub fn awaken_session_contract::SessionEnvironmentReceipt::verify(&self) -> core::result::Result<(), awaken_session_contract::SessionEnvironmentReceiptError>
 pub struct awaken_session_contract::SessionEventBatch
 pub awaken_session_contract::SessionEventBatch::admission_closed: bool
+pub awaken_session_contract::SessionEventBatch::admission_projection_anchor: core::option::Option<awaken_session_contract::SessionEventProjectionAnchor>
 pub awaken_session_contract::SessionEventBatch::admitted_revision: awaken_session_contract::SessionRevision
 pub awaken_session_contract::SessionEventBatch::batch_id: alloc::string::String
 pub awaken_session_contract::SessionEventBatch::events: alloc::vec::Vec<awaken_session_contract::SessionEventEntry>
@@ -1559,6 +1565,7 @@ pub awaken_session_contract::SessionEventBatch::request_fingerprint: core::optio
 pub awaken_session_contract::SessionEventBatch::traceparent: core::option::Option<alloc::string::String>
 pub awaken_session_contract::SessionEventBatch::wake_activity_epoch: core::option::Option<u64>
 impl awaken_session_contract::SessionEventBatch
+pub fn awaken_session_contract::SessionEventBatch::anchor_admission_projection(&mut self, awaken_session_contract::SessionEventProjectionAnchor) -> core::result::Result<bool, awaken_session_contract::SessionEventBatchError>
 pub fn awaken_session_contract::SessionEventBatch::anchor_committed_input(&mut self, &str, awaken_session_contract::SessionEventProjectionAnchor) -> core::result::Result<bool, awaken_session_contract::SessionEventBatchError>
 pub fn awaken_session_contract::SessionEventBatch::bind_idempotency(&mut self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<(), awaken_session_contract::SessionEventBatchError>
 pub fn awaken_session_contract::SessionEventBatch::closed_admission(alloc::string::String, awaken_session_contract::SessionRevision, alloc::string::String, alloc::string::String) -> core::result::Result<Self, awaken_session_contract::SessionEventBatchError>

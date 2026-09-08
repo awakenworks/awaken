@@ -107,7 +107,7 @@ use material_mutation::{
     CredentialMaterialRecoveryAction, credential_material_now_unix_ms,
     credential_material_recovery_action, fence_material_writes,
     idempotent_credential_source_matches, logical_credential_source_matches,
-    logical_material_ref_matches, namespace_new_material_refs,
+    logical_material_ref_matches, namespace_new_material_refs, new_material_refs,
 };
 
 /// Secret-free write-ahead intent for create, rotate, disable, archive, or
@@ -139,13 +139,7 @@ impl CredentialMutationIntent {
         before: Option<CredentialSource>,
         mut after: CredentialSource,
     ) -> Result<Self, CredentialError> {
-        let before_refs = before
-            .iter()
-            .flat_map(CredentialSource::material_refs)
-            .collect::<BTreeSet<_>>();
-        let writes_new_material = after
-            .material_refs()
-            .any(|reference| !before_refs.contains(reference));
+        let writes_new_material = new_material_refs(before.as_ref(), &after).next().is_some();
         let material_fence = CredentialMaterialMutationFence::fresh(writes_new_material)?;
         namespace_new_material_refs(before.as_ref(), &mut after, material_fence.attempt_id());
         let intent = Self {

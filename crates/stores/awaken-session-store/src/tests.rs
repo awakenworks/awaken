@@ -2050,6 +2050,196 @@ fn removed_bundle_v2_aggregate(session: &PersistedSession) -> serde_json::Value 
     encoded
 }
 
+#[test]
+fn current_mutation_admission_rejects_unreadable_or_foreign_observation_authority() {
+    // Dependency causes: D1 malformed current JSON; D2 valid JSON carries a
+    // foreign root id; D3 aggregate/index revisions disagree. All precede time
+    // comparison: effect E1=Corrupt, never replacement or deletion admission.
+    // These execute the same current-row decoder/gate used by both adapters.
+    let mut current = sample("observation-authority");
+    current.revision = SessionRevision(1);
+    let payload = SessionMutationPayload::Replace(current.clone());
+    let mutation = SessionMutation {
+        expected_revision: current.revision,
+        idempotency: IdempotencyRecord {
+            key: "observation-authority".into(),
+            payload_hash: payload.stable_hash(),
+        },
+        payload,
+        lifecycle_facts: Vec::new(),
+    };
+    let valid = aggregate_str(&current).unwrap();
+    current.session_id = "foreign-observation-authority".into();
+    for (rule, aggregate_json, revision) in [
+        ("D1", "{".into(), 1),
+        ("D2", aggregate_str(&current).unwrap(), 1),
+        ("D3", valid, 2),
+    ] {
+        assert!(
+            matches!(
+                validate_current_mutation(
+                    &mutation,
+                    EncodedSessionRow {
+                        aggregate_json,
+                        revision
+                    }
+                ),
+                Err(SessionRepositoryError::Corrupt(_))
+            ),
+            "{rule}/E1"
+        );
+    }
+}
+
+/// Root-observation cause/effect graph: C1 a receipt already exists; C2 current
+/// owner/revision match; C3 creation observation (including legacy None) is exact;
+/// C4 a known update observation is retained and nondecreasing. Effects: E1
+/// durable replay without adopting the candidate; E2 conflict; E3 invalid mutation
+/// with root/receipt/outbox unchanged; E4 atomic row + receipt + fact publication.
+/// Decision rules: R1=C1=>E1 before candidate-time validation; R2=!C1+!C2=>E2;
+/// R3=!C1+C2+!C3=>E3; R4=!C1+C2+C3+!C4=>E3; R5=!C1+C2+C3+C4=>E4.
+/// Unknown update may remain unknown for legacy low-level replacements, or gain
+/// a first observation. Unknown creation must never be invented by an update.
+/// The same table is invoked by both real SQL adapters through the existing
+/// root-mutation conformance owner, without a second backend test framework.
+async fn root_observation_replacement_table<R: ManagedSessionRepository>(repo: &R, prefix: &str) {
+    let rows = [
+        (None, None, Some(0), None, false),
+        (Some(10), Some(10), None, Some(11), false),
+        (Some(10), Some(10), Some(11), Some(11), false),
+        (Some(10), Some(10), Some(9), Some(10), false),
+        (Some(10), Some(10), Some(10), None, false),
+        (Some(10), Some(10), Some(10), Some(9), false),
+        (Some(10), Some(10), Some(10), Some(10), true),
+        (Some(10), Some(10), Some(10), Some(11), true),
+        (None, None, None, None, true),
+        (None, None, None, Some(0), true),
+        (Some(0), Some(0), Some(0), Some(0), true),
+        (
+            Some(u64::MAX),
+            Some(u64::MAX),
+            Some(u64::MAX),
+            Some(u64::MAX),
+            true,
+        ),
+        (
+            Some(u64::MAX),
+            Some(u64::MAX),
+            Some(u64::MAX),
+            Some(u64::MAX - 1),
+            false,
+        ),
+        (Some(0), None, Some(0), Some(0), true),
+        (None, Some(u64::MAX), None, Some(u64::MAX), true),
+        (None, Some(0), None, None, false),
+        (Some(0), Some(0), Some(1), None, false),
+    ];
+    for (index, (created, updated, desired_created, desired_updated, admitted)) in
+        rows.into_iter().enumerate()
+    {
+        let id = format!("{prefix}-time-{index}");
+        let mut seed = sample(&id);
+        seed.created_at_unix_ms = created;
+        seed.updated_at_unix_ms = updated;
+        let before = create_fixture(repo, "ws_a", seed, Vec::new()).await;
+        let before_facts = repo.pending_lifecycle().await.unwrap();
+        let mut candidate = before.clone();
+        candidate.title = Some("observed candidate".into());
+        candidate.created_at_unix_ms = desired_created;
+        candidate.updated_at_unix_ms = desired_updated;
+        let payload = SessionMutationPayload::Replace(candidate.clone());
+        let key = format!("observation:{id}");
+        let event = fact(&format!("observation-fact:{id}"), &id, "session.updated");
+        let mutation = SessionMutation {
+            expected_revision: before.revision,
+            idempotency: IdempotencyRecord {
+                key: key.clone(),
+                payload_hash: payload.stable_hash(),
+            },
+            payload,
+            lifecycle_facts: vec![event.clone()],
+        };
+        // R2 wins even when the candidate also violates C3/C4: no cross-owner
+        // observation validation or partial row/receipt/outbox publication.
+        assert!(
+            matches!(
+                repo.commit_mutation("foreign", mutation.clone())
+                    .await
+                    .unwrap(),
+                SessionMutationResult::Conflict { .. }
+            ),
+            "R2 row {index}"
+        );
+        let result = repo.commit_mutation("ws_a", mutation.clone()).await;
+        if admitted {
+            assert_eq!(
+                result,
+                Ok(SessionMutationResult::Applied {
+                    new_revision: SessionRevision(2)
+                }),
+                "R5 row {index}"
+            );
+            candidate.revision = SessionRevision(2);
+            assert_eq!(repo.get(&id).await.unwrap(), candidate, "R5 row {index}");
+            assert!(
+                repo.pending_lifecycle().await.unwrap().contains(&event),
+                "R5 outbox"
+            );
+            // R1 receipt identity precedes candidate-time validation. Even a
+            // newly sampled/forged candidate cannot change a replayed root.
+            let mut replay = mutation.clone();
+            if let SessionMutationPayload::Replace(root) = &mut replay.payload {
+                root.created_at_unix_ms = if created.is_some() { None } else { Some(1) };
+                root.updated_at_unix_ms = None;
+            }
+            assert_eq!(
+                repo.commit_mutation("ws_a", replay).await.unwrap(),
+                SessionMutationResult::Replayed {
+                    new_revision: SessionRevision(2)
+                },
+                "R1"
+            );
+            assert_eq!(
+                repo.get(&id).await.unwrap(),
+                candidate,
+                "R1 complete durable root"
+            );
+            repo.complete_lifecycle(&event.id).await.unwrap();
+        } else {
+            assert!(
+                matches!(result, Err(SessionRepositoryError::InvalidMutation(_))),
+                "R3/R4 row {index}: {result:?}"
+            );
+            assert_eq!(repo.get(&id).await.unwrap(), before, "R3/R4 complete root");
+            assert_eq!(
+                repo.idempotency_receipt(&id, &key).await.unwrap(),
+                None,
+                "R3/R4 no receipt"
+            );
+            assert_eq!(
+                repo.pending_lifecycle().await.unwrap(),
+                before_facts,
+                "R3/R4 no outbox"
+            );
+            // Rejection cannot consume the idempotency key: correcting the
+            // candidate at the same revision must still apply normally.
+            let mut corrected = mutation;
+            candidate.created_at_unix_ms = created;
+            candidate.updated_at_unix_ms = updated;
+            corrected.payload = SessionMutationPayload::Replace(candidate);
+            corrected.idempotency.payload_hash = corrected.payload.stable_hash();
+            assert!(
+                matches!(
+                    repo.commit_mutation("ws_a", corrected).await.unwrap(),
+                    SessionMutationResult::Applied { .. }
+                ),
+                "R3/R4 correction"
+            );
+            repo.complete_lifecycle(&event.id).await.unwrap();
+        }
+    }
+}
+
 /// Root-mutation cause graph shared by every durable backend:
 /// C1=idempotency key exists, C2=payload hash matches, C3=root revision
 /// matches, C4=aggregate was tombstoned. Key/hash resolution precedes CAS,
@@ -2063,6 +2253,7 @@ fn removed_bundle_v2_aggregate(session: &PersistedSession) -> serde_json::Value 
 /// | R4 | F | - | F | F | revision conflict |
 /// | R5 | F | - | - | T | tombstone conflict |
 async fn root_mutation_decision_table<R: ManagedSessionRepository>(repo: &R, id: &str) {
+    root_observation_replacement_table(repo, id).await;
     let created = create_fixture(repo, "ws_a", sample(id), Vec::new()).await;
     let mut replacement = created.clone();
     replacement.title = Some("winner".into());

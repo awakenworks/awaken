@@ -36,6 +36,16 @@ type checking are valuable executable evidence, but are not formal proofs.
   obligation therefore retains `abstract_model_checked`; SessionRoot TLC,
   SQLite crash/race tests and a shared SQLite/Postgres lost-ack/conflict table
   provide complementary evidence, not universal refinement.
+  Fresh low-level Replace is also checked against the current durable root in
+  one shared store admission, after replay and the owner/revision fence. The
+  contract guard directly proves creation-time immutability (including legacy
+  unknown) and forbids erasing/regressing a known update over all `Option<u64>`
+  inputs. It no longer relies on callers preserving those fields. Both SQL
+  adapters exercise the same 17-row rejection/publication/replay table; malformed,
+  foreign-identity and revision-inconsistent current rows fail closed at the
+  shared decoder gate. Historical unknown update can remain unknown in low-level
+  replacements; only the application samples the clock. The SQL/async/refinement
+  limits above remain unchanged.
 - Terminal reconciliation keeps one production page iterator shared by Host and
   Worker. Kani calls that exact iterator over 0..3 arbitrary byte identities,
   arbitrary usize limits and initial cursor, and every early-drop position
@@ -547,15 +557,39 @@ proves command-validation composition or SQL/outbox atomicity. The former
 proof-only boolean predicates were removed; both complete transaction
 obligations retain abstract-model grades until production composition closes.
 
+Rollout payload identity already has one production owner: the derived
+`ManagedCredentialRollout` equality in the Credential contract. InMemory,
+SQLite and PostgreSQL consume that equality under their existing lock or
+transaction for insert replay and acknowledgement; there is no second
+proof-only identity predicate. Its Kani harness exercises actual equality,
+inequality, String allocation and Drop with five independent 0..2-byte ASCII
+strings per event (including NUL), both full-width u64 revisions and all four
+operations, at unwind 6. A raw-byte/length/tag oracle independently checks all
+eight fields. Native tests exhaust the 256 differing-field subsets plus each
+string's length, prefix, empty and unused-byte cases. The shared real-backend
+suite checks exact commit replay, seven individual non-key payload collisions,
+absent-key no-op, exact acknowledgement and repeated acknowledgement while
+checking the committed pair and outbox after rejected acknowledgements. A
+subsequent valid mutation reuses that pending event id with a new child
+revision; all three adapters reject publication and retain the original pair,
+outbox and unapplied WAL before exact abort cleanup.
+This adds bounded production equality evidence; arbitrary strings, JSON
+projection, insert-collision rollback and transaction composition remain outside
+the kernel proof. The complete event replay/ack obligation therefore keeps its
+abstract-model grade.
+
 The Source and Managed creation envelopes share `CredentialMaterialMutationFence`.
 Its material-input projection is also shared by both fresh-command and durable
 validation paths, replacing four copies of reference-set/attempt-suffix logic.
 Material lifecycle sets use the byte-lexical order derived by `SecretRef`, so
 cleanup's ordered union already supplies unique sorted deletion references;
 the former HashSet-plus-Vec-sort path is removed.
-The input projection extends its predecessor set directly, without the
-FromIterator temporary Vec/sort, and consumes the new-reference iterator once
-for both facts. Exact suffix checks borrow the attempt and fixed separator,
+Preparation, input admission and Ready recovery share the same borrowed
+candidate-delta iterator. It extends its predecessor set directly, without the
+FromIterator temporary Vec/sort, and preserves candidate order and repeated new
+aliases. The independent 5,184-row executable oracle checks this exact sequence;
+input admission consumes it once for both facts. Exact suffix checks borrow the
+attempt and fixed separator,
 without allocating a formatted suffix. The no-predecessor Kani harness executes
 the actual BTreeSet/BTreeMap/String projection with primary and one auxiliary
 candidate slot, six reference classes and optional attempt. The corresponding
