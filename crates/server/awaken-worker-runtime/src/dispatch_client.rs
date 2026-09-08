@@ -301,6 +301,10 @@ impl ClaimedStreamPublisher for HttpDispatchQueue {
 
 #[async_trait]
 impl DispatchQueue for HttpDispatchQueue {
+    fn owns_local_maintenance(&self) -> bool {
+        false
+    }
+
     async fn resolve_claimed_session_run_reservation(
         &self,
         claim: &RunClaim,
@@ -881,9 +885,9 @@ impl DispatchQueue for HttpDispatchQueue {
     // A database-less worker never legitimately drives them, so they FAIL CLOSED
     // (Rejected) rather than pretend a mutation/read the server didn't perform — a
     // silent `Ok` no-op here would let a remote worker believe it quarantined,
-    // purged, or relayed when it did nothing. The pool's maintenance loop ticks purge/
-    // relay but discards their result (`let _ =` / `unwrap_or(0)`), so a rejection
-    // is swallowed there; anywhere the result is consumed, the fault surfaces. ---
+    // purged, or relayed when it did nothing. Schedulers use this adapter's
+    // owns_local_maintenance boundary to avoid starting redundant server work;
+    // an explicit misuse still surfaces the fault rather than reporting success. ---
 
     async fn quarantine_retry_exhausted(
         &self,

@@ -22,12 +22,15 @@
 //
 // Decision table:
 // | Rule | C1 | C2 | C3-C5 | Effect |
-// | H1 | Y | host-login | Y | E1 + live local capability, no auth-file access |
+// | H1 | Y | host-login | Y | E1 + live local capability + shared resource oracle |
 // | D1 | - | host-fixture | Y | same resource oracle, no inference service |
 // | N1 | - | native-host-fixture | Y | API-selected TrustedHost Native Hand, same resource oracle |
 // | C1 | Y | container  | Y | E1 + newly observed managed container |
-// | F1 | N | any        | - | fail before invoking Codex |
+// | F1 | N | live profile | - | fail before invoking the adapter |
 // | F2 | Y | other      | - | fail before server/session work |
+// Linux H1/D1/N1 use the same scoped execution selection and namespace oracle;
+// the exhaustive platform/profile/runtime rules live in acp_live_profile.test.mjs.
+// Awaken discovers login through the CLI, without opening its authentication file.
 
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
@@ -42,23 +45,16 @@ import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 import { availablePort, FAKE_KEY, startUpstream, initializeE2EInstallation, waitForSessionEventReceipt, stopServer as stop, hardKillServer } from './harness.mjs';
 import { installHostResourceFixture, verifyAgentResources } from './fixtures/trusted_host_resources.mjs';
+import { resolveAcpLiveProfile } from './acp_live_profile.mjs';
 
-const profile = process.env.CODEX_ACP_PROFILE;
-const runtime = process.env.AWAKEN_ACP_RUNTIME ?? 'codex';
-const nativeHost = profile === 'native-host-fixture';
-const native = profile === 'native-fixture' || nativeHost;
-// Linux deterministic TrustedHost rows must exercise the installed boundary,
-// not silently qualify the old unsupervised deployment. Other OSes retain
-// their existing native resource contract; live-login opt-in is unchanged.
-const scopedHost = process.platform === 'linux' && (profile === 'host-fixture' || nativeHost);
-assert.ok(native ? runtime === 'native' : ['codex', 'claude'].includes(runtime), 'select the exact runtime for this profile');
-if (!['host-fixture', 'native-fixture', 'native-host-fixture'].includes(profile) && process.env.CODEX_ACP_LIVE !== '1') {
-  throw new Error('set CODEX_ACP_LIVE=1 to confirm this test may invoke the real Codex ACP adapter');
-}
-
-if (!['host-login', 'host-fixture', 'native-fixture', 'native-host-fixture', 'container'].includes(profile)) {
-  throw new Error('set CODEX_ACP_PROFILE=host-login, host-fixture, native-fixture, native-host-fixture or container');
-}
+// One selection drives deployment, companion features AND the resource oracle.
+// Real host login cannot silently fall back to unsupervised Linux execution.
+const { profile, runtime, nativeHost, native, scopedHost } = resolveAcpLiveProfile({
+  profile: process.env.CODEX_ACP_PROFILE,
+  runtime: process.env.AWAKEN_ACP_RUNTIME,
+  platform: process.platform,
+  live: process.env.CODEX_ACP_LIVE,
+});
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BETAS = ['managed-agents-2026-04-01'];

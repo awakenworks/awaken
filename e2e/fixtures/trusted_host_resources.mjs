@@ -61,8 +61,8 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
   // resource receipt must export its actual PID namespace plus this attempt.
   // Same-as-driver, absent/stale proof or an unconfigured boundary fails.
   // The same oracle runs again after graceful and abrupt all-in-one replacement.
-  // This is real execution/resource wiring with synthetic inference/credentials;
-  // it is not distributed Worker failover or vendor authentication evidence.
+  // Fixture callers use synthetic inference/credentials; host-login uses the
+  // real discovered login with the SAME oracle. Neither is cross-host failover.
   const native = runtime === 'native';
   assert.ok(['namespace', 'workdir'].includes(nativeIsolation));
   const trustedHost = !native || nativeIsolation === 'workdir';

@@ -378,6 +378,22 @@ The pool and coordinator-only Host reuse its one reconciliation loop. It is not
 a new aggregate, recovery center or source of physical-stop evidence; the former
 `DispatchMaintenance` name has no parallel compatibility implementation.
 
+The Dispatch adapter's immutable `owns_local_maintenance` boundary determines
+whether this process may run that loop. Memory/SQLite/PostgreSQL own queue
+maintenance; `HttpDispatchQueue` does not, and `AnyDispatchStore` forwards the
+same fact. Database-less Workers keep claim, renewal and retry-exhaustion drive
+but never periodically invoke Coordinator-only relay, purge or global scans.
+Explicit unsupported calls still reject; they are not successful no-ops.
+Service gates its terminal deadline as well as its maintenance body, preventing
+a skipped remote scan from leaving a permanently ready timer. Pool and standalone
+Reconciler use the same early ownership check, without another deployment flag.
+The adjacent 12-row scheduler test crosses ownership, entry and timer selection;
+the HTTP test checks that type erasure preserves refusal. The bounded
+`DispatchMaintenanceScheduling` model covers lost/duplicate hints, periodic
+progress and cancellation with three semantic mutants and reachability witnesses.
+Its atomic scheduling steps assume no storage operation is in flight: it does
+not prove driver completion, claim semantics or physical process termination.
+
 Standalone reconciliation directly consumes the configured `WakeSignal`.
 Within a Pool, only the existing wake coordinator consumes that external port
 and relays to a `LocalWakeSignal` for reconciliation; no extra listener or

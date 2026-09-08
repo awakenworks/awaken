@@ -952,13 +952,23 @@ the remaining external/reconciliation gates:
 | Flow | pinned to the pushed Awaken revision; one existing Worker/executor consumes the shared preparation service | keep the revision and lockfile updated atomically |
 | ambient configuration | Complete: Provider proposals and Flow ACP inventory/default fields are removed; sandbox/container, content-capture, database-pool and observability policy consume typed deployment configuration; memoryd uses explicit argv; enrollment signing is internal; OAuth cache lifetime is fixed credential-domain behavior | retain the automated reader audit: only PATH/HOME/DISPLAY/OS metadata and test gates may remain ambient |
 | content attribution/erasure | Managed request attribution is durable across dispatch and resume; Host-owned capture sink and subject-scoped ACP blob store share the erasure resolver; HTTP E2E proves capture + real session harvest fan-out, cross-subject isolation and idempotency | add automatic retention-expiry policy for ACP session homes |
-| real host proof | installed Codex `0.145.0` completed the zero-configuration host-login release gate through real wrapper negotiation, BackendDefault publication, LLM response and committed running→idle transcript; installed Claude `2.1.220` is correctly login-required when ambient `ANTHROPIC_API_KEY` is cleared | run the same release-gated real LLM session after a persisted Claude host login is available |
+| real host proof | on 2026-09-08, installed and wrapper-bundled Codex `0.153.4` completed the real host-login gate with Linux scoped execution, default/nested cwd, File/Memory/Repository byte and patch oracles, graceful/abrupt restart, conflict retention and durable cleanup; installed Claude `2.1.234` remains login-required when ambient provider keys are cleared | run the same real resource gate after a persisted Claude host login is available; qualify macOS/Windows, production HTTPS Git identity and cross-host cloud/local failures separately |
 
 Therefore discovery, generic ACP configuration, live Worker projection,
 event-triggered reconciliation, Flow reuse and the real Codex persisted-login
 path are implemented. A real Claude persisted-login LLM session remains the
 explicit external release gate; the ADR does not equate hermetic protocol
 coverage or an ambient API key with that proof.
+
+The Linux real-login gate now selects the same scoped deployment and resource
+oracle as the hermetic profiles through `e2e/acp_live_profile.mjs`; it cannot
+silently qualify an unsupervised host instead. The 2026-09-08 live deployment
+also yielded one WorkerLocal source, zero material references and zero sealed
+secret rows in a read-only credential-store observation. That observation and
+the existing registration/resolver conformance tests support local credential
+custody; they are not a credential-exfiltration audit or a real remote-cloud
+fault test. The resource mission's local bare Git remote uses test-support,
+not production HTTPS authentication. ADR-0038 owns its detailed resource scope.
 
 ADR-0057's trigger-gated G2 implementation now has request attribution,
 subject-scoped ACP continuity, a registered `ContentEraser`, and an Art.17 HTTP

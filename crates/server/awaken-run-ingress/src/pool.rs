@@ -974,6 +974,12 @@ struct ReconciliationContext<S> {
 }
 
 async fn reconciliation_loop<S: Dispatch + 'static>(context: ReconciliationContext<S>) {
+    // The same pool also drives database-less Workers. Their upstream already
+    // owns maintenance; do not poll unsupported server verbs or a second scan.
+    // Claim/renewal/retry-exhaustion stay in the independent ordinary drainers.
+    if !context.store.owns_local_maintenance() {
+        return;
+    }
     let ReconciliationContext {
         store,
         clock,
