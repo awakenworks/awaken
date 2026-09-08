@@ -541,12 +541,18 @@ mod assemble_tests {
     }
 
     #[test]
-    fn legal_legacy_wire_enters_the_typed_model_and_serializes_compatibly() {
+    fn legacy_waiting_field_with_current_phase_enters_the_typed_model() {
+        // Cause/effect graph: C1 a historical commit uses the `waiting` field;
+        // C2 its RunState tag is the current `Awaiting` spelling. E1 the field
+        // alias enters the sole typed RunDisposition; E2 serialization emits
+        // only `resume_ticket` and the current state tag. Constraint: this
+        // field-shape compatibility is independent of retired RunState tags.
+        // Decision table: R1=C1+C2 -> E1+E2.
         let legacy = serde_json::json!({
             "thread_id": "t",
             "run_fact": {
                 "run_id": "r",
-                "phase": "Waiting"
+                "phase": "Awaiting"
             },
             "messages": [],
             "state": [],
