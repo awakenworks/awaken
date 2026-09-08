@@ -1731,6 +1731,11 @@ pub trait ContainerRuntime: Send + Sync {
         plan: &ContainerPlan,
         _realization_fingerprint: &pc::SandboxRealizationFingerprint,
     ) -> Result<PreparedContainer, RuntimeError> {
+        if !plan.memory_mounts.is_empty() {
+            return Err(RuntimeError::Backend(
+                "container runtime must implement a non-runnable reservation for Memory".into(),
+            ));
+        }
         if context.effect_fence.is_some() {
             return Err(RuntimeError::Backend(
                 "container runtime does not implement fenced realization effects".into(),

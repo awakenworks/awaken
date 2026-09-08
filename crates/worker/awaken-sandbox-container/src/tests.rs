@@ -881,8 +881,8 @@ async fn activation_response_loss_recovers_copy_from_the_backend_bound_root() {
      * reservation is fresh/recovered/active; C2 Copy mount succeeds; C3
      * activation response arrives/is lost; C4 the Worker process-local Provider
      * is replaced. Effects: R1 fresh+C2 reserves before mount and activates
-     * after the manifest commit; R2 fresh+C2+C3(loss) publishes no Sandbox and
-     * retains the backend-bound root; R3 R2+C4+active reads the exact manifest,
+     * after the recovery-receipt commit; R2 fresh+C2+C3(loss) publishes no Sandbox and
+     * retains the backend-bound root; R3 R2+C4+active reads the exact receipt,
      * performs no remount/compensation, and returns the same locator/evidence.
      * A recovering-but-not-active reservation instead invokes exact
      * `recover_unknown_mount` before a new mount (U1-U3). */
@@ -936,9 +936,9 @@ async fn activation_response_loss_recovers_copy_from_the_backend_bound_root() {
         .unwrap();
     assert!(
         recovered_root
-            .join(crate::provider::MEMORY_MATERIALIZATION_MANIFEST)
+            .join(crate::staged_mounts::MEMORY_PRE_ACTIVATION_RECEIPT)
             .is_file(),
-        "R2 manifest"
+        "R2 pre-activation recovery receipt"
     );
     let second = provider(runtime.clone());
     second.install_memory_mounter(mounter);
@@ -1036,7 +1036,11 @@ async fn recovered_native_reservation_without_its_exact_memory_root_fails_closed
         Ok(_) => panic!("missing root cannot become a fresh Memory attempt"),
         Err(error) => error,
     };
-    assert!(error.to_string().contains("recovery staging is missing"));
+    assert!(
+        error
+            .to_string()
+            .contains("retained host staging path is missing")
+    );
     assert_eq!(runtime.st.lock().unwrap().activation_calls, 0);
     assert!(!torn_down.load(Ordering::SeqCst));
 }
@@ -1609,7 +1613,6 @@ async fn physical_disposal_rechecks_current_authority_before_delete_release_and_
                     .iter()
                     .enumerate()
                     .map(|(index, calls)| StagedMemoryMount {
-                        attempt: published_memory_attempt(pc::Realization::Fuse),
                         handle: Box::new(FakeMemoryMount {
                             torn_down: Arc::new(AtomicBool::new(false)),
                             fail_teardown: false,
@@ -2706,24 +2709,6 @@ struct FakeMemoryMount {
     realization: pc::Realization,
 }
 
-fn published_memory_attempt(realization: pc::Realization) -> pc::MemoryMountAttempt {
-    let mut attempt = pc::MemoryMountAttempt::new(
-        "container-test-memory-attempt",
-        "container-test-memory-store",
-        "/container-test-memory",
-        pc::MountAccess::ReadWrite,
-    )
-    .unwrap();
-    for transition in [
-        pc::MemoryMountAttemptTransition::Begin,
-        pc::MemoryMountAttemptTransition::Mounted(realization),
-        pc::MemoryMountAttemptTransition::Published,
-    ] {
-        attempt.apply(transition).unwrap();
-    }
-    attempt
-}
-
 #[async_trait]
 impl pc::MemoryMounter for FakeMemoryMounter {
     async fn mount(
@@ -3223,15 +3208,19 @@ impl ContainerRuntime for FakeRuntime {
         _realization_fingerprint: &pc::SandboxRealizationFingerprint,
         prepared_locator: &str,
     ) -> Result<String, RuntimeError> {
+        {
+            let mut state = self.st.lock().unwrap();
+            state
+                .created_binds
+                .insert(prepared_locator.to_owned(), plan.binds.clone());
+            state
+                .created_memory_mounts
+                .insert(prepared_locator.to_owned(), plan.memory_mounts.clone());
+            state.activation_calls += 1;
+            state.active_reservations.insert(context.scope.to_owned());
+        }
+        self.creation_response("activation").await;
         let mut state = self.st.lock().unwrap();
-        state
-            .created_binds
-            .insert(prepared_locator.to_owned(), plan.binds.clone());
-        state
-            .created_memory_mounts
-            .insert(prepared_locator.to_owned(), plan.memory_mounts.clone());
-        state.activation_calls += 1;
-        state.active_reservations.insert(context.scope.to_owned());
         if std::mem::take(&mut state.lose_activation_response_once) {
             return Err(RuntimeError::MayHaveCommitted(
                 "injected activation response loss".into(),
@@ -3812,12 +3801,13 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
     // File response -> backend prepare response -> Memory/recovery response ->
     // activation -> handle response -> control response -> publication.
     // C1 boundary x C2 current proof {revoked, replaced, exhausted, renewed}
-    // x C3 neutral/ContainerEnvironment/warm-pool port (120 rows).
+    // x C3 neutral/ContainerEnvironment/warm-pool port (144 rows).
     // A copied future fence is constant. Package/File/Memory responses exercise
     // actual dependencies, including already-created local participant bytes.
     // CA1 loss before prepare => Err, no physical creation; CA2 loss at/after
     // prepare => Err, no NEXT effect/publication/removal, exact backend-bound
-    // staging retained. CA3 same-effect renewal => one successful physical owner.
+    // staging retained; revoked authority cannot authorize compensation. CA3
+    // same-effect renewal => one successful physical owner.
     // CA4 no proof at entry => zero runtime observations. CA5 an earlier
     // unknown Memory mount has a failed compensation behind a prepared backend;
     // recovery of that exact backend-bound path pauses. Loss on its response
@@ -3838,6 +3828,8 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
             "file",
             "memory",
             "create",
+            "staging",
+            "activation",
             "handle",
             "control",
         ] {
@@ -3853,7 +3845,9 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
                 {
                     let mut state = runtime.st.lock().unwrap();
                     state.control_enabled = true;
-                    if boundary != "entry" {
+                    if boundary == "staging" {
+                        state.staging_response_gate = Some(gate.clone());
+                    } else if boundary != "entry" {
                         state.creation_response_gate = Some((boundary, gate.clone()));
                     }
                 }
@@ -4008,8 +4002,16 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
                     change == "renew",
                     "{port}/{boundary}/{change}: {result:?}"
                 );
-                let after_prepare =
-                    ["memory", "recovery", "create", "handle", "control"].contains(&boundary);
+                let after_prepare = [
+                    "memory",
+                    "recovery",
+                    "create",
+                    "staging",
+                    "activation",
+                    "handle",
+                    "control",
+                ]
+                .contains(&boundary);
                 {
                     let state = runtime.st.lock().unwrap();
                     assert_eq!(
@@ -4033,7 +4035,7 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
                             let last = match boundary {
                                 "package" => "initial-preflight",
                                 "file" => "resolved-preflight",
-                                "memory" | "recovery" => "create",
+                                "memory" | "recovery" | "staging" => "create",
                                 other => other,
                             };
                             assert_eq!(
@@ -4044,8 +4046,8 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
                         }
                         if boundary == "memory" {
                             assert!(
-                                torn_down.load(Ordering::SeqCst),
-                                "CA2 compensate unpublished Memory after authority loss"
+                                !torn_down.load(Ordering::SeqCst),
+                                "CA2 revoked authority cannot authorize compensation"
                             );
                         }
                     }
@@ -4053,6 +4055,7 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
                 if change != "renew" && after_prepare {
                     // The backend reservation/active object, not a process-local
                     // ledger, is the next call's sole recovery root.
+                    runtime.st.lock().unwrap().staging_response_gate = None;
                     gate.add_permits(1);
                     let replay = provider.create_container(&requested).await;
                     assert!(
