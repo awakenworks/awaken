@@ -320,6 +320,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-run-executor-acp \
     --harness mcp_client_credential_admission_has_no_gateway_or_adapter_fallback
   run_kani awaken-dispatch-contract \
+    --harness claim_credential_operation_is_total_and_terminal_dominates \
     --harness only_awaiting_or_already_superseded_is_replacement_safe \
     --harness stale_dispatch_claim_cannot_modify_authoritative_state \
     --harness exact_dispatch_settlement_is_terminal_or_awaiting_only \
