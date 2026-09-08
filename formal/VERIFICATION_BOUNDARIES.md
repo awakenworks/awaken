@@ -24,6 +24,18 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Architecture slices implemented at this checkpoint
 
+- Session root time remains attached to the existing application CAS. Its
+  production observation kernel is directly checked over every `Option<u64>`
+  previous observation and `u64` clock, including zero, equal/backwards samples
+  and `u64::MAX`: the result is exact, monotonic and repeat-idempotent without
+  arithmetic overflow. The actual `SessionMutationResult` interpretation kernel
+  accepts the candidate only for Applied and returns that exact revision;
+  Replayed requires the existing durable-root read, while Conflict/Mismatch
+  reject it. These proofs do not execute SQL transactions, asynchronous reload,
+  create-time stamping or an unbounded crash schedule. The whole root-time
+  obligation therefore retains `abstract_model_checked`; SessionRoot TLC,
+  SQLite crash/race tests and a shared SQLite/Postgres lost-ack/conflict table
+  provide complementary evidence, not universal refinement.
 - ACP crossing writes extend the existing AcpBoundary model with a bounded
   duplex schedule, FIFO read-ahead, cancellation and explicit overflow. Kani
   proves the production buffer admission arithmetic over usize inputs; it does
