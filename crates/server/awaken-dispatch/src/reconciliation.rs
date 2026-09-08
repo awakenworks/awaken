@@ -29,7 +29,7 @@ impl TerminalReconciliationScan {
         F: FnMut(DispatchSummary) -> Fut,
         Fut: Future<Output = Result<Option<(RunId, RunState)>, Error>>,
     {
-        let budget = limit.min(256);
+        let budget = inspection_budget(limit);
         if budget == 0 {
             return Ok(Vec::new());
         }
@@ -37,14 +37,10 @@ impl TerminalReconciliationScan {
             return Ok(Vec::new());
         };
         let ids = store.scan_dispatch_ids(after.as_ref(), budget).await?;
-        let at_end = ids.len() < budget;
         let mut completed = Vec::new();
-        for run_id in ids {
-            // Advance before per-row I/O: a failed/cancelled observation may be
-            // retried after wrap, but cannot pin every later row behind it.
-            *after = Some(run_id.clone());
+        for run_id in TerminalScanPage::new(&ids, &mut after, budget) {
             let result = async {
-                let Some(row) = store.dispatch_summary(&run_id).await? else {
+                let Some(row) = store.dispatch_summary(run_id).await? else {
                     return Ok(None);
                 };
                 if !matches!(
@@ -64,9 +60,58 @@ impl TerminalReconciliationScan {
                 }
             }
         }
-        if at_end {
-            *after = None;
-        }
         Ok(completed)
     }
 }
+
+fn inspection_budget(limit: usize) -> usize {
+    limit.min(256)
+}
+
+/// The one production page traversal. Only scheduling identity is mutable here;
+/// the caller retains Dispatch/ThreadCommit authority. Keeping traversal over a
+/// borrowed slice also makes its exact control flow verifiable independently of
+/// adapter allocation, locking and asynchronous observation.
+struct TerminalScanPage<'a, Id> {
+    ids: &'a [Id],
+    after: &'a mut Option<Id>,
+    budget: usize,
+    visited: usize,
+}
+
+impl<'a, Id> TerminalScanPage<'a, Id> {
+    fn new(ids: &'a [Id], after: &'a mut Option<Id>, limit: usize) -> Self {
+        Self {
+            ids,
+            after,
+            budget: inspection_budget(limit),
+            visited: 0,
+        }
+    }
+}
+
+impl<'a, Id: Clone> Iterator for TerminalScanPage<'a, Id> {
+    type Item = &'a Id;
+
+    fn next(&mut self) -> Option<&'a Id> {
+        if self.visited < self.budget && self.visited < self.ids.len() {
+            let run_id = &self.ids[self.visited];
+            self.visited += 1;
+            // Advance before the caller performs per-row I/O. Dropping a page
+            // while its observer is pending must preserve this position.
+            *self.after = Some(run_id.clone());
+            Some(run_id)
+        } else {
+            // Wrap only after consuming a short/empty positive-budget page.
+            // A full final page needs a subsequent empty scan. In particular,
+            // neither cancellation (Drop) nor a zero budget resets the cursor.
+            if self.budget > 0 && self.ids.len() < self.budget {
+                *self.after = None;
+            }
+            None
+        }
+    }
+}
+
+#[cfg(any(test, kani))]
+mod page_proofs;

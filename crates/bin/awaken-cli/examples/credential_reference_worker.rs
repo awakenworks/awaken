@@ -109,15 +109,11 @@ impl awaken_runtime_contract::CredentialMaterialResolver for ReferenceMaterializ
                 "awaken.workload.acp",
             ),
         ] {
-            for source in [awaken_runtime_contract::CredentialMaterialSource::WorkerReference] {
-                for envelope in [false] {
-                    profiles.insert(awaken_runtime_contract::CredentialMaterialCapability {
-                        holder: holder.clone(),
-                        source,
-                        envelope,
-                    });
-                }
-            }
+            profiles.insert(awaken_runtime_contract::CredentialMaterialCapability {
+                holder,
+                source: awaken_runtime_contract::CredentialMaterialSource::WorkerReference,
+                envelope: false,
+            });
         }
         profiles
     }

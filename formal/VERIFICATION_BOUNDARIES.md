@@ -36,6 +36,21 @@ type checking are valuable executable evidence, but are not formal proofs.
   obligation therefore retains `abstract_model_checked`; SessionRoot TLC,
   SQLite crash/race tests and a shared SQLite/Postgres lost-ack/conflict table
   provide complementary evidence, not universal refinement.
+- Terminal reconciliation keeps one production page iterator shared by Host and
+  Worker. Kani calls that exact iterator over 0..3 arbitrary byte identities,
+  arbitrary usize limits and initial cursor, and every early-drop position
+  (unwind 5, default checks). It verifies ordered bounded consumption, advance
+  before observation, retention on cancellation, and short/empty-page wrap.
+  Native decision-table cases extend lengths to 300 and cover 256/257/MAX limits;
+  actual RunId async tests cover failed observers, cancellation, SQL corruption
+  and custom adapters returning oversized pages. The iterator enforces the visit
+  budget even if such an adapter violates its read limit; adapter allocation is
+  still outside that bound. The existing TLC model separately owns conditional
+  progress under finite stable rows, fair calls, returning reads and bounded
+  restarts. Neither evidence proves Tokio locking, RunId allocation, SQL keyset
+  refinement or universal liveness; the whole scan obligation retains its
+  abstract-model grade.
+
 - ACP crossing writes extend the existing AcpBoundary model with a bounded
   duplex schedule, FIFO read-ahead, cancellation and explicit overflow. Kani
   proves the production buffer admission arithmetic over usize inputs; it does

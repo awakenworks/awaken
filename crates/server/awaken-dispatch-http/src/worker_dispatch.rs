@@ -159,6 +159,7 @@ pub struct WorkerDispatchService {
     session_work: Option<Arc<dyn awaken_session_contract::work_queue::SessionWorkLeaseAuthority>>,
     local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
     max_attempts: u64,
+    execution_bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
 }
 
 impl WorkerDispatchService {
@@ -188,7 +189,17 @@ impl WorkerDispatchService {
             session_work: None,
             local_credential_capabilities: Default::default(),
             max_attempts: 5,
+            execution_bindings: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_execution_binding_source(
+        mut self,
+        source: Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>,
+    ) -> Self {
+        self.execution_bindings = Some(source);
+        self
     }
 
     #[must_use]
@@ -380,6 +391,7 @@ async fn claim_authority(
 }
 
 pub struct RegisteredDispatchDependencies {
+    pub execution_bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     pub dispatch: Arc<dyn DispatchQueue>,
     pub checkpoint: Arc<dyn StreamCheckpointStore>,
     pub directory: Arc<dyn WorkerDirectory>,
@@ -398,6 +410,7 @@ pub struct RegisteredDispatchDependencies {
 
 pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) -> Router {
     let RegisteredDispatchDependencies {
+        execution_bindings,
         dispatch,
         checkpoint,
         directory,
@@ -412,25 +425,28 @@ pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) 
         terminal_observer,
         stream_sink,
     } = dependencies;
-    dispatch_transport_router_with_service(Arc::new(
-        WorkerDispatchService::new(
-            dispatch,
-            authenticator,
-            Arc::new(SystemWorkerClock),
-            Arc::new(FixedWorkerLeasePolicy::default()),
-        )
-        .with_worker_directory(directory, 30_000)
-        .with_placement_policy(policy)
-        .with_checkpoint_store(checkpoint)
-        .with_recovery_source(recovery)
-        .with_completion_sink(completion)
-        .with_terminal_observer(terminal_observer)
-        .with_stream_sink(stream_sink)
-        .with_session_control(sessions)
-        .with_session_environment_bindings(session_environment_bindings)
-        .with_session_coordination(coordination)
-        .with_session_work_authority(session_work),
-    ))
+    let service = WorkerDispatchService::new(
+        dispatch,
+        authenticator,
+        Arc::new(SystemWorkerClock),
+        Arc::new(FixedWorkerLeasePolicy::default()),
+    )
+    .with_worker_directory(directory, 30_000)
+    .with_placement_policy(policy)
+    .with_checkpoint_store(checkpoint)
+    .with_recovery_source(recovery)
+    .with_completion_sink(completion)
+    .with_terminal_observer(terminal_observer)
+    .with_stream_sink(stream_sink)
+    .with_session_control(sessions)
+    .with_session_environment_bindings(session_environment_bindings)
+    .with_session_coordination(coordination)
+    .with_session_work_authority(session_work);
+    let service = match execution_bindings {
+        Some(source) => service.with_execution_binding_source(source),
+        None => service,
+    };
+    dispatch_transport_router_with_service(Arc::new(service))
 }
 
 /// Compose the complete registered-Worker transport from already-configured

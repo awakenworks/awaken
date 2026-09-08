@@ -25,6 +25,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 tracing = "0.1"
+tokio = { workspace = true, features = ["time"] }
 
 [features]
 test-support = []
