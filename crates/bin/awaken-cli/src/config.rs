@@ -181,27 +181,7 @@ impl ResolvedDeployment {
                 "worker_server_required: pass --server or configure worker_server".to_owned(),
             );
         }
-        worker_bootstrap::validate_credential_file_ownership(
-            role,
-            file.worker_request_credential_file.is_some(),
-            file.worker_trust_credentials_file.is_some(),
-        )?;
-        if let Some(policy) = &file.worker_kubernetes {
-            policy.validate(role, mode, file.worker_trust_credentials_file.is_some())?;
-        }
-        if file.worker_kubernetes_identity_directory.is_some()
-            && (role != Role::Worker || mode != OperatingMode::Server)
-        {
-            return Err(
-                "worker_kubernetes_identity_directory is owned by a server-mode Worker".into(),
-            );
-        }
-        if role == Role::Coordinator && file.credential_envelope_keys_file.is_some() {
-            return Err(
-                "credential_envelope_keys_file belongs to Control or Worker, not Coordinator"
-                    .into(),
-            );
-        }
+        worker_bootstrap::validate_file_ownership(role, mode, &file)?;
         let worker = WorkerBootstrap::resolve(
             awaken_worker::WorkerBootstrapInput {
                 worker_id: file.worker_id.clone(),

@@ -593,13 +593,13 @@ credential admission and materialization. The Gateway opens the same canonical
 store adapters; a copied Vault, local fallback, or raw-secret RPC is not an
 equivalent realization.
 
-`CredentialEnvelope` currently records recipient, expiry, and payload
-fingerprint constraints for an installed resolver such as CSI. Awaken does not
-currently implement a cryptographic envelope issuer, recipient public-key
-registry, ciphertext store, replay nonce, or KMS unwrap contract. A deployment
-that cannot install the canonical materializer in the Gateway therefore fails
-closed; it must not claim recipient-bound network delivery from envelope
-metadata alone.
+`CredentialEnvelope` records recipient, expiry, and payload fingerprint
+constraints for an installed resolver such as CSI. The self-hosted recipient-key
+transport described above now seals scalar Provider/process credentials; it does
+not implement this Gateway's structured `HttpEffect` delivery, a recipient
+public-key registry, a ciphertext store, or a KMS unwrap contract. A deployment
+that cannot install the canonical materializer in the Gateway therefore still
+fails closed; envelope metadata alone does not establish network delivery.
 
 ### Amendment: deployment-owned Cloud Native profile (2026-08-14)
 

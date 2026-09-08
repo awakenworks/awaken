@@ -33,7 +33,33 @@ impl KubernetesWorkerTransport {
     }
 }
 
-pub(super) fn validate_credential_file_ownership(
+pub(super) fn validate_file_ownership(
+    role: Role,
+    mode: super::OperatingMode,
+    file: &super::FileConfig,
+) -> Result<(), String> {
+    validate_credential_file_ownership(
+        role,
+        file.worker_request_credential_file.is_some(),
+        file.worker_trust_credentials_file.is_some(),
+    )?;
+    if let Some(policy) = &file.worker_kubernetes {
+        policy.validate(role, mode, file.worker_trust_credentials_file.is_some())?;
+    }
+    if file.worker_kubernetes_identity_directory.is_some()
+        && (role != Role::Worker || mode != super::OperatingMode::Server)
+    {
+        return Err("worker_kubernetes_identity_directory is owned by a server-mode Worker".into());
+    }
+    if role == Role::Coordinator && file.credential_envelope_keys_file.is_some() {
+        return Err(
+            "credential_envelope_keys_file belongs to Control or Worker, not Coordinator".into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_credential_file_ownership(
     role: Role,
     request_credential_file: bool,
     trust_credentials_file: bool,
@@ -61,6 +87,32 @@ pub(super) fn validate_credential_file_ownership(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn envelope_key_file_is_excluded_from_the_coordinator() {
+        // E1 no envelope key file => preserve role-owned transport rules.
+        // E2 key file + Coordinator => reject before file I/O. E3 Control,
+        // Worker or AllInOne => retain the existing issuer/resolver composition.
+        for role in [
+            Role::Control,
+            Role::Coordinator,
+            Role::Worker,
+            Role::AllInOne,
+        ] {
+            for keys in [false, true] {
+                let file = super::super::FileConfig {
+                    credential_envelope_keys_file: keys.then(|| "keys.json".into()),
+                    ..Default::default()
+                };
+                assert_eq!(
+                    validate_file_ownership(role, super::super::OperatingMode::Server, &file)
+                        .is_ok(),
+                    !keys || role != Role::Coordinator,
+                    "E1-E3 {role:?} keys={keys}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn kubernetes_file_configuration_reaches_only_its_owning_process() {
