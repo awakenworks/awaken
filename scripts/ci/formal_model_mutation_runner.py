@@ -33,8 +33,11 @@ def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str
                 for source_path in directory.glob("*"):
                     if source_path.is_file(): shutil.copy2(source_path, artifact_directory / source_path.name)
             try:
+                # Pinned TLC extracts standard modules by name and deletes them
+                # on JVM exit. -metadir isolates states, not those parser files;
+                # reuse this invocation's owner for JVM temporaries as well.
                 result = subprocess.run(
-                    ["java", f"-Xmx{heap_mb}m", "-XX:+UseParallelGC", "-jar", str(tlc_jar.resolve()),
+                    ["java", f"-Djava.io.tmpdir={directory}", f"-Xmx{heap_mb}m", "-XX:+UseParallelGC", "-jar", str(tlc_jar.resolve()),
                      "-metadir", str(directory / "states"), "-config", str(config_path), str(model)],
                     cwd=directory, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     timeout=timeout_seconds, check=False,
