@@ -1465,6 +1465,54 @@ async fn managed_material_mutation_begin_and_phases_conform(
     .unwrap();
     assert!(repo.begin_managed_mutation(update.clone()).await.unwrap());
     let update_reclaiming = repo.commit_managed_mutation(&update).await.unwrap();
+    // Rollout identity decision table, shared by all three real repositories.
+    // C1 event key exists; C2 every payload field matches; C3 exact mutation is
+    // replayed. R1 C1+C2+C3 => same event and committed pair; R2 C1+!C2 =>
+    // conflict with unchanged event/pair; R3 !C1 => idempotent no-op; R4 C1+C2
+    // acknowledgement => remove exactly this event; repeating R4 => R3.
+    // Single-field collisions cover each of the seven non-key fields; all
+    // eight-field combinations are independently covered in the contract's
+    // native/Kani table. The SQL transaction/JSON boundary is exercised here.
+    let events = repo.pending_managed_rollouts().await.unwrap();
+    assert_eq!(events.len(), 1, "rollout R1");
+    let event = events[0].clone();
+    assert_eq!(
+        repo.commit_managed_mutation(&update).await.unwrap(),
+        update_reclaiming,
+        "rollout R1 exact commit replay"
+    );
+    assert_eq!(repo.pending_managed_rollouts().await.unwrap(), events);
+    for field in 0..7 {
+        let mut collision = event.clone();
+        match field {
+            0 => collision.workspace_id.push('x'),
+            1 => collision.vault_id.push('x'),
+            2 => collision.credential_id.push('x'),
+            3 => collision.source_id.0.push('x'),
+            4 => collision.source_version ^= 1,
+            5 => collision.credential_revision ^= 1,
+            6 => collision.operation = ManagedCredentialOperation::Delete,
+            _ => unreachable!(),
+        }
+        assert!(
+            matches!(
+                repo.complete_managed_rollout(&collision).await,
+                Err(CredentialError::MutationConflict(_))
+            ),
+            "rollout R2 field {field}"
+        );
+        assert_eq!(repo.pending_managed_rollouts().await.unwrap(), events);
+        assert_eq!(
+            repo.get(&update.after_source.id).await.unwrap(),
+            update.after_source
+        );
+        assert_eq!(
+            repo.get_vault_credential("ws", &update.after_credential.id)
+                .await
+                .unwrap(),
+            Some(update.after_credential.clone())
+        );
+    }
     let mut forged_update = update.clone();
     forged_update
         .before_source
@@ -1484,6 +1532,69 @@ async fn managed_material_mutation_begin_and_phases_conform(
     repo.complete_managed_mutation(&update_reclaiming)
         .await
         .unwrap();
+
+    // R5 a later valid mutation reuses the still-durable event id but advances
+    // the child revision => insert collision rejects the entire publication.
+    // Public repository commands seed the collision, so this same rollback
+    // witness runs on all adapters without a parallel test-only insertion port.
+    let mut next_child = update.after_credential.clone();
+    next_child.revision += 1;
+    let collision_update = PendingManagedCredentialMutation::change(
+        update.operation_id.clone(),
+        ManagedCredentialOperation::Update,
+        update.after_source.clone(),
+        update.after_source.clone(),
+        update.after_credential.clone(),
+        next_child,
+        false,
+    )
+    .unwrap();
+    assert!(
+        repo.begin_managed_mutation(collision_update.clone())
+            .await
+            .unwrap()
+    );
+    assert!(
+        matches!(
+            repo.commit_managed_mutation(&collision_update).await,
+            Err(awaken_credential_vault::catalog::ManagedCredentialMutationError::RevisionConflict)
+        ),
+        "rollout R5"
+    );
+    assert_eq!(
+        repo.get(&update.after_source.id).await.unwrap(),
+        update.after_source
+    );
+    assert_eq!(
+        repo.get_vault_credential("ws", &update.after_credential.id)
+            .await
+            .unwrap(),
+        Some(update.after_credential.clone())
+    );
+    assert_eq!(repo.pending_managed_rollouts().await.unwrap(), events);
+    assert_eq!(
+        repo.pending_managed_mutations().await.unwrap(),
+        vec![collision_update.clone()]
+    );
+    let aborted = repo
+        .abort_managed_mutation(&collision_update)
+        .await
+        .unwrap();
+    repo.complete_managed_mutation(&aborted).await.unwrap();
+    let mut absent = event.clone();
+    absent.id.push('x');
+    repo.complete_managed_rollout(&absent).await.unwrap();
+    assert_eq!(
+        repo.pending_managed_rollouts().await.unwrap(),
+        events,
+        "rollout R3"
+    );
+    repo.complete_managed_rollout(&event).await.unwrap();
+    assert!(
+        repo.pending_managed_rollouts().await.unwrap().is_empty(),
+        "rollout R4"
+    );
+    repo.complete_managed_rollout(&event).await.unwrap();
 
     for source_exists in [false, true] {
         for child_exists in [false, true] {

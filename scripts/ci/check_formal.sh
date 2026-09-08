@@ -381,6 +381,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness publication_revision_decision_is_target_safe_fail_closed_and_replay_first
   run_kani awaken-config-store \
     --harness management_effect_retirement_requires_present_matching_receipt
+  run_kani awaken-credential-contract --solver minisat \
+    --harness managed_rollout_identity_requires_every_payload_field
   run_kani awaken-credential-contract \
     --harness credential_envelope_issuance_accepts_exactly_the_complete_claim \
     --harness credential_profile_admission_requires_one_complete_material_tuple \

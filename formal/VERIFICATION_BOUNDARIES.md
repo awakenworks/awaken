@@ -547,6 +547,27 @@ proves command-validation composition or SQL/outbox atomicity. The former
 proof-only boolean predicates were removed; both complete transaction
 obligations retain abstract-model grades until production composition closes.
 
+Rollout payload identity already has one production owner: the derived
+`ManagedCredentialRollout` equality in the Credential contract. InMemory,
+SQLite and PostgreSQL consume that equality under their existing lock or
+transaction for insert replay and acknowledgement; there is no second
+proof-only identity predicate. Its Kani harness exercises actual equality,
+inequality, String allocation and Drop with five independent 0..2-byte ASCII
+strings per event (including NUL), both full-width u64 revisions and all four
+operations, at unwind 6. A raw-byte/length/tag oracle independently checks all
+eight fields. Native tests exhaust the 256 differing-field subsets plus each
+string's length, prefix, empty and unused-byte cases. The shared real-backend
+suite checks exact commit replay, seven individual non-key payload collisions,
+absent-key no-op, exact acknowledgement and repeated acknowledgement while
+checking the committed pair and outbox after rejected acknowledgements. A
+subsequent valid mutation reuses that pending event id with a new child
+revision; all three adapters reject publication and retain the original pair,
+outbox and unapplied WAL before exact abort cleanup.
+This adds bounded production equality evidence; arbitrary strings, JSON
+projection, insert-collision rollback and transaction composition remain outside
+the kernel proof. The complete event replay/ack obligation therefore keeps its
+abstract-model grade.
+
 The Source and Managed creation envelopes share `CredentialMaterialMutationFence`.
 Its material-input projection is also shared by both fresh-command and durable
 validation paths, replacing four copies of reference-set/attempt-suffix logic.
