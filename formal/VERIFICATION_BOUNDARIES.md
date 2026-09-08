@@ -266,6 +266,16 @@ type checking are valuable executable evidence, but are not formal proofs.
   failures or Rust refinement. AllInOne source lifecycle refresh remains a
   separate integration obligation; these bounds must not be reported as full
   cloud/local or Windows/macOS production qualification.
+  The shared resource E2E additionally selects a shipped standalone Worker
+  process, signed HTTP-over-TLS transport, exact registry observations,
+  projected disable/delete/restore, and Worker-only graceful/abrupt replacement.
+  Its unchanged File/Memory/Repository oracle checks bytes, physical roots,
+  conflict retention and terminal tombstones. This is executable integration
+  evidence, not an extension of the model's state space or proof grade. Local
+  probe intervals and Coordinator heartbeat publication have separate clocks;
+  a configured evidence TTL shorter than publication cadence may fail closed
+  between heartbeats. That availability/configuration gap is not proved away
+  by the per-use projection model.
 - Circuit admission and completion now consume one owner-local Rust reducer.
   Both Closed requests and HalfOpen probes carry phase/epoch fences. Late
   completions stutter, zero probe capacity rejects even the first probe, and

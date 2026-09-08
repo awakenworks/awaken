@@ -167,6 +167,27 @@ observation expiry: failed refreshes do not extend old deadlines. A successful
 check is not instant revocation protection during the final check-to-launch
 interval, nor protection from a trusted publisher replaying older content.
 
+The portable gate runs `CODEX_ACP_PROFILE=worker-host-fixture` through the
+existing `e2e/codex_acp_live_e2e.mjs` resource mission for Codex and Claude. It
+first lets normal startup create the source, then removes ACP from the embedded
+Worker and launches the production `awaken-worker` artifact with a separate
+installation directory, explicit private CA and signed request credential.
+An unsigned registration must fail; the exact standalone registry row must
+publish and revoke its projected reference without restarting. The same File,
+Memory and Repository mission checks default/nested cwd, rendered resource
+variables, independent bytes and Git patch application, concurrent Memory
+conflicts, graceful/abrupt Worker replacement while Control stays alive, and
+physical cleanup plus durable tombstones. The physical marker must reside in
+the standalone Worker's root, excluding embedded execution as a passing oracle.
+
+This is a same-host fixture qualification, not real vendor login, HTTPS Git
+credential, cross-host cloud failure or automatic projection delivery proof.
+The fixture retains the default 30-second observation TTL: choosing a TTL
+shorter than the Coordinator's heartbeat publication cadence can leave safe but
+unavailable gaps even when local probes succeed. Current configuration checks
+only TTL versus probe interval; publication-cadence coordination remains an
+explicit follow-up boundary, not a reason to extend expired evidence.
+
 ## Split service boundaries
 
 Split Control and Coordinator processes each bind a second private HTTP surface.
@@ -192,7 +213,8 @@ executable_agent_registration_token_file = "/var/run/secrets/awaken/agent-regist
 ```
 
 Split roles fail startup when `internal_bind` is absent, malformed, or equal to
-`bind`; AllInOne and Worker reject it. Token values are loaded from files and
+`bind`; AllInOne may select it for external Workers, while Worker rejects it.
+Token values are loaded from files and
 never appear in `awaken config`. `awaken database migrate` also prepares the
 Coordinator-owned executable Agent command log when `runtime_database_url` is
 configured.

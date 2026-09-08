@@ -21,8 +21,7 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs, { mkdtempSync } from 'node:fs';
-import { request as httpRequest } from 'node:http';
-import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
+import type { Server as HttpsServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,6 +40,7 @@ import {
 } from './fixtures/thread_commit_fixture.mjs';
 import { workdirWorkerManifestFixture } from './fixtures/worker_manifest_fixture.mjs';
 import { createTlsIdentityFixture } from './fixtures/tls_identity_fixture.mjs';
+import { startTlsProxy, stopTlsProxy } from './fixtures/tls_proxy_fixture.mjs';
 import { stableFingerprintFixture } from './fixtures/stable_fingerprint_fixture.mjs';
 // @ts-expect-error The shared Cargo artifact resolver is intentionally JavaScript.
 import { WORKER_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
@@ -66,48 +66,6 @@ function workerBinary(): string {
     packageName: 'awaken-worker',
     targetName: 'awaken-worker',
     prebuiltEnvironmentName: WORKER_BIN_ENV,
-  });
-}
-
-async function startTlsProxy(
-  port: number,
-  targetPort: number,
-  certificate: string,
-  key: string,
-): Promise<HttpsServer> {
-  const server = createHttpsServer(
-    { cert: fs.readFileSync(certificate), key: fs.readFileSync(key) },
-    (incoming, outgoing) => {
-      const upstream = httpRequest({
-        hostname: '127.0.0.1',
-        port: targetPort,
-        method: incoming.method,
-        path: incoming.url,
-        headers: incoming.headers,
-      }, (response) => {
-        outgoing.writeHead(response.statusCode ?? 502, response.headers);
-        response.pipe(outgoing);
-      });
-      upstream.on('error', (error) => {
-        if (!outgoing.headersSent) outgoing.writeHead(502);
-        outgoing.end(`TLS proxy upstream failed: ${error.message}`);
-      });
-      incoming.pipe(upstream);
-    },
-  );
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(port, '127.0.0.1', () => {
-      server.off('error', reject);
-      resolve();
-    });
-  });
-  return server;
-}
-
-async function stopTlsProxy(server: HttpsServer): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
   });
 }
 

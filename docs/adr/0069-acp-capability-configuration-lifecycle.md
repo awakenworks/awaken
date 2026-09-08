@@ -898,7 +898,7 @@ Implemented consolidation evidence:
 - `awaken-acp-application` owns discovery, acquisition, WorkerLocal registration
   and liveness composition;
 - host process probing and observation classification live only in
-  `awaken-acp-application`; Runtime Host no longer converts or imports discovery
+  `awaken-run-executor-acp::host`; Runtime Host no longer converts or imports discovery
   observations;
 - `awaken-protocol-acp::negotiate_capabilities` reuses the production
   initialize/session-new state machine, sends no prompt and returns full neutral

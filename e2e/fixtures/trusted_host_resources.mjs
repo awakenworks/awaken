@@ -38,7 +38,7 @@ export async function installHostResourceFixture(root, temp, data, runtime) {
   return { ...process.env, PATH: [bin, process.env.PATH].join(path.delimiter) };
 }
 
-export async function verifyAgentResources({ client, request, temp, runtime, restart, nativeModel, nativeIsolation = 'namespace', requireScopedExecution = false }) {
+export async function verifyAgentResources({ client, request, temp, runtime, restart, nativeModel, nativeIsolation = 'namespace', requireScopedExecution = false, expectedPhysicalRoot }) {
   // Cause/effect graph:
   // C1 API binds trusted_host version 1; C2 cwd={default,repo/src};
   // C3 File+Memory+Repository; C4 two Sessions share a MemoryStore and host
@@ -60,7 +60,8 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
   // S1-S6 Linux scoped x Codex/Claude/Native x default/nested cwd: EACH
   // resource receipt must export its actual PID namespace plus this attempt.
   // Same-as-driver, absent/stale proof or an unconfigured boundary fails.
-  // The same oracle runs again after graceful and abrupt all-in-one replacement.
+  // The same oracle runs again after graceful and abrupt Worker replacement
+  // (all-in-one OR standalone; the caller owns that process fault boundary).
   // Fixture callers use synthetic inference/credentials; host-login uses the
   // real discovered login with the SAME oracle. Neither is cross-host failover.
   const native = runtime === 'native';
@@ -221,7 +222,7 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
   // not graceful shutdown on every OS or in-flight crash fencing.
   await restart();
   await Promise.all(cases.map(execute));
-  // R5 dirty live Session + abrupt co-located Worker death => same Session can
+  // R5 dirty live Session + abrupt Worker death => same Session can
   // recover the surviving tree. The next mission MUST read the previous edits
   // before writing its new attempt marker; re-cloning would fail this oracle.
   await restart({ crash: true });
@@ -264,6 +265,14 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
       }
     }
     assert.equal(markers.length, 1, 'R7 one exact physical-generation marker');
+    if (expectedPhysicalRoot) {
+      // W5 separate Worker installation => retained physical evidence must be
+      // below THAT root, never a successful embedded Worker projection. This
+      // path is an independent oracle; it is never sent to the Agent fixture.
+      const relative = path.relative(expectedPhysicalRoot, markers[0]);
+      assert.ok(relative !== '' && relative !== '..' && !relative.startsWith('..' + path.sep)
+        && !path.isAbsolute(relative), 'W5 resource realization belongs to standalone Worker');
+    }
     const leaf = path.basename(markers[0]).slice(1, -suffix.length);
     const output = path.join(path.dirname(markers[0]), leaf, logical.replace(/^\/+/, ''));
     assert.ok(fs.existsSync(output), `R7 exact physical projection exists before cleanup: ${output}`);

@@ -2,6 +2,7 @@
 //
 // One script owns live deployments and the deterministic native-executable peer:
 //   CODEX_ACP_PROFILE=host-fixture node e2e/codex_acp_live_e2e.mjs
+//   CODEX_ACP_PROFILE=worker-host-fixture node e2e/codex_acp_live_e2e.mjs
 //   CODEX_ACP_PROFILE=native-fixture AWAKEN_ACP_RUNTIME=native node e2e/codex_acp_live_e2e.mjs
 //   CODEX_ACP_PROFILE=native-host-fixture AWAKEN_ACP_RUNTIME=native node e2e/codex_acp_live_e2e.mjs
 //
@@ -24,6 +25,7 @@
 // | Rule | C1 | C2 | C3-C5 | Effect |
 // | H1 | Y | host-login | Y | E1 + live local capability + shared resource oracle |
 // | D1 | - | host-fixture | Y | same resource oracle, no inference service |
+// | W1 | - | worker-host-fixture | Y | signed standalone Worker, same resource oracle |
 // | N1 | - | native-host-fixture | Y | API-selected TrustedHost Native Hand, same resource oracle |
 // | C1 | Y | container  | Y | E1 + newly observed managed container |
 // | F1 | N | live profile | - | fail before invoking the adapter |
@@ -47,10 +49,11 @@ import { availablePort, FAKE_KEY, startUpstream, initializeE2EInstallation, wait
 import { installHostResourceFixture, verifyAgentResources } from './fixtures/trusted_host_resources.mjs';
 import { resolveAcpLiveProfile } from './acp_live_profile.mjs';
 import { assertWorkerLocalCredentialCustody } from './fixtures/worker_local_credentials.mjs';
+import { prepareStandaloneHostWorker } from './fixtures/standalone_host_worker.mjs';
 
 // One selection drives deployment, companion features AND the resource oracle.
 // Real host login cannot silently fall back to unsupervised Linux execution.
-const { profile, runtime, nativeHost, native, scopedHost } = resolveAcpLiveProfile({
+const { profile, runtime, nativeHost, native, scopedHost, standaloneWorker } = resolveAcpLiveProfile({
   profile: process.env.CODEX_ACP_PROFILE,
   runtime: process.env.AWAKEN_ACP_RUNTIME,
   platform: process.platform,
@@ -124,6 +127,7 @@ async function startHostLoginProfile() {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-host-resource-'));
   let child;
   let upstream;
+  let external;
   try {
   // Artifact race rule: another scenario may rebuild target/debug/awaken with
   // different features while doctor/initialization or a restart is pending.
@@ -138,7 +142,7 @@ async function startHostLoginProfile() {
     features: ['hand', ...(scopedHost ? ['awaken-sandbox-local/test-support'] : [])],
     snapshotDestination: path.join(path.dirname(binary), process.platform === 'win32' ? 'awaken-sandbox.exe' : 'awaken-sandbox'),
   });
-  const environment = profile === 'host-fixture'
+  const environment = profile === 'host-fixture' || standaloneWorker
     ? await installHostResourceFixture(ROOT, temp, path.join(temp, 'data'), runtime)
     : process.env;
   if (native) upstream = await startUpstream('gitRepo', { models: ['fake-haiku'] });
@@ -154,7 +158,10 @@ async function startHostLoginProfile() {
 
   const port = await availablePort(0);
   const config = path.join(temp, 'config.toml');
-  fs.writeFileSync(config, [
+  if (standaloneWorker) external = await prepareStandaloneHostWorker({
+    root: ROOT, temp, productDirectory: path.dirname(binary), runtime, scopedHost,
+  });
+  const controlConfig = [
     `data_dir = ${JSON.stringify(path.join(temp, 'data'))}`,
     `sandbox_dir = ${JSON.stringify(path.join(temp, 'sandboxes'))}`,
     `bind = ${JSON.stringify(`127.0.0.1:${port}`)}`,
@@ -168,9 +175,11 @@ async function startHostLoginProfile() {
     `sandbox_trusted_host_scoped_execution = ${scopedHost}`,
     'log_filter = "warn"',
     `acp_clis = ${JSON.stringify(native ? [] : [runtime])}`,
+    ...(external?.controlConfig ?? []),
     // Select the runtime under test, without configuring a default backend or
     // credential material. Its login and executable remain discovery-owned.
-  ].join('\n'));
+  ];
+  fs.writeFileSync(config, controlConfig.join('\n'));
   initializeE2EInstallation(environment, { binary, configPath: config });
   const launch = () => {
     const process = spawn(binary, automatedAllInOneArgs('--config', config), {
@@ -209,6 +218,22 @@ async function startHostLoginProfile() {
     });
     verifyCredentials();
 
+    if (external) {
+      // W1 bootstrap authors the real locator once. The persistent source is
+      // reused unchanged; only the embedded Worker's ACP selection is removed.
+      await stop(child);
+      fs.writeFileSync(config, controlConfig.map((line) =>
+        line.startsWith('acp_clis =') ? 'acp_clis = []' : line).join('\n'));
+      child = launch();
+      await waitReady(child, baseURL, path.join(temp, 'data', 'admin-token'));
+      await external.start(credentialBaseline);
+      await external.verifyRevocation();
+      await waitForVerifiedAcpCapability(baseURL, runtime, {
+        timeoutMs: 60_000, pollMs: 200, requireAvailableLogin: true, apiKey,
+      });
+      verifyCredentials();
+    }
+
     if (native) {
       // Native uses the production provider import and real Messages transport,
       // not a scenario-only route or a second fake provider implementation.
@@ -234,7 +259,13 @@ async function startHostLoginProfile() {
     assert.equal(result.response.status, 200, JSON.stringify(result.value));
     result = await request(baseURL, apiKey, 'POST', `/v1/config/agents/${agent}/publish`);
     assert.equal(result.response.status, 200, JSON.stringify(result.value));
-    return { baseURL, apiKey, agent, temp, verifyCredentials, restart: async ({ crash = false } = {}) => {
+    return { baseURL, apiKey, agent, temp, physicalRoot: external?.physicalRoot,
+      verifyCredentials, restart: async ({ crash = false } = {}) => {
+      if (external) {
+        await external.restart({ crash });
+        verifyCredentials();
+        return;
+      }
       if (crash) await hardKillServer(child, 'TrustedHost live Session');
       else await stop(child);
       child = launch();
@@ -244,11 +275,13 @@ async function startHostLoginProfile() {
       });
       verifyCredentials();
     }, cleanup: async () => {
+      if (external) await external.cleanup();
       await stop(child);
       if (upstream) await upstream.close();
       fs.rmSync(temp, { recursive: true, force: true });
     } };
   } catch (error) {
+    if (external) await external.cleanup();
     if (child) await stop(child);
     if (upstream) await upstream.close();
     fs.rmSync(temp, { recursive: true, force: true });
@@ -345,6 +378,7 @@ try {
     await client.beta.sessions.delete(session.id, { betas: BETAS });
     await verifyAgentResources({
       client, runtime, temp: deployment.temp, restart: deployment.restart,
+      expectedPhysicalRoot: deployment.physicalRoot,
       requireScopedExecution: scopedHost,
       ...(native ? { nativeModel: 'fake-haiku', nativeIsolation: nativeHost ? 'workdir' : 'namespace' } : {}),
       request: (method, route, body) =>
