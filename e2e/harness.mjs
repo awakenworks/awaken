@@ -17,6 +17,7 @@ import {
   AWAKEN_BIN_ENV,
   SCENARIO_HOST_BIN_ENV,
   cargoExecutable,
+  cargoExecutionBundle,
   cargoScenarioHostBundle,
 } from './cargo_binary.mjs';
 import { stringifyDurableJson } from './sqlite.mjs';
@@ -287,12 +288,13 @@ function ensureBuilt() {
 
 export function ensureProductionBuilt() {
   if (productionBin) return productionBin;
-  productionBin = cargoExecutable({
+  // Cold production fixtures require the same hand companion as release bundles.
+  ({ executable: productionBin } = cargoExecutionBundle({
     cwd: REPO_ROOT,
     packageName: 'awaken-cli',
     targetName: 'awaken',
     prebuiltEnvironmentName: AWAKEN_BIN_ENV,
-  });
+  }));
   return productionBin;
 }
 
