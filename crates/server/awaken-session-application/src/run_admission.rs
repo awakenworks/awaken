@@ -541,10 +541,14 @@ impl SessionApplication {
         &self,
         command: CreateProfiledSessionCommand,
     ) -> Result<awaken_session_contract::PersistedSession, SessionCreationError> {
-        self.create_profiled_session_with_completion(
+        // Match the canonical Session-create boundary: the profiled authoring
+        // graph is intentionally deep, so keep its state machine behind one
+        // heap indirection instead of embedding it in every caller's Tokio
+        // worker stack under the full workspace feature graph.
+        Box::pin(self.create_profiled_session_with_completion(
             command,
             SessionCreationCompletion::AwaitRealization,
-        )
+        ))
         .await
     }
 
@@ -555,10 +559,10 @@ impl SessionApplication {
         &self,
         command: CreateProfiledSessionCommand,
     ) -> Result<awaken_session_contract::PersistedSession, SessionCreationError> {
-        self.create_profiled_session_with_completion(
+        Box::pin(self.create_profiled_session_with_completion(
             command,
             SessionCreationCompletion::AcceptDurableRoot,
-        )
+        ))
         .await
     }
 
