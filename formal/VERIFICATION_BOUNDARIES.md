@@ -457,15 +457,35 @@ methods, preservation of all non-phase fields, and recovery dispatch at the
 exact expiry boundary. Epochs and clocks use the full `u64` domain; identities
 use independent empty/a/b strings with unwind 4. The concrete takeover test
 checks successor abort-only behavior, invalid deadlines and epoch exhaustion.
-The same production claim transition now takes a lazy token factory behind its
-unchanged UUID wrapper. A bounded Kani proof checks exact eligibility/error
-precedence, nonwrapping epochs, field preservation and abort-only positive-epoch
-successors even when tokens repeat, using empty or two valid 32-byte UUID tokens
-with unwind 36. Legacy epoch zero is included without an
-owned-writer assumption. Six adapter phase rechecks are redundant after claim
-success plus complete locked snapshot equality and have been removed. The shared
-Source/Managed conformance table exercises all three backends, races two claimants,
-rejects stale token/epoch/deadline/payload snapshots, and checks two successive takeovers.
+The same production claim transition takes a lazy token factory behind its
+unchanged UUID wrapper. Kani checks exact eligibility/error precedence,
+nonwrapping epochs and field preservation with empty or two valid 32-byte UUID
+tokens (unwind 36). Epoch one is reserved for the original writer: legacy zero
+and modern one both advance to two, then every positive recovery epoch advances
+by one. All accepted successors are abort-only even if tokens repeat. A concrete
+valid legacy-fence regression reproduced the former zero-to-one token-collision
+path into Ready. The shared SQL table persists wire rows with missing owner
+fields and missing/retained attempt IDs across Writing, Ready and ReclaimingAbort,
+then checks Source/Managed takeover, repeated takeover, stale-owner rejection,
+abort and completion on SQLite/PostgreSQL. Root update witnesses also vary
+explicit/omitted JSON defaults and SQLite whitespace while preserving the decoded
+Source/child snapshots. They reproduce a second encoding comparison that rejected
+otherwise admitted legacy mutations. Full decoded-row admission under the existing
+FOR UPDATE / BEGIN IMMEDIATE lock is now the sole snapshot fence; keyed ownership,
+insert conflicts and affected-row checks remain. These witnesses cover publication,
+WAL completion and rollout acknowledgement, not general SQL serializability.
+The existing InMemory legacy recovery and serde tests exercise the same fence.
+`ManagedCredentialCreation` now actually includes legacy Writing initial states
+with absent/partial/complete material; new commands still use the existing Begin.
+The single lease-expiry action also covers recovery owners. Three semantic
+mutants check physical cleanup, legacy epoch reuse and legacy over-denial; three
+legacy witnesses require claim, repeated claim and abort to be reachable; a
+fourth witness preserves fresh-command publication.
+FairSpec checks conditional abort progress over all initial partitions. This
+removes the former comment-only legacy coverage; it is not Rust refinement.
+Six adapter phase rechecks remain redundant after claim success plus complete
+locked snapshot equality. Shared backend rules retain independent token, epoch,
+deadline, payload and durable-phase drift checks.
 These checks do not prove UUID generation, arbitrary-length strings, the
 enclosing repository CAS, external material IO or the complete recovery protocol;
 the existing takeover obligation retains its abstract-model grade.

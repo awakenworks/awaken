@@ -206,9 +206,14 @@ struct CredentialMaterialRequest<'a> {
     binding: &'a CredentialMaterialBinding,
 }
 
+struct CredentialMaterialCapability {
+    holder: PlaintextHolder,
+    source: CredentialMaterialSource,
+    envelope: bool,
+}
+
 trait CredentialMaterialResolver {
-    fn supported_material_sources(&self) -> Set<CredentialMaterialSource>;
-    fn supports_recipient_bound_envelopes(&self) -> bool;
+    fn material_capabilities(&self) -> Set<CredentialMaterialCapability>;
 
     async fn resolve_exact(
         &self,
@@ -1043,3 +1048,34 @@ Session-reservation repair, committed-terminal settlement, and opaque ACP
 recovery do not enter credential/model execution and retain their existing
 paths. The direct Runtime path continues to compile its attempt binding from the
 same credential contract without a durable queue projection.
+
+
+## 2026-09-08 amendment: installed material support is a relation
+
+A resolver reports exact `CredentialMaterialCapability` tuples of plaintext
+holder, material source, and envelope presence. Independent source and envelope
+unions are removed from the resolver port: they cannot express a Worker file
+adapter that accepts an unsealed Worker reference but requires a recipient-bound
+envelope for a Control reference. The configured opaque Worker trust domain is
+part of every tuple; a Worker-only adapter never advertises ACP Workload access.
+
+`PinnedCredentialMaterializer` remains the one projection owner. It combines
+installed resolver tuples with its local Vault composition and adds the actual
+Native, ACP, MCP or platform realization mechanism in separate existing profiles.
+The credential admission kernel checks one complete profile; composing profiles
+must never synthesize an unimplemented Cartesian product. The same exact tuple
+is checked before the external resolver is called. Material absence, expiry and
+use-time revocation remain independent execution failures, not capability claims.
+
+The existing realization profile gains an envelope-required constraint. Its
+Worker capability namespace advances to v2 because a v1 reader would ignore that
+narrowing field. A current reader rejects old credential capability declarations;
+an old reader cannot discover the v2 credential evidence needed for admission.
+Registration/heartbeat refresh supplies new observations; no legacy declaration
+is promoted by a permissive default or a copied compatibility policy.
+
+This amendment repairs installed-evidence fidelity. It does not install an
+issuer in the open self-hosted composition, authorize plaintext transport, or
+claim that ordinary Provider publication reaches an independent Worker. Existing
+hosted issuers/resolvers must migrate the same port as consumers; cryptography
+and deployment remain behind the established delivery interface.

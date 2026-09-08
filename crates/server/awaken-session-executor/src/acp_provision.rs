@@ -290,40 +290,7 @@ impl LaunchResolver for PublishedAcpLaunchResolver {
             }
             AcpCredentialAuthority::BackendOwned => return Default::default(),
         };
-        let (material_sources, recipient_bound_envelopes) =
-            credentials.material_source_capabilities();
-        let (realization_kind, material_type) = match self.cli.managed_credential_delivery {
-            awaken_run_executor_acp::ManagedCredentialDelivery::ProcessSecret => (
-                awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment,
-                awaken_runtime_contract::credential::PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE,
-            ),
-            awaken_run_executor_acp::ManagedCredentialDelivery::Artifact(_) => (
-                awaken_runtime_contract::CredentialRealizationKind::PrivateSecretFile,
-                awaken_runtime_contract::credential::PRIVATE_SECRET_FILE_MATERIAL_TYPE,
-            ),
-        };
-        awaken_runtime_contract::CredentialRealizationCapabilities {
-            holders: [awaken_runtime_contract::PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Workload,
-                awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
-            )]
-            .into_iter()
-            .collect(),
-            material_sources,
-            realization_kinds: [realization_kind].into_iter().collect(),
-            recipient_bound_envelopes,
-            extension_consumers: [(
-                format!(
-                    "{}acp:{}",
-                    awaken_runtime_contract::credential::ACP_CREDENTIAL_CONSUMER_PREFIX,
-                    self.cli.id
-                ),
-                [material_type.to_string()].into_iter().collect(),
-            )]
-            .into_iter()
-            .collect(),
-            alternatives: Vec::new(),
-        }
+        credentials.acp_model_capabilities(self.cli)
     }
 }
 

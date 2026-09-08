@@ -1,4 +1,7 @@
 //! Transactional persistence for the Managed Credential aggregate.
+//!
+//! Complete decoded-row admission and BEGIN IMMEDIATE own snapshot CAS. Keyed
+//! ownership and affected-row checks remain; JSON spelling is not a second fence.
 
 use super::*;
 
@@ -277,13 +280,12 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                     .ok_or(ManagedCredentialMutationError::NotFound)?;
                 tx.execute(
                     &format!("UPDATE {p}_source SET workspace_id = ?1, data = ?2 \
-                             WHERE id = ?3 AND workspace_id = ?4 AND data = ?5"),
+                             WHERE id = ?3 AND workspace_id = ?4"),
                     params![
                         pending.after_source.workspace_id,
                         serde_json::to_string(&pending.after_source).map_err(storage)?,
                         pending.after_source.id.0,
                         before.workspace_id,
-                        serde_json::to_string(before).map_err(storage)?
                     ],
                 )
                 .map_err(storage)?
@@ -312,7 +314,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                 tx.execute(
                     &format!("UPDATE {p}_managed_vault_credential SET vault_id = ?1, \
                              workspace_id = ?2, source_id = ?3, data = ?4 WHERE id = ?5 \
-                             AND vault_id = ?6 AND workspace_id = ?7 AND source_id = ?8 AND data = ?9"),
+                             AND vault_id = ?6 AND workspace_id = ?7 AND source_id = ?8"),
                     params![
                         pending.after_credential.vault_id,
                         pending.after_credential.workspace_id,
@@ -322,7 +324,6 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                         before.vault_id,
                         before.workspace_id,
                         before.source_id.0,
-                        serde_json::to_string(before).map_err(storage)?
                     ],
                 )
                 .map_err(storage)?
@@ -486,12 +487,11 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                 .execute(
                     &format!(
                         "UPDATE {p}_managed_credential_mutation SET data = ?1 \
-                             WHERE source_id = ?2 AND data = ?3"
+                             WHERE source_id = ?2"
                     ),
                     params![
                         serde_json::to_string(&claimed).map_err(storage)?,
                         pending.after_source.id.0,
-                        current
                     ],
                 )
                 .map_err(storage)?;
@@ -557,12 +557,11 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                 .execute(
                     &format!(
                         "UPDATE {p}_managed_credential_mutation SET data = ?1 \
-                             WHERE source_id = ?2 AND data = ?3"
+                             WHERE source_id = ?2"
                     ),
                     params![
                         serde_json::to_string(&reclaiming).map_err(storage)?,
                         pending.after_source.id.0,
-                        current
                     ],
                 )
                 .map_err(storage)?;
@@ -628,9 +627,9 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                 .execute(
                     &format!(
                         "DELETE FROM {p}_managed_credential_mutation \
-                             WHERE source_id = ?1 AND data = ?2"
+                             WHERE source_id = ?1"
                     ),
-                    params![pending.after_source.id.0, current],
+                    params![pending.after_source.id.0],
                 )
                 .map_err(storage)?;
             if changed != 1 {
@@ -727,9 +726,9 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                 .execute(
                     &format!(
                         "DELETE FROM {p}_managed_credential_rollout \
-                             WHERE event_id = ?1 AND data = ?2"
+                             WHERE event_id = ?1"
                     ),
-                    params![rollout.id, current],
+                    params![rollout.id],
                 )
                 .map_err(storage)?;
             if changed != 1 {

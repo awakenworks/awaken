@@ -156,17 +156,34 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for UnusedContainerP
 
 #[async_trait::async_trait]
 impl awaken_runtime_contract::CredentialMaterialResolver for ExternalCredentialResolver {
-    fn supported_material_sources(
+    fn material_capabilities(
         &self,
-    ) -> std::collections::BTreeSet<awaken_runtime_contract::CredentialMaterialSource> {
-        std::collections::BTreeSet::from([
-            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-            awaken_runtime_contract::CredentialMaterialSource::WorkerReference,
-        ])
-    }
-
-    fn supports_recipient_bound_envelopes(&self) -> bool {
-        true
+    ) -> std::collections::BTreeSet<awaken_runtime_contract::CredentialMaterialCapability> {
+        let mut profiles = std::collections::BTreeSet::new();
+        for holder in [
+            awaken_runtime_contract::PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Worker,
+                "awaken.worker",
+            ),
+            awaken_runtime_contract::PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Workload,
+                "awaken.workload.acp",
+            ),
+        ] {
+            for source in [
+                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                awaken_runtime_contract::CredentialMaterialSource::WorkerReference,
+            ] {
+                for envelope in [false, true] {
+                    profiles.insert(awaken_runtime_contract::CredentialMaterialCapability {
+                        holder: holder.clone(),
+                        source,
+                        envelope,
+                    });
+                }
+            }
+        }
+        profiles
     }
 
     async fn resolve_exact(
@@ -242,6 +259,7 @@ impl InferenceExecutorMaterializer for SchemeMaterializer {
             .into_iter()
             .collect(),
             recipient_bound_envelopes: false,
+            envelope_required: false,
             extension_consumers: Default::default(),
             alternatives: Vec::new(),
         }
@@ -260,55 +278,46 @@ fn deployment() -> awaken_session_executor::DeploymentConfig {
     awaken_session_executor::DeploymentConfig::ephemeral()
 }
 
+fn admits_native_source(
+    evidence: &awaken_runtime_contract::CredentialRealizationCapabilities,
+    source: awaken_runtime_contract::CredentialMaterialSource,
+) -> bool {
+    use awaken_runtime_contract::{
+        CredentialAccess, CredentialExecutionPolicy, CredentialRealizationKind, CredentialRef,
+        CredentialTarget, CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    };
+    let holder = PlaintextHolder::new(
+        PlaintextBoundary::Worker,
+        awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+    );
+    CredentialAccess::new(
+        CredentialRef {
+            id: "source".into(),
+            revision: 1,
+        },
+        source,
+        CredentialUsage::ProviderAdapter,
+        CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
+    )
+    .with_target(CredentialTarget::new(
+        awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+        "provider",
+    ))
+    .admit(
+        &holder,
+        CredentialRealizationKind::WorkerProviderAdapter,
+        evidence,
+        1,
+    )
+    .is_ok()
+}
+
 fn credential_support() -> CredentialMaterializerSupport {
-    let material_sources = std::collections::BTreeSet::from([
-        awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-    ]);
-    CredentialMaterializerSupport {
-        provider_adapter: awaken_runtime_contract::CredentialRealizationCapabilities {
-            holders: [awaken_runtime_contract::PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Worker,
-                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
-            )]
-            .into_iter()
-            .collect(),
-            material_sources: material_sources.clone(),
-            realization_kinds: [
-                awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
-            ]
-            .into_iter()
-            .collect(),
-            ..Default::default()
-        },
-        process_secret: awaken_runtime_contract::CredentialRealizationCapabilities {
-            holders: [awaken_runtime_contract::PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Workload,
-                awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
-            )]
-            .into_iter()
-            .collect(),
-            material_sources: material_sources.clone(),
-            realization_kinds: [
-                awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment,
-            ]
-            .into_iter()
-            .collect(),
-            ..Default::default()
-        },
-        worker_relay: awaken_runtime_contract::CredentialRealizationCapabilities {
-            holders: [awaken_runtime_contract::PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Worker,
-                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
-            )]
-            .into_iter()
-            .collect(),
-            material_sources,
-            realization_kinds: [awaken_runtime_contract::CredentialRealizationKind::WorkerRelay]
-                .into_iter()
-                .collect(),
-            ..Default::default()
-        },
-    }
+    CredentialMaterializerSupport::from(
+        &awaken_credential_materializer::PinnedCredentialMaterializer::external_only(Arc::new(
+            ExternalCredentialResolver,
+        )),
+    )
 }
 
 #[test]
@@ -708,20 +717,15 @@ fn external_credential_resolver_has_one_canonical_resolution_path() {
             &worker.manifest().capabilities,
         )
         .expect("X2 evidence decodes");
-    assert_eq!(
-        evidence.material_sources,
-        std::collections::BTreeSet::from([
-            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-            awaken_runtime_contract::CredentialMaterialSource::WorkerReference,
-        ]),
-        "X2 source evidence comes only from the installed resolver"
-    );
-    assert!(
-        evidence
-            .realization_kinds
-            .contains(&awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,),
-        "X2 the canonical pinned adapter proves its actual Native mechanism"
-    );
+    for source in [
+        awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+        awaken_runtime_contract::CredentialMaterialSource::WorkerReference,
+    ] {
+        assert!(
+            admits_native_source(&evidence, source),
+            "X2 exact source, holder and Native mechanism coexist in one installed profile"
+        );
+    }
 }
 
 /// Credential capability derivation cause-effect graph:
@@ -845,19 +849,10 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
             &without_acp.capabilities,
         )
         .expect("Native credential realization capability decodes");
-    assert!(
-        native
-            .holders
-            .contains(&awaken_runtime_contract::PlaintextHolder::new(
-                awaken_runtime_contract::PlaintextBoundary::Worker,
-                awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
-            ))
-    );
-    assert!(
-        native
-            .realization_kinds
-            .contains(&awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,)
-    );
+    assert!(admits_native_source(
+        &native,
+        awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference
+    ));
     assert!(
         without_acp
             .capabilities

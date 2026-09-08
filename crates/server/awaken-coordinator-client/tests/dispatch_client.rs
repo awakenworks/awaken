@@ -146,6 +146,7 @@ async fn spawn_transport_server() -> (
             .into_iter()
             .collect(),
             recipient_bound_envelopes: false,
+            envelope_required: false,
             extension_consumers: Default::default(),
             alternatives: Vec::new(),
         },
