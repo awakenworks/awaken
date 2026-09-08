@@ -124,13 +124,10 @@ Static ownership stays unchanged: Session root CAS owns the generation, the Host
 slot owns the process-local Environment, and the Provider owns physical resource
 identity. The added private retirement coordination extends that lifecycle; it
 does not introduce another lease, registry, resource store or recovery protocol.
-`SessionExecutionReplacement` composes the existing authority/binding model for
-two execution objects and two callers. It checks write-once capture, no old-object
-resurrection, quiescence before replacement, cancellation retention and positive
-successor admission. Unknown evidence has no eventual-completion guarantee;
-physical observer truth, Memory identity and Rust refinement are not proved by
-this bounded model. Semantic mutants and positive reachability witnesses use the
-existing TLC runner and strict gate.
+`SessionExecutionReplacement` composes the authority/binding model for two objects
+and callers: write-once capture, quiescence, cancellation retention and successor
+admission. The shared TLC mutation runner checks safety and positive reachability;
+unknown evidence has no eventual-completion guarantee or physical/Rust refinement.
 
 The adjacent SR1-SR5 Host tests exercise real scoped processes through complete
 projection installation, renewal, explicit revocation, warm generation change,
@@ -153,15 +150,18 @@ observe Ready, rebind retained resources, atomically enroll the fresh Candidate,
 persist Adopt, then publish its exact Store-read identity. No ownerless interval
 or Unowned recovery is admitted.
 
-SC1-SC4 and UC1-UC3 reuse the same real Linux fixture, root sink and blocking seam.
-Actual context cancellation before commit or after commit/before response crosses
-renewal, foreign binding, unknown-observer retry and repeated explicit revocation.
-Root bytes, execution and receipt counts are checked; lifecycle tables cross
-origins, commitment, exact selection and wrong causes.
-The same bounded model separates successor root commit, readback and publication:
-12 semantic mutants and six witnesses include lost responses and post-commit
-cancellation. Unmaterialized terminal takeover, a second successor replacement,
-real distributed CAS/dispatch faults, observer truth and Rust refinement remain open.
+SC1-SC4 and UC1-UC3 cancel real Linux context Futures before root commit or its
+response, crossing renewal, foreign binding, unknown observation and revocation.
+Terminal takeover reuses the same owner and two-phase aggregate authorization:
+an exact unacknowledged Candidate stays Unbound, never published or given a
+fabricated commit identity. Provider auxiliary reconstruction retains the original
+Arc and its participants; only a genuinely cold owner is installed. Unmaterialized
+roots skip Agent output harvest but reconcile exact mounted Memory before disposal.
+U1-U3/HM0/HM1 test concurrent replay, successor leases, Memory rejection and ack.
+The replacement model has 12 mutants and six witnesses; the owner terminal model
+has seven mutants and three witnesses across two callers, one replacement and
+cancellation, including after removal. A second successor replacement, physical
+observer truth, real distributed faults and universal Rust refinement remain open.
 
 ## 2026-09-01 amendment: lease-only renewal
 

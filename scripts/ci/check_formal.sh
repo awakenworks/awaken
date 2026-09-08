@@ -698,6 +698,10 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/session-environment-convergence" \
     -config formal/tla/SessionEnvironmentConvergence.cfg \
     formal/tla/SessionEnvironmentProjection.tla
+  java -Djava.io.tmpdir="$tlc_state_root" -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-environment-terminal-owner" \
+    -config formal/tla/SessionEnvironmentTerminalOwner.cfg \
+    formal/tla/SessionEnvironmentProjection.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/managed-projection-publish" \
     -config formal/tla/ManagedProjectionPublish.cfg \

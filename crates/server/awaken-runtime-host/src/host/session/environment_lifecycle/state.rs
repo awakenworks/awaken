@@ -106,24 +106,6 @@ pub(super) fn projected_environment_owner(
     }
 }
 
-fn owned_binding(owner: &SessionEnvironmentOwner) -> Option<&str> {
-    match owner {
-        SessionEnvironmentOwner::Vacant
-        | SessionEnvironmentOwner::Restoring(SessionEnvironmentRestoration::Awaiting { .. }) => {
-            None
-        }
-        SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::AwaitingAdoption {
-            binding,
-            ..
-        }) => Some(binding),
-        SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(candidate)) => {
-            Some(&candidate.binding)
-        }
-        SessionEnvironmentOwner::Resident(owned) => Some(&owned.binding),
-        SessionEnvironmentOwner::Retiring(retiring) => Some(retiring.owned.binding()),
-    }
-}
-
 fn compatible_durable_projection(
     owned: &BoundSessionEnvironment,
     identity: &BoundSessionEnvironmentIdentity,
@@ -333,7 +315,7 @@ impl SessionEnvironmentOwner {
                     owned.binding = binding;
                     return Ok(());
                 }
-                if let Some(existing) = owned_binding(self)
+                if let Some(existing) = self.physical_binding()
                     && existing != binding
                 {
                     return Err(HostError::internal(

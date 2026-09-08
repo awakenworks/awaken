@@ -414,12 +414,10 @@ impl SharedHost {
                         "terminal disposal found another retirement operation",
                     ));
                 }
-                let RetiringEnvironmentOwner::Bound(_) = &retirement.owned else {
-                    return Err(HostError::unavailable_classified(
-                        "session_terminal_unpublished_candidate",
-                        "terminal disposal cannot consume an unpublished Environment",
-                    ));
-                };
+                // Preparation may own an Unbound Candidate whose ordinary
+                // Create response never arrived. The separately authorized
+                // aggregate Disposal, not a forged Bound identity, permits
+                // deletion of that same exact terminal physical owner.
                 if !provider_proved_absence {
                     let environment = retirement.owned.environment();
                     let exact_authorization =

@@ -460,8 +460,8 @@ impl SharedHost {
                     candidate,
                 )) => (None, Some(candidate.clone())),
                 SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
-                    cause: SessionEnvironmentRetirementCause::RealizationRevocation,
                     owned: RetiringEnvironmentOwner::Unbound(candidate),
+                    ..
                 }) => (
                     Some((candidate.binding.clone(), candidate.environment.clone())),
                     None,
@@ -662,6 +662,22 @@ impl SharedHost {
         unavailable_policy: SessionEnvironmentUnavailablePolicy,
         preauthorized: Option<&AuthorizedSessionEnvironmentEffect>,
     ) -> Result<SessionEnvironmentAdoptionDisposition, HostError> {
+        if self
+            .session_slots
+            .read(thread, |slot| {
+                matches!(
+                    &slot.environment_owner,
+                    SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+                        cause, owned: RetiringEnvironmentOwner::Unbound(_),
+                    }) if *cause != SessionEnvironmentRetirementCause::RealizationRevocation
+                )
+            })
+            .unwrap_or(false)
+        {
+            return Err(HostError::internal(
+                "unpublished terminal or cleanup ownership cannot resume ordinary adoption",
+            ));
+        }
         let (handle, spec, mut resident, candidate) =
             self.validated_session_environment_adoption(thread, encoded, provider, None)?;
         // Realization revocation permanently closed the old process-level Hand,

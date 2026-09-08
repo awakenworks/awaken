@@ -19263,84 +19263,143 @@ async fn unavailable_auxiliary_writable_memory_fails_before_terminal_effects() {
      *
      * Observation and effect-free reconstruction are provider evidence reads,
      * not source effects; the exact event list therefore contains only C1. */
-    let thread = "unavailable-auxiliary-writable-memory";
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let provider = Arc::new(TerminalRecoveryProvider {
-        restored_disposals: Mutex::new(Vec::new()),
-        events: events.clone(),
-        scenario: TerminalRecoveryScenario::UnavailableAuxiliaryMemory,
-        fence_refresh_probe: None,
-    });
-    let host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub").with_session_container_provider(
-            provider,
-            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
-        ),
-    );
-    let managed = managed_with_resource_source(host.clone());
+    // M4/M5 cross the same absent-primary evidence with a retained Candidate
+    // before commit / after a lost commit response. Every retry must reach the
+    // same classified Memory boundary without relabeling or replacing its Arc.
+    for candidate_unmaterialized in [None, Some(true), Some(false)] {
+        let thread = "unavailable-auxiliary-writable-memory";
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(TerminalRecoveryProvider {
+            restored_disposals: Mutex::new(Vec::new()),
+            events: events.clone(),
+            scenario: TerminalRecoveryScenario::UnavailableAuxiliaryMemory,
+            fence_refresh_probe: None,
+        });
+        let host = Arc::new(
+            SharedHost::new(Arc::new(OkModel), "stub").with_session_container_provider(
+                provider,
+                Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            ),
+        );
+        let managed = managed_with_resource_source(host.clone());
 
-    let mut projection = terminal_memory_projection();
-    awaken_session_contract::SessionRuntime::install_session_projection(
-        &managed,
-        thread,
-        projection.clone(),
-        awaken_session_contract::SessionProjectionInstallMode::Dispatch,
-    )
-    .await
-    .expect("M0 install frozen writable Memory input");
-
-    let handle = terminal_fixture_container_handle(thread, &host.sandbox_spec(thread))
-        .with_memory_materializations(vec![terminal_memory_evidence()])
-        .expect("M0 durable handle carries exact writable Copy evidence");
-    let binding = serde_json::to_string(&handle).expect("M0 encode durable binding");
-    // A changed aggregate Environment is a new root-CAS snapshot.
-    projection.revision.0 += 1;
-    projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
-        binding,
-        effect_id: None,
-        generation: None,
-        idle_since_unix_ms: None,
-    };
-    let (lease, effect) = terminal_recovery_effect(thread, "unavailable-memory-worker");
-    host.install_test_terminal_cleanup_projection(
-        &awaken_session_contract::SessionTerminalCleanupAssignment {
-            session_id: thread.into(),
-            projection: projection.clone(),
-            authority: crate::session_slot::test_lease_receipt(lease),
-        },
-    )
-    .await
-    .expect("M0 install exact terminal assignment");
-
-    let preparation_authorization = terminal_preparation_authorization(&effect, &projection);
-    let error = managed
-        .prepare_terminal_cleanup_for_effect(effect, preparation_authorization)
+        let mut projection = terminal_memory_projection();
+        awaken_session_contract::SessionRuntime::install_session_projection(
+            &managed,
+            thread,
+            projection.clone(),
+            awaken_session_contract::SessionProjectionInstallMode::Dispatch,
+        )
         .await
-        .expect_err("M0 unavailable writable Memory must fail before source effects");
-    assert_eq!(
-        error.kind,
-        awaken_session_contract::RunErrorKind::Unavailable,
-        "M0/E2",
-    );
-    assert_eq!(error.code, "session_terminal_memory_source_absent", "M0/E2");
-    assert_eq!(
-        events.lock().unwrap().as_slice(),
-        [
-            "observe-unavailable-memory",
-            "reconstruct-unavailable-memory"
-        ],
-        "M0/E2 publish/ack/checkpoint/provider-prep/dispose are all zero",
-    );
-    assert!(
-        host.session_slots
-            .read(thread, |slot| {
-                slot.environment_owner
-                    .terminal_bound_environment()
-                    .is_some()
-            })
-            .unwrap_or(false),
-        "M0/E3 exact auxiliary owner remains Retiring for retry/takeover"
-    );
+        .expect("M0 install frozen writable Memory input");
+
+        let handle = terminal_fixture_container_handle(thread, &host.sandbox_spec(thread))
+            .with_memory_materializations(vec![terminal_memory_evidence()])
+            .expect("M0 durable handle carries exact writable Copy evidence");
+        let binding = serde_json::to_string(&handle).expect("M0 encode durable binding");
+        // A changed aggregate Environment is a new root-CAS snapshot.
+        projection.revision.0 += 1;
+        projection.environment = awaken_session_contract::SessionEnvironmentState::Resident {
+            binding,
+            effect_id: None,
+            generation: None,
+            idle_since_unix_ms: None,
+        };
+        let (lease, effect) = terminal_recovery_effect(thread, "unavailable-memory-worker");
+        let mut retained = None;
+        if let Some(unmaterialized) = candidate_unmaterialized {
+            let fence = lease
+                .sandbox_effect_fence("unacknowledged-auxiliary-create")
+                .unwrap();
+            let environment = Arc::new(
+                host.session_provider
+                    .prepare_terminal_effective_for_effect(
+                        &host.sandbox_spec(thread),
+                        Some(&handle),
+                        None,
+                        &fence,
+                        &pc::test_support::EffectAuthority::new(&fence),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+            host.begin_session_environment_preparation(thread, environment.clone())
+                .unwrap();
+            retained = Some(environment);
+            if unmaterialized {
+                projection.environment =
+                    awaken_session_contract::SessionEnvironmentState::Unmaterialized;
+            }
+        }
+        host.install_test_terminal_cleanup_projection(
+            &awaken_session_contract::SessionTerminalCleanupAssignment {
+                session_id: thread.into(),
+                projection: projection.clone(),
+                authority: crate::session_slot::test_lease_receipt(lease),
+            },
+        )
+        .await
+        .expect("M0 install exact terminal assignment");
+
+        // M0 retry must retain the first exact auxiliary owner, including its
+        // non-durable participants; primary absence is not permission to replace it.
+        for attempt in 0..2 {
+            events.lock().unwrap().clear();
+            let preparation_authorization =
+                terminal_preparation_authorization(&effect, &projection);
+            let error = managed
+                .prepare_terminal_cleanup_for_effect(effect.clone(), preparation_authorization)
+                .await
+                .expect_err("M0 unavailable writable Memory must fail before source effects");
+            assert_eq!(
+                error.kind,
+                awaken_session_contract::RunErrorKind::Unavailable,
+                "M0/E2",
+            );
+            assert_eq!(
+                error.code, "session_terminal_memory_source_absent",
+                "M0/E2 retry {attempt}"
+            );
+            assert_eq!(
+                events.lock().unwrap().as_slice(),
+                [
+                    "observe-unavailable-memory",
+                    "reconstruct-unavailable-memory"
+                ],
+                "M0/E2 publish/ack/checkpoint/provider-prep/dispose are all zero",
+            );
+            assert!(
+                host.session_slots
+                    .read(thread, |slot| {
+                        match &slot.environment_owner {
+                            crate::session_slot::SessionEnvironmentOwner::Retiring(retiring) => {
+                                let environment = retiring.owned.environment();
+                                if let Some(previous) = &retained {
+                                    assert!(
+                                        Arc::ptr_eq(previous, &environment),
+                                        "M0/M4/M5 preserve exact Arc and participants"
+                                    );
+                                }
+                                retained = Some(environment);
+                                if candidate_unmaterialized.is_some() {
+                                    assert!(
+                                        matches!(&retiring.owned,
+                                crate::session_slot::RetiringEnvironmentOwner::Unbound(candidate)
+                                if candidate.durable_identity().is_none()),
+                                        "M4/M5 no fabricated commitment"
+                                    );
+                                }
+                                true
+                            }
+                            _ => false,
+                        }
+                    })
+                    .unwrap_or(false),
+                "M0/E3 exact auxiliary owner remains Retiring for retry/takeover"
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -19427,11 +19486,17 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
     // disposal receipt, exact durable binding retained. After the participant
     // succeeds, the SAME terminal effect resumes through E3->E4->E5. The port
     // fixture controls failure; Memory's SQLite U2-U5 table owns byte admission.
+    // H7/H8 extend the same participants to unacknowledged Candidates, with
+    // root Unmaterialized / Resident (lost response), crossed with rejection.
+    // Unmaterialized forbids Artifact harvesting but still reconciles the exact
+    // mounted Memory; neither state fabricates ordinary commit identity or
+    // admits LiveSource. Failed writeback must retain the same physical owner.
     #[derive(Clone, Copy)]
     struct Rule {
         name: &'static str,
         resident: bool,
         rejection: bool,
+        candidate_unmaterialized: Option<bool>,
     }
 
     for rule in [
@@ -19439,21 +19504,49 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             name: "resident",
             resident: true,
             rejection: false,
+            candidate_unmaterialized: None,
         },
         Rule {
             name: "cold",
             resident: false,
             rejection: false,
+            candidate_unmaterialized: None,
         },
         Rule {
             name: "resident-rejected",
             resident: true,
             rejection: true,
+            candidate_unmaterialized: None,
         },
         Rule {
             name: "cold-rejected",
             resident: false,
             rejection: true,
+            candidate_unmaterialized: None,
+        },
+        Rule {
+            name: "candidate-unmaterialized",
+            resident: false,
+            rejection: false,
+            candidate_unmaterialized: Some(true),
+        },
+        Rule {
+            name: "candidate-lost-response",
+            resident: false,
+            rejection: false,
+            candidate_unmaterialized: Some(false),
+        },
+        Rule {
+            name: "candidate-unmaterialized-rejected",
+            resident: false,
+            rejection: true,
+            candidate_unmaterialized: Some(true),
+        },
+        Rule {
+            name: "candidate-lost-response-rejected",
+            resident: false,
+            rejection: true,
+            candidate_unmaterialized: Some(false),
         },
     ] {
         let thread = format!("terminal-memory-{}", rule.name);
@@ -19517,6 +19610,29 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
             idle_since_unix_ms: None,
         };
         let (lease, effect) = terminal_recovery_effect(&thread, "terminal-memory-worker");
+        if let Some(unmaterialized) = rule.candidate_unmaterialized {
+            let fence = lease
+                .sandbox_effect_fence("unacknowledged-memory-create")
+                .unwrap();
+            let environment = host
+                .session_provider
+                .prepare_terminal_effective_for_effect(
+                    &host.sandbox_spec(&thread),
+                    Some(&handle),
+                    None,
+                    &fence,
+                    &pc::test_support::EffectAuthority::new(&fence),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            host.begin_session_environment_preparation(&thread, Arc::new(environment))
+                .unwrap();
+            if unmaterialized {
+                projection.environment =
+                    awaken_session_contract::SessionEnvironmentState::Unmaterialized;
+            }
+        }
         host.install_test_terminal_cleanup_projection(
             &awaken_session_contract::SessionTerminalCleanupAssignment {
                 session_id: thread.clone(),
@@ -19576,7 +19692,7 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
                 assert_eq!(
                     host.session_slots
                         .read(&thread, |slot| {
-                            slot.environment_owner.durable_binding().map(str::to_owned)
+                            slot.environment_owner.physical_binding().map(str::to_owned)
                         })
                         .flatten()
                         .as_deref(),
@@ -19596,28 +19712,32 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
         assert!(preparation.artifact_receipts.is_empty(), "HM1/E1");
         // A rejected cold attempt retains its exact reconstructed Environment;
         // retry must reuse it, not materialize a fresh projection over the source.
-        let preparation_events = if rule.resident || rule.rejection {
-            vec![
-                "observe-live-memory",
-                "capture-artifacts",
-                "read-terminal-memory",
-                "encode-terminal-v2",
-                "reconcile-terminal-v2",
-                "ack-memory",
-                "prepare-source",
-            ]
-        } else {
-            vec![
-                "observe-live-memory",
-                "prepare-live-memory",
-                "capture-artifacts",
-                "read-terminal-memory",
-                "encode-terminal-v2",
-                "reconcile-terminal-v2",
-                "ack-memory",
-                "prepare-source",
-            ]
-        };
+        let mut preparation_events =
+            if rule.resident || rule.rejection || rule.candidate_unmaterialized.is_some() {
+                vec![
+                    "observe-live-memory",
+                    "capture-artifacts",
+                    "read-terminal-memory",
+                    "encode-terminal-v2",
+                    "reconcile-terminal-v2",
+                    "ack-memory",
+                    "prepare-source",
+                ]
+            } else {
+                vec![
+                    "observe-live-memory",
+                    "prepare-live-memory",
+                    "capture-artifacts",
+                    "read-terminal-memory",
+                    "encode-terminal-v2",
+                    "reconcile-terminal-v2",
+                    "ack-memory",
+                    "prepare-source",
+                ]
+            };
+        if rule.candidate_unmaterialized == Some(true) {
+            preparation_events.retain(|event| *event != "capture-artifacts");
+        }
         assert_eq!(
             events.lock().unwrap().as_slice(),
             preparation_events,
@@ -19635,13 +19755,51 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
         assert!(
             host.session_slots
                 .read(&thread, |slot| {
-                    slot.environment_owner
-                        .terminal_bound_environment()
-                        .is_some()
+                    matches!(
+                        &slot.environment_owner,
+                        crate::session_slot::SessionEnvironmentOwner::Retiring(_)
+                    )
                 })
                 .unwrap_or(false),
             "HM1/E4 exact owner remains Retiring until Disposal"
         );
+        if rule.candidate_unmaterialized.is_some() {
+            assert!(host.session_slots.read(&thread, |slot| matches!(
+                &slot.environment_owner,
+                crate::session_slot::SessionEnvironmentOwner::Retiring(crate::session_slot::RetiringSessionEnvironment {
+                    owned: crate::session_slot::RetiringEnvironmentOwner::Unbound(candidate), ..
+                }) if candidate.durable_identity().is_none()
+            )).unwrap(), "H7/H8 no invented commit evidence");
+            let before = events.lock().unwrap().clone();
+            let error = host
+                .prepare_bound_environment_for_effect_under_lifecycle(
+                    &thread,
+                    &binding,
+                    &effect.sandbox_effect_fence().unwrap(),
+                    Some(&resources),
+                    crate::host::BoundEnvironmentPreparationMode::LiveSource,
+                )
+                .await
+                .err()
+                .expect("H7/H8 retired Candidate cannot become a live source");
+            assert_eq!(error.code, "session_terminal_unpublished_candidate");
+            let error = host
+                .adopt_bound_session_environment(
+                    &thread,
+                    Some(&binding),
+                    &host.session_provider,
+                    None,
+                    false,
+                )
+                .await
+                .expect_err("H7/H8 terminal Candidate cannot ordinarily adopt");
+            assert!(error.message.contains("cannot resume ordinary adoption"));
+            assert_eq!(
+                *events.lock().unwrap(),
+                before,
+                "H7/H8 reject before Provider observation or I/O"
+            );
+        }
 
         let disposal_effect = terminal_disposal_effect(preparation, lease, &projection);
         let disposal = managed
@@ -19666,8 +19824,41 @@ async fn resident_and_cold_terminal_memory_use_one_terminal_v2_authority() {
 /// receipt, unlike evict-to-rebuild edges that retain the physical workspace.
 #[tokio::test]
 async fn exact_terminal_cleanup_disposes_the_threads_sandbox() {
+    terminal_cleanup_disposes_exact_owner("resident", false).await;
+}
+
+#[tokio::test]
+async fn unacknowledged_candidates_complete_terminal_cleanup_without_publication() {
+    // U1 root Unmaterialized + unacknowledged Create; U2 root Resident + lost
+    // response; U3 root Resident + committed hidden Candidate. Cross U1-U3
+    // with retained/revoked ownership. Reuse T1-T4's real physical disposal,
+    // concurrent preparation/disposal replay, and aggregate-ack oracles.
+    // No row may publish a Resident or fabricate a normal Environment receipt;
+    // root-unmaterialized ownership must remain Unbound through terminal ack.
+    for initial in ["uncommitted", "lost-response", "committed-hidden"] {
+        for revoke in [false, true] {
+            terminal_cleanup_disposes_exact_owner(initial, revoke).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn unmaterialized_terminal_cleanup_rejects_known_candidate_binding() {
+    // U4: local committed Create or unacknowledged Adoption already knows a
+    // durable binding, while the frozen root claims Unmaterialized. Reject both
+    // concurrent callers without publication, owner mutation, or physical delete.
+    // Missing Adopt response is not missing prior binding provenance.
+    for initial in ["committed-conflict", "adoption-conflict"] {
+        terminal_cleanup_disposes_exact_owner(initial, false).await;
+    }
+}
+
+async fn terminal_cleanup_disposes_exact_owner(initial: &str, revoke: bool) {
     use awaken_provisioning_contract::SandboxStatus;
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    // Each rule owns its filesystem, including the durable Removed marker.
+    // Reusing a thread id across independent rows must not reuse that marker.
+    let storage = tempfile::tempdir().expect("terminal owner rule storage");
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_store_dir(storage.path()));
     let managed = install_test_dispatch_runtime(&host);
     install_test_session_application(&host);
 
@@ -19686,7 +19877,7 @@ async fn exact_terminal_cleanup_disposes_the_threads_sandbox() {
     host.register_thread_memory("t-end", None);
     host.register_thread_resources("t-end", crate::provisioning::StagedResources::default());
     host.register_thread_model("t-end", "private-model");
-    let lease = awaken_session_contract::SessionRealizationLease {
+    let mut lease = awaken_session_contract::SessionRealizationLease {
         owner: "terminal-test-worker".into(),
         runtime_incarnation: "terminal-test-worker:incarnation".into(),
         epoch: 1,
@@ -19732,18 +19923,38 @@ async fn exact_terminal_cleanup_disposes_the_threads_sandbox() {
         &environment_state,
     )
     .expect("project the terminal-test durable Environment identity");
-    host.publish_prepared_session_environment(
-        "t-end",
-        &candidate,
-        crate::session_slot::BoundSessionEnvironmentIdentity::Durable {
-            effect_id: environment_effect_id,
-            generation: environment_generation,
-        },
-    )
-    .expect("publish the exact terminal-test Environment owner");
-    host.ctx_for("t-end", None)
-        .await
-        .expect("cache the Runtime around the exact fenced Environment");
+    let identity = crate::session_slot::BoundSessionEnvironmentIdentity::Durable {
+        effect_id: environment_effect_id,
+        generation: environment_generation,
+    };
+    match initial {
+        "resident" => {
+            host.publish_prepared_session_environment("t-end", &candidate, identity)
+                .expect("publish the exact terminal-test Environment owner");
+            host.ctx_for("t-end", None)
+                .await
+                .expect("cache the Runtime");
+        }
+        "committed-hidden" | "committed-conflict" => {
+            host.retain_committed_session_environment_candidate("t-end", &candidate, identity)
+                .expect("retain actual Store-read identity without publication");
+        }
+        "adoption-conflict" => {
+            // Explicit owner input: an existing binding was adopted, but no
+            // new Adopt receipt was read. Do not fabricate durable identity.
+            host.session_slots.update("t-end", |slot| {
+                let crate::session_slot::SessionEnvironmentOwner::Preparing(
+                    crate::session_slot::SessionEnvironmentPreparation::Candidate(current),
+                ) = &mut slot.environment_owner
+                else {
+                    panic!("U4 Candidate input")
+                };
+                current.origin = crate::session_slot::UnboundSessionEnvironmentOrigin::Adoption;
+            });
+        }
+        "uncommitted" | "lost-response" => {}
+        _ => panic!("unknown terminal test row"),
+    }
     assert_eq!(
         env.status().await.expect("status"),
         SandboxStatus::Ready,
@@ -19778,7 +19989,36 @@ async fn exact_terminal_cleanup_disposes_the_threads_sandbox() {
         .expect("T1 exact root command");
     // A changed aggregate Environment is a new root-CAS snapshot.
     terminal_projection.revision.0 += 1;
-    terminal_projection.environment = environment_state;
+    let conflicting = initial.ends_with("-conflict");
+    terminal_projection.environment = if initial == "uncommitted" || conflicting {
+        awaken_session_contract::SessionEnvironmentState::Unmaterialized
+    } else {
+        environment_state
+    };
+    if revoke {
+        // Install the actual aggregate proof before closing its admission:
+        // absence of a response is not an Unowned legacy-disposal permission.
+        host.install_test_terminal_cleanup_projection(
+            &awaken_session_contract::SessionTerminalCleanupAssignment {
+                session_id: "t-end".into(),
+                projection: terminal_projection.clone(),
+                authority: crate::session_slot::test_lease_receipt(lease.clone()),
+            },
+        )
+        .await
+        .expect("U install Managed provenance");
+        let lifecycle = host
+            .session_slots
+            .read("t-end", |slot| slot.lifecycle.clone())
+            .unwrap();
+        let _lifecycle = lifecycle.lock().await;
+        host.retire_session_environment_for_revocation("t-end")
+            .await
+            .expect("U revoke retained owner");
+        // Closed generation is absorbing. Control takeover must issue a new
+        // generation; replaying the revoked lease is not a renewal.
+        lease.epoch += 1;
+    }
     host.install_test_terminal_cleanup_projection(
         &awaken_session_contract::SessionTerminalCleanupAssignment {
             session_id: "t-end".into(),
@@ -19792,6 +20032,7 @@ async fn exact_terminal_cleanup_disposes_the_threads_sandbox() {
         awaken_session_contract::SessionTerminalCleanupEffect::new(command.clone(), lease.clone());
     let preparation_authorization =
         terminal_preparation_authorization(&effect, &terminal_projection);
+    let before = host.prepared_session_environment("t-end");
     let (archive, recovery) = tokio::join!(
         managed.prepare_terminal_cleanup_for_effect(
             effect.clone(),
@@ -19802,7 +20043,34 @@ async fn exact_terminal_cleanup_disposes_the_threads_sandbox() {
             preparation_authorization.clone(),
         )
     );
-    let archive = archive.expect("archive terminal preparation");
+    if conflicting {
+        for outcome in [archive, recovery] {
+            let error = outcome.expect_err("U4 inconsistent root must fail closed");
+            assert_eq!(
+                error.code,
+                "session_terminal_environment_projection_conflict"
+            );
+        }
+        assert!(
+            host.prepared_session_environment("t-end")
+                .unwrap()
+                .exact_matches(&before.unwrap()),
+            "U4 retains exact ownership"
+        );
+        assert_eq!(
+            env.status().await.unwrap(),
+            SandboxStatus::Ready,
+            "U4 no physical delete"
+        );
+        assert!(
+            host.session_environment("t-end").await.is_none(),
+            "U4 no publication"
+        );
+        return;
+    }
+    let archive = archive.unwrap_or_else(|error| {
+        panic!("{initial}/{revoke}: archive terminal preparation: {error}")
+    });
     let recovery = recovery.expect("recovery terminal preparation replay");
     assert_eq!(archive, recovery, "T1/E1 exact response-loss replay");
     assert_eq!(
@@ -19813,13 +20081,25 @@ async fn exact_terminal_cleanup_disposes_the_threads_sandbox() {
     assert!(
         host.session_slots
             .read("t-end", |slot| {
-                slot.environment_owner
-                    .terminal_bound_environment()
-                    .is_some()
+                matches!(&slot.environment_owner, crate::session_slot::SessionEnvironmentOwner::Retiring(retiring)
+                    if Arc::ptr_eq(&retiring.owned.environment(), &env)
+                        && retiring.owned.environment().handle() == env.handle())
             })
             .unwrap_or(false),
         "T1/E2 exact owner is hidden from tools but retained for Disposal"
     );
+    assert!(
+        host.session_environment("t-end").await.is_none(),
+        "U no terminal publication"
+    );
+    if initial == "uncommitted" || initial == "lost-response" {
+        assert!(host.session_slots.read("t-end", |slot| matches!(
+            &slot.environment_owner,
+            crate::session_slot::SessionEnvironmentOwner::Retiring(crate::session_slot::RetiringSessionEnvironment {
+                owned: crate::session_slot::RetiringEnvironmentOwner::Unbound(candidate), ..
+            }) if candidate.durable_identity().is_none()
+        )).unwrap(), "U retains missing ordinary commit evidence");
+    }
     managed
         .acknowledge_terminal_cleanup_preparation(&effect)
         .await;
