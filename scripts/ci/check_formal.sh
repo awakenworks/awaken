@@ -638,6 +638,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-worker \
     --harness environment_evidence_decision_never_refreshes_expired_proof \
     --harness observation_batch_is_single_generation_and_never_wraps \
+    --harness observation_publication_budget_is_strict_and_overflow_safe \
     --harness worker_realization_scope_source_is_total_and_exact
   run_kani awaken-worker-transport-security \
     --harness worker_transport_selector_admits_only_three_exact_postures \

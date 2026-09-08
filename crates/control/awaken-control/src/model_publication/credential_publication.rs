@@ -8,7 +8,7 @@ use awaken_config_service::PublicationResolutionError;
 use awaken_credential_contract::{CredentialPurpose, CredentialTarget};
 use awaken_credential_vault::{
     CredentialBinding, CredentialPool, CredentialSource, ExactCredentialAccessRequest,
-    SelectionPolicy, compile_exact_credential_access,
+    SelectionPolicy, publish_exact_credential_access,
 };
 use awaken_model_catalog::{ApiDialect, Offering, ProviderCatalog};
 use awaken_runtime_contract::resolved::AcpExecutionProfile;
@@ -173,7 +173,7 @@ impl CatalogModelPublicationResolver {
             .map_err(|error| format!("ACP backend {cli}: {error}"))
     }
 
-    pub(super) fn provider_candidate(
+    pub(super) async fn provider_candidate(
         &self,
         catalog: &ProviderCatalog,
         workspace: &ScopeId,
@@ -218,23 +218,23 @@ impl CatalogModelPublicationResolver {
         let provider_ref = format!("{}@{}", offering.provider_id.0, provider.version);
         let brokered = matches!(access, PublicationAccess::Brokered);
         let credential = match access {
-            PublicationAccess::Direct(credential) => credential
-                .map(|credential| {
-                    let usage = self
-                        .credential_usage(&binding, credential)
-                        .map_err(unavailable)?;
-                    let material_binding = CredentialMaterialBinding::for_target(
-                        workspace.as_str(),
-                        &(&provider_ref, &endpoint),
-                        &usage,
-                    );
-                    let selected_holder = self.direct_holder.as_ref().ok_or_else(|| {
+            PublicationAccess::Direct(Some(credential)) => {
+                let usage = self
+                    .credential_usage(&binding, credential)
+                    .map_err(unavailable)?;
+                let material_binding = CredentialMaterialBinding::for_target(
+                    workspace.as_str(),
+                    &(&provider_ref, &endpoint),
+                    &usage,
+                );
+                let selected_holder = self.direct_holder.as_ref().ok_or_else(|| {
                         unavailable(
                             "direct provider credential publication requires an exact deployment-selected plaintext holder"
                                 .into(),
                         )
                     })?;
-                    compile_exact_credential_access(
+                Some(
+                    publish_exact_credential_access(
                         credential,
                         ExactCredentialAccessRequest {
                             workspace_id: Some(workspace.as_str()),
@@ -248,10 +248,15 @@ impl CatalogModelPublicationResolver {
                             binding: &material_binding,
                             now_unix_ms: super::wall_clock_ms(),
                         },
+                        self.credential_material_delivery
+                            .as_ref()
+                            .map(|(secrets, delivery)| (secrets.as_ref(), delivery)),
                     )
-                    .map_err(|error| unavailable(error.to_string()))
-                })
-                .transpose()?,
+                    .await
+                    .map_err(|error| unavailable(error.to_string()))?,
+                )
+            }
+            PublicationAccess::Direct(None) => None,
             PublicationAccess::Brokered => None,
         };
         let error_binding = binding.clone();
@@ -306,9 +311,22 @@ impl CatalogModelPublicationResolver {
 
 #[cfg(test)]
 mod tests {
+    use super::super::tests::{
+        catalog_with_dialect, direct_resolver, test_acp_capabilities, verified_acp_worker,
+    };
     use super::unspecified_reasoning;
+    use super::*;
+    use awaken_agent_config::ModelSelection;
+    use awaken_agent_contract::RedactedString;
+    use awaken_config_service::ModelPublicationResolver;
+    use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
+    use awaken_credential_vault::{
+        CredentialCreateParams, CredentialKind, CredentialStatus, InMemorySecretStore, SecretStore,
+    };
     use awaken_model_catalog::ApiDialect;
     use awaken_runtime_contract::UnspecifiedReasoning;
+    use awaken_runtime_contract::resolved::ModelProvisioning;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn catalog_identity_compiles_to_an_explicit_reasoning_policy() {
@@ -339,5 +357,181 @@ mod tests {
             UnspecifiedReasoning::ProviderDefault,
             "C4",
         );
+    }
+    struct ProviderDeliveryIssuer {
+        fault: u8,
+        calls: Mutex<Vec<awaken_credential_contract::CredentialEnvelopeIssuance>>,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_credential_contract::CredentialEnvelopeIssuer for ProviderDeliveryIssuer {
+        async fn issue(
+            &self,
+            request: awaken_credential_contract::CredentialEnvelopeIssuance,
+        ) -> Result<awaken_credential_contract::CredentialEnvelope, String> {
+            use awaken_credential_contract::{
+                CredentialEnvelope, SealedCredentialEnvelopeRef,
+                credential_envelope_payload_fingerprint,
+            };
+            let fingerprint = credential_envelope_payload_fingerprint(
+                &request.access,
+                &request.selected_holder,
+                &request.binding,
+            );
+            let recipient = request.selected_holder.trust_domain.clone();
+            self.calls.lock().unwrap().push(request);
+            if self.fault == 1 {
+                return Err("injected delivery unavailable".into());
+            }
+            Ok(CredentialEnvelope::SealedForWorker {
+                envelope_ref: SealedCredentialEnvelopeRef {
+                    id: if self.fault == 5 {
+                        ""
+                    } else {
+                        "provider-envelope"
+                    }
+                    .into(),
+                    payload_fingerprint: if self.fault == 2 {
+                        "wrong-payload".into()
+                    } else {
+                        fingerprint
+                    },
+                },
+                recipient: if self.fault == 3 {
+                    awaken_credential_contract::TrustDomainRef("wrong-worker".into())
+                } else {
+                    recipient
+                },
+                expires_at_unix_ms: if self.fault == 4 { 0 } else { u64::MAX },
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn native_and_claude_provider_publications_deliver_exact_material_or_fail_closed() {
+        // Causes: C1 Native/Claude select their canonical distinct usage; C2
+        // installed issuer returns exact/failure/payload drift/recipient drift/
+        // expiry/empty identity; C3 source active/disabled; C4 material present/
+        // absent. Effects: D1 exact delivery -> one envelope and one secret read
+        // for the selected source; D2 any issuer fault -> no candidate, no bare
+        // reference fallback; D3 disabled/missing material -> no issuer call.
+        // Each D rule crosses both backends. Existing no-delivery selection
+        // tests preserve AllInOne direct-reference behavior. This is publication
+        // integration through real Vault I/O, not a claim of vendor execution.
+        for backend in ["genai", "acp:claude"] {
+            for fault in 0..8 {
+                let credentials = Arc::new(InMemoryCredentialRepo::new());
+                let secrets = Arc::new(InMemorySecretStore::new());
+                let source = enter_credential(
+                    CredentialCreateParams {
+                        workspace_id: "workspace-a".into(),
+                        kind: CredentialKind::Vault,
+                        provider_id: Some("openai".into()),
+                        env_key: Some("ANTHROPIC_API_KEY".into()),
+                        secret: Some(RedactedString::new("publication-test-secret")),
+                        oauth_command: None,
+                    },
+                    secrets.as_ref(),
+                    credentials.as_ref(),
+                )
+                .await
+                .unwrap();
+                if fault == 6 {
+                    let mut disabled = source.clone();
+                    disabled.status = CredentialStatus::Disabled;
+                    credentials.put(disabled).await.unwrap();
+                }
+                if fault == 7 {
+                    secrets
+                        .delete(source.material_ref.as_ref().unwrap())
+                        .await
+                        .unwrap();
+                }
+                let issuer = Arc::new(ProviderDeliveryIssuer {
+                    fault,
+                    calls: Mutex::new(Vec::new()),
+                });
+                let resolver = direct_resolver(
+                    catalog_with_dialect(&["test-model"], ApiDialect::AnthropicMessages),
+                    credentials,
+                )
+                .with_acp_capabilities(test_acp_capabilities())
+                .with_worker_observations(
+                    verified_acp_worker("provider-managed", "acp:claude", "sha256:delivery").await,
+                )
+                .with_credential_material_delivery(
+                    secrets,
+                    Some(
+                        awaken_credential_contract::CredentialMaterialDelivery::RecipientEnvelope(
+                            issuer.clone(),
+                        ),
+                    ),
+                );
+                let result = resolver
+                    .resolve_models(
+                        &ScopeId::from("workspace-a"),
+                        &ModelSelection::Target {
+                            target: awaken_config_resolver::ModelTarget {
+                                model_id: "test-model".into(),
+                                provider_id: Some("openai".into()),
+                                api_dialect: None,
+                                protocol_endpoint_id: None,
+                                endpoint_name: None,
+                            },
+                            backend_ref: backend.into(),
+                            configuration: Default::default(),
+                        },
+                        &[],
+                    )
+                    .await;
+                let calls = issuer.calls.lock().unwrap();
+                assert_eq!(
+                    calls.len(),
+                    usize::from(fault < 6),
+                    "{backend}/D{fault}: {:?}",
+                    result.as_ref().err()
+                );
+                if fault == 0 {
+                    let resolved = result.expect("D1 exact delivery");
+                    let ModelProvisioning::Provider {
+                        credential: Some(access),
+                        provider_ref,
+                        endpoint,
+                        ..
+                    } = resolved.primary.provisioning()
+                    else {
+                        panic!("D1 provider");
+                    };
+                    assert!(
+                        access.envelope.is_some(),
+                        "D1 regression: formerly bare reference"
+                    );
+                    let issued = &calls[0];
+                    assert_eq!(issued.access.credential.id, source.id.0);
+                    assert_eq!(issued.access.credential.revision, source.version as u64);
+                    assert_eq!(issued.material.expose_secret(), "publication-test-secret");
+                    assert_eq!(
+                        issued.binding,
+                        awaken_credential_contract::CredentialMaterialBinding::for_target(
+                            "workspace-a",
+                            &(provider_ref, endpoint),
+                            &access.usage
+                        )
+                    );
+                    assert_eq!(
+                        access.usage,
+                        if backend == "genai" {
+                            CredentialUsage::ProviderAdapter
+                        } else {
+                            CredentialUsage::EnvironmentVariable {
+                                name: "ANTHROPIC_API_KEY".into(),
+                            }
+                        }
+                    );
+                } else {
+                    assert!(result.is_err(), "{backend}/D{fault} must fail closed");
+                }
+            }
+        }
     }
 }

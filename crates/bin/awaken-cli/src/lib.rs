@@ -1037,6 +1037,7 @@ fn resolve_model_services(
     supply: PublicationModelSupply,
     stores: &ProcessStores,
     cloud_models_enabled: bool,
+    credential_material_delivery: Option<awaken_credential_contract::CredentialMaterialDelivery>,
     worker_observations: Arc<dyn awaken_coordinator::WorkerObservationSource>,
 ) -> ResolvedModelServices {
     let control = stores
@@ -1044,28 +1045,35 @@ fn resolve_model_services(
         .as_ref()
         .expect("model publication requires Control stores");
     let acp_capabilities = Arc::new(awaken_run_executor_acp::known_acp_publication_capabilities());
+    let direct_resolver = || {
+        awaken_control::model_publication::CatalogModelPublicationResolver::from_repo(
+            control.catalog.clone(),
+            control.credentials.clone(),
+        )
+        .with_credential_material_delivery(
+            control.secrets.clone(),
+            credential_material_delivery.clone(),
+        )
+        .with_acp_capabilities(acp_capabilities.clone())
+        .with_profiles(control.profiles.clone())
+        .with_worker_observations(worker_observations.clone())
+    };
     match supply {
         PublicationModelSupply::PublishedProviders => ResolvedModelServices {
             publication_resolver: Arc::new(
-                awaken_control::model_publication::CatalogModelPublicationResolver::from_repo(
-                    control.catalog.clone(),
-                    control.credentials.clone(),
-                )
-                .with_acp_capabilities(acp_capabilities)
-                .with_profiles(control.profiles.clone())
-                .with_worker_observations(worker_observations)
-                .with_brokered_access(cloud_models_enabled)
-                // The canonical self-hosted deployment selects the Worker as
-                // the exact direct Provider plaintext holder. Publication must
-                // freeze that existing deployment fact instead of leaving the
-                // resolver unconfigured and rejecting every Provider credential.
-                .with_direct_provider_credential_execution(
-                    awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
-                    awaken_runtime_contract::PlaintextHolder::new(
-                        awaken_runtime_contract::PlaintextBoundary::Worker,
-                        awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+                direct_resolver()
+                    .with_brokered_access(cloud_models_enabled)
+                    // The canonical self-hosted deployment selects the Worker as
+                    // the exact direct Provider plaintext holder. Publication must
+                    // freeze that existing deployment fact instead of leaving the
+                    // resolver unconfigured and rejecting every Provider credential.
+                    .with_direct_provider_credential_execution(
+                        awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+                        awaken_runtime_contract::PlaintextHolder::new(
+                            awaken_runtime_contract::PlaintextBoundary::Worker,
+                            awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+                        ),
                     ),
-                ),
             ),
             runtime: RuntimeModelServices::PublishedProviders,
         },
@@ -1074,14 +1082,7 @@ fn resolve_model_services(
             direct_credential_execution,
         } => {
             let publication_resolver = if let Some(execution) = direct_credential_execution {
-                let direct =
-                    awaken_control::model_publication::CatalogModelPublicationResolver::from_repo(
-                        control.catalog.clone(),
-                        control.credentials.clone(),
-                    )
-                    .with_acp_capabilities(acp_capabilities)
-                    .with_profiles(control.profiles.clone())
-                    .with_worker_observations(worker_observations)
+                let direct = direct_resolver()
                     .with_brokered_access(false)
                     .with_direct_provider_credential_execution(execution.policy, execution.holder);
                 Arc::new(HostedAndDirectModelPublicationResolver {

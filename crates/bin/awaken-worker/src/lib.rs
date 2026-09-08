@@ -611,14 +611,12 @@ impl WorkerNodeBuilder {
                     .to_string(),
             ));
         }
-        if self.credential_probe_interval.is_zero()
-            || self.credential_observation_ttl <= self.credential_probe_interval
-        {
-            return Err(WorkerNodeBuildError(
-                "credential observation TTL must be greater than the non-zero probe interval"
-                    .to_string(),
-            ));
-        }
+        credential_liveness::validate_observation_timing(
+            self.credential_probe_interval,
+            self.credential_observation_ttl,
+            None,
+        )
+        .map_err(WorkerNodeBuildError)?;
         if self.upstream.base_url().trim().is_empty() {
             return Err(WorkerNodeBuildError(
                 "Worker upstream URL must not be empty".to_string(),
@@ -1328,6 +1326,7 @@ impl WorkerNode {
             session_environment_provider,
             observations,
             observation_ttl: self.credential_observation_ttl,
+            probe_interval: self.credential_probe_interval,
             warm_environments: Default::default(),
         });
         // Publish Ready before starting the pull loop. Dynamic capability probes
@@ -1383,6 +1382,12 @@ impl WorkerNode {
                     .lease_ttl_ms
                     .expect("WorkerControlClient validates applied heartbeat TTL"),
             );
+        credential_liveness::validate_observation_timing(
+            self.credential_probe_interval,
+            self.credential_observation_ttl,
+            Some(heartbeat_timing),
+        )
+        .map_err(std::io::Error::other)?;
         if lifecycle.session_environment_provider.is_some()
             && !lifecycle::environment_proof_is_fresh(
                 environment_proof_started.elapsed(),

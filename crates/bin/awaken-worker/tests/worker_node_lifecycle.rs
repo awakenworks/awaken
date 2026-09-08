@@ -1449,3 +1449,74 @@ async fn drain_closes_local_admission_before_control_acknowledges() {
         .await
         .expect("Worker lifecycle completes");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn incompatible_observation_publication_budget_withdraws_or_drains() {
+    // C1 authored P=10ms,T=400ms pass local validation; C2 the Coordinator
+    // negotiates 600ms lease (H=200,R=100, sum=310) or 900ms (sum=460).
+    // C3 negotiation changes at initial receipt or after claims have started.
+    // E1 600ms admits ordinary work; E2 initial 900ms withdraws once without
+    // claims; E3 later 900ms drains and terminates the incarnation once. No
+    // implicit TTL widening, retry-to-rejoin, or second observation publisher.
+    // Rules: B1 initial incompatible => E2; B2 compatible -> incompatible =>
+    // E1 then E3. Pure table owns strict equality/overflow/zero boundaries.
+    for initial_incompatible in [true, false] {
+        let upstream = FakeWorkerUpstream::start_with_short_registry_lease();
+        if initial_incompatible {
+            upstream.set_lease_ttl_ms(900);
+        }
+        let worker = lifecycle_worker(WorkerUpstream::new(upstream.url()))
+            .with_manifest(manifest())
+            .with_deployment_config(local_coordinator_deployment())
+            .with_credential_observation_window(
+                Duration::from_millis(10),
+                Duration::from_millis(400),
+            )
+            .build()
+            .unwrap();
+        let task = tokio::spawn(worker.run_until(std::future::pending()));
+        if !initial_incompatible {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while !upstream
+                    .requests()
+                    .iter()
+                    .any(|path| path.contains("/dispatch/claim"))
+                {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("B2 compatible budget admits claims");
+            upstream.set_lease_ttl_ms(900);
+        }
+        let result = tokio::time::timeout(Duration::from_secs(4), task)
+            .await
+            .expect("bounded termination")
+            .unwrap();
+        if initial_incompatible {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("heartbeat interval"),
+                "B1 diagnostic"
+            );
+        }
+        let paths = upstream.requests();
+        assert_eq!(
+            paths
+                .iter()
+                .filter(|p| p.as_str() == "/v1/worker/deregister")
+                .count(),
+            1
+        );
+        assert_eq!(
+            paths.iter().any(|p| p.contains("/dispatch/claim")),
+            !initial_incompatible
+        );
+        assert_eq!(
+            paths.iter().any(|p| p == "/v1/worker/drain"),
+            !initial_incompatible
+        );
+    }
+}

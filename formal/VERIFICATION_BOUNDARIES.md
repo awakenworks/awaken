@@ -272,10 +272,24 @@ type checking are valuable executable evidence, but are not formal proofs.
   Its unchanged File/Memory/Repository oracle checks bytes, physical roots,
   conflict retention and terminal tombstones. This is executable integration
   evidence, not an extension of the model's state space or proof grade. Local
-  probe intervals and Coordinator heartbeat publication have separate clocks;
-  a configured evidence TTL shorter than publication cadence may fail closed
-  between heartbeats. That availability/configuration gap is not proved away
-  by the per-use projection model.
+  probe intervals and Coordinator heartbeat publication have separate clocks.
+  The Worker now rejects a negotiated budget unless evidence TTL strictly exceeds
+  probe interval + renewal interval + request timeout, at initial admission and
+  each subsequent lease receipt. `observation_publication_budget_is_strict_and_overflow_safe`
+  verifies the actual pure Rust kernel over all Duration seconds/nanoseconds,
+  using an independent u128 sum oracle. This is scalar arithmetic proof, not an
+  availability theorem for delayed/failed probes, network delivery or scheduling.
+  Lifecycle integration verifies initial withdrawal and later absorbing drain.
+  The production kernel module can be verified directly with standalone Kani;
+  cargo-kani 0.67 currently fails artifact discovery with a separate global Cargo
+  build-dir. No build-directory override is needed for the standalone proof.
+- Ordinary Provider and Managed Resource publication share Vault's exact material
+  handoff. Native/Claude decision tables cover recipient-envelope success and
+  issuer failure, substituted fingerprint/recipient, expiry and empty identity;
+  inactive or missing sources cannot reach issuance. This is executable
+  integration coverage, not a new cryptographic proof or proof of automatic
+  self-hosted Control-to-Worker delivery. Existing envelope contracts retain
+  authority over authenticated binding and recipient admission.
 - Circuit admission and completion now consume one owner-local Rust reducer.
   Both Closed requests and HalfOpen probes carry phase/epoch fences. Late
   completions stutter, zero probe capacity rejects even the first probe, and

@@ -130,6 +130,7 @@ mod tests {
             session_environment_provider: None,
             observations: Arc::new(crate::WorkerObservationCache::default()),
             observation_ttl: std::time::Duration::from_secs(30),
+            probe_interval: std::time::Duration::from_secs(10),
             warm_environments: Default::default(),
         });
         let app = worker_admin_router_with_lifecycle(lifecycle);

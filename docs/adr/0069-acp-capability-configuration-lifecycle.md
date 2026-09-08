@@ -722,6 +722,15 @@ The lifecycle has four consistency boundaries:
    Immediately before spawn, the Worker repeats all mutable checks and compares
    the live handshake with the frozen demand.
 
+Worker timing validation is owned by `credential_liveness`: both file configuration
+and builder calls use it, and startup plus each changed registry lease validate
+`TTL > probe interval + renewal interval + request timeout`. The renewal and
+request terms come from the existing Coordinator-owned `AuthorityLeaseTiming`.
+Initial incompatibility uses registration withdrawal before claim admission;
+later incompatibility uses the ordinary absorbing drain/exit. The scalar budget
+does not promise continuous availability through slow probes or failed transport,
+and neither configuration validation nor heartbeats renew cached deadlines.
+
 Refresh is event-driven on process startup, explicit user refresh, adapter
 version/wrapper change, login remediation completion and observed liveness
 change, with a bounded periodic retry for transient failures. Concurrent

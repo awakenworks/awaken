@@ -1,8 +1,8 @@
-//! Pure source-to-access compiler shared by protocol and hosted compositions.
+//! Exact source-to-access compilation and optional material delivery.
 //!
-//! The compiler owns no row lookup, material read, envelope issuance, or
-//! selection. Callers supply one already-selected source and retain their
-//! existing I/O/custody responsibilities.
+//! Callers retain row lookup and selection. The pure compiler authorizes one
+//! selected source; the publication entrypoint optionally delivers that exact
+//! material through the deployment-owned custody port after authorization.
 
 use awaken_credential_contract::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialBinding,
@@ -98,6 +98,83 @@ pub fn compile_exact_credential_access(
     );
     if let Some(target) = target {
         access = access.with_target(target);
+    }
+    Ok(access)
+}
+
+/// Compile and, when installed, deliver one already-selected exact credential.
+/// Selection and repositories stay with the caller; authorization precedes any
+/// secret read. The same entrypoint serves Managed Resources and Provider
+/// publications, so recipient checks and source-origin behavior cannot drift.
+pub async fn publish_exact_credential_access(
+    source: &CredentialSource,
+    request: ExactCredentialAccessRequest<'_>,
+    delivery: Option<(
+        &dyn crate::SecretStore,
+        &awaken_credential_contract::CredentialMaterialDelivery,
+    )>,
+) -> Result<CredentialAccess, CredentialError> {
+    use awaken_credential_contract::{
+        CredentialCustodyPublication, CredentialEnvelopeIssuance, CredentialMaterialDelivery,
+        PlaintextBoundary,
+    };
+    let now_unix_ms = request.now_unix_ms;
+    let selected_holder = request.selected_holder;
+    let binding = request.binding;
+    let mut access = compile_exact_credential_access(source, request)?;
+    let Some((secrets, delivery)) = delivery else {
+        return Ok(access);
+    };
+    // WorkerLocal login remains at its existing host. Installing a Control
+    // delivery port cannot turn an opaque login reference into readable material.
+    if access.material_source != CredentialMaterialSource::ControlPlaneReference {
+        return Ok(access);
+    }
+    let selected = match delivery {
+        CredentialMaterialDelivery::ExternalCustody(custodian) => {
+            custodian.handles(selected_holder, &access.usage)
+        }
+        CredentialMaterialDelivery::RecipientEnvelope(_) => {
+            selected_holder.boundary != PlaintextBoundary::Platform
+        }
+    };
+    if !selected {
+        return Ok(access);
+    }
+    let material = crate::materialize(source, secrets).await?;
+    if let Some(descriptor) = &source.descriptor {
+        crate::validate_described_material(descriptor, &material)?;
+    }
+    match delivery {
+        CredentialMaterialDelivery::ExternalCustody(custodian) => {
+            custodian
+                .publish(CredentialCustodyPublication {
+                    access: access.clone(),
+                    selected_holder: selected_holder.clone(),
+                    binding: binding.clone(),
+                    material,
+                })
+                .await
+                .map_err(CredentialError::InvalidSource)?;
+        }
+        CredentialMaterialDelivery::RecipientEnvelope(issuer) => {
+            let envelope = issuer
+                .issue(CredentialEnvelopeIssuance {
+                    access: access.clone(),
+                    selected_holder: selected_holder.clone(),
+                    binding: binding.clone(),
+                    material,
+                })
+                .await
+                .map_err(CredentialError::InvalidSource)?;
+            envelope
+                .validate_issuance(&access, selected_holder, binding)
+                .map_err(|error| CredentialError::InvalidSource(error.to_string()))?;
+            envelope
+                .validate_for_holder(selected_holder, now_unix_ms)
+                .map_err(|error| CredentialError::InvalidSource(error.to_string()))?;
+            access = access.with_envelope(envelope);
+        }
     }
     Ok(access)
 }
@@ -549,5 +626,119 @@ mod tests {
             .is_err(),
             "O4/E3"
         );
+    }
+    struct PublicationProbe {
+        reads: std::sync::atomic::AtomicUsize,
+        deliveries: std::sync::atomic::AtomicUsize,
+        handles: bool,
+        fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::SecretStore for PublicationProbe {
+        async fn put(
+            &self,
+            _: &SecretRef,
+            _: crate::RedactedString,
+        ) -> Result<(), CredentialError> {
+            unreachable!()
+        }
+        async fn delete(&self, _: &SecretRef) -> Result<(), CredentialError> {
+            unreachable!()
+        }
+        async fn get(&self, _: &SecretRef) -> Result<crate::RedactedString, CredentialError> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(crate::RedactedString::new("publication-test-secret"))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_credential_contract::CredentialMaterialCustodian for PublicationProbe {
+        fn handles(&self, _: &PlaintextHolder, _: &CredentialUsage) -> bool {
+            self.handles
+        }
+        async fn publish(
+            &self,
+            request: awaken_credential_contract::CredentialCustodyPublication,
+        ) -> Result<(), String> {
+            self.deliveries
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(request.material.expose_secret(), "publication-test-secret");
+            if self.fail {
+                Err("injected custody failure".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn publication_authority_and_origin_fence_every_material_read() {
+        // Causes: active/inactive source, Vault/WorkerLocal origin, installed/
+        // absent delivery, selected/unhandled usage, custodian success/failure.
+        // Effects: R1 valid selected Vault => exactly one read+delivery; R2 no
+        // delivery/unhandled => exact bare pin without I/O; R3 WorkerLocal =>
+        // exact Worker reference without Control I/O; R4 inactive => error before
+        // I/O; R5 custodian failure => error, no successful bare-pin fallback.
+        use awaken_credential_contract::CredentialMaterialDelivery;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        for (rule, worker, active, installed, handles, fail, success, io) in [
+            ("R1", false, true, true, true, false, true, 1),
+            ("R2 absent", false, true, false, true, false, true, 0),
+            ("R2 unhandled", false, true, true, false, false, true, 0),
+            ("R3", true, true, true, true, false, true, 0),
+            ("R4 vault", false, false, true, true, false, false, 0),
+            ("R4 worker", true, false, true, true, false, false, 0),
+            ("R5", false, true, true, true, true, false, 1),
+        ] {
+            let (mut source, _, policy, holder, binding) = fixture();
+            source.descriptor = None;
+            if worker {
+                source.kind = CredentialKind::WorkerLocal;
+            }
+            if !active {
+                source.status = CredentialStatus::Disabled;
+            }
+            let probe = Arc::new(PublicationProbe {
+                reads: AtomicUsize::new(0),
+                deliveries: AtomicUsize::new(0),
+                handles,
+                fail,
+            });
+            let delivery = CredentialMaterialDelivery::ExternalCustody(probe.clone());
+            let result = publish_exact_credential_access(
+                &source,
+                ExactCredentialAccessRequest {
+                    workspace_id: Some("workspace-a"),
+                    target: None,
+                    usage: CredentialUsage::EnvironmentVariable {
+                        name: "AWAKEN_TEST_KEY".into(),
+                    },
+                    policy,
+                    selected_holder: &holder,
+                    binding: &binding,
+                    now_unix_ms: 1_999,
+                },
+                installed.then_some((probe.as_ref() as &dyn crate::SecretStore, &delivery)),
+            )
+            .await;
+            assert_eq!(result.is_ok(), success, "{rule}");
+            assert_eq!(probe.reads.load(Ordering::SeqCst), io, "{rule}");
+            assert_eq!(probe.deliveries.load(Ordering::SeqCst), io, "{rule}");
+            if let Ok(access) = result {
+                assert!(access.envelope.is_none());
+                assert_eq!(
+                    access.material_source,
+                    if worker {
+                        CredentialMaterialSource::WorkerReference
+                    } else {
+                        CredentialMaterialSource::ControlPlaneReference
+                    }
+                );
+            }
+        }
     }
 }

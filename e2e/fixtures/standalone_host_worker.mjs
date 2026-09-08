@@ -49,8 +49,8 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
     `worker_admin_listen = "127.0.0.1:${adminPort}"`,
     'worker_credential_probe_interval_secs = 1',
     // Keep the production 30s evidence window: a 5s lease is shorter than
-    // the Coordinator-owned heartbeat publication cadence and would create
-    // expected fail-closed gaps unrelated to resource transport correctness.
+    // the Coordinator-owned heartbeat publication budget and is now rejected
+    // during startup rather than creating intermittent eligibility gaps.
     'worker_credential_observation_ttl_secs = 30',
     'sandbox_tier = "local"', 'sandbox_trusted_host_enabled = true',
     `sandbox_trusted_host_scoped_execution = ${scopedHost}`,

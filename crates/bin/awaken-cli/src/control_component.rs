@@ -183,6 +183,10 @@ pub(super) async fn prepare_control_routers(
         model_supply,
         &stores,
         cloud_models_enabled,
+        process
+            .managed_services
+            .credential_material_delivery
+            .clone(),
         worker_observations.clone(),
     );
     let mut web_search_providers = process

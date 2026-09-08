@@ -17,6 +17,39 @@ use awaken_worker_contract::{
     WorkerAcpCapabilityObservation, WorkerCredentialObservation, WorkerHeartbeat,
 };
 
+/// One validation owner for authored probe settings and negotiated publication
+/// timing. This is a normal-operation budget, not a lease extension or a promise
+/// that failed/slow probes and transport retries preserve availability.
+pub(crate) fn validate_observation_timing(
+    probe_interval: Duration,
+    observation_ttl: Duration,
+    publication: Option<awaken_runtime_contract::authority_lease::AuthorityLeaseTiming>,
+) -> Result<(), String> {
+    if probe_interval.is_zero() || observation_ttl <= probe_interval {
+        return Err("credential observation TTL must exceed the non-zero probe interval".into());
+    }
+    if let Some(timing) = publication {
+        if !observation_budget_fits(
+            probe_interval,
+            observation_ttl,
+            timing.renew_interval(),
+            timing.request_timeout(),
+        ) {
+            return Err(format!(
+                "credential observation TTL {:?} must exceed probe interval {:?} + heartbeat interval {:?} + request budget {:?}",
+                observation_ttl,
+                probe_interval,
+                timing.renew_interval(),
+                timing.request_timeout(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+mod observation_budget;
+use observation_budget::observation_budget_fits;
+
 #[derive(Default)]
 pub(crate) struct WorkerObservationCache {
     batch: RwLock<ObservationBatch>,
@@ -391,6 +424,49 @@ mod tests {
                 .revalidate_worker_reference(credential)
                 .await
         }
+    }
+
+    #[test]
+    fn observation_timing_decision_table() {
+        // Causes: P=probe interval, T=observation TTL, H=negotiated renewal,
+        // R=request budget. Effects: reject invalid authored settings before I/O;
+        // reject T<=P+H+R before admission (strict expiry); accept a positive
+        // margin. R1 zero P; R2 T<=P; R3 valid pre-negotiation; R4 T<=sum;
+        // R5 T>sum; R6 checked overflow. Independent boundary rows prevent a
+        // check against max(P,H), or omission of transport R, passing this table.
+        use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
+        let negotiated = Some(AuthorityLeaseTiming::from_ttl_ms(30_000));
+        for (rule, probe, ttl, publication, accepted) in [
+            ("R1", 0, 30_000, None, false),
+            ("R2 below", 10_000, 9_999, None, false),
+            ("R2 equal", 10_000, 10_000, None, false),
+            ("R3", 1_000, 5_000, None, true),
+            ("R4 old fixture", 1_000, 5_000, negotiated, false),
+            ("R4 sum below", 10_000, 24_999, negotiated, false),
+            ("R4 sum equal", 10_000, 25_000, negotiated, false),
+            ("R5 margin", 10_000, 25_001, negotiated, true),
+            ("R5 default", 10_000, 30_000, negotiated, true),
+        ] {
+            assert_eq!(
+                validate_observation_timing(
+                    Duration::from_millis(probe),
+                    Duration::from_millis(ttl),
+                    publication,
+                )
+                .is_ok(),
+                accepted,
+                "{rule}"
+            );
+        }
+        assert!(
+            validate_observation_timing(
+                Duration::MAX - Duration::from_nanos(1),
+                Duration::MAX,
+                negotiated,
+            )
+            .is_err(),
+            "R6"
+        );
     }
 
     #[tokio::test]

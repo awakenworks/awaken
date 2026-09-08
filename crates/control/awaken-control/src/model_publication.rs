@@ -55,6 +55,10 @@ pub struct CatalogModelPublicationResolver {
     brokered_access_enabled: bool,
     direct_credential_policy: CredentialExecutionPolicy,
     direct_holder: Option<awaken_runtime_contract::PlaintextHolder>,
+    credential_material_delivery: Option<(
+        Arc<dyn awaken_credential_vault::SecretStore>,
+        awaken_credential_contract::CredentialMaterialDelivery,
+    )>,
     workers: Option<Arc<dyn awaken_worker_contract::WorkerObservationSource>>,
     a2a_cards: Arc<dyn A2aCardDiscovery>,
     executor_capabilities: Arc<Vec<ExecutorModelCapability>>,
@@ -151,7 +155,9 @@ impl CatalogModelPublicationResolver {
                 }
                 None
             };
-            return self.provider_candidate(catalog, workspace, binding, offering, access, acp);
+            return self
+                .provider_candidate(catalog, workspace, binding, offering, access, acp)
+                .await;
         }
         if matches!(Backend::from_ref(&binding.backend_ref), Backend::Acp(_)) {
             let configuration = Default::default();
@@ -253,7 +259,8 @@ impl CatalogModelPublicationResolver {
                     reason,
                 })?;
             resolved.push(
-                self.provider_candidate(catalog, workspace, binding, offering, access, None)?,
+                self.provider_candidate(catalog, workspace, binding, offering, access, None)
+                    .await?,
             );
         }
         let primary = resolved.remove(0);
@@ -427,11 +434,12 @@ mod tests {
         WorkerRegistration,
     };
 
-    fn test_acp_capabilities() -> Arc<Vec<awaken_acp_contract::AcpPublicationCapability>> {
+    pub(super) fn test_acp_capabilities() -> Arc<Vec<awaken_acp_contract::AcpPublicationCapability>>
+    {
         Arc::new(awaken_run_executor_acp::known_acp_publication_capabilities())
     }
 
-    async fn verified_acp_worker(
+    pub(super) async fn verified_acp_worker(
         credential_id: &str,
         backend_ref: &str,
         fingerprint: &str,
@@ -557,7 +565,7 @@ mod tests {
         catalog
     }
 
-    fn catalog_with_dialect(models: &[&str], dialect: ApiDialect) -> ProviderCatalog {
+    pub(super) fn catalog_with_dialect(models: &[&str], dialect: ApiDialect) -> ProviderCatalog {
         let mut catalog = catalog(models);
         catalog.endpoints.get_mut("ep1").unwrap().dialect = dialect;
         for offering in &mut catalog.offerings {
@@ -566,17 +574,15 @@ mod tests {
         catalog
     }
 
-    fn direct_resolver(
+    pub(super) fn direct_resolver(
         catalog: ProviderCatalog,
         credentials: Arc<dyn CredentialRepo>,
     ) -> CatalogModelPublicationResolver {
         let policy = CredentialExecutionPolicy::self_hosted_provider();
-        let holder = policy
-            .allowed_plaintext_holders
-            .iter()
-            .next()
-            .expect("self-hosted Provider policy has an exact holder")
-            .clone();
+        let holder = awaken_runtime_contract::PlaintextHolder::new(
+            awaken_runtime_contract::PlaintextBoundary::Worker,
+            awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+        );
         CatalogModelPublicationResolver::new(catalog, credentials)
             .with_direct_provider_credential_execution(policy, holder)
     }

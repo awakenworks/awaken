@@ -69,13 +69,11 @@ impl WorkerBootstrap {
         if worker.credential_trust_domain.trim().is_empty() {
             return Err("worker_credential_trust_domain must not be empty".into());
         }
-        if worker.credential_probe_interval_secs == 0
-            || worker.credential_observation_ttl_secs <= worker.credential_probe_interval_secs
-        {
-            return Err(
-                "Worker credential observation TTL must exceed the non-zero probe interval".into(),
-            );
-        }
+        crate::credential_liveness::validate_observation_timing(
+            std::time::Duration::from_secs(worker.credential_probe_interval_secs),
+            std::time::Duration::from_secs(worker.credential_observation_ttl_secs),
+            None,
+        )?;
         Ok(worker)
     }
 }

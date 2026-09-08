@@ -18,6 +18,7 @@ pub struct FakeWorkerUpstream {
     initial_heartbeat_blocked: Arc<AtomicBool>,
     heartbeat_sequences: Arc<Mutex<Vec<u64>>>,
     applied_heartbeat_sequence: Arc<AtomicU64>,
+    next_lease_ttl_ms: Arc<AtomicU64>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -116,6 +117,8 @@ impl FakeWorkerUpstream {
         let heartbeat_sequences = Arc::new(Mutex::new(Vec::new()));
         let initial_heartbeat_blocked = Arc::new(AtomicBool::new(false));
         let applied_heartbeat_sequence = Arc::new(AtomicU64::new(0));
+        let next_lease_ttl_ms = Arc::new(AtomicU64::new(registry_ttl_ms));
+        let thread_next_lease_ttl_ms = next_lease_ttl_ms.clone();
         let thread_stop = stop.clone();
         let thread_requests = requests.clone();
         let thread_request_headers = request_headers.clone();
@@ -145,7 +148,7 @@ impl FakeWorkerUpstream {
                                 drain_release: thread_drain_release.as_deref(),
                                 applied_heartbeat_budget,
                                 heartbeat_fault,
-                                registry_ttl_ms,
+                                registry_ttl_ms: thread_next_lease_ttl_ms.load(Ordering::Acquire),
                                 recovery_release: thread_recovery_release.as_deref(),
                                 heartbeat_count: &heartbeat_count,
                                 heartbeat_sequences: &thread_heartbeat_sequences,
@@ -175,8 +178,13 @@ impl FakeWorkerUpstream {
             heartbeat_sequences,
             initial_heartbeat_blocked,
             applied_heartbeat_sequence,
+            next_lease_ttl_ms,
             thread: Some(thread),
         }
+    }
+
+    pub fn set_lease_ttl_ms(&self, ttl: u64) {
+        self.next_lease_ttl_ms.store(ttl, Ordering::Release);
     }
 
     pub fn url(&self) -> &str {

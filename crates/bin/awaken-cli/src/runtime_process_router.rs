@@ -187,6 +187,10 @@ pub(super) async fn prepare_runtime_routers(
             model_supply,
             &stores,
             cloud_models_enabled,
+            process
+                .managed_services
+                .credential_material_delivery
+                .clone(),
             worker_observations.clone(),
         )
     });

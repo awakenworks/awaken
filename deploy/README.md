@@ -182,11 +182,14 @@ the standalone Worker's root, excluding embedded execution as a passing oracle.
 
 This is a same-host fixture qualification, not real vendor login, HTTPS Git
 credential, cross-host cloud failure or automatic projection delivery proof.
-The fixture retains the default 30-second observation TTL: choosing a TTL
-shorter than the Coordinator's heartbeat publication cadence can leave safe but
-unavailable gaps even when local probes succeed. Current configuration checks
-only TTL versus probe interval; publication-cadence coordination remains an
-explicit follow-up boundary, not a reason to extend expired evidence.
+The fixture retains the default 30-second observation TTL. The Worker validates
+one timing contract: positive probe interval and, after each Coordinator lease
+receipt, `observation TTL > probe interval + heartbeat interval + request budget`.
+An incompatible initial receipt withdraws registration before claims; a later
+incompatible lease drains and terminates that incarnation. Raise the authored
+observation TTL to cover the negotiated budget; the Worker never extends old
+evidence to hide configuration errors. Slow probes, scheduling stalls and
+transport retries can still exhaust evidence and correctly fail closed.
 
 ## Split service boundaries
 
