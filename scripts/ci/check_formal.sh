@@ -376,6 +376,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness deployment_run_failure_projection_is_total_exact_and_non_strengthening \
     --harness missing_agent_publication_is_available_only_to_noninteractive_projection \
     --harness inbound_admission_receipt_is_stable_across_processing_races \
+    --harness inbound_order_is_fixed_before_effect_observation \
     --harness rollout_update_revision_is_monotonic_and_covers_event \
     --harness user_profile_capability_and_field_projection_is_total_exclusive_and_exact \
     --harness idempotency_key_scan_transition_is_exact_and_invalid_absorbing \

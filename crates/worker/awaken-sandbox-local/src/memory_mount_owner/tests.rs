@@ -1,5 +1,6 @@
 use super::*;
 use crate::provider::workdir_helper_tests::{TeardownProbe, workdir_spec};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 struct PausedMounter {
@@ -38,16 +39,20 @@ impl PausedMounter {
 
 #[async_trait::async_trait]
 impl pc::MemoryMounter for PausedMounter {
-    async fn mount(
+    async fn mount(&self, _: &str, _: &Path, _: pc::MountAccess) -> pc::MemoryMountOutcome {
+        self.mount_calls.fetch_add(1, Ordering::SeqCst);
+        let created = self.before_pause.then(|| self.guard());
+        let _permit = self.mount_gate.acquire().await.unwrap();
+        pc::MemoryMountOutcome::Mounted(created.unwrap_or_else(|| self.guard()))
+    }
+
+    async fn recover_unknown_mount(
         &self,
         _: &str,
         _: &Path,
         _: pc::MountAccess,
-    ) -> Result<Box<dyn pc::MemoryMount>, pc::SandboxError> {
-        self.mount_calls.fetch_add(1, Ordering::SeqCst);
-        let created = self.before_pause.then(|| self.guard());
-        let _permit = self.mount_gate.acquire().await.unwrap();
-        Ok(created.unwrap_or_else(|| self.guard()))
+    ) -> Result<(), pc::SandboxError> {
+        Ok(())
     }
 }
 
@@ -103,6 +108,136 @@ async fn acquire(
         )
         .await
         .unwrap();
+}
+
+#[derive(Clone, Copy)]
+enum FailedMountMode {
+    NoEffect,
+    RecoveryRequired,
+    Panic,
+}
+
+struct FailedMountMounter {
+    mode: FailedMountMode,
+    mount_calls: AtomicUsize,
+    recovery_calls: AtomicUsize,
+    recovery_failures: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl pc::MemoryMounter for FailedMountMounter {
+    async fn mount(&self, _: &str, _: &Path, _: pc::MountAccess) -> pc::MemoryMountOutcome {
+        self.mount_calls.fetch_add(1, Ordering::SeqCst);
+        match self.mode {
+            FailedMountMode::NoEffect => {
+                pc::MemoryMountOutcome::NoEffect(pc::SandboxError::new("no effect"))
+            }
+            FailedMountMode::RecoveryRequired => pc::MemoryMountOutcome::RecoveryRequired(
+                pc::SandboxError::new("response lost after effect"),
+            ),
+            FailedMountMode::Panic => panic!("mount task panicked after effect boundary"),
+        }
+    }
+
+    async fn recover_unknown_mount(
+        &self,
+        _: &str,
+        _: &Path,
+        _: pc::MountAccess,
+    ) -> Result<(), pc::SandboxError> {
+        self.recovery_calls.fetch_add(1, Ordering::SeqCst);
+        if self
+            .recovery_failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            Err(pc::SandboxError::new("recovery still unavailable"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[tokio::test]
+async fn mount_outcome_decision_table_retains_only_effect_responsibility() {
+    // Causes: C1 mount reports NoEffect/RecoveryRequired/panics; C2 cleanup is
+    // denied/admitted; C3 first recovery fails/succeeds. Effects: E1 NoEffect
+    // retires immediately and permits a fresh mount; E2 unknown/panic retain the
+    // exact operation and block remount; E3 denial performs no recovery; E4 a
+    // failed recovery remains retained; E5 successful recovery retires without
+    // another mount. Rules: N1=C1(NoEffect)=>E1; U1=C1(Unknown|Panic)=>E2;
+    // U2=U1+!C2=>E3; U3=U1+C2+C3(fail)=>E4; U4=U3+C3(ok)=>E5.
+    for mode in [
+        FailedMountMode::NoEffect,
+        FailedMountMode::RecoveryRequired,
+        FailedMountMode::Panic,
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let registry = MemoryMountRegistry::default();
+        let owner = registry.owner(root.path());
+        let mounter = Arc::new(FailedMountMounter {
+            mode,
+            mount_calls: AtomicUsize::new(0),
+            recovery_calls: AtomicUsize::new(0),
+            recovery_failures: AtomicUsize::new(usize::from(!matches!(
+                mode,
+                FailedMountMode::NoEffect
+            ))),
+        });
+        let req = requirement("failed");
+        let first = owner
+            .lock()
+            .await
+            .acquire(
+                mounter.clone(),
+                req.clone(),
+                "failed".into(),
+                root.path().join("failed"),
+                pc::MountAccess::ReadWrite,
+            )
+            .await;
+        assert!(first.is_err());
+        assert_eq!(mounter.mount_calls.load(Ordering::SeqCst), 1);
+        if matches!(mode, FailedMountMode::NoEffect) {
+            owner.lock().await.require_empty().unwrap();
+            let retry = owner
+                .lock()
+                .await
+                .acquire(
+                    mounter.clone(),
+                    req,
+                    "failed".into(),
+                    root.path().join("failed"),
+                    pc::MountAccess::ReadWrite,
+                )
+                .await;
+            assert!(retry.is_err(), "N1/E1 fresh attempt runs and fails cleanly");
+            assert_eq!(mounter.mount_calls.load(Ordering::SeqCst), 2, "N1/E1");
+            continue;
+        }
+        assert!(owner.lock().await.require_no_pending().is_err(), "U1/E2");
+        assert!(
+            owner
+                .lock()
+                .await
+                .release(|| Err(pc::SandboxError::new("denied")))
+                .await
+                .is_err(),
+            "U2/E3"
+        );
+        assert_eq!(mounter.recovery_calls.load(Ordering::SeqCst), 0, "U2/E3");
+        assert!(
+            owner.lock().await.release(|| Ok(())).await.is_err(),
+            "U3/E4"
+        );
+        assert!(owner.lock().await.require_no_pending().is_err(), "U3/E4");
+        owner.lock().await.release(|| Ok(())).await.unwrap();
+        owner.lock().await.require_empty().unwrap();
+        assert_eq!(mounter.recovery_calls.load(Ordering::SeqCst), 2, "U4/E5");
+        assert_eq!(mounter.mount_calls.load(Ordering::SeqCst), 1, "U4/E5");
+    }
 }
 
 mod provider_tests;

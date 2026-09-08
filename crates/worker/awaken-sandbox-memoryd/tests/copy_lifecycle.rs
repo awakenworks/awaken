@@ -2,13 +2,16 @@
 //! This replaces the retired `awaken-sandbox memoryd` executable test so there is
 //! one production realization path and one matching lifecycle test owner.
 
+mod support;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use awaken_memory_store::{MemoryRepository, SqliteMemoryRepository};
-use awaken_provisioning_contract::MemoryMaterializationEvidence;
+use awaken_provisioning_contract::{MemoryMaterializationEvidence, MemoryMountOutcome};
 use awaken_provisioning_contract::{MemoryMounter, MountAccess};
 use awaken_sandbox_memoryd::MemoryStoreMounter;
+use support::MemoryMountOutcomeTestExt as _;
 
 fn temporary_root() -> PathBuf {
     tempfile::Builder::new()
@@ -38,7 +41,7 @@ async fn live_and_recovered_copy_do_not_follow_a_renamed_head() {
             let mount = mounter
                 .mount("s", &projection, MountAccess::ReadWrite)
                 .await
-                .unwrap();
+                .mounted();
             let evidence = MemoryMaterializationEvidence::new(
                 "s",
                 "/memory",
@@ -109,13 +112,20 @@ async fn ingress_and_recovery_reject_a_tree_that_cannot_be_harvested() {
     let history = repository.list_versions("s").await.unwrap();
     let projection = root.path().join("projection");
     let mounter = MemoryStoreMounter::copy_only(repository.clone());
-    assert!(
+    assert!(matches!(
         mounter
             .mount("s", &projection, MountAccess::ReadWrite)
-            .await
-            .is_err()
+            .await,
+        awaken_provisioning_contract::MemoryMountOutcome::RecoveryRequired(_)
+    ));
+    mounter
+        .recover_unknown_mount("s", &projection, MountAccess::ReadWrite)
+        .await
+        .unwrap();
+    assert!(
+        !projection.exists(),
+        "typed unknown recovery removes the unpublished projection"
     );
-    assert_eq!(std::fs::read_dir(&projection).unwrap().count(), 0);
     let evidence = MemoryMaterializationEvidence::new("s", "/workspace/memory", vec![]).unwrap();
     let error = mounter
         .reconcile_recovered_copy(
@@ -298,8 +308,12 @@ async fn parent_alias_admission_preserves_exact_no_edit_heads_and_history() {
             let result = mounter
                 .mount("s", &root.path().join("projection"), MountAccess::ReadWrite)
                 .await;
-            assert_eq!(result.is_ok(), !aliases && exact, "{left}/{right}/{nested}");
-            if let Ok(mount) = result {
+            assert_eq!(
+                matches!(result, MemoryMountOutcome::Mounted(_)),
+                !aliases && exact,
+                "{left}/{right}/{nested}"
+            );
+            if let MemoryMountOutcome::Mounted(mount) = result {
                 mount.teardown().await.unwrap();
                 mount.teardown().await.unwrap();
             }
@@ -383,7 +397,7 @@ async fn unrepresentable_copy_blocks_writeback_until_source_is_repaired() {
                     }
                     let mounter = MemoryStoreMounter::copy_only(repository.clone());
                     let projection = root.path().join("projection");
-                    let mount = mounter.mount("s", &projection, access).await.unwrap();
+                    let mount = mounter.mount("s", &projection, access).await.mounted();
                     let evidence = MemoryMaterializationEvidence::new(
                         "s",
                         "/workspace/memory",
@@ -547,7 +561,7 @@ async fn unreadable_projection_never_authorizes_partial_writeback() {
         let mount = mounter
             .mount("s", &projection, MountAccess::ReadWrite)
             .await
-            .unwrap();
+            .mounted();
         std::fs::write(projection.join("a.md"), "dirty").unwrap();
         let denied = projection.join("z");
         if directory {
@@ -602,7 +616,7 @@ async fn empty_entry_and_depth_overflows_fail_before_any_repository_write() {
         let mount = mounter
             .mount("s", &projection, MountAccess::ReadWrite)
             .await
-            .unwrap();
+            .mounted();
         std::fs::write(projection.join("a.md"), "dirty").unwrap();
         if deep {
             let mut path = projection.clone();
@@ -653,7 +667,7 @@ async fn unavailable_copy_root_is_not_evidence_of_memory_deletion() {
         let mount = mounter
             .mount("s", &projection, MountAccess::ReadWrite)
             .await
-            .unwrap();
+            .mounted();
         let evidence = mount.materialization_heads();
         std::fs::write(projection.join("nested/note.md"), "local edit").unwrap();
         std::fs::rename(&projection, &retained).unwrap();
@@ -734,11 +748,11 @@ async fn concurrent_copy_harvest_preserves_one_winner_and_retry_evidence() {
             let left = mounter
                 .mount("s", &left_path, MountAccess::ReadWrite)
                 .await
-                .unwrap();
+                .mounted();
             let right = mounter
                 .mount("s", &right_path, MountAccess::ReadWrite)
                 .await
-                .unwrap();
+                .mounted();
             let evidence = MemoryMaterializationEvidence::new(
                 "s",
                 "/workspace/memory",
@@ -862,7 +876,7 @@ async fn unsafe_copy_entries_fail_before_any_durable_mutation() {
         let mount = mounter
             .mount("s", &projection, MountAccess::ReadWrite)
             .await
-            .unwrap();
+            .mounted();
         std::fs::write(projection.join("a.md"), "dirty").unwrap();
         let external = root.join("external");
         std::fs::create_dir(&external).unwrap();
@@ -927,7 +941,7 @@ async fn an_existing_empty_copy_is_an_intentional_delete_not_a_missing_tree() {
     let mount = mounter
         .mount("s", &projection, MountAccess::ReadWrite)
         .await
-        .unwrap();
+        .mounted();
     std::fs::remove_file(projection.join("note.md")).unwrap();
     mount.teardown().await.unwrap();
     let history = repository.list_versions("s").await.unwrap();
@@ -970,7 +984,7 @@ async fn windows_junction_is_not_a_readable_memory_projection() {
         let mount = mounter
             .mount("s", &projection, MountAccess::ReadWrite)
             .await
-            .unwrap();
+            .mounted();
         std::fs::write(projection.join("a.md"), "dirty").unwrap();
         let junction = if root_link {
             std::fs::rename(&projection, &retained).unwrap();
@@ -1043,7 +1057,7 @@ async fn partial_copy_commit_keeps_per_file_truth_across_retry_and_reopen() {
         let mount = mounter
             .mount("s", &projection, MountAccess::ReadWrite)
             .await
-            .unwrap();
+            .mounted();
         let evidence = MemoryMaterializationEvidence::new(
             "s",
             "/workspace/memory",
@@ -1141,7 +1155,7 @@ async fn recovered_copy_retries_committed_write_without_a_second_version() {
     let mount = mounter
         .mount("s", &root.join("projection"), MountAccess::ReadWrite)
         .await
-        .unwrap();
+        .mounted();
     let evidence = MemoryMaterializationEvidence::new(
         "s",
         "/workspace/memory",
@@ -1217,11 +1231,11 @@ async fn concurrent_identical_edits_converge_but_different_creates_conflict() {
         let left = mounter
             .mount("s", &left_path, MountAccess::ReadWrite)
             .await
-            .unwrap();
+            .mounted();
         let right = mounter
             .mount("s", &right_path, MountAccess::ReadWrite)
             .await
-            .unwrap();
+            .mounted();
         for (directory, content) in [
             (&left_path, "left"),
             (
@@ -1308,7 +1322,7 @@ async fn copy_mount_reconciles_once_and_survives_mounter_replacement() {
     repository
         .create(store_id, "/root.md", "one")
         .await
-        .expect("seed root");
+        .unwrap();
     repository
         .create(store_id, "/deleted.md", "remove-me")
         .await
@@ -1317,7 +1331,7 @@ async fn copy_mount_reconciles_once_and_survives_mounter_replacement() {
     let mount = mounter
         .mount(store_id, &first_projection, MountAccess::ReadWrite)
         .await
-        .expect("materialize first generation");
+        .mounted();
 
     assert_eq!(
         std::fs::read_to_string(first_projection.join("root.md")).expect("read seed"),
@@ -1341,7 +1355,7 @@ async fn copy_mount_reconciles_once_and_survives_mounter_replacement() {
     let replacement_mount = replacement
         .mount(store_id, &second_projection, MountAccess::ReadOnly)
         .await
-        .expect("materialize replacement generation");
+        .mounted();
 
     assert_eq!(
         std::fs::read_to_string(second_projection.join("root.md")).expect("read update"),

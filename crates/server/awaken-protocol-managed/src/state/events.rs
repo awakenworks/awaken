@@ -17,6 +17,19 @@ use awaken_session_contract::{
 };
 
 const MANAGED_MULTIAGENT_EVENT_ID_PREFIX: &str = "magent_v1_";
+const INBOUND_ADMISSION_PHASE: u16 = 120;
+
+/// The sole order rule for accepted inbound commands. Processing/effect
+/// observations may enrich the public row but can never replace this coordinate.
+#[must_use]
+const fn inbound_admission_order(
+    anchor: Option<awaken_session_contract::SessionEventProjectionAnchor>,
+) -> Option<(u64, u16)> {
+    match anchor {
+        Some(anchor) => Some((anchor.source_commit_cursor, INBOUND_ADMISSION_PHASE)),
+        None => None,
+    }
+}
 
 /// Whether one committed coordinated Run permanently closes its logical child
 /// Thread. Ordinary Agent Threads remain reusable after completion or external
@@ -44,23 +57,17 @@ struct DurableInboundProjection {
 enum InboundProjectionView {
     AdmissionReceipt,
     DurableHistory,
-    RootBarrierHistory,
 }
 
 /// The one projection algebra for Session-root inbound commands. Admission
-/// receipts and the root-barrier view retain every accepted command; ordinary
-/// durable history includes only entries whose processing provenance exists.
-/// Admission deliberately hides mutable progress while both history views expose
-/// the root-owned marker.
+/// receipts retain every accepted command; durable history requires the batch's
+/// immutable admission fence. Admission deliberately hides mutable progress;
+/// history exposes the root-owned processed marker without changing order.
 #[must_use]
-const fn inbound_projection_visible(
-    view: InboundProjectionView,
-    processed: bool,
-    anchored: bool,
-) -> bool {
+const fn inbound_projection_visible(view: InboundProjectionView, admission_anchored: bool) -> bool {
     match view {
-        InboundProjectionView::AdmissionReceipt | InboundProjectionView::RootBarrierHistory => true,
-        InboundProjectionView::DurableHistory => processed || anchored,
+        InboundProjectionView::AdmissionReceipt => true,
+        InboundProjectionView::DurableHistory => admission_anchored,
     }
 }
 
@@ -73,20 +80,14 @@ const fn inbound_processed_at_visible(view: InboundProjectionView, processed: bo
 #[kani::proof]
 fn inbound_admission_receipt_is_stable_across_processing_races() {
     let processed: bool = kani::any();
-    let anchored: bool = kani::any();
+    let admission_anchored: bool = kani::any();
     assert!(inbound_projection_visible(
         InboundProjectionView::AdmissionReceipt,
-        processed,
-        anchored
-    ));
-    assert!(inbound_projection_visible(
-        InboundProjectionView::RootBarrierHistory,
-        processed,
-        anchored
+        admission_anchored,
     ));
     assert_eq!(
-        inbound_projection_visible(InboundProjectionView::DurableHistory, processed, anchored),
-        processed || anchored
+        inbound_projection_visible(InboundProjectionView::DurableHistory, admission_anchored,),
+        admission_anchored
     );
     assert!(!inbound_processed_at_visible(
         InboundProjectionView::AdmissionReceipt,
@@ -96,10 +97,22 @@ fn inbound_admission_receipt_is_stable_across_processing_races() {
         inbound_processed_at_visible(InboundProjectionView::DurableHistory, processed),
         processed
     );
-    assert_eq!(
-        inbound_processed_at_visible(InboundProjectionView::RootBarrierHistory, processed),
-        processed
-    );
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn inbound_order_is_fixed_before_effect_observation() {
+    let admission_cursor: u64 = kani::any();
+    let _later_effect_cursor: u64 = kani::any();
+    let anchor = Some(awaken_session_contract::SessionEventProjectionAnchor {
+        source_commit_cursor: admission_cursor,
+    });
+    let issued = inbound_admission_order(anchor);
+    assert_eq!(issued, Some((admission_cursor, INBOUND_ADMISSION_PHASE)));
+    // Effect progress has no input to the order function: replay after any
+    // effect observation produces the exact coordinate already issued.
+    assert_eq!(inbound_admission_order(anchor), issued);
+    assert_eq!(inbound_admission_order(None), None);
 }
 
 fn inbound_projections(
@@ -110,8 +123,10 @@ fn inbound_projections(
     let mut projections = Vec::new();
     for batch in batches {
         for entry in &batch.events {
-            if inbound_projection_visible(view, entry.processed, entry.projection_anchor.is_some())
-            {
+            if inbound_projection_visible(
+                view,
+                inbound_admission_order(batch.admission_projection_anchor).is_some(),
+            ) {
                 projections.push(inbound_projection(session_id, entry, view));
             }
         }

@@ -722,6 +722,94 @@ async fn memory_store_realizes_as_copy_on_the_container_tier() {
     assert!(torn_down.load(Ordering::SeqCst));
 }
 
+struct UncertainMemoryMounter {
+    mount_calls: Arc<AtomicUsize>,
+    recovery_calls: Arc<AtomicUsize>,
+    recovery_failures_remaining: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl pc::MemoryMounter for UncertainMemoryMounter {
+    async fn mount(
+        &self,
+        _store_id: &str,
+        _host_path: &std::path::Path,
+        _access: pc::MountAccess,
+    ) -> pc::MemoryMountOutcome {
+        self.mount_calls.fetch_add(1, Ordering::SeqCst);
+        pc::MemoryMountOutcome::RecoveryRequired(pc::SandboxError::new(
+            "mount response was lost after a possible effect",
+        ))
+    }
+
+    async fn recover_unknown_mount(
+        &self,
+        _store_id: &str,
+        _host_path: &std::path::Path,
+        _access: pc::MountAccess,
+    ) -> Result<(), pc::SandboxError> {
+        self.recovery_calls.fetch_add(1, Ordering::SeqCst);
+        let remaining = self.recovery_failures_remaining.fetch_update(
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+            |value| value.checked_sub(1),
+        );
+        if remaining.is_ok() {
+            Err(pc::SandboxError::new("mount recovery remains unavailable"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[tokio::test]
+async fn uncertain_memory_staging_blocks_remount_until_exact_recovery() {
+    // Cause/effect graph: C1 mount returns RecoveryRequired; C2 exact recovery
+    // fails or succeeds; C3 the same provider receives another create. Effects:
+    // E1 the first failure retains operation identity; E2 C3 cannot remount
+    // while C2 fails; E3 successful recovery retires the retained operation and
+    // only then permits a fresh mount; E4 the fresh unknown is compensated by
+    // its own identity. Rules U1=C1+C2(fail)=>E1;
+    // U2=U1+C3+C2(fail)=>E2; U3=U2+C3+C2(success)=>E3+E4.
+    // No backend container exists in these rules, so recovery is cleanup-safe;
+    // ambiguous backend creation is retained in the separate non-retryable set.
+    let runtime = Arc::new(FakeRuntime::default());
+    let mut sandbox_spec = spec("uncertain-memory-stage");
+    sandbox_spec.mounts.push(pc::MountRequirement {
+        mount_id: "memory".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "uncertain-store".into(),
+            materialization_reference: None,
+            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+        },
+        mount_path: "/mnt/memory/uncertain".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    });
+    let provider = provider(runtime);
+    let mount_calls = Arc::new(AtomicUsize::new(0));
+    let recovery_calls = Arc::new(AtomicUsize::new(0));
+    let recovery_failures_remaining = Arc::new(AtomicUsize::new(2));
+    provider.install_memory_mounter(Arc::new(UncertainMemoryMounter {
+        mount_calls: mount_calls.clone(),
+        recovery_calls: recovery_calls.clone(),
+        recovery_failures_remaining,
+    }));
+
+    assert!(provider.create(&sandbox_spec).await.is_err(), "U1/E1");
+    assert_eq!(mount_calls.load(Ordering::SeqCst), 1, "U1/E1");
+    assert_eq!(recovery_calls.load(Ordering::SeqCst), 1, "U1/E1");
+
+    assert!(provider.create(&sandbox_spec).await.is_err(), "U2/E2");
+    assert_eq!(mount_calls.load(Ordering::SeqCst), 1, "U2/E2");
+    assert_eq!(recovery_calls.load(Ordering::SeqCst), 2, "U2/E2");
+
+    assert!(provider.create(&sandbox_spec).await.is_err(), "U3/E3+E4");
+    assert_eq!(mount_calls.load(Ordering::SeqCst), 2, "U3/E3");
+    assert_eq!(recovery_calls.load(Ordering::SeqCst), 4, "U3/E4");
+}
+
 fn one_file_archive(path: &str, bytes: &[u8]) -> Vec<u8> {
     let mut archive = tar::Builder::new(Vec::new());
     let mut header = tar::Header::new_gnu();
@@ -754,16 +842,28 @@ impl pc::MemoryMounter for HarvestingMemoryMounter {
         store_id: &str,
         host_path: &std::path::Path,
         _access: pc::MountAccess,
-    ) -> Result<Box<dyn pc::MemoryMount>, pc::SandboxError> {
-        *self.reference.lock().unwrap() = Some(store_id.to_owned());
-        std::fs::create_dir_all(host_path)
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-        std::fs::write(host_path.join("seed.txt"), b"seed")
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-        Ok(Box::new(HarvestingMemoryMount {
-            root: host_path.to_path_buf(),
-            harvested: self.harvested.clone(),
-        }))
+    ) -> pc::MemoryMountOutcome {
+        let result: Result<Box<dyn pc::MemoryMount>, pc::SandboxError> = (|| {
+            *self.reference.lock().unwrap() = Some(store_id.to_owned());
+            std::fs::create_dir_all(host_path)
+                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            std::fs::write(host_path.join("seed.txt"), b"seed")
+                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            Ok(Box::new(HarvestingMemoryMount {
+                root: host_path.to_path_buf(),
+                harvested: self.harvested.clone(),
+            }) as Box<dyn pc::MemoryMount>)
+        })();
+        pc::MemoryMountOutcome::from_no_effect(result)
+    }
+
+    async fn recover_unknown_mount(
+        &self,
+        _: &str,
+        _: &std::path::Path,
+        _: pc::MountAccess,
+    ) -> Result<(), pc::SandboxError> {
+        Ok(())
     }
 
     async fn reconcile_recovered_copy(
@@ -2381,17 +2481,29 @@ impl pc::MemoryMounter for FakeMemoryMounter {
         _store_id: &str,
         host_path: &std::path::Path,
         _access: pc::MountAccess,
-    ) -> Result<Box<dyn pc::MemoryMount>, pc::SandboxError> {
-        std::fs::create_dir_all(host_path).map_err(|e| pc::SandboxError::new(e.to_string()))?;
-        std::fs::write(host_path.join("seed.txt"), b"seed")
-            .map_err(|e| pc::SandboxError::new(e.to_string()))?;
-        Ok(Box::new(FakeMemoryMount {
-            torn_down: self.torn_down.clone(),
-            fail_teardown: self.fail_teardown,
-            teardown_calls: Arc::new(AtomicUsize::new(0)),
-            response_gate: None,
-            realization: pc::Realization::Copy,
-        }))
+    ) -> pc::MemoryMountOutcome {
+        let result: Result<Box<dyn pc::MemoryMount>, pc::SandboxError> = (|| {
+            std::fs::create_dir_all(host_path).map_err(|e| pc::SandboxError::new(e.to_string()))?;
+            std::fs::write(host_path.join("seed.txt"), b"seed")
+                .map_err(|e| pc::SandboxError::new(e.to_string()))?;
+            Ok(Box::new(FakeMemoryMount {
+                torn_down: self.torn_down.clone(),
+                fail_teardown: self.fail_teardown,
+                teardown_calls: Arc::new(AtomicUsize::new(0)),
+                response_gate: None,
+                realization: pc::Realization::Copy,
+            }) as Box<dyn pc::MemoryMount>)
+        })();
+        pc::MemoryMountOutcome::from_no_effect(result)
+    }
+
+    async fn recover_unknown_mount(
+        &self,
+        _: &str,
+        _: &std::path::Path,
+        _: pc::MountAccess,
+    ) -> Result<(), pc::SandboxError> {
+        Ok(())
     }
 }
 
@@ -5101,8 +5213,10 @@ async fn create_failure_compensates_only_when_the_runtime_proves_no_backend_effe
      * definite runtime rejection is followed by a Memory teardown failure,
      * E4 retains the remaining process-local participants and reports both
      * errors instead of dropping the only retryable cleanup handle. The
-     * shared runtime decision table's CurrentAttemptOnly/prior-attempt row owns
-     * E3: a later process remains fail-closed and performs zero replacement.
+     * E3: the same Provider retains ambiguous participants and blocks a later
+     * realization before any second staging or replacement. The shared runtime
+     * decision table's CurrentAttemptOnly/prior-attempt row extends that closure
+     * to a later process.
      * This closes safety only; it deliberately makes no cross-process liveness
      * or automatic-reclamation claim for host-bind participants. */
     fn memory_spec(scope: &str) -> pc::SandboxSpec {
@@ -5183,6 +5297,19 @@ async fn create_failure_compensates_only_when_the_runtime_proves_no_backend_effe
     assert!(
         std::path::Path::new(&ambiguous_source).exists(),
         "E2 a possibly referenced host stage is retained"
+    );
+    let attempted_before_retry = ambiguous_runtime.st.lock().unwrap().attempted_binds.len();
+    assert!(
+        ambiguous_provider
+            .create_container(&memory_spec("ambiguous-create-retry"))
+            .await
+            .is_err(),
+        "E3 an ambiguous transfer blocks the Provider"
+    );
+    assert_eq!(
+        ambiguous_runtime.st.lock().unwrap().attempted_binds.len(),
+        attempted_before_retry,
+        "E3 no second participant is staged"
     );
     // The test owns no backend object, so it may clean only its injected stage
     // after observing the retention boundary. Production has no such proof and

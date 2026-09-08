@@ -256,14 +256,19 @@ harvest after ACK. Host replay tests distinguish wrapper loss (reuse) from actua
 Provider replacement (cold reacquisition). Its first/last mount-response table
 checks twenty revoke/replace/expire/renew/cancel schedules: denial cannot authorize
 compensation, and a fresh retry resumes the original cancelled mount future.
-`MemoryParticipantOwnership` bounds one root/Copy-or-FUSE
-participant and two callers; ten semantic mutants and five witnesses cover its
-ownership/admission cuts. It is an abstract safety model, not a Rust refinement or
-an unconditional liveness proof. A non-returning mounter, process/Provider death,
-backend acceptance followed by ambiguous Err, hostile-host identity races,
-Container compensation and real multi-platform/cloud credential qualification
-remain outside this process-local closure. Actual kernel FUSE tests are separate
-from fake-guard timing fixtures; cross-compilation is not platform execution.
+`MemoryParticipantOwnership` bounds one root/Copy-or-FUSE participant and two
+callers; twelve semantic mutants and six witnesses cover its ownership/admission
+cuts, including no-effect failure, unknown result and failed recovery. The
+`MemoryMounter` port now returns one of `Mounted`, `NoEffect` or
+`RecoveryRequired`; both live local ownership and container staging retain the
+same operation identity until a retryable recovery succeeds. This removes the
+former assumption that every ordinary error proved mounter-owned cleanup. It is
+an abstract safety model, not a Rust refinement or an unconditional liveness
+proof. A non-returning mounter, process/Provider death, a dishonest adapter
+recovery result, hostile-host identity races and real multi-platform/cloud
+credential qualification remain outside this process-local closure. Actual
+kernel FUSE tests are separate from fake-guard timing fixtures;
+cross-compilation is not platform execution.
 
 ### D6 — The unit of work is the provisioning-contract mount, not a legacy bolt-on
 

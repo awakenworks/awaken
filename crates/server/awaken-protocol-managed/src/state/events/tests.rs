@@ -454,12 +454,17 @@ fn durable_inbound_projection_uses_only_session_root_provenance() {
     let queued = durable_inbound_projections(session_id, std::slice::from_ref(&batch));
     assert!(
         queued.is_empty(),
-        "R1 unanchored receipts are not falsely classified as anchored history"
+        "R1 an unadmitted plan is not public history"
     );
+    batch
+        .anchor_admission_projection(awaken_session_contract::SessionEventProjectionAnchor {
+            source_commit_cursor: 0,
+        })
+        .unwrap();
     let pending = inbound_projections(
         session_id,
         std::slice::from_ref(&batch),
-        InboundProjectionView::RootBarrierHistory,
+        InboundProjectionView::DurableHistory,
     );
     assert_eq!(
         pending.len(),
@@ -523,18 +528,17 @@ fn durable_inbound_projection_uses_only_session_root_provenance() {
 
 #[tokio::test]
 async fn pending_tail_does_not_hide_processed_interrupt_history() {
-    // Cause/effect graph: C1 a User command remains accepted but unanchored;
-    // C2 a later Interrupt crosses it and commits its processed anchor; C3 the
-    // projection is warm or rebuilt cold. Effects: E1 the User receipt remains
-    // visible with null processed_at; E2 the Interrupt is visible with its
-    // durable processed marker; E3 warm and cold projections agree. Constraint:
-    // Runtime-derived suffixes remain withheld while C1 is unanchored; this test
-    // changes only the Session-root inbound partition.
+    // Cause/effect graph: C1 a closed Runtime interval precedes admission; C2 a
+    // User command is accepted and remains effect-pending; C3 a later Interrupt
+    // is accepted and receives its effect anchor; C4 projection is warm or cold.
+    // Effects: E1 C1 remains public instead of being blocked by C2; E2 both
+    // receipts keep admission order, with processed_at only on C3; E3 the later
+    // effect anchor does not relocate either receipt; E4 warm/cold agree.
     //
     // | Rule | C1 pending | C2 anchored | C3 | Expected |
     // |---|---|---|---|---|
-    // | P1 | T | T | warm | E1 + E2 |
-    // | P2 | T | T | cold | E1 + E2 + E3 |
+    // | P1 | T | T | warm | E1 + E2 + E3 |
+    // | P2 | T | T | cold | E1 + E2 + E3 + E4 |
     let runtime = LifecycleRuntime::default();
     let repository = Arc::new(ephemeral_session_repo());
     let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
@@ -548,7 +552,40 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
         )
         .await
         .unwrap();
+    let prior_run = RunId("prior-runtime-history".into());
+    let activity = warm.application.begin_activity(&session.id).await.unwrap();
+    runtime.lifecycle.lock().unwrap().extend([
+        lifecycle(
+            1,
+            &session.id,
+            &prior_run,
+            RunLifecycleEventKind::Running,
+            RunState::Running,
+        ),
+        lifecycle(
+            2,
+            &session.id,
+            &prior_run,
+            RunLifecycleEventKind::Completed,
+            RunState::Ended(EndCause::NaturalEnd),
+        ),
+    ]);
     warm.application
+        .settle_activity_observed(
+            &session.id,
+            activity.activity_epoch,
+            Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                activity_epoch: activity.activity_epoch,
+                thread_id: ThreadId(session.id.clone()),
+                run_id: prior_run,
+                lifecycle_cursor: lifecycle_cursor(2),
+                source_commit_cursor: 2,
+            }),
+        )
+        .await
+        .unwrap();
+    let user = warm
+        .application
         .append_session_event_batch(
             &session.id,
             vec![SessionEventInput::UserMessage {
@@ -559,6 +596,22 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
         )
         .await
         .unwrap();
+    warm.refresh_committed_events(&session.id).await.unwrap();
+    let issued_prefix = warm
+        .list_events(&session.id, None, None, false)
+        .unwrap()
+        .data
+        .into_iter()
+        .map(|event| event.id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        issued_prefix.last(),
+        Some(&durable_inbound_event_id(
+            &session.id,
+            user.events[0].event.operation_id(),
+        )),
+        "P1/E1+E2 issued prefix ends at pending admission"
+    );
     let interrupt = warm
         .application
         .append_session_event_batch(
@@ -579,13 +632,32 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
         .list_events(&session.id, None, None, false)
         .unwrap()
         .data;
+    let user_index = warm_events
+        .iter()
+        .position(|event| event.type_str() == "user.message")
+        .expect("P1/E2 User receipt");
+    let interrupt_index = warm_events
+        .iter()
+        .position(|event| event.type_str() == "user.interrupt")
+        .expect("P1/E2 Interrupt receipt");
     assert_eq!(
         warm_events
             .iter()
-            .map(|event| (event.type_str(), event.processed_at.is_some()))
+            .take(issued_prefix.len())
+            .map(|event| event.id.as_str())
             .collect::<Vec<_>>(),
-        vec![("user.message", false), ("user.interrupt", true)],
-        "P1/E1+E2"
+        issued_prefix.iter().map(String::as_str).collect::<Vec<_>>(),
+        "P1/E3 later effect preserves every issued cursor"
+    );
+    assert!(user_index > 0, "P1/E1 Runtime prefix remains public");
+    assert!(user_index < interrupt_index, "P1/E2+E3 admission order");
+    assert!(
+        warm_events[user_index].processed_at.is_none(),
+        "P1/E2 pending marker"
+    );
+    assert!(
+        warm_events[interrupt_index].processed_at.is_some(),
+        "P1/E2 processed marker"
     );
 
     let cold = ManagedState::new(runtime).with_session_repo(repository);
@@ -595,134 +667,8 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
             .unwrap()
             .data,
         warm_events,
-        "P2/E1+E2+E3"
+        "P2/E1+E2+E3+E4"
     );
-}
-
-#[test]
-fn legacy_processed_batch_without_anchor_remains_visible_after_serde_recovery() {
-    // Cause/effect decision table: C1 a pre-anchor Session row has
-    // processed=true and no projection_anchor; C2 it is serialized/recovered.
-    // E1 the accepted inbound remains listable with its stable legacy-prefix
-    // identity; E2 no Runtime-derived anchor is invented. Rule L1=C1+C2=>E1+E2.
-    // New unprocessed rows are covered by the adjacent fail-closed test and do
-    // not enter this isolated migration lineage.
-    let session_id = "legacy-processed-input";
-    let mut batch = awaken_session_contract::SessionEventBatch::compile(
-        session_id,
-        "legacy-batch",
-        vec![SessionEventInput::UserMessage {
-            content: vec![ContentBlock::text("legacy accepted")],
-        }],
-    )
-    .unwrap();
-    batch.events[0].processed = true;
-    let encoded = serde_json::to_vec(&batch).unwrap();
-    let recovered: awaken_session_contract::SessionEventBatch =
-        serde_json::from_slice(&encoded).unwrap();
-    assert!(recovered.events[0].projection_anchor.is_none(), "L1/E2");
-    let projection = durable_inbound_projections(session_id, &[recovered]);
-    assert_eq!(projection.len(), 1, "L1/E1");
-    assert_eq!(projection[0].event.type_str(), "user.message", "L1/E1");
-}
-
-#[tokio::test]
-async fn legacy_inbound_cursor_precedes_later_anchored_batches_warm_and_cold() {
-    // Cause/effect graph: C1 a pre-anchor processed User entry is already
-    // listable and its cursor issued; C2 a new batch later receives the exact
-    // Runtime projection anchor under root CAS; C3 a second ManagedState starts
-    // cold. Effects: E1 C1 remains the immutable legacy prefix; E2 C2 appends
-    // after it; E3 full payload and the Page after every C1 cursor, including
-    // next_page, are equal warm/cold. Rules I1=C1=>E1; I2=C1+C2=>E1+E2;
-    // I3=I2+C3=>E3. Legacy source zero is isolated lineage, not a fallback for
-    // any new unanchored command.
-    let runtime = LifecycleRuntime::default();
-    let repository = Arc::new(ephemeral_session_repo());
-    let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
-    let session = warm
-        .create_session(
-            serde_json::from_value(serde_json::json!({
-                "agent":"coder", "environment_id":"env_local"
-            }))
-            .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
-    let mut persisted = warm.application.session(&session.id).await.unwrap();
-    let mut legacy = awaken_session_contract::SessionEventBatch::compile(
-        &session.id,
-        "legacy-inbound",
-        vec![SessionEventInput::UserMessage {
-            content: vec![ContentBlock::text("legacy")],
-        }],
-    )
-    .unwrap();
-    legacy.events[0].processed = true;
-    persisted.event_batches.push(legacy);
-    warm.commit_session_snapshot(
-        DEFAULT_SCOPE,
-        persisted,
-        "test-legacy-inbound-prefix",
-        Vec::new(),
-    )
-    .await
-    .unwrap();
-    warm.refresh_committed_events(&session.id).await.unwrap();
-    let issued = warm
-        .list_events(&session.id, None, None, false)
-        .unwrap()
-        .data;
-    assert_eq!(issued.len(), 1, "I1/E1");
-
-    let later = warm
-        .application
-        .append_session_event_batch(
-            &session.id,
-            vec![SessionEventInput::UserMessage {
-                content: vec![ContentBlock::text("later")],
-            }],
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-    persist_batch_projection_anchors(&warm, &session.id, &later.batch_id, &[10]).await;
-    warm.refresh_committed_events(&session.id).await.unwrap();
-    let final_warm = warm.list_events(&session.id, None, None, false).unwrap();
-    assert_eq!(&final_warm.data[..issued.len()], issued.as_slice(), "I2/E1");
-    assert_eq!(final_warm.data.len(), 2, "I2/E2");
-
-    let cold = ManagedState::new(runtime).with_session_repo(repository);
-    cold.refresh_committed_events(&session.id).await.unwrap();
-    assert_eq!(
-        cold.list_events(&session.id, None, None, false).unwrap(),
-        final_warm,
-        "I3/E3 full payload"
-    );
-    for cursor in issued.iter().map(|event| event.id.as_str()) {
-        assert_eq!(
-            cold.list_events(&session.id, Some(cursor), Some(1), false)
-                .unwrap(),
-            warm.list_events(&session.id, Some(cursor), Some(1), false)
-                .unwrap(),
-            "I3/E3 page after {cursor}"
-        );
-        let warm_suffix = warm
-            .list_events(&session.id, Some(cursor), None, false)
-            .unwrap();
-        let cold_suffix = cold
-            .list_events(&session.id, Some(cursor), None, false)
-            .unwrap();
-        assert_eq!(cold_suffix, warm_suffix, "I3/E3 suffix after {cursor}");
-        assert!(
-            warm_suffix
-                .data
-                .iter()
-                .any(|event| event.type_str() == "user.message"),
-            "I3/E2 later anchored input remains in the suffix after {cursor}"
-        );
-    }
 }
 
 #[test]
@@ -4512,10 +4458,11 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
     // cursors; C4 the warm projector saw each turn incrementally while an
     // independent cold projector starts after both; C5 every durable Event id is
     // reused as a cursor on the other replica. Effects: E1 each retained inbound
-    // batch is assigned by admitted revision plus its exact Run opening; E2
-    // each interval is ordered input -> Session/Thread Running -> output ->
-    // Thread Idle -> exact Usage/Session Idle; E3 full serialized payloads and
-    // every suffix are byte-for-byte equal; E4 replay adds nothing.
+    // batch keeps its admission high-water and root-CAS ordinal; E2 commands
+    // admitted before an interval precede its Session/Thread Running facts,
+    // followed by output, Thread Idle and exact Usage/Session Idle; E3 full
+    // serialized payloads and every suffix are byte-for-byte equal; E4 replay
+    // adds nothing.
     //
     // | Rule | Turns | View | Cursor | Effects |
     // | R1 | two overlapping batches | warm incremental | none | E1+E2 |
@@ -4802,9 +4749,9 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
             warm_events.iter().map(Event::type_str).collect::<Vec<_>>(),
             [
                 "user.message",
+                "user.message",
                 "session.status_running",
                 "session.thread_status_running",
-                "user.message",
                 "agent.message",
                 "session.thread_status_running",
                 "agent.message",
@@ -5197,14 +5144,14 @@ async fn late_outcome_terminal_uses_its_state_commit_and_preserves_an_issued_pre
 
 #[tokio::test]
 async fn running_user_input_exposes_committed_output_before_completion_on_warm_and_cold_peers() {
-    // Cause/effect table: V1 root accepted, Runtime input/output committed,
-    // Run still Running, root anchor missing -> receipt only. V2 canonical
-    // application reconciliation -> input anchored, output visible without a
-    // processed timestamp or terminal event. V3 cold peer + old receipt cursor
-    // -> identical full history/suffix; repeated reconciliation is inert.
-    // Constraint: install no test-only anchor; exercise the real application
-    // CAS and existing projector together. Neither GET nor recovery executes a
-    // model or invents an input Message. This is local integration, not live E2E.
+    // Cause/effect table: V1 root admission is ordered, Runtime input/output are
+    // committed, and the Run remains Running -> receipt plus stable Runtime
+    // facts are public. V2 canonical application reconciliation records the
+    // effect observation without moving the receipt or inventing a processed
+    // timestamp. V3 cold peer + old receipt cursor -> identical full
+    // history/suffix; repeated reconciliation is inert. Constraint: install no
+    // test-only anchor; exercise the real application CAS and existing projector
+    // together. Neither GET nor recovery executes a model or invents a Message.
     let runtime = LifecycleRuntime::default();
     runtime
         .include_runs_in_snapshot
@@ -5268,8 +5215,18 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
         .list_events(&session.id, None, None, false)
         .unwrap()
         .data;
-    assert_eq!(before.len(), 1, "V1");
-    let cursor = before[0].id.clone();
+    assert!(
+        before
+            .iter()
+            .any(|event| event.type_str() == "agent.message"),
+        "V1 stable Runtime facts do not wait for effect completion"
+    );
+    let cursor = before
+        .iter()
+        .find(|event| event.type_str() == "user.message")
+        .expect("V1 admitted User receipt")
+        .id
+        .clone();
     warm.application
         .drive_session_event_batches(&session.id, None)
         .await
@@ -5279,6 +5236,11 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
         .list_events(&session.id, None, None, false)
         .unwrap()
         .data;
+    assert_eq!(
+        visible.iter().map(|event| &event.id).collect::<Vec<_>>(),
+        before.iter().map(|event| &event.id).collect::<Vec<_>>(),
+        "V2 effect observation cannot relocate an issued cursor"
+    );
     assert!(
         visible
             .iter()
@@ -5334,220 +5296,11 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
 }
 
 #[tokio::test]
-async fn unanchored_accepted_command_holds_a_late_runtime_suffix_until_root_cas() {
-    // Cause/effect graph: C1 a first committed Run prefix is already listable;
-    // C2 a second User command is accepted in the Session root without its
-    // processed+anchor CAS; C3 the second Runtime terminal prefix becomes
-    // readable; C4 the effect owner then commits the exact root anchor. E1 the
-    // C1 prefix gains only the pending User receipt while C2+C3 race; E2 after
-    // C4 the same User id is marked processed and Runtime facts appear only in
-    // the old-cursor suffix; E3 a cold peer agrees.
-    //
-    // | Rule | unanchored root | Runtime suffix | Effect |
-    // | U1 | no | first prefix | issue cursor |
-    // | U2 | yes | visible | E1, publish pending receipt only |
-    // | U3 | anchored | visible | E2+E3 |
-    //
-    // This is the read-skew gate: the final revision reread detects mutation
-    // during reads, while the earliest unanchored command prevents publication
-    // even when its Runtime effect won before the projector began.
-    let runtime = LifecycleRuntime::default();
-    runtime
-        .include_runs_in_snapshot
-        .store(true, Ordering::SeqCst);
-    let repository = Arc::new(ephemeral_session_repo());
-    let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
-    let session = warm
-        .create_session(
-            serde_json::from_value(serde_json::json!({
-                "agent":"coder", "environment_id":"env_local"
-            }))
-            .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
-    let first_activity = warm.application.begin_activity(&session.id).await.unwrap();
-    let first_run = RunId("anchor-gate-first".into());
-    runtime.lifecycle.lock().unwrap().extend([
-        lifecycle(
-            5,
-            &session.id,
-            &first_run,
-            RunLifecycleEventKind::Running,
-            RunState::Running,
-        ),
-        lifecycle(
-            6,
-            &session.id,
-            &first_run,
-            RunLifecycleEventKind::Completed,
-            RunState::Ended(EndCause::NaturalEnd),
-        ),
-    ]);
-    runtime.messages.lock().unwrap().push(Message::text(
-        MessageId("anchor-gate-first-output".into()),
-        Role::Assistant,
-        "first",
-    ));
-    runtime.message_cursors.lock().unwrap().push(4);
-    warm.application
-        .settle_activity_observed(
-            &session.id,
-            first_activity.activity_epoch,
-            Some(awaken_session_contract::SessionRuntimeIntervalObservation {
-                activity_epoch: first_activity.activity_epoch,
-                thread_id: ThreadId(session.id.clone()),
-                run_id: first_run,
-                lifecycle_cursor: lifecycle_cursor(6),
-                source_commit_cursor: 6,
-            }),
-        )
-        .await
-        .unwrap();
-    warm.refresh_committed_events(&session.id).await.unwrap();
-    let prefix = warm
-        .list_events(&session.id, None, None, false)
-        .unwrap()
-        .data;
-    let cursor = prefix.last().expect("U1 issued cursor").id.clone();
-
-    let batch = warm
-        .application
-        .append_session_event_batch(
-            &session.id,
-            vec![SessionEventInput::UserMessage {
-                content: vec![ContentBlock::text("second")],
-            }],
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-    let second_activity = warm.application.begin_activity(&session.id).await.unwrap();
-    let second_run = RunId("anchor-gate-second".into());
-    runtime.lifecycle.lock().unwrap().extend([
-        lifecycle(
-            20,
-            &session.id,
-            &second_run,
-            RunLifecycleEventKind::Running,
-            RunState::Running,
-        ),
-        lifecycle(
-            22,
-            &session.id,
-            &second_run,
-            RunLifecycleEventKind::Completed,
-            RunState::Ended(EndCause::NaturalEnd),
-        ),
-    ]);
-    runtime.messages.lock().unwrap().extend([
-        Message::new(
-            MessageId::session_event_input(&session.id, batch.events[0].event.operation_id()),
-            Role::User,
-            vec![ContentBlock::text("second")],
-        ),
-        Message::text(
-            MessageId("anchor-gate-second-output".into()),
-            Role::Assistant,
-            "second",
-        ),
-    ]);
-    *runtime.message_cursors.lock().unwrap() = vec![4, 19, 21];
-    warm.application
-        .settle_activity_observed(
-            &session.id,
-            second_activity.activity_epoch,
-            Some(awaken_session_contract::SessionRuntimeIntervalObservation {
-                activity_epoch: second_activity.activity_epoch,
-                thread_id: ThreadId(session.id.clone()),
-                run_id: second_run,
-                lifecycle_cursor: lifecycle_cursor(22),
-                source_commit_cursor: 22,
-            }),
-        )
-        .await
-        .unwrap();
-    warm.refresh_committed_events(&session.id).await.unwrap();
-    let pending_prefix = warm
-        .list_events(&session.id, None, None, false)
-        .unwrap()
-        .data;
-    assert_eq!(&pending_prefix[..prefix.len()], prefix.as_slice(), "U2/E1");
-    assert_eq!(pending_prefix.len(), prefix.len() + 1, "U2/E1");
-    assert_eq!(
-        pending_prefix.last().unwrap().type_str(),
-        "user.message",
-        "U2/E1"
-    );
-    assert!(
-        pending_prefix.last().unwrap().processed_at.is_none(),
-        "U2/E1"
-    );
-    let pending_cold = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
-    pending_cold
-        .refresh_committed_events(&session.id)
-        .await
-        .unwrap();
-    let cold_pending_events = pending_cold
-        .list_events(&session.id, None, None, false)
-        .unwrap()
-        .data;
-    assert_eq!(cold_pending_events.len(), 1, "U2/E1 cold anchor barrier");
-    assert_eq!(
-        cold_pending_events[0],
-        *pending_prefix.last().unwrap(),
-        "U2/E1 cold replica retains the root-owned pending receipt"
-    );
-
-    persist_batch_projection_anchors(&warm, &session.id, &batch.batch_id, &[19]).await;
-    warm.refresh_committed_events(&session.id).await.unwrap();
-    let final_warm = warm
-        .list_events(&session.id, None, None, false)
-        .unwrap()
-        .data;
-    assert_eq!(&final_warm[..prefix.len()], prefix.as_slice(), "U3/E2");
-    assert_eq!(
-        final_warm[prefix.len()].id,
-        pending_prefix[prefix.len()].id,
-        "U3/E2 pending receipt upgrades in place"
-    );
-    assert!(final_warm[prefix.len()].processed_at.is_some(), "U3/E2");
-    let warm_suffix = warm
-        .list_events(&session.id, Some(&cursor), None, false)
-        .unwrap();
-    assert!(
-        warm_suffix
-            .data
-            .iter()
-            .any(|event| event.type_str() == "user.message"),
-        "U3/E2"
-    );
-
-    let cold = ManagedState::new(runtime).with_session_repo(repository);
-    cold.refresh_committed_events(&session.id).await.unwrap();
-    assert_eq!(
-        cold.list_events(&session.id, None, None, false)
-            .unwrap()
-            .data,
-        final_warm,
-        "U3/E3 full order"
-    );
-    assert_eq!(
-        cold.list_events(&session.id, Some(&cursor), None, false)
-            .unwrap(),
-        warm_suffix,
-        "U3/E3 suffix"
-    );
-}
-
-#[tokio::test]
 async fn local_session_update_waits_for_its_accepted_input_predecessor() {
     // Cause/effect graph: C1 `/events` has returned an accepted User receipt but
-    // its effect anchor is not committed; C2 PATCH commits session.updated on
+    // its effect observation is not committed; C2 PATCH commits session.updated on
     // this process; C3 the User effect and anchor later commit. E1 the transient
-    // update is withheld while C1 is unanchored; E2 after C3 local order is
+    // update is withheld while C1's effect is pending; E2 after C3 local order is
     // User -> session.updated -> later Runtime facts. Decision rules:
     // S1=C1+C2=>E1; S2=C1+C2+C3=>E2. Cross-replica reconstruction of
     // session.updated remains explicitly out of scope; this test preserves the
@@ -11147,6 +10900,12 @@ fn retained_outcome_fixture(
         }],
     )
     .expect("retained Outcome command");
+    batch.admitted_revision = awaken_session_contract::SessionRevision(1);
+    batch
+        .anchor_admission_projection(awaken_session_contract::SessionEventProjectionAnchor {
+            source_commit_cursor: 0,
+        })
+        .unwrap();
     batch.events[0].processed = true;
     let outcome_id = match &batch.events[0].event {
         SessionEventCommand::DefineOutcome { outcome_id, .. } => outcome_id.clone(),

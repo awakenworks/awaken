@@ -525,16 +525,21 @@ permission decision, and it never invents a ToolResult for unexecuted work.
 
 Each interval freezes its opening/closing root revisions, exact Runtime
 lifecycle observations, cumulative neutral usage, and historical budget limit.
-The existing Event-entry processed CAS freezes the exact Runtime commit anchor
-that made that command's effect listable; `state_command.commit_sequence` does
-the same for compaction, Outcome, and disposition facts. Admission revisions
-remain root ordering provenance but are never compared with Runtime commit
-coordinates. One interval therefore projects exactly one aggregate
+Every accepted Event batch freezes the Runtime store high-water observed before
+its Session root CAS. That admission coordinate makes the complete inbound DTO
+immediately listable at one immutable public position. The existing Event-entry
+processed CAS separately freezes the Runtime commit anchor that observed its
+effect; it may add `processed_at` but cannot relocate the inbound Event.
+`state_command.commit_sequence` remains the corresponding effect coordinate for
+compaction, Outcome, and disposition facts. Admission revisions remain root
+provenance and are never compared with Runtime commit coordinates. One interval
+therefore projects exactly one aggregate
 Running/Usage/Idle bracket, including child-only continuations and multiple
 resumes of the same Run.
 
 The projector consumes only recovery snapshots fenced at those committed
-boundaries. New entries without an immutable anchor are withheld, and a final
+boundaries. Persisted accepted entries without an admission coordinate are
+invalid rather than routed through a compatibility projector, and a final
 Session revision reread discards a mixed root/Runtime snapshot. Budget-reached
 events first become listable at the first closed interval whose cumulative
 usage covers that exact transition. Parent terminal events first become
@@ -549,14 +554,10 @@ This aggregate JSON expansion is not mixed-writer compatible:
 `PersistedSession` rejects unknown fields, so an old Coordinator cannot decode a
 row after a new writer stores interval history. Beta uses a maintenance cutover:
 close Flow/public admission, drain and fully stop all old Coordinator writers,
-then let the existing Open lifecycle supervisor reconcile retained rows. A
-legacy terminal aggregate with an incomplete Event batch executes no new
-Runtime work: the same root-CAS batch owner resolves it at the terminal cleanup
-cursor, or at the explicitly isolated pre-anchor legacy prefix when that old
-row has no cursor. This is a narrow, non-destructive compatibility repair, not
-a second scheduler or event store. Deploy the new revision only after that
-reconciliation is clean, create new Sessions for the complete-history guarantee,
-then reopen admission.
+and require every persisted accepted Event batch to carry its admission
+coordinate before the new reader starts. There is no read-time coordinate
+synthesis, pre-anchor fallback, or parallel compatibility projector. Deploy the
+new revision only after that cutover condition is true, then reopen admission.
 
 ## Amendment (2026-09-01): Managed refresh uses one disposable prefix reducer
 
@@ -571,12 +572,12 @@ is no separate warm projector.
 process-local transient `session.updated` overlay. Those are the only three
 cache roles. Child lifecycle, usage, Event visibility, and message-consumption
 coordinates are outputs of the same reducer, not independently synchronized
-state machines. While an accepted Session command is still missing its immutable
-Runtime anchor, the last valid issued result is retained and the root-owned
-receipt is appended as a withheld suffix; legacy pre-anchor history therefore
-remains subject to the maintenance reconciliation above. No event store, child
-registry, usage authority, dispatch-derived lifecycle, or parallel compatibility
-projector is introduced.
+state machines. An accepted command is ordered by its immutable batch admission
+coordinate even while its effect remains pending. The normal reducer can
+therefore append already-closed Runtime facts without a root-wide barrier, while
+a later effect observation updates only that command's progress. No event store,
+child registry, usage authority, dispatch-derived lifecycle, fallback prefix, or
+parallel compatibility projector is introduced.
 
 Event-batch cutover validation is a read-only projection of that same
 supervisor, not a general Session-health claim or Cloud-side scan. After

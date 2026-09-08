@@ -1,4 +1,6 @@
 //! Controlled faults at the real Repository commit / mounter acknowledgement seam.
+
+mod support;
 use awaken_memory_store::{
     MemErr, Memory, MemoryEntry, MemoryPurgeSummary, MemoryRepository, MemoryVersion,
     SqliteMemoryRepository,
@@ -11,6 +13,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use support::MemoryMountOutcomeTestExt as _;
 
 struct Gate {
     after: bool,
@@ -105,7 +108,7 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
                 mounter
                     .mount("s", &projection, MountAccess::ReadWrite)
                     .await
-                    .unwrap(),
+                    .mounted(),
             );
             let evidence = MemoryMaterializationEvidence::new(
                 "s",
@@ -152,7 +155,7 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
             });
             tokio::time::timeout(std::time::Duration::from_secs(5), gate.reached.notified())
                 .await
-                .expect("SQL transaction reached the pre-commit trigger");
+                .unwrap();
             pending.abort();
             assert!(pending.await.unwrap_err().is_cancelled());
             assert_eq!(observer.snapshot_heads("s").await.unwrap(), initial_heads);
@@ -484,7 +487,7 @@ async fn interrupted_conflict_retention_retries_without_losing_the_proposal() {
                 let mount = MemoryStoreMounter::copy_only(repository.clone())
                     .mount("s", &projection, MountAccess::ReadWrite)
                     .await
-                    .unwrap();
+                    .mounted();
                 let evidence = MemoryMaterializationEvidence::new(
                     "s",
                     "/memory",
@@ -663,7 +666,7 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                         mounter
                             .mount("s", &projection, MountAccess::ReadWrite)
                             .await
-                            .unwrap(),
+                            .mounted(),
                     );
                     let evidence = MemoryMaterializationEvidence::new(
                         "s",
@@ -688,7 +691,7 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                         gate.reached.notified(),
                     )
                     .await
-                    .expect("exact commit seam reached");
+                    .unwrap();
                     assert_eq!(
                         repository.list_versions("s").await.unwrap().len(),
                         initial_history + usize::from(prefix) + usize::from(after),

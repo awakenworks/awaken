@@ -53,7 +53,17 @@ pub struct ContainerProvider<R: ContainerRuntime> {
     /// Neutral MemoryStore projection injected by the composition root. Interior
     /// mutability lets an already-shared provider receive the platform adapter.
     pub(super) memory_mounter: std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>,
+    /// Process-local participants that could not yet transfer into a Sandbox.
+    /// Retryable rows own exact Memory cleanup identities; ambiguous rows block
+    /// every later realization because a container may already reference them.
+    retained_staging: tokio::sync::Mutex<RetainedContainerStaging>,
     pub(super) resident_hand: Option<ResidentHandConfig>,
+}
+
+#[derive(Default)]
+struct RetainedContainerStaging {
+    retryable: Vec<StagedMounts>,
+    ambiguous: Vec<StagedMounts>,
 }
 
 impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
@@ -84,8 +94,48 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             file_store: None,
             secret_broker: std::sync::RwLock::new(None),
             memory_mounter: std::sync::RwLock::new(None),
+            retained_staging: tokio::sync::Mutex::new(RetainedContainerStaging::default()),
             resident_hand: None,
         }
+    }
+
+    async fn recover_retained_staging(&self) -> Result<(), pc::SandboxError> {
+        let mut retained = self.retained_staging.lock().await;
+        if !retained.ambiguous.is_empty() {
+            return Err(pc::SandboxError::new(
+                "container realization remains blocked by an ambiguous prior participant transfer",
+            ));
+        }
+        let mut unresolved = Vec::new();
+        let mut first_error = None;
+        for staging in std::mem::take(&mut retained.retryable) {
+            match staging
+                .recover_memory_after_definite_no_backend_effect()
+                .await
+            {
+                Ok(()) => {}
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                    unresolved.push(staging);
+                }
+            }
+        }
+        retained.retryable = unresolved;
+        first_error.map_or(Ok(()), |error| {
+            Err(pc::SandboxError::new(format!(
+                "container Memory participant recovery remains incomplete: {error}"
+            )))
+        })
+    }
+
+    async fn retain_retryable_staging(&self, staging: StagedMounts) {
+        self.retained_staging.lock().await.retryable.push(staging);
+    }
+
+    async fn retain_ambiguous_staging(&self, staging: StagedMounts) {
+        self.retained_staging.lock().await.ambiguous.push(staging);
     }
 
     /// Make the existing Hand the Session container's resident process. This is
@@ -287,6 +337,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             )
             .await
             .map_err(err)?;
+        self.recover_retained_staging().await?;
         // Resolve + materialize each mount's bytes: self-contained content (codex config,
         // ADR-0038 resources) ships in the plan; File/Resource/Secret resolve by id through
         // the seed then the injected BlobSource, hash-verified. Bytes are staged to a host
@@ -320,10 +371,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             stage_memory_binds(spec, &mut plan, &mut staging, mounter, native_memory).await
         {
             if let Err(cleanup_error) = staging
-                .teardown_memory_after_definite_no_backend_effect()
+                .recover_memory_after_definite_no_backend_effect()
                 .await
             {
-                staging.retain_participants_without_cleanup();
+                self.retain_retryable_staging(staging).await;
                 return Err(pc::SandboxError::new(format!(
                     "{error}; Memory participant cleanup failed: {cleanup_error}"
                 )));
@@ -347,7 +398,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 Ok(id) => break id,
                 Err(RuntimeError::EffectFenceExpired) => {
                     let Some(asserted) = current_effect_fence.as_ref() else {
-                        staging.retain_participants_without_cleanup();
+                        self.retain_retryable_staging(staging).await;
                         return Err(pc::SandboxError::new(
                             "unfenced container realization reported an expired effect fence",
                         ));
@@ -356,21 +407,21 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     match refreshed {
                         Ok(refreshed) => current_effect_fence = Some(refreshed),
                         Err(error) => {
-                            staging.retain_participants_without_cleanup();
+                            self.retain_retryable_staging(staging).await;
                             return Err(error);
                         }
                     }
                 }
                 Err(RuntimeError::MayHaveCommitted(message)) => {
-                    staging.retain_participants_without_cleanup();
+                    self.retain_ambiguous_staging(staging).await;
                     return Err(err(RuntimeError::MayHaveCommitted(message)));
                 }
                 Err(error) => {
                     if let Err(cleanup_error) = staging
-                        .teardown_memory_after_definite_no_backend_effect()
+                        .recover_memory_after_definite_no_backend_effect()
                         .await
                     {
-                        staging.retain_participants_without_cleanup();
+                        self.retain_retryable_staging(staging).await;
                         return Err(pc::SandboxError::new(format!(
                             "{error}; Memory participant cleanup failed: {cleanup_error}"
                         )));
@@ -394,7 +445,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             // on a later evidence-read failure; the next root-driven retry must be
             // able to rediscover and converge it.
             Err(error) => {
-                staging.retain_participants_without_cleanup();
+                self.retain_ambiguous_staging(staging).await;
                 return Err(err(error.after_mutation()));
             }
         };
@@ -414,13 +465,13 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             {
                 Ok(Some(binding)) => Some(binding),
                 Ok(None) => {
-                    staging.retain_participants_without_cleanup();
+                    self.retain_ambiguous_staging(staging).await;
                     return Err(err(RuntimeError::MayHaveCommitted(
                         "container runtime omitted a demanded Sandbox control incarnation".into(),
                     )));
                 }
                 Err(error) => {
-                    staging.retain_participants_without_cleanup();
+                    self.retain_ambiguous_staging(staging).await;
                     return Err(err(error.after_mutation()));
                 }
             }

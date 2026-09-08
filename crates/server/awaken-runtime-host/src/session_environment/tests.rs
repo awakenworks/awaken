@@ -2612,31 +2612,44 @@ impl pc::MemoryMounter for RestartMemoryMounter {
         _store_id: &str,
         host_path: &std::path::Path,
         _access: pc::MountAccess,
-    ) -> Result<Box<dyn pc::MemoryMount>, pc::SandboxError> {
-        let call = self.mount_calls.fetch_add(1, Ordering::SeqCst) + 1;
-        let gate = self.response_gate.lock().unwrap().clone();
-        if let Some((pending_call, gate)) = gate
-            && call == pending_call
-        {
-            let _permit = gate.acquire().await.unwrap();
+    ) -> pc::MemoryMountOutcome {
+        let result: Result<Box<dyn pc::MemoryMount>, pc::SandboxError> = async {
+            let call = self.mount_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            let gate = self.response_gate.lock().unwrap().clone();
+            if let Some((pending_call, gate)) = gate
+                && call == pending_call
+            {
+                let _permit = gate.acquire().await.unwrap();
+            }
+            let realization = self
+                .outcomes
+                .lock()
+                .expect("restart Memory outcomes lock poisoned")
+                .pop_front()
+                .ok_or_else(|| pc::SandboxError::new("unexpected Memory remount"))?;
+            std::fs::create_dir_all(host_path).map_err(|error| {
+                pc::SandboxError::new(format!("create fake Memory projection: {error}"))
+            })?;
+            std::fs::write(host_path.join("value.txt"), b"durable-memory").map_err(|error| {
+                pc::SandboxError::new(format!("write fake Memory projection: {error}"))
+            })?;
+            Ok(Box::new(RestartMemoryMount {
+                realization,
+                teardown_calls: self.teardown_calls.clone(),
+                teardown_failures: self.teardown_failures.clone(),
+            }) as Box<dyn pc::MemoryMount>)
         }
-        let realization = self
-            .outcomes
-            .lock()
-            .expect("restart Memory outcomes lock poisoned")
-            .pop_front()
-            .ok_or_else(|| pc::SandboxError::new("unexpected Memory remount"))?;
-        std::fs::create_dir_all(host_path).map_err(|error| {
-            pc::SandboxError::new(format!("create fake Memory projection: {error}"))
-        })?;
-        std::fs::write(host_path.join("value.txt"), b"durable-memory").map_err(|error| {
-            pc::SandboxError::new(format!("write fake Memory projection: {error}"))
-        })?;
-        Ok(Box::new(RestartMemoryMount {
-            realization,
-            teardown_calls: self.teardown_calls.clone(),
-            teardown_failures: self.teardown_failures.clone(),
-        }))
+        .await;
+        pc::MemoryMountOutcome::from_no_effect(result)
+    }
+
+    async fn recover_unknown_mount(
+        &self,
+        _: &str,
+        _: &std::path::Path,
+        _: pc::MountAccess,
+    ) -> Result<(), pc::SandboxError> {
+        Ok(())
     }
 }
 

@@ -43,6 +43,7 @@ mod resident_hand;
 mod restore_target;
 mod runtime;
 mod secret;
+mod staged_mounts;
 mod writable;
 pub use cgroup::CgroupCaps;
 pub use egress::{
@@ -92,6 +93,7 @@ use runtime::{
     container_realization_fingerprint, container_runtime_unix_now_ms,
 };
 pub use secret::SecretBytes;
+use staged_mounts::{StagedMemoryMount, StagedMounts};
 pub use writable::{
     checkpoint_writable_roots, checkpoint_writable_roots_from_output_path,
     validate_checkpoint_writable_roots, writable_dirs,
@@ -547,75 +549,17 @@ fn secret_writeback_projection(mount: &pc::MountRequirement) -> Option<SecretWri
     })
 }
 
-#[derive(Default)]
-struct StagedMounts {
-    guard: Option<StagingGuard>,
-    secret_writebacks: Vec<SecretWriteback>,
-    memory: Vec<StagedMemoryMount>,
-}
-
-struct StagedMemoryMount {
-    handle: Box<dyn pc::MemoryMount>,
-    host_path: std::path::PathBuf,
-    mount_path: String,
-    access: pc::MountAccess,
-    materialization: Option<pc::MemoryMaterializationEvidence>,
-    native_runtime_volume: bool,
-    writeback_prepared: bool,
-}
-
-impl StagedMounts {
-    /// Tear down every effect-scoped Memory participant after the runtime has
-    /// proved that no backend object was committed. A single failed teardown
-    /// must not prevent the remaining independent handles from being tried.
-    async fn teardown_memory_after_definite_no_backend_effect(
-        &self,
-    ) -> Result<(), pc::SandboxError> {
-        let mut first_error = None;
-        for mount in &self.memory {
-            if let Err(error) = mount.handle.teardown().await
-                && first_error.is_none()
-            {
-                first_error = Some(error);
-            }
-        }
-        first_error.map_or(Ok(()), Err)
-    }
-
-    /// Preserve process-local participant ownership after an ambiguous backend
-    /// mutation or a failed explicit teardown. Docker/Podman host binds and
-    /// Memory mount handles cannot be reconstructed by a later process, so
-    /// dropping either here could break a physical object that actually
-    /// committed or erase the only retryable cleanup handle. This intentionally
-    /// trades liveness/capacity for safety; the shared CurrentAttemptOnly kernel
-    /// keeps later processes fail-closed instead of claiming recovery.
-    fn retain_participants_without_cleanup(self) {
-        std::mem::forget(self);
-    }
-}
-
-impl std::fmt::Debug for StagedMounts {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StagedMounts")
-            .field("guard", &self.guard)
-            .field("secret_writebacks", &self.secret_writebacks)
-            .field("memory_mounts", &self.memory.len())
-            .finish()
-    }
-}
-
 async fn reject_unaccepted_memory_mount(
+    staged: &mut StagedMounts,
     handle: Box<dyn pc::MemoryMount>,
     cause: pc::SandboxError,
 ) -> pc::SandboxError {
     match handle.teardown().await {
         Ok(()) => cause,
         Err(cleanup_error) => {
-            // `MemoryMount::teardown` is retryable by contract. If it fails,
-            // dropping the only handle would silently convert a cleanup error
-            // into leaked/unknown physical state; retain it for process-lifetime
-            // safety just like an ambiguous backend participant.
-            std::mem::forget(handle);
+            // `MemoryMount::teardown` is retryable by contract. Keep its exact
+            // participant in the provider-owned staging ledger for later retry.
+            staged.retain_mounted_memory(handle);
             pc::SandboxError::new(format!(
                 "{cause}; Memory participant cleanup failed: {cleanup_error}"
             ))
@@ -639,14 +583,27 @@ async fn stage_memory_binds(
     let root = staging_dir(&mut staged.guard, &spec.scope)?;
     for projection in memory {
         let host_path = root.join(format!("memory-{}", stage_name(&projection.mount_path)));
-        let handle = mounter
-            .mount(&projection.store_reference, &host_path, projection.access)
-            .await?;
+        let store_reference = projection.store_reference.clone();
+        let access = projection.access;
+        let handle = match mounter.mount(&store_reference, &host_path, access).await {
+            pc::MemoryMountOutcome::Mounted(handle) => handle,
+            pc::MemoryMountOutcome::NoEffect(error) => return Err(error),
+            pc::MemoryMountOutcome::RecoveryRequired(error) => {
+                staged.retain_unknown_memory(
+                    Arc::clone(&mounter),
+                    store_reference,
+                    host_path,
+                    access,
+                );
+                return Err(error);
+            }
+        };
         let realization = handle.realization();
         let materialization = match realization {
             pc::Realization::Copy => {
                 let Some(heads) = handle.materialization_heads() else {
                     return Err(reject_unaccepted_memory_mount(
+                        staged,
                         handle,
                         pc::SandboxError::new(
                             "copy-backed Memory mount omitted its original durable heads",
@@ -662,13 +619,14 @@ async fn stage_memory_binds(
                 match evidence {
                     Ok(evidence) => Some(evidence),
                     Err(error) => {
-                        return Err(reject_unaccepted_memory_mount(handle, error).await);
+                        return Err(reject_unaccepted_memory_mount(staged, handle, error).await);
                     }
                 }
             }
             pc::Realization::Fuse => None,
             _ => {
                 return Err(reject_unaccepted_memory_mount(
+                    staged,
                     handle,
                     pc::SandboxError::new("MemoryStore mount returned an unsupported realization"),
                 )
@@ -679,6 +637,7 @@ async fn stage_memory_binds(
             && realization != pc::Realization::Fuse
         {
             return Err(reject_unaccepted_memory_mount(
+                staged,
                 handle,
                 pc::SandboxError::new("MemoryStore mount requires write-through FUSE realization"),
             )
@@ -686,6 +645,7 @@ async fn stage_memory_binds(
         }
         if native_runtime_volume && realization != pc::Realization::Copy {
             return Err(reject_unaccepted_memory_mount(
+                staged,
                 handle,
                 pc::SandboxError::new(
                     "remote container Memory volume requires a copy-capable MemoryMounter",
@@ -695,13 +655,13 @@ async fn stage_memory_binds(
         }
         #[cfg(unix)]
         if let Err(error) = make_memory_tree_accessible(&host_path, projection.access) {
-            return Err(reject_unaccepted_memory_mount(handle, error).await);
+            return Err(reject_unaccepted_memory_mount(staged, handle, error).await);
         }
         if native_runtime_volume {
             let snapshot_tar = match memory_snapshot_tar(&host_path) {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
-                    return Err(reject_unaccepted_memory_mount(handle, error).await);
+                    return Err(reject_unaccepted_memory_mount(staged, handle, error).await);
                 }
             };
             let planned = plan
@@ -712,7 +672,7 @@ async fn stage_memory_binds(
             let planned = match planned {
                 Ok(planned) => planned,
                 Err(error) => {
-                    return Err(reject_unaccepted_memory_mount(handle, error).await);
+                    return Err(reject_unaccepted_memory_mount(staged, handle, error).await);
                 }
             };
             planned.snapshot_tar = snapshot_tar;
@@ -1155,11 +1115,7 @@ async fn resolve_and_stage(
             }
         }
     }
-    Ok(StagedMounts {
-        guard,
-        secret_writebacks,
-        memory: Vec::new(),
-    })
+    Ok(StagedMounts::new(guard, secret_writebacks))
 }
 
 fn binds_of(spec: &pc::SandboxSpec) -> Vec<BindPlan> {

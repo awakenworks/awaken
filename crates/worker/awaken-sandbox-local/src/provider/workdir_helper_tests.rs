@@ -343,27 +343,39 @@ impl pc::MemoryMounter for FailedCreationMounter {
         _store_id: &str,
         host_path: &std::path::Path,
         _access: pc::MountAccess,
-    ) -> Result<Box<dyn pc::MemoryMount>, pc::SandboxError> {
-        let call = self
-            .mount_calls
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if call == 1 {
-            return Err(pc::SandboxError::new("injected later mount failure"));
-        }
-        if call != 0 {
-            return Err(pc::SandboxError::new(format!(
-                "unexpected Memory mount call {call}"
-            )));
-        }
-        std::fs::create_dir_all(host_path)
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-        Ok(Box::new(TeardownProbe {
-            teardowns: self.teardowns.clone(),
-            drops: self.drops.clone(),
-            failures: self.failures,
-            wait_until_ms: None,
-            response_gate: None,
-        }))
+    ) -> pc::MemoryMountOutcome {
+        let result: Result<Box<dyn pc::MemoryMount>, pc::SandboxError> = (|| {
+            let call = self
+                .mount_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if call == 1 {
+                return Err(pc::SandboxError::new("injected later mount failure"));
+            }
+            if call != 0 {
+                return Err(pc::SandboxError::new(format!(
+                    "unexpected Memory mount call {call}"
+                )));
+            }
+            std::fs::create_dir_all(host_path)
+                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            Ok(Box::new(TeardownProbe {
+                teardowns: self.teardowns.clone(),
+                drops: self.drops.clone(),
+                failures: self.failures,
+                wait_until_ms: None,
+                response_gate: None,
+            }) as Box<dyn pc::MemoryMount>)
+        })();
+        pc::MemoryMountOutcome::from_no_effect(result)
+    }
+
+    async fn recover_unknown_mount(
+        &self,
+        _: &str,
+        _: &std::path::Path,
+        _: pc::MountAccess,
+    ) -> Result<(), pc::SandboxError> {
+        Ok(())
     }
 }
 

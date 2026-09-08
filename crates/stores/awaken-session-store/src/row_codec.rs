@@ -540,6 +540,57 @@ mod tests {
     }
 
     #[test]
+    fn aggregate_codec_requires_current_accepted_admission_order_fence() {
+        // Cause/effect graph: C1 an accepted batch has an immutable admission
+        // fence or no fence; C2 the boundary is encode or decode. Effects: E1
+        // fenced rows roundtrip; E2 an in-memory null or stored missing field
+        // fails closed. Rules F1=fenced+encode/decode=>E1;
+        // F2=null+encode=>E2; F3=missing+decode=>E2. There is no read-time
+        // coordinate synthesis or compatibility projection.
+        let mut session = sample("codec-admission-fence");
+        let mut batch = awaken_session_contract::SessionEventBatch::compile(
+            &session.session_id,
+            "accepted",
+            vec![awaken_session_contract::SessionEventInput::UserMessage {
+                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                    "ordered",
+                )],
+            }],
+        )
+        .unwrap();
+        batch.admitted_revision = awaken_session_contract::SessionRevision(1);
+        batch
+            .anchor_admission_projection(awaken_session_contract::SessionEventProjectionAnchor {
+                source_commit_cursor: 0,
+            })
+            .unwrap();
+        session.event_batches.push(batch);
+        let encoded = super::encode(&session).expect("F1 encode");
+        super::decode(super::EncodedSessionRow {
+            aggregate_json: encoded.clone(),
+            revision: i64::try_from(session.revision.0).unwrap(),
+        })
+        .expect("F1 decode");
+
+        session.event_batches[0].admission_projection_anchor = None;
+        assert!(super::encode(&session).is_err(), "F2/E2");
+
+        let mut stored: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        stored["aggregate"]["event_batches"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("admission_projection_anchor");
+        assert!(
+            super::decode(super::EncodedSessionRow {
+                aggregate_json: stored.to_string(),
+                revision: i64::try_from(session.revision.0).unwrap(),
+            })
+            .is_err(),
+            "F3/E2"
+        );
+    }
+
+    #[test]
     fn aggregate_codec_rejects_foreign_completed_publication_outcomes() {
         // Causes: C1 outcome is Published or Rejected; C2 outer Session id is
         // exact or foreign; C3 admission boundary is encode or decode. Effects:

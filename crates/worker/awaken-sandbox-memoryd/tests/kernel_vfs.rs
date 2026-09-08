@@ -9,6 +9,8 @@
 
 #![cfg(all(feature = "fuse", target_os = "linux"))]
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -17,6 +19,7 @@ use awaken_memory_store::{MemoryRepository, SqliteMemoryRepository};
 use awaken_provisioning_contract::{MemoryMounter, MountAccess, Realization};
 use awaken_sandbox_memoryd::MemoryStoreMounter;
 use awaken_sandbox_memoryd::fuse::spawn_mount;
+use support::MemoryMountOutcomeTestExt as _;
 
 fn fuse_unavailable_reason() -> Option<String> {
     if !Path::new("/dev/fuse").exists() {
@@ -151,10 +154,10 @@ fn independent_mounter_projections_invalidate_peer_caches_and_teardown_independe
     // R2 R1+C5 => E2 B remains mounted and readable until its own teardown.
     let mount_a = rt
         .block_on(mounter.mount(store, &mnt_a, MountAccess::ReadWrite))
-        .unwrap();
+        .mounted();
     let mount_b = rt
         .block_on(mounter.mount(store, &mnt_b, MountAccess::ReadWrite))
-        .unwrap();
+        .mounted();
     assert_eq!(mount_a.realization(), Realization::Fuse);
     assert_eq!(mount_b.realization(), Realization::Fuse);
     assert_ne!(mnt_a, mnt_b, "each sandbox owns a distinct projection");

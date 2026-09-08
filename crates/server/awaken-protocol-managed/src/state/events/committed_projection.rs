@@ -86,37 +86,6 @@ impl ManagedState {
             .cloned()
             .ok_or(StateError::NotFound)?;
         let base_cache_revision = base_record.cache_revision;
-        if persisted.event_batches.iter().any(|batch| {
-            batch
-                .events
-                .iter()
-                .any(|entry| !entry.processed && entry.projection_anchor.is_none())
-        }) {
-            // Project the complete root-owned inbound partition: already
-            // anchored history may coexist with a later unanchored User tail
-            // (notably when an Interrupt crosses queued work). Runtime-derived
-            // facts remain withheld until every accepted command has its anchor
-            // CAS, but the pending tail must not hide earlier durable progress.
-            let projections = inbound_projections(
-                session_id,
-                &persisted.event_batches,
-                InboundProjectionView::RootBarrierHistory,
-            );
-            let mut candidate = base_record;
-            let previous_event_ids = candidate
-                .events
-                .iter()
-                .map(|event| event.id.clone())
-                .collect::<std::collections::HashSet<_>>();
-            Self::apply_persisted_session(&mut candidate, &persisted);
-            merge_durable_inbound_projections(&mut candidate, projections);
-            return self.publish_projection_candidate(
-                session_id,
-                base_cache_revision,
-                candidate,
-                &previous_event_ids,
-            );
-        }
         let price_snapshot = persisted.budget.price_snapshot().cloned();
         let budget_reach_projections = persisted
             .budget

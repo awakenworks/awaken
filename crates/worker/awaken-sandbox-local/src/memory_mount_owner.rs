@@ -8,12 +8,11 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_fs::DirectoryIdentity;
 
-type MountFuture =
-    Pin<Box<dyn Future<Output = Result<Box<dyn pc::MemoryMount>, pc::SandboxError>> + Send>>;
 #[derive(PartialEq)]
 struct MountKey {
     requirement: pc::MountRequirement,
@@ -22,7 +21,48 @@ struct MountKey {
 
 struct PendingMount {
     key: MountKey,
-    future: MountFuture,
+    reference: String,
+    access: pc::MountAccess,
+    mounter: Arc<dyn pc::MemoryMounter>,
+    phase: PendingMountPhase,
+}
+
+enum PendingMountPhase {
+    Running(MountFuture),
+    RecoveryRequired { detail: String },
+}
+
+type RawMountFuture = Pin<Box<dyn Future<Output = pc::MemoryMountOutcome> + Send>>;
+
+/// Retained future wrapper that classifies an unwind as an unknown physical
+/// result. Polling remains caller-driven, so cancellation leaves this exact
+/// future in the long-lived owner instead of detaching work into the runtime.
+struct MountFuture {
+    inner: RawMountFuture,
+}
+
+impl Future for MountFuture {
+    type Output = pc::MemoryMountOutcome;
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let inner = &mut self.get_mut().inner;
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            inner.as_mut().poll(context)
+        })) {
+            Ok(outcome) => outcome,
+            Err(_) => Poll::Ready(pc::MemoryMountOutcome::RecoveryRequired(
+                pc::SandboxError::new(
+                    "Memory mount operation panicked before classifying its effect",
+                ),
+            )),
+        }
+    }
+}
+
+enum PendingMountCompletion {
+    Mounted,
+    NoEffect(pc::SandboxError),
+    RecoveryRequired(pc::SandboxError),
 }
 
 pub(crate) struct MemoryMountParticipant {
@@ -95,17 +135,69 @@ impl MemoryMountState {
         Ok(())
     }
 
-    async fn finish_mount(&mut self) -> Result<(), pc::SandboxError> {
-        if let Some(pending) = self.pending.as_mut() {
-            // Await a borrowed future: cancellation cannot consume the mounter's
-            // operation. A completed guard is stored before any next admission.
-            let result = pending.future.as_mut().await;
-            let pending = self.pending.take().expect("completed pending Memory mount");
-            self.mounts.push(MemoryMountParticipant {
-                key: Some(pending.key),
-                confirmed: false,
-                guard: result?,
-            });
+    async fn finish_mount(&mut self) -> Option<PendingMountCompletion> {
+        let outcome = match &mut self.pending.as_mut()?.phase {
+            // Await a borrowed JoinHandle: cancellation cannot consume the
+            // operation, while task panic becomes an explicit unknown result.
+            PendingMountPhase::Running(operation) => operation.await,
+            PendingMountPhase::RecoveryRequired { detail } => {
+                return Some(PendingMountCompletion::RecoveryRequired(
+                    pc::SandboxError::new(detail.clone()),
+                ));
+            }
+        };
+        match outcome {
+            pc::MemoryMountOutcome::Mounted(guard) => {
+                let pending = self.pending.take().expect("completed pending Memory mount");
+                self.mounts.push(MemoryMountParticipant {
+                    key: Some(pending.key),
+                    confirmed: false,
+                    guard,
+                });
+                Some(PendingMountCompletion::Mounted)
+            }
+            pc::MemoryMountOutcome::NoEffect(error) => {
+                self.pending.take();
+                if self.mounts.is_empty() {
+                    self.identity = None;
+                }
+                Some(PendingMountCompletion::NoEffect(error))
+            }
+            pc::MemoryMountOutcome::RecoveryRequired(error) => {
+                let detail = error.to_string();
+                self.pending
+                    .as_mut()
+                    .expect("unknown Memory operation remains retained")
+                    .phase = PendingMountPhase::RecoveryRequired {
+                    detail: detail.clone(),
+                };
+                Some(PendingMountCompletion::RecoveryRequired(
+                    pc::SandboxError::new(detail),
+                ))
+            }
+        }
+    }
+
+    async fn recover_unknown_mount(&mut self) -> Result<(), pc::SandboxError> {
+        let pending = self
+            .pending
+            .as_ref()
+            .expect("unknown Memory recovery requires a retained operation");
+        if !matches!(pending.phase, PendingMountPhase::RecoveryRequired { .. }) {
+            return Err(pc::SandboxError::new(
+                "Memory mount has not reached an unknown result",
+            ));
+        }
+        let mounter = pending.mounter.clone();
+        let reference = pending.reference.clone();
+        let path = pending.key.path.clone();
+        let access = pending.access;
+        mounter
+            .recover_unknown_mount(&reference, &path, access)
+            .await?;
+        self.pending.take();
+        if self.mounts.is_empty() {
+            self.identity = None;
         }
         Ok(())
     }
@@ -141,12 +233,27 @@ impl MemoryMountState {
         {
             return Ok(index);
         }
+        let operation_mounter = mounter.clone();
+        let operation_reference = reference.clone();
+        let operation_path = path.clone();
         self.pending = Some(PendingMount {
             key,
-            future: Box::pin(async move { mounter.mount(&reference, &path, access).await }),
+            reference,
+            access,
+            mounter,
+            phase: PendingMountPhase::Running(MountFuture {
+                inner: Box::pin(async move {
+                    operation_mounter
+                        .mount(&operation_reference, &operation_path, access)
+                        .await
+                }),
+            }),
         });
-        self.finish_mount().await?;
-        Ok(self.mounts.len() - 1)
+        match self.finish_mount().await.expect("new mount is pending") {
+            PendingMountCompletion::Mounted => Ok(self.mounts.len() - 1),
+            PendingMountCompletion::NoEffect(error)
+            | PendingMountCompletion::RecoveryRequired(error) => Err(error),
+        }
     }
 
     pub(crate) fn confirm_all(&mut self) {
@@ -245,7 +352,16 @@ impl MemoryMountState {
         if self.pending.is_some() {
             authorize()?;
             Self::validate_root(&self.root, self.identity)?;
-            self.finish_mount().await?;
+            match self.finish_mount().await.expect("pending Memory operation") {
+                PendingMountCompletion::Mounted | PendingMountCompletion::NoEffect(_) => {}
+                PendingMountCompletion::RecoveryRequired(_) => {
+                    authorize()?;
+                    Self::validate_root(&self.root, self.identity)?;
+                    self.recover_unknown_mount().await?;
+                    authorize()?;
+                    Self::validate_root(&self.root, self.identity)?;
+                }
+            }
         }
         let selected: Vec<&dyn pc::MemoryMount> = self
             .mounts
