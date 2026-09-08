@@ -407,7 +407,7 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
     let occupied_claim = RunClaim::from(&occupied_claim.lease);
     assert_eq!(
         store
-            .begin_attempt(&occupied_claim, 60_004)
+            .begin_attempt(&occupied_claim, 60_004, None)
             .await
             .expect("begin occupied attempt"),
         AttemptAdmission::Applied,

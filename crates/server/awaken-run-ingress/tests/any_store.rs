@@ -30,6 +30,17 @@ fn any_in_memory() -> AnyDispatchStore {
 }
 
 #[tokio::test]
+async fn execution_binding_is_frozen_with_the_physical_slot() {
+    // Shared B1-B9 includes Any delegation, Memory and real SQLite transactions.
+    for store in [
+        AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new())),
+        any_in_memory(),
+    ] {
+        harness::attempt_binding::assert_binding_lifecycle(&store).await;
+    }
+}
+
+#[tokio::test]
 async fn returned_attempt_cannot_restart_under_the_same_claim() {
     // Causal graph: admitted A -> observed return/ACK -> empty slot -> delayed
     // duplicate begin(A). Reusing A would let a repeated ACK(A) clear a second

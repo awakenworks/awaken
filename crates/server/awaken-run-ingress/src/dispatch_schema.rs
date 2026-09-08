@@ -338,6 +338,11 @@ pub(crate) fn converged_dispatch_bundle() -> Result<MigrationBundle, MigrationEr
                 "V0004__retired_attempt_epoch.sql",
                 include_str!("migrations/V0004__retired_attempt_epoch.sql"),
             )?,
+            portable_migration(
+                5,
+                "V0005__physical_attempt_binding.sql",
+                include_str!("migrations/V0005__physical_attempt_binding.sql"),
+            )?,
         ],
     )
 }
@@ -522,7 +527,7 @@ mod tests {
                 .iter()
                 .map(|migration| migration.version)
                 .collect::<Vec<_>>(),
-            [1, 2, 3, 4],
+            [1, 2, 3, 4, 5],
             "S1/E1"
         );
         for (table, column) in [
@@ -530,6 +535,7 @@ mod tests {
             ("runtime_dispatch_completion", "thread_id"),
             ("runtime_pending", "context_messages"),
             ("runtime_dispatch", "active_attempt_epoch"),
+            ("runtime_dispatch", "active_attempt_binding"),
         ] {
             let present = connection
                 .prepare(&format!("PRAGMA table_info({table})"))
@@ -600,6 +606,9 @@ mod tests {
         // M1 compact/expanded history + empty leased row => retire its epoch,
         // never infer stop. M2 occupied predecessor => preserve its exact pair
         // and allow its later ACK. M3 reopen => no repeat migration or reset.
+        // B22 V4 -> V5 preserves occupied predecessor and leaves both empty
+        // and historical occupied bindings absent; migration cannot invent stop
+        // evidence or provider provenance for past execution.
         for history in [
             dispatch_bundle().unwrap(),
             expanded_dispatch_bundle().unwrap(),
@@ -612,7 +621,12 @@ mod tests {
                 MigrationBundle::new(CONVERGED_BUNDLE_ID, full.migrations()[..3].to_vec()).unwrap();
             runner.run_bundle(&conn, &previous).unwrap();
             conn.execute_batch("INSERT INTO runtime_dispatch (run_id, thread_id, request, status, lease_epoch, lease_owner, lease_until) VALUES ('empty', 't1', '{}', 'running', 3, 'a', 100), ('occupied', 't2', '{}', 'running', 3, 'b', 100); UPDATE runtime_dispatch SET active_attempt_owner = 'old', active_attempt_epoch = 2 WHERE run_id = 'occupied';").unwrap();
+            let v4 =
+                MigrationBundle::new(CONVERGED_BUNDLE_ID, full.migrations()[..4].to_vec()).unwrap();
+            runner.run_bundle(&conn, &v4).unwrap();
             runner.run_bundle(&conn, &full).unwrap();
+            let bound: i64 = conn.query_row("SELECT COUNT(*) FROM runtime_dispatch WHERE active_attempt_binding IS NOT NULL", [], |row| row.get(0)).unwrap();
+            assert_eq!(bound, 0, "B22 no backfill");
             let empty: i64 = conn
                 .query_row(
                     "SELECT retired_attempt_epoch FROM runtime_dispatch WHERE run_id = 'empty'",

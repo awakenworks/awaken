@@ -241,7 +241,7 @@ pub(super) async fn begin_attempt(
         }
         let admission = service
             .dispatch
-            .begin_attempt(&request.claim, authority.now_ms)
+            .begin_attempt(&request.claim, authority.now_ms, None)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(json!({ "admission": admission }))
@@ -265,7 +265,7 @@ pub(super) async fn handoff_attempt(
         }
         let admission = service
             .dispatch
-            .handoff_attempt(&request.claim, authority.now_ms)
+            .handoff_attempt(&request.claim, authority.now_ms, None)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(json!({ "admission": admission }))

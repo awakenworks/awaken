@@ -1044,18 +1044,24 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // does not require it to remain the current registry/Run owner, because that
     // would make safe handoff impossible after reclaim.
     assert_eq!(
-        queue.begin_attempt(&claim, 10_000).await.expect("P1 begin"),
+        queue
+            .begin_attempt(&claim, 10_000, None)
+            .await
+            .expect("P1 begin"),
         AttemptAdmission::Applied,
         "P1 exact identity"
     );
     assert_eq!(
-        queue.begin_attempt(&claim, 10_000).await.expect("P2 retry"),
+        queue
+            .begin_attempt(&claim, 10_000, None)
+            .await
+            .expect("P2 retry"),
         AttemptAdmission::AlreadyApplied,
         "P2 exact response-loss retry"
     );
     assert_eq!(
         queue
-            .handoff_attempt(&claim, 10_000)
+            .handoff_attempt(&claim, 10_000, None)
             .await
             .expect("P2 handoff retry"),
         AttemptAdmission::AlreadyApplied,
@@ -1067,7 +1073,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     );
     assert!(
         mismatched_queue
-            .handoff_attempt(&claim, 10_000)
+            .handoff_attempt(&claim, 10_000, None)
             .await
             .is_err(),
         "P3 mismatched signed-body incarnation cannot replace the slot"
@@ -1090,11 +1096,11 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     }
     let occupied_before = dispatch.list_dispatches().await.unwrap();
     assert!(
-        queue.begin_attempt(&claim, 10_000).await.is_err(),
+        queue.begin_attempt(&claim, 10_000, None).await.is_err(),
         "U1 begin"
     );
     assert!(
-        queue.handoff_attempt(&claim, 10_000).await.is_err(),
+        queue.handoff_attempt(&claim, 10_000, None).await.is_err(),
         "U1 handoff"
     );
     assert_eq!(
@@ -1117,12 +1123,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // U4: neither an old peer nor a current replacement may re-admit the same
     // acknowledged identity; protocol rejection and epoch retirement compose.
     assert!(
-        queue.begin_attempt(&claim, 10_000).await.is_err(),
+        queue.begin_attempt(&claim, 10_000, None).await.is_err(),
         "U4 old peer"
     );
     *directory.0.lock().unwrap() = before_upgrade;
     assert_eq!(
-        queue.begin_attempt(&claim, 10_000).await.unwrap(),
+        queue.begin_attempt(&claim, 10_000, None).await.unwrap(),
         AttemptAdmission::Fenced,
         "U4 retired epoch"
     );
@@ -2236,7 +2242,10 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // slot, after which the original idempotent boundary retries are admitted.
     // Neither claim validity nor a caller's terminal assertion replaces ACK.
     assert_eq!(
-        queue.begin_attempt(&child_claim, 10_000).await.unwrap(),
+        queue
+            .begin_attempt(&child_claim, 10_000, None)
+            .await
+            .unwrap(),
         AttemptAdmission::Applied
     );
     assert!(

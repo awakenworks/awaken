@@ -301,10 +301,14 @@ pub trait DispatchQueue: Send + Sync {
     /// until [`finish_attempt`](Self::finish_attempt) records that predecessor's
     /// model/tool/Sandbox future has actually returned. Implementations must make
     /// an exact retry idempotent and return `Fenced` for a non-current claim.
+    /// A supplied binding is frozen with the slot in this same transaction and
+    /// must name the exact registered assignment. Same-claim retries preserve
+    /// it, including None; coordinates cannot be backfilled after execution.
     async fn begin_attempt(
         &self,
         _claim: &RunClaim,
         _now_ms: u64,
+        _binding: Option<&crate::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         Err(DispatchError::Rejected(
             "dispatch backend does not support physical attempt admission".to_string(),
@@ -323,6 +327,7 @@ pub trait DispatchQueue: Send + Sync {
         &self,
         _claim: &RunClaim,
         _now_ms: u64,
+        _binding: Option<&crate::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         Err(DispatchError::Rejected(
             "dispatch backend does not support durable attempt handoff".to_string(),
@@ -336,6 +341,19 @@ pub trait DispatchQueue: Send + Sync {
     async fn finish_attempt(&self, _claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
         Err(DispatchError::Rejected(
             "dispatch backend does not support physical attempt quiescence".to_string(),
+        ))
+    }
+
+    /// Read the existing occupied physical identity, independently of the newer
+    /// mutation claim/Worker assignment. No transport authority or stop evidence
+    /// is minted by this read. Unsupported adapters must error, never return a
+    /// misleading empty slot.
+    async fn load_physical_attempt(
+        &self,
+        _run_id: &RunId,
+    ) -> Result<Option<PhysicalAttempt>, DispatchError> {
+        Err(DispatchError::Rejected(
+            "dispatch backend does not expose physical attempt bindings".into(),
         ))
     }
 
