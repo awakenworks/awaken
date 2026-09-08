@@ -518,3 +518,45 @@ Brokered and direct candidates may coexist in one explicitly authored Profile.
 Every candidate retains its access kind and exact credential/route pins;
 runtime and downstream products may never infer a source, inject a hidden
 cross-source fallback, or convert a direct failure into platform-funded usage.
+
+### 2026-09-09 amendment — hosted BYOK authorization and Workspace isolation
+
+Hosted BYOK reuses ProviderConnectionService, CatalogRepo, CredentialRepo and
+ModelPublicationResolver. The product-owned hosted administrator role grants
+exact `model_supply.connect` and `model_supply.write` actions, in addition to
+read; it never acquires a model-supply wildcard. Deployment capability and IAM
+are independent gates. Capability responses intersect authoring flags with the
+current principal's exact Workspace decisions; this projection grants nothing.
+Cloud keeps `local_catalog_enabled=false`: global model attributes and manual
+brokered refresh remain platform-owned even when BYOK and Workspace Profiles
+are enabled. Builder and Viewer retain read-only model supply.
+
+The existing ProtocolEndpoint owns optional Workspace identity, persisted in
+its existing JSON row. Provider connections derive their endpoint identity from
+the exact Workspace, Provider, dialect and optional endpoint name. Catalog
+reads and publication apply the same Workspace projection. Legacy unscoped
+operator-authored endpoints and brokered projections remain readable, but new
+Workspace commands cannot retarget them. No parallel catalog or credential
+store is introduced. Provider identity remains shared descriptive vocabulary;
+endpoint URL, model discovery and credential proof belong to the Workspace.
+
+Static ownership: IAM owns role decisions; Catalog owns endpoint scope and
+model projection; Vault owns exact scoped credentials; immutable publication
+owns execution pins; the injected Gateway owns hosted plaintext execution.
+
+Dynamic behavior: valid owner request -> exact Workspace IAM -> deployment
+BYOK gate -> provider discovery -> disabled credential -> atomic Catalog write
+-> credential activation -> publication -> exact Gateway execution. Rejection
+before discovery has no external or persistent effect; failed Catalog writes
+leave new credentials disabled and retries reuse their command identity.
+Brokered catalog startup and periodic reconciliation share one operation;
+transient reads never masquerade as an empty successful observation.
+
+Cause/effect decision tables belong beside the corresponding HTTP, lifecycle,
+repository and release E2E tests. Release acceptance uses the actual product
+profile and provisioning roles, including an old-profile negative control;
+test-only broad administrator grants cannot establish hosted BYOK acceptance.
+
+Brokered delegation retains the selected offering's public API dialect. Cloud
+filters its exact account pool by that dialect; internal catalog endpoint
+coordinates remain local selectors and are never passed off as Cloud route ids.

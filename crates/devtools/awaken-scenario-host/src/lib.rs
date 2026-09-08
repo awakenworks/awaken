@@ -660,6 +660,7 @@ pub async fn build_resolved_real_router() -> Router {
         .expect("put provider");
     catalog_repo
         .put_endpoint(ProtocolEndpoint {
+            workspace_id: None,
             id: ProtocolEndpointId::new("ep1"),
             provider_id: ProviderId::new("anthropic"),
             dialect: ApiDialect::AnthropicMessages,
@@ -770,6 +771,7 @@ pub async fn build_oauth_resolved_router() -> Router {
         .expect("put provider");
     catalog_repo
         .put_endpoint(ProtocolEndpoint {
+            workspace_id: None,
             id: ProtocolEndpointId::new("ep1"),
             provider_id: ProviderId::new("anthropic"),
             dialect: ApiDialect::AnthropicMessages,

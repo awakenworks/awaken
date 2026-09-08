@@ -46,6 +46,7 @@ impl CatalogModelPublicationResolver {
             credentials,
             profiles: None,
             brokered_access_enabled: true,
+            brokered_publication: None,
             direct_credential_policy:
                 awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
             direct_holder: None,
@@ -70,6 +71,7 @@ impl CatalogModelPublicationResolver {
             credentials,
             profiles: None,
             brokered_access_enabled: true,
+            brokered_publication: None,
             direct_credential_policy:
                 awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
             direct_holder: None,
@@ -140,6 +142,17 @@ impl CatalogModelPublicationResolver {
     #[must_use]
     pub fn with_brokered_access(mut self, enabled: bool) -> Self {
         self.brokered_access_enabled = enabled;
+        self
+    }
+
+    /// Keep hosted route authority in Cloud while this resolver owns Profile
+    /// interpretation and Workspace catalog/credential validation.
+    #[must_use]
+    pub fn with_brokered_publication(
+        mut self,
+        resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
+    ) -> Self {
+        self.brokered_publication = Some(resolver);
         self
     }
 

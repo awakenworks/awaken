@@ -33,13 +33,13 @@ pub use router::{
     AdminState, ArchiveCredentialRequest, BrokeredCatalogDiscovery, CloudLoginApplication,
     CloudLoginState, CloudLoginStatusView, ConfigCapabilitiesSource, ConfigCapabilitiesView,
     CooldownRequest, CredentialProbe, CredentialSourceView, CredentialValidation,
-    EnterCredentialRequest, IdentityCapabilityView, ModelSupplyCapabilityView, PoolEligibleView,
-    ProbeStatus, ProductSurfaceCapabilityView, ProviderConnectionStatus, ProviderConnectionSummary,
-    ProviderConnectionView, PutModelAttributesRequest, ResolveProfileRequest, ResolveRequest,
-    ResolvedCandidatesView, ResolvedInferenceView, RotateCredentialRequest,
-    SaveProviderConnectionRequest, ValidateCredentialRequest, admin_router,
-    admin_router_with_capabilities, admin_router_with_runtime_capabilities,
-    reconcile_brokered_catalog,
+    EnterCredentialRequest, IdentityCapabilityView, ModelSupplyAuthorization,
+    ModelSupplyCapabilityView, PoolEligibleView, ProbeStatus, ProductSurfaceCapabilityView,
+    ProviderConnectionStatus, ProviderConnectionSummary, ProviderConnectionView,
+    PutModelAttributesRequest, ResolveProfileRequest, ResolveRequest, ResolvedCandidatesView,
+    ResolvedInferenceView, RotateCredentialRequest, SaveProviderConnectionRequest,
+    ValidateCredentialRequest, admin_router, admin_router_with_capabilities,
+    admin_router_with_runtime_capabilities, reconcile_brokered_catalog,
 };
 
 /// The API surface version this crate serves.

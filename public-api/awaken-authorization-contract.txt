@@ -51,7 +51,9 @@ pub awaken_authorization_contract::WorkspaceProfileAuthority::ApiKeyRead
 pub awaken_authorization_contract::WorkspaceProfileAuthority::FileAll
 pub awaken_authorization_contract::WorkspaceProfileAuthority::FileRead
 pub awaken_authorization_contract::WorkspaceProfileAuthority::ModelSupplyAll
+pub awaken_authorization_contract::WorkspaceProfileAuthority::ModelSupplyConnect
 pub awaken_authorization_contract::WorkspaceProfileAuthority::ModelSupplyRead
+pub awaken_authorization_contract::WorkspaceProfileAuthority::ModelSupplyWrite
 pub awaken_authorization_contract::WorkspaceProfileAuthority::SkillAll
 pub awaken_authorization_contract::WorkspaceProfileAuthority::SkillRead
 pub awaken_authorization_contract::WorkspaceProfileAuthority::WorkspaceAll
