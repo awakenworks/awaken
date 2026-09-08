@@ -450,28 +450,57 @@ pub(crate) fn semantic_skill_adapter(
     }
 }
 
-/// Anthropic-compatible progressive-disclosure metadata. The prompt carries
-/// only name, description, and the exact `SKILL.md` path; the model reads full
-/// instructions with ordinary file tools when the Skill is relevant.
+/// Rebuildable metadata only, derived from the one frozen registry. Keep the
+/// directory unrendered until the attempt selects its filesystem view; an ACP
+/// cwd is not the Skill materialization root. No bodies or version state live here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FilesystemSkillPrompt {
+    entries: Vec<(String, String, String)>,
+}
+
+impl FilesystemSkillPrompt {
+    pub(crate) fn render(
+        &self,
+        path_view: &crate::managed_resource_projection::AgentPathView,
+        environment: Option<&crate::session_environment::SessionEnvironment>,
+    ) -> Result<String, String> {
+        let entries = self
+            .entries
+            .iter()
+            .map(|(name, description, directory)| {
+                let path = match environment {
+                    Some(environment) => path_view.render(&format!(
+                        "{}/SKILL.md",
+                        environment
+                            .skill_directory_path(directory)
+                            .map_err(|error| error.to_string())?,
+                    )),
+                    // A reservation has no filesystem yet. Actual execution reads
+                    // this same metadata again after the Environment is realized.
+                    None => format!("{directory}/SKILL.md"),
+                };
+                Ok(format!("- {name}: {description} (`{path}`)"))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(format!(
+            "Available Skills are listed below. When a Skill is relevant, read its `SKILL.md` from the given path before acting.\n{}",
+            entries.join("\n")
+        ))
+    }
+}
+
+/// Anthropic-compatible progressive-disclosure metadata; ordinary file tools
+/// read the full instructions from the later projected `SKILL.md` path.
 pub(crate) fn filesystem_skill_prompt(
     registry: &dyn SkillRegistry,
-) -> Result<Option<String>, String> {
+) -> Result<Option<FilesystemSkillPrompt>, String> {
     let entries = registry
         .list()?
         .into_iter()
         .filter(|skill| skill.model_invocable)
-        .filter_map(|skill| {
-            skill
-                .dir
-                .map(|dir| format!("- {}: {} (`{dir}/SKILL.md`)", skill.name, skill.description))
-        })
+        .filter_map(|skill| skill.dir.map(|dir| (skill.name, skill.description, dir)))
         .collect::<Vec<_>>();
-    Ok((!entries.is_empty()).then(|| {
-        format!(
-            "Available Skills are listed below. When a Skill is relevant, read its `SKILL.md` from the given path before acting.\n{}",
-            entries.join("\n")
-        )
-    }))
+    Ok((!entries.is_empty()).then_some(FilesystemSkillPrompt { entries }))
 }
 
 fn list_skills_descriptor() -> ToolDescriptor {
@@ -712,7 +741,9 @@ mod tests {
         assert_eq!(listed[0].id, "test", "R1 exact frozen id");
         let prompt = filesystem_skill_prompt(registry.as_ref())
             .unwrap()
-            .expect("R1 prompt");
+            .expect("R1 prompt")
+            .render(&Default::default(), None)
+            .unwrap();
         assert!(
             prompt.contains("Frozen") && !prompt.contains("Unbound"),
             "R3/R7"
@@ -720,6 +751,140 @@ mod tests {
 
         env.dispose().await.unwrap();
         std::fs::remove_dir_all(base).ok();
+    }
+
+    #[tokio::test]
+    async fn filesystem_skill_path_is_readable_from_actual_acp_working_directory() {
+        // P1 attached/repository bytes + Workdir ACP + default/nested cwd ->
+        // the advertised path opens those exact bytes from the actual process
+        // cwd, without a host-private absolute prefix. P2 the frozen metadata
+        // is reused across cwd projections; it must not retain a first-use path.
+        // The filesystem read is independent of prompt spelling/normalization.
+        let base = tempfile::tempdir().unwrap();
+        let env = Arc::new(crate::session_environment::SessionEnvironment::workdir(
+            LocalProvider::new(base.path())
+                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("skill-path"))
+                .await
+                .unwrap(),
+        ));
+        let body = b"---\nname: Frozen\ndescription: pinned\n---\nEXACT-SKILL-BYTES";
+        let repository_body =
+            b"---\nname: Repository\ndescription: pinned checkout\n---\nEXACT-REPOSITORY-BYTES";
+        let repository_root = "workspace/repo/.claude/skills".to_owned();
+        let repository_dir = base
+            .path()
+            .join("skill-path")
+            .join(&repository_root)
+            .join("source");
+        std::fs::create_dir_all(&repository_dir).unwrap();
+        std::fs::write(repository_dir.join("SKILL.md"), repository_body).unwrap();
+        let registry = build_skill_registry(
+            &[],
+            Vec::new(),
+            Some(vec![version_with(vec![
+                awaken_skill_store::SkillBundleFile {
+                    path: "SKILL.md".into(),
+                    content: body.to_vec(),
+                    executable: false,
+                },
+            ])]),
+            Some(env.clone()),
+            MANAGED_SKILLS_SUBDIR,
+            Some(&[repository_root]),
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let projection = filesystem_skill_prompt(registry.as_ref()).unwrap().unwrap();
+        let slots = crate::session_slot::SessionRuntimeSlots::default();
+        slots.update("skill-path", |slot| {
+            slot.skill_prompt = Some(projection.clone())
+        });
+        assert!(
+            slots
+                .prompts("skill-path", None, true, false)
+                .unwrap()
+                .iter()
+                .any(|prompt| prompt.contains("Frozen")),
+            "P3 reservation discloses metadata"
+        );
+        // The test installs a resident projection only, not a durable claim.
+        // Actual Managed owner transitions retain their existing integration tests.
+        slots.update("skill-path", |slot| {
+            use crate::session_slot::*;
+            slot.environment_owner = SessionEnvironmentOwner::Resident(BoundSessionEnvironment {
+                binding: "fixture".into(),
+                environment: env.clone(),
+                identity: BoundSessionEnvironmentIdentity::LegacyDirect(
+                    LegacyDirectEnvironmentProvenance::DurableBinding {
+                        binding: "fixture".into(),
+                        effect: LegacyEnvironmentEffect::Absent,
+                    },
+                ),
+            });
+        });
+        for cwd in [
+            None,
+            Some("项目 repo/src"),
+            Some("repo/.claude/skills/source"),
+        ] {
+            let view = env.agent_filesystem_view(
+                cwd,
+                crate::session_environment::AgentFilesystemClient::AcpProcess,
+            );
+            std::fs::create_dir_all(&view.protocol_cwd).unwrap();
+            let prompt = slots
+                .prompts("skill-path", cwd, true, false)
+                .unwrap()
+                .join("\n");
+            assert!(!prompt.contains(base.path().to_str().unwrap()));
+            assert!(
+                !prompt.contains("EXACT-SKILL-BYTES") && !prompt.contains("EXACT-REPOSITORY-BYTES")
+            );
+            let paths = prompt
+                .lines()
+                .filter(|line| line.starts_with("- "))
+                .collect::<Vec<_>>();
+            assert_eq!(paths.len(), 2);
+            for line in paths {
+                let advertised = line
+                    .split('`')
+                    .find(|part| {
+                        *part == "SKILL.md"
+                            || part.ends_with("/SKILL.md")
+                            || part.ends_with("\\SKILL.md")
+                    })
+                    .unwrap();
+                let actual =
+                    std::fs::read(std::path::Path::new(&view.protocol_cwd).join(advertised));
+                let expected: &[u8] = if line.starts_with("- Frozen:") {
+                    body
+                } else {
+                    repository_body
+                };
+                assert_eq!(
+                    actual.unwrap_or_else(|error| panic!("P1 {cwd:?}: {advertised}: {error}")),
+                    expected
+                );
+            }
+        }
+        assert_eq!(
+            slots
+                .read("skill-path", |slot| slot.skill_prompt.clone())
+                .flatten(),
+            Some(projection),
+            "P2 metadata remains frozen"
+        );
+        // P6 malformed directory metadata cannot yield a model request once
+        // realized; propagate the shared path validator's failure unchanged.
+        slots.update("skill-path", |slot| {
+            slot.skill_prompt = Some(FilesystemSkillPrompt {
+                entries: vec![("Unsafe".into(), "invalid".into(), "../escape".into())],
+            })
+        });
+        assert!(slots.prompts("skill-path", None, true, false).is_err());
+        env.dispose().await.unwrap();
     }
 
     #[tokio::test]
@@ -847,7 +1012,9 @@ mod tests {
         );
         let prompt = filesystem_skill_prompt(frozen.as_ref())
             .unwrap()
-            .expect("R2 prompt metadata");
+            .expect("R2 prompt metadata")
+            .render(&Default::default(), None)
+            .unwrap();
         assert_eq!(
             prompt.matches("- Shared:").count(),
             3,
