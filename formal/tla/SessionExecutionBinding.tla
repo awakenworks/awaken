@@ -55,6 +55,7 @@ bindingVars == <<selection, boundSlot, boundGeneration, boundEnvironment,
     environmentIdentity, environmentPhase, sessionExpired, effectHeld,
     effectChecked, badEffect, effects, effectPhases, weakStarted>>
 bindingAll == <<allVars, bindingVars, deploymentReady, registeredWorker, providerSource, providerPhase, memoryVars>>
+EnvironmentLimit == 2
 
 BindingInit == RootInit
   /\ registeredWorker \in BOOLEAN
@@ -186,8 +187,8 @@ BindingSpec == BindingInit /\ [][BindingNext]_bindingAll
 BindingTypeOK == RootTypeOK /\ selection \in {"unset", "weak", "scoped"}
   /\ deploymentReady \in BOOLEAN /\ registeredWorker \in BOOLEAN
   /\ providerSource \in BOOLEAN /\ providerPhase \in {"preparation", "disposal", "reconstruction", "restore-disposal", "checkpoint", "adoption", "creation"}
-  /\ boundSlot \in 0..2 /\ boundGeneration \in 0..2 /\ boundEnvironment \in 0..2
-  /\ environmentIdentity \in 1..2 /\ environmentPhase \in {"candidate", "resident", "retiring"}
+  /\ boundSlot \in 0..2 /\ boundGeneration \in 0..GenerationLimit /\ boundEnvironment \in 0..EnvironmentLimit
+  /\ environmentIdentity \in 1..EnvironmentLimit /\ environmentPhase \in {"candidate", "resident", "retiring"}
   /\ sessionExpired \in BOOLEAN /\ effectHeld \in BOOLEAN /\ effectChecked \in BOOLEAN
   /\ badEffect \in BOOLEAN /\ weakStarted \in BOOLEAN /\ effects \in 0..2
   /\ effectPhases \subseteq {"candidate", "resident", "retiring", "provider", "memory", "memory-replay", "preparation", "disposal", "disposal-replay", "reconstruction", "reconstruction-replay", "restore-disposal", "restore-disposal-replay", "checkpoint", "checkpoint-replay", "adoption", "adoption-replay", "creation", "creation-replay"}

@@ -1,26 +1,32 @@
 -------------------- MODULE SessionExecutionReplacement --------------------
 EXTENDS SessionExecutionBinding
 
-(* Composition of TWO execution objects, not rebinding one authority. The
+(* Composition of bounded execution objects, not rebinding one authority. The
    original BindingSpec still proves write-once capture over its entire life.
    Reuse its current-binding predicate for the successor and its Worker/Session
    renewal, close and generation-install actions. Two callers share the Host
    lifecycle lock; cancellation releases the caller, never the physical owner.
-   One old tree, two generations, one successor, one cancellation per caller.
+   One physical root, one predecessor tree, one cancellation per caller.
+   The default two-generation profile is unchanged; the four-generation
+   profile also replaces fresh/ready successors. An append-only capture map
+   retains every execution identity; nextCapture only selects the current one.
    The original owner may be Resident, committed Candidate, uncommitted
    Candidate, or Candidate whose Create committed but response was lost.
    The successor's root commit and readback are separate steps: cancellation
    loses neither the owner nor the committed receipt and replay writes once.
-   A second replacement after the successor becomes Candidate is not modeled.
+   Immutable physical generation is distinct from per-Adopt root receipts.
    Observer truth, exact root/Memory identity and atomic Host publication are
    assumptions discharged separately by executable tests, not Rust refinement.
    Unknown evidence has no liveness guarantee. Enabledness below forbids a
    vacuously safe implementation which simply never admits the new scope. *)
 VARIABLES phase, caller, cancelled, tree, observation, nextCapture, newEffect, badNewEffect, originalPhase
 replacementVars == <<phase, caller, cancelled, tree, observation, nextCapture, newEffect, badNewEffect, originalPhase>>
-VARIABLES rootReceipt, observedReceipt, rootWrites, cancelledAfterCommit, badRootCommit
-receiptVars == <<rootReceipt, observedReceipt, rootWrites, cancelledAfterCommit, badRootCommit>>
+VARIABLES rootReceipt, observedReceipt, rootWrites, cancelledAfterCommit, badRootCommit,
+          captures, cancelledFresh, cancelledCommitted
+receiptVars == <<rootReceipt, observedReceipt, rootWrites, cancelledAfterCommit, badRootCommit,
+                captures, cancelledFresh, cancelledCommitted>>
 replacementAll == <<bindingAll, replacementVars, receiptVars>>
+FourGenerations == 4
 OriginalEnvironmentPhase == IF originalPhase = "resident" THEN "resident" ELSE "candidate"
 Successor == INSTANCE SessionExecutionBinding
   WITH boundSlot <- nextCapture[1], boundGeneration <- nextCapture[2],
@@ -32,7 +38,10 @@ ReplacementInit == BindingInit
   /\ originalPhase \in {"candidate", "resident", "uncommitted", "lost"}
   /\ rootReceipt = (IF originalPhase = "uncommitted" THEN 0 ELSE 1)
   /\ observedReceipt = (IF originalPhase \in {"candidate", "resident"} THEN 1 ELSE 0)
-  /\ rootWrites = 0 /\ cancelledAfterCommit = FALSE /\ badRootCommit = FALSE
+  /\ rootWrites = [g \in 2..GenerationLimit |-> 0]
+  /\ captures = [g \in 2..GenerationLimit |-> <<0, 0, 0>>]
+  /\ cancelledFresh = {} /\ cancelledCommitted = {}
+  /\ cancelledAfterCommit = FALSE /\ badRootCommit = FALSE
   /\ tree = "absent" /\ observation = "unknown"
   /\ nextCapture = <<0, 0, 0>> /\ newEffect = FALSE /\ badNewEffect = FALSE
 
@@ -55,8 +64,11 @@ Acquire(c) == /\ caller = 0 /\ phase \in {"old", "retiring", "adoptable", "fresh
 Cancel == /\ caller # 0 /\ caller \notin cancelled
   /\ cancelled' = cancelled \cup {caller} /\ caller' = 0
   /\ cancelledAfterCommit' = (cancelledAfterCommit \/
-       (phase = "fresh" /\ rootReceipt = 2 /\ observedReceipt # 2))
-  /\ UNCHANGED <<rootReceipt, observedReceipt, rootWrites, badRootCommit>>
+       (phase = "fresh" /\ rootReceipt = environmentIdentity /\ observedReceipt # environmentIdentity))
+  /\ cancelledFresh' = cancelledFresh \cup (IF phase = "fresh" THEN {environmentIdentity} ELSE {})
+  /\ cancelledCommitted' = cancelledCommitted \cup
+       (IF phase = "fresh" /\ rootReceipt = environmentIdentity THEN {environmentIdentity} ELSE {})
+  /\ UNCHANGED <<rootReceipt, observedReceipt, rootWrites, badRootCommit, captures>>
   /\ UNCHANGED <<bindingAll, phase, tree, observation, nextCapture, newEffect, badNewEffect>>
 Retire == /\ caller # 0 /\ phase = "old"
   /\ phase' = "retiring" /\ environmentPhase' = "retiring"
@@ -77,14 +89,17 @@ Install == /\ caller # 0 /\ phase = "retiring" /\ observation = "absent"
        memoryVars, caller, cancelled, tree, observation, nextCapture, newEffect, badNewEffect>>
 Adopt == /\ caller # 0 /\ phase = "adoptable"
   /\ ExecutionRootCurrent /\ projection = "Live" /\ ~sessionExpired
-  /\ phase' = "fresh" /\ environmentIdentity' = 2 /\ environmentPhase' = "candidate"
-  /\ nextCapture' = <<slotIdentity, lease[1], 2>>
+  /\ phase' = "fresh" /\ environmentIdentity' = lease[1] /\ environmentPhase' = "candidate"
+  /\ nextCapture' = <<slotIdentity, lease[1], lease[1]>>
+  /\ captures' = [captures EXCEPT ![lease[1]] = nextCapture']
+  /\ observedReceipt' = 0
+  /\ UNCHANGED <<rootReceipt, rootWrites, cancelledAfterCommit, badRootCommit, cancelledFresh, cancelledCommitted>>
   /\ UNCHANGED <<allVars, selection, boundSlot, boundGeneration, boundEnvironment,
        sessionExpired, effectHeld, effectChecked, badEffect, effects, effectPhases,
        weakStarted, deploymentReady, registeredWorker, providerSource, providerPhase,
        memoryVars, caller, cancelled, tree, observation, newEffect, badNewEffect>>
 Publish == /\ caller # 0 /\ phase = "fresh" /\ Successor!CurrentBinding
-  /\ observedReceipt = 2
+  /\ observedReceipt = environmentIdentity
   /\ phase' = "ready" /\ environmentPhase' = "resident" /\ caller' = 0
   /\ UNCHANGED <<allVars, selection, boundSlot, boundGeneration, boundEnvironment,
        environmentIdentity, sessionExpired, effectHeld, effectChecked, badEffect, effects,
@@ -98,50 +113,80 @@ ExecuteSuccessor == /\ phase \in {"fresh", "ready"} /\ Successor!CurrentBinding
        \/ tree # "absent" \/ observation # "absent")
   /\ UNCHANGED <<bindingAll, phase, caller, cancelled, tree, observation, nextCapture>>
 CommitRoot == /\ caller # 0 /\ phase = "fresh" /\ Successor!CurrentBinding
-  /\ rootReceipt # 2 /\ rootWrites < 2
-  /\ rootReceipt' = 2 /\ rootWrites' = rootWrites + 1
+  /\ rootReceipt # environmentIdentity /\ rootWrites[environmentIdentity] < 2
+  /\ rootReceipt' = environmentIdentity
+  /\ rootWrites' = [rootWrites EXCEPT ![environmentIdentity] = @ + 1]
   /\ badRootCommit' = (~RootCurrent \/ projection # "Live" \/ sessionExpired
        \/ nextCapture # <<slotIdentity, lease[1], environmentIdentity>>
        \/ environmentPhase # "candidate")
-  /\ UNCHANGED <<bindingAll, replacementVars, observedReceipt, cancelledAfterCommit>>
+  /\ UNCHANGED <<bindingAll, replacementVars, observedReceipt, cancelledAfterCommit,
+                captures, cancelledFresh, cancelledCommitted>>
 ReadReceipt == /\ caller # 0 /\ phase = "fresh" /\ Successor!CurrentBinding
-  /\ rootReceipt = 2 /\ observedReceipt # 2 /\ observedReceipt' = 2
-  /\ UNCHANGED <<bindingAll, replacementVars, rootReceipt, rootWrites, cancelledAfterCommit, badRootCommit>>
+  /\ rootReceipt = environmentIdentity /\ observedReceipt # environmentIdentity
+  /\ observedReceipt' = environmentIdentity
+  /\ UNCHANGED <<bindingAll, replacementVars, rootReceipt, rootWrites, cancelledAfterCommit, badRootCommit,
+                captures, cancelledFresh, cancelledCommitted>>
+(* A new Control claim requests replacement after a caller cancelled or a
+   Resident was published. No identity is rebound: Retire/Stop/Install/Adopt
+   remain the sole owner transitions. A live predecessor is conservative even
+   if no modeled execution occurred. Unknown observation never enables Install. *)
+ReplaceSuccessor == /\ caller = 0 /\ phase \in {"fresh", "ready"}
+  /\ environmentIdentity < GenerationLimit
+  /\ phase' = "old" /\ tree' = "live" /\ observation' = "unknown"
+  /\ newEffect' = FALSE
+  /\ UNCHANGED <<bindingAll, caller, cancelled, nextCapture, badNewEffect>>
 ReplacementNext == /\ UNCHANGED originalPhase
   /\ (((Setup \/ StartOriginal \/ Authority
   \/ (\E c \in Callers : Acquire(c)) \/ Retire \/ Stop
-  \/ ObserveAbsent \/ ObserveUnknown \/ Install \/ Adopt \/ Publish \/ ExecuteSuccessor)
-  /\ UNCHANGED receiptVars) \/ Cancel \/ CommitRoot \/ ReadReceipt)
+  \/ ObserveAbsent \/ ObserveUnknown \/ Install \/ Publish \/ ExecuteSuccessor \/ ReplaceSuccessor)
+  /\ UNCHANGED receiptVars) \/ Adopt \/ Cancel \/ CommitRoot \/ ReadReceipt)
 ReplacementSpec == ReplacementInit /\ [][ReplacementNext]_replacementAll
 
 ReplacementTypeOK == BindingTypeOK
   /\ phase \in {"initial", "old", "retiring", "adoptable", "fresh", "ready"}
   /\ caller \in 0..2 /\ cancelled \subseteq Callers
   /\ originalPhase \in {"candidate", "resident", "uncommitted", "lost"}
-  /\ rootReceipt \in 0..2 /\ observedReceipt \in 0..2 /\ rootWrites \in 0..2
+  /\ rootReceipt \in 0..GenerationLimit /\ observedReceipt \in 0..GenerationLimit
+  /\ rootWrites \in [2..GenerationLimit -> 0..2]
+  /\ captures \in [2..GenerationLimit -> (0..2) \X (0..GenerationLimit) \X (0..EnvironmentLimit)]
+  /\ cancelledFresh \subseteq 2..GenerationLimit /\ cancelledCommitted \subseteq cancelledFresh
   /\ cancelledAfterCommit \in BOOLEAN /\ badRootCommit \in BOOLEAN
   /\ tree \in {"live", "absent"} /\ observation \in {"unknown", "absent"}
-  /\ nextCapture \in (0..2) \X (0..2) \X (0..2) /\ newEffect \in BOOLEAN /\ badNewEffect \in BOOLEAN
+  /\ nextCapture \in (0..2) \X (0..GenerationLimit) \X (0..EnvironmentLimit) /\ newEffect \in BOOLEAN /\ badNewEffect \in BOOLEAN
 SuccessorCommitsOnlyCurrent == ~badNewEffect
-InstallRequiresQuiescence == lease[1] = 2 => tree = "absent" /\ observation = "absent"
+InstallRequiresQuiescence == phase \in {"adoptable", "fresh", "ready"} => tree = "absent" /\ observation = "absent"
 OriginalCannotReopen == phase \in {"retiring", "adoptable", "fresh", "ready"} => ~CurrentBinding
 FreshCaptureMatchesOwner == phase \in {"fresh", "ready"} =>
-  nextCapture = <<slotIdentity, 2, environmentIdentity>>
+  nextCapture = <<slotIdentity, lease[1], environmentIdentity>>
+RetiredCapturesCannotAuthorize == \A g \in 2..(environmentIdentity - 1) :
+  captures[g] # <<slotIdentity, lease[1], environmentIdentity>>
 FreshExecutionEnabled == (phase \in {"fresh", "ready"} /\ RootCurrent
   /\ projection = "Live" /\ ~sessionExpired /\ ~newEffect) => ENABLED ExecuteSuccessor
 CommittedOwnerRetirementEnabled == (caller # 0 /\ phase = "old") => ENABLED Retire
-PublicationHasReadback == phase = "ready" => observedReceipt = 2 /\ rootReceipt = 2
-ReadbackNamesCommittedRoot == observedReceipt = 2 => rootReceipt = 2
-RootReceiptWrittenOnce == rootWrites <= 1
+PublicationHasReadback == phase = "ready" => observedReceipt = environmentIdentity /\ rootReceipt = environmentIdentity
+ReadbackNamesCommittedRoot == observedReceipt > 1 => rootWrites[observedReceipt] = 1
+ReadbackIsInvocationSpecific == phase = "fresh" => observedReceipt \in {0, environmentIdentity}
+RootReceiptWrittenOnce == \A g \in 2..GenerationLimit : rootWrites[g] <= 1
 RootCommitIsCurrent == ~badRootCommit
 FreshRootCommitEnabled == (caller # 0 /\ phase = "fresh" /\ RootCurrent
-  /\ projection = "Live" /\ ~sessionExpired /\ rootReceipt # 2) => ENABLED CommitRoot
+  /\ projection = "Live" /\ ~sessionExpired /\ rootReceipt # environmentIdentity) => ENABLED CommitRoot
 CancellationRetainsOwner == [][Cancel => UNCHANGED <<phase, environmentIdentity, nextCapture, tree>>]_replacementAll
-SuccessorCaptureIsWriteOnce == [][nextCapture # <<0, 0, 0>> => UNCHANGED nextCapture]_replacementAll
+SuccessorCaptureIsWriteOnce == [][\A g \in 2..GenerationLimit :
+  captures[g] # <<0, 0, 0>> => UNCHANGED captures[g]]_replacementAll
+CaptureSelectsImmutableObject == phase \in {"fresh", "ready"} => captures[environmentIdentity] = nextCapture
 NoSuccessorReached == ~newEffect
 NoCancelledRecoveryReached == ~(newEffect /\ cancelled = Callers)
 NoCandidateSuccessorReached == ~(newEffect /\ originalPhase = "candidate")
 NoUncommittedRecoveryReached == ~(phase = "ready" /\ originalPhase = "uncommitted")
 NoLostResponseRecoveryReached == ~(phase = "ready" /\ originalPhase = "lost")
 NoPostCommitCancellationRecoveryReached == ~(phase = "ready" /\ cancelledAfterCommit)
+(* Positive witnesses need one feasible path, not universal liveness. Keep
+   authority stable only for their existential search; neither safety profile
+   nor semantic mutant checks use this constraint. *)
+RecoveryWitnessScope == bootNow = 0 /\ rootPhase # "Closed" /\ projection = "Live"
+  /\ lease[2] = 1 /\ request = NoSnapshot /\ originalPhase = "uncommitted"
+NoMultiRecovery00 == ~(phase = "ready" /\ environmentIdentity = 4 /\ cancelledFresh = {2, 3} /\ cancelledCommitted = {})
+NoMultiRecovery01 == ~(phase = "ready" /\ environmentIdentity = 4 /\ cancelledFresh = {2, 3} /\ cancelledCommitted = {3})
+NoMultiRecovery10 == ~(phase = "ready" /\ environmentIdentity = 4 /\ cancelledFresh = {2, 3} /\ cancelledCommitted = {2})
+NoMultiRecovery11 == ~(phase = "ready" /\ environmentIdentity = 4 /\ cancelledFresh = {2, 3} /\ cancelledCommitted = {2, 3})
 =============================================================================

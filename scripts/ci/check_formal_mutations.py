@@ -342,12 +342,12 @@ class MutationOracleTests(unittest.TestCase):
         # R1 default and R2 explicit composed-model budgets reach every child
         # invocation. Both still require a green baseline and the exact named
         # invariant counterexample; no timeout or merely nonzero exit is a kill.
-        # R3 both budgets keep the canonical collector and full configuration;
+        # R3 budgets/worker count keep the canonical collector and full configuration;
         # R4 a timeout escapes as failed verification, never a semantic kill.
         green = subprocess.CompletedProcess([], 0, "Model checking completed. No error has been found.")
         rejected = subprocess.CompletedProcess([], 12, "Invariant ExactRule is violated")
-        for budget, heap, timeout in (({}, "-Xmx512m", 60),
-                                     ({"heap_mb": 2048, "timeout_seconds": 180}, "-Xmx2048m", 180)):
+        for budget, heap, timeout, workers in (({}, "-Xmx512m", 60, "1"),
+                                     ({"heap_mb": 2048, "timeout_seconds": 600, "workers": 4}, "-Xmx2048m", 600, "4")):
             with self.subTest(budget=budget), patch("subprocess.run", side_effect=[green, rejected]) as runner:
                 check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", "config",
                                           [("mutant", "config", "ExactRule")], **budget)
@@ -355,6 +355,8 @@ class MutationOracleTests(unittest.TestCase):
                 for call in runner.call_args_list:
                     self.assertEqual(call.args[0][:5], ["java", f'-Djava.io.tmpdir={call.kwargs["cwd"]}', heap, "-XX:+UseParallelGC", "-jar"])
                     self.assertEqual(call.kwargs["timeout"], timeout)
+                    argv = call.args[0]
+                    self.assertEqual(argv[argv.index("-workers") + 1], workers)
             with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("java", timeout)):
                 with self.assertRaises(subprocess.TimeoutExpired):
                     check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", "config", [], **budget)

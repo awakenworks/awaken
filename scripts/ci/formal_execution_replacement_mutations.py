@@ -1,4 +1,4 @@
-"""Two execution objects across one Session replacement; reuse the TLC oracle."""
+"""Bounded successive Session replacements; reuse one model and TLC oracle."""
 
 from pathlib import Path
 from formal_model_mutation_runner import ROOT, check_tlc_model_mutations
@@ -15,7 +15,7 @@ def check_execution_replacement_model_mutants(tlc_jar: Path) -> None:
     for anchor, broken, oracle in [
         ('/\\ observation = "absent"\n  /\\ tree = "absent" /\\ InstallReplacement',
          '/\\ InstallReplacement', "InstallRequiresQuiescence"),
-        ("nextCapture' = <<slotIdentity, lease[1], 2>>",
+        ("nextCapture' = <<slotIdentity, lease[1], lease[1]>>",
          "nextCapture' = <<boundSlot, boundGeneration, boundEnvironment>>", "FreshCaptureMatchesOwner"),
         ('environmentPhase\' = "retiring"', 'environmentPhase\' = "resident"', "OriginalCannotReopen"),
         ('ExecuteSuccessor == /\\ phase', 'ExecuteSuccessor == /\\ FALSE /\\ phase', "FreshExecutionEnabled"),
@@ -23,12 +23,12 @@ def check_execution_replacement_model_mutants(tlc_jar: Path) -> None:
          'phase \\in {"fresh", "ready"}', "SuccessorCommitsOnlyCurrent"),
         ('Retire == /\\ caller', 'Retire == /\\ originalPhase = "resident" /\\ caller',
          "CommittedOwnerRetirementEnabled"),
-        ('/\\ observedReceipt = 2\n  /\\ phase\' = "ready"',
+        ('/\\ observedReceipt = environmentIdentity\n  /\\ phase\' = "ready"',
          '/\\ phase\' = "ready"', "PublicationHasReadback"),
-        ('/\\ rootReceipt = 2 /\\ observedReceipt # 2 /\\ observedReceipt\' = 2',
-         '/\\ observedReceipt # 2 /\\ observedReceipt\' = 2', "ReadbackNamesCommittedRoot"),
-        ('/\\ rootReceipt # 2 /\\ rootWrites < 2',
-         '/\\ rootWrites < 2', "RootReceiptWrittenOnce"),
+        ('/\\ rootReceipt = environmentIdentity /\\ observedReceipt # environmentIdentity\n',
+         '/\\ observedReceipt # environmentIdentity\n', "ReadbackNamesCommittedRoot"),
+        ('/\\ rootReceipt # environmentIdentity /\\ rootWrites[environmentIdentity] < 2',
+         '/\\ rootWrites[environmentIdentity] < 2', "RootReceiptWrittenOnce"),
         ('CommitRoot == /\\ caller # 0 /\\ phase = "fresh" /\\ Successor!CurrentBinding',
          'CommitRoot == /\\ caller # 0 /\\ phase = "fresh"', "RootCommitIsCurrent"),
         ('CommitRoot == /\\ caller', 'CommitRoot == /\\ FALSE /\\ caller', "FreshRootCommitEnabled"),
@@ -47,6 +47,36 @@ def check_execution_replacement_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "SessionExecutionReplacement", source, config, mutations,
                              dependencies=("SessionExecutionBinding", "WorkerExecutionAuthority", "SessionRealizationAuthority"))
     print("Execution replacement: 12/12 mutants killed; 6 recovery witnesses including lost commit response and post-commit cancellation")
+    chain_config = (ROOT / "formal/tla/SessionExecutionReplacementChain.cfg").read_text()
+    chain_header = chain_config.split("PROPERTIES", 1)[0]
+    # MC C/E table: both intermediate adoptions may independently lose the
+    # response before or after commit. Every feasible 00/01/10/11 schedule must
+    # reach generation 4. Receipt and immutable-capture mutants specifically
+    # exercise bugs invisible to a single-successor model. Baseline is checked
+    # before any kill; tool failures never stand in for a semantic violation.
+    chain_mutations = []
+    for anchor, broken, oracle in [
+        ('/\\ observedReceipt = environmentIdentity\n',
+         '/\\ (observedReceipt = environmentIdentity \\/ (environmentIdentity > 2 /\\ rootReceipt > 0))\n',
+         "PublicationHasReadback"),
+        ('/\\ observedReceipt\' = 0\n', '/\\ observedReceipt\' = rootReceipt\n',
+         "ReadbackIsInvocationSpecific"),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit(f"replacement chain mutation anchor drifted: {oracle}")
+        chain_mutations.append((source.replace(anchor, broken), chain_header + f"INVARIANTS {oracle}\n", oracle))
+    capture = "/\\ captures' = [captures EXCEPT ![lease[1]] = nextCapture']"
+    if source.count(capture) != 1:
+        raise SystemExit("replacement chain capture anchor drifted")
+    chain_mutations.append((source.replace(capture,
+        "/\\ captures' = [captures EXCEPT ![lease[1]] = nextCapture', ![2] = nextCapture']"),
+        chain_header + "PROPERTY SuccessorCaptureIsWriteOnce\n", "action:SuccessorCaptureIsWriteOnce"))
+    for witness in ("NoMultiRecovery00", "NoMultiRecovery01", "NoMultiRecovery10", "NoMultiRecovery11"):
+        chain_mutations.append((source, chain_header + f"CONSTRAINT RecoveryWitnessScope\nINVARIANTS {witness}\n", witness))
+    check_tlc_model_mutations(tlc_jar, "SessionExecutionReplacement", source, chain_config, chain_mutations,
+                             dependencies=("SessionExecutionBinding", "WorkerExecutionAuthority", "SessionRealizationAuthority"),
+                             heap_mb=2048, timeout_seconds=600, workers=4)
+    print("Execution replacement chain: 3/3 mutants killed; 4 successive cancellation recovery witnesses")
     check_terminal_owner_model_mutants(tlc_jar)
 
 

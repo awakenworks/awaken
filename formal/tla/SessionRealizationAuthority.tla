@@ -12,7 +12,10 @@ EXTENDS Naturals, FiniteSets
    LocalProcessRecovery own execution/receipt composition. No Rust refinement
    or cleanup liveness under unknown physical evidence is asserted. *)
 Callers == {1, 2}
-Snapshots == (1..2) \X (1..3)
+(* Default profiles retain two generations. The replacement composition may
+   override this bound, reusing the SAME slot-install transition. *)
+GenerationLimit == 2
+Snapshots == (1..GenerationLimit) \X (1..3)
 NoSnapshot == <<0, 0>>
 VARIABLES projection, lease, request, cleanup, ownerLocked, closedGenerations,
           badGrant, badCleanup, granted, cleaned
@@ -74,12 +77,12 @@ FinishCleanup(c) ==
   /\ UNCHANGED <<projection, lease, request, ownerLocked, closedGenerations,
                   badGrant, granted>>
 
-(* A successful fresh Control claim installs generation 2. Replaying any
+(* A successful fresh Control claim installs the next bounded generation. Replaying any
    expiry of the currently closed generation stutters, as does a rejected
    claim. The model does not invent local authority to claim generation 1. *)
 Replace ==
   /\ UNCHANGED selectionVars
-  /\ lease[1] = 1 /\ lease' = <<2, 1>> /\ projection' = "Live"
+  /\ lease[1] < GenerationLimit /\ lease' = <<lease[1] + 1, 1>> /\ projection' = "Live"
   /\ UNCHANGED <<request, cleanup, ownerLocked, closedGenerations,
                   badGrant, badCleanup, granted, cleaned>>
 
@@ -135,7 +138,7 @@ Spec == Init /\ [][Next]_vars /\ WF_vars(FinishPeer)
 TypeOK == /\ projection \in {"Live", "Closed"} /\ lease \in Snapshots
           /\ request \in Snapshots \cup {NoSnapshot}
           /\ cleanup \in [Callers -> Snapshots \cup {NoSnapshot}]
-          /\ ownerLocked \in BOOLEAN /\ closedGenerations \subseteq 1..2
+          /\ ownerLocked \in BOOLEAN /\ closedGenerations \subseteq 1..GenerationLimit
           /\ badGrant \in BOOLEAN /\ badCleanup \in BOOLEAN
           /\ granted \in BOOLEAN /\ cleaned \in BOOLEAN
           /\ slotIdentity \in 1..2 /\ selectedSlot \in [Callers -> 0..2]
