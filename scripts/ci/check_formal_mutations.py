@@ -1209,7 +1209,48 @@ def check_session_network_model_mutant(tlc_jar: Path) -> None:
     mutant = source.replace(guard, r"Meet(left, right) == left \intersect right")
     check_tlc_model_mutations(tlc_jar, "SessionNetworkPolicy", source, config,
                              [(mutant, config, "NoBlankHostIsGranted")])
-    print("Session network mutation score: 1/1 killed (blank host is not authority)")
+    # S1..S4 decision table: one canonical two-host source, all seven output
+    # sequences of length 0..2, every position map and all four allowed sets.
+    # The 84 cases independently check exact membership, canonical order and
+    # output cardinality. Missing content binding/completeness/order/injectivity
+    # must each yield a semantic counterexample after a green baseline.
+    sequence_oracle = r"""
+SequenceOutputCases == {<<>>, <<0>>, <<1>>, <<0, 0>>, <<0, 1>>, <<1, 0>>, <<1, 1>>}
+SequenceExpected(allowed) ==
+    IF allowed = {} THEN <<>> ELSE
+    IF allowed = {0} THEN <<0>> ELSE
+    IF allowed = {1} THEN <<1>> ELSE <<0, 1>>
+SequenceProjectionOracle ==
+    \A output \in SequenceOutputCases:
+      \A selection \in [DOMAIN output -> 1..2], allowed \in SUBSET {0, 1}:
+        LET bound == SelectedSequence(<<0, 1>>, output, selection)
+            exact == ExactSelection(<<0, 1>>, output, selection, allowed)
+        IN /\ (bound /\ exact => SequenceHosts(output) = allowed)
+           /\ (bound /\ exact /\ IncreasingSelection(output, selection) =>
+                 output = SequenceExpected(allowed))
+           /\ (bound /\ exact /\ InjectiveSelection(output, selection) =>
+                 Len(output) = Cardinality(allowed))
+"""
+    end = "============================================================================="
+    if source.count(end) != 1:
+        raise SystemExit("Session network module boundary drifted")
+    sequence_source = source.replace(end, sequence_oracle + "\n" + end)
+    sequence_config = config.replace("INVARIANTS ", "INVARIANTS SequenceProjectionOracle ", 1)
+    anchors = [
+        (r"/\ \A i \in DOMAIN output: output[i] = source[selection[i]]", r"/\ TRUE"),
+        (r"(source[i] \in allowed) <=> (\E j \in DOMAIN output: selection[j] = i)", "TRUE"),
+        (r"\A i, j \in DOMAIN output: i < j => selection[i] < selection[j]", "TRUE"),
+        (r"\A i, j \in DOMAIN output: selection[i] = selection[j] => i = j", "TRUE"),
+    ]
+    sequence_mutants = []
+    for anchor, replacement in anchors:
+        if sequence_source.count(anchor) != 1:
+            raise SystemExit("Session network sequence mutation anchor drifted")
+        sequence_mutants.append((sequence_source.replace(anchor, replacement), sequence_config,
+                                 "constant:SequenceProjectionOracle"))
+    check_tlc_model_mutations(tlc_jar, "SessionNetworkPolicy", sequence_source,
+                             sequence_config, sequence_mutants)
+    print("Session network mutation score: 5/5 killed (blank and exact canonical sequence selection)")
 
 
 def check_verified_admission_model_mutants(tlc_jar: Path) -> None:
