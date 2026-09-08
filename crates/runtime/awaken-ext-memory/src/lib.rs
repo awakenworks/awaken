@@ -35,10 +35,11 @@ pub use agent::{
 };
 pub use extraction::{
     MemoryExtractionController, MemoryExtractionDriver, MemoryExtractionError,
-    MemoryExtractionIntent, MemoryExtractionMutation, MemoryExtractionPolicy,
-    MemoryExtractionReceipt, MemoryExtractionRepository, MemoryExtractionStatus,
-    MemoryExtractorSnapshot, MemoryMutationReceipt, MemoryTerminalExtraction,
-    MemoryTerminalExtractionRequest, MemoryTerminalObserver, PutMemoryExtractionOutcome,
+    MemoryExtractionIntent, MemoryExtractionMutation, MemoryExtractionOutcome,
+    MemoryExtractionPolicy, MemoryExtractionReceipt, MemoryExtractionRepository,
+    MemoryExtractionStatus, MemoryExtractorSnapshot, MemoryMutationReceipt,
+    MemoryTerminalExtraction, MemoryTerminalExtractionRequest, MemoryTerminalObserver,
+    PutMemoryExtractionOutcome,
 };
 pub use localfs::{Entry, MemoryDir, MemoryStoreHandle, sanitize_stem};
 pub use recall::{RecallBounds, recall_block};

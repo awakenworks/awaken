@@ -21,7 +21,11 @@ import unittest
 from unittest.mock import patch
 
 from formal_model_mutation_runner import check_tlc_model_mutations
-from formal_memory_mutations import check_memory_invalidation_model_mutants, check_memory_participant_model_mutants
+from formal_memory_mutations import (
+    check_memory_extraction_model_mutants,
+    check_memory_invalidation_model_mutants,
+    check_memory_participant_model_mutants,
+)
 from formal_execution_replacement_mutations import check_execution_replacement_model_mutants
 
 
@@ -519,6 +523,7 @@ def main() -> None:
         "sandbox-control-model-mutants": check_sandbox_control_model_mutants,
         "memory-invalidation-model-mutants": check_memory_invalidation_model_mutants,
         "memory-participant-model-mutants": check_memory_participant_model_mutants,
+        "memory-extraction-model-mutants": check_memory_extraction_model_mutants,
         "audit-commit-model-mutants": check_audit_commit_model_mutants,
         "effect-retirement-model-mutant": check_effect_retirement_model_mutant,
         "credential-removal-model-mutant": check_credential_removal_model_mutant,

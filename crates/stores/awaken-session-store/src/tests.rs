@@ -2399,6 +2399,74 @@ async fn extraction_intent_and_claim_survive_sqlite_reopen() {
 }
 
 #[tokio::test]
+async fn indeterminate_extraction_is_not_reclaimed_after_sqlite_reopen() {
+    use awaken_ext_memory::{MemoryExtractionRepository, MemoryExtractionStatus};
+
+    // Cause/effect graph: C1 an extraction owns a live claim; C2 its stable
+    // auxiliary Run becomes indeterminate; C3 the process/store reopens.
+    // Effects: E1 the explicit terminal status survives JSON plus indexed
+    // status storage; E2 recoverable scheduling excludes it; E3 the exact Run
+    // identity and diagnostic remain available for attention. Decision rules:
+    // R1=C1+known retryable=>recoverable (covered by the adjacent claim test);
+    // R2=C1+C2+C3=>E1,E2,E3.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sessions-indeterminate.db");
+    let path = path.to_string_lossy().to_string();
+    let expected_run_id;
+    {
+        let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+        let mut unknown = extraction("extract-unknown", "terminal-unknown");
+        expected_run_id = unknown.auxiliary_run_id();
+        repo.put_extraction_if_absent(unknown.clone())
+            .await
+            .unwrap();
+        let expected_revision = unknown.revision;
+        let generation = unknown.claim("worker-a", 100, 50).unwrap();
+        repo.compare_and_swap_extraction(expected_revision, unknown.clone())
+            .await
+            .unwrap();
+        let expected_revision = unknown.revision;
+        unknown
+            .mark_execution_indeterminate(
+                "worker-a",
+                generation,
+                110,
+                "provider termination is not observable",
+            )
+            .unwrap();
+        repo.compare_and_swap_extraction(expected_revision, unknown)
+            .await
+            .unwrap();
+    }
+
+    let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
+    let unknown = reopened
+        .get_extraction("extract-unknown")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        unknown.status,
+        MemoryExtractionStatus::ExecutionIndeterminate,
+        "R2/E1"
+    );
+    assert_eq!(unknown.auxiliary_run_id(), expected_run_id, "R2/E3");
+    assert_eq!(
+        unknown.last_error.as_deref(),
+        Some("provider termination is not observable"),
+        "R2/E3"
+    );
+    assert!(
+        reopened
+            .recoverable_extractions(10)
+            .await
+            .unwrap()
+            .is_empty(),
+        "R2/E2"
+    );
+}
+
+#[tokio::test]
 async fn extraction_revision_overflow_is_rejected_before_storage() {
     use awaken_ext_memory::{MemoryExtractionError, MemoryExtractionRepository};
 
