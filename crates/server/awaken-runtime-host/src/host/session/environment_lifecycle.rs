@@ -792,7 +792,9 @@ impl SharedHost {
                     (None, None) => {
                         let rebound = match revoked_durable.as_ref() {
                             Some(retiring) => provider
-                                .rebind_retained(&handle, &retiring.owned.environment())
+                                .rebind_retained(&spec, &handle, &retiring.owned.environment(),
+                                    effect.provider_fence.as_ref(),
+                                    authority.as_ref().map(|authority| authority as &dyn awaken_provisioning_contract::CurrentExecutionAuthority))
                                 .await,
                             None => provider
                                 .adopt_effective_for_effect(
@@ -965,6 +967,59 @@ impl SharedHost {
             return false;
         };
         self.confirm_terminated_retirement(thread, &retirement.owner)
+    }
+
+    /// Called by the complete projection installer under lifecycle -> Resource
+    /// locks, before installing a different Session generation. The durable
+    /// Sandbox identity does not change, but a scoped execution object's captured
+    /// authority cannot follow that new generation. Reuse the sole retirement
+    /// transition; failure/cancellation leaves its exact owner available to retry.
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn retire_replaced_scoped_execution(
+        &self,
+        thread: &str,
+        incoming: &awaken_session_contract::ObservedSessionRealizationLease,
+    ) -> Result<(), HostError> {
+        let retirement = self.authorize_worker_effect(|| {
+            let now = awaken_local_process::authority_proof_started()
+                .map_err(|error| HostError::internal(error.to_string()))?;
+            if incoming.remaining_at(now).is_none() {
+                return Err(HostError::internal("replacement Session authority time proof is exhausted"));
+            }
+            let selected = self.session_slots.read(thread, |slot| {
+                let environment = match &slot.environment_owner {
+                    SessionEnvironmentOwner::Resident(owned) => &owned.environment,
+                    SessionEnvironmentOwner::Retiring(retiring)
+                        if retiring.cause == SessionEnvironmentRetirementCause::RealizationRevocation =>
+                        return Some(retiring.owned.environment()),
+                    _ => return None,
+                };
+                let same_generation = slot.realization_authority.lease().is_some_and(|old| {
+                    awaken_session_contract::realization_lease_generation_authorizes(old, &incoming.lease)
+                    || awaken_session_contract::realization_lease_generation_authorizes(&incoming.lease, old)
+                });
+                (!same_generation).then(|| environment.clone())
+            }).flatten();
+            let Some(environment) = selected else { return Ok(None) };
+            if !matches!(environment.as_ref(), crate::session_environment::SessionEnvironment::Workdir { sandbox, .. } if sandbox.has_scoped_execution()) {
+                return Ok(None);
+            }
+            self.retire_current_environment(thread,
+                SessionEnvironmentRetirementCause::RealizationRevocation,
+                RetirementSelection::Exact(&environment))
+        })?;
+        if let Some(retirement) = retirement {
+            let environment = retirement.owner.owned.environment();
+            // Independent participants must both stop even if one drain fails.
+            // Cancellation leaves the same Retiring owner for the next caller.
+            let (mcp, execution) = tokio::join!(
+                self.drain_mcp_projections(thread, &[]),
+                environment.stop_bound_processes(),
+            );
+            mcp?;
+            execution.map_err(|error| HostError::internal(error.to_string()))?;
+        }
+        Ok(())
     }
 
     fn retire_current_environment(

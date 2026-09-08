@@ -820,6 +820,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/session-execution-binding" \
     -config formal/tla/SessionExecutionBinding.cfg formal/tla/SessionExecutionBinding.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-execution-replacement" \
+    -config formal/tla/SessionExecutionReplacement.cfg formal/tla/SessionExecutionReplacement.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/skill-version-pin" \
     -config formal/tla/SkillVersionPin.cfg formal/tla/SkillVersionPin.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \

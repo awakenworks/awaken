@@ -479,6 +479,7 @@ export const BEHAVIORS = {
       const attempt = quoted(field('ATTEMPT'));
       const previous = /^AWK_PREVIOUS=(.+)$/mu.exec(mission)?.[1];
       const contention = /^AWK_CONTEND=(.+)$/mu.exec(mission)?.[1];
+      const parentNamespace = /^AWK_PARENT_PID_NAMESPACE=(.+)$/mu.exec(mission)?.[1];
       return tool(`resources-${field('ATTEMPT')}`, 'bash', { command: [
         'set -eu',
         'initial_cwd=$PWD',
@@ -501,6 +502,11 @@ export const BEHAVIORS = {
           'test "$(cat "$repository/$result.txt")" = "$prior"',
         ] : []),
         'mkdir -p "$outputs"',
+        ...(parentNamespace ? [
+          'namespace=$(readlink /proc/self/ns/pid)',
+          `test "$namespace" != ${quoted(parentNamespace)}`,
+          'printf "%s\\n%s" "$namespace" "$attempt" > "$outputs/scope.txt"',
+        ] : []),
         'printf "%s" "$combined" > "$memory/$result.md"',
         'printf "%s" "$combined" > "$repository/$result.txt"',
         'printf "%s" "$combined" > "$outputs/result.txt"',

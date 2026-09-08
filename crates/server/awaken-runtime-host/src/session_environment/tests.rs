@@ -585,7 +585,7 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
     // H5 shares H2's missing executable so no platform-specific helper is needed.
     environment.stop_bound_processes().await.unwrap();
     let rebound = provider
-        .rebind_retained(&handle, &environment)
+        .rebind_retained(&spec(), &handle, &environment, None, None)
         .await
         .unwrap();
     let (
@@ -874,7 +874,7 @@ async fn native_process_and_agent_channel_share_one_live_environment() {
         // W4 retained Workdir + either cwd -> same physical owner and exact
         // ACP-written bytes; rebind must not adopt or replace the workspace.
         let rebound = provider
-            .rebind_retained(&environment.handle(), &environment)
+            .rebind_retained(&spec(), &environment.handle(), &environment, None, None)
             .await
             .unwrap();
         let (
@@ -1043,7 +1043,13 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
         hand_idle_after: std::time::Duration::ZERO,
     };
     let rebound = selected
-        .rebind_retained(&environment.handle(), &environment)
+        .rebind_retained(
+            &crate::session_environment::environment_test_spec(),
+            &environment.handle(),
+            &environment,
+            None,
+            None,
+        )
         .await
         .unwrap();
     let (
@@ -4128,13 +4134,16 @@ async fn revoked_durable_container_rebinds_hand_without_reconstructing_its_owner
         let mut foreign = handle.clone();
         foreign.sandbox_id.push_str("-foreign");
         assert!(
-            provider.rebind_retained(&foreign, &previous).await.is_err(),
+            provider
+                .rebind_retained(&spec, &foreign, &previous, None, None)
+                .await
+                .is_err(),
             "W3 foreign handle"
         );
         let directory = tempfile::tempdir().unwrap();
         assert!(
             SessionEnvironmentProvider::workdir(directory.path())
-                .rebind_retained(&handle, &previous)
+                .rebind_retained(&spec, &handle, &previous, None, None)
                 .await
                 .is_err(),
             "W3 foreign provider"

@@ -702,19 +702,42 @@ impl SessionEnvironmentProvider {
     /// Rebuild only the revoked process bindings after the lifecycle owner has
     /// authorized and observed this exact retained Sandbox. Its physical owner
     /// carries non-durable create-attempt and cleanup participants that a cold
-    /// provider adoption cannot reconstruct. This performs no Sandbox adoption,
-    /// allocation, disposal or process launch; ordinary tool admission remains
-    /// responsible for the new Hand's first invocation.
+    /// provider adoption cannot reconstruct. Scoped Local execution is instead
+    /// bound once to its original Session generation: reuse the canonical fenced
+    /// adoption to obtain a fresh execution object over the SAME root and shared
+    /// Memory participants. Never reset the old object's authority or admission.
+    /// No branch allocates a new physical Sandbox or launches an Agent.
     pub(crate) async fn rebind_retained(
         &self,
+        spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
         retained: &SessionEnvironment,
+        effect_fence: Option<&pc::SandboxEffectFence>,
+        authority: Option<&dyn pc::CurrentExecutionAuthority>,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
         if &retained.handle() != handle {
             return Err(pc::SandboxError::new(
                 "retained Environment differs from rebound handle",
             ));
         }
+        #[cfg(target_os = "linux")]
+        if matches!(retained, SessionEnvironment::Workdir { sandbox, .. } if sandbox.has_scoped_execution())
+        {
+            if !matches!(self, Self::Workdir { provider, .. } if provider.execution_deployment().is_some())
+                || effect_fence.is_none()
+                || authority.is_none()
+            {
+                return Err(pc::SandboxError::new(
+                    "scoped rebind requires its deployment and current adoption authority",
+                ));
+            }
+            retained.stop_bound_processes().await?;
+            return self
+                .adopt_effective_for_effect(spec, handle, effect_fence, authority)
+                .await;
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (spec, effect_fence, authority);
         match (self, retained) {
             (Self::Workdir { hand, .. }, SessionEnvironment::Workdir { sandbox, .. }) => {
                 Ok(SessionEnvironment::Workdir {
