@@ -99,6 +99,7 @@ STORE_BACKEND_TESTS = (
 INGRESS_CONFORMANCE = "crates/server/awaken-dispatch/tests/dispatch_conformance.rs"
 QUALITY_WORKFLOW = ".github/workflows/quality.yml"
 RELEASE_WORKFLOW = ".github/workflows/release.yml"
+K8S_CONTAINER_GATE = "scripts/e2e/k8s_container_e2e.sh"
 
 
 def e2e_files(root: Path) -> set[str]:
@@ -333,6 +334,25 @@ def release_gate_errors(check_all: str, public_api: str, check_rust: str) -> lis
     return errors
 
 
+def k8s_container_gate_errors(gate: str) -> list[str]:
+    """Require the canonical live K8s runner to execute its control-path case."""
+
+    errors: list[str] = []
+    if 'CONTROL_IMAGE="${AWAKEN_K8S_CONTROL_IMAGE:-}"' not in gate or not re.search(
+        r'CONTROL_IMAGE.*@sha256:\[0-9a-f\]\{64\}', gate
+    ):
+        errors.append("Kubernetes gate does not require an exact control-image digest")
+    if 'k3d_import_storage_images "$CLUSTER" "$FIXTURE_IMAGE" "$SESSION_IMAGE" "$CONTROL_IMAGE"' not in gate:
+        errors.append("Kubernetes gate does not import the exact control image")
+    if not re.search(
+        r'AWAKEN_K8S_E2E=1 AWAKEN_K8S_CONTROL_E2E=1\s*\\?\s*\n'
+        r'\s*AWAKEN_K8S_CONTROL_IMAGE="\$CONTROL_IMAGE"',
+        gate,
+    ):
+        errors.append("Kubernetes gate can still skip the required control roundtrip")
+    return errors
+
+
 def workflow_gate_errors(workflows: dict[str, str]) -> list[str]:
     """Require one exact-SHA workflow to execute the canonical full gate."""
 
@@ -522,6 +542,11 @@ def validate(root: Path) -> list[str]:
             (root / "scripts/ci/check-all.sh").read_text(encoding="utf-8"),
             (root / "scripts/ci/check_public_api.sh").read_text(encoding="utf-8"),
             (root / "scripts/ci/check-rust.sh").read_text(encoding="utf-8"),
+        )
+    )
+    errors.extend(
+        k8s_container_gate_errors(
+            (root / K8S_CONTAINER_GATE).read_text(encoding="utf-8")
         )
     )
     errors.extend(rust_hook_errors(
@@ -882,6 +907,20 @@ def self_test() -> None:
         public_api,
         check_rust,
     ), "R7 independently sharded release group"
+
+    # Kubernetes-control gate decision table: C12 an exact operator digest is
+    # admitted; C13 that image enters the shared importer; C14 both live-test
+    # gates are set on the one canonical k8s_e2e invocation. K1 all true => the
+    # helper/marker path executes. K2 any false => reject orchestration before a
+    # successful Rust skip can count as release evidence.
+    k8s_gate = (ROOT / K8S_CONTAINER_GATE).read_text(encoding="utf-8")
+    assert not k8s_container_gate_errors(k8s_gate), "K1 required control roundtrip"
+    for mutation in (
+        k8s_gate.replace('@sha256:[0-9a-f]{64}', ':latest', 1),
+        k8s_gate.replace(' "$CONTROL_IMAGE"\n', '\n', 1),
+        k8s_gate.replace('AWAKEN_K8S_CONTROL_E2E=1', 'AWAKEN_K8S_CONTROL_E2E=0', 1),
+    ):
+        assert k8s_container_gate_errors(mutation), "K2 false-green control gate"
 
     # Workflow cause/effect decision table: C14 the candidate SHA is exact;
     # C15 one full-gate invocation owns all groups; C16 PR/main/release enter
