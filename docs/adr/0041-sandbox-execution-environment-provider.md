@@ -1018,3 +1018,24 @@ host-view qualification must separately check host identity and access: an
 unprivileged user/PID namespace can retain absolute filesystem paths while
 changing supplementary-group visibility and host PID semantics. A successful
 Namespace readiness probe is therefore not a TrustedHost compatibility result.
+## Amendment: container reservation precedes activation (2026-09-08)
+
+Container runtime realization has one two-phase port. The shared
+`ContainerRuntime::create_for_effect` method is only a thin direct-call
+composition of `prepare_for_effect` and `activate_for_effect`; Docker, Podman,
+and Kubernetes no longer implement a second combined path. Docker reserves a
+created, stopped container, Podman uses `create` rather than `run`, and
+Kubernetes reserves the UID-fenced Pod before projected participants converge.
+Activation re-observes the exact fingerprinted locator before Docker/Podman
+start or Kubernetes convergence and returns success only for that locator.
+
+The existing stable-scope discovery, immutable labels/annotations, Pod UID,
+PVC binding, and `existing_realization_decision` remain the physical authority.
+Only the existing runtime port and the three adapters are modified; the Podman
+reservation argv is projected from the same plan renderer. No reservation
+store, lease, WAL, recovery service, or second realization state machine is
+added. The direct composition preserves effect-free runtime callers but is not
+a crash boundary. Provider ordering is still `Memory -> combined create` at
+this amendment point, so this split alone does not claim cross-process Memory
+responsibility. That requires the provider to call the two phases explicitly
+and recover the backend-owned staging locator before mounting.

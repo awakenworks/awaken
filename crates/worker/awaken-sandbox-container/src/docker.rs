@@ -1144,7 +1144,7 @@ impl ContainerRuntime for DockerRuntime {
         self.create_for_effect(&context, plan, &fingerprint).await
     }
 
-    async fn create_for_effect(
+    async fn prepare_for_effect(
         &self,
         context: &ContainerRealizationContext<'_>,
         plan: &ContainerPlan,
@@ -1209,51 +1209,10 @@ impl ContainerRuntime for DockerRuntime {
                             continue;
                         }
                     };
-                    if let Err(error) = self
-                        .docker
-                        .start_container(&created.id, None::<StartContainerOptions<String>>)
-                        .await
-                    {
-                        let after = self
-                            .create_decision(context, Some(realization_fingerprint))
-                            .await
-                            .map_err(RuntimeError::after_mutation)?;
-                        if let ExistingRealizationDecision::ReuseReady(observed) = &after {
-                            return Ok(observed.incarnation.identity.clone());
-                        }
-                        if after == ExistingRealizationDecision::Create {
-                            return Err(backend(error).after_mutation());
-                        }
-                        decision = after;
-                        continue;
-                    }
                     return Ok(created.id);
                 }
-                ExistingRealizationDecision::ConvergeCreating(observed) => {
-                    if let Err(error) = self
-                        .docker
-                        .start_container(
-                            &observed.incarnation.identity,
-                            None::<StartContainerOptions<String>>,
-                        )
-                        .await
-                    {
-                        let after = self
-                            .create_decision(context, Some(realization_fingerprint))
-                            .await
-                            .map_err(RuntimeError::after_mutation)?;
-                        if let ExistingRealizationDecision::ReuseReady(observed) = &after {
-                            return Ok(observed.incarnation.identity.clone());
-                        }
-                        if after == ExistingRealizationDecision::Create {
-                            return Err(backend(error).after_mutation());
-                        }
-                        decision = after;
-                        continue;
-                    }
-                    return Ok(observed.incarnation.identity);
-                }
-                ExistingRealizationDecision::ReuseReady(observed) => {
+                ExistingRealizationDecision::ConvergeCreating(observed)
+                | ExistingRealizationDecision::ReuseReady(observed) => {
                     return Ok(observed.incarnation.identity);
                 }
                 ExistingRealizationDecision::ReplaceExact(observed) => {
@@ -1286,7 +1245,66 @@ impl ContainerRuntime for DockerRuntime {
                 }
             }
         }
-        Err(backend("Docker exact realization did not converge").after_mutation())
+        Err(backend("Docker exact reservation did not converge").after_mutation())
+    }
+
+    async fn activate_for_effect(
+        &self,
+        context: &ContainerRealizationContext<'_>,
+        _plan: &ContainerPlan,
+        realization_fingerprint: &pc::SandboxRealizationFingerprint,
+        prepared_locator: &str,
+    ) -> Result<String, RuntimeError> {
+        if context.effect_fence.is_none() {
+            self.docker
+                .start_container(prepared_locator, None::<StartContainerOptions<String>>)
+                .await
+                .map_err(|error| backend(error).after_mutation())?;
+            return Ok(prepared_locator.to_owned());
+        }
+        let decision = self
+            .create_decision(context, Some(realization_fingerprint))
+            .await?;
+        match decision {
+            ExistingRealizationDecision::ConvergeCreating(observed)
+                if observed.incarnation.identity == prepared_locator =>
+            {
+                let start = self
+                    .docker
+                    .start_container(
+                        &observed.incarnation.identity,
+                        None::<StartContainerOptions<String>>,
+                    )
+                    .await;
+                let after = self
+                    .create_decision(context, Some(realization_fingerprint))
+                    .await
+                    .map_err(RuntimeError::after_mutation)?;
+                match after {
+                    ExistingRealizationDecision::ReuseReady(ready)
+                        if ready.incarnation.identity == prepared_locator =>
+                    {
+                        Ok(ready.incarnation.identity)
+                    }
+                    _ => Err(start
+                        .map_or_else(backend, |()| {
+                            backend("Docker activation did not publish the prepared realization")
+                        })
+                        .after_mutation()),
+                }
+            }
+            ExistingRealizationDecision::ReuseReady(observed)
+                if observed.incarnation.identity == prepared_locator =>
+            {
+                Ok(observed.incarnation.identity)
+            }
+            ExistingRealizationDecision::Create => Err(backend(
+                "Docker prepared realization disappeared before activation",
+            )),
+            _ => Err(backend(
+                "Docker activation resolved a different or inadmissible realization",
+            )),
+        }
     }
 
     async fn recover_restore_target(

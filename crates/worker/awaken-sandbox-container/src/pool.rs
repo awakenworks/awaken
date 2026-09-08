@@ -681,7 +681,7 @@ mod tests {
             Ok(())
         }
 
-        async fn create_for_effect(
+        async fn prepare_for_effect(
             &self,
             context: &crate::ContainerRealizationContext<'_>,
             plan: &crate::ContainerPlan,

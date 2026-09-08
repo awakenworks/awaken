@@ -2867,7 +2867,7 @@ impl ContainerRuntime for FakeRuntime {
         Ok(())
     }
 
-    async fn create_for_effect(
+    async fn prepare_for_effect(
         &self,
         context: &ContainerRealizationContext<'_>,
         plan: &ContainerPlan,

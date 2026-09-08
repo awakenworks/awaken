@@ -1718,7 +1718,13 @@ pub trait ContainerRuntime: Send + Sync {
     /// to compile and may serve explicitly ephemeral callers through this port.
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError>;
 
-    async fn create_for_effect(
+    /// Reserve one exact backend object without making its workload runnable.
+    ///
+    /// The returned locator belongs to the existing stable-scope realization
+    /// authority. Production adapters must make this operation idempotent from
+    /// their labels/annotations and immutable physical incarnation; the caller
+    /// may cross additional participant boundaries before activation.
+    async fn prepare_for_effect(
         &self,
         context: &crate::ContainerRealizationContext<'_>,
         plan: &ContainerPlan,
@@ -1730,6 +1736,42 @@ pub trait ContainerRuntime: Send + Sync {
             ));
         }
         self.create(context.scope, plan).await
+    }
+
+    /// Activate the exact object returned by [`Self::prepare_for_effect`].
+    /// Implementations must re-observe the immutable realization before
+    /// starting it and may return success only when that same object is ready.
+    async fn activate_for_effect(
+        &self,
+        context: &crate::ContainerRealizationContext<'_>,
+        plan: &ContainerPlan,
+        realization_fingerprint: &pc::SandboxRealizationFingerprint,
+        prepared_locator: &str,
+    ) -> Result<String, RuntimeError> {
+        let _ = (plan, realization_fingerprint);
+        if context.effect_fence.is_some() {
+            return Err(RuntimeError::Backend(
+                "container runtime does not implement fenced realization activation".into(),
+            ));
+        }
+        Ok(prepared_locator.to_owned())
+    }
+
+    /// Direct composition of the canonical reservation and activation ports.
+    /// Session providers call the two phases explicitly when participant work
+    /// must be placed between them. This thin method exists for effect-free
+    /// direct runtime callers; it is not a crash-recovery boundary of its own.
+    async fn create_for_effect(
+        &self,
+        context: &crate::ContainerRealizationContext<'_>,
+        plan: &ContainerPlan,
+        realization_fingerprint: &pc::SandboxRealizationFingerprint,
+    ) -> Result<String, RuntimeError> {
+        let prepared = self
+            .prepare_for_effect(context, plan, realization_fingerprint)
+            .await?;
+        self.activate_for_effect(context, plan, realization_fingerprint, &prepared)
+            .await
     }
 
     async fn recover_restore_target(

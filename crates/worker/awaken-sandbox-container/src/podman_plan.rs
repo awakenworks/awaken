@@ -139,3 +139,20 @@ pub fn podman_run_argv(name: &str, plan: &ContainerPlan, rootfs: &RootfsPlan) ->
     argv.extend(plan.command.iter().cloned());
     argv
 }
+
+/// Render the same immutable Podman object as [`podman_run_argv`] without
+/// starting its workload. Keeping this as a projection of the single plan
+/// prevents reservation and activation from acquiring different mounts,
+/// limits, network policy, labels, or command.
+pub(crate) fn podman_create_argv(
+    name: &str,
+    plan: &ContainerPlan,
+    rootfs: &RootfsPlan,
+) -> Vec<String> {
+    let mut argv = podman_run_argv(name, plan, rootfs);
+    argv[0] = "create".into();
+    if argv.get(1).map(String::as_str) == Some("-d") {
+        argv.remove(1);
+    }
+    argv
+}
