@@ -1031,6 +1031,16 @@ async fn maintenance_verbs_fail_closed_except_the_legitimate_inbox_list_readback
         "http://127.0.0.1:1",
         WorkerIdentity::new("worker-local", "boot-local", 1),
     );
+    // M3 transport topology must survive the exact type erasure used by Host.
+    // Schedulers skip maintenance, but the explicit M1 calls below still reject.
+    // M4 the same erasure must not disable a genuine local store's maintenance.
+    assert!(
+        awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new()))
+            .owns_local_maintenance()
+    );
+    assert!(!queue.owns_local_maintenance());
+    let queue = awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(queue));
+    assert!(!queue.owns_local_maintenance());
     let run = RunId("run-1".into());
     let thread = ThreadId("thread-1".into());
     let _ = &run;

@@ -992,6 +992,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -config formal/tla/TerminalReconciliationScan.cfg formal/tla/TerminalReconciliationScan.tla
   python3 scripts/ci/check_formal_mutations.py --terminal-scan-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/dispatch-maintenance-scheduling" \
+    -config formal/tla/DispatchMaintenanceScheduling.cfg formal/tla/DispatchMaintenanceScheduling.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-run-cancellation" \
     -config formal/tla/SessionRunProtocolCancellation.cfg formal/tla/SessionRunProtocol.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
