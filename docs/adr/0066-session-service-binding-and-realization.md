@@ -96,6 +96,52 @@ slots against its admission relation. Progress assumes fair latest delivery and
 exact closure; provider atomicity and universal asynchronous refinement remain
 outside this evidence. Decision tables live beside the production-entry tests.
 
+## 2026-09-08 amendment: scoped execution replacement
+
+A durable Sandbox binding may outlive several Session authority generations.
+Its filesystem identity is not the lifetime of a scoped execution object: that
+object captures one Session generation and one exact Environment allocation.
+Rebuilding only the Hand around that object cannot authorize a later generation.
+Resetting its write-once authority would instead resurrect stale capabilities.
+
+The complete projection installer reuses the Environment lifecycle owner before
+installing a different generation. Same-generation renewal preserves the Resident
+and its execution binding. Replacement moves the exact Resident to
+`Retiring(RealizationRevocation)` and detaches its cached Runtime. MCP drain and
+execution-tree stop are joined; either failure retains the owner and prevents
+new proof publication. Cancellation leaves that same retirement available to the
+next lifecycle-serialized caller. Unknown physical evidence is not quiescence.
+
+On exact Ready adoption, scoped Local rebind uses the existing fenced Provider
+adoption to construct a fresh execution object over the same physical root and
+Provider-owned Memory participants. Candidate enrollment binds its new authority
+once; ordinary publication and lazy Hand startup remain unchanged. The old
+object stays closed. Namespace, unscoped Local and Container retain their existing
+physical owner; in particular, Container's non-durable creation and cleanup
+participants must not be replaced by cold reconstruction.
+
+Static ownership stays unchanged: Session root CAS owns the generation, the Host
+slot owns the process-local Environment, and the Provider owns physical resource
+identity. The added private retirement coordination extends that lifecycle; it
+does not introduce another lease, registry, resource store or recovery protocol.
+`SessionExecutionReplacement` composes the existing authority/binding model for
+two execution objects and two callers. It checks write-once capture, no old-object
+resurrection, quiescence before replacement, cancellation retention and positive
+successor admission. Unknown evidence has no eventual-completion guarantee;
+physical observer truth, Memory identity and Rust refinement are not proved by
+this bounded model. Semantic mutants and positive reachability witnesses use the
+existing TLC runner and strict gate.
+
+The adjacent SR1-SR5 Host tests exercise real scoped processes through complete
+projection installation, renewal, explicit revocation, warm generation change,
+unknown-observer failure, exact retry and foreign-binding rejection before stopping
+the legitimate predecessor. The existing Native/Codex/Claude resource
+E2E now explicitly enables the Linux scope and verifies a process-produced PID
+namespace receipt via Files, alongside default/nested cwd, Memory/File/Repository
+bytes and restart recovery. Codex/Claude deterministic peers do not establish
+real vendor credential compatibility. These rows also do not establish Windows,
+macOS, cross-machine failover or all pending-Candidate replacement schedules.
+
 ## 2026-09-01 amendment: lease-only renewal
 
 Initial assignment and desired-state progression continue to use the one

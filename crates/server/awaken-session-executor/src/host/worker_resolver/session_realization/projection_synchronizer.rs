@@ -425,6 +425,43 @@ mod tests {
         ignore = "requires Linux mount-namespace path fidelity"
     )]
     async fn claimed_ready_durable_revocation_adopts_a_fresh_hand_and_runtime() {
+        claimed_ready_durable_replacement(false, true, false).await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "required real Linux helper supplied by the portability supervision gate"]
+    async fn trusted_host_scoped_session_revocation_rebinds_execution_not_only_hand() {
+        // SR1: scoped Resident A + explicit revocation + a fresh Session epoch
+        // + exact Ready durable binding => fresh executable B, same root/bytes;
+        // A remains denied. A fresh Hand around A's closed execution binding is
+        // insufficient. This reuses DH1's production projection/receipt path.
+        claimed_ready_durable_replacement(true, true, false).await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "required real Linux helper supplied by the portability supervision gate"]
+    async fn trusted_host_scoped_session_new_epoch_replaces_resident_execution() {
+        // SR2: scoped Resident A + no explicit revocation + new Session epoch
+        // => stop A before publishing executable B; preserve the exact physical
+        // binding. This is the warm approval/resume path, distinct from SR1.
+        // Both rules assert real process admission, not merely wrapper identity.
+        claimed_ready_durable_replacement(true, false, false).await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "required real Linux helper supplied by the portability supervision gate"]
+    async fn trusted_host_scoped_session_unknown_predecessor_blocks_replacement_and_retries() {
+        // SR3: new epoch + indeterminate durable process observer => stop the
+        // exact local tree but retain A as Retiring, old lease and root bytes;
+        // do not publish a Candidate/new proof. Restore exact observer evidence
+        // under this fixture's exclusive ownership => retry reaches SR2's B.
+        claimed_ready_durable_replacement(true, false, true).await;
+    }
+
+    async fn claimed_ready_durable_replacement(scoped: bool, revoke: bool, unknown: bool) {
         use awaken_session_contract::SessionProjectionSynchronizer as _;
 
         let thread = "claimed-ready-durable-hand-rebuild";
@@ -438,6 +475,28 @@ mod tests {
                 "/bin/sh",
                 std::time::Duration::ZERO,
             );
+        #[cfg(target_os = "linux")]
+        if scoped {
+            raw_host.session_provider = crate::session_environment::SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(storage.path(), false);
+            raw_host.session_provider.install_workdir_hand(
+                Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+                crate::acp_backend::deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER")
+                    .to_string_lossy()
+                    .into_owned(),
+                std::time::Duration::ZERO,
+            );
+            raw_host
+                .session_provider
+                .install_scoped_execution(
+                    awaken_sandbox_local::LocalExecutionDeployment::new(
+                        crate::acp_backend::deployment_test_binary("AWAKEN_TEST_SCOPED_LAUNCHER"),
+                        crate::acp_backend::deployment_test_binary("AWAKEN_TEST_SCOPED_HELPER"),
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
         let host = Arc::new(raw_host.with_store_dir(storage.path()));
         let managed = managed_test_host(host.clone());
         let snapshot = test_activation(thread, "run-claimed-ready-durable").snapshot;
@@ -453,14 +512,15 @@ mod tests {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/boot-1".into(),
             epoch: 1,
-            expires_at_unix_ms: u64::MAX,
+            expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms()
+                + 60_000,
         };
         awaken_session_contract::SessionRuntime::install_session_projection(
             &managed,
             thread,
             projection,
             awaken_session_contract::SessionProjectionInstallMode::Realization {
-                lease: crate::session_slot::test_observed_lease(initial_lease),
+                lease: crate::session_slot::test_observed_lease(initial_lease.clone()),
                 prepare_session: true,
             },
         )
@@ -490,11 +550,59 @@ mod tests {
             .join("durable-root-sentinel");
         std::fs::write(&root_sentinel, b"same physical durable root")
             .expect("DH1/C2 root sentinel");
+        if scoped {
+            // SR4: same generation, later expiry => preserve A and its bound
+            // execution capability. Renewal is NOT a replacement or shutdown.
+            let mut renewed = initial_lease.clone();
+            renewed.expires_at_unix_ms += 30_000;
+            host.install_frozen_session_projection(
+                thread,
+                projection.clone(),
+                None,
+                true,
+                Some(crate::session_slot::test_observed_lease(renewed.clone())),
+            )
+            .await
+            .unwrap();
+            assert!(Arc::ptr_eq(
+                &original,
+                &host.session_environment(thread).await.unwrap()
+            ));
+            assert_eq!(binding_sink.calls(), 1, "SR4 no adoption receipt");
+            scoped_admission(&original)
+                .await
+                .expect("SR initial execution is admitted");
+        }
+        let predecessor = if scoped {
+            let mut command = awaken_provisioning_contract::Command::new([
+                "/bin/sh",
+                "-c",
+                "setsid /bin/sleep 60 & /bin/sleep 60 & printf active > scope-ready; wait",
+            ]);
+            command.cwd = "/workspace".into();
+            command.stdio = awaken_provisioning_contract::Stdio::Piped;
+            let (process, channel) = original.spawn_agent(command).await.unwrap();
+            let ready = root_sentinel
+                .parent()
+                .unwrap()
+                .join("workspace/scope-ready");
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while std::fs::read(&ready).ok().as_deref() != Some(b"active") {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(process.poll().await.unwrap().is_none());
+            Some((process, channel))
+        } else {
+            None
+        };
         let lifecycle = host
             .session_slots
             .read(thread, |slot| slot.lifecycle.clone())
             .expect("DH1 lifecycle owner");
-        {
+        if revoke {
             let _lifecycle = lifecycle.lock().await;
             assert!(
                 host.retire_session_environment_for_revocation(thread)
@@ -504,10 +612,12 @@ mod tests {
             );
         }
         assert!(
-            host.session_slots
-                .read(thread, |slot| slot.runtime.is_none()
-                    && !slot.environment_owner.is_resident())
-                .unwrap_or(false),
+            !revoke
+                || host
+                    .session_slots
+                    .read(thread, |slot| slot.runtime.is_none()
+                        && !slot.environment_owner.is_resident())
+                    .unwrap_or(false),
             "DH1/C2 revocation clears R1 and hides Retiring A"
         );
 
@@ -520,13 +630,105 @@ mod tests {
             owner: claim.owner.clone(),
             runtime_incarnation: "worker-a/boot-2".into(),
             epoch: claim.epoch,
-            expires_at_unix_ms: u64::MAX,
+            expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms()
+                + 60_000,
         };
         let directive = awaken_session_contract::SessionRealizationDirective {
             projection: projection.clone(),
             authority: crate::session_slot::test_lease_receipt(lease.clone()),
             action: awaken_session_contract::SessionRealizationAction::Complete,
         };
+        if scoped && !revoke {
+            // SR5: a newer root with a foreign binding is not retirement
+            // authority. Validate the prospective owner before any tree stop;
+            // final publication validation alone would reject too late.
+            let mut foreign = projection.clone();
+            foreign.revision.0 += 1;
+            if let awaken_session_contract::SessionEnvironmentState::Resident { binding, .. } =
+                &mut foreign.environment
+            {
+                binding.push_str("-foreign");
+            } else {
+                panic!("SR5 Resident projection")
+            }
+            assert!(
+                host.install_frozen_session_projection(
+                    thread,
+                    foreign,
+                    None,
+                    true,
+                    Some(crate::session_slot::test_observed_lease(lease.clone()))
+                )
+                .await
+                .is_err()
+            );
+            assert!(Arc::ptr_eq(
+                &original,
+                &host.session_environment(thread).await.unwrap()
+            ));
+            assert!(
+                predecessor
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .poll()
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            scoped_admission(&original)
+                .await
+                .expect("SR5 valid prior execution was not retired");
+            assert_eq!(binding_sink.calls(), 1);
+        }
+        if unknown {
+            let marker = root_sentinel
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join(format!(".{thread}.awaken-realization.json"));
+            let original_marker = std::fs::read(&marker).unwrap();
+            let mut foreign: serde_json::Value = serde_json::from_slice(&original_marker).unwrap();
+            for execution in foreign["executions"].as_array_mut().unwrap() {
+                execution["boot_id"] = serde_json::to_value([7_u8; 16]).unwrap();
+            }
+            std::fs::write(&marker, serde_json::to_vec(&foreign).unwrap()).unwrap();
+            let result = WorkerProjectionSynchronizer::for_directive(
+                host.as_ref(),
+                &directive,
+                Some(&claim),
+                Some(&snapshot),
+                true,
+                Some(&binding),
+            )
+            .synchronize_session_projection(
+                thread,
+                &projection,
+                &crate::session_slot::test_observed_lease(lease.clone()),
+                true,
+            )
+            .await;
+            assert!(
+                result.is_err(),
+                "SR3 unknown tree cannot authorize replacement"
+            );
+            host.session_slots
+                .read(thread, |slot| {
+                    assert!(matches!(&slot.environment_owner,
+                    crate::session_slot::SessionEnvironmentOwner::Retiring(retiring)
+                    if Arc::ptr_eq(&retiring.owned.environment(), &original)));
+                    assert_eq!(slot.realization_authority.lease().unwrap().epoch, 1);
+                    assert!(slot.runtime.is_none());
+                })
+                .unwrap();
+            assert_eq!(binding_sink.calls(), 1, "SR3 no Adopt receipt");
+            assert_eq!(
+                std::fs::read(&root_sentinel).unwrap(),
+                b"same physical durable root"
+            );
+            std::fs::write(&marker, original_marker).unwrap();
+        }
         WorkerProjectionSynchronizer::for_directive(
             host.as_ref(),
             &directive,
@@ -549,6 +751,26 @@ mod tests {
             .await
             .expect("DH1/E1-E2 fresh Resident Environment B");
         let rebuilt_hand = rebuilt.tool_executor();
+        if scoped {
+            assert!(
+                predecessor
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .poll()
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "SR predecessor tree stops before successor execution"
+            );
+            assert!(
+                scoped_admission(&original).await.is_err(),
+                "SR old execution stays denied"
+            );
+            scoped_admission(&rebuilt)
+                .await
+                .expect("SR fresh execution must be admitted");
+        }
         assert!(!Arc::ptr_eq(&original, &rebuilt), "DH1/E2 fresh wrapper");
         assert!(
             !Arc::ptr_eq(&original_hand, &rebuilt_hand),
@@ -556,6 +778,10 @@ mod tests {
         );
         assert_eq!(rebuilt.handle(), original_handle, "DH1/E3 typed handle");
         assert!(root_sentinel.exists(), "DH1/E3 root sentinel survives");
+        assert_eq!(
+            std::fs::read(&root_sentinel).unwrap(),
+            b"same physical durable root"
+        );
         assert_eq!(binding_sink.calls(), 2, "DH1/E1 one canonical Adopt");
 
         let effective_model_ref = snapshot
@@ -602,6 +828,21 @@ mod tests {
                 .unwrap_or(false),
             "DH1/E4 fresh Runtime and Resident are published together"
         );
+    }
+
+    async fn scoped_admission(
+        environment: &crate::session_environment::SessionEnvironment,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        let mut command = awaken_provisioning_contract::Command::new(["/usr/bin/true"]);
+        command.cwd = "/workspace".into();
+        command.stdio = awaken_provisioning_contract::Stdio::Piped;
+        let (process, _channel) = environment.spawn_agent(command).await?;
+        assert_eq!(
+            process.wait().await?.code,
+            Some(0),
+            "real scoped process exits"
+        );
+        Ok(())
     }
 
     /// Reuse the production provider/create owner to establish the one legacy

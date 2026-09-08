@@ -1567,6 +1567,22 @@ impl crate::SharedHost {
         // replay revalidates the exact aggregate transition. Requirements are
         // staged here, but only the physical transition body may publish the
         // active manifest.
+        #[cfg(target_os = "linux")]
+        if let Some(proof) = realization_lease.as_ref() {
+            // Reject a foreign durable owner BEFORE retiring a valid execution
+            // object. Publication still revalidates this same canonical kernel.
+            self.session_slots.update(thread, |slot| {
+                let newer = slot.validate_projection_receipt(&receipt)?;
+                slot.projected_environment_owner(
+                    thread,
+                    &projection.workspace_id,
+                    &projection.environment,
+                    newer,
+                )
+                .map(|_| ())
+            })?;
+            self.retire_replaced_scoped_execution(thread, proof).await?;
+        }
         let preparation = if resource_mode.synchronizes() && projection.resource_revision > 0 {
             realization_lease
                 .as_ref()
