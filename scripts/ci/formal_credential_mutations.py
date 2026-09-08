@@ -37,6 +37,33 @@ def check_acp_binding_model_mutants(tlc_jar: Path) -> None:
     print("ACP binding batches: 3/3 mutants killed; 3/3 positive witnesses reachable")
 
 
+def check_acp_observation_model_mutants(tlc_jar: Path) -> None:
+    # C1 preserve a previous refresh's probe; C2 repeat one host probe for each
+    # Workspace; C3 let credential cardinality decide protocol cardinality;
+    # C4 lend one active source's login to a disabled reference. All must fail
+    # the named independent invariant, not parsing/timeout. Four witnesses guard
+    # against inert projections, mandatory-login coupling and unreachable refresh.
+    source = (ROOT / "formal/tla/AcpObservationRefresh.tla").read_text()
+    config = (ROOT / "formal/tla/AcpObservationRefresh.cfg").read_text()
+    header = "SPECIFICATION Spec\n"
+    mutations = []
+    for anchor, replacement, invariant in (
+        ("cacheGeneration' = 0", "cacheGeneration' = cacheGeneration", "CapabilityUsesThisRefresh"),
+        ("probes' = 1", "probes' = Cardinality(batchEnabled)", "OneHostProbePerRefresh"),
+        ("rows' = IF selected THEN 1 ELSE 0", "rows' = IF selected THEN Cardinality(batchEnabled) ELSE 0",
+         "OneCapabilityRowPerSelectedBackend"),
+        ("THEN batchEnabled ELSE {}", "THEN References ELSE {}", "CredentialProjectionNeverWidens"),
+    ):
+        if source.count(anchor) != 1:
+            raise SystemExit(f"ACP observation mutation anchor drifted: {invariant}")
+        mutations.append((source.replace(anchor, replacement), header + f"INVARIANTS {invariant}\n", invariant))
+    for witness in ("NoSharedActiveProjection", "NoProtocolWithoutBindings", "NoUnselectedBackend",
+                    "NoSecondRefreshMissingCli"):
+        mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
+    check_tlc_model_mutations(tlc_jar, "AcpObservationRefresh", source, config, mutations)
+    print("ACP observation refresh: 4/4 mutants killed; 4/4 positive witnesses reachable")
+
+
 def check_mcp_credential_model_mutants(tlc_jar: Path) -> None:
     # Cause/effect table (the model owns the relation, not this runner):
     # M1 wrong requested generation, M2 wrong source revision, M3 call after

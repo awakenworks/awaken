@@ -915,6 +915,13 @@ Implemented consolidation evidence:
   atomic, expiring heartbeat batch; it retains the prior deadlines on a hard
   refresh failure and does not store the changing fingerprint in the immutable
   Worker manifest;
+- within that batch, host login is probed once per CLI and projected onto each
+  exact Workspace credential reference; disabled references remain disabled.
+  Protocol negotiation and publication occur once per configured backend, not
+  once per credential row. The selected Worker profile owns those routes, so
+  unselected installed CLIs are excluded and a Provider-owned route does not
+  disappear merely because no host-login binding is active. Each credential
+  refresh invalidates the previous host-probe cache before capability refresh;
 - successful AllInOne heartbeats feed one observation-fingerprint gate; split
   Control reads the same Coordinator authority through its authenticated private
   service boundary and polls that gate every five seconds; changes invoke the

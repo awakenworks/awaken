@@ -230,6 +230,15 @@ type checking are valuable executable evidence, but are not formal proofs.
   Concurrent-reader and generation-exhaustion tests exercise the actual cache;
   std RwLock and Tokio integration remain executable/TCB evidence, not Kani or
   universal implementation refinement.
+  `AcpObservationRefresh.tla` separately checks the ACP adapter projection:
+  one backend, two references and two serialized refreshes, with mutable host
+  state between steps. Four mutants reject per-Workspace duplicate probes,
+  credential-derived protocol cardinality, cross-reference login borrowing and
+  cross-refresh cached evidence; four witnesses cover useful shared login,
+  protocol without a login binding, unselected routes and a missing CLI on the
+  second refresh. Rust rows cross two CLIs, all three-binding status combinations,
+  negotiation failures and actual cache refresh. This does not prove external
+  revocation, per-use revalidation, concurrent custom consumers or Rust refinement.
 - ACP WorkerLocal binding extension validates the complete input batch and
   publishes it under the same resolver mutex. Rejection cannot leak a prefix
   insertion or status update. `AcpLocalBindingBatch.tla` covers two writers,
