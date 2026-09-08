@@ -46,6 +46,7 @@ import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 import { availablePort, FAKE_KEY, startUpstream, initializeE2EInstallation, waitForSessionEventReceipt, stopServer as stop, hardKillServer } from './harness.mjs';
 import { installHostResourceFixture, verifyAgentResources } from './fixtures/trusted_host_resources.mjs';
 import { resolveAcpLiveProfile } from './acp_live_profile.mjs';
+import { assertWorkerLocalCredentialCustody } from './fixtures/worker_local_credentials.mjs';
 
 // One selection drives deployment, companion features AND the resource oracle.
 // Real host login cannot silently fall back to unsupervised Linux execution.
@@ -189,6 +190,16 @@ async function startHostLoginProfile() {
   };
   child = launch();
   const baseURL = `http://127.0.0.1:${port}`;
+  let credentialBaseline;
+  const verifyCredentials = () => {
+    // C1 this fresh installation selects one backend-owned login, not a managed
+    // Native provider. C2 startup/restart/resource completion. C1+C2 => one
+    // unchanged WorkerLocal locator, zero material refs and sealed secrets.
+    // Native intentionally imports a fixture Vault key and is not this rule.
+    if (!native) credentialBaseline = assertWorkerLocalCredentialCustody(
+      path.join(temp, 'data', 'credential.db'), runtime, credentialBaseline,
+    );
+  };
     const apiKey = await waitReady(child, baseURL, path.join(temp, 'data', 'admin-token'));
     if (!native) await waitForVerifiedAcpCapability(baseURL, runtime, {
       timeoutMs: 60_000,
@@ -196,6 +207,7 @@ async function startHostLoginProfile() {
       requireAvailableLogin: true,
       apiKey,
     });
+    verifyCredentials();
 
     if (native) {
       // Native uses the production provider import and real Messages transport,
@@ -222,7 +234,7 @@ async function startHostLoginProfile() {
     assert.equal(result.response.status, 200, JSON.stringify(result.value));
     result = await request(baseURL, apiKey, 'POST', `/v1/config/agents/${agent}/publish`);
     assert.equal(result.response.status, 200, JSON.stringify(result.value));
-    return { baseURL, apiKey, agent, temp, restart: async ({ crash = false } = {}) => {
+    return { baseURL, apiKey, agent, temp, verifyCredentials, restart: async ({ crash = false } = {}) => {
       if (crash) await hardKillServer(child, 'TrustedHost live Session');
       else await stop(child);
       child = launch();
@@ -230,6 +242,7 @@ async function startHostLoginProfile() {
       if (!native) await waitForVerifiedAcpCapability(baseURL, runtime, {
         timeoutMs: 60_000, pollMs: 200, requireAvailableLogin: true, apiKey,
       });
+      verifyCredentials();
     }, cleanup: async () => {
       await stop(child);
       if (upstream) await upstream.close();
@@ -337,6 +350,8 @@ try {
       request: (method, route, body) =>
         request(deployment.baseURL, deployment.apiKey, method, route, body),
     });
+    deployment.verifyCredentials();
+    if (!native) console.log(`WORKER LOCAL CREDENTIAL CUSTODY PASS: ${runtime}, startup/restarts/resources`);
   }
 } finally {
   await deployment.cleanup();
