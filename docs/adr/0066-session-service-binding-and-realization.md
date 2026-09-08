@@ -34,19 +34,19 @@ both local and remote adapters.
 
 ## Durable structure
 
-Frozen network restrictions use `SessionNetworkPolicy` in the Session contract
-as their single algebra owner. `normalized` owns trimming, ASCII case folding,
-deduplication and blank removal; `safe_intersection` consumes that canonical
-form instead of repeating those rules. Profiled admission meets the Environment
-policy with the request restriction before layout validation and root creation.
-Two blank-only allowlists therefore freeze `None`, never `Allowlist([""])`.
-The Host still projects the frozen fact into the existing provisioning contract;
-it does not reconstruct or widen authority during realization or replay.
+Frozen network restrictions use `SessionNetworkPolicy` as their single algebra
+owner. `normalized` trims and ASCII-folds host names, removes blanks, then sorts
+and deduplicates the returned Vec. `safe_intersection` filters the canonical
+left list; both paths share the empty-list-to-`None` constructor. Two blank-only
+allowlists therefore freeze `None`. The public enum and wire format are unchanged.
+Profiled admission meets Environment and request restrictions before layout
+validation and root creation. The Host projects that frozen fact during
+realization and replay without reconstructing or widening authority.
 
-The public enum and wire format remain unchanged. The abstract set algebra is
-proved in `SessionNetworkPolicyProof.tla`; production property tests and SQLite
-root readback cover the concrete regression. This is not universal Rust
-refinement, a DNS specification, or proof of provider network enforcement.
+The [verification boundaries](../../formal/VERIFICATION_BOUNDARIES.md) and
+[obligation ledger](../../formal/coverage.json) own the abstract sequence proofs
+and executable cross-checks. Universal Rust String/Vec refinement, DNS semantics
+and provider network enforcement remain outside these proofs.
 
 ```text
 PersistedSession

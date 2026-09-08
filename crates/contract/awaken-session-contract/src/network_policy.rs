@@ -26,18 +26,17 @@ impl SessionNetworkPolicy {
             Self::Unrestricted => Self::Unrestricted,
             Self::None => Self::None,
             Self::Allowlist { hosts } => {
-                let hosts = hosts
+                let mut hosts = hosts
                     .iter()
                     .map(|host| host.trim().to_ascii_lowercase())
                     .filter(|host| !host.is_empty())
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .into_iter()
                     .collect::<Vec<_>>();
-                if hosts.is_empty() {
-                    Self::None
-                } else {
-                    Self::Allowlist { hosts }
-                }
+                // BTreeSet::from_iter already sorts a temporary Vec before
+                // building a tree. Keep that canonical Vec directly instead
+                // of constructing and consuming an intermediate tree.
+                hosts.sort();
+                hosts.dedup();
+                Self::from_canonical_hosts(hosts)
             }
         }
     }
@@ -55,11 +54,26 @@ impl SessionNetworkPolicy {
                     .into_iter()
                     .filter(|host| right.binary_search(host).is_ok())
                     .collect::<Vec<_>>();
-                Self::Allowlist { hosts }.normalized()
+                // Filtering the canonical left list preserves its order,
+                // uniqueness and spelling; only the empty-result rule remains.
+                Self::from_canonical_hosts(hosts)
             }
         }
     }
+
+    /// Both callers already own sorted, unique, nonblank canonical host names.
+    /// Keep the empty allowlist's sole representation at this one boundary.
+    fn from_canonical_hosts(hosts: Vec<String>) -> Self {
+        if hosts.is_empty() {
+            Self::None
+        } else {
+            Self::Allowlist { hosts }
+        }
+    }
 }
+
+#[cfg(test)]
+mod collection_tests;
 
 #[cfg(test)]
 mod tests {
