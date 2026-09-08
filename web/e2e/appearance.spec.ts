@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 // Agents integration table: legacy explicit preference -> prepaint migration;
 // refresh -> same canonical preference; selecting system -> OS updates remain live.
+// Pointer density comes from the family owner at every viewport.
 // Chinese + narrow chrome -> visible operable appearance control with bounded layout.
 test("Agents migrates appearance and keeps the Chinese mobile chrome usable", async ({ page }) => {
   await page.addInitScript(() => {
@@ -25,6 +26,8 @@ test("Agents migrates appearance and keeps the Chinese mobile chrome usable", as
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await page.setViewportSize({ width: 360, height: 780 });
   await expect(appearance).toBeVisible();
+  expect(await appearance.evaluate((node) => getComputedStyle(node).getPropertyValue("--ui-control-height-md").trim()))
+    .toBe(await page.evaluate(() => matchMedia("(pointer: coarse)").matches ? "44px" : "34px"));
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: "test-results/agents-appearance-mobile-zh.png", fullPage: true });
 });

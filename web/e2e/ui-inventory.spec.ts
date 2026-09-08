@@ -51,7 +51,8 @@ for (const item of NAV) {
   }
 }
 
-test("Agent configuration exposes every controllable capability by user intent", async ({ page }) => {
+test("Agent configuration exposes every controllable capability by user intent", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/w/default/agents/new");
   await expect(page.getByRole("button", { name: "Check draft", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Save draft", exact: true })).toBeVisible();
@@ -64,6 +65,12 @@ test("Agent configuration exposes every controllable capability by user intent",
   await expect(page.getByLabel("Display name", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Task sent to the new Session")).toBeVisible();
   await expect(page.getByLabel("Environment for this run")).toBeVisible();
+  // The existing UI inventory also owns the exact editor capture: real rendered
+  // controls, controlled local data, no fabricated interface or production claim.
+  await expect(page.locator("main .ui-skeleton-bar, main .ui-state--loading")).toHaveCount(0);
+  await testInfo.attach("agent-editor-desktop.png", {
+    body: await page.screenshot({ fullPage: true }), contentType: "image/png",
+  });
 
   await page.getByRole("tab", { name: "Build", exact: true }).click();
   await page.getByRole("tab", { name: "Instructions", exact: true }).click();
