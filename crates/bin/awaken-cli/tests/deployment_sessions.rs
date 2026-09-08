@@ -38,12 +38,15 @@ async fn deployment_run_creates_session_and_executes_initial_events() {
     // C1 published Agent + valid Deployment -> Agent latest version is frozen;
     // C2 manual run -> ordinary Session with Deployment id;
     // C3 initial user Event -> ordinary Event executor commits the model response.
-    // C4 lifecycle admission reconciles Resources on the default Tokio worker
-    // stack. Effects: E1-E3 are the respective durable results above; E4 the
-    // complete production recovery/admission chain returns without aborting its
-    // worker for stack exhaustion. K1 the sole lifecycle recovery cycle enters
-    // through a production task boundary, never a test-only stack override.
-    // D1: C1+C2+C3+C4 -> E1+E2+E3+E4. The deterministic router owns an explicit
+    // C4 a projection read may observe the exact committed-prefix conflict;
+    // C5 lifecycle admission reconciles Resources on the default Tokio worker
+    // stack. Effects: E1-E3 are the respective durable results above; E4 retries
+    // only the unchanged GET; E5 the complete production recovery/admission chain
+    // returns without aborting its worker for stack exhaustion. K1 the sole
+    // lifecycle recovery cycle enters
+    // through a production task boundary, never a test-only stack override; K2
+    // C4 retries only the unchanged GET. D1: C1+C2+C3+C4+C5 -> E1+E2+E3+E4+E5.
+    // The deterministic router owns an explicit
     // local sandbox, independent of optional host capabilities such as bwrap.
     let app = build_all_in_one_router_with_model(Arc::new(EchoModel), "echo").await;
     let (status, agent) = call(
@@ -91,25 +94,25 @@ async fn deployment_run_creates_session_and_executes_initial_events() {
     assert_eq!(status, StatusCode::OK, "C2");
     assert_eq!(session["deployment_id"], deployment_id);
 
-    let mut observed = None;
-    for _ in 0..200 {
-        let (status, events) = call(
-            &app,
-            "GET",
-            &format!("/v1/sessions/{session_id}/events"),
-            None,
-        )
-        .await;
-        if status == StatusCode::OK
-            && events["data"].as_array().unwrap().iter().any(|event| {
+    let uri = format!("/v1/sessions/{session_id}/events");
+    let observed = awaken_protocol_managed::test_support::wait_for_session_events(
+        None,
+        std::time::Duration::from_secs(10),
+        "Deployment initial Event response",
+        || async {
+            let (status, events) = call(&app, "GET", &uri, None).await;
+            (status.as_u16(), events)
+        },
+        |events| {
+            events.iter().any(|event| {
                 event["type"] == "agent.message"
                     && event["content"][0]["text"] == "Echo: verify release"
             })
-        {
-            observed = Some(events);
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-    }
-    assert!(observed.is_some(), "C3 initial Event eventually completes");
+        },
+    )
+    .await;
+    assert!(
+        observed["data"].is_array(),
+        "C3 initial Event eventually completes"
+    );
 }

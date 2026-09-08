@@ -24,12 +24,12 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-async fn json_call(
+async fn raw_json_call(
     app: &Router,
     method: &str,
     uri: &str,
     body: serde_json::Value,
-) -> serde_json::Value {
+) -> (StatusCode, serde_json::Value) {
     let req = Request::builder()
         .method(method)
         .uri(uri)
@@ -41,9 +41,20 @@ async fn json_call(
         })
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "{method} {uri}");
+    let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    serde_json::from_slice(&bytes).unwrap()
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+async fn json_call(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: serde_json::Value,
+) -> serde_json::Value {
+    let (status, value) = raw_json_call(app, method, uri, body).await;
+    assert_eq!(status, StatusCode::OK, "{method} {uri}: {value}");
+    value
 }
 
 async fn create_session(app: &Router) -> String {
@@ -63,18 +74,34 @@ async fn create_session(app: &Router) -> String {
 }
 
 async fn send_message(app: &Router, session: &str, text: &str) -> serde_json::Value {
-    json_call(
+    let receipt = json_call(
         app,
         "POST",
         &format!("/v1/sessions/{session}/events"),
         serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": text }] }] }),
     )
     .await;
-    json_call(
-        app,
-        "GET",
-        &format!("/v1/sessions/{session}/events"),
-        serde_json::Value::Null,
+    let uri = format!("/v1/sessions/{session}/events");
+    let app = app.clone();
+    awaken_protocol_managed::test_support::wait_for_session_events(
+        Some(&receipt),
+        std::time::Duration::from_secs(90),
+        "live Skill Run reply",
+        move || {
+            let app = app.clone();
+            let uri = uri.clone();
+            async move {
+                let (status, events) =
+                    raw_json_call(&app, "GET", &uri, serde_json::Value::Null).await;
+                (status.as_u16(), events)
+            }
+        },
+        |events| {
+            events.iter().any(|event| event["type"] == "agent.message")
+                && events
+                    .iter()
+                    .any(|event| event["type"] == "session.status_idle")
+        },
     )
     .await
 }

@@ -1,5 +1,9 @@
 //! Explicit test-only startup for the split Environment owners.
 
+#[path = "test_support/managed_event_observer.rs"]
+mod managed_event_observer;
+pub use managed_event_observer::wait_for_session_events;
+
 use std::sync::Arc;
 
 use awaken_environment_execution_application::{
