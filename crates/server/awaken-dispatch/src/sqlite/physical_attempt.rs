@@ -7,6 +7,7 @@ struct PersistedAttemptFacts {
     lease_until: Option<i64>,
     active_owner: Option<String>,
     active_epoch: Option<i64>,
+    retired_epoch: i64,
 }
 
 impl SqliteDispatchStore {
@@ -26,7 +27,7 @@ impl SqliteDispatchStore {
                 .query_row(
                     &format!(
                         "SELECT status, lease_owner, lease_epoch, lease_until, \
-                         active_attempt_owner, active_attempt_epoch \
+                         active_attempt_owner, active_attempt_epoch, retired_attempt_epoch \
                          FROM {p}_dispatch WHERE run_id = ?1"
                     ),
                     params![claim.run_id.0],
@@ -38,6 +39,7 @@ impl SqliteDispatchStore {
                             lease_until: row.get(3)?,
                             active_owner: row.get(4)?,
                             active_epoch: row.get(5)?,
+                            retired_epoch: row.get(6)?,
                         })
                     },
                 )
@@ -52,7 +54,9 @@ impl SqliteDispatchStore {
                 .active_epoch
                 .map(|value| durable_u64("dispatch attempt epoch", value))
                 .transpose()?;
-            let live = current.status == "running"
+            let retired_epoch = durable_u64("retired attempt epoch", current.retired_epoch)?;
+            let live = awaken_dispatch_contract::attempt_epoch_is_open(claim.epoch, retired_epoch)
+                && current.status == "running"
                 && current.lease_owner.as_deref() == Some(&claim.owner)
                 && persisted_epoch == claim.epoch
                 && current

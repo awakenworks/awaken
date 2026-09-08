@@ -82,6 +82,7 @@ struct Row {
     /// part of the Dispatch claim aggregate and deliberately survives a lease
     /// reclaim until that predecessor acknowledges quiescence.
     active_attempt: Option<RunClaim>,
+    retired_attempt_epoch: u64,
 }
 
 fn guarded_claim_row(
@@ -763,6 +764,7 @@ fn enqueue_new_local(
             credential_bindings: Vec::new(),
             credential_receipts: Vec::new(),
             active_attempt: None,
+            retired_attempt_epoch: 0,
         },
     );
     state.order.push(run_id);
@@ -828,7 +830,10 @@ impl MemoryDispatchStore {
                 && peer.request.thread_id() == row.request.thread_id()
                 && peer.active_attempt.is_some()
         });
-        let current = row.state == DispatchState::Leased
+        let current = awaken_dispatch_contract::attempt_epoch_is_open(
+            claim.epoch,
+            row.retired_attempt_epoch,
+        ) && row.state == DispatchState::Leased
             && row.lease_epoch == claim.epoch
             && row
                 .lease
@@ -1514,6 +1519,7 @@ impl DispatchQueue for MemoryDispatchStore {
         let (transition, outcome) = crate::dispatch::decide_physical_attempt_finish(slot)?;
         if transition == PhysicalAttemptTransition::Clear {
             row.active_attempt = None;
+            row.retired_attempt_epoch = claim.epoch;
         }
         Ok(outcome)
     }

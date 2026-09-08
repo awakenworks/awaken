@@ -40,6 +40,27 @@ struct BlockingCommit {
     release: tokio::sync::Notify,
 }
 
+#[tokio::test]
+async fn postgres_returned_attempt_epoch_is_not_reused() {
+    // Execute shared R1-R6 with PostgreSQL's own transaction clock. An explicit
+    // AWAKEN_TEST_DATABASE_URL makes database unavailability fail this gate.
+    let Some(pool) = harness::schema_pool("t_pg_attempt_retirement").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .unwrap();
+    harness::attempt_retirement::assert_retirement(&store, 0).await;
+    // R7 SQL bypass cannot reinstall an already retired epoch, even if a caller
+    // skips the application reducer. The named row belongs only to this test.
+    let error = sqlx::query("UPDATE runtime_dispatch SET active_attempt_owner = 'stale', active_attempt_epoch = retired_attempt_epoch WHERE run_id = 'retirement'")
+        .execute(&pool).await.unwrap_err();
+    assert_eq!(
+        error.as_database_error().unwrap().code().as_deref(),
+        Some("23514")
+    );
+}
+
 #[async_trait::async_trait]
 impl CommitCoordinator for BlockingCommit {
     async fn commit(&self, _commit: ThreadCommit) -> Result<CommitRecord, CommitError> {
