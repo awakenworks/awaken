@@ -404,7 +404,7 @@ async fn create_session(
         None => Box::pin(state.create_session(req, workspace_id)).await,
     }
     .map_err(error_response)?;
-    let (response_headers, body) = versioned_session_response(&state, session).await?;
+    let (response_headers, body) = versioned_session_response(&state, &session.id)?;
     Ok((StatusCode::OK, response_headers, body))
 }
 
@@ -454,17 +454,15 @@ async fn retrieve_session(
     // root-owned aggregate status readable: Events GET remains unhealthy, while
     // a terminal root still disables and a known nonterminal root can authorize
     // only the protocol's existing pure-Interrupt recovery path.
-    let session = state.get_session(&id).map_err(error_response)?;
-    versioned_session_response(&state, session).await
+    versioned_session_response(&state, &id)
 }
 
-async fn versioned_session_response(
+fn versioned_session_response(
     state: &ManagedState,
-    session: Session,
+    session_id: &str,
 ) -> Result<(HeaderMap, Json<Session>), WireErr> {
-    let revision = state
-        .session_revision(&session.id)
-        .await
+    let (session, revision) = state
+        .get_session_with_revision(session_id)
         .map_err(error_response)?;
     Ok(versioned_session_response_at_revision(session, revision))
 }
@@ -559,7 +557,7 @@ async fn update_session(
         Some(value) => awaken_session_application::SessionFieldUpdate::Replace(value),
         None => awaken_session_application::SessionFieldUpdate::Clear,
     });
-    let (session, command_revision) = state
+    let (session, response_revision) = state
         .update_session(
             &id,
             awaken_session_application::SessionUpdateCommand {
@@ -589,7 +587,7 @@ async fn update_session(
         .map_err(error_response)?;
     Ok(versioned_session_response_at_revision(
         session,
-        command_revision,
+        response_revision,
     ))
 }
 

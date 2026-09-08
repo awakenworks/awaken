@@ -371,6 +371,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness session_root_receipt_selects_candidate_only_for_applied_revision \
     --harness environment_owner_topology_is_exact_and_frozen \
     --harness only_an_applied_awaited_create_may_enter_post_create_effects \
+    --harness nonterminal_control_failures_only_replay_the_durable_create_root \
     --harness session_recovery_backoff_is_bounded_monotonic_and_saturating \
     --harness terminal_session_never_enters_ordinary_resource_reconciliation \
     --harness dependency_wake_never_postpones_the_single_existing_deadline

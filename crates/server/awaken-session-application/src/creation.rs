@@ -7,7 +7,7 @@
 use awaken_session_contract::{
     CompiledSessionCreation, IdempotencyRecord, PersistedSession, RunError, SessionBudgetState,
     SessionCreateResult, SessionCreationIntent, SessionExecutionState, SessionMcpAttachmentSet,
-    SessionMutationPayload, SessionToolConfiguration,
+    SessionMutationPayload, SessionRealizationControlDisposition, SessionToolConfiguration,
 };
 
 use super::{SessionApplication, SessionMutationError, SessionRealizationError};
@@ -29,6 +29,29 @@ enum SessionCreateEffectPlan {
     ContinueAppliedRealization,
     AcceptAppliedRoot,
     ReturnDurableReplay,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionCreateControlFailurePlan {
+    ReplayDurableRootAndWake,
+    FailTerminal,
+}
+
+/// Reuse the contract-owned disposition instead of teaching create another
+/// list of retryable control variants.
+#[must_use]
+const fn session_create_control_failure_plan(
+    disposition: SessionRealizationControlDisposition,
+) -> SessionCreateControlFailurePlan {
+    match disposition {
+        SessionRealizationControlDisposition::NotReady
+        | SessionRealizationControlDisposition::Retryable => {
+            SessionCreateControlFailurePlan::ReplayDurableRootAndWake
+        }
+        SessionRealizationControlDisposition::Terminal => {
+            SessionCreateControlFailurePlan::FailTerminal
+        }
+    }
 }
 
 /// Close the only post-create effect gate over the repository's typed receipt.
@@ -85,6 +108,29 @@ mod create_effect_gate_verification {
         if receipt == SessionCreateReceiptKind::Replayed {
             assert_eq!(plan, SessionCreateEffectPlan::ReturnDurableReplay);
         }
+    }
+
+    #[kani::proof]
+    fn nonterminal_control_failures_only_replay_the_durable_create_root() {
+        // Causes: C1 contract disposition is NotReady/Retryable/Terminal.
+        // Effects: E1 replay exact receipt and wake recovery; E2 preserve the
+        // terminal failure path. The closed table proves no nonterminal control
+        // disposition can reach cleanup and no terminal disposition is accepted.
+        //
+        // | Rule | Disposition | Effect |
+        // |---|---|---|
+        // | P1 | NotReady or Retryable | E1 |
+        // | P2 | Terminal | E2 |
+        let disposition = match kani::any::<u8>() % 3 {
+            0 => SessionRealizationControlDisposition::NotReady,
+            1 => SessionRealizationControlDisposition::Retryable,
+            _ => SessionRealizationControlDisposition::Terminal,
+        };
+        let plan = session_create_control_failure_plan(disposition);
+        assert_eq!(
+            plan == SessionCreateControlFailurePlan::ReplayDurableRootAndWake,
+            disposition != SessionRealizationControlDisposition::Terminal
+        );
     }
 }
 
@@ -441,17 +487,62 @@ impl SessionApplication {
         persisted = match realized {
             Ok(session) => session,
             Err(error) => {
-                let _ = self
-                    .release_terminal_resources(&owner_scope, &session_id)
+                let recoverable_control = matches!(
+                    &error,
+                    SessionRealizationError::Control(control)
+                        if session_create_control_failure_plan(control.disposition())
+                            == SessionCreateControlFailurePlan::ReplayDurableRootAndWake
+                );
+                // Cleanup authority comes from the current durable execution
+                // state, never from an effect error or a control-error label.
+                // The accepting replay exposes that state without converting an
+                // ActivationFailed root into a transport-only tombstone.
+                let current = self
+                    .replay_accepted_session_create(&owner_scope, &session_id, &idempotency)
                     .await;
+                match current {
+                    Ok(Some(session)) if session.execution.is_terminal() => {
+                        let _ = self
+                            .release_terminal_resources(&owner_scope, &session_id)
+                            .await;
+                    }
+                    Ok(Some(session)) if recoverable_control => {
+                        self.wake_lifecycle_supervisor();
+                        return Ok(session);
+                    }
+                    Ok(Some(_)) => {
+                        // The root still owns unfinished physical responsibility.
+                        // Keep it intact and wake the sole lifecycle driver, but
+                        // retain the original fail-closed effect/control result.
+                        self.wake_lifecycle_supervisor();
+                    }
+                    Ok(None) => {}
+                    Err(replay_error) => return Err(replay_error),
+                }
                 return Err(SessionCreationError::realization(error));
             }
         };
 
-        persisted = self
+        persisted = match self
             .commit_session_snapshot(&owner_scope, persisted, "activate", Vec::new())
             .await
-            .map_err(SessionCreationError::mutation)?;
+        {
+            Ok(session) => session,
+            Err(SessionMutationError::Conflict) => {
+                // The realization is complete, so a concurrent root writer (or
+                // a lost acknowledgement from this final CAS) cannot invalidate
+                // the create receipt. Return the exact receipt's current root
+                // instead of exposing a retry-unsafe failed POST.
+                let Some(session) = self
+                    .replay_session_create(&owner_scope, &session_id, &idempotency)
+                    .await?
+                else {
+                    return Err(SessionCreationError::Conflict);
+                };
+                validated_create_replay(session, completion)?
+            }
+            Err(error) => return Err(SessionCreationError::mutation(error)),
+        };
 
         // The aggregate is already the authoritative dispatch intent. An
         // ambiguous create failure here could induce a duplicate client create;

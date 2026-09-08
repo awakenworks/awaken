@@ -3,16 +3,14 @@
 use super::*;
 
 const DEPLOYMENT_RUN_ID: &str = "awaken.deployment_run_id";
-const DEPLOYMENT_LAUNCH_FINGERPRINT: &str = "awaken.deployment_launch_fingerprint";
 
 impl ManagedState {
     /// Create or replay the one Session owned by a durable DeploymentRun.
     ///
     /// The DeploymentRun is already the command identity, so this seam derives a
-    /// stable Session id and stores the exact launch fingerprint in the ordinary
-    /// Session aggregate. No launch receipt table or remote-only state machine is
-    /// needed. A response-loss retry therefore reads the canonical Session; reuse
-    /// of the run id with another payload or owner fails closed.
+    /// stable Session id and lowers the exact launch fingerprint into the
+    /// repository's existing create receipt. No metadata identity, launch table,
+    /// or remote-only state machine is needed.
     pub async fn create_deployment_session_with_initial_events(
         self: &Arc<Self>,
         deployment_run_id: &str,
@@ -29,73 +27,32 @@ impl ManagedState {
             "sesn_{}",
             awaken_session_contract::stable_fingerprint(&("deployment-run", deployment_run_id))
         );
-        if let Some(session) = self
-            .replay_deployment_session(
-                &session_id,
-                deployment_run_id,
-                launch_fingerprint,
-                &workspace_id,
-            )
-            .await?
+        let idempotency = awaken_session_contract::IdempotencyRecord {
+            key: format!("managed:deployment-session:{session_id}"),
+            payload_hash: launch_fingerprint.to_owned(),
+        };
+        if let Some(persisted) = self
+            .application
+            .replay_session_create(&workspace_id, &session_id, &idempotency)
+            .await
+            .map_err(Self::map_create_replay_error)?
         {
-            return Ok(session);
+            return self.project_replayed_session(&session_id, persisted).await;
         }
 
         req.metadata
             .insert(DEPLOYMENT_RUN_ID.into(), deployment_run_id.to_owned());
-        req.metadata.insert(
-            DEPLOYMENT_LAUNCH_FINGERPRINT.into(),
-            launch_fingerprint.to_owned(),
-        );
         // Deployment initial Events have the wider official union (including
         // `system.message`) while public Session creation intentionally admits
         // only User messages and Outcomes. The same create owner validates and
         // installs this lowered union in the original Session root.
         let initial_events = std::mem::take(&mut req.initial_events);
-        let created = self
-            .create_session_with_identity_from(
-                req,
-                Some(workspace_id.clone()),
-                Some(session_id.clone()),
-                Some(initial_events),
-            )
-            .await;
-        match created {
-            Ok(session) => Ok(session),
-            Err(error) => {
-                // A peer may have won the deterministic Session insert between
-                // the read above and our create. Re-read only the same canonical
-                // aggregate and accept it only when owner and payload match.
-                if let Some(session) = self
-                    .replay_deployment_session(
-                        &session_id,
-                        deployment_run_id,
-                        launch_fingerprint,
-                        &workspace_id,
-                    )
-                    .await?
-                {
-                    return Ok(session);
-                }
-                Err(error)
-            }
-        }
-    }
-
-    async fn replay_deployment_session(
-        self: &Arc<Self>,
-        session_id: &str,
-        deployment_run_id: &str,
-        launch_fingerprint: &str,
-        workspace_id: &str,
-    ) -> Result<Option<Session>, StateError> {
-        self.replay_session_with_metadata(
-            session_id,
-            workspace_id,
-            &[
-                (DEPLOYMENT_RUN_ID, deployment_run_id),
-                (DEPLOYMENT_LAUNCH_FINGERPRINT, launch_fingerprint),
-            ],
+        self.create_session_with_identity_from(
+            req,
+            Some(workspace_id),
+            Some(session_id),
+            Some(idempotency),
+            Some(initial_events),
         )
         .await
     }
@@ -104,7 +61,7 @@ impl ManagedState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::test_support::RehydrateFake;
+    use crate::state::test_support::{RehydrateFake, ephemeral_session_repo};
     use async_trait::async_trait;
     use awaken_deployment_application::{
         DeploymentAgent, DeploymentLaunch, DeploymentLaunchOutcome, DeploymentSessionLauncher,
@@ -145,6 +102,99 @@ mod tests {
                 ),
             )
         }
+    }
+
+    #[tokio::test]
+    async fn deployment_launch_replays_only_the_exact_repository_receipt() {
+        // Deployment-create cause/effect graph. C1 a DeploymentRun Session is
+        // absent/present; C2 owner matches/differs; C3 launch fingerprint
+        // matches/differs. Effects: E1 first launch creates one Session and
+        // retains the run id as business metadata; E2 exact replay returns the
+        // same durable root without replacing request fields; E3 a different
+        // launch or owner is an idempotency mismatch; E4 no private launch
+        // fingerprint is stored in mutable Session metadata.
+        //
+        // | Rule | Root | Owner | Launch | Effect |
+        // |---|---|---|---|---|
+        // | D1 | absent | exact | exact | E1+E4 |
+        // | D2 | present | exact | exact | E2+E4 |
+        // | D3 | present | exact | different | E3 |
+        // | D4 | present | different | exact | E3 |
+        let repo: Arc<dyn awaken_session_contract::ManagedSessionRepository> =
+            Arc::new(ephemeral_session_repo());
+        let state =
+            Arc::new(ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone()));
+        let request = |title: &str| {
+            let mut request = SessionCreateParams::new(
+                "deployment-agent",
+                awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+            );
+            request.title = Some(title.into());
+            request.initial_events = vec![InboundEvent::UserMessage {
+                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                    "launch",
+                )],
+            }];
+            request
+        };
+
+        let created = state
+            .create_deployment_session_with_initial_events(
+                "deployment-run-receipt",
+                "launch-a",
+                request("first"),
+                "workspace-a".into(),
+            )
+            .await
+            .expect("D1/E1");
+        assert_eq!(
+            created.metadata.get(DEPLOYMENT_RUN_ID).map(String::as_str),
+            Some("deployment-run-receipt"),
+            "D1/E1"
+        );
+        assert_eq!(created.metadata.len(), 1, "D1/E4");
+
+        drop(state);
+        let state =
+            Arc::new(ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone()));
+        assert!(state.list_sessions().is_empty(), "D2 cold cache");
+        let replayed = state
+            .create_deployment_session_with_initial_events(
+                "deployment-run-receipt",
+                "launch-a",
+                request("must not replace"),
+                "workspace-a".into(),
+            )
+            .await
+            .expect("D2/E2");
+        assert_eq!(replayed.id, created.id, "D2/E2");
+        assert_eq!(replayed.title, created.title, "D2/E2");
+        assert_eq!(replayed.status, created.status, "D2/E2");
+        assert_eq!(state.list_sessions().len(), 1, "D2/E2");
+
+        for (rule, owner, launch) in [
+            ("D3", "workspace-a", "launch-b"),
+            ("D4", "workspace-b", "launch-a"),
+        ] {
+            assert!(
+                matches!(
+                    state
+                        .create_deployment_session_with_initial_events(
+                            "deployment-run-receipt",
+                            launch,
+                            request("conflicting"),
+                            owner.into(),
+                        )
+                        .await,
+                    Err(StateError::IdempotencyMismatch)
+                ),
+                "{rule}/E3"
+            );
+        }
+        assert_eq!(
+            repo.get(&created.id).await.unwrap().title.as_deref(),
+            Some("first")
+        );
     }
 
     #[tokio::test]

@@ -4,14 +4,9 @@
 //! only lowers an external owner-scoped idempotency key into the stable opaque
 //! Session identity needed to address that existing receipt.
 
-use std::sync::Arc;
-
 use super::{DEFAULT_SCOPE, ManagedState, StateError};
 use crate::types::resource::ResourceInput;
 use crate::types::{AgentRef, AgentRefObject, ModelEffortInput, Session, SessionCreateParams};
-
-pub(crate) const SESSION_CREATE_REQUEST_FINGERPRINT: &str =
-    "awaken.managed_session_create_request_fingerprint";
 
 /// Derive the one public Session address selected by an owner-scoped create
 /// idempotency key.
@@ -105,58 +100,33 @@ fn request_fingerprint(
 
 impl ManagedState {
     pub async fn create_session_idempotent(
-        self: &Arc<Self>,
-        mut req: SessionCreateParams,
+        &self,
+        req: SessionCreateParams,
         workspace_id: Option<String>,
         idempotency_key: &str,
     ) -> Result<Session, StateError> {
         let owner_scope = workspace_id.as_deref().unwrap_or(DEFAULT_SCOPE).to_owned();
-        if req
-            .metadata
-            .contains_key(SESSION_CREATE_REQUEST_FINGERPRINT)
-        {
-            return Err(StateError::Run(super::RunError::bad_request(
-                "Session create request contains reserved metadata",
-            )));
-        }
         let session_id = managed_session_id_from_idempotency(&owner_scope, idempotency_key);
         let request_fingerprint = request_fingerprint(&req, &session_id)?;
-        if let Some(session) = self
-            .replay_session_with_metadata(
-                &session_id,
-                &owner_scope,
-                &[(SESSION_CREATE_REQUEST_FINGERPRINT, &request_fingerprint)],
-            )
-            .await?
+        let idempotency = awaken_session_contract::IdempotencyRecord {
+            key: format!("managed:session-create:{session_id}"),
+            payload_hash: request_fingerprint,
+        };
+        if let Some(persisted) = self
+            .application
+            .replay_session_create(&owner_scope, &session_id, &idempotency)
+            .await
+            .map_err(Self::map_create_replay_error)?
         {
-            return Ok(session);
+            return self.project_replayed_session(&session_id, persisted).await;
         }
-        req.metadata.insert(
-            SESSION_CREATE_REQUEST_FINGERPRINT.into(),
-            request_fingerprint.clone(),
-        );
-        let created = Box::pin(self.create_session_with_identity(
+        Box::pin(self.create_session_with_identity(
             req,
             workspace_id,
-            Some(session_id.clone()),
+            Some(session_id),
+            Some(idempotency),
         ))
-        .await;
-        match created {
-            Ok(session) => Ok(session),
-            Err(error) => {
-                if let Some(session) = self
-                    .replay_session_with_metadata(
-                        &session_id,
-                        &owner_scope,
-                        &[(SESSION_CREATE_REQUEST_FINGERPRINT, &request_fingerprint)],
-                    )
-                    .await?
-                {
-                    return Ok(session);
-                }
-                Err(error)
-            }
-        }
+        .await
     }
 }
 
@@ -165,6 +135,7 @@ mod tests {
     use super::*;
     use crate::state::test_support::{RehydrateFake, ephemeral_session_repo};
     use awaken_session_contract::ManagedSessionRepository;
+    use std::sync::Arc;
 
     fn request(title: &str) -> SessionCreateParams {
         let mut request = SessionCreateParams::new(
@@ -196,6 +167,10 @@ mod tests {
             .create_session_idempotent(request("Project A"), Some("workspace-a".into()), "issue-a")
             .await
             .expect("R1 creates the canonical Session");
+        assert!(
+            created.metadata.is_empty(),
+            "R1 receipt identity is not duplicated into mutable metadata"
+        );
         drop(original);
 
         let restarted =

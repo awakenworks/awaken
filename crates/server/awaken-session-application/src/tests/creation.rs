@@ -4,6 +4,7 @@ use super::*;
 struct RecordingCreateRuntime {
     baseline_installs: AtomicUsize,
     preparations: AtomicUsize,
+    projection_failure: AtomicUsize,
 }
 
 #[async_trait::async_trait]
@@ -42,6 +43,15 @@ impl SessionRuntime for RecordingCreateRuntime {
                 }
         ) {
             self.preparations.fetch_add(1, Ordering::SeqCst);
+        }
+        match self.projection_failure.swap(0, Ordering::SeqCst) {
+            1 => {
+                return Err(RunError::unavailable(
+                    "injected retryable projection failure",
+                ));
+            }
+            2 => return Err(RunError::internal("injected terminal projection failure")),
+            _ => {}
         }
         Ok(())
     }
@@ -1225,6 +1235,192 @@ async fn exact_create_replay_returns_durable_root_without_repeating_external_eff
         1,
         "R4/E3"
     );
+}
+
+#[tokio::test]
+async fn committed_create_conflicts_recover_only_through_the_exact_receipt() {
+    // Post-create conflict cause/effect graph. C1 the caller omits/provides a
+    // stable create receipt; C2 the realization acknowledgement or final
+    // activation root commits but its response is reported as Conflict; C3 a
+    // stable receipt is replayed with the same/different payload hash. Effects:
+    // E1 create returns the exact current durable root; E2 Runtime realization
+    // is not repeated; E3 exact replay returns that root without another root
+    // mutation; E4 conflicting payload is rejected without effects. Constraint:
+    // recovery reads the repository's create receipt and never retries the
+    // public POST, installs a process lock, or treats Conflict as success when
+    // that exact receipt is absent.
+    //
+    // | Rule | Receipt | Lost acknowledgement | Replay hash | Effect |
+    // |---|---|---|---|---|
+    // | R1 | internal | realization ACK | - | E1+E2 |
+    // | R2 | internal | final activation | - | E1+E2 |
+    // | R3 | stable | realization ACK | exact | E1+E2+E3 |
+    // | R4 | stable | realization ACK | different | E4 |
+    // | R5 | internal | begin unavailable | - | E1, lifecycle owns retry |
+    for (
+        rule,
+        session_id,
+        fault_operation,
+        commit_before_failure,
+        stable_receipt,
+        expected_installs,
+    ) in [
+        (
+            "R1",
+            "create-ack-conflict-internal",
+            "acknowledge-session-realization",
+            true,
+            false,
+            2,
+        ),
+        (
+            "R2",
+            "create-activation-conflict-internal",
+            "session:activate:",
+            true,
+            false,
+            2,
+        ),
+        (
+            "R3",
+            "create-ack-conflict-stable",
+            "acknowledge-session-realization",
+            true,
+            true,
+            2,
+        ),
+        (
+            "R5",
+            "create-begin-unavailable-internal",
+            "begin-session-realization",
+            false,
+            false,
+            0,
+        ),
+    ] {
+        let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("post-create conflict repository"),
+        );
+        let faulting = Arc::new(FaultingSessionRepository::new(durable.clone()));
+        if commit_before_failure {
+            faulting.commit_then_conflict_once(fault_operation);
+        } else {
+            faulting.fail_once(fault_operation);
+        }
+        let runtime = Arc::new(RecordingCreateRuntime::default());
+        let application = SessionApplication::new(
+            runtime.clone(),
+            Arc::new(NoopMcpRealizer),
+            faulting,
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let stable = stable_receipt.then(|| awaken_session_contract::IdempotencyRecord {
+            key: "public-create-key".into(),
+            payload_hash: "public-create-payload".into(),
+        });
+        let mut command = creation_command(session_id);
+        command.idempotency = stable.clone();
+
+        let created = application.create_session(command).await.expect(rule);
+        let durable_after_create = durable.get(session_id).await.expect("E1 durable root");
+        assert_eq!(created, durable_after_create, "{rule}/E1");
+        assert_eq!(
+            created.execution.admits_activity(),
+            expected_installs > 0,
+            "{rule}/E1"
+        );
+        assert_eq!(
+            runtime.baseline_installs.load(Ordering::SeqCst),
+            expected_installs,
+            "{rule}/E2"
+        );
+        assert_eq!(
+            runtime.preparations.load(Ordering::SeqCst),
+            usize::from(expected_installs > 0),
+            "{rule}/E2"
+        );
+
+        if let Some(stable) = stable {
+            let revision = created.revision;
+            let mut replay = creation_command(session_id);
+            replay.idempotency = Some(stable.clone());
+            assert_eq!(
+                application.create_session(replay).await.expect("R3/E3"),
+                created,
+                "R3/E3"
+            );
+            assert_eq!(
+                durable.get(session_id).await.unwrap().revision,
+                revision,
+                "R3/E3"
+            );
+            assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 2, "R3/E3");
+            assert_eq!(runtime.preparations.load(Ordering::SeqCst), 1, "R3/E3");
+
+            let mut mismatch = creation_command(session_id);
+            mismatch.idempotency = Some(awaken_session_contract::IdempotencyRecord {
+                key: stable.key,
+                payload_hash: "different-public-create-payload".into(),
+            });
+            assert!(
+                matches!(
+                    application.create_session(mismatch).await,
+                    Err(SessionCreationError::IdempotencyMismatch)
+                ),
+                "R4/E4"
+            );
+            assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 2, "R4/E4");
+            assert_eq!(runtime.preparations.load(Ordering::SeqCst), 1, "R4/E4");
+        }
+    }
+}
+
+#[tokio::test]
+async fn create_failure_cleanup_is_authorized_only_by_a_terminal_durable_root() {
+    // Cleanup-admission cause/effect graph. C1 projection failure is retryable
+    // unavailable/nonretryable internal; C2 the canonical failure command leaves
+    // the root nonterminal/commits ActivationFailed. Effects: E1 both creates
+    // retain the original effect error; E2 a nonterminal root keeps cleanup
+    // unfenced for lifecycle retry; E3 only the terminal root enters and fences
+    // the existing cleanup protocol (later phases may remain recoverable).
+    //
+    // | Rule | Effect | Durable root | Cleanup |
+    // |---|---|---|---|
+    // | F1 | unavailable | nonterminal | E1+E2 |
+    // | F2 | internal | ActivationFailed | E1+E3 |
+    for (rule, failure, terminal) in [("F1", 1, false), ("F2", 2, true)] {
+        let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("cleanup admission repository"),
+        );
+        let runtime = Arc::new(RecordingCreateRuntime::default());
+        runtime.projection_failure.store(failure, Ordering::SeqCst);
+        let application = SessionApplication::new(
+            runtime,
+            Arc::new(NoopMcpRealizer),
+            repository.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let session_id = format!("create-cleanup-{rule}");
+
+        assert!(
+            matches!(
+                application
+                    .create_session(creation_command(&session_id))
+                    .await,
+                Err(SessionCreationError::Rejected(_))
+            ),
+            "{rule}/E1"
+        );
+        let durable = repository.get(&session_id).await.expect("durable root");
+        assert_eq!(durable.execution.is_terminal(), terminal, "{rule}");
+        assert_eq!(
+            durable.terminal_cleanup.is_fenced(),
+            terminal,
+            "{rule}/E2-E3"
+        );
+    }
 }
 
 #[tokio::test]

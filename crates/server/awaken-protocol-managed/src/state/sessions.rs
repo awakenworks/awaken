@@ -315,7 +315,7 @@ impl ManagedState {
         // sink for webhook/usage stamping, but NEVER stored on the core session.
         workspace_id: Option<String>,
     ) -> Result<Session, StateError> {
-        self.create_session_with_identity(req, workspace_id, None)
+        self.create_session_with_identity(req, workspace_id, None, None)
             .await
     }
 
@@ -324,8 +324,9 @@ impl ManagedState {
         req: SessionCreateParams,
         workspace_id: Option<String>,
         explicit_id: Option<String>,
+        idempotency: Option<awaken_session_contract::IdempotencyRecord>,
     ) -> Result<Session, StateError> {
-        self.create_session_with_identity_from(req, workspace_id, explicit_id, None)
+        self.create_session_with_identity_from(req, workspace_id, explicit_id, idempotency, None)
             .await
     }
 
@@ -337,6 +338,7 @@ impl ManagedState {
         mut req: SessionCreateParams,
         workspace_id: Option<String>,
         explicit_id: Option<String>,
+        idempotency: Option<awaken_session_contract::IdempotencyRecord>,
         deployment_initial_events: Option<Vec<InboundEvent>>,
     ) -> Result<Session, StateError> {
         req.validate_common()
@@ -732,6 +734,26 @@ impl ManagedState {
             .tools_override()
             .map(project::session_tool_configuration)
             .unwrap_or(inherited_tools);
+        let session_skills = effective_skills.as_ref().map_or_else(
+            || project::agent_skills(&caps),
+            |skills| {
+                skills
+                    .iter()
+                    .cloned()
+                    .map(crate::types::agent::AgentSkill::from_binding)
+                    .collect()
+            },
+        );
+        if req
+            .agent
+            .tools_override()
+            .is_some_and(|tools| tools.is_empty())
+            && !session_skills.is_empty()
+        {
+            return Err(StateError::Run(RunError::bad_request(
+                "cannot clear tools while skills are configured",
+            )));
+        }
         // Validate after replacement/inheritance has produced the effective
         // Session configuration. Checking only when both override arrays were
         // present admitted a partial override whose inherited half named a
@@ -897,6 +919,14 @@ impl ManagedState {
                 initial_mcp: mcp_drafts,
             },
         };
+        // Finish every fallible wire projection before the durable root insert.
+        // After the application returns, Managed only caches this already-
+        // validated projection and therefore needs no second receipt recovery
+        // path around DTO construction.
+        let deployment_id = req.metadata.get("awaken.deployment_id").cloned();
+        let session_tools = project::managed_tools(&effective_tools);
+        let session_multiagent =
+            self.resolved_session_multiagent(&owner_scope, config_view.as_ref(), &caps)?;
         // The adapter has finished lowering wire policy. The Session application
         // now exclusively orders every durable mutation and external projection.
         let creation = awaken_session_application::CreateSessionCommand {
@@ -908,16 +938,12 @@ impl ManagedState {
             tools: effective_tools.clone(),
             budget: budget_state,
             repository_configurations,
-            idempotency: None,
+            idempotency,
             initial_events,
         };
         let persisted = Box::pin(self.application.create_session(creation))
             .await
             .map_err(Self::map_creation_error)?;
-        let deployment_id = req.metadata.get("awaken.deployment_id").cloned();
-        let session_tools = project::managed_tools(&effective_tools);
-        let session_multiagent =
-            self.resolved_session_multiagent(&owner_scope, config_view.as_ref(), &caps)?;
         let mut session = Session {
             id: id.clone(),
             kind: "session",
@@ -940,16 +966,7 @@ impl ManagedState {
                 // visibility is a separate state and can remain Requested while
                 // this immutable Session snapshot is already readable.
                 mcp_servers: typed_mcp_servers(persisted.configured_mcp_servers()),
-                skills: effective_skills.as_ref().map_or_else(
-                    || project::agent_skills(&caps),
-                    |skills| {
-                        skills
-                            .iter()
-                            .cloned()
-                            .map(crate::types::agent::AgentSkill::from_binding)
-                            .collect()
-                    },
-                ),
+                skills: session_skills,
                 multiagent: session_multiagent,
             },
             budget: persisted
@@ -981,11 +998,6 @@ impl ManagedState {
             session.agent.system = system.map(str::to_owned);
         }
         if let Some(tools) = req.agent.tools_override() {
-            if tools.is_empty() && !session.agent.skills.is_empty() {
-                return Err(StateError::Run(RunError::bad_request(
-                    "cannot clear tools while skills are configured",
-                )));
-            }
             session.agent.tools = project::resolved_tools(tools);
         }
         self.owners.lock().unwrap().insert(id.clone(), owner_scope);
@@ -1243,22 +1255,28 @@ impl ManagedState {
 
     /// `GET /v1/sessions/{id}`.
     pub fn get_session(&self, id: &str) -> Result<Session, StateError> {
+        self.get_session_with_revision(id)
+            .map(|(session, _)| session)
+    }
+
+    /// Read the wire projection and its durable Session revision from the same
+    /// cache snapshot. The checkpoint is already the root revision used to
+    /// render this DTO; a second repository read could pair a newer ETag with
+    /// older content or turn a committed create into an unavailable response.
+    pub fn get_session_with_revision(
+        &self,
+        id: &str,
+    ) -> Result<(Session, awaken_session_contract::SessionRevision), StateError> {
         let sessions = self.sessions.lock().unwrap();
         sessions
             .get(id)
-            .map(SessionRecord::session_projection)
+            .map(|record| {
+                (
+                    record.session_projection(),
+                    record.checkpoint.source.session_revision,
+                )
+            })
             .ok_or(StateError::NotFound)
-    }
-
-    pub async fn session_revision(
-        &self,
-        id: &str,
-    ) -> Result<awaken_session_contract::SessionRevision, StateError> {
-        self.application
-            .session(id)
-            .await
-            .map(|session| session.revision)
-            .map_err(StateError::from)
     }
 
     /// `GET /v1/sessions` — every session, ascending id (deterministic).
