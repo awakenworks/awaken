@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
 use crate::dispatch::DispatchError;
 
@@ -26,6 +27,23 @@ pub trait WakeSignal: Send + Sync {
 
     /// Wait for the next wake hint.
     async fn wait(&self);
+}
+
+/// Notifications are latency hints, never durable admission or stop evidence.
+/// One budget at the calling boundary prevents an unavailable transport from
+/// blocking an already-committed command or the next reconciliation pass.
+pub async fn publish_dispatch_hint(wake: &dyn WakeSignal, shutdown: &CancellationToken) {
+    tokio::select! {
+        biased;
+        _ = shutdown.cancelled() => {}
+        result = tokio::time::timeout(std::time::Duration::from_millis(100), wake.publish()) => {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!(%error, "dispatch wake publication failed; polling will recover"),
+                Err(_) => tracing::warn!("dispatch wake publication timed out; polling will recover"),
+            }
+        }
+    }
 }
 
 /// Single-process wake signal over a shared `tokio` notify. A hint published when
@@ -109,6 +127,8 @@ pub struct PgNotifyWake {
     /// In-process fan-out: the single background listener nudges this, every drain
     /// task waits on it. Keeps `wait` off the connection pool.
     local: Arc<Notify>,
+    shutdown: CancellationToken,
+    listener: Option<tokio::task::JoinHandle<()>>,
 }
 
 #[cfg(feature = "durable")]
@@ -130,26 +150,55 @@ impl PgNotifyWake {
         let listen_pool = pool.clone();
         let listen_channel = channel.clone();
         let waiters = local.clone();
-        tokio::spawn(async move {
-            loop {
-                if let Ok(mut listener) =
-                    sqlx::postgres::PgListener::connect_with(&listen_pool).await
-                    && listener.listen(&listen_channel).await.is_ok()
-                {
-                    while listener.recv().await.is_ok() {
-                        waiters.notify_waiters();
+        let shutdown = CancellationToken::new();
+        let cancelled = shutdown.clone();
+        let listener = tokio::spawn(async move {
+            let listen = async {
+                loop {
+                    if let Ok(mut listener) =
+                        sqlx::postgres::PgListener::connect_with(&listen_pool).await
+                        && listener.listen(&listen_channel).await.is_ok()
+                    {
+                        while listener.recv().await.is_ok() {
+                            waiters.notify_waiters();
+                        }
                     }
+                    // Reconnect after a failed connection or LISTEN. The durable
+                    // polling path covers any hints missed during this backoff.
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
-                // The connection dropped (or never opened): back off, then reconnect.
-                // The poll fallback covers the gap, so no wake is lost, only deferred.
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            };
+            tokio::select! {
+                biased;
+                _ = cancelled.cancelled() => {}
+                _ = listen => {}
             }
         });
         Self {
             pool,
             channel,
             local,
+            shutdown,
+            listener: Some(listener),
         }
+    }
+
+    /// Stop and join this signal's sole listener. Consuming ownership prevents
+    /// one shared `Arc` reference from shutting down another live owner.
+    pub async fn shutdown(mut self) {
+        self.shutdown.cancel();
+        if let Some(listener) = self.listener.take() {
+            let _ = listener.await;
+        }
+    }
+}
+
+#[cfg(feature = "durable")]
+impl Drop for PgNotifyWake {
+    fn drop(&mut self) {
+        // Dropping the last owner cancels acquisition, LISTEN, recv, or backoff.
+        // These are only notification work; no durable operation is discarded.
+        self.shutdown.cancel();
     }
 }
 
@@ -167,5 +216,54 @@ impl WakeSignal for PgNotifyWake {
 
     async fn wait(&self) {
         self.local.notified().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test(start_paused = true)]
+    async fn publication_budget_covers_failure_hang_and_pre_cancel_without_retry() {
+        // C1 transport success/error/pending; C2 caller cancelled before send.
+        // R1 !C2 => exactly one send, success/error return immediately, pending
+        // returns at 100ms. R2 C2 => zero sends. All paths preserve caller-owned
+        // durable state by accepting no storage/settlement capability here.
+        struct Probe {
+            mode: usize,
+            calls: AtomicUsize,
+        }
+        #[async_trait]
+        impl WakeSignal for Probe {
+            async fn publish(&self) -> Result<(), DispatchError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                match self.mode {
+                    0 => Ok(()),
+                    1 => Err(DispatchError::Rejected("offline".into())),
+                    _ => std::future::pending().await,
+                }
+            }
+            async fn wait(&self) {
+                std::future::pending().await
+            }
+        }
+        for cancelled in [false, true] {
+            for mode in 0..3 {
+                let probe = Probe {
+                    mode,
+                    calls: AtomicUsize::new(0),
+                };
+                let shutdown = CancellationToken::new();
+                if cancelled {
+                    shutdown.cancel();
+                }
+                let start = tokio::time::Instant::now();
+                publish_dispatch_hint(&probe, &shutdown).await;
+                assert_eq!(probe.calls.load(Ordering::SeqCst), usize::from(!cancelled));
+                let expected = if !cancelled && mode == 2 { 100 } else { 0 };
+                assert_eq!(start.elapsed(), std::time::Duration::from_millis(expected));
+            }
+        }
     }
 }

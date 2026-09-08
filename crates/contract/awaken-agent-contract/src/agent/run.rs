@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Opaque Run identity. Ordering is lexical for indexed pagination, never
+/// execution priority or the chronological order in which Runs were admitted.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Id(pub String);
 
 /// The committed lifecycle state of a run: the single stored authority for

@@ -35,7 +35,7 @@ use crate::Error;
 use crate::clock::Clock;
 use crate::dispatch::{Claimed, Dispatch, PendingInput};
 use crate::service::DispatchServiceConfig;
-use crate::wake::{LocalWakeSignal, WakeSignal};
+use crate::wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
 use crate::worker::{DispatchWorker, renew_claim_while_active};
 use awaken_dispatch_contract::RunDispatch;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -511,27 +511,27 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
             request.traceparent = awaken_observability::current_traceparent();
         }
         self.store.enqueue(request).await?;
-        let _ = self.wake.publish().await;
+        publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;
         Ok(())
     }
 
     /// Durably deliver pending input and nudge the pool to resume the run.
     pub async fn deliver(&self, input: PendingInput) -> Result<(), Error> {
         self.store.append(input).await?;
-        let _ = self.wake.publish().await;
+        publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;
         Ok(())
     }
 
     /// Stage a cross-thread delivery and nudge the pool to relay it.
     pub async fn send(&self, input: PendingInput) -> Result<(), Error> {
         self.store.stage(input).await?;
-        let _ = self.wake.publish().await;
+        publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;
         Ok(())
     }
 
     /// Wake the pool to drain immediately.
     pub async fn notify(&self) {
-        let _ = self.wake.publish().await;
+        publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;
     }
 
     /// Persist cancellation and wake the pool's one claim/resolver path.
@@ -547,7 +547,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         }
         // The signal is only a latency hint. A dropped signal is covered by the
         // pool's poll fallback and the durable cancellation bit.
-        let _ = self.wake.publish().await;
+        publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;
         Ok(true)
     }
 
@@ -573,7 +573,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
                 admission.state = AdmissionState::Open;
                 admission.generation = admission.generation.saturating_add(1);
                 drop(admission);
-                let _ = self.wake.publish().await;
+                publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;
                 true
             }
             AdmissionState::Suspended | AdmissionState::Draining => false,
@@ -992,19 +992,27 @@ async fn reconciliation_loop<S: Dispatch + 'static>(context: ReconciliationConte
         let now = clock.now_ms();
         if let Some(ttl) = config.dead_letter_ttl {
             let cutoff = now.saturating_sub(ttl.as_millis() as u64);
-            let _ = store.purge_dead_letters_before(cutoff).await;
+            if let Err(error) = store.purge_dead_letters_before(cutoff).await {
+                tracing::warn!(%error, "dispatch dead-letter purge failed; retrying");
+            }
         }
         // A relay that moved staged deliveries into a thread's pending input made a
         // awaiting run wakeable — nudge the drain tasks so they pick it up now rather
         // than at the next poll.
-        let relayed = store.relay().await.unwrap_or(0);
+        let relayed = match store.relay().await {
+            Ok(relayed) => relayed,
+            Err(error) => {
+                tracing::warn!(%error, "dispatch relay failed; retrying");
+                0
+            }
+        };
         if relayed > 0 {
             // Relay is already durable. Only its best-effort notification may
             // be abandoned on shutdown; storage and observation work is joined.
-            tokio::select! {
-                _ = shutdown.cancelled() => break,
-                _ = wake.publish() => {}
-            }
+            publish_dispatch_hint(wake.as_ref(), &shutdown).await;
+        }
+        if shutdown.is_cancelled() {
+            break;
         }
         if let Some(interval) = config.terminal_reconciliation_interval
             && tokio::time::Instant::now() >= next_terminal_reconciliation

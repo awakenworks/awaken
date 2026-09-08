@@ -847,6 +847,176 @@ async fn physical_attempt_admission_uses_the_postgres_authority_clock() {
 }
 
 #[tokio::test]
+async fn terminal_recovery_claim_rejects_caller_clock_skew() {
+    // T1 a pending row + stale caller clock -> fresh DB-relative lease, not an
+    // already-expired 1970 deadline. T2 a DB-live lease + future caller clock
+    // -> no recovery claim, unchanged owner/epoch. Causes are independent of
+    // external execution: this deliberately has no physical slot to mask a
+    // wrong lease decision. A lease held by a live finisher is still exclusive.
+    let Some(pool) = harness::schema_pool("t_pg_terminal_recovery_clock").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .unwrap();
+    store
+        .enqueue(RunDispatch::new(activation("terminal-clock")))
+        .await
+        .unwrap();
+    let before: i64 =
+        sqlx::query_scalar("SELECT FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let first = store
+        .claim_for_terminal_recovery(&RunId("terminal-clock".into()), "first", 60_000, 0)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        first.lease.expires_ms >= before as u64 + 60_000,
+        "T1 new lease must be DB-relative, got {:?}",
+        first.lease
+    );
+    assert!(
+        store
+            .claim_for_terminal_recovery(&first.lease.run_id, "skewed-successor", 60_000, u64::MAX)
+            .await
+            .unwrap()
+            .is_none(),
+        "T2 caller clock cannot steal a DB-live lease"
+    );
+    assert!(
+        store
+            .claim_is_current(&RunClaim::from(&first.lease), 0)
+            .await
+            .unwrap(),
+        "T2 exact original authority preserved"
+    );
+}
+
+#[tokio::test]
+async fn retry_exhaustion_claim_rejects_caller_clock_skew() {
+    // X1 ordinary DB claim is live, no physical slot, crash threshold zero;
+    // X2 caller supplies far-future time. Effect: None, not an exhaustion claim
+    // and not a loop that repeatedly selects a DB-ineligible row. The separate
+    // threshold is zero intentionally: only lease eligibility may block this.
+    let Some(pool) = harness::schema_pool("t_pg_retry_recovery_clock").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool).await.unwrap();
+    store
+        .enqueue(RunDispatch::new(activation("retry-clock")))
+        .await
+        .unwrap();
+    let first = store
+        .claim("first", 60_000, 0, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        store.claim_retry_exhausted("skewed-successor", 60_000, u64::MAX, 0),
+    )
+    .await
+    .expect("X1/X2 selection must terminate")
+    .unwrap();
+    assert!(
+        result.is_none(),
+        "X1/X2 caller clock cannot exhaust a DB-live lease"
+    );
+    assert!(
+        store
+            .claim_is_current(&RunClaim::from(&first.lease), 0)
+            .await
+            .unwrap(),
+        "X1 unchanged original authority"
+    );
+}
+
+#[tokio::test]
+async fn exact_claim_mints_lease_after_waiting_for_thread_lock() {
+    // L1 exact ordinary/terminal claim waits on a peer Thread transaction;
+    // L2 time passes while pg_blocking_pids proves that precise wait. E1 after
+    // the peer commits, the new deadline is based on a fresh DB clock, not on
+    // time sampled before that wait. Matrix runs both entry modes through the
+    // same lock+clock kernel; no live claim or execution is force-cancelled.
+    let Some(pool) = harness::schema_pool("t_pg_exact_claim_lock_clock").await else {
+        return;
+    };
+    let store = Arc::new(
+        PostgresDispatchStore::with_pool(pool.clone())
+            .await
+            .unwrap(),
+    );
+    for terminal in [false, true] {
+        let name = if terminal {
+            "terminal-lock-clock"
+        } else {
+            "ordinary-lock-clock"
+        };
+        store
+            .enqueue(RunDispatch::new(activation_on(name, name)))
+            .await
+            .unwrap();
+        let mut blocker = pool.begin().await.unwrap();
+        let blocker_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *blocker)
+            .await
+            .unwrap();
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(name)
+            .execute(&mut *blocker)
+            .await
+            .unwrap();
+        let task = tokio::spawn({
+            let store = store.clone();
+            async move {
+                if terminal {
+                    store
+                        .claim_for_terminal_recovery(&RunId(name.into()), "after-lock", 60_000, 0)
+                        .await
+                } else {
+                    store
+                        .claim_run(
+                            &RunId(name.into()),
+                            "after-lock",
+                            60_000,
+                            0,
+                            &Default::default(),
+                        )
+                        .await
+                }
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))")
+                    .bind(blocker_pid).fetch_one(&pool).await.unwrap();
+                if blocked { break; }
+                tokio::task::yield_now().await;
+            }
+        }).await.expect("L1 exact claim waits on this transaction");
+        // The barrier above proves contention; this short real-clock advance
+        // separates PostgreSQL millisecond samples without mocking its clock.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let released_at: i64 = sqlx::query_scalar(
+            "SELECT FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint",
+        )
+        .fetch_one(&mut *blocker)
+        .await
+        .unwrap();
+        blocker.commit().await.unwrap();
+        let claimed = task.await.unwrap().unwrap().unwrap();
+        assert!(
+            claimed.lease.expires_ms >= released_at as u64 + 60_000,
+            "E1 mode={terminal}: {:?}",
+            claimed.lease
+        );
+    }
+}
+
+#[tokio::test]
 async fn list_dispatches_on_postgres() {
     let Some(pool) = harness::schema_pool("t_pg_list").await else {
         return;

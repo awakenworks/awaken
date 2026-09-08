@@ -60,7 +60,6 @@ async fn claim_exact_transaction(
         requested_run,
         owner,
         lease_ms,
-        now_ms,
         worker,
         capabilities,
         mode,
@@ -73,7 +72,6 @@ async fn claim_exact_transaction_with_mode(
     requested_run: &RunId,
     owner: &str,
     lease_ms: u64,
-    now_ms: u64,
     worker: Option<&WorkerSnapshot>,
     capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     mode: ExactClaimMode,
@@ -82,6 +80,10 @@ async fn claim_exact_transaction_with_mode(
     let Some(_) = lock_dispatch_thread(tx, requested_run).await? else {
         return Ok(None);
     };
+    // All exact-claim modes share the database authority clock. Read it only
+    // after the potentially blocking Thread lock: neither caller skew nor
+    // time spent awaiting a peer may mint an already-expired new lease.
+    let now_ms = crate::postgres_helpers::postgres_now_ms(&mut **tx).await?;
     let thread_available = thread_available_for_claim(p);
     let no_running_peer = no_running_peer(p);
     let eligibility = match mode {

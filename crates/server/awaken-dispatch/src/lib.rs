@@ -38,6 +38,7 @@ mod postgres_checkpoint;
 mod postgres_helpers;
 #[cfg(feature = "durable")]
 mod postgres_identity;
+mod reconciliation;
 mod recovery_projection;
 mod service;
 #[cfg(feature = "durable")]
@@ -101,6 +102,7 @@ pub use pool::{CompletionSink, DispatchPool, DispatchReconciler, WorkerResolver}
 pub use postgres::{
     PostgresDispatchStore, PostgresStreamCheckpointStore, StoreError as PostgresStoreError,
 };
+pub use reconciliation::TerminalReconciliationScan;
 pub use recovery_projection::{RecoveryProjection, RecoveryProjectionError};
 pub use service::{DispatchService, DispatchServiceConfig};
 #[cfg(feature = "durable")]
@@ -109,7 +111,7 @@ pub use sqlite::{SqliteDispatchStore, StoreError as SqliteStoreError};
 pub use wake::NatsWakeSignal;
 #[cfg(feature = "durable")]
 pub use wake::PgNotifyWake;
-pub use wake::{LocalWakeSignal, WakeSignal};
+pub use wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
 pub use worker::{DEFAULT_LEASE_MS, DispatchWorker, claim_bound_ownership_verifier};
 pub use worker_context::InferenceMaterializerFn;
 

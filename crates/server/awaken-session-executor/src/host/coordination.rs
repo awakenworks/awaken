@@ -1053,7 +1053,8 @@ impl SharedHost {
         {
             // This is only a latency hint. The durable cancellation intent and
             // dispatch row remain the recovery authority if the hint is lost.
-            let _ = wake.publish().await;
+            awaken_dispatch::publish_dispatch_hint(wake.as_ref(), &CancellationToken::new())
+                .await;
         }
 
         const SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);

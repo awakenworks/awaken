@@ -30,7 +30,7 @@ from formal_execution_replacement_mutations import check_execution_replacement_m
 from formal_credential_mutations import (
     check_mcp_credential_model_mutants, check_credential_effect_model_mutants,
 )
-from formal_dispatch_mutations import check_resolution_failure_model_mutant
+from formal_dispatch_mutations import check_resolution_failure_model_mutant, check_terminal_scan_model_mutants
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -322,7 +322,7 @@ class MutationOracleTests(unittest.TestCase):
         flags = (
             "memory-copy-model-mutant", "agent-input-model-mutant",
             "resource-preparation-model-mutant", "realization-renewal-model-mutant",
-            "resolution-failure-model-mutant", "config-cas-model-mutant",
+            "resolution-failure-model-mutant", "terminal-scan-model-mutants", "config-cas-model-mutant",
             "background-completion-model-mutant", "sandbox-control-model-mutants",
             "audit-commit-model-mutants", "effect-retirement-model-mutant",
             "credential-removal-model-mutant", "verified-admission-model-mutants",
@@ -531,6 +531,7 @@ def main() -> None:
         "resource-preparation-model-mutant": check_resource_preparation_model_mutant,
         "realization-renewal-model-mutant": check_realization_renewal_model_mutant,
         "resolution-failure-model-mutant": check_resolution_failure_model_mutant,
+        "terminal-scan-model-mutants": check_terminal_scan_model_mutants,
         "config-cas-model-mutant": check_config_cas_model_mutant,
         "background-completion-model-mutant": check_background_completion_model_mutant,
         "sandbox-control-model-mutants": check_sandbox_control_model_mutants,

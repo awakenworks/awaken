@@ -246,7 +246,6 @@ pub(super) async fn reconcile_committed_terminals(
     clock: Arc<dyn awaken_dispatch::Clock>,
     limit: usize,
 ) -> Result<Vec<(RunId, RunState)>, awaken_dispatch::Error> {
-    let now_ms = clock.now_ms();
     let host = resolver.host()?;
     // A database-less Worker delegates committed truth upstream and has no
     // process-local registry from which to discover every Thread reader.
@@ -257,72 +256,62 @@ pub(super) async fn reconcile_committed_terminals(
     let store = host
         .dispatch_store()
         .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
-    let rows = store.list_dispatches().await?;
-    let mut reconciled = Vec::new();
-    for row in rows.into_iter().filter(|row| {
-        matches!(
-            row.state,
-            awaken_dispatch::DispatchState::Awaiting | awaken_dispatch::DispatchState::Leased
-        )
-    }) {
-        if reconciled.len() >= limit {
-            break;
-        }
+    host.terminal_scan
+        .reconcile(store.as_ref(), limit, |row| {
+            let host = &host;
+            let store = &store;
+            let clock = clock.clone();
+            async move {
+                // The dispatch summary already carries the canonical Session affinity.
+                // Read committed truth from that physical partition before taking the
+                // maintenance claim: claiming every Awaiting/expired row and restoring
+                // non-terminal ones to Awaiting would steal a recoverable lease from a
+                // registered replacement Worker and advance its fencing epoch forever.
+                // `settle_claimed_terminal` repeats this check after the claim, closing
+                // the read/claim race without introducing another recovery registry.
+                let commit_thread = row.session_thread_id.as_ref().unwrap_or(&row.thread_id);
+                let commit = Arc::new(
+                    host.build_commit(&commit_thread.0)
+                        .await
+                        .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?,
+                );
+                if !matches!(commit.run_state(&row.run_id), Some(RunState::Ended(_))) {
+                    return Ok(None);
+                }
 
-        // The dispatch summary already carries the canonical Session affinity.
-        // Read committed truth from that physical partition before taking the
-        // maintenance claim: claiming every Awaiting/expired row and restoring
-        // non-terminal ones to Awaiting would steal a recoverable lease from a
-        // registered replacement Worker and advance its fencing epoch forever.
-        // `settle_claimed_terminal` repeats this check after the claim, closing
-        // the read/claim race without introducing another recovery registry.
-        let commit_thread = row.session_thread_id.as_ref().unwrap_or(&row.thread_id);
-        let commit = Arc::new(
-            host.build_commit(&commit_thread.0)
-                .await
-                .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?,
-        );
-        if !matches!(commit.run_state(&row.run_id), Some(RunState::Ended(_))) {
-            continue;
-        }
-
-        let Some(claimed) = store
-            .claim_for_terminal_recovery(
-                &row.run_id,
-                &host.deployment.dispatch_owner,
-                DEFAULT_LEASE_MS,
-                now_ms,
-            )
-            .await?
-        else {
-            continue;
-        };
-
-        let worker = match resolver
-            .boundary_worker(&host, &claimed, commit, false)
-            .await
-        {
-            Ok(worker) => worker,
-            Err(error) => {
-                let _ = store
-                    .settle(
-                        &claimed.lease.run_id,
-                        claimed.lease.epoch,
-                        awaken_dispatch::DispatchOutcome::Awaiting,
-                        &[],
+                let Some(claimed) = store
+                    .claim_for_terminal_recovery(
+                        &row.run_id,
+                        &host.deployment.dispatch_owner,
+                        DEFAULT_LEASE_MS,
+                        clock.now_ms(),
                     )
-                    .await;
-                return Err(error);
+                    .await?
+                else {
+                    return Ok(None);
+                };
+
+                let worker = match resolver
+                    .boundary_worker(host, &claimed, commit, false)
+                    .await
+                {
+                    Ok(worker) => worker,
+                    Err(error) => {
+                        let _ = store
+                            .settle(
+                                &claimed.lease.run_id,
+                                claimed.lease.epoch,
+                                awaken_dispatch::DispatchOutcome::Awaiting,
+                                &[],
+                            )
+                            .await;
+                        return Err(error);
+                    }
+                };
+                worker.settle_claimed_terminal(claimed, clock.clone()).await
             }
-        };
-        if let Some(terminal) = worker
-            .settle_claimed_terminal(claimed, clock.clone())
-            .await?
-        {
-            reconciled.push(terminal);
-        }
-    }
-    Ok(reconciled)
+        })
+        .await
 }
 
 #[cfg(test)]

@@ -389,14 +389,44 @@ delayed by the ordinary poll. `None` still disables only terminal observation.
 
 Service, Pool and standalone Reconciler shutdown cancel their existing local
 token and join their existing tasks. They do not publish a network hint merely
-to unblock a cancellation-aware wait. In-flight storage and observation work
-is still joined, not dropped on a newly introduced timeout. Only a best-effort
-notification after durable relay may be abandoned on cancellation; this does
-not manufacture a physical-stop fact. Virtual-time regressions cover all three
-topologies, blocked publication, duplicate/lost hints, optional deadlines and
-delayed observation.
-These scheduling checks are executable evidence; the existing Dispatch kernel
-and bounded SessionRunProtocol safety proofs retain their original scope.
+to unblock a cancellation-aware wait. All command/reconciliation hint publication
+uses `publish_dispatch_hint` with one 100ms best-effort budget. Notification
+failure cannot change a completed durable admission. In-flight storage and
+observation work is still joined; only the non-authoritative notification may
+be abandoned. The PG listener owns cancellation and join handles; its final
+owner requests cancellation, while explicit shutdown joins the listener.
+Service drains at most 64 attempts per scheduling batch without collecting an
+unbounded result vector. Full batches yield and revisit cancellation and terminal
+coordination, not the ordinary idle poll. A single in-flight operation still has
+its original authority and completion semantics, not a fabricated stop timeout.
+
+Host and Worker share `TerminalReconciliationScan`, a process-local cursor over
+the existing Dispatch primary key. `scan_dispatch_ids` reads at most the page
+budget without decoding execution requests; `dispatch_summary` reads one exact
+row. The scheduling budget counts inspected IDs, including nonterminal, missing
+and unreadable rows, capped at 256 per pass. Per-row failures are reported and
+retain the original Dispatch, but do not prevent visiting later IDs. Advance
+precedes per-row I/O; short/empty pages wrap, and restart forgets only scheduling
+position. A concurrent scan yields instead of adding a waiter. No durable cursor,
+mirror index, recovery queue or event-feed projection is introduced. The old
+administrative `list_dispatches` shares summary decoding but is not a recovery
+scan fallback. Pending, Awaiting and Leased candidates use the same filter;
+committed truth and exact claim/slot guards are rechecked before settlement.
+Custom Dispatch adapters must implement both bounded/exact read ports; their
+defaults explicitly reject unsupported capability, never silently scan all rows.
+Host/Worker sample their supplied clock after asynchronous projection reads,
+immediately before terminal claim. PostgreSQL exact claims of every mode sample
+database time after the Thread lock; retry-exhaustion discovery also uses database
+time. Caller clock skew cannot expire a live PostgreSQL claim or mint an already
+expired replacement. Memory/SQLite retain their existing caller-clock contract.
+
+Virtual-time and real-PG regressions cover publication failure, listener lifetime,
+bounded batches, page boundaries, failed prefixes, concurrent scans and restart.
+The minimal `TerminalReconciliationScan` model checks budget and conditional
+progress for a finite stable ordered set under fair scheduling, returning reads
+and bounded restarts. Its negative cursor mutation and positive wrap witness do
+not duplicate Dispatch transitions or certify SQL/OS/provider behavior. Existing
+Dispatch kernel and SessionRunProtocol proof scopes remain unchanged.
 
 Physical exclusion is Thread-scoped even though the exact attempt belongs to a
 Run's Dispatch row. Cancellation may return a row to Pending while its old
