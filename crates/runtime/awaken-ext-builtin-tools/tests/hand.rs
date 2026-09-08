@@ -914,6 +914,8 @@ async fn mutation_receipts_keep_the_resolved_logical_path_after_bash_changes_dir
     // W3 edit (one/all matches) returns that same target; W4 a host projection
     // never leaks physical storage paths. Existing escape/symlink/error tests
     // retain ownership of failed admission; this changes only success receipts.
+    // The direct root expectation follows the host canonical path (macOS /var
+    // may resolve through /private); projected output remains /managed.
     for projected in [false, true] {
         for form in ["relative", "absolute", "normalized"] {
             let root = tempfile::tempdir().unwrap();
@@ -935,7 +937,12 @@ async fn mutation_receipts_keep_the_resolved_logical_path_after_bash_changes_dir
             let expected = if projected {
                 "/managed/result.txt".to_string()
             } else {
-                root.path().join("result.txt").display().to_string()
+                root.path()
+                    .canonicalize()
+                    .unwrap()
+                    .join("result.txt")
+                    .display()
+                    .to_string()
             };
             let input = match (projected, form) {
                 (_, "absolute") => expected.clone(),
