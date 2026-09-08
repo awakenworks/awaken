@@ -209,7 +209,7 @@ impl MemoryExtractionController {
             }
 
             let result = self.advance_claimed(driver, &mut intent, generation).await;
-            if let Err((error, terminal)) = result {
+            if let Err(failure) = result {
                 let Ok(Some(current)) = self.repository.get_extraction(&intent.intent_id).await
                 else {
                     return;
@@ -222,10 +222,22 @@ impl MemoryExtractionController {
                 }
                 let now = unix_ms();
                 let expected_revision = intent.revision;
-                let transition = if terminal || intent.attempts >= self.policy.max_attempts {
-                    intent.terminal_fail(&self.owner, generation, now, error)
-                } else {
-                    intent.retry(&self.owner, generation, now, error)
+                let retryable = matches!(&failure, AdvanceFailure::Retryable(_));
+                let transition = match failure {
+                    AdvanceFailure::ExecutionIndeterminate(error) => {
+                        intent.mark_execution_indeterminate(&self.owner, generation, now, error)
+                    }
+                    AdvanceFailure::Permanent(error) => {
+                        intent.terminal_fail(&self.owner, generation, now, error)
+                    }
+                    AdvanceFailure::Retryable(error)
+                        if intent.attempts >= self.policy.max_attempts =>
+                    {
+                        intent.terminal_fail(&self.owner, generation, now, error)
+                    }
+                    AdvanceFailure::Retryable(error) => {
+                        intent.retry(&self.owner, generation, now, error)
+                    }
                 };
                 if transition.is_ok() {
                     let _ = self
@@ -233,7 +245,7 @@ impl MemoryExtractionController {
                         .compare_and_swap_extraction(expected_revision, intent.clone())
                         .await;
                 }
-                if !terminal && intent.attempts < self.policy.max_attempts {
+                if retryable && intent.attempts < self.policy.max_attempts {
                     tokio::time::sleep(std::time::Duration::from_millis(
                         self.policy.retry_base_ms * u64::from(intent.attempts.max(1)),
                     ))
@@ -284,22 +296,41 @@ impl MemoryExtractionController {
         driver: &dyn MemoryExtractionDriver,
         intent: &mut MemoryExtractionIntent,
         generation: u64,
-    ) -> Result<(), (String, bool)> {
+    ) -> Result<(), AdvanceFailure> {
         driver
             .validate_binding(intent)
             .await
-            .map_err(|error| (error, true))?;
+            .map_err(AdvanceFailure::Permanent)?;
         if intent.status == MemoryExtractionStatus::Claimed {
             let extraction_input = intent.clone();
             let extraction = driver.extract(&extraction_input);
             tokio::pin!(extraction);
             let mutations = loop {
                 tokio::select! {
-                    result = &mut extraction => break result.map_err(|error| (error, false))?,
+                    result = &mut extraction => break match result {
+                        MemoryExtractionOutcome::Mutations(mutations) => mutations,
+                        MemoryExtractionOutcome::Retryable { reason } => {
+                            return Err(AdvanceFailure::Retryable(reason));
+                        }
+                        MemoryExtractionOutcome::ExecutionIndeterminate {
+                            auxiliary_run_id,
+                            reason,
+                        } => {
+                            if auxiliary_run_id != intent.auxiliary_run_id() {
+                                return Err(AdvanceFailure::Permanent(format!(
+                                    "Memory extractor returned unknown execution for foreign auxiliary Run `{auxiliary_run_id}`"
+                                )));
+                            }
+                            return Err(AdvanceFailure::ExecutionIndeterminate(reason));
+                        }
+                        MemoryExtractionOutcome::PermanentFailure { reason } => {
+                            return Err(AdvanceFailure::Permanent(reason));
+                        }
+                    },
                     () = tokio::time::sleep(std::time::Duration::from_millis(self.policy.heartbeat_ms)) => {
                         self.renew_current_claim(intent, generation)
                             .await
-                            .map_err(|error| (error.to_string(), false))?;
+                            .map_err(|error| AdvanceFailure::Retryable(error.to_string()))?;
                     }
                 }
             };
@@ -312,38 +343,37 @@ impl MemoryExtractionController {
                 .repository
                 .get_extraction(&intent.intent_id)
                 .await
-                .map_err(|error| (error.to_string(), false))?
+                .map_err(|error| AdvanceFailure::Retryable(error.to_string()))?
                 .ok_or_else(|| {
-                    (
+                    AdvanceFailure::Permanent(
                         "Memory extraction disappeared during execution".into(),
-                        true,
                     )
                 })?;
             current
                 .require_claim(&self.owner, generation, unix_ms())
-                .map_err(|error| (error.to_string(), false))?;
+                .map_err(|error| AdvanceFailure::Retryable(error.to_string()))?;
             *intent = current;
             let expected_revision = intent.revision;
             intent
                 .mark_extracted(&self.owner, generation, unix_ms(), mutations)
-                .map_err(|error| (error.to_string(), false))?;
+                .map_err(|error| AdvanceFailure::Retryable(error.to_string()))?;
             self.repository
                 .compare_and_swap_extraction(expected_revision, intent.clone())
                 .await
-                .map_err(|error| (error.to_string(), false))?;
+                .map_err(|error| AdvanceFailure::Retryable(error.to_string()))?;
         }
         if intent.status == MemoryExtractionStatus::Extracted {
             driver
                 .validate_binding(intent)
                 .await
-                .map_err(|error| (error, true))?;
+                .map_err(AdvanceFailure::Permanent)?;
             let mut receipts = Vec::with_capacity(intent.mutations.len());
             for mutation in &intent.mutations {
                 receipts.push(
                     driver
                         .apply(intent, mutation)
                         .await
-                        .map_err(|error| (error, false))?,
+                        .map_err(AdvanceFailure::Retryable)?,
                 );
             }
             let expected_revision = intent.revision;
@@ -357,24 +387,30 @@ impl MemoryExtractionController {
                         mutations: receipts,
                     },
                 )
-                .map_err(|error| (error.to_string(), false))?;
+                .map_err(|error| AdvanceFailure::Retryable(error.to_string()))?;
             self.repository
                 .compare_and_swap_extraction(expected_revision, intent.clone())
                 .await
-                .map_err(|error| (error.to_string(), false))?;
+                .map_err(|error| AdvanceFailure::Retryable(error.to_string()))?;
         }
         if intent.status == MemoryExtractionStatus::Stored {
             let expected_revision = intent.revision;
             intent
                 .complete(&self.owner, generation, unix_ms())
-                .map_err(|error| (error.to_string(), false))?;
+                .map_err(|error| AdvanceFailure::Retryable(error.to_string()))?;
             self.repository
                 .compare_and_swap_extraction(expected_revision, intent.clone())
                 .await
-                .map_err(|error| (error.to_string(), false))?;
+                .map_err(|error| AdvanceFailure::Retryable(error.to_string()))?;
         }
         Ok(())
     }
+}
+
+enum AdvanceFailure {
+    Retryable(String),
+    ExecutionIndeterminate(String),
+    Permanent(String),
 }
 
 pub(crate) fn unix_ms() -> u64 {

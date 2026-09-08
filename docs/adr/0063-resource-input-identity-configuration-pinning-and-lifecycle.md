@@ -389,6 +389,14 @@ missing terminal outbox intent, reclaims an expired process lease, and remounts 
 dead FUSE realization before resuming. The resource stores never receive a
 principal, API key, role, policy document, or PDP result.
 
+The auxiliary Run id is stable across every claim. A safe retry re-observes that
+same Run and resumes only the remaining durable stage. An execution whose
+termination is not authoritative transitions from `Claimed` to the terminal
+`ExecutionIndeterminate` disposition; it is not reclaimed or counted down as a
+generic model retry. Known terminal failures use `TerminalFailed`. This keeps
+execution evidence in the application intent without adding another recovery
+store or moving Run truth into the Memory resource aggregate.
+
 ### D8: Anthropic compatibility is an adapter concern
 
 The Managed adapter continues to accept and project Anthropic File, MemoryStore,

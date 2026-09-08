@@ -630,6 +630,11 @@ before the activation is considered fully settled. The Runtime Host supplies the
 scoped handles and durable adapters but does not decide extraction eligibility,
 cursor movement, prompt policy, or mutation semantics.
 
+Extraction re-enters through its durable auxiliary Run; safe retries observe it
+without creating a second execution. An unknown Runtime
+outcome becomes `ExecutionIndeterminate`: it keeps its Run identity and diagnostic,
+creates no mutation or receipt, and awaits attention; a known terminal failure becomes `TerminalFailed`.
+
 Suspension denies new opens and later writes. Deletion creates a tombstone,
 rejects all operations, drains active handles and extraction jobs, applies
 retention/redaction rules, purges the unified content/history transactionally,

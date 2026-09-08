@@ -518,6 +518,15 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   or arbitrary crashes. Twelve before/after-save error/cancellation rows,
   real SQLite/PG conformance, and terminal-only HTTP authorization are the
   corresponding implementation checks.
+  `MemoryExtraction.tla` composes the existing durable intent stages with the
+  stable auxiliary Run boundary. It checks that recovery after an in-flight
+  crash observes the same Run without a second start, and that an explicit
+  unknown result becomes a non-recoverable `execution_indeterminate` terminal.
+  Unknown never fabricates mutations/receipts, changes the auxiliary Run identity,
+  or consumes the ordinary retry budget again. The model bounds attempts
+  to two and treats Runtime observation honesty, repository CAS/lease semantics,
+  provider effects, and eventual operator resolution as external assumptions;
+  it is model-linked safety evidence, not Rust refinement or a liveness claim.
   Copy location is checked inside the same repository transaction, before the
   same-content retry shortcut. Ordinary API/open-FUSE-fd updates still follow
   their ID. The shared Memory conformance suite covers SQLite/Postgres/volatile

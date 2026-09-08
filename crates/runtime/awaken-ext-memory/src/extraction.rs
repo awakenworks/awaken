@@ -18,142 +18,8 @@ use awaken_agent_contract::thread::read::transcript::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Frozen, secret-free extractor configuration used by every retry.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct MemoryExtractorSnapshot {
-    /// Complete ordinary Agent publication used on every retry. It contains
-    /// model/tool/plugin references only, never secret bytes.
-    pub agent: awaken_runtime_contract::ExecutableAgentSnapshot,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extraction_prompt: Option<String>,
-}
-
-impl<'de> Deserialize<'de> for MemoryExtractorSnapshot {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Stored {
-            Current {
-                agent: Box<awaken_runtime_contract::ExecutableAgentSnapshot>,
-                #[serde(default)]
-                extraction_prompt: Option<String>,
-            },
-            Legacy {
-                agent_id: String,
-                model: Box<awaken_runtime_contract::resolved::ResolvedModelCandidate>,
-                #[serde(default)]
-                instructions: Option<String>,
-                #[serde(default)]
-                extraction_prompt: Option<String>,
-            },
-        }
-
-        Ok(match Stored::deserialize(deserializer)? {
-            Stored::Current {
-                agent,
-                extraction_prompt,
-            } => Self {
-                agent: *agent,
-                extraction_prompt,
-            },
-            Stored::Legacy {
-                agent_id,
-                model,
-                instructions,
-                extraction_prompt,
-            } => Self {
-                agent: crate::memory_agent(
-                    &agent_id,
-                    *model,
-                    instructions
-                        .as_deref()
-                        .filter(|value| !value.trim().is_empty())
-                        .unwrap_or(crate::DEFAULT_MEMORY_INSTRUCTIONS),
-                ),
-                extraction_prompt,
-            },
-        })
-    }
-}
-
-impl MemoryExtractorSnapshot {
-    /// Construct the explicit host-executor form used by embedded compositions
-    /// and persistence-adapter tests. Provider-backed publications carry their
-    /// complete candidate from the executable snapshot instead.
-    #[must_use]
-    pub fn host_executor(
-        agent_id: impl Into<String>,
-        provider_identity_ref: impl Into<String>,
-        model_ref: impl Into<String>,
-        backend_ref: impl Into<String>,
-    ) -> Self {
-        let agent_id = agent_id.into();
-        Self {
-            agent: crate::memory_agent(
-                &agent_id,
-                awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                    awaken_runtime_contract::resolved::ModelBinding::new(
-                        provider_identity_ref,
-                        model_ref,
-                        backend_ref,
-                    ),
-                ),
-                crate::DEFAULT_MEMORY_INSTRUCTIONS,
-            ),
-            extraction_prompt: None,
-        }
-    }
-}
-
-/// One deterministic Memory mutation proposed by the extractor.
-///
-/// `observed_sha256` is captured before storage. A retry may apply the mutation
-/// only when the current head still equals that value, or treat it as already
-/// applied when the current head equals `target_sha256`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MemoryExtractionMutation {
-    pub path: String,
-    pub content: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observed_sha256: Option<String>,
-    pub target_sha256: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MemoryMutationReceipt {
-    pub path: String,
-    pub target_sha256: String,
-    /// `true` when a prior attempt had already committed this exact target.
-    pub already_applied: bool,
-}
-
-/// Durable proof that every proposed mutation reached the governed store.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MemoryExtractionReceipt {
-    pub stored_at_unix_ms: u64,
-    pub mutations: Vec<MemoryMutationReceipt>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MemoryExtractionStatus {
-    Pending,
-    Claimed,
-    Extracted,
-    Stored,
-    Completed,
-    TerminalFailed,
-}
-
-impl MemoryExtractionStatus {
-    #[must_use]
-    pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::TerminalFailed)
-    }
-}
+mod types;
+pub use types::*;
 
 /// Recoverable application intent keyed by one terminal commit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -212,62 +78,6 @@ pub struct MemoryExtractionIntent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MemoryExtractionError {
-    Invalid(String),
-    NotFound(String),
-    IdempotencyConflict(String),
-    RevisionConflict(String),
-    LeaseHeld {
-        lease_expires_at_unix_ms: u64,
-    },
-    StaleClaim,
-    InvalidTransition {
-        from: MemoryExtractionStatus,
-        to: MemoryExtractionStatus,
-    },
-    Storage(String),
-}
-
-impl std::fmt::Display for MemoryExtractionError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Invalid(message) => {
-                write!(formatter, "invalid Memory extraction intent: {message}")
-            }
-            Self::NotFound(id) => {
-                write!(formatter, "Memory extraction intent `{id}` was not found")
-            }
-            Self::IdempotencyConflict(key) => write!(
-                formatter,
-                "Memory extraction idempotency key `{key}` has different content"
-            ),
-            Self::RevisionConflict(id) => {
-                write!(
-                    formatter,
-                    "Memory extraction intent `{id}` changed concurrently"
-                )
-            }
-            Self::LeaseHeld {
-                lease_expires_at_unix_ms,
-            } => write!(
-                formatter,
-                "Memory extraction intent is already claimed until {lease_expires_at_unix_ms}"
-            ),
-            Self::StaleClaim => formatter.write_str("stale Memory extraction claim"),
-            Self::InvalidTransition { from, to } => write!(
-                formatter,
-                "invalid Memory extraction transition from {from:?} to {to:?}"
-            ),
-            Self::Storage(message) => {
-                write!(formatter, "Memory extraction repository failure: {message}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for MemoryExtractionError {}
 
 impl MemoryExtractionIntent {
     #[allow(clippy::too_many_arguments)]
@@ -461,6 +271,13 @@ impl MemoryExtractionIntent {
             {
                 return Err(MemoryExtractionError::Invalid(
                     "stored intent requires a storage receipt".into(),
+                ));
+            }
+            MemoryExtractionStatus::ExecutionIndeterminate
+                if !self.mutations.is_empty() || self.receipt.is_some() =>
+            {
+                return Err(MemoryExtractionError::Invalid(
+                    "indeterminate execution cannot fabricate mutations or a receipt".into(),
                 ));
             }
             _ => {}
@@ -725,6 +542,28 @@ impl MemoryExtractionIntent {
         self.bump_revision()
     }
 
+    /// Retire an extraction whose stable auxiliary Run may have produced an
+    /// external effect but has no authoritative terminal observation. The same
+    /// intent remains the durable attention record; it must not re-enter the
+    /// ordinary retry budget or mint another auxiliary Run identity.
+    pub fn mark_execution_indeterminate(
+        &mut self,
+        owner: &str,
+        generation: u64,
+        now_unix_ms: u64,
+        error: impl Into<String>,
+    ) -> Result<(), MemoryExtractionError> {
+        self.require_claim(owner, generation, now_unix_ms)?;
+        self.require_status(
+            MemoryExtractionStatus::Claimed,
+            MemoryExtractionStatus::ExecutionIndeterminate,
+        )?;
+        self.status = MemoryExtractionStatus::ExecutionIndeterminate;
+        self.last_error = Some(error.into());
+        self.clear_claim();
+        self.bump_revision()
+    }
+
     /// Record one exact credential effect under the live extraction claim.
     /// Replaying the identical receipt is idempotent; a different receipt for the
     /// same candidate/claim is rejected rather than becoming a second truth.
@@ -858,10 +697,7 @@ pub trait MemoryExtractionDriver: Send + Sync {
     async fn validate_binding(&self, intent: &MemoryExtractionIntent) -> Result<(), String>;
 
     /// Execute the pinned Extractor Agent and return deterministic proposed writes.
-    async fn extract(
-        &self,
-        intent: &MemoryExtractionIntent,
-    ) -> Result<Vec<MemoryExtractionMutation>, String>;
+    async fn extract(&self, intent: &MemoryExtractionIntent) -> MemoryExtractionOutcome;
 
     /// Apply one proposed write using the mutation's optimistic hashes.
     async fn apply(
@@ -1154,6 +990,39 @@ mod tests {
     }
 
     #[test]
+    fn execution_indeterminate_is_terminal_and_retains_the_stable_run_identity() {
+        // Cause/effect graph: C1 the current claim owns a stable auxiliary Run;
+        // C2 its execution is known/unknown; C3 a later worker scans recoverable
+        // work. Effects: E1 unknown retires the claim without changing the Run
+        // id; E2 it is terminal for automatic scheduling; E3 no mutations or
+        // receipt are fabricated. Decision rules: R1=C1+unknown=>E1,E2,E3;
+        // R2=C1+known-success is covered by the ordinary Extracted path above.
+        let mut intent = intent();
+        let run_id = intent.auxiliary_run_id();
+        let generation = intent.claim("worker-a", 100, 50).unwrap();
+
+        intent
+            .mark_execution_indeterminate(
+                "worker-a",
+                generation,
+                110,
+                "remote termination is not observable",
+            )
+            .unwrap();
+
+        assert_eq!(
+            intent.status,
+            MemoryExtractionStatus::ExecutionIndeterminate,
+            "R1/E1"
+        );
+        assert!(intent.status.is_terminal(), "R1/E2");
+        assert_eq!(intent.auxiliary_run_id(), run_id, "R1/E1");
+        assert!(intent.claim_owner.is_none(), "R1/E1");
+        assert!(intent.mutations.is_empty(), "R1/E3");
+        assert!(intent.receipt.is_none(), "R1/E3");
+    }
+
+    #[test]
     fn stale_or_live_claims_cannot_advance_the_intent() {
         let mut intent = intent();
         let generation = intent.claim("worker-a", 100, 50).unwrap();
@@ -1349,7 +1218,7 @@ mod tests {
 
     struct TestDriver {
         extraction_calls: AtomicUsize,
-        fail_first_extraction: bool,
+        first_outcome: Option<MemoryExtractionOutcome>,
         binding_valid: bool,
     }
 
@@ -1365,15 +1234,14 @@ mod tests {
                 .ok_or_else(|| "binding revoked".to_string())
         }
 
-        async fn extract(
-            &self,
-            _intent: &MemoryExtractionIntent,
-        ) -> Result<Vec<MemoryExtractionMutation>, String> {
+        async fn extract(&self, _intent: &MemoryExtractionIntent) -> MemoryExtractionOutcome {
             let call = self.extraction_calls.fetch_add(1, Ordering::SeqCst);
-            if self.fail_first_extraction && call == 0 {
-                return Err("temporary model failure".into());
+            if call == 0
+                && let Some(outcome) = &self.first_outcome
+            {
+                return outcome.clone();
             }
-            Ok(vec![MemoryExtractionMutation {
+            MemoryExtractionOutcome::Mutations(vec![MemoryExtractionMutation {
                 path: "/customer.md".into(),
                 content: "remember".into(),
                 observed_sha256: None,
@@ -1414,7 +1282,9 @@ mod tests {
         );
         let driver = TestDriver {
             extraction_calls: AtomicUsize::new(0),
-            fail_first_extraction: true,
+            first_outcome: Some(MemoryExtractionOutcome::Retryable {
+                reason: "temporary model failure".into(),
+            }),
             binding_valid: true,
         };
 
@@ -1470,7 +1340,7 @@ mod tests {
         controller.enqueue(intent()).await.unwrap();
         let driver = TestDriver {
             extraction_calls: AtomicUsize::new(0),
-            fail_first_extraction: false,
+            first_outcome: None,
             binding_valid: true,
         };
 
@@ -1568,7 +1438,7 @@ mod tests {
         controller.enqueue(intent()).await.unwrap();
         let driver = TestDriver {
             extraction_calls: AtomicUsize::new(0),
-            fail_first_extraction: false,
+            first_outcome: None,
             binding_valid: false,
         };
 
@@ -1582,6 +1452,87 @@ mod tests {
         assert_eq!(failed.status, MemoryExtractionStatus::TerminalFailed);
         assert_eq!(failed.last_error.as_deref(), Some("binding revoked"));
         assert_eq!(driver.extraction_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn controller_never_retries_indeterminate_or_permanent_extraction() {
+        // Cause/effect graph: C1 extraction result is retryable, execution-
+        // indeterminate, or permanent; C2 the retry budget remains. Effects: E1
+        // retryable may reclaim the same intent; E2 unknown becomes the explicit
+        // attention terminal and keeps the stable Run id; E3 permanent becomes
+        // TerminalFailed; E4 neither E2 nor E3 invokes the extractor twice.
+        // | Rule | result          | budget | terminal                 | calls |
+        // | R1   | Retryable       | yes    | eventual Completed       | 2     |
+        // | R2   | Indeterminate   | yes    | ExecutionIndeterminate   | 1     |
+        // | R3   | Permanent       | yes    | TerminalFailed           | 1     |
+        // | R4   | Unknown/wrong id| yes    | TerminalFailed           | 1     |
+        // R1 is owned by controller_owns_retry_receipt_and_completion_ordering;
+        // this test covers R2-R4 and the no-blind-replay/identity invariant.
+        for (suffix, outcome, expected, expected_error) in [
+            (
+                "unknown",
+                MemoryExtractionOutcome::ExecutionIndeterminate {
+                    auxiliary_run_id: "extract-1/agent/run".into(),
+                    reason: "provider result unknown".into(),
+                },
+                MemoryExtractionStatus::ExecutionIndeterminate,
+                "provider result unknown",
+            ),
+            (
+                "permanent",
+                MemoryExtractionOutcome::PermanentFailure {
+                    reason: "stable Run failed".into(),
+                },
+                MemoryExtractionStatus::TerminalFailed,
+                "stable Run failed",
+            ),
+            (
+                "foreign-unknown",
+                MemoryExtractionOutcome::ExecutionIndeterminate {
+                    auxiliary_run_id: "another-intent/agent/run".into(),
+                    reason: "provider result unknown".into(),
+                },
+                MemoryExtractionStatus::TerminalFailed,
+                "foreign auxiliary Run",
+            ),
+        ] {
+            let repository = Arc::new(TestRepository::default());
+            let controller = MemoryExtractionController::new(repository.clone(), "worker-a")
+                .with_policy(MemoryExtractionPolicy {
+                    lease_ms: 1_000,
+                    heartbeat_ms: 100,
+                    max_attempts: 3,
+                    retry_base_ms: 0,
+                });
+            controller.enqueue(intent()).await.unwrap();
+            let driver = TestDriver {
+                extraction_calls: AtomicUsize::new(0),
+                first_outcome: Some(outcome),
+                binding_valid: true,
+            };
+
+            controller.drive_recoverable(&driver).await;
+
+            let terminal = repository
+                .get_extraction("extract-1")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(terminal.status, expected, "{suffix}: R2-R4 terminal");
+            assert_eq!(
+                driver.extraction_calls.load(Ordering::SeqCst),
+                1,
+                "{suffix}: R2-R4/E4"
+            );
+            assert_eq!(terminal.auxiliary_run_id(), "extract-1/agent/run");
+            assert!(
+                terminal
+                    .last_error
+                    .as_deref()
+                    .is_some_and(|error| error.contains(expected_error)),
+                "{suffix}: exact terminal diagnostic"
+            );
+        }
     }
 
     #[tokio::test]

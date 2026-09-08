@@ -86,3 +86,85 @@ def check_memory_participant_model_mutants(tlc_jar: Path) -> None:
         mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
     check_tlc_model_mutations(tlc_jar, "MemoryParticipantOwnership", source, config, mutations)
     print("Memory participant ownership: 12/12 mutants killed; 6 lifecycle witnesses reachable")
+
+
+def check_memory_extraction_model_mutants(tlc_jar: Path) -> None:
+    """Reject retry/identity mutations at the durable extraction boundary."""
+    source = (ROOT / "formal/tla/MemoryExtraction.tla").read_text()
+    config = (ROOT / "formal/tla/MemoryExtraction.cfg").read_text()
+    header = "SPECIFICATION Spec\nCHECK_DEADLOCK FALSE\nCONSTANTS MaxAttempts = 2 StableRun = stable_run\n"
+    def action(name: str, successor: str) -> str:
+        start = source.index(f"{name} ==")
+        end = source.index(f"\n{successor} ==", start)
+        return source[start:end]
+
+    unknown = action("ReturnIndeterminate", "ReturnPermanent")
+    retryable = action("ReturnRetryable", "ReturnIndeterminate")
+    claim = action("Claim", "StartExtraction")
+    recovery = action("RecoverExtraction", "ReturnMutations")
+    mutations = [
+        (
+            source.replace(
+                unknown,
+                unknown.replace(
+                    "/\\ UNCHANGED <<attempts, runStarts, observations, mutations, receipt,\n                    runIdentity>>",
+                    "/\\ mutations' = TRUE\n    /\\ UNCHANGED <<attempts, runStarts, observations, receipt,\n                    runIdentity>>",
+                ),
+            ),
+            header + "INVARIANTS UnknownHasNoFabricatedWork\n",
+            "UnknownHasNoFabricatedWork",
+        ),
+        (
+            source.replace(
+                claim,
+                claim.replace(
+                    '{"pending", "extracted", "stored"}',
+                    '{"pending", "extracted", "stored", "execution_indeterminate"}',
+                ),
+            ),
+            header + "INVARIANTS TerminalHasNoClaim\n",
+            "TerminalHasNoClaim",
+        ),
+        (
+            source.replace(
+                unknown,
+                unknown.replace("terminalRunStarts' = runStarts", "terminalRunStarts' = 0"),
+            ),
+            header + "INVARIANTS UnknownCannotInvokeAgain\n",
+            "UnknownCannotInvokeAgain",
+        ),
+        (
+            source.replace(
+                retryable,
+                retryable.replace(
+                    "/\\ UNCHANGED <<attempts, runStarts, observations, mutations, receipt,",
+                    "/\\ runIdentity' = \"replacement\"\n    /\\ UNCHANGED <<attempts, runStarts, observations, mutations, receipt,",
+                ).replace(
+                    "                    runIdentity, terminalRunStarts>>",
+                    "                    terminalRunStarts>>",
+                ),
+            ),
+            header + "INVARIANTS StableAuxiliaryRun\n",
+            "StableAuxiliaryRun",
+        ),
+        (
+            source.replace(
+                recovery,
+                recovery.replace(
+                    "/\\ observations' = observations + 1",
+                    "/\\ observations' = observations + 1\n    /\\ runStarts' = runStarts + 1",
+                ).replace(
+                    "/\\ UNCHANGED <<phase, runStarts, mutations, receipt, runIdentity,",
+                    "/\\ UNCHANGED <<phase, mutations, receipt, runIdentity,",
+                ),
+            ),
+            header + "INVARIANTS SingleStableRunStart\n",
+            "SingleStableRunStart",
+        ),
+    ]
+    if any(mutated == source for mutated, _, _ in mutations):
+        raise SystemExit("Memory extraction mutation anchor drifted")
+    for witness in ("NoIndeterminateReached", "NoCompletedReached"):
+        mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
+    check_tlc_model_mutations(tlc_jar, "MemoryExtraction", source, config, mutations)
+    print("Memory extraction: 5/5 mutants killed; 2 terminal schedules reachable")

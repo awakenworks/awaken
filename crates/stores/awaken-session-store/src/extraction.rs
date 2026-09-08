@@ -22,6 +22,7 @@ fn status_name(status: MemoryExtractionStatus) -> &'static str {
         MemoryExtractionStatus::Extracted => "extracted",
         MemoryExtractionStatus::Stored => "stored",
         MemoryExtractionStatus::Completed => "completed",
+        MemoryExtractionStatus::ExecutionIndeterminate => "execution_indeterminate",
         MemoryExtractionStatus::TerminalFailed => "terminal_failed",
     }
 }
@@ -179,7 +180,7 @@ impl MemoryExtractionRepository for SqliteManagedSessionRepository {
             let mut statement = conn
                 .prepare(
                     "SELECT data FROM managed_memory_extraction
-                 WHERE status NOT IN ('completed', 'terminal_failed')
+                 WHERE status NOT IN ('completed', 'execution_indeterminate', 'terminal_failed')
                  ORDER BY created_at, intent_id LIMIT ?1",
                 )
                 .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
@@ -318,7 +319,7 @@ impl MemoryExtractionRepository for PostgresManagedSessionRepository {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         sqlx::query(
             "SELECT data FROM managed_memory_extraction
-             WHERE status NOT IN ('completed', 'terminal_failed')
+             WHERE status NOT IN ('completed', 'execution_indeterminate', 'terminal_failed')
              ORDER BY created_at, intent_id LIMIT $1",
         )
         .bind(limit)
