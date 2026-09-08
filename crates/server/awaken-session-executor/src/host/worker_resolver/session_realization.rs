@@ -204,13 +204,12 @@ mod tests {
         );
     }
 
-    /// C1-C3: a cold Worker must derive eager-vs-deferred provisioning only from
+    /// C1-C2: a cold Worker must derive eager-vs-deferred provisioning only from
     /// the immutable dispatch envelope. A complete eager Runtime plus exact empty
     /// Resource projection realizes eagerly, an exact on-tool-use projection stays
-    /// sandbox-free during Brain resolution, and a malformed projection is rejected
-    /// by claim admission before any Worker or Sandbox effect. Moving C3 earlier
-    /// preserves fail-closed behavior while keeping one projection decoder at the
-    /// run-ingress contract boundary.
+    /// sandbox-free during Brain resolution. Malformed projection admission belongs
+    /// to the shared cross-backend Run Ingress conformance table; keeping it there
+    /// avoids a second store-contract test in this Worker realization suite.
     #[tokio::test]
     async fn cold_worker_runtime_projection_decision_table() {
         use awaken_dispatch::{Clock, DispatchQueue, WorkerResolver as _};
@@ -310,44 +309,6 @@ mod tests {
                     }))
                 .unwrap_or(false),
             "C2"
-        );
-
-        store
-            .enqueue(
-                awaken_dispatch::RunDispatch::new(test_activation(
-                    "cold-invalid",
-                    "run-invalid",
-                ))
-                .with_session_runtime(awaken_dispatch::SessionRuntimeEnvelope::new("{")),
-            )
-            .await
-            .expect("enqueue invalid projection");
-        // C3 is filtered by the queue's canonical credential-admission
-        // selector before a claim exists. An ineligible row is not a queue
-        // transport error; C4 a later eligible row must still be claimable.
-        assert!(
-            store
-                .claim("worker-a", 1_000, now, &Default::default())
-                .await
-                .expect("C3 invalid projection is skipped before claim")
-                .is_none()
-        );
-        store
-            .enqueue(awaken_dispatch::RunDispatch::new(test_activation(
-                "cold-after-invalid",
-                "run-after-invalid",
-            )))
-            .await
-            .unwrap();
-        let eligible = store
-            .claim("worker-a", 1_000, now, &Default::default())
-            .await
-            .unwrap()
-            .expect("C4 malformed row cannot starve an eligible Run");
-        assert_eq!(eligible.request.activation.run_id.0, "run-after-invalid");
-        assert!(
-            host.session_environment("cold-invalid").await.is_none(),
-            "C3"
         );
     }
 
