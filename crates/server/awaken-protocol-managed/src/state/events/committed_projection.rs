@@ -633,19 +633,7 @@ impl ManagedState {
             && !Self::primary_thread_status_is_open(record)
             && let Some(terminal) = projected_root_terminal
         {
-            let reconstructed = primary_thread_status_event(
-                record,
-                managed_multiagent_event_id(
-                    &record.session.id,
-                    &record.session.id,
-                    "root-terminal-status-running",
-                    ManagedMultiagentEventProvenance::Lifecycle {
-                        cursor: terminal.cursor.0,
-                    },
-                ),
-                PrimaryThreadStatusProjection::Running,
-            );
-            record.events.push(reconstructed);
+            Self::append_terminal_thread_running_once(record, terminal);
         }
         if !blocked_transcript_threads.contains(session_id)
             && let Some(snapshot) = root_snapshot.as_ref()
@@ -827,7 +815,7 @@ impl ManagedState {
                 record,
                 None,
                 &terminal.state,
-                root_pending,
+                historical_pending.get(&terminal.cursor).or(root_pending),
                 terminal.await_reason.as_ref(),
             )?;
             let aggregate_reason = match thread_reason {
@@ -876,12 +864,30 @@ impl ManagedState {
         if can_idle && child_terminal_reached_budget {
             record.deferred_session_stop_reason = Some((None, StopReason::BudgetReached));
         }
-        if let Some(terminal) = projected_root_terminal {
-            record
-                .checkpoint
-                .progress
-                .terminal_cursors
-                .insert(terminal.cursor);
+        // All root terminals use this one reducer. A current-ticket-only fast
+        // path would freeze an empty approval payload when the latest terminal
+        // is historical and its reply has already resumed the Run.
+        for terminal in all_accepted_lifecycle.iter().filter(|event| {
+            event.thread_id.0 == session_id
+                && matches!(
+                    event.kind,
+                    RunLifecycleEventKind::Awaiting
+                        | RunLifecycleEventKind::Completed
+                        | RunLifecycleEventKind::Failed
+                        | RunLifecycleEventKind::Cancelled
+                )
+        }) {
+            let idle_id = managed_multiagent_event_id(
+                &record.session.id,
+                &record.session.id,
+                "root-lifecycle-status-idle",
+                ManagedMultiagentEventProvenance::Lifecycle {
+                    cursor: terminal.cursor.0,
+                },
+            );
+            if record.events.iter().any(|event| event.id == idle_id) {
+                continue;
+            }
             Self::append_root_terminal_error(
                 record,
                 terminal,
@@ -894,22 +900,21 @@ impl ManagedState {
                 record,
                 None,
                 &terminal.state,
-                root_pending,
+                historical_pending
+                    .get(&terminal.cursor)
+                    .or(root_pending.filter(|_| root_terminal == Some(terminal))),
                 terminal.await_reason.as_ref(),
             )?;
-            let thread_idle = primary_thread_status_event(
+            record.events.push(primary_thread_status_event(
                 record,
-                managed_multiagent_event_id(
-                    &record.session.id,
-                    &record.session.id,
-                    "root-lifecycle-status-idle",
-                    ManagedMultiagentEventProvenance::Lifecycle {
-                        cursor: terminal.cursor.0,
-                    },
-                ),
+                idle_id,
                 PrimaryThreadStatusProjection::Idle { stop_reason },
-            );
-            record.events.push(thread_idle);
+            ));
+            record
+                .checkpoint
+                .progress
+                .terminal_cursors
+                .insert(terminal.cursor);
         }
         let projected_usage =
             session_usage_value(usage, price_snapshot.as_ref()).map_err(StateError::Run)?;
@@ -1068,58 +1073,6 @@ impl ManagedState {
             || persisted.terminal_cleanup.runtime_commit_cursor().is_some()
         {
             self.append_parent_terminal_projection(record);
-        }
-        // A cold prefix can contain multiple completed root turns. The legacy
-        // projector lowered only its latest terminal, so repair every retained
-        // root boundary by the same lifecycle identity before interval ordering.
-        for terminal in all_accepted_lifecycle.iter().filter(|event| {
-            event.thread_id.0 == session_id
-                && matches!(
-                    event.kind,
-                    RunLifecycleEventKind::Awaiting
-                        | RunLifecycleEventKind::Completed
-                        | RunLifecycleEventKind::Failed
-                        | RunLifecycleEventKind::Cancelled
-                )
-        }) {
-            let idle_id = managed_multiagent_event_id(
-                &record.session.id,
-                &record.session.id,
-                "root-lifecycle-status-idle",
-                ManagedMultiagentEventProvenance::Lifecycle {
-                    cursor: terminal.cursor.0,
-                },
-            );
-            if record.events.iter().any(|event| event.id == idle_id) {
-                continue;
-            }
-            Self::append_root_terminal_error(
-                record,
-                terminal,
-                durable_outcome_projections
-                    .iter()
-                    .any(|projection| projection.owns_failure_run(&terminal.run_id)),
-                root_snapshot.as_ref(),
-            )?;
-            let stop_reason = Self::public_run_stop_reason(
-                record,
-                None,
-                &terminal.state,
-                historical_pending
-                    .get(&terminal.cursor)
-                    .or(root_pending.filter(|_| root_terminal == Some(terminal))),
-                terminal.await_reason.as_ref(),
-            )?;
-            record.events.push(primary_thread_status_event(
-                record,
-                idle_id,
-                PrimaryThreadStatusProjection::Idle { stop_reason },
-            ));
-            record
-                .checkpoint
-                .progress
-                .terminal_cursors
-                .insert(terminal.cursor);
         }
         Self::replace_interval_aggregate_projections(
             record,

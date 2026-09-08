@@ -1483,8 +1483,13 @@ def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "SessionRuntimeProjection", source, opening_config, [
         (source.replace("cursor <= other", "IF phase = \"closed\" THEN cursor >= other ELSE cursor <= other", 1),
          opening_config, "OpeningIdentityStable"),
+        # O2 a terminal-only first interval cannot borrow a later interval's
+        # Running cursor; both warm and cold readers must retain its fallback.
+        (source.replace('IF aggregate = "terminal-only" THEN 1 ELSE',
+                        'IF aggregate = "terminal-only" THEN sourceVersion ELSE', 1),
+         opening_config, "OpeningIdentityStable"),
     ])
-    print("Cowork lifecycle mutation score: 19/19 killed (worker evidence 3, drain 4, ACP/composition/rollout 5, cleanup evidence 4, presentation/admission 2, opening identity 1); drain ACK witness reachable")
+    print("Cowork lifecycle mutation score: 20/20 killed (worker evidence 3, drain 4, ACP/composition/rollout 5, cleanup evidence 4, presentation/admission 2, opening identity 2); drain ACK witness reachable")
 
 
 def check_observation_rule_mutants(trace_dir: Path, manifest: dict) -> None:

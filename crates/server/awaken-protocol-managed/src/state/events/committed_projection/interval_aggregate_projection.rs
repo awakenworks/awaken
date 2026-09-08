@@ -17,6 +17,27 @@ impl ManagedState {
         }
     }
 
+    pub(super) fn append_terminal_thread_running_once(
+        record: &mut SessionRecord,
+        terminal: &RunLifecycleEvent,
+    ) {
+        let id = managed_multiagent_event_id(
+            &record.session.id,
+            &record.session.id,
+            "root-terminal-status-running",
+            ManagedMultiagentEventProvenance::Lifecycle {
+                cursor: terminal.cursor.0,
+            },
+        );
+        if record.events.iter().all(|event| event.id != id) {
+            record.events.push(primary_thread_status_event(
+                record,
+                id,
+                PrimaryThreadStatusProjection::Running,
+            ));
+        }
+    }
+
     pub(super) fn replace_interval_aggregate_projections(
         record: &mut SessionRecord,
         persisted: &awaken_session_contract::PersistedSession,
@@ -177,6 +198,38 @@ impl ManagedState {
                     },
                 )
             });
+            // A fast interval may commit only Awaiting/Ended. Its terminal-prefix
+            // bracket was public before any later interval existed and must be
+            // rebuilt on a cold reader using that same exact terminal, never a
+            // Running commit beyond this interval's retained close.
+            if running_id.is_none()
+                && let Some(terminal) = interval.observations.iter().find_map(|observation| {
+                    lifecycle_events.iter().find(|event| {
+                        event.cursor == observation.lifecycle_cursor
+                            && event.thread_id == observation.thread_id
+                            && event.run_id == observation.run_id
+                            && event.thread_id.0 == record.session.id
+                            && matches!(
+                                event.kind,
+                                RunLifecycleEventKind::Awaiting
+                                    | RunLifecycleEventKind::Completed
+                                    | RunLifecycleEventKind::Failed
+                                    | RunLifecycleEventKind::Cancelled
+                            )
+                    })
+                })
+            {
+                let id = managed_multiagent_event_id(
+                    &record.session.id,
+                    &record.session.id,
+                    "aggregate-terminal-status-running",
+                    ManagedMultiagentEventProvenance::LifecyclePrefix {
+                        cursor: terminal.cursor.0,
+                    },
+                );
+                Self::append_aggregate_running_once(record, id);
+                Self::append_terminal_thread_running_once(record, terminal);
+            }
             let usage_id = managed_multiagent_event_id(
                 &record.session.id,
                 &record.session.id,

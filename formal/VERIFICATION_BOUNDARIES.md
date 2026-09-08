@@ -429,11 +429,13 @@ type checking are valuable executable evidence, but are not formal proofs.
   isolation, cold reconstruction of pre-anchor legacy history, browser delivery,
   or lifecycle-supervisor fairness.
   `SessionRuntimeProjection.tla` also checks opening identity with the bounded
-  `SessionRuntimeProjectionOpening.cfg`: one exact interval, up to three
-  Running commits, arbitrary live reads, terminal observation and cold rebuild.
+  `SessionRuntimeProjectionOpening.cfg`: one retained opening, up to three
+  source commits and one later interval, arbitrary live reads, terminal
+  observation and cold rebuild, including a terminal-only first interval.
   Both projections must retain the first admitted opening; choosing the latest
-  Running after terminal is rejected by the Cowork lifecycle semantic mutant.
-  The existing Rust recovery test exercises 12 source/terminal combinations,
+  Running after terminal or borrowing the next interval's Running for a
+  terminal-only predecessor is rejected by the Cowork lifecycle mutants.
+  The existing Rust recovery test exercises 24 source/terminal combinations,
   three observation cuts, warm/cold equality and bidirectional pagination.
   This is abstract model checking, not Rust refinement: Run/Thread selection,
   legacy admission anchors and actual process failure are executable-test scope.
