@@ -24,5 +24,5 @@ serde_json.workspace = true
 tracing = "0.1"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "test-util"] }
 axum = "0.8"

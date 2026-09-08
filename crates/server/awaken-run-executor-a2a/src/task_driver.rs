@@ -1,192 +1,123 @@
+//! The one owned A2A observation/cancellation path; never spawn cleanup on drop.
+
+use std::future::Future;
 use std::sync::Arc;
 
-use awaken_agent_contract::agent::run::{EndCause, RunState};
+use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_protocol_a2a::client::{self as a2a, Transport};
 use awaken_protocol_a2a::{Task, TaskState};
-use awaken_runtime_contract::CancellationToken;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::execution::{
-    Error as ExecutionError, Result as ExecutionResult, verify_attempt_ownership,
-};
-use awaken_runtime_contract::runtime_context::{AttemptOwnershipVerifier, RuntimeRunContext};
+use awaken_runtime_contract::execution::{Error, Result, verify_attempt_ownership};
+use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+
+use super::{TaskReference, validate_reattached_task};
 
 const MAX_TASK_POLLS: usize = 600;
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
 
-#[derive(Debug)]
-pub(crate) enum PollError {
-    Cancelled,
-    Timeout,
-    Client(a2a::ClientError),
-    Ownership(ExecutionError),
-}
-
-/// Completes the transport-side half of cooperative cancellation when an owner
-/// drops the polling future immediately after cancelling its token. Runtime tool
-/// cancellation intentionally drops in-flight futures; without this guard that
-/// correct local-process behavior could strand a remote A2A task before this
-/// driver had a chance to observe the same token.
-struct CancellationOnDrop {
-    transport: Arc<dyn Transport>,
-    task_id: String,
-    cancellation: Option<CancellationToken>,
-    ownership: Option<Arc<dyn AttemptOwnershipVerifier>>,
-    armed: bool,
-}
-
-impl CancellationOnDrop {
-    fn new(
-        transport: Arc<dyn Transport>,
-        task_id: String,
-        cancellation: Option<&CancellationToken>,
-        ownership: Option<Arc<dyn AttemptOwnershipVerifier>>,
-    ) -> Self {
-        Self {
-            transport,
-            task_id,
-            cancellation: cancellation.cloned(),
-            ownership,
-            armed: true,
-        }
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for CancellationOnDrop {
-    fn drop(&mut self) {
-        if !self.armed
-            || !self
-                .cancellation
-                .as_ref()
-                .is_some_and(CancellationToken::is_cancelled)
-        {
-            return;
-        }
-        let transport = self.transport.clone();
-        let task_id = self.task_id.clone();
-        let ownership = self.ownership.clone();
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        runtime.spawn(async move {
-            if verify_attempt_ownership(ownership.as_deref()).await.is_ok() {
-                let _ = a2a::try_cancel_task(transport.as_ref(), &task_id).await;
+/// Adapt this protocol to the existing attempt-local veto. This encloses the
+/// send/reattach, task-reference commit and observation, but not the final
+/// boundary commit: losing that commit cannot undo an observed remote boundary.
+/// Protocol errors carry no positive no-dispatch/termination evidence. Preserve
+/// their diagnostic while vetoing ACK before returning; drop/unwind uses the
+/// same Runtime observer as Native, MCP and Hand, not an A2A cleanup task.
+pub(super) async fn observe_remote_operation<T>(
+    context: &RuntimeRunContext,
+    operation: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    context
+        .physical_quiescence
+        .observe_return(async {
+            let result = operation.await;
+            if result.is_err() {
+                context.physical_quiescence.mark_uncertain();
             }
-        });
-    }
+            result
+        })
+        .await
 }
 
-/// Reattach to an A2A task and drive only its transport lifecycle. Root Runs and
-/// delegated Runs deliberately share this one polling/cancellation mechanism;
-/// each caller maps the returned task boundary into its own domain disposition.
-pub(crate) async fn poll_to_boundary(
+/// Cancellation delivery is not a stop receipt. Reobserve the exact task even
+/// after a lost cancel response; only its terminal state acknowledges stop.
+/// A waiting task is a normal execution boundary, but is NOT a terminal cancel.
+pub(super) async fn cancel_and_observe(
+    transport: &dyn Transport,
+    reference: &TaskReference,
+    context: &RuntimeRunContext,
+) -> Result<Task> {
+    verify_attempt_ownership(context.ownership.as_deref()).await?;
+    let delivery = a2a::try_cancel_task(transport, &reference.task_id).await;
+    verify_attempt_ownership(context.ownership.as_deref()).await?;
+    let observed = a2a::get_task(transport, &reference.task_id).await;
+    if let Ok(task) = &observed {
+        validate_reattached_task(reference, task)?;
+        if task.status.state.is_terminal() {
+            return Ok(observed.expect("matched successful observation"));
+        }
+    }
+    // Keep the delivery failure when neither response proves termination.
+    delivery.map_err(|error| Error::Execution(error.to_string()))?;
+    observed.map_err(|error| Error::Execution(error.to_string()))?;
+    Err(Error::Execution(
+        "remote A2A cancellation has no exact terminal observation".to_string(),
+    ))
+}
+
+/// Root and delegated Runs use the same bounded task driver. All GETs remain
+/// bound to the initial identity, including every poll (not only reattachment).
+pub(super) async fn poll_to_boundary(
     transport: Arc<dyn Transport>,
+    reference: &TaskReference,
     mut task: Task,
-    cancellation: Option<&CancellationToken>,
-    ownership: Option<Arc<dyn AttemptOwnershipVerifier>>,
-) -> Result<Task, PollError> {
-    let mut cancellation_on_drop = CancellationOnDrop::new(
-        transport.clone(),
-        task.id.clone(),
-        cancellation,
-        ownership.clone(),
-    );
+    context: &RuntimeRunContext,
+) -> Result<Task> {
     for poll in 0..=MAX_TASK_POLLS {
+        validate_reattached_task(reference, &task)?;
         if !matches!(
             task.status.state,
             TaskState::Submitted | TaskState::Working | TaskState::Unknown
         ) {
-            cancellation_on_drop.disarm();
             return Ok(task);
         }
-        if cancellation.is_some_and(CancellationToken::is_cancelled) {
-            if let Err(error) = verify_attempt_ownership(ownership.as_deref()).await {
-                cancellation_on_drop.disarm();
-                return Err(PollError::Ownership(error));
-            }
-            let result = a2a::try_cancel_task(transport.as_ref(), &task.id)
-                .await
-                .map_err(PollError::Client);
-            cancellation_on_drop.disarm();
-            result?;
-            return Err(PollError::Cancelled);
+        if context
+            .cancellation
+            .as_ref()
+            .is_some_and(|token| token.is_cancelled())
+        {
+            return cancel_and_observe(transport.as_ref(), reference, context).await;
         }
         if poll == MAX_TASK_POLLS {
-            cancellation_on_drop.disarm();
-            return Err(PollError::Timeout);
+            return Err(Error::Execution(
+                "remote A2A task did not reach a boundary in time".to_string(),
+            ));
         }
-        match cancellation {
+        match &context.cancellation {
             Some(token) => {
                 tokio::select! {
                     _ = tokio::time::sleep(POLL_INTERVAL) => {}
                     _ = token.cancelled() => {
-                        if let Err(error) = verify_attempt_ownership(ownership.as_deref()).await {
-                            cancellation_on_drop.disarm();
-                            return Err(PollError::Ownership(error));
-                        }
-                        let result = a2a::try_cancel_task(transport.as_ref(), &task.id)
-                            .await
-                            .map_err(PollError::Client);
-                        cancellation_on_drop.disarm();
-                        result?;
-                        return Err(PollError::Cancelled);
+                        return cancel_and_observe(transport.as_ref(), reference, context).await;
                     }
                 }
             }
             None => tokio::time::sleep(POLL_INTERVAL).await,
         }
-        if let Err(error) = verify_attempt_ownership(ownership.as_deref()).await {
-            cancellation_on_drop.disarm();
-            return Err(PollError::Ownership(error));
-        }
-        task = match a2a::get_task(transport.as_ref(), &task.id).await {
-            Ok(task) => task,
-            Err(error) => {
-                cancellation_on_drop.disarm();
-                return Err(PollError::Client(error));
-            }
-        };
+        verify_attempt_ownership(context.ownership.as_deref()).await?;
+        task = a2a::get_task(transport.as_ref(), &reference.task_id)
+            .await
+            .map_err(|error| Error::Execution(error.to_string()))?;
     }
     unreachable!("bounded A2A poll loop always returns")
 }
 
-/// Map one transport boundary into the ordinary committed Run boundary. This
-/// remains part of the task driver; the executor selects only the exact frozen
-/// candidate and transport before entering it.
-pub(crate) async fn drive_task(
-    transport: Arc<dyn Transport>,
+/// Commit only after the owned remote operation returned a validated boundary.
+pub(super) async fn finish_task(
     endpoint: &str,
     activation: &RunActivation,
     context: &RuntimeRunContext,
     task: Task,
-) -> ExecutionResult<RunState> {
-    let task = match poll_to_boundary(
-        transport.clone(),
-        task,
-        context.cancellation.as_ref(),
-        context.ownership.clone(),
-    )
-    .await
-    {
-        Ok(task) => task,
-        Err(PollError::Cancelled) => {
-            return super::finish_terminal(context, activation, Vec::new(), EndCause::Cancelled)
-                .await;
-        }
-        Err(PollError::Timeout) => {
-            return Err(ExecutionError::Execution(
-                "remote A2A task did not reach a boundary in time".to_string(),
-            ));
-        }
-        Err(PollError::Client(error)) => {
-            return Err(ExecutionError::Execution(error.to_string()));
-        }
-        Err(PollError::Ownership(error)) => return Err(error),
-    };
+) -> Result<RunState> {
     let reply = super::task_reply(&task);
     let messages = (!reply.is_empty())
         .then(|| super::assistant_message(context, activation, reply))
@@ -194,7 +125,7 @@ pub(crate) async fn drive_task(
         .collect();
     match task.status.state {
         TaskState::InputRequired | TaskState::AuthRequired => {
-            let reference = super::TaskReference::from_task(endpoint, &task);
+            let reference = TaskReference::from_task(endpoint, &task);
             super::commit_boundary(
                 context,
                 activation,
@@ -222,228 +153,446 @@ pub(crate) async fn drive_task(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use awaken_protocol_a2a::client::Response;
-    use awaken_runtime_contract::runtime_context::AttemptOwnershipError;
-    use tokio::sync::Notify;
-
     use super::*;
-
-    struct RecordingTransport {
-        cancellations: AtomicUsize,
-        cancelled: Notify,
-    }
-
-    #[async_trait::async_trait]
-    impl Transport for RecordingTransport {
-        async fn request(
-            &self,
-            method: &str,
-            path: &str,
-            _body: Option<Vec<u8>>,
-        ) -> Result<Response, String> {
-            if method == "POST" && path.ends_with(":cancel") {
-                self.cancellations.fetch_add(1, Ordering::SeqCst);
-                self.cancelled.notify_one();
-                return Ok(Response::new(204, Vec::new()));
-            }
-            Err(format!("unexpected request {method} {path}"))
-        }
-    }
+    use crate::tests::{
+        OwnershipDecision, Rec, ScriptedOwnership, ScriptedTransport, activation, response,
+        scripted_executor,
+    };
+    use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error as CommitError};
+    use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
+    use awaken_protocol_a2a::client::Response;
+    use awaken_runtime_contract::CancellationToken;
+    use awaken_runtime_contract::execution::RunExecutor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn task(state: TaskState) -> Task {
         serde_json::from_value(serde_json::json!({
-            "kind": "task",
-            "id": "remote-task",
-            "contextId": "remote-context",
-            "status": { "state": state }
+            "kind": "task", "id": "task-a", "contextId": "context-a",
+            "status": { "state": state },
         }))
-        .expect("valid task fixture")
+        .unwrap()
     }
 
-    enum OwnershipDecision {
-        Current,
-        Lost,
-        Unavailable,
+    fn reference() -> TaskReference {
+        TaskReference::from_task("http://remote.invalid", &task(TaskState::Working))
     }
 
-    struct FixedOwnership(OwnershipDecision);
-
-    #[async_trait::async_trait]
-    impl AttemptOwnershipVerifier for FixedOwnership {
-        async fn verify_current(&self) -> Result<(), AttemptOwnershipError> {
-            match self.0 {
-                OwnershipDecision::Current => Ok(()),
-                OwnershipDecision::Lost => Err(AttemptOwnershipError::Lost),
-                OwnershipDecision::Unavailable => {
-                    Err(AttemptOwnershipError::Unavailable("authority down".into()))
+    #[tokio::test]
+    async fn cancel_confirmation_crosses_delivery_identity_and_every_task_state() {
+        // C1 delivery={204,lost}; C2 observation covers all nine TaskStates;
+        // C3 identity={exact,foreign task,foreign context}. E1 verified return,
+        // E2 veto+error. Complete graph: C3 && terminal(C2) => E1 regardless
+        // of C1; every other row => E2. One cancel then one GET, both task A;
+        // no creation/retry, no mutation of independent B or clearing old veto.
+        // Remote truth/authenticity is the A2A adapter's TCB, not proved here.
+        for delivered in [true, false] {
+            for state in [
+                TaskState::Submitted,
+                TaskState::Working,
+                TaskState::Unknown,
+                TaskState::InputRequired,
+                TaskState::AuthRequired,
+                TaskState::Completed,
+                TaskState::Failed,
+                TaskState::Canceled,
+                TaskState::Rejected,
+            ] {
+                for identity in 0..3 {
+                    let mut observed = task(state);
+                    if identity == 1 {
+                        observed.id = "task-b".into();
+                    }
+                    if identity == 2 {
+                        observed.context_id = "context-b".into();
+                    }
+                    let transport = ScriptedTransport::new(vec![
+                        if delivered {
+                            Ok(Response::new(204, Vec::new()))
+                        } else {
+                            Err("cancel response lost".into())
+                        },
+                        response(&serde_json::to_string(&observed).unwrap()),
+                    ]);
+                    let context = RuntimeRunContext::new();
+                    let other = RuntimeRunContext::new();
+                    let result = observe_remote_operation(
+                        &context,
+                        cancel_and_observe(&transport, &reference(), &context),
+                    )
+                    .await;
+                    let confirmed = identity == 0 && state.is_terminal();
+                    assert_eq!(
+                        result.is_ok(),
+                        confirmed,
+                        "{delivered}/{state:?}/{identity}"
+                    );
+                    assert_eq!(
+                        context.physical_quiescence.can_acknowledge_return(),
+                        confirmed
+                    );
+                    assert!(other.physical_quiescence.can_acknowledge_return());
+                    let seen = transport.seen.lock().unwrap();
+                    assert_eq!(seen.len(), 2);
+                    assert_eq!(
+                        (&*seen[0].0, &*seen[0].1),
+                        ("POST", "/v1/a2a/tasks/task-a:cancel")
+                    );
+                    assert_eq!((&*seen[1].0, &*seen[1].1), ("GET", "/v1/a2a/tasks/task-a"));
                 }
             }
         }
     }
 
     #[tokio::test]
-    async fn cancellation_delivery_covers_explicit_drop_and_terminal_rules() {
-        // Causes: the fixtures below establish `cancellation delivery covers explicit drop and
-        // terminal rules` with the concrete inputs, state, dependencies, and failure triggers used
-        // by this case.
-        // Constraints/invariants: the current fenced attempt and committed context are
-        // authoritative; remote protocol state cannot become a parallel Run or transcript truth.
-        // Decision rule: evaluate every labeled cause partition in this test; each matching rule
-        // selects only its stated effect and preserves the authority constraint.
-        // Cause/effect graph: C1=task remains pollable; C2=token is cancelled;
-        // C3=poll future is retained long enough to observe C2; C4=task already
-        // reached a terminal boundary. Effects: E1=send one idempotent remote
-        // cancel, E2=return Cancelled, E3=return the terminal task, E4=never
-        // cancel a terminal task.
-        //
-        // | Rule | C1 | C2 | C3 | C4 | Effect |
-        // | A1   | Y  | Y  | Y  | N  | E1 + E2 |
-        // | A2   | Y  | Y  | N  | N  | E1 from the drop guard |
-        // | A3   | N  | N  | -  | Y  | E3 + E4 |
-        let explicit = Arc::new(RecordingTransport {
-            cancellations: AtomicUsize::new(0),
-            cancelled: Notify::new(),
-        });
-        let explicit_token = CancellationToken::new();
-        explicit_token.cancel();
-        assert!(matches!(
-            poll_to_boundary(
-                explicit.clone(),
-                task(TaskState::Working),
-                Some(&explicit_token),
-                None,
-            )
-            .await,
-            Err(PollError::Cancelled)
-        ));
-        assert_eq!(explicit.cancellations.load(Ordering::SeqCst), 1, "A1/E1");
-
-        let dropped = Arc::new(RecordingTransport {
-            cancellations: AtomicUsize::new(0),
-            cancelled: Notify::new(),
-        });
-        let dropped_token = CancellationToken::new();
-        let polling_token = dropped_token.clone();
-        let polling_transport = dropped.clone();
-        let polling = tokio::spawn(async move {
-            poll_to_boundary(
-                polling_transport,
-                task(TaskState::Working),
-                Some(&polling_token),
-                None,
+    async fn failed_terminal_observation_and_old_veto_never_become_stop_proof() {
+        // R1 cancel 204 + GET lost/404/malformed => error+veto. R2 old veto +
+        // exact terminal GET => operation succeeds but old veto is monotonic.
+        // R3 lost cancel + lost GET => error, no automatic second cancel.
+        for observation in [
+            Err("observation lost".into()),
+            Ok(Response::new(404, Vec::new())),
+            response("malformed"),
+        ] {
+            let context = RuntimeRunContext::new();
+            let transport =
+                ScriptedTransport::new(vec![Ok(Response::new(204, Vec::new())), observation]);
+            assert!(
+                observe_remote_operation(
+                    &context,
+                    cancel_and_observe(&transport, &reference(), &context),
+                )
+                .await
+                .is_err()
+            );
+            assert!(!context.physical_quiescence.can_acknowledge_return());
+            assert_eq!(transport.seen.lock().unwrap().len(), 2);
+        }
+        let context = RuntimeRunContext::new();
+        context.physical_quiescence.mark_uncertain();
+        let transport = ScriptedTransport::new(vec![
+            Err("cancel response lost".into()),
+            response(&serde_json::to_string(&task(TaskState::Canceled)).unwrap()),
+        ]);
+        assert!(
+            observe_remote_operation(
+                &context,
+                cancel_and_observe(&transport, &reference(), &context),
             )
             .await
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        dropped_token.cancel();
-        polling.abort();
-        let _ = polling.await;
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            dropped.cancelled.notified(),
-        )
-        .await
-        .expect("A2 drop guard delivers cancellation");
-        assert_eq!(dropped.cancellations.load(Ordering::SeqCst), 1, "A2/E1");
-
-        let terminal = Arc::new(RecordingTransport {
-            cancellations: AtomicUsize::new(0),
-            cancelled: Notify::new(),
-        });
-        let terminal_token = CancellationToken::new();
-        let settled = poll_to_boundary(
-            terminal.clone(),
-            task(TaskState::Completed),
-            Some(&terminal_token),
-            None,
-        )
-        .await
-        .expect("A3 returns terminal task");
-        assert_eq!(settled.status.state, TaskState::Completed, "A3/E3");
-        terminal_token.cancel();
-        tokio::task::yield_now().await;
-        assert_eq!(terminal.cancellations.load(Ordering::SeqCst), 0, "A3/E4");
+            .is_ok()
+        );
+        assert!(!context.physical_quiescence.can_acknowledge_return(), "R2");
+        let transport =
+            ScriptedTransport::new(vec![Err("cancel lost".into()), Err("get lost".into())]);
+        assert!(
+            observe_remote_operation(
+                &context,
+                cancel_and_observe(&transport, &reference(), &context),
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(transport.seen.lock().unwrap().len(), 2, "R3");
     }
 
     #[tokio::test]
-    async fn cancellation_never_crosses_a_stale_attempt_boundary() {
-        // Causes: the fixtures below establish `cancellation` with the concrete inputs, state,
-        // dependencies, and failure triggers used by this case.
-        // Constraints/invariants: the current fenced attempt and committed context are
-        // authoritative; remote protocol state cannot become a parallel Run or transcript truth.
-        // Decision rule: evaluate every labeled cause partition in this test; each matching rule
-        // selects only its stated effect and preserves the authority constraint.
-        // Cause/effect graph: C1=authority current/lost/unavailable; C2=cancel
-        // is explicit or delivered by the dropped-future guard. Effects:
-        // E1=one idempotent A2A cancel while current; E2=zero HTTP calls and an
-        // ownership error (when observable) after authority is lost. The absent
-        // compatibility rule is covered by `cancellation_delivery...`.
-        //
-        // | Rule | Authority   | Delivery | Effect |
-        // | O1   | current     | explicit | E1     |
-        // | O2   | lost/down   | explicit | E2     |
-        // | O3   | lost        | drop     | E2     |
-        let current = Arc::new(RecordingTransport {
-            cancellations: AtomicUsize::new(0),
-            cancelled: Notify::new(),
-        });
-        let token = CancellationToken::new();
-        token.cancel();
-        assert!(matches!(
-            poll_to_boundary(
-                current.clone(),
-                task(TaskState::Working),
-                Some(&token),
-                Some(Arc::new(FixedOwnership(OwnershipDecision::Current))),
-            )
-            .await,
-            Err(PollError::Cancelled)
-        ));
-        assert_eq!(current.cancellations.load(Ordering::SeqCst), 1, "O1/E1");
-
-        for decision in [OwnershipDecision::Lost, OwnershipDecision::Unavailable] {
-            let stale = Arc::new(RecordingTransport {
-                cancellations: AtomicUsize::new(0),
-                cancelled: Notify::new(),
-            });
-            let token = CancellationToken::new();
-            token.cancel();
-            assert!(matches!(
-                poll_to_boundary(
-                    stale.clone(),
-                    task(TaskState::Working),
-                    Some(&token),
-                    Some(Arc::new(FixedOwnership(decision))),
+    async fn cancellation_rechecks_authority_without_a_drop_side_channel() {
+        // C1 lost/unavailable before cancel => zero requests; C2 authority
+        // lost after cancel => only POST, no GET or false completion. Both
+        // keep the existing remote participant uncertain. Current/current is
+        // covered by the terminal-observation table, not a second fixture.
+        for decisions in [
+            vec![OwnershipDecision::Lost],
+            vec![OwnershipDecision::Unavailable],
+            vec![OwnershipDecision::Current, OwnershipDecision::Lost],
+        ] {
+            let expected_calls = decisions.len() - 1;
+            let context = RuntimeRunContext::new()
+                .with_ownership(Arc::new(ScriptedOwnership::new(decisions)));
+            let transport = ScriptedTransport::new(vec![Ok(Response::new(204, Vec::new()))]);
+            assert!(
+                observe_remote_operation(
+                    &context,
+                    cancel_and_observe(&transport, &reference(), &context),
                 )
-                .await,
-                Err(PollError::Ownership(_))
-            ));
-            assert_eq!(stale.cancellations.load(Ordering::SeqCst), 0, "O2/E2");
+                .await
+                .is_err()
+            );
+            assert!(!context.physical_quiescence.can_acknowledge_return());
+            assert_eq!(transport.seen.lock().unwrap().len(), expected_calls);
+            tokio::task::yield_now().await;
+            assert_eq!(
+                transport.seen.lock().unwrap().len(),
+                expected_calls,
+                "no spawned retry"
+            );
         }
+    }
 
-        let dropped = Arc::new(RecordingTransport {
-            cancellations: AtomicUsize::new(0),
-            cancelled: Notify::new(),
-        });
-        let token = CancellationToken::new();
-        let polling_token = token.clone();
-        let polling_transport = dropped.clone();
-        let polling = tokio::spawn(async move {
-            poll_to_boundary(
-                polling_transport,
-                task(TaskState::Working),
-                Some(&polling_token),
-                Some(Arc::new(FixedOwnership(OwnershipDecision::Lost))),
-            )
+    #[tokio::test]
+    async fn every_poll_preserves_the_initial_task_and_context() {
+        // C1 initial task A working; C2 next GET swaps id or context to B
+        // while claiming Completed. Both => rejection+veto; never accept B's
+        // terminal state, poll/cancel B, or rewrite the committed reference.
+        for change_task in [true, false] {
+            let mut foreign = task(TaskState::Completed);
+            if change_task {
+                foreign.id = "task-b".into();
+            } else {
+                foreign.context_id = "context-b".into();
+            }
+            let transport = Arc::new(ScriptedTransport::new(vec![
+                response(&serde_json::to_string(&task(TaskState::Working)).unwrap()),
+                response(&serde_json::to_string(&foreign).unwrap()),
+            ]));
+            let rec = Arc::new(Rec::default());
+            let context = RuntimeRunContext::new()
+                .with_commit(rec.clone())
+                .with_reader(rec.clone());
+            let latch = context.physical_quiescence.clone();
+            let activation = activation("a2a:http://remote.invalid");
+            assert!(
+                scripted_executor(transport.clone())
+                    .execute(activation.clone(), context.clone())
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("identity changed")
+            );
+            assert!(!latch.can_acknowledge_return());
+            let retained = crate::restored_task_reference(&context, &activation)
+                .unwrap()
+                .unwrap();
+            assert_eq!(retained.task_id, "task-a");
+            assert_eq!(retained.context_id, "context-a");
+            let seen = transport.seen.lock().unwrap();
+            assert_eq!(seen.len(), 2);
+            assert_eq!(seen[1].1, "/v1/a2a/tasks/task-a");
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_an_owned_remote_observer_only_vetoes_its_attempt() {
+        // R1 unpolled => no send, no veto. R2 polled while remote A working
+        // then drop, with/without cancellation => veto A; no detached cancel
+        // or background task and no effect on B. R3 retained cancellation
+        // and terminal paths are covered by the executor/cancel matrix.
+        for cancel in [false, true] {
+            let transport = Arc::new(ScriptedTransport::new(vec![response(
+                &serde_json::to_string(&task(TaskState::Working)).unwrap(),
+            )]));
+            let executor = scripted_executor(transport.clone());
+            let token = CancellationToken::new();
+            let context = RuntimeRunContext::new()
+                .with_commit(Arc::new(Rec::default()))
+                .with_cancellation(token.clone());
+            let other = RuntimeRunContext::new();
+            let latch = context.physical_quiescence.clone();
+            drop(executor.execute(activation("a2a:http://remote.invalid"), context.clone()));
+            assert!(latch.can_acknowledge_return(), "R1");
+            assert!(transport.seen.lock().unwrap().is_empty(), "R1");
+            let mut operation =
+                Box::pin(executor.execute(activation("a2a:http://remote.invalid"), context));
+            std::future::poll_fn(|cx| {
+                assert!(operation.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            if cancel {
+                token.cancel();
+            }
+            drop(operation);
+            tokio::task::yield_now().await;
+            assert!(!latch.can_acknowledge_return(), "R2");
+            assert!(
+                other.physical_quiescence.can_acknowledge_return(),
+                "R2 independent B"
+            );
+            assert_eq!(
+                transport.seen.lock().unwrap().len(),
+                1,
+                "R2 no cancellation side channel"
+            );
+        }
+    }
+
+    struct FailCommit(AtomicUsize, usize);
+    #[async_trait::async_trait]
+    impl Coordinator for FailCommit {
+        async fn commit(
+            &self,
+            _commit: ThreadCommit,
+        ) -> std::result::Result<CommitRecord, CommitError> {
+            let ordinal = self.0.fetch_add(1, Ordering::SeqCst) + 1;
+            if ordinal == self.1 {
+                Err(CommitError::Rejected("commit response lost".into()))
+            } else {
+                Ok(CommitRecord {
+                    sequence: ordinal as u64,
+                })
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn commit_failure_does_not_replace_remote_execution_evidence() {
+        // R1 working task + reference commit fails => error+veto (task may
+        // continue, no GET/re-send). R2 terminal observed + final commit fails
+        // => commit error WITHOUT inventing remote uncertainty; retry belongs
+        // to the existing commit owner, not execution. One send in either row.
+        for (state, failed_commit, can_ack) in [
+            (TaskState::Working, 1, false),
+            (TaskState::Completed, 2, true),
+        ] {
+            let transport = Arc::new(ScriptedTransport::new(vec![response(
+                &serde_json::to_string(&task(state)).unwrap(),
+            )]));
+            let context = RuntimeRunContext::new()
+                .with_commit(Arc::new(FailCommit(AtomicUsize::new(0), failed_commit)));
+            let latch = context.physical_quiescence.clone();
+            let error = scripted_executor(transport.clone())
+                .execute(activation("a2a:http://remote.invalid"), context)
+                .await
+                .unwrap_err();
+            assert!(matches!(error, Error::Commit(_)));
+            assert_eq!(latch.can_acknowledge_return(), can_ack);
+            assert_eq!(transport.seen.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn exhausted_observation_budget_retains_one_remote_task_without_resending() {
+        // C1 every GET is exact but Working through the existing 600-poll
+        // budget => timeout+veto; one creation, 600 GETs, no cancel, no second
+        // creation or terminal commit. Virtual time changes only scheduling,
+        // not the production loop or its bound; transport/OS deadlines are
+        // outside this bounded observer test.
+        let body = serde_json::to_string(&task(TaskState::Working)).unwrap();
+        let transport = Arc::new(ScriptedTransport::new(
+            (0..=MAX_TASK_POLLS).map(|_| response(&body)).collect(),
+        ));
+        let rec = Arc::new(Rec::default());
+        let context = RuntimeRunContext::new()
+            .with_commit(rec.clone())
+            .with_reader(rec.clone());
+        let latch = context.physical_quiescence.clone();
+        let error = scripted_executor(transport.clone())
+            .execute(activation("a2a:http://remote.invalid"), context)
             .await
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        token.cancel();
-        polling.abort();
-        let _ = polling.await;
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        assert_eq!(dropped.cancellations.load(Ordering::SeqCst), 0, "O3/E2");
+            .unwrap_err();
+        assert!(error.to_string().contains("did not reach a boundary"));
+        assert!(!latch.can_acknowledge_return());
+        assert_eq!(
+            rec.0.lock().unwrap().len(),
+            1,
+            "reference only, no false terminal"
+        );
+        let seen = transport.seen.lock().unwrap();
+        assert_eq!(seen.len(), MAX_TASK_POLLS + 1);
+        assert_eq!(seen.iter().filter(|request| request.0 == "POST").count(), 1);
+        assert!(
+            seen[1..]
+                .iter()
+                .all(|request| request.1 == "/v1/a2a/tasks/task-a")
+        );
+    }
+
+    #[tokio::test]
+    async fn resolution_failure_distinguishes_fresh_work_from_an_existing_remote_task() {
+        // R1 fresh + resolver rejects before dispatch => no veto.
+        // R2 committed remote task + resolver rejects => veto (failed
+        // credentials do not prove the task stopped). Existing route identity
+        // and exact TaskReference remain the recovery owner in both rows.
+        let executor =
+            crate::A2aRunExecutor::new(Arc::new(crate::tests::RejectingTransportResolver));
+        let fresh = RuntimeRunContext::new();
+        assert!(
+            executor
+                .execute(activation("a2a:http://remote.invalid"), fresh.clone())
+                .await
+                .is_err()
+        );
+        assert!(fresh.physical_quiescence.can_acknowledge_return(), "R1");
+        let rec = Arc::new(Rec::default());
+        let initial = RuntimeRunContext::new()
+            .with_commit(rec.clone())
+            .with_reader(rec.clone());
+        let transport = Arc::new(ScriptedTransport::new(vec![
+            response(&serde_json::to_string(&task(TaskState::Working)).unwrap()),
+            Err("initial observer lost".into()),
+        ]));
+        let activation = activation("a2a:http://remote.invalid");
+        assert!(
+            scripted_executor(transport)
+                .execute(activation.clone(), initial)
+                .await
+                .is_err()
+        );
+        let recovered = RuntimeRunContext::new()
+            .with_commit(rec.clone())
+            .with_reader(rec);
+        assert!(
+            executor
+                .execute(activation.clone(), recovered.clone())
+                .await
+                .is_err()
+        );
+        assert!(
+            !recovered.physical_quiescence.can_acknowledge_return(),
+            "R2"
+        );
+        assert_eq!(
+            crate::restored_task_reference(&recovered, &activation)
+                .unwrap()
+                .unwrap()
+                .task_id,
+            "task-a"
+        );
+    }
+
+    #[tokio::test]
+    async fn resumed_send_failure_preserves_the_previous_reference_and_vetoes_ack() {
+        // R1 an exact awaiting ticket resumes with a stable message identity,
+        // then its send response is lost => error+veto; retain the committed
+        // previous task/context, never repeat send inside this drive.
+        use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+        use awaken_runtime_contract::execution::RunAttemptExecutor;
+        use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
+        let rec = Arc::new(Rec::default());
+        let transport = Arc::new(ScriptedTransport::new(vec![
+            response(&serde_json::to_string(&task(TaskState::InputRequired)).unwrap()),
+            Err("resume response lost".into()),
+        ]));
+        let activation = activation("a2a:http://remote.invalid");
+        let initial = RuntimeRunContext::new()
+            .with_commit(rec.clone())
+            .with_reader(rec.clone());
+        assert_eq!(
+            scripted_executor(transport.clone())
+                .execute(activation.clone(), initial)
+                .await
+                .unwrap(),
+            RunState::Awaiting
+        );
+        let ticket = rec.resume_ticket(&activation.run_id).unwrap();
+        let command = ResumeCommand::from_ticket(&ticket, ResumeResult::Input("answer".into()), 0);
+        let resumed = RuntimeRunContext::new()
+            .with_commit(rec.clone())
+            .with_reader(rec);
+        assert!(
+            scripted_executor(transport.clone())
+                .resume(activation.clone(), command, resumed.clone())
+                .await
+                .is_err()
+        );
+        assert!(!resumed.physical_quiescence.can_acknowledge_return());
+        assert_eq!(
+            crate::restored_task_reference(&resumed, &activation)
+                .unwrap()
+                .unwrap()
+                .task_id,
+            "task-a"
+        );
+        assert_eq!(transport.seen.lock().unwrap().len(), 2);
     }
 }

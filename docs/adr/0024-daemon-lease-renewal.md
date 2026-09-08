@@ -221,6 +221,31 @@ executor B proves exact committed continuation
 handoff B replaces slot A -> tasks/get (never message:send) -> finish B
 ```
 
+The A2A executor also uses the Runtime's same attempt-local return observer.
+Send/resume failures, a failed reference commit before a remote boundary,
+reattachment failures, exhausted polling, identity mismatch and an abandoned
+Future veto physical ACK. Even failed transport resolution must retain that veto
+when a remote task already exists; fresh pre-dispatch resolution does not invent
+an external participant. Diagnostics remain execution/commit errors and cannot
+be used as stop evidence. An unknown send no longer commits an ordinary
+`a2a_error` terminal result. A validated boundary precedes its final commit, so
+failure of that final commit does not undo observed remote completion.
+
+Every poll reuses the existing task-reference identity admission, not only the
+initial reattachment. Explicit and cooperative cancellation share one owned
+cancel-and-observe path. A successful HTTP cancel response proves delivery only;
+an exact task/context terminal GET is required, including after a lost cancel
+response. Waiting states are execution boundaries, not terminal cancellation
+receipts. A failed/nonterminal observation retains the slot and the existing
+reference for recovery; it does not retry creation. The former Future-drop
+background cancellation is removed: drop propagates uncertainty, while the
+existing claimed cancellation/recovery owner remains responsible for progress.
+No Session-wide stop, new receipt store, task schema or wire route is introduced.
+Task-state/identity/delivery decision tables, observer-drop and commit-failure
+tests cover this adapter; the existing Kani identity/route proofs remain narrow.
+Remote terminal-state honesty, transport completion and atomic external effects
+remain assumptions, not a generic all-participant crash-stop proof.
+
 Native model invocation evidence now uses the existing Run-scoped Thread state
 log (`ActiveModelOperation`), not a new receipt database. Before every
 `LlmExecutor::infer_streaming` call, including Runtime retries and model-pool
