@@ -1486,8 +1486,13 @@ test("Models either tests a discovered model or closes the provider prerequisite
   await page.goto("/w/default/models");
   await expect(page.getByRole("heading", { name: "Catalog", exact: true })).toBeVisible();
   const testBtn = page.getByRole("button", { name: "Test", exact: true }).first();
+  const emptyCatalog = page.getByText(/No models yet|还没有模型/);
+  // R0: the Catalog heading mounts before the query settles. No button during
+  // loading is not an empty result; wait for the observed empty/discovered branch.
+  // Settled empty, inactive and executable cases retain the checks below.
+  await expect(testBtn.or(emptyCatalog).first()).toBeVisible();
   if ((await testBtn.count()) === 0) {
-    await expect(page.getByText(/No models yet|还没有模型/)).toBeVisible();
+    await expect(emptyCatalog).toBeVisible();
     await expect(page.getByRole("heading", { name: /Provider connections|Provider 连接/ })).toBeVisible();
     await expect(page.getByRole("button", { name: "Author", exact: true })).toHaveCount(0);
     return;
