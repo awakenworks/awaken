@@ -19673,7 +19673,12 @@ async fn exact_terminal_cleanup_disposes_the_threads_sandbox() {
         .expect("project the exact create fence");
     let physical = host
         .provider
-        .create_sandbox_for_effect(&host.sandbox_spec("t-end"), &create_fence, None)
+        .create_sandbox_for_effect(
+            &host.sandbox_spec("t-end"),
+            &create_fence,
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&create_fence),
+        )
         .await
         .expect("create the exact durable terminal-test Sandbox");
     let env = Arc::new(crate::session_environment::SessionEnvironment::workdir(
@@ -21903,6 +21908,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
             &host.sandbox_spec("remote-terminal-worker"),
             &create_fence,
             None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&create_fence),
         )
         .await
         .expect("R1 exact Worker-local Sandbox");

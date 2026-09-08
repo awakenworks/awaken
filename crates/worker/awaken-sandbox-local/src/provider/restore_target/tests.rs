@@ -309,7 +309,12 @@ async fn exact_restore_target_recovery_and_disposal_are_request_bound() {
     let terminal =
         pc::SandboxEffectFence::new("hibernate-terminal", "owner", "runtime", 3, u64::MAX).unwrap();
     let source = provider
-        .create_sandbox_for_effect(&spec, &create, None)
+        .create_sandbox_for_effect(
+            &spec,
+            &create,
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&create),
+        )
         .await
         .unwrap();
     std::fs::write(source.workspace_path().join("value"), b"checkpoint").unwrap();

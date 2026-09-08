@@ -5,12 +5,13 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-fn admitted(
+fn admitted<'a>(
     root: &Path,
     fingerprint: &pc::SandboxRealizationFingerprint,
     effect: &pc::SandboxEffectFence,
     phase: &str,
-) -> ProviderCreationGuard {
+    authority: &'a dyn pc::CurrentExecutionAuthority,
+) -> ProviderCreationGuard<'a> {
     if phase == "legacy" {
         return ProviderCreationGuard::Legacy(begin_legacy(root).unwrap());
     }
@@ -19,7 +20,10 @@ fn admitted(
         guard.complete(&empty_receipt()).unwrap();
         guard = begin(root, fingerprint, effect, None, None).unwrap();
     }
-    ProviderCreationGuard::Current(Box::new(guard))
+    ProviderCreationGuard::Current {
+        guard: Box::new(guard),
+        authority,
+    }
 }
 
 #[tokio::test]
@@ -42,7 +46,8 @@ async fn compensation_preserves_phase_and_all_failure_evidence() {
                 let root = base.path().join("root");
                 let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec("root"));
                 let effect = fence("create", 1);
-                let mut guard = admitted(&root, &fingerprint, &effect, phase);
+                let authority = pc::test_support::EffectAuthority::new(&effect);
+                let mut guard = admitted(&root, &fingerprint, &effect, phase, &authority);
                 guard.prepare_root().unwrap();
                 let secret = root.join("credential");
                 let foreign = base.path().join("foreign");
@@ -122,7 +127,7 @@ async fn compensation_preserves_phase_and_all_failure_evidence() {
                             "R4 no invented legacy recovery"
                         );
                     } else {
-                        let guard = admitted(&root, &fingerprint, &effect, phase);
+                        let guard = admitted(&root, &fingerprint, &effect, phase, &authority);
                         let error = crate::compensate_creation_failure(
                             guard,
                             &mut memory,
@@ -166,16 +171,20 @@ async fn recreating_compensation_restores_exact_source_only_after_memory_cleanup
         let source_marker = read_marker(&root).unwrap().unwrap();
         std::fs::remove_dir(&root).unwrap(); // Fixture: exact empty source was lost.
         let effect = fence("rebuild", 2);
-        let guard = ProviderCreationGuard::Current(Box::new(
-            begin(
-                &root,
-                &fingerprint,
-                &effect,
-                Some(source(&fingerprint, &evidence)),
-                None,
-            )
-            .unwrap(),
-        ));
+        let authority = pc::test_support::EffectAuthority::new(&effect);
+        let guard = ProviderCreationGuard::Current {
+            guard: Box::new(
+                begin(
+                    &root,
+                    &fingerprint,
+                    &effect,
+                    Some(source(&fingerprint, &evidence)),
+                    None,
+                )
+                .unwrap(),
+            ),
+            authority: &authority,
+        };
         let rebuilding = read_marker(&root).unwrap();
         let teardowns = Arc::new(AtomicUsize::new(0));
         let drops = Arc::new(AtomicUsize::new(0));
@@ -210,16 +219,19 @@ async fn recreating_compensation_restores_exact_source_only_after_memory_cleanup
                 0,
                 "R1 original Memory guard retained"
             );
-            let guard = ProviderCreationGuard::Current(Box::new(
-                begin(
-                    &root,
-                    &fingerprint,
-                    &effect,
-                    Some(source(&fingerprint, &evidence)),
-                    None,
-                )
-                .unwrap(),
-            ));
+            let guard = ProviderCreationGuard::Current {
+                guard: Box::new(
+                    begin(
+                        &root,
+                        &fingerprint,
+                        &effect,
+                        Some(source(&fingerprint, &evidence)),
+                        None,
+                    )
+                    .unwrap(),
+                ),
+                authority: &authority,
+            };
             let error = crate::compensate_creation_failure(
                 guard,
                 &mut memory,
@@ -263,7 +275,8 @@ async fn compensation_reports_abort_conflict_without_deleting_foreign_stage() {
     let root = base.path().join("root");
     let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec("root"));
     let effect = fence("create", 1);
-    let guard = admitted(&root, &fingerprint, &effect, "creating");
+    let authority = pc::test_support::EffectAuthority::new(&effect);
+    let guard = admitted(&root, &fingerprint, &effect, "creating", &authority);
     let marker = read_marker(&root).unwrap().unwrap();
     let stage = stage_path(&root, &marker.root).unwrap();
     std::fs::create_dir(&stage).unwrap();
@@ -304,7 +317,7 @@ async fn compensation_reports_abort_conflict_without_deleting_foreign_stage() {
     );
     let preserved = base.path().join("foreign-preserved");
     std::fs::rename(&stage, &preserved).unwrap();
-    let guard = admitted(&root, &fingerprint, &effect, "creating");
+    let guard = admitted(&root, &fingerprint, &effect, "creating", &authority);
     let error = crate::compensate_creation_failure(
         guard,
         &mut memory,
@@ -342,7 +355,8 @@ async fn cancelled_compensation_retains_original_memory_and_root_until_exact_ret
         let root = base.path().join("root");
         let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec("root"));
         let effect = fence("create", 1);
-        let mut guard = admitted(&root, &fingerprint, &effect, phase);
+        let authority = pc::test_support::EffectAuthority::new(&effect);
+        let mut guard = admitted(&root, &fingerprint, &effect, phase, &authority);
         guard.prepare_root().unwrap();
         let secret = root.join("credential");
         std::fs::write(&secret, b"original credential").unwrap();
@@ -392,7 +406,7 @@ async fn cancelled_compensation_retains_original_memory_and_root_until_exact_ret
             "R1 original owner remains nonempty"
         );
         gate.add_permits(1);
-        let guard = admitted(&root, &fingerprint, &effect, phase);
+        let guard = admitted(&root, &fingerprint, &effect, phase, &authority);
         let error = crate::compensate_creation_failure(
             guard,
             &mut memory,

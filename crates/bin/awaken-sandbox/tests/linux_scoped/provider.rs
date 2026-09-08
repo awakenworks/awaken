@@ -136,7 +136,12 @@ async fn configured_execution_probe_uses_the_real_boundary_and_keeps_admission_c
     assert_eq!(provider.execution_deployment(), Some(&deployment));
     assert!(!pc::SandboxProvider::capabilities(&provider).process_tree_supervision);
     let sandbox = provider
-        .create_sandbox_for_effect(&spec(), &fence("create"), None)
+        .create_sandbox_for_effect(
+            &spec(),
+            &fence("create"),
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("create")),
+        )
         .await
         .unwrap();
     assert!(sandbox.has_scoped_execution() && sandbox.needs_execution_authority());
@@ -218,7 +223,12 @@ async fn provider_spawn_records_all_trees_and_cold_adoption_waits_for_exact_exit
     let base = tempfile::tempdir().unwrap();
     let provider = LocalProvider::trusted_host(base.path());
     let sandbox = provider
-        .create_sandbox_for_effect(&spec(), &fence("create"), None)
+        .create_sandbox_for_effect(
+            &spec(),
+            &fence("create"),
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("create")),
+        )
         .await
         .unwrap();
     let authority = Authority::live();
@@ -280,7 +290,12 @@ async fn provider_spawn_records_all_trees_and_cold_adoption_waits_for_exact_exit
     );
     assert!(
         provider
-            .create_sandbox_for_effect(&spec(), &fence("create"), None)
+            .create_sandbox_for_effect(
+                &spec(),
+                &fence("create"),
+                None,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("create"))
+            )
             .await
             .is_err()
     );
@@ -335,7 +350,12 @@ async fn provider_scope_denies_late_upgrade_and_rechecks_authority_at_go() {
         let base = tempfile::tempdir().unwrap();
         let provider = LocalProvider::trusted_host(base.path());
         let sandbox = provider
-            .create_sandbox_for_effect(&spec(), &fence("create"), None)
+            .create_sandbox_for_effect(
+                &spec(),
+                &fence("create"),
+                None,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("create")),
+            )
             .await
             .unwrap();
         let authority = Authority::live();
@@ -406,7 +426,14 @@ async fn provider_refresh_reobserves_exact_tree_exit_after_delivery_failure() {
             let provider = LocalProvider::trusted_host(base.path());
             let sandbox = Arc::new(
                 provider
-                    .create_sandbox_for_effect(&spec(), &fence("create"), None)
+                    .create_sandbox_for_effect(
+                        &spec(),
+                        &fence("create"),
+                        None,
+                        &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence(
+                            "create",
+                        )),
+                    )
                     .await
                     .unwrap(),
             );
@@ -492,7 +519,14 @@ async fn provider_authority_wait_cannot_extend_launch_or_refresh_budget() {
         let provider = LocalProvider::trusted_host(base.path());
         let sandbox = Arc::new(
             provider
-                .create_sandbox_for_effect(&spec(), &fence("create"), None)
+                .create_sandbox_for_effect(
+                    &spec(),
+                    &fence("create"),
+                    None,
+                    &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence(
+                        "create",
+                    )),
+                )
                 .await
                 .unwrap(),
         );
@@ -579,7 +613,12 @@ async fn provider_close_racing_join_cannot_report_quiescence_or_allow_late_go() 
     let provider = LocalProvider::trusted_host(base.path());
     let sandbox = Arc::new(
         provider
-            .create_sandbox_for_effect(&spec(), &fence("create"), None)
+            .create_sandbox_for_effect(
+                &spec(),
+                &fence("create"),
+                None,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("create")),
+            )
             .await
             .unwrap(),
     );
@@ -646,7 +685,12 @@ async fn provider_missing_helper_or_substituted_marker_cannot_fallback_to_host_e
         let base = tempfile::tempdir().unwrap();
         let provider = LocalProvider::trusted_host(base.path());
         let sandbox = provider
-            .create_sandbox_for_effect(&spec(), &fence("create"), None)
+            .create_sandbox_for_effect(
+                &spec(),
+                &fence("create"),
+                None,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("create")),
+            )
             .await
             .unwrap();
         let path = base.path().join(".scoped-provider.awaken-realization.json");
@@ -747,7 +791,12 @@ async fn provider_owner_crash_preserves_marker_and_recovery_never_signals_saved_
     .unwrap();
     let provider = LocalProvider::trusted_host(base.path());
     let recreated = provider
-        .create_sandbox_for_effect(&spec(), &fence("create"), None)
+        .create_sandbox_for_effect(
+            &spec(),
+            &fence("create"),
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("create")),
+        )
         .await
         .unwrap();
     let handle = recreated.handle();
@@ -806,7 +855,12 @@ async fn provider_terminal_retry_retains_resources_until_the_last_tree_is_absent
     let base = tempfile::tempdir().unwrap();
     let provider = LocalProvider::trusted_host(base.path());
     let sandbox = provider
-        .create_sandbox_for_effect(&spec(), &fence("create"), None)
+        .create_sandbox_for_effect(
+            &spec(),
+            &fence("create"),
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("create")),
+        )
         .await
         .unwrap();
     sandbox
@@ -859,7 +913,12 @@ async fn provider_owner_participant() {
     let base = std::env::var_os("SCOPED_PROVIDER_BASE").unwrap();
     let provider = LocalProvider::trusted_host(base);
     let sandbox = provider
-        .create_sandbox_for_effect(&spec(), &fence("create"), None)
+        .create_sandbox_for_effect(
+            &spec(),
+            &fence("create"),
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("create")),
+        )
         .await
         .unwrap();
     sandbox

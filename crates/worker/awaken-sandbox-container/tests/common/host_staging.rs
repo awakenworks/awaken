@@ -73,7 +73,11 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
     let terminal_fence = super::disposal::effect_fence(&spec.scope, "cleanup", "successor", 2);
     let creator = ContainerProvider::new(first_runtime, image);
     let sandbox = creator
-        .create_for_effect(&spec, &initial_fence)
+        .create_for_effect(
+            &spec,
+            &initial_fence,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&initial_fence),
+        )
         .await
         .expect("R1 ordinary creation");
     let handle = sandbox.handle();

@@ -92,7 +92,14 @@ async fn namespace_owner_crash_participant() {
         .await
         .expect("usable native Namespace is required");
     let sandbox = provider
-        .create_sandbox_for_effect(&spec(), &effect_fence("namespace-crash"), None)
+        .create_sandbox_for_effect(
+            &spec(),
+            &effect_fence("namespace-crash"),
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&effect_fence(
+                "namespace-crash",
+            )),
+        )
         .await
         .expect("create exact provider-owned Namespace");
     // $0 carries this literal script to the next node without shell-generated
@@ -261,7 +268,12 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
     let sandbox_spec = spec();
     let realization = effect_fence("namespace-hand-realization");
     let sandbox = provider
-        .create_sandbox_for_effect(&sandbox_spec, &realization, None)
+        .create_sandbox_for_effect(
+            &sandbox_spec,
+            &realization,
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&realization),
+        )
         .await
         .expect("fenced namespace");
     let binary = binary_support::awaken_sandbox();

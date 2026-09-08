@@ -4,6 +4,9 @@
 //! Session owns authorization. This provider sidecar persists only the exact
 //! projected effect fence, immutable spec, physical incarnation, root inode,
 //! and lifecycle crash cut needed to apply that authorization safely.
+//! Creation's provider guard borrows the captured current authority around
+//! these physical transitions; this marker does not compare Control timestamps
+//! against a second Worker clock.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -322,7 +325,6 @@ impl CreationGuard {
     }
 
     pub(crate) fn validate_before_mutation(&self) -> Result<(), pc::SandboxError> {
-        validate_live_effect_fence(&self.marker.effect_fence)?;
         let observed = read_marker_locked(&self.root, self.lock()?)?
             .ok_or_else(|| err("filesystem creation lost its realization marker"))?;
         if observed != self.marker {
@@ -342,7 +344,6 @@ impl CreationGuard {
     pub(crate) fn prepare_root(&self) -> Result<(), pc::SandboxError> {
         match self.admission {
             Admission::Creating | Admission::Recreating => {
-                validate_live_effect_fence(&self.marker.effect_fence)?;
                 let identity = required_root_identity(&self.marker)?;
                 require_exact_root_locked(&self.root, self.lock()?, identity)?;
                 self.lock()?
@@ -370,7 +371,6 @@ impl CreationGuard {
                 ));
             }
         } else {
-            validate_live_effect_fence(&self.marker.effect_fence)?;
             let mut next = self.marker.clone();
             next.phase = RealizationPhase::Ready;
             next.rebuild_source = None;
@@ -391,7 +391,6 @@ impl CreationGuard {
         if self.admission == Admission::Ready {
             return Ok(());
         }
-        validate_live_effect_fence(&self.marker.effect_fence)?;
         remove_owned_root_or_stage_locked(&self.root, self.lock()?, &self.marker)?;
         match self.marker.phase {
             RealizationPhase::Creating => {
@@ -485,80 +484,8 @@ impl LegacyCreationGuard {
     }
 }
 
-/// One provider creation guard across fenced current and explicitly legacy
-/// callers. It centralizes preparation/compensation without making legacy state
-/// a second durable lifecycle.
-pub(crate) enum ProviderCreationGuard {
-    Current(Box<CreationGuard>),
-    Legacy(LegacyCreationGuard),
-}
-
-impl ProviderCreationGuard {
-    pub(crate) fn is_incomplete(&self) -> bool {
-        match self {
-            Self::Current(guard) => guard.admission != Admission::Ready,
-            Self::Legacy(_) => true,
-        }
-    }
-
-    pub(crate) fn completed_receipt(
-        &self,
-    ) -> Result<Option<&RealizationCompletionReceipt>, pc::SandboxError> {
-        match self {
-            Self::Current(guard) => guard.completed_receipt(),
-            Self::Legacy(_) => Ok(None),
-        }
-    }
-
-    /// Exact root identity already owned by this admission. Current attempts
-    /// publish it before returning from `begin`; a legacy attempt remains absent
-    /// until `prepare_root` creates its one-shot root.
-    pub(crate) fn root_identity(&self) -> Result<Option<DirectoryIdentity>, pc::SandboxError> {
-        match self {
-            Self::Current(guard) => required_root_identity(&guard.marker).map(Some),
-            Self::Legacy(guard) => Ok(guard.identity),
-        }
-    }
-
-    pub(crate) fn prepare_root(&mut self) -> Result<(), pc::SandboxError> {
-        match self {
-            Self::Current(guard) => guard.prepare_root(),
-            Self::Legacy(guard) => guard.prepare_root(),
-        }
-    }
-
-    pub(crate) fn validate_before_mutation(&self) -> Result<(), pc::SandboxError> {
-        match self {
-            Self::Current(guard) => guard.validate_before_mutation(),
-            Self::Legacy(guard) => guard.validate_before_mutation(),
-        }
-    }
-
-    pub(crate) fn complete(
-        &mut self,
-        receipt: &RealizationCompletionReceipt,
-    ) -> Result<LiveRealization, pc::SandboxError> {
-        match self {
-            Self::Current(guard) => guard.complete(receipt).map(LiveRealization::Current),
-            Self::Legacy(guard) => guard.complete().map(LiveRealization::LegacyCreated),
-        }
-    }
-
-    pub(crate) fn validate_memory_replay(&self) -> Result<(), pc::SandboxError> {
-        self.validate_before_mutation()?;
-        if let Self::Current(guard) = self {
-            execution_participant::require_quiescent(&guard.marker)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn abort_creation(self) -> Result<(), pc::SandboxError> {
-        match self {
-            Self::Current(guard) => (*guard).abort_creation(),
-            Self::Legacy(guard) => guard.abort_creation(),
-        }
-    }
-}
+mod creation_guard;
+pub(crate) use creation_guard::ProviderCreationGuard;
 
 /// Serializes exact terminal cleanup and retains a Removed tombstone for
 /// delete/finish/receipt response-loss replay.
@@ -893,19 +820,6 @@ fn err(error: impl ToString) -> pc::SandboxError {
     pc::SandboxError::new(error.to_string())
 }
 
-fn now_unix_ms() -> Result<u64, pc::SandboxError> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| err(format!("read Sandbox effect time: {error}")))?
-        .as_millis()
-        .try_into()
-        .map_err(|_| err("Sandbox effect time exceeds u64"))
-}
-
-fn validate_live_effect_fence(fence: &pc::SandboxEffectFence) -> Result<(), pc::SandboxError> {
-    fence.validate_live_at(now_unix_ms()?)
-}
-
 fn is_distinct_authorized_rebuild(
     observed: &pc::SandboxEffectFence,
     incoming: &pc::SandboxEffectFence,
@@ -1233,7 +1147,6 @@ fn ensure_root_published(
                 )));
             }
         }
-        validate_live_effect_fence(&marker.effect_fence)?;
         let previous = marker.clone();
         marker.root.identity = Some(
             lock.create_sibling_directory_noreplace(&stage_leaf)
@@ -1250,7 +1163,6 @@ fn ensure_root_published(
     let stage_entry = classify_locked(lock, &stage_leaf)?;
     match (marker.root.published, root_entry, stage_entry) {
         (false, PathEntry::Absent, PathEntry::Directory(observed)) if observed == identity => {
-            validate_live_effect_fence(&marker.effect_fence)?;
             lock.publish_sibling_directory_noreplace(&stage_leaf, root_leaf)
                 .map_err(err)?;
             let previous = marker.clone();
@@ -1259,7 +1171,6 @@ fn ensure_root_published(
         }
         // Rename succeeded and the process died before publishing the phase bit.
         (false, PathEntry::Directory(observed), PathEntry::Absent) if observed == identity => {
-            validate_live_effect_fence(&marker.effect_fence)?;
             let previous = marker.clone();
             marker.root.published = true;
             replace_marker_locked(root, lock, &previous, marker)
@@ -1423,7 +1334,6 @@ pub(crate) fn begin(
     effect_fence.validate_identity()?;
     let lock = acquire(root)?;
     let Some(mut observed) = read_marker_locked(root, &lock)? else {
-        validate_live_effect_fence(effect_fence)?;
         if source.is_some() {
             return Err(err(
                 "sandbox rebuild source has no provider realization marker",
@@ -1462,7 +1372,6 @@ pub(crate) fn begin(
     execution_participant::require_quiescent(&observed)?;
     match observed.phase {
         RealizationPhase::Creating => {
-            validate_live_effect_fence(effect_fence)?;
             if source.is_some()
                 || !observed.effect_fence.same_effect_identity(effect_fence)
                 || observed.restore_input_fingerprint.as_deref() != restore_input_fingerprint
@@ -1483,7 +1392,6 @@ pub(crate) fn begin(
             })
         }
         RealizationPhase::Recreating => {
-            validate_live_effect_fence(effect_fence)?;
             let recorded = observed
                 .rebuild_source
                 .as_ref()
@@ -1549,7 +1457,6 @@ pub(crate) fn begin(
                 }
             }
             PathEntry::Absent => {
-                validate_live_effect_fence(effect_fence)?;
                 let source = source.ok_or_else(|| {
                     err("missing ready sandbox requires an exact V2 rebuild source handle")
                 })?;
@@ -1600,7 +1507,6 @@ pub(crate) fn begin(
             )),
         },
         RealizationPhase::Removed => {
-            validate_live_effect_fence(effect_fence)?;
             if source.is_some() {
                 return Err(err(
                     "Removed filesystem restoration does not accept a stale source handle",

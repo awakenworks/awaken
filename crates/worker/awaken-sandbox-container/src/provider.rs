@@ -997,12 +997,13 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
         &self,
         spec: &pc::SandboxSpec,
         effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
         Ok(Box::new(
             self.create_container_for_effect(
                 spec,
                 Some(effect_fence),
-                None,
+                Some(authority),
                 ContainerRealizationIntent::Create,
             )
             .await?,

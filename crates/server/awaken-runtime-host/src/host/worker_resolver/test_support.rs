@@ -255,7 +255,7 @@ pub(crate) async fn available_local_environment_binding(
         .create_effective_for_effect(
             &spec,
             Some(&create_fence),
-            None,
+            Some(&awaken_provisioning_contract::test_support::EffectAuthority::new(&create_fence)),
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )

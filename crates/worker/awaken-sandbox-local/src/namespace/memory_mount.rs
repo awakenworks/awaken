@@ -5,7 +5,7 @@ use awaken_provisioning_contract as pc;
 
 pub(crate) async fn prepare_memory_before_root(
     owner: &crate::MemoryMountOwner,
-    guard: &crate::realization_marker::ProviderCreationGuard,
+    guard: &crate::realization_marker::ProviderCreationGuard<'_>,
 ) -> Result<(), pc::SandboxError> {
     let mut state = owner.lock().await;
     if guard.root_identity()?.is_some() {

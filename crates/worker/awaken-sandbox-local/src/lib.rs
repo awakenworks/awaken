@@ -865,7 +865,7 @@ mod memory_mount_release_tests {
 /// the Memory owner lock throughout; this function adds no lifecycle state.
 /// Ready response-loss replay never shreds or rolls back the completed root.
 pub(crate) async fn compensate_creation_failure(
-    guard: realization_marker::ProviderCreationGuard,
+    guard: realization_marker::ProviderCreationGuard<'_>,
     memory: &mut MemoryMountState,
     root: &IsolatedRoot,
     secret_paths: &[PathBuf],
@@ -880,7 +880,7 @@ pub(crate) async fn compensate_creation_failure(
             Ok(identity) => identity,
             Err(error) => return error,
         };
-        shred_secret_paths_at(root, identity, secret_paths)
+        guard.with_mutation(|| shred_secret_paths_at(root, identity, secret_paths))
     } else {
         Ok(())
     };

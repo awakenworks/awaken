@@ -519,11 +519,30 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
     );
     let create_fence =
         pc::SandboxEffectFence::new("create-hand", "owner", "runtime", 1, u64::MAX).unwrap();
+    // C5 fenced creation has no source/denied source/current source. The first
+    // two must reject before provider filesystem effects; only current proceeds
+    // to the existing lazy-Hand checks. An immutable fence is not a grant.
+    let denied = pc::test_support::EffectAuthority::denied();
+    for source in [None, Some(&denied as &dyn pc::CurrentExecutionAuthority)] {
+        assert!(
+            provider
+                .create_effective_for_effect(
+                    &spec(),
+                    Some(&create_fence),
+                    source,
+                    None,
+                    awaken_sandbox_container::ContainerRealizationIntent::Create,
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(std::fs::read_dir(base.path()).unwrap().count(), 0);
+    }
     let environment = provider
         .create_effective_for_effect(
             &spec(),
             Some(&create_fence),
-            None,
+            Some(&awaken_provisioning_contract::test_support::EffectAuthority::new(&create_fence)),
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
@@ -2795,7 +2814,9 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
             .create_effective_for_effect(
                 &fuse_spec,
                 Some(&fuse_effect),
-                None,
+                Some(
+                    &awaken_provisioning_contract::test_support::EffectAuthority::new(&fuse_effect),
+                ),
                 None,
                 awaken_sandbox_container::ContainerRealizationIntent::Create,
             )
@@ -2826,7 +2847,9 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
             .create_effective_for_effect(
                 &fuse_spec,
                 Some(&fuse_effect),
-                None,
+                Some(
+                    &awaken_provisioning_contract::test_support::EffectAuthority::new(&fuse_effect),
+                ),
                 None,
                 awaken_sandbox_container::ContainerRealizationIntent::Create,
             )
@@ -2910,7 +2933,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         .create_effective_for_effect(
             &copy_spec,
             Some(&copy_effect),
-            None,
+            Some(&awaken_provisioning_contract::test_support::EffectAuthority::new(&copy_effect)),
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
@@ -2939,7 +2962,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         .create_effective_for_effect(
             &copy_spec,
             Some(&copy_effect),
-            None,
+            Some(&awaken_provisioning_contract::test_support::EffectAuthority::new(&copy_effect)),
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
@@ -2986,7 +3009,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         .create_effective_for_effect(
             &drift_spec,
             Some(&drift_effect),
-            None,
+            Some(&awaken_provisioning_contract::test_support::EffectAuthority::new(&drift_effect)),
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
@@ -3006,7 +3029,7 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         .create_effective_for_effect(
             &drift_spec,
             Some(&drift_effect),
-            None,
+            Some(&awaken_provisioning_contract::test_support::EffectAuthority::new(&drift_effect)),
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
@@ -3061,7 +3084,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
         .create_effective_for_effect(
             &hot_spec,
             Some(&hot_create),
-            None,
+            Some(&awaken_provisioning_contract::test_support::EffectAuthority::new(&hot_create)),
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )
@@ -3138,7 +3161,7 @@ async fn local_and_namespace_terminal_fuse_replay_is_exact_and_wrapper_loss_conv
             .create_effective_for_effect(
                 &spec,
                 Some(&create),
-                None,
+                Some(&awaken_provisioning_contract::test_support::EffectAuthority::new(&create)),
                 None,
                 awaken_sandbox_container::ContainerRealizationIntent::Create,
             )
@@ -3335,7 +3358,11 @@ async fn cold_terminal_memory_rechecks_current_authority_after_mount_responses()
                     .create_effective_for_effect(
                         &spec,
                         Some(&create),
-                        None,
+                        Some(
+                            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                                &create,
+                            ),
+                        ),
                         None,
                         awaken_sandbox_container::ContainerRealizationIntent::Create,
                     )
@@ -3508,7 +3535,7 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
         .create_effective_for_effect(
             &namespace_spec,
             Some(&create_fence),
-            None,
+            Some(&awaken_provisioning_contract::test_support::EffectAuthority::new(&create_fence)),
             None,
             awaken_sandbox_container::ContainerRealizationIntent::Create,
         )

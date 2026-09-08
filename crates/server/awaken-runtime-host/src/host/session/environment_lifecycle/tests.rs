@@ -365,7 +365,11 @@ async fn environment(
             .create_effective_for_effect(
                 &crate::provisioning::agent_run_sandbox_spec(thread),
                 Some(&effect_fence),
-                None,
+                Some(
+                    &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                        &effect_fence,
+                    ),
+                ),
                 None,
                 awaken_sandbox_container::ContainerRealizationIntent::Create,
             )
@@ -2438,7 +2442,12 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
         let spec = host.sandbox_spec(thread);
         let physical = host
             .provider
-            .create_sandbox_for_effect(&spec, &create_fence, None)
+            .create_sandbox_for_effect(
+                &spec,
+                &create_fence,
+                None,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&create_fence),
+            )
             .await
             .expect("C1 create provider-effective terminal Sandbox");
         let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(

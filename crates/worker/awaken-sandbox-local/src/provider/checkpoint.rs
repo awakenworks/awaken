@@ -544,6 +544,9 @@ mod tests {
                             &workdir_spec("upload-clock", false),
                             &create,
                             None,
+                            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                                &create,
+                            ),
                         )
                         .await
                         .unwrap();
@@ -640,7 +643,12 @@ mod tests {
                 let suspend =
                     pc::SandboxEffectFence::new("suspend", "owner", "boot", 2, expiry).unwrap();
                 let sandbox = LocalProvider::new(tmp.path())
-                    .create_sandbox_for_effect(&workdir_spec("upload-wait", false), &create, None)
+                    .create_sandbox_for_effect(
+                        &workdir_spec("upload-wait", false),
+                        &create,
+                        None,
+                        &awaken_provisioning_contract::test_support::EffectAuthority::new(&create),
+                    )
                     .await
                     .unwrap();
                 let request = request("suspend");
@@ -766,7 +774,14 @@ mod tests {
                         pc::SandboxEffectFence::new("terminal", "owner", "runtime", 3, expiry)
                             .unwrap();
                     let sandbox = provider
-                        .create_sandbox_for_effect(&spec, &create, None)
+                        .create_sandbox_for_effect(
+                            &spec,
+                            &create,
+                            None,
+                            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                                &create,
+                            ),
+                        )
                         .await
                         .unwrap();
                     let request = request("suspend");
