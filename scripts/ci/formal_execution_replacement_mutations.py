@@ -47,3 +47,35 @@ def check_execution_replacement_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "SessionExecutionReplacement", source, config, mutations,
                              dependencies=("SessionExecutionBinding", "WorkerExecutionAuthority", "SessionRealizationAuthority"))
     print("Execution replacement: 12/12 mutants killed; 6 recovery witnesses including lost commit response and post-commit cancellation")
+    check_terminal_owner_model_mutants(tlc_jar)
+
+
+def check_terminal_owner_model_mutants(tlc_jar: Path) -> None:
+    # U/HM rows: terminal handoff of the same hidden owner, not a second
+    # production lifecycle. Exhaust two callers, cancellation, replacement,
+    # participant failure (stutter), durable preparation and lost delete reply.
+    source = (ROOT / "formal/tla/SessionEnvironmentProjection.tla").read_text()
+    config = (ROOT / "formal/tla/SessionEnvironmentTerminalOwner.cfg").read_text()
+    mutations = []
+    for anchor, broken, oracle in [
+        ('!.phase = "Retiring"]', '!.phase = "Retiring", !.identity = 1]', "TerminalIdentityUnchanged"),
+        ('!.retried = TRUE, !.wrapper = 1', '!.retried = TRUE, !.wrapper = 2', "TerminalRetainsExactOwner"),
+        ('!.cancelled = @ \\cup {terminalOwner.caller}',
+         '!.phase = "Vacant", !.cancelled = @ \\cup {terminalOwner.caller}', "TerminalRetainsExactOwner"),
+        ('/\\ TerminalCurrent /\\ exact /\\ terminalOwner.durable',
+         '/\\ TerminalCurrent /\\ exact', "TerminalDisposalRequiresParticipants"),
+        ('/\\ TerminalCurrent /\\ exact /\\ terminalOwner.durable',
+         '/\\ exact /\\ terminalOwner.durable', "TerminalEffectsAreCurrentAndExact"),
+        ('/\\ TerminalCurrent /\\ exact /\\ terminalOwner.durable',
+         '/\\ TerminalCurrent /\\ terminalOwner.durable', "TerminalEffectsAreCurrentAndExact"),
+        ('/\\ terminalOwner.participants = TerminalParticipants', '/\\ TRUE', "TerminalDisposalRequiresParticipants"),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit(f"terminal owner mutation anchor drifted: {oracle}")
+        mutations.append((source.replace(anchor, broken),
+                          config.replace("TerminalOwnerSafety", oracle), oracle))
+    for witness in ("NoUncommittedTerminalCompletion", "NoLostResponseTerminalCompletion",
+                    "NoCancelledAuxiliaryTakeoverCompletion"):
+        mutations.append((source, config.replace("TerminalOwnerSafety", witness), witness))
+    check_tlc_model_mutations(tlc_jar, "SessionEnvironmentProjection", source, config, mutations)
+    print("Terminal owner: 7/7 semantic mutants killed; 3 terminal completion witnesses")

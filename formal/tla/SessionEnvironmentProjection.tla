@@ -22,7 +22,9 @@ ownerVars == <<phase, localEffect, localGeneration, localBinding,
 
 VARIABLE convergence
 VARIABLE lastSynchronization
-vars == <<ownerVars, lastSynchronization, convergence>>
+VARIABLE terminalOwner
+projectionVars == <<ownerVars, lastSynchronization, convergence>>
+vars == <<projectionVars, terminalOwner>>
 
 NoValue == "none"
 RetirementCauses == {"Revocation", "Discard", "Terminal", "Checkpoint"}
@@ -41,7 +43,7 @@ ConvergenceInitial ==
      last |-> [before |-> SnapshotA, after |-> SnapshotA, incoming |-> SnapshotA,
                physical |-> "none", admitted |-> TRUE]]
 
-Init ==
+ProjectionInit ==
     /\ convergence = ConvergenceInitial
     /\ lastSynchronization = [observed |-> TRUE, closed |-> FALSE,
                                 allowed |-> FALSE, admitted |-> TRUE, after |-> "Resident"]
@@ -63,6 +65,8 @@ Init ==
                         recoverable |-> TRUE, cleared |-> FALSE,
                         cause |-> NoValue,
                         before |-> "Resident", after |-> "Resident"]
+
+Init == ProjectionInit /\ terminalOwner = 0
 
 Capture(effect, generation, binding) ==
     /\ UNCHANGED recoveryVars
@@ -173,7 +177,7 @@ OwnerNext ==
 
 
 Next ==
-    /\ UNCHANGED convergence
+    /\ UNCHANGED <<convergence, terminalOwner>>
     /\ ( (OwnerNext /\ UNCHANGED lastSynchronization)
         \/ \E closed, allowed \in BOOLEAN: SynchronizeResident(closed, allowed))
 
@@ -251,28 +255,28 @@ PhysicalProjectionCompatible(physical, incoming) ==
     physical = "none" \/ physical = incoming.binding
 
 ConvergenceCapture(p) ==
-    /\ UNCHANGED <<ownerVars, lastSynchronization>>
+    /\ UNCHANGED <<ownerVars, lastSynchronization, terminalOwner>>
     /\ convergence.root \notin convergence.inbox[p]
     /\ convergence' = [convergence EXCEPT !.inbox[p] = @ \cup {convergence.root}]
 ConvergenceLose ==
-    /\ UNCHANGED <<ownerVars, lastSynchronization>>
+    /\ UNCHANGED <<ownerVars, lastSynchronization, terminalOwner>>
     /\ ~convergence.closed
     /\ convergence' = [convergence EXCEPT !.closed = TRUE]
 ConvergencePublish ==
-    /\ UNCHANGED <<ownerVars, lastSynchronization>>
+    /\ UNCHANGED <<ownerVars, lastSynchronization, terminalOwner>>
     /\ convergence.closed /\ convergence.root = SnapshotA
     /\ convergence' = [convergence EXCEPT !.root = SnapshotB]
 ConvergenceClear ==
-    /\ UNCHANGED <<ownerVars, lastSynchronization>>
+    /\ UNCHANGED <<ownerVars, lastSynchronization, terminalOwner>>
     /\ convergence.closed /\ convergence.physical["Worker"] = "A"
     /\ convergence' = [convergence EXCEPT !.physical["Worker"] = "none"]
 ConvergenceAdopt ==
-    /\ UNCHANGED <<ownerVars, lastSynchronization>>
+    /\ UNCHANGED <<ownerVars, lastSynchronization, terminalOwner>>
     /\ convergence.cached["Worker"] = SnapshotB
     /\ convergence.physical["Worker"] = "none"
     /\ convergence' = [convergence EXCEPT !.physical["Worker"] = "B"]
 ConvergenceDeliver(p, incoming) ==
-    /\ UNCHANGED <<ownerVars, lastSynchronization>>
+    /\ UNCHANGED <<ownerVars, lastSynchronization, terminalOwner>>
     /\ incoming \in convergence.inbox[p]
     /\ LET before == convergence.cached[p]
            physical == convergence.physical[p]
@@ -285,7 +289,7 @@ ConvergenceDeliver(p, incoming) ==
                       physical |-> physical, admitted |-> admitted]]
 ConvergenceLatest(p) == ConvergenceDeliver(p, convergence.root)
 ConvergenceNext ==
-    /\ UNCHANGED <<ownerVars, lastSynchronization>>
+    /\ UNCHANGED <<ownerVars, lastSynchronization, terminalOwner>>
     /\ (ConvergenceLose \/ ConvergencePublish \/ ConvergenceClear \/ ConvergenceAdopt
         \/ (\E p \in Processes: ConvergenceCapture(p))
         \/ \E p \in Processes, incoming \in {SnapshotA, SnapshotB}: ConvergenceDeliver(p, incoming))
@@ -315,4 +319,102 @@ ProjectionObservation(before, incoming, after, admitted) ==
             /\ after.fingerprint = incoming.fingerprint
             /\ after.binding = incoming.binding
        ELSE after = before
+\* Terminal composition of the SAME local owner boundary. One exact physical
+\* target, two callers, one lease replacement, and one cancellation per caller.
+\* Root-commit knowledge is an input: terminal authority must never invent it.
+\* Resource preparation, its durable acceptance, physical removal and aggregate
+\* acknowledgement are separate actions; cancellation may split any pair.
+\* This models Host ordering, not truth of Provider observations, physical CAS,
+\* credential transport, or Rust refinement. Unknown resources can block forever.
+TerminalCallers == {1, 2}
+TerminalOrigins == {"uncommitted", "lost", "committed"}
+TerminalParticipants == {"Memory", "Files", "Repository"}
+TerminalCurrent == terminalOwner.caller # 0 /\
+                   terminalOwner.captured = terminalOwner.epoch
+TerminalInit ==
+    /\ ProjectionInit
+    /\ \E origin \in TerminalOrigins:
+      terminalOwner = [origin |-> origin, identity |-> IF origin = "committed" THEN 1 ELSE 0,
+        rootBound |-> origin # "uncommitted", wrapper |-> 1, phase |-> "Candidate",
+        epoch |-> 1, captured |-> 0, caller |-> 0, cancelled |-> {},
+        participants |-> {}, prepared |-> FALSE, durable |-> FALSE,
+        removed |-> FALSE, acknowledged |-> FALSE, published |-> FALSE,
+        retried |-> FALSE, cancelledAfterRemoval |-> FALSE, badEffect |-> FALSE]
+TerminalAcquire(c) ==
+    /\ c \in TerminalCallers /\ terminalOwner.caller = 0
+    /\ ~terminalOwner.acknowledged
+    /\ terminalOwner' = [terminalOwner EXCEPT !.caller = c, !.captured = terminalOwner.epoch]
+TerminalRelease ==
+    /\ terminalOwner.caller # 0
+    /\ terminalOwner' = [terminalOwner EXCEPT !.caller = 0, !.captured = 0]
+TerminalCancel ==
+    /\ terminalOwner.caller # 0 /\ terminalOwner.caller \notin terminalOwner.cancelled
+    /\ terminalOwner' = [terminalOwner EXCEPT
+         !.cancelledAfterRemoval = @ \/ terminalOwner.removed,
+         !.cancelled = @ \cup {terminalOwner.caller}, !.caller = 0, !.captured = 0]
+TerminalReplace ==
+    /\ terminalOwner.epoch = 1 /\ ~terminalOwner.acknowledged
+    /\ terminalOwner' = [terminalOwner EXCEPT !.epoch = 2]
+TerminalRetire ==
+    /\ TerminalCurrent /\ terminalOwner.phase = "Candidate"
+    /\ terminalOwner' = [terminalOwner EXCEPT !.phase = "Retiring"]
+TerminalAuxiliaryRetry ==
+    /\ TerminalCurrent /\ terminalOwner.phase = "Retiring"
+    /\ ~terminalOwner.removed
+    /\ terminalOwner' = [terminalOwner EXCEPT !.retried = TRUE, !.wrapper = 1]
+TerminalParticipant(p) ==
+    /\ TerminalCurrent /\ terminalOwner.phase = "Retiring"
+    /\ p \in TerminalParticipants \ terminalOwner.participants
+    /\ terminalOwner' = [terminalOwner EXCEPT !.participants = @ \cup {p}]
+TerminalPrepare ==
+    /\ TerminalCurrent /\ terminalOwner.phase = "Retiring"
+    /\ terminalOwner.participants = TerminalParticipants
+    /\ terminalOwner' = [terminalOwner EXCEPT !.prepared = TRUE]
+TerminalCommitPreparation ==
+    /\ TerminalCurrent /\ terminalOwner.prepared
+    /\ terminalOwner' = [terminalOwner EXCEPT !.durable = TRUE]
+TerminalRemove(exact) ==
+    /\ TerminalCurrent /\ exact /\ terminalOwner.durable
+    /\ terminalOwner.phase = "Retiring"
+    /\ terminalOwner' = [terminalOwner EXCEPT !.removed = TRUE,
+         !.badEffect = (~TerminalCurrent \/ ~exact)]
+TerminalAcknowledge ==
+    /\ TerminalCurrent /\ terminalOwner.removed
+    /\ terminalOwner' = [terminalOwner EXCEPT !.acknowledged = TRUE,
+         !.phase = "Vacant", !.caller = 0, !.captured = 0]
+TerminalNext ==
+    \/ \E c \in TerminalCallers: TerminalAcquire(c)
+    \/ TerminalRelease \/ TerminalCancel \/ TerminalReplace \/ TerminalRetire
+    \/ TerminalAuxiliaryRetry \/ TerminalPrepare \/ TerminalCommitPreparation
+    \/ \E p \in TerminalParticipants: TerminalParticipant(p)
+    \/ \E exact \in BOOLEAN: TerminalRemove(exact)
+    \/ TerminalAcknowledge
+TerminalSpec == TerminalInit /\ [][TerminalNext /\ UNCHANGED projectionVars]_vars
+TerminalIdentityUnchanged ==
+    /\ terminalOwner.identity = IF terminalOwner.origin = "committed" THEN 1 ELSE 0
+    /\ terminalOwner.rootBound = (terminalOwner.origin # "uncommitted")
+    /\ ~terminalOwner.published
+TerminalRetainsExactOwner ==
+    /\ terminalOwner.wrapper = 1
+    /\ (terminalOwner.phase = "Vacant") = terminalOwner.acknowledged
+TerminalDisposalRequiresParticipants ==
+    terminalOwner.removed => (terminalOwner.durable /\ terminalOwner.prepared /\
+                               terminalOwner.participants = TerminalParticipants)
+TerminalEffectsAreCurrentAndExact == ~terminalOwner.badEffect
+TerminalOwnerSafety ==
+    /\ terminalOwner.origin \in TerminalOrigins
+    /\ terminalOwner.phase \in {"Candidate", "Retiring", "Vacant"}
+    /\ terminalOwner.epoch \in 1..2 /\ terminalOwner.caller \in 0..2
+    /\ terminalOwner.captured \in 0..2
+    /\ terminalOwner.cancelled \subseteq TerminalCallers
+    /\ terminalOwner.participants \subseteq TerminalParticipants
+    /\ TerminalIdentityUnchanged /\ TerminalRetainsExactOwner
+    /\ TerminalDisposalRequiresParticipants /\ TerminalEffectsAreCurrentAndExact
+NoUncommittedTerminalCompletion ==
+    ~(terminalOwner.origin = "uncommitted" /\ terminalOwner.acknowledged)
+NoLostResponseTerminalCompletion ==
+    ~(terminalOwner.origin = "lost" /\ terminalOwner.acknowledged)
+NoCancelledAuxiliaryTakeoverCompletion ==
+    ~(terminalOwner.epoch = 2 /\ terminalOwner.cancelled # {} /\
+      terminalOwner.cancelledAfterRemoval /\ terminalOwner.retried /\ terminalOwner.acknowledged)
 =============================================================================
