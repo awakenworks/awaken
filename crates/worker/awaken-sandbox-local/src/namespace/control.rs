@@ -852,7 +852,12 @@ mod tests {
         let foreign =
             pc::SandboxEffectFence::new("foreign", "owner", "runtime", 1, u64::MAX).unwrap();
         let sandbox = NamespaceProvider::new(base.path())
-            .create_sandbox_for_effect(&demanded_spec("namespace-terminal-order"), &create, None)
+            .create_sandbox_for_effect(
+                &demanded_spec("namespace-terminal-order"),
+                &create,
+                None,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&create),
+            )
             .await
             .unwrap();
         pc::Sandbox::prepare_disposal_for_effect(

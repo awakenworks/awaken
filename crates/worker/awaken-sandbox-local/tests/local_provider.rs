@@ -73,7 +73,12 @@ async fn execution_deployment_selects_once_and_never_claims_unqualified_supervis
     assert_eq!(std::fs::read_dir(base.path()).unwrap().count(), 0);
     let fence = pc::SandboxEffectFence::new("select", "owner", "runtime", 1, u64::MAX).unwrap();
     let sandbox = provider
-        .create_sandbox_for_effect(&spec, &fence, None)
+        .create_sandbox_for_effect(
+            &spec,
+            &fence,
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence),
+        )
         .await
         .unwrap();
     assert!(sandbox.has_scoped_execution() && sandbox.needs_execution_authority());
@@ -92,7 +97,12 @@ async fn execution_deployment_selects_once_and_never_claims_unqualified_supervis
     assert_eq!(adopted.handle(), handle);
     assert!(adopted.has_scoped_execution() && adopted.needs_execution_authority());
     let replay = provider
-        .create_sandbox_for_effect(&spec, &fence, None)
+        .create_sandbox_for_effect(
+            &spec,
+            &fence,
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence),
+        )
         .await
         .unwrap();
     assert!(replay.has_scoped_execution() && replay.needs_execution_authority());
@@ -133,7 +143,12 @@ async fn execution_deployment_selects_once_and_never_claims_unqualified_supervis
     required.process_tree_supervision = true;
     assert!(
         provider
-            .create_sandbox_for_effect(&required, &fence, None)
+            .create_sandbox_for_effect(
+                &required,
+                &fence,
+                None,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence)
+            )
             .await
             .is_err()
     );

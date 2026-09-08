@@ -395,10 +395,25 @@ impl SessionEnvironmentProvider {
         source_handle: Option<&pc::SandboxHandle>,
         intent: awaken_sandbox_container::ContainerRealizationIntent,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
-        match self {
+        let admit = || match (effect_fence, effect_fence_source) {
+            (Some(fence), Some(authority)) => {
+                pc::with_current_sandbox_effect(fence, authority, || Ok(()))
+            }
+            (Some(_), None) => Err(pc::SandboxError::new(
+                "fenced creation has no current authority",
+            )),
+            (None, _) => Ok(()),
+        };
+        admit()?;
+        let environment = match self {
             Self::Workdir { provider, hand } => match effect_fence {
                 Some(effect_fence) => provider
-                    .create_sandbox_for_effect(spec, effect_fence, source_handle)
+                    .create_sandbox_for_effect(
+                        spec,
+                        effect_fence,
+                        source_handle,
+                        effect_fence_source.expect("fenced creation validated its authority"),
+                    )
                     .await
                     .map(|sandbox| {
                         SessionEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
@@ -415,7 +430,12 @@ impl SessionEnvironmentProvider {
             } => match effect_fence {
                 Some(effect_fence) => {
                     provider
-                        .create_sandbox_for_effect(spec, effect_fence, source_handle)
+                        .create_sandbox_for_effect(
+                            spec,
+                            effect_fence,
+                            source_handle,
+                            effect_fence_source.expect("fenced creation validated its authority"),
+                        )
                         .await
                 }
                 None => provider.create_sandbox(spec).await,
@@ -450,7 +470,9 @@ impl SessionEnvironmentProvider {
                 )
                 .await
             }
-        }
+        }?;
+        admit()?;
+        Ok(environment)
     }
 
     /// Pre-create never-used capacity for the same exact normalized container

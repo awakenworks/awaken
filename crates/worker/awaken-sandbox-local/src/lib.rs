@@ -860,6 +860,51 @@ mod memory_mount_release_tests {
     }
 }
 
+/// Compensate failed materialization or Ready publication through the same
+/// provider-owned participants. The caller retains the creation/root guard and
+/// the Memory owner lock throughout; this function adds no lifecycle state.
+/// Ready response-loss replay never shreds or rolls back the completed root.
+pub(crate) async fn compensate_creation_failure(
+    guard: realization_marker::ProviderCreationGuard<'_>,
+    memory: &mut MemoryMountState,
+    root: &IsolatedRoot,
+    secret_paths: &[PathBuf],
+    phase: &str,
+    cause: awaken_provisioning_contract::SandboxError,
+) -> awaken_provisioning_contract::SandboxError {
+    use awaken_provisioning_contract::SandboxError;
+
+    let teardown = memory.release(|| guard.validate_before_mutation()).await;
+    let shredding = if guard.is_incomplete() {
+        let identity = match guard.root_identity() {
+            Ok(identity) => identity,
+            Err(error) => return error,
+        };
+        guard.with_mutation(|| shred_secret_paths_at(root, identity, secret_paths))
+    } else {
+        Ok(())
+    };
+    if teardown.is_err() || shredding.is_err() {
+        return SandboxError::new(format!(
+            "{phase} failed: {cause}; memory teardown: {}; secret shredding: {}; exact root evidence was retained",
+            teardown
+                .as_ref()
+                .err()
+                .map_or_else(|| "ok".to_owned(), ToString::to_string),
+            shredding
+                .as_ref()
+                .err()
+                .map_or_else(|| "ok".to_owned(), ToString::to_string),
+        ));
+    }
+    if let Err(cleanup) = guard.abort_creation() {
+        return SandboxError::new(format!(
+            "{phase} failed: {cause}; exact-owned cleanup failed: {cleanup}"
+        ));
+    }
+    cause
+}
+
 /// Tear down an all-or-retry set. No guard is cleared until every teardown
 /// succeeds, so a partial transport/unmount failure remains retryable and can
 /// never be converted into successful root deletion.

@@ -107,6 +107,190 @@ async fn trusted_host_realizes_readonly_resource_as_advisory_access() {
     );
 }
 
+#[tokio::test]
+async fn creation_resource_responses_require_current_authority_before_writing() {
+    // R1-R60: Local/Namespace x File present/File optional absent/Secret x
+    // past/future Control timestamps x revoke/replace/exhaust/renew/cancel.
+    // Entry denial -> no root or resolution. Loss during actual Pending ->
+    // neither returned bytes nor an optional empty file nor Ready is published.
+    // Renewal -> success. Exact admitted retry writes once; Ready replay does
+    // not resolve again. Synthetic credentials only, not local credential E2E.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    struct PausedSource {
+        calls: AtomicUsize,
+        gate: tokio::sync::Semaphore,
+        absent: bool,
+    }
+    impl PausedSource {
+        async fn resolve(&self) -> Option<Vec<u8>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let _permit = self.gate.acquire().await.unwrap();
+            (!self.absent).then(|| b"synthetic-resource".to_vec())
+        }
+    }
+    #[async_trait]
+    impl pc::BlobSource for PausedSource {
+        async fn get(&self, _: &str) -> Option<Vec<u8>> {
+            self.resolve().await
+        }
+    }
+    #[async_trait]
+    impl pc::SecretBroker for PausedSource {
+        async fn materialize(&self, _: &str) -> Result<Vec<u8>, pc::SandboxError> {
+            Ok(self.resolve().await.unwrap())
+        }
+        async fn materialize_process(&self, _: &str) -> Result<Vec<u8>, pc::SandboxError> {
+            unreachable!("file-only fixture")
+        }
+        async fn write_back(&self, _: &str, _: Vec<u8>) -> Result<(), pc::SandboxError> {
+            unreachable!("read-only fixture")
+        }
+    }
+    for namespace in [false, true] {
+        for kind in ["file", "absent", "secret"] {
+            for expiry in [100, u64::MAX - 1] {
+                for change in ["revoke", "replace", "exhaust", "renew", "cancel"] {
+                    let tmp = tempfile::tempdir().unwrap();
+                    let source = Arc::new(PausedSource {
+                        calls: AtomicUsize::new(0),
+                        gate: tokio::sync::Semaphore::new(0),
+                        absent: kind == "absent",
+                    });
+                    let provider: Box<dyn pc::SandboxProvider> = if namespace {
+                        Box::new(
+                            crate::NamespaceProvider::new(tmp.path())
+                                .with_blob_source(source.clone())
+                                .with_secret_broker(source.clone()),
+                        )
+                    } else {
+                        Box::new(
+                            LocalProvider::trusted_host(tmp.path())
+                                .with_blob_source(source.clone())
+                                .with_secret_broker(source.clone()),
+                        )
+                    };
+                    let mut spec = workdir_spec("resource-proof", false);
+                    if namespace {
+                        spec.isolation = pc::IsolationClass::Namespace;
+                    }
+                    spec.mounts.push(pc::MountRequirement {
+                        mount_id: "resource".into(),
+                        mount_path: "/workspace/resource".into(),
+                        source: if kind == "secret" {
+                            pc::MountSource::Secret {
+                                reference: "synthetic".into(),
+                                content_hash: None,
+                            }
+                        } else {
+                            pc::MountSource::File {
+                                file_id: "synthetic".into(),
+                                content_hash: None,
+                            }
+                        },
+                        access: pc::MountAccess::ReadOnly,
+                        lifetime: pc::MountLifetime::Session,
+                        required: kind != "absent",
+                    });
+                    let fence =
+                        pc::SandboxEffectFence::new("create", "owner", "boot", 1, expiry).unwrap();
+                    let authority = pc::test_support::EffectAuthority::new(&fence);
+                    let root = tmp.path().join("resource-proof");
+                    assert!(
+                        provider
+                            .create_for_effect(
+                                &spec,
+                                &fence,
+                                &pc::test_support::EffectAuthority::denied()
+                            )
+                            .await
+                            .is_err()
+                    );
+                    assert!(!root.exists());
+                    assert_eq!(source.calls.load(Ordering::SeqCst), 0);
+                    let mut pending =
+                        Box::pin(provider.create_for_effect(&spec, &fence, &authority));
+                    std::future::poll_fn(|cx| {
+                        assert!(std::future::Future::poll(pending.as_mut(), cx).is_pending());
+                        std::task::Poll::Ready(())
+                    })
+                    .await;
+                    assert_eq!(source.calls.load(Ordering::SeqCst), 1);
+                    match change {
+                        "revoke" => *authority.current.lock().unwrap() = None,
+                        "replace" => {
+                            authority.current.lock().unwrap().as_mut().unwrap().0.epoch += 1
+                        }
+                        "exhaust" => {
+                            authority.current.lock().unwrap().as_mut().unwrap().1 = Duration::ZERO
+                        }
+                        "renew" => {
+                            authority
+                                .current
+                                .lock()
+                                .unwrap()
+                                .as_mut()
+                                .unwrap()
+                                .0
+                                .expires_at_unix_ms += 1
+                        }
+                        _ => {}
+                    }
+                    if change == "cancel" {
+                        drop(pending);
+                    } else {
+                        source.gate.add_permits(1);
+                        assert_eq!(
+                            pending.await.is_ok(),
+                            change == "renew",
+                            "{namespace}/{kind}/{expiry}/{change}"
+                        );
+                    }
+                    let file = root.join("workspace/resource");
+                    assert_eq!(
+                        file.exists(),
+                        change == "renew",
+                        "response is not mutation authority"
+                    );
+                    *authority.current.lock().unwrap() =
+                        Some((fence.clone(), Duration::from_secs(1)));
+                    if change == "cancel" {
+                        source.gate.add_permits(1);
+                    }
+                    let replay = provider
+                        .create_for_effect(&spec, &fence, &authority)
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        std::fs::read(&file).unwrap(),
+                        if kind == "absent" {
+                            b"".as_slice()
+                        } else {
+                            b"synthetic-resource".as_slice()
+                        }
+                    );
+                    assert_eq!(
+                        source.calls.load(Ordering::SeqCst),
+                        if change == "renew" { 1 } else { 2 }
+                    );
+                    assert_eq!(
+                        provider
+                            .create_for_effect(&spec, &fence, &authority)
+                            .await
+                            .unwrap()
+                            .handle(),
+                        replay.handle()
+                    );
+                    assert_eq!(
+                        source.calls.load(Ordering::SeqCst),
+                        if change == "renew" { 1 } else { 2 }
+                    );
+                }
+            }
+        }
+    }
+}
+
 pub(crate) struct TeardownProbe {
     pub(crate) teardowns: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pub(crate) drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -149,6 +333,7 @@ struct FailedCreationMounter {
     mount_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     teardowns: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    failures: usize,
 }
 
 #[async_trait::async_trait]
@@ -175,7 +360,7 @@ impl pc::MemoryMounter for FailedCreationMounter {
         Ok(Box::new(TeardownProbe {
             teardowns: self.teardowns.clone(),
             drops: self.drops.clone(),
-            failures: usize::MAX,
+            failures: self.failures,
             wait_until_ms: None,
             response_gate: None,
         }))
@@ -184,77 +369,108 @@ impl pc::MemoryMounter for FailedCreationMounter {
 
 #[tokio::test]
 async fn failed_creation_teardown_retains_guards_past_temporary_sandbox_drop() {
+    // Public creation compensation table: Local/Namespace x current/legacy x
+    // teardown succeeds/fails. All eight rows use the same creation call path.
+    // Success drops the guard and removes the exact root; failure retains both.
     // Ownerless-rollback decision row: C1 Memory mount succeeds; C2 a later
     // frozen mount fails; C3 Memory teardown fails. R1 C1+C2 invokes teardown;
     // R2 C3 keeps the complete guard set in the live Provider's root owner,
     // so returning Err and dropping the temporary
     // wrapper cannot call MemoryMount::drop on the still-live participant.
-    let tmp = tempfile::tempdir().unwrap();
-    let mount_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let teardowns = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let drops = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let provider = LocalProvider::new(tmp.path()).with_memory_mounter(std::sync::Arc::new(
-        FailedCreationMounter {
-            mount_calls: mount_calls.clone(),
-            teardowns: teardowns.clone(),
-            drops: drops.clone(),
-        },
-    ));
-    let mut spec = workdir_spec("failed-creation-memory-retention", false);
-    spec.mounts = vec![
-        pc::MountRequirement {
-            mount_id: "memory".into(),
-            source: pc::MountSource::MemoryStore {
-                store_id: "store".into(),
-                materialization_reference: None,
-                write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
-            },
-            mount_path: "/mnt/memory/test".into(),
-            access: pc::MountAccess::ReadWrite,
-            lifetime: pc::MountLifetime::Session,
-            required: true,
-        },
-        pc::MountRequirement {
-            mount_id: "later-memory".into(),
-            source: pc::MountSource::MemoryStore {
-                store_id: "later-store".into(),
-                materialization_reference: None,
-                write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
-            },
-            mount_path: "/mnt/memory/later".into(),
-            access: pc::MountAccess::ReadWrite,
-            lifetime: pc::MountLifetime::Session,
-            required: true,
-        },
-    ];
-    let effect = pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX).unwrap();
-    assert!(
-        provider
-            .create_sandbox_for_effect(&spec, &effect, None)
-            .await
-            .is_err(),
-        "R1"
-    );
-    assert_eq!(
-        mount_calls.load(std::sync::atomic::Ordering::SeqCst),
-        2,
-        "C1+C2"
-    );
-    assert_eq!(teardowns.load(std::sync::atomic::Ordering::SeqCst), 1, "R1");
-    assert_eq!(
-        drops.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "R2 temporary Sandbox already left scope"
-    );
+    for namespace in [false, true] {
+        for current in [false, true] {
+            for failures in [0, 1] {
+                let tmp = tempfile::tempdir().unwrap();
+                let mount_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let teardowns = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let drops = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let mounter = std::sync::Arc::new(FailedCreationMounter {
+                    mount_calls: mount_calls.clone(),
+                    teardowns: teardowns.clone(),
+                    drops: drops.clone(),
+                    failures,
+                });
+                let provider: Box<dyn pc::SandboxProvider> = if namespace {
+                    Box::new(crate::NamespaceProvider::new(tmp.path()).with_memory_mounter(mounter))
+                } else {
+                    Box::new(LocalProvider::new(tmp.path()).with_memory_mounter(mounter))
+                };
+                let mut spec = workdir_spec("failed-creation-memory-retention", false);
+                if namespace {
+                    spec.isolation = pc::IsolationClass::Namespace;
+                }
+                spec.mounts = vec![
+                    pc::MountRequirement {
+                        mount_id: "memory".into(),
+                        source: pc::MountSource::MemoryStore {
+                            store_id: "store".into(),
+                            materialization_reference: None,
+                            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+                        },
+                        mount_path: "/mnt/memory/test".into(),
+                        access: pc::MountAccess::ReadWrite,
+                        lifetime: pc::MountLifetime::Session,
+                        required: true,
+                    },
+                    pc::MountRequirement {
+                        mount_id: "later-memory".into(),
+                        source: pc::MountSource::MemoryStore {
+                            store_id: "later-store".into(),
+                            materialization_reference: None,
+                            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+                        },
+                        mount_path: "/mnt/memory/later".into(),
+                        access: pc::MountAccess::ReadWrite,
+                        lifetime: pc::MountLifetime::Session,
+                        required: true,
+                    },
+                ];
+                let effect =
+                    pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX).unwrap();
+                let result = if current {
+                    provider
+                        .create_for_effect(
+                            &spec,
+                            &effect,
+                            &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                                &effect,
+                            ),
+                        )
+                        .await
+                } else {
+                    provider.create(&spec).await
+                };
+                let cause = result.err().expect("R1 later mount fails");
+                assert!(cause.to_string().contains("injected later mount failure"));
+                assert_eq!(
+                    crate::sandbox_dir(tmp.path(), &spec.scope).exists(),
+                    failures != 0,
+                    "R2 only successful compensation removes the root"
+                );
+                assert_eq!(
+                    mount_calls.load(std::sync::atomic::Ordering::SeqCst),
+                    2,
+                    "C1+C2"
+                );
+                assert_eq!(teardowns.load(std::sync::atomic::Ordering::SeqCst), 1, "R1");
+                assert_eq!(
+                    drops.load(std::sync::atomic::Ordering::SeqCst),
+                    usize::from(failures == 0),
+                    "R2 temporary Sandbox already left scope"
+                );
+            }
+        }
+    }
 }
 
 #[tokio::test]
 async fn ready_create_replay_projects_the_receipt_without_rematerializing() {
     // Create-replay cause/effect table: C1 marker is Creating/Ready; C2
-    // retry effect is exact/drifted; C3 lease is live/expired. R1 Creating
-    // requires live authorization, writes once, and publishes its receipt;
-    // R2 Ready+exact (either C3) is read-only, returns the same V2 handle,
-    // and preserves bytes changed after Ready; R3 drift rejects.
+    // retry effect is exact/drifted; C3 current authority is admitted/denied;
+    // C4 assertion timestamp is original/historical. R1 Creating requires
+    // current authorization, writes once, and publishes its receipt.
+    // R2 Ready+exact+admitted (either C4) returns the same V2 handle and
+    // preserves Agent bytes; R3 drift or denied current authority rejects.
     // The preserved mutation distinguishes receipt projection from a second
     // Inline resolution/write, which would restore `declared`.
     let tmp = tempfile::tempdir().unwrap();
@@ -272,14 +488,24 @@ async fn ready_create_replay_projects_the_receipt_without_rematerializing() {
     });
     let effect = pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX).unwrap();
     let first = provider
-        .create_sandbox_for_effect(&spec, &effect, None)
+        .create_sandbox_for_effect(
+            &spec,
+            &effect,
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&effect),
+        )
         .await
         .expect("R1");
     let first_handle = pc::Sandbox::handle(&first);
     std::fs::write(first.workspace_path().join("receipt.txt"), b"after-ready").unwrap();
 
     let replay = provider
-        .create_sandbox_for_effect(&spec, &effect, None)
+        .create_sandbox_for_effect(
+            &spec,
+            &effect,
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&effect),
+        )
         .await
         .expect("R2");
     assert_eq!(
@@ -297,9 +523,10 @@ async fn ready_create_replay_projects_the_receipt_without_rematerializing() {
             &spec,
             &pc::SandboxEffectFence::new("create", "owner", "runtime", 1, 0).unwrap(),
             None,
+            &pc::test_support::EffectAuthority::new(&effect),
         )
         .await
-        .expect("R2 read-only replay ignores lease expiry");
+        .expect("R2 historical assertion with current proof");
     assert_eq!(
         pc::Sandbox::handle(&expired_replay),
         first_handle,
@@ -309,8 +536,24 @@ async fn ready_create_replay_projects_the_receipt_without_rematerializing() {
         provider
             .create_sandbox_for_effect(
                 &spec,
+                &effect,
+                None,
+                &pc::test_support::EffectAuthority::denied(),
+            )
+            .await
+            .is_err(),
+        "R3 receipt does not replace current authority"
+    );
+    assert!(
+        provider
+            .create_sandbox_for_effect(
+                &spec,
                 &pc::SandboxEffectFence::new("drifted", "owner", "runtime", 1, u64::MAX,).unwrap(),
                 None,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    &pc::SandboxEffectFence::new("drifted", "owner", "runtime", 1, u64::MAX,)
+                        .unwrap()
+                )
             )
             .await
             .is_err(),
@@ -1261,7 +1504,12 @@ async fn terminal_checkpoint_cancellation_reuses_the_original_guard_and_upload_j
                 pc::SandboxEffectFence::new("suspend", "owner", "runtime", 1, u64::MAX).unwrap();
             let sandbox = Arc::new(
                 provider
-                    .create_sandbox_for_effect(&spec, &create, None)
+                    .create_sandbox_for_effect(
+                        &spec,
+                        &create,
+                        None,
+                        &awaken_provisioning_contract::test_support::EffectAuthority::new(&create),
+                    )
                     .await
                     .unwrap(),
             );
@@ -1383,7 +1631,12 @@ async fn terminal_checkpoint_cleanup_uses_the_hot_ready_guard() {
     let terminal =
         pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, u64::MAX).unwrap();
     let sandbox = provider
-        .create_sandbox_for_effect(&spec, &create, None)
+        .create_sandbox_for_effect(
+            &spec,
+            &create,
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&create),
+        )
         .await
         .unwrap();
     std::fs::write(sandbox.workspace_path().join("mutable"), b"state").unwrap();
@@ -1456,7 +1709,12 @@ async fn terminal_checkpoint_cleanup_uses_the_prepared_removal_guard() {
     let terminal =
         pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, u64::MAX).unwrap();
     let sandbox = provider
-        .create_sandbox_for_effect(&spec, &create, None)
+        .create_sandbox_for_effect(
+            &spec,
+            &create,
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&create),
+        )
         .await
         .unwrap();
     std::fs::write(sandbox.workspace_path().join("mutable"), b"state").unwrap();

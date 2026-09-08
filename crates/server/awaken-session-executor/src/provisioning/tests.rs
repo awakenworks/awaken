@@ -1393,7 +1393,12 @@ async fn terminal_release_harvests_outputs_idempotently_before_sandbox_disposal(
         .unwrap();
     let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
         host.provider
-            .create_sandbox_for_effect(&spec, &create_fence, None)
+            .create_sandbox_for_effect(
+                &spec,
+                &create_fence,
+                None,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&create_fence),
+            )
             .await
             .unwrap(),
     ));
@@ -1532,7 +1537,12 @@ async fn terminal_artifact_response_loss_recovers_the_same_receipt_without_an_en
         .unwrap();
     let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
         host.provider
-            .create_sandbox_for_effect(&spec, &create_fence, None)
+            .create_sandbox_for_effect(
+                &spec,
+                &create_fence,
+                None,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&create_fence),
+            )
             .await
             .unwrap(),
     ));
@@ -2029,7 +2039,12 @@ async fn terminal_harvest_failure_preserves_the_sandbox_for_retry() {
         .unwrap();
     let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
         host.provider
-            .create_sandbox_for_effect(&spec, &create_fence, None)
+            .create_sandbox_for_effect(
+                &spec,
+                &create_fence,
+                None,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&create_fence),
+            )
             .await
             .unwrap(),
     ));

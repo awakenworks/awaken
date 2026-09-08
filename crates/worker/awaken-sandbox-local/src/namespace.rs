@@ -483,7 +483,7 @@ impl NamespaceProvider {
         spec: &pc::SandboxSpec,
         memory_mounts: &mut crate::MemoryMountState,
         memory_materializations: &mut Vec<pc::MemoryMaterializationEvidence>,
-        mutation_guard: &crate::realization_marker::ProviderCreationGuard,
+        mutation_guard: &crate::realization_marker::ProviderCreationGuard<'_>,
     ) -> Result<(Vec<RenderMount>, Vec<pc::RealizedMount>), pc::SandboxError> {
         let root_identity = mutation_guard
             .root_identity()?
@@ -542,6 +542,7 @@ impl NamespaceProvider {
                     "the Namespace provider cannot write back a brokered writable Secret mount",
                 ));
             }
+            mutation_guard.validate_before_mutation()?;
             let bytes = resolve_source(
                 &req.source,
                 &self.blobs,
@@ -555,15 +556,16 @@ impl NamespaceProvider {
                     let relative = host
                         .strip_prefix(root.root())
                         .map_err(|_| err("namespace mount escaped its exact sandbox root"))?;
-                    mutation_guard.validate_before_mutation()?;
-                    awaken_sandbox_fs::write_relative_file_atomic(
-                        root.root(),
-                        root_identity,
-                        relative,
-                        bytes,
-                        0o600,
-                    )
-                    .map_err(err)?;
+                    mutation_guard.with_mutation(|| {
+                        awaken_sandbox_fs::write_relative_file_atomic(
+                            root.root(),
+                            root_identity,
+                            relative,
+                            bytes,
+                            0o600,
+                        )
+                        .map_err(err)
+                    })?;
                 }
                 None if req.required => {
                     return Err(err(format!(
@@ -575,15 +577,16 @@ impl NamespaceProvider {
                     let relative = host
                         .strip_prefix(root.root())
                         .map_err(|_| err("namespace mount escaped its exact sandbox root"))?;
-                    mutation_guard.validate_before_mutation()?;
-                    awaken_sandbox_fs::write_relative_file_atomic(
-                        root.root(),
-                        root_identity,
-                        relative,
-                        b"",
-                        0o600,
-                    )
-                    .map_err(err)?;
+                    mutation_guard.with_mutation(|| {
+                        awaken_sandbox_fs::write_relative_file_atomic(
+                            root.root(),
+                            root_identity,
+                            relative,
+                            b"",
+                            0o600,
+                        )
+                        .map_err(err)
+                    })?;
                 }
             }
             layout.push(RenderMount {
@@ -644,9 +647,10 @@ impl pc::SandboxProvider for NamespaceProvider {
         &self,
         spec: &pc::SandboxSpec,
         effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
         Ok(Box::new(
-            self.create_sandbox_for_effect(spec, effect_fence, None)
+            self.create_sandbox_for_effect(spec, effect_fence, None, authority)
                 .await?,
         ))
     }
@@ -746,18 +750,19 @@ impl NamespaceProvider {
         spec: &pc::SandboxSpec,
         effect_fence: &pc::SandboxEffectFence,
         source_handle: Option<&pc::SandboxHandle>,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<NamespaceSandbox, pc::SandboxError> {
         if let Some(handle) = source_handle {
             handle.namespace_payload(Self::provider_kind())?;
         }
-        self.create_sandbox_inner(spec, Some(effect_fence), source_handle)
+        self.create_sandbox_inner(spec, Some((effect_fence, authority)), source_handle)
             .await
     }
 
     async fn create_sandbox_inner(
         &self,
         spec: &pc::SandboxSpec,
-        effect_fence: Option<&pc::SandboxEffectFence>,
+        effect: Option<(&pc::SandboxEffectFence, &dyn pc::CurrentExecutionAuthority)>,
         source_handle: Option<&pc::SandboxHandle>,
     ) -> Result<NamespaceSandbox, pc::SandboxError> {
         pc::prepare_environment(spec, &Self::capabilities()).map_err(err)?;
@@ -774,18 +779,18 @@ impl NamespaceProvider {
         let raw_root = crate::sandbox_dir(&self.base, &spec.scope);
         let memory_mounts = self.memory_mounts.owner(&raw_root);
         let realization_fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
-        let mut realization_guard = match effect_fence {
-            Some(effect_fence) => crate::realization_marker::ProviderCreationGuard::Current(
-                Box::new(crate::realization_marker::begin(
+        let mut realization_guard = match effect {
+            Some((effect_fence, authority)) => {
+                crate::realization_marker::ProviderCreationGuard::current(
                     &raw_root,
                     &realization_fingerprint,
                     effect_fence,
                     source_handle
                         .map(crate::realization_marker::rebuild_source)
                         .transpose()?,
-                    None,
-                )?),
-            ),
+                    authority,
+                )?
+            }
             None if source_handle.is_none() => {
                 crate::realization_marker::ProviderCreationGuard::Legacy(
                     crate::realization_marker::begin_legacy(&raw_root)?,
@@ -833,7 +838,8 @@ impl NamespaceProvider {
                 .filter(|mount| matches!(mount.source, pc::MountSource::Secret { .. }))
                 .map(|mount| host_projection_path(&root, &host_workspace, &mount.mount_path))
                 .collect::<Result<Vec<_>, _>>()?;
-            let layout = replay_render_layout(&root, &host_workspace, spec)?;
+            let layout = realization_guard
+                .with_mutation(|| replay_render_layout(&root, &host_workspace, spec))?;
             let host_paths = layout
                 .iter()
                 .take(spec.mounts.len())
@@ -902,11 +908,13 @@ impl NamespaceProvider {
         }
         crate::memory_mount::prepare_memory_before_root(&memory_mounts, &realization_guard).await?;
         if realization_guard.is_incomplete() {
-            crate::shred_secret_paths_at(
-                &raw_isolated_root,
-                realization_guard.root_identity()?,
-                &raw_secret_paths,
-            )?;
+            realization_guard.with_authority(|| {
+                crate::shred_secret_paths_at(
+                    &raw_isolated_root,
+                    realization_guard.root_identity()?,
+                    &raw_secret_paths,
+                )
+            })?;
         }
         realization_guard.prepare_root()?;
         let mut memory_state = memory_mounts.lock().await;
@@ -933,25 +941,26 @@ impl NamespaceProvider {
                 .filter(|mount| matches!(mount.source, pc::MountSource::Secret { .. }))
                 .map(|mount| host_projection_path(&root, &host_workspace, &mount.mount_path))
                 .collect::<Result<Vec<_>, _>>()?;
-            realization_guard.validate_before_mutation()?;
-            awaken_sandbox_fs::create_relative_directory_all(
-                root.root(),
-                raw_identity,
-                std::path::Path::new(pc::WorkspaceLayout::ROOT.trim_start_matches('/')),
-            )
-            .map_err(err)?;
+            realization_guard.with_mutation(|| {
+                awaken_sandbox_fs::create_relative_directory_all(
+                    root.root(),
+                    raw_identity,
+                    std::path::Path::new(pc::WorkspaceLayout::ROOT.trim_start_matches('/')),
+                )
+                .map_err(err)
+            })?;
             let host_outputs = root.resolve(&spec.outputs_path).map_err(err)?;
-            realization_guard.validate_before_mutation()?;
-            awaken_sandbox_fs::create_relative_directory_all(
-                root.root(),
-                raw_identity,
-                std::path::Path::new(spec.outputs_path.trim_start_matches('/')),
-            )
-            .map_err(err)?;
+            realization_guard.with_mutation(|| {
+                awaken_sandbox_fs::create_relative_directory_all(
+                    root.root(),
+                    raw_identity,
+                    std::path::Path::new(spec.outputs_path.trim_start_matches('/')),
+                )
+                .map_err(err)
+            })?;
 
-            // Creating starts from an exact-owned empty root; Ready response-loss
-            // recovery preserves the root and reconciles only the immutable
-            // spec-owned mount destinations through this same leaf implementation.
+            // Only incomplete creation reaches materialization. Ready returned
+            // above by projecting its receipt without rewriting Agent bytes.
             let (mut layout, realized) = self
                 .realize_layout(
                     &root,
@@ -962,7 +971,8 @@ impl NamespaceProvider {
                     &realization_guard,
                 )
                 .await?;
-            let control_directory = control_directory_for(&root, &spec.control_services)?;
+            let control_directory = realization_guard
+                .with_mutation(|| control_directory_for(&root, &spec.control_services))?;
             if let Some(directory) = control_directory.clone() {
                 layout.push(private_control_mount(directory));
             }
@@ -997,77 +1007,36 @@ impl NamespaceProvider {
         ) = match realization {
             Ok(realization) => realization,
             Err(cause) => {
-                let teardown = memory_state
-                    .release(|| realization_guard.validate_before_mutation())
-                    .await;
-                let shredding = if realization_guard.is_incomplete() {
-                    crate::shred_secret_paths_at(
-                        &raw_isolated_root,
-                        realization_guard.root_identity()?,
-                        &raw_secret_paths,
-                    )
-                } else {
-                    Ok(())
-                };
-                if teardown.is_err() || shredding.is_err() {
-                    return Err(err(format!(
-                        "namespace realization failed: {cause}; memory teardown: {}; secret shredding: {}; exact root evidence was retained",
-                        teardown
-                            .as_ref()
-                            .err()
-                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
-                        shredding
-                            .as_ref()
-                            .err()
-                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
-                    )));
-                }
-                if let Err(cleanup) = realization_guard.abort_creation() {
-                    return Err(err(format!(
-                        "namespace realization failed: {cause}; exact-owned cleanup failed: {cleanup}"
-                    )));
-                }
-                return Err(cause);
+                return Err(crate::compensate_creation_failure(
+                    realization_guard,
+                    &mut memory_state,
+                    &raw_isolated_root,
+                    &raw_secret_paths,
+                    "namespace realization",
+                    cause,
+                )
+                .await);
             }
         };
         let realization = match realization_guard.complete(&receipt) {
             Ok(realization) => realization,
             Err(cause) => {
-                let teardown = memory_state
-                    .release(|| realization_guard.validate_before_mutation())
-                    .await;
-                let shredding = if realization_guard.is_incomplete() {
-                    crate::shred_secret_paths_at(
-                        &raw_isolated_root,
-                        realization_guard.root_identity()?,
-                        &raw_secret_paths,
-                    )
-                } else {
-                    Ok(())
-                };
-                if teardown.is_err() || shredding.is_err() {
-                    return Err(err(format!(
-                        "namespace Ready publication failed: {cause}; memory teardown: {}; secret shredding: {}; exact root evidence was retained",
-                        teardown
-                            .as_ref()
-                            .err()
-                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
-                        shredding
-                            .as_ref()
-                            .err()
-                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
-                    )));
-                }
-                if let Err(cleanup) = realization_guard.abort_creation() {
-                    return Err(err(format!(
-                        "namespace Ready publication failed: {cause}; exact-owned cleanup failed: {cleanup}"
-                    )));
-                }
-                return Err(cause);
+                return Err(crate::compensate_creation_failure(
+                    realization_guard,
+                    &mut memory_state,
+                    &raw_isolated_root,
+                    &raw_secret_paths,
+                    "namespace Ready publication",
+                    cause,
+                )
+                .await);
             }
         };
 
-        memory_state.confirm_all();
+        realization_guard.with_authority(|| {
+            memory_state.confirm_all();
+            Ok(())
+        })?;
         drop(memory_state);
         Ok(NamespaceSandbox {
             id: spec.scope.clone(),

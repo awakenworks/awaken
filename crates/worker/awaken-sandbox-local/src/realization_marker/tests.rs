@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "tests/creation_compensation.rs"]
+mod creation_compensation;
+
 fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
         process_tree_supervision: false,
@@ -179,17 +182,25 @@ fn provider_creation_guard_preserves_current_and_legacy_completion_and_abort() {
     let base = tempfile::tempdir().unwrap();
     let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec("guard"));
 
+    let current_complete_fence = fence("current-complete", 1);
+    let current_complete_authority =
+        pc::test_support::EffectAuthority::new(&current_complete_fence);
+    let current_abort_fence = fence("current-abort", 1);
+    let current_abort_authority = pc::test_support::EffectAuthority::new(&current_abort_fence);
     let current_complete_root = base.path().join("current-complete");
-    let mut current_complete = ProviderCreationGuard::Current(Box::new(
-        begin(
-            &current_complete_root,
-            &fingerprint,
-            &fence("current-complete", 1),
-            None,
-            None,
-        )
-        .unwrap(),
-    ));
+    let mut current_complete = ProviderCreationGuard::Current {
+        guard: Box::new(
+            begin(
+                &current_complete_root,
+                &fingerprint,
+                &current_complete_fence,
+                None,
+                None,
+            )
+            .unwrap(),
+        ),
+        authority: &current_complete_authority,
+    };
     current_complete.prepare_root().unwrap();
     assert!(
         matches!(
@@ -200,16 +211,19 @@ fn provider_creation_guard_preserves_current_and_legacy_completion_and_abort() {
     );
 
     let current_abort_root = base.path().join("current-abort");
-    let mut current_abort = ProviderCreationGuard::Current(Box::new(
-        begin(
-            &current_abort_root,
-            &fingerprint,
-            &fence("current-abort", 1),
-            None,
-            None,
-        )
-        .unwrap(),
-    ));
+    let mut current_abort = ProviderCreationGuard::Current {
+        guard: Box::new(
+            begin(
+                &current_abort_root,
+                &fingerprint,
+                &current_abort_fence,
+                None,
+                None,
+            )
+            .unwrap(),
+        ),
+        authority: &current_abort_authority,
+    };
     current_abort.prepare_root().unwrap();
     current_abort.abort_creation().unwrap();
     assert!(!current_abort_root.exists(), "G2");
