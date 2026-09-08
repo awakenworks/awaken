@@ -16,6 +16,25 @@ pub(super) fn ensure_supported_narrowing(
     Ok(())
 }
 
+fn preserve_remote_uncertainty<T>(context: &RuntimeRunContext, error: Error) -> Result<T> {
+    context.physical_quiescence.mark_uncertain();
+    Err(error)
+}
+
+fn reject_unconfirmed_operation<T>(
+    context: &RuntimeRunContext,
+    intent: &RemoteOperationIntent,
+    action: &str,
+) -> Result<T> {
+    preserve_remote_uncertainty(
+        context,
+        Error::Execution(format!(
+            "A2A operation {:?} has no committed remote task; automatic {action} is unsafe",
+            intent.operation_id
+        )),
+    )
+}
+
 #[async_trait]
 impl RunExecutor for A2aRunExecutor {
     fn capabilities(&self) -> ExecutorCapabilities {
@@ -53,86 +72,120 @@ impl RunExecutor for A2aRunExecutor {
         };
         let endpoint = endpoint_of(candidate)?;
 
-        let route = match restored_task_route(&context, &activation, &endpoint) {
+        let route = match restored_remote_operation_route(&context, &activation, &endpoint) {
             Ok(route) => route,
             Err(error) => {
-                return finish_invalid_task_reference(&context, &activation, error).await;
+                return preserve_remote_uncertainty(&context, error);
             }
         };
-        let resolve = async {
-            verify_attempt_ownership(context.ownership.as_deref()).await?;
-            self.transport_resolver
-                .resolve(candidate, &context)
-                .await
-                .map_err(Error::Execution)
-        };
-        let transport = if matches!(route, TaskReferenceRoute::Reattach(_)) {
-            // A resolver failure cannot establish that the existing remote task
-            // stopped. Fresh pre-dispatch resolution has no such participant.
-            task_driver::observe_remote_operation(&context, resolve).await?
-        } else {
-            resolve.await?
-        };
-        let task = task_driver::observe_remote_operation(&context, async {
-            let task = match route {
-                TaskReferenceRoute::Reattach(reference) => {
+        let (accepted, task) = match route {
+            RemoteOperationRoute::Prepared(intent) => {
+                // The commit/send gap is deliberately not replayed. Neither the
+                // stable message id nor a predecessor task can prove whether
+                // this exact operation was accepted by the peer.
+                return reject_unconfirmed_operation(&context, &intent, "resend");
+            }
+            RemoteOperationRoute::Reattach(accepted) => {
+                task_driver::observe_remote_operation(&context, async {
                     verify_attempt_ownership(context.ownership.as_deref()).await?;
-                    let task = get_task(transport.as_ref(), &reference.task_id)
+                    let transport = self
+                        .transport_resolver
+                        .resolve(candidate, &context)
+                        .await
+                        .map_err(Error::Execution)?;
+                    verify_attempt_ownership(context.ownership.as_deref()).await?;
+                    let task = get_task(transport.as_ref(), &accepted.reference.task_id)
                         .await
                         .map_err(|error| Error::Execution(error.to_string()))?;
-                    validate_reattached_task(&reference, &task)?;
-                    task
-                }
-                TaskReferenceRoute::Fresh => {
-                    let normalized = awaken_runtime_contract::NormalizedModelInput::new(
-                        &activation.snapshot.resolved_spec.instructions,
-                        &context.request_context,
-                        &activation.input,
-                    );
-                    let trace = normalized.trace();
-                    tracing::debug!(
-                        run_id = %activation.run_id.0,
-                        thread_id = %activation.thread_id.0,
-                        publication_id = %activation.snapshot.fingerprint.0,
-                        backend = "a2a",
-                        has_instructions = trace.has_instructions,
-                        request_context_supplied = trace.request_context_supplied,
-                        request_context_visible = trace.request_context_visible,
-                        durable_input_supplied = trace.durable_input_supplied,
-                        durable_input_visible = trace.durable_input_visible,
-                        legacy_derived_filtered = trace.legacy_derived_filtered,
-                        "projected privacy-safe model input"
-                    );
-                    let prompt = normalized.text_envelope();
-                    let message_id = stable_message_id(&activation.run_id, None)?;
+                    validate_reattached_task(&accepted.reference, &task)?;
+                    let task = task_driver::poll_to_boundary(
+                        transport,
+                        &accepted.reference,
+                        task,
+                        &context,
+                    )
+                    .await?;
+                    Ok((accepted, task))
+                })
+                .await?
+            }
+            RemoteOperationRoute::Fresh => {
+                verify_attempt_ownership(context.ownership.as_deref()).await?;
+                let transport = self
+                    .transport_resolver
+                    .resolve(candidate, &context)
+                    .await
+                    .map_err(Error::Execution)?;
+                let normalized = awaken_runtime_contract::NormalizedModelInput::new(
+                    &activation.snapshot.resolved_spec.instructions,
+                    &context.request_context,
+                    &activation.input,
+                );
+                let trace = normalized.trace();
+                tracing::debug!(
+                    run_id = %activation.run_id.0,
+                    thread_id = %activation.thread_id.0,
+                    publication_id = %activation.snapshot.fingerprint.0,
+                    backend = "a2a",
+                    has_instructions = trace.has_instructions,
+                    request_context_supplied = trace.request_context_supplied,
+                    request_context_visible = trace.request_context_visible,
+                    durable_input_supplied = trace.durable_input_supplied,
+                    durable_input_visible = trace.durable_input_visible,
+                    legacy_derived_filtered = trace.legacy_derived_filtered,
+                    "projected privacy-safe model input"
+                );
+                let prompt = normalized.text_envelope();
+                let message_id = stable_message_id(&activation.run_id, None)?;
+                let intent = prepare_remote_operation(
+                    &endpoint,
+                    &activation.thread_id.0,
+                    None,
+                    &message_id,
+                    &prompt,
+                )?;
+                verify_attempt_ownership(context.ownership.as_deref()).await?;
+                commit_boundary(
+                    &context,
+                    &activation,
+                    RunDisposition::running(activation.run_id.clone()),
+                    activation.input.clone(),
+                    vec![prepared_operation_state(&intent)?],
+                )
+                .await?;
+                task_driver::observe_remote_operation(&context, async {
                     verify_attempt_ownership(context.ownership.as_deref()).await?;
                     let task = send_message(
                         transport.as_ref(),
                         None,
-                        &activation.thread_id.0,
-                        &message_id,
+                        &intent.context_id,
+                        &intent.message_id,
                         &prompt,
                     )
                     .await
                     .map_err(|error| Error::Execution(error.to_string()))?;
-                    let reference = TaskReference::from_task(&endpoint, &task);
-                    validate_reattached_task(&reference, &task)?;
+                    let accepted = accept_remote_operation(intent, &task)?;
                     commit_boundary(
                         &context,
                         &activation,
                         RunDisposition::running(activation.run_id.clone()),
-                        activation.input.clone(),
-                        vec![task_reference_state(&reference)?],
+                        Vec::new(),
+                        vec![accepted_operation_state(&accepted)?],
                     )
                     .await?;
-                    task
-                }
-            };
-            let reference = TaskReference::from_task(&endpoint, &task);
-            task_driver::poll_to_boundary(transport, &reference, task, &context).await
-        })
-        .await?;
-        task_driver::finish_task(&endpoint, &activation, &context, task).await
+                    let task = task_driver::poll_to_boundary(
+                        transport,
+                        &accepted.reference,
+                        task,
+                        &context,
+                    )
+                    .await?;
+                    Ok((accepted, task))
+                })
+                .await?
+            }
+        };
+        task_driver::finish_task(&activation, &context, accepted, task).await
     }
 }
 
@@ -143,24 +196,26 @@ impl RunAttemptExecutor for A2aRunExecutor {
         activation: &RunActivation,
         context: &RuntimeRunContext,
     ) -> AttemptRecoveryMode {
-        // Cause C1: the recovered Run has a complete committed A2A TaskReference.
-        // Cause C2: that reference is bound to the publication-frozen endpoint.
+        // Cause C1: the recovered Run has a complete committed A2A Accepted state.
+        // Cause C2: its task reference is bound to the publication-frozen endpoint.
+        // Cause C3: the state is only Prepared, so send acceptance is unknown.
         // Effect E1: C1+C2 permits replacing only the Dispatch physical slot;
         // `execute` then uses `tasks/get` and cannot repeat `message:send`.
-        // Effect E2: every absent, malformed, non-remote, or mismatched reference
+        // Effect E2: every absent, malformed, non-remote, mismatched, or C3 state
         // retains the generic predecessor-quiescence fence.
         //
-        // | Rule | C1 | C2 | Recovery mode |
-        // |---|---|---|---|
-        // | R1 | yes | yes | continue durable remote operation |
-        // | R2 | no | n/a | require predecessor quiescence |
-        // | R3 | yes | no | require predecessor quiescence |
+        // | Rule | C1 | C2 | C3 | Recovery mode |
+        // |---|---|---|---|---|
+        // | R1 | yes | yes | no | continue durable remote operation |
+        // | R2 | no | n/a | no | require predecessor quiescence |
+        // | R3 | yes | no | no | require predecessor quiescence |
+        // | R4 | no | n/a | yes | require predecessor quiescence |
         let continuation_is_bound = (|| {
             let candidate = remote_candidate_of(activation).ok()?;
             let endpoint = endpoint_of(candidate).ok()?;
             matches!(
-                restored_task_route(context, activation, &endpoint).ok()?,
-                TaskReferenceRoute::Reattach(_)
+                restored_remote_operation_route(context, activation, &endpoint).ok()?,
+                RemoteOperationRoute::Reattach(_)
             )
             .then_some(())
         })()
@@ -190,20 +245,24 @@ impl RunAttemptExecutor for A2aRunExecutor {
             .map_err(|error| Error::Execution(format!("invalid A2A resume: {error}")))?;
         let candidate = remote_candidate_of(&activation)?;
         let endpoint = endpoint_of(candidate)?;
-        let reference = match restored_task_route(&context, &activation, &endpoint) {
-            Ok(TaskReferenceRoute::Reattach(reference)) => reference,
-            Ok(TaskReferenceRoute::Fresh) => {
-                return finish_invalid_task_reference(
+        let accepted = match restored_remote_operation_route(&context, &activation, &endpoint) {
+            Ok(RemoteOperationRoute::Reattach(accepted)) => accepted,
+            Ok(RemoteOperationRoute::Fresh) => {
+                return finish_missing_remote_operation(
                     &context,
                     &activation,
                     Error::Execution("A2A resume is missing its durable remote task".to_string()),
                 )
                 .await;
             }
+            Ok(RemoteOperationRoute::Prepared(intent)) => {
+                return reject_unconfirmed_operation(&context, &intent, "resume");
+            }
             Err(error) => {
-                return finish_invalid_task_reference(&context, &activation, error).await;
+                return preserve_remote_uncertainty(&context, error);
             }
         };
+        let reference = &accepted.reference;
         let text = resume_text(&command.result)?;
         verify_attempt_ownership(context.ownership.as_deref()).await?;
         let transport = self
@@ -212,38 +271,63 @@ impl RunAttemptExecutor for A2aRunExecutor {
             .await
             .map_err(Error::Execution)?;
         let message_id = stable_message_id(&activation.run_id, Some(&ticket.correlation_id))?;
+        let intent = prepare_remote_operation(
+            &endpoint,
+            &reference.context_id,
+            Some(&reference.task_id),
+            &message_id,
+            &text,
+        )?;
         verify_attempt_ownership(context.ownership.as_deref()).await?;
-        let task = task_driver::observe_remote_operation(&context, async {
+        commit_boundary(
+            &context,
+            &activation,
+            RunDisposition::running(activation.run_id.clone()),
+            Vec::new(),
+            vec![prepared_operation_state(&intent)?],
+        )
+        .await?;
+        let (accepted, task) = task_driver::observe_remote_operation(&context, async {
+            verify_attempt_ownership(context.ownership.as_deref()).await?;
             let task = send_message(
                 transport.as_ref(),
                 None,
-                &reference.context_id,
-                &message_id,
+                &intent.context_id,
+                &intent.message_id,
                 &text,
             )
             .await
             .map_err(|error| Error::Execution(error.to_string()))?;
-            let reference = continued_task_reference(&endpoint, &reference, &task)?;
+            let accepted = accept_remote_operation(intent, &task)?;
             commit_boundary(
                 &context,
                 &activation,
                 RunDisposition::running(activation.run_id.clone()),
                 Vec::new(),
-                vec![task_reference_state(&reference)?],
+                vec![accepted_operation_state(&accepted)?],
             )
             .await?;
-            task_driver::poll_to_boundary(transport, &reference, task, &context).await
+            let task =
+                task_driver::poll_to_boundary(transport, &accepted.reference, task, &context)
+                    .await?;
+            Ok((accepted, task))
         })
         .await?;
-        task_driver::finish_task(&endpoint, &activation, &context, task).await
+        task_driver::finish_task(&activation, &context, accepted, task).await
     }
 
     async fn cancel(&self, activation: RunActivation, context: RuntimeRunContext) -> Result<()> {
         let candidate = remote_candidate_of(&activation)?;
         let endpoint = endpoint_of(candidate)?;
-        let reference = match restored_task_route(&context, &activation, &endpoint)? {
-            TaskReferenceRoute::Fresh => return Ok(()),
-            TaskReferenceRoute::Reattach(reference) => reference,
+        let reference = match restored_remote_operation_route(&context, &activation, &endpoint) {
+            Ok(RemoteOperationRoute::Fresh) => return Ok(()),
+            Ok(RemoteOperationRoute::Prepared(intent)) => {
+                return reject_unconfirmed_operation(&context, &intent, "cancellation");
+            }
+            Ok(RemoteOperationRoute::Reattach(accepted)) => accepted.reference,
+            Err(error) => {
+                return preserve_remote_uncertainty(&context, error);
+            }
         };
         task_driver::observe_remote_operation(&context, async {
             verify_attempt_ownership(context.ownership.as_deref()).await?;

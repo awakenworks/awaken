@@ -10,9 +10,9 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::terminal::{CommittedTerminalRun, deliver_committed_terminal};
 
 use super::task_projection::assistant_message;
-use super::task_state::clear_task_reference_state;
+use super::task_state::clear_remote_operation_state;
 
-pub(super) async fn finish_invalid_task_reference(
+pub(super) async fn finish_missing_remote_operation(
     context: &RuntimeRunContext,
     activation: &RunActivation,
     error: Error,
@@ -41,14 +41,15 @@ pub(super) async fn finish_terminal(
         activation,
         RunDisposition::ended(activation.run_id.clone(), cause.clone()),
         messages,
-        vec![clear_task_reference_state()],
+        vec![clear_remote_operation_state()],
     )
     .await?;
     Ok(RunState::Ended(cause))
 }
 
 /// Commit one remote lifecycle boundary through the same atomic Run boundary as
-/// Native and ACP. The task reference is therefore never ahead of its Run state.
+/// Native and ACP. Prepared/Accepted operation state is therefore never ahead
+/// of its Run state.
 pub(super) async fn commit_boundary(
     context: &RuntimeRunContext,
     activation: &RunActivation,
