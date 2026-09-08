@@ -1,5 +1,5 @@
 ----------------------- MODULE SessionNetworkPolicy -----------------------
-EXTENDS TLC
+EXTENDS Naturals, Sequences, FiniteSets, TLC
 CONSTANTS Hosts, Blank
 
 \* Canonical host identities abstract Rust trim/ASCII-case folding. Blank is
@@ -8,6 +8,25 @@ CONSTANTS Hosts, Blank
 \* collection refinement. None is {}, unrestricted projects to Hosts.
 Canonical(hosts) == hosts \ {Blank}
 Meet(left, right) == Canonical(left) \intersect Canonical(right)
+
+\* Sequence projection vocabulary for the same canonical meet. A selection
+\* witness identifies the retained source position of every output element;
+\* it specifies stable filtering, not Rust iterator/library refinement.
+SequenceHosts(sequence) == {sequence[i] : i \in DOMAIN sequence}
+SelectedSequence(source, output, selection) ==
+    /\ selection \in [DOMAIN output -> DOMAIN source]
+    /\ \A i \in DOMAIN output: output[i] = source[selection[i]]
+ExactSelection(source, output, selection, allowed) ==
+    \A i \in DOMAIN source:
+        (source[i] \in allowed) <=> (\E j \in DOMAIN output: selection[j] = i)
+IncreasingSelection(output, selection) ==
+    \A i, j \in DOMAIN output: i < j => selection[i] < selection[j]
+InjectiveSelection(output, selection) ==
+    \A i, j \in DOMAIN output: selection[i] = selection[j] => i = j
+SequenceOrderedBy(sequence, order) ==
+    \A i, j \in DOMAIN sequence: i < j => <<sequence[i], sequence[j]>> \in order
+SequenceUnique(sequence) ==
+    \A i, j \in DOMAIN sequence: sequence[i] = sequence[j] => i = j
 
 VARIABLE left, right, result
 vars == <<left, right, result>>

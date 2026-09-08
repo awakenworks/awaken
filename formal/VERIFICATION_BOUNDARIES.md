@@ -573,6 +573,21 @@ type checking are valuable executable evidence, but are not formal proofs.
   exact-once table. SDK capture/serialization, signature authenticity,
   unbounded payloads, network and provider/LLM behavior are not proved.
 
+- Session network restriction retains one sorted, deduplicated Vec and uses
+  stable filtering for meet; its empty result shares the canonical `None`
+  constructor. TLAPS proves six sequence-selection properties over arbitrary
+  indexed collections, alongside the existing meet algebra. Exact source
+  positions and complete membership give exact intersection; increasing and
+  injective positions preserve order and uniqueness. Three concrete witnesses
+  establish the need for these premises. These mathematical selection premises
+  are not a universal refinement of Rust library calls. TLC checks the existing
+  three-host/blank model and an 84-case sequence oracle; five model mutations
+  are rejected. Native normalization exhausts 16,515 policies with at most two
+  one-byte ASCII hosts, while meet crosses 25,281 pairs over twelve representative
+  bytes. Six production mutations, Unicode property tests and SQLite root
+  readback cross-check the implementation. Kani composition has not completed;
+  arbitrary String/Vec refinement, DNS and provider enforcement remain unproved.
+
 ## Credential effect and MCP delivery evidence
 
 Catalog Vault insert/ensure now share the actual workspace predicate across
