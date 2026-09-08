@@ -149,6 +149,7 @@ struct FailedCreationMounter {
     mount_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     teardowns: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     drops: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    failures: usize,
 }
 
 #[async_trait::async_trait]
@@ -175,7 +176,7 @@ impl pc::MemoryMounter for FailedCreationMounter {
         Ok(Box::new(TeardownProbe {
             teardowns: self.teardowns.clone(),
             drops: self.drops.clone(),
-            failures: usize::MAX,
+            failures: self.failures,
             wait_until_ms: None,
             response_gate: None,
         }))
@@ -184,68 +185,90 @@ impl pc::MemoryMounter for FailedCreationMounter {
 
 #[tokio::test]
 async fn failed_creation_teardown_retains_guards_past_temporary_sandbox_drop() {
+    // Public creation compensation table: Local/Namespace x current/legacy x
+    // teardown succeeds/fails. All eight rows use the same creation call path.
+    // Success drops the guard and removes the exact root; failure retains both.
     // Ownerless-rollback decision row: C1 Memory mount succeeds; C2 a later
     // frozen mount fails; C3 Memory teardown fails. R1 C1+C2 invokes teardown;
     // R2 C3 keeps the complete guard set in the live Provider's root owner,
     // so returning Err and dropping the temporary
     // wrapper cannot call MemoryMount::drop on the still-live participant.
-    let tmp = tempfile::tempdir().unwrap();
-    let mount_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let teardowns = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let drops = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let provider = LocalProvider::new(tmp.path()).with_memory_mounter(std::sync::Arc::new(
-        FailedCreationMounter {
-            mount_calls: mount_calls.clone(),
-            teardowns: teardowns.clone(),
-            drops: drops.clone(),
-        },
-    ));
-    let mut spec = workdir_spec("failed-creation-memory-retention", false);
-    spec.mounts = vec![
-        pc::MountRequirement {
-            mount_id: "memory".into(),
-            source: pc::MountSource::MemoryStore {
-                store_id: "store".into(),
-                materialization_reference: None,
-                write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
-            },
-            mount_path: "/mnt/memory/test".into(),
-            access: pc::MountAccess::ReadWrite,
-            lifetime: pc::MountLifetime::Session,
-            required: true,
-        },
-        pc::MountRequirement {
-            mount_id: "later-memory".into(),
-            source: pc::MountSource::MemoryStore {
-                store_id: "later-store".into(),
-                materialization_reference: None,
-                write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
-            },
-            mount_path: "/mnt/memory/later".into(),
-            access: pc::MountAccess::ReadWrite,
-            lifetime: pc::MountLifetime::Session,
-            required: true,
-        },
-    ];
-    let effect = pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX).unwrap();
-    assert!(
-        provider
-            .create_sandbox_for_effect(&spec, &effect, None)
-            .await
-            .is_err(),
-        "R1"
-    );
-    assert_eq!(
-        mount_calls.load(std::sync::atomic::Ordering::SeqCst),
-        2,
-        "C1+C2"
-    );
-    assert_eq!(teardowns.load(std::sync::atomic::Ordering::SeqCst), 1, "R1");
-    assert_eq!(
-        drops.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "R2 temporary Sandbox already left scope"
-    );
+    for namespace in [false, true] {
+        for current in [false, true] {
+            for failures in [0, 1] {
+                let tmp = tempfile::tempdir().unwrap();
+                let mount_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let teardowns = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let drops = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let mounter = std::sync::Arc::new(FailedCreationMounter {
+                    mount_calls: mount_calls.clone(),
+                    teardowns: teardowns.clone(),
+                    drops: drops.clone(),
+                    failures,
+                });
+                let provider: Box<dyn pc::SandboxProvider> = if namespace {
+                    Box::new(crate::NamespaceProvider::new(tmp.path()).with_memory_mounter(mounter))
+                } else {
+                    Box::new(LocalProvider::new(tmp.path()).with_memory_mounter(mounter))
+                };
+                let mut spec = workdir_spec("failed-creation-memory-retention", false);
+                if namespace {
+                    spec.isolation = pc::IsolationClass::Namespace;
+                }
+                spec.mounts = vec![
+                    pc::MountRequirement {
+                        mount_id: "memory".into(),
+                        source: pc::MountSource::MemoryStore {
+                            store_id: "store".into(),
+                            materialization_reference: None,
+                            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+                        },
+                        mount_path: "/mnt/memory/test".into(),
+                        access: pc::MountAccess::ReadWrite,
+                        lifetime: pc::MountLifetime::Session,
+                        required: true,
+                    },
+                    pc::MountRequirement {
+                        mount_id: "later-memory".into(),
+                        source: pc::MountSource::MemoryStore {
+                            store_id: "later-store".into(),
+                            materialization_reference: None,
+                            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+                        },
+                        mount_path: "/mnt/memory/later".into(),
+                        access: pc::MountAccess::ReadWrite,
+                        lifetime: pc::MountLifetime::Session,
+                        required: true,
+                    },
+                ];
+                let effect =
+                    pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX).unwrap();
+                let result = if current {
+                    provider.create_for_effect(&spec, &effect).await
+                } else {
+                    provider.create(&spec).await
+                };
+                let cause = result.err().expect("R1 later mount fails");
+                assert!(cause.to_string().contains("injected later mount failure"));
+                assert_eq!(
+                    crate::sandbox_dir(tmp.path(), &spec.scope).exists(),
+                    failures != 0,
+                    "R2 only successful compensation removes the root"
+                );
+                assert_eq!(
+                    mount_calls.load(std::sync::atomic::Ordering::SeqCst),
+                    2,
+                    "C1+C2"
+                );
+                assert_eq!(teardowns.load(std::sync::atomic::Ordering::SeqCst), 1, "R1");
+                assert_eq!(
+                    drops.load(std::sync::atomic::Ordering::SeqCst),
+                    usize::from(failures == 0),
+                    "R2 temporary Sandbox already left scope"
+                );
+            }
+        }
+    }
 }
 
 #[tokio::test]

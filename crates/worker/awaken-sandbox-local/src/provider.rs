@@ -490,75 +490,29 @@ impl LocalProvider {
         let receipt = match realization {
             Ok(receipt) => receipt,
             Err(cause) => {
-                let teardown = crate::release_memory_mounts(&sandbox.memory_mounts, || {
-                    realization_guard.validate_before_mutation()
-                })
-                .await;
-                let shredding = if realization_guard.is_incomplete() {
-                    crate::shred_secret_paths_at(
-                        &sandbox.root,
-                        realization_guard.root_identity()?,
-                        &sandbox.secret_paths,
-                    )
-                } else {
-                    Ok(())
-                };
-                if teardown.is_err() || shredding.is_err() {
-                    return Err(err(format!(
-                        "sandbox realization failed: {cause}; memory teardown: {}; secret shredding: {}; exact root evidence was retained",
-                        teardown
-                            .as_ref()
-                            .err()
-                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
-                        shredding
-                            .as_ref()
-                            .err()
-                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
-                    )));
-                }
-                if let Err(cleanup) = realization_guard.abort_creation() {
-                    return Err(err(format!(
-                        "sandbox realization failed: {cause}; exact-owned cleanup failed: {cleanup}"
-                    )));
-                }
-                return Err(cause);
+                return Err(crate::compensate_creation_failure(
+                    realization_guard,
+                    &mut *sandbox.memory_mounts.lock().await,
+                    &sandbox.root,
+                    &sandbox.secret_paths,
+                    "sandbox realization",
+                    cause,
+                )
+                .await);
             }
         };
         sandbox.realization = match realization_guard.complete(&receipt) {
             Ok(realization) => realization,
             Err(cause) => {
-                let teardown = crate::release_memory_mounts(&sandbox.memory_mounts, || {
-                    realization_guard.validate_before_mutation()
-                })
-                .await;
-                let shredding = if realization_guard.is_incomplete() {
-                    crate::shred_secret_paths_at(
-                        &sandbox.root,
-                        realization_guard.root_identity()?,
-                        &sandbox.secret_paths,
-                    )
-                } else {
-                    Ok(())
-                };
-                if teardown.is_err() || shredding.is_err() {
-                    return Err(err(format!(
-                        "sandbox Ready publication failed: {cause}; memory teardown: {}; secret shredding: {}; exact root evidence was retained",
-                        teardown
-                            .as_ref()
-                            .err()
-                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
-                        shredding
-                            .as_ref()
-                            .err()
-                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
-                    )));
-                }
-                if let Err(cleanup) = realization_guard.abort_creation() {
-                    return Err(err(format!(
-                        "sandbox Ready publication failed: {cause}; exact-owned cleanup failed: {cleanup}"
-                    )));
-                }
-                return Err(cause);
+                return Err(crate::compensate_creation_failure(
+                    realization_guard,
+                    &mut *sandbox.memory_mounts.lock().await,
+                    &sandbox.root,
+                    &sandbox.secret_paths,
+                    "sandbox Ready publication",
+                    cause,
+                )
+                .await);
             }
         };
         sandbox.memory_mounts.lock().await.confirm_all();

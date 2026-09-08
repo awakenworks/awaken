@@ -997,73 +997,29 @@ impl NamespaceProvider {
         ) = match realization {
             Ok(realization) => realization,
             Err(cause) => {
-                let teardown = memory_state
-                    .release(|| realization_guard.validate_before_mutation())
-                    .await;
-                let shredding = if realization_guard.is_incomplete() {
-                    crate::shred_secret_paths_at(
-                        &raw_isolated_root,
-                        realization_guard.root_identity()?,
-                        &raw_secret_paths,
-                    )
-                } else {
-                    Ok(())
-                };
-                if teardown.is_err() || shredding.is_err() {
-                    return Err(err(format!(
-                        "namespace realization failed: {cause}; memory teardown: {}; secret shredding: {}; exact root evidence was retained",
-                        teardown
-                            .as_ref()
-                            .err()
-                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
-                        shredding
-                            .as_ref()
-                            .err()
-                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
-                    )));
-                }
-                if let Err(cleanup) = realization_guard.abort_creation() {
-                    return Err(err(format!(
-                        "namespace realization failed: {cause}; exact-owned cleanup failed: {cleanup}"
-                    )));
-                }
-                return Err(cause);
+                return Err(crate::compensate_creation_failure(
+                    realization_guard,
+                    &mut memory_state,
+                    &raw_isolated_root,
+                    &raw_secret_paths,
+                    "namespace realization",
+                    cause,
+                )
+                .await);
             }
         };
         let realization = match realization_guard.complete(&receipt) {
             Ok(realization) => realization,
             Err(cause) => {
-                let teardown = memory_state
-                    .release(|| realization_guard.validate_before_mutation())
-                    .await;
-                let shredding = if realization_guard.is_incomplete() {
-                    crate::shred_secret_paths_at(
-                        &raw_isolated_root,
-                        realization_guard.root_identity()?,
-                        &raw_secret_paths,
-                    )
-                } else {
-                    Ok(())
-                };
-                if teardown.is_err() || shredding.is_err() {
-                    return Err(err(format!(
-                        "namespace Ready publication failed: {cause}; memory teardown: {}; secret shredding: {}; exact root evidence was retained",
-                        teardown
-                            .as_ref()
-                            .err()
-                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
-                        shredding
-                            .as_ref()
-                            .err()
-                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
-                    )));
-                }
-                if let Err(cleanup) = realization_guard.abort_creation() {
-                    return Err(err(format!(
-                        "namespace Ready publication failed: {cause}; exact-owned cleanup failed: {cleanup}"
-                    )));
-                }
-                return Err(cause);
+                return Err(crate::compensate_creation_failure(
+                    realization_guard,
+                    &mut memory_state,
+                    &raw_isolated_root,
+                    &raw_secret_paths,
+                    "namespace Ready publication",
+                    cause,
+                )
+                .await);
             }
         };
 

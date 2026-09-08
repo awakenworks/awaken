@@ -436,6 +436,21 @@ current-authority port described below; terminal checkpoint cleanup is wired
 below. No new store, timer, lease, registry or state machine is
 introduced by this cold reconstruction change.
 
+Local/Namespace creation and Ready-publication failures share the crate's
+`compensate_creation_failure` orchestration instead of four copies. The existing
+creation guard, Memory owner and exact-root Secret leaf retain their respective
+responsibilities. Under the original root guard and Memory borrow, release
+Memory, shred only incomplete-creation credentials, and abort the exact attempt
+only when both steps succeed. A failure retains evidence; a completed Ready root
+is never rolled back. Adjacent cause/effect tables cover both public providers,
+current/legacy admission, independent teardown/Secret/abort failures, exact
+Recreating source-marker restoration, Ready protection and actual teardown
+cancellation followed by exact current-marker retry. Foreign private-stage
+conflicts are retained rather than reported as successful cleanup. Legacy
+failure still rejects an occupied root rather than inventing durable recovery.
+This consolidates compensation, not creation authorization: the creation clock
+migration and real Worker-death/remote-commit qualifications remain open.
+
 ### Terminal Provider clock ownership
 
 Current Worker/Session proof is the sole liveness authority for terminal

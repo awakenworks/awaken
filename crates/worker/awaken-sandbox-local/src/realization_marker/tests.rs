@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "tests/creation_compensation.rs"]
+mod creation_compensation;
+
 fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
         process_tree_supervision: false,
