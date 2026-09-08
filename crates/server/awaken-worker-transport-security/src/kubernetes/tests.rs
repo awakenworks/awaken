@@ -68,6 +68,7 @@ impl MockApi {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        install_rustls_crypto_provider();
         let client = Client::try_from(kube::Config::new(
             format!("http://{address}").parse().unwrap(),
         ))
