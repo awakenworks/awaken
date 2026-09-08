@@ -36,6 +36,16 @@ type checking are valuable executable evidence, but are not formal proofs.
   obligation therefore retains `abstract_model_checked`; SessionRoot TLC,
   SQLite crash/race tests and a shared SQLite/Postgres lost-ack/conflict table
   provide complementary evidence, not universal refinement.
+  Fresh low-level Replace is also checked against the current durable root in
+  one shared store admission, after replay and the owner/revision fence. The
+  contract guard directly proves creation-time immutability (including legacy
+  unknown) and forbids erasing/regressing a known update over all `Option<u64>`
+  inputs. It no longer relies on callers preserving those fields. Both SQL
+  adapters exercise the same 17-row rejection/publication/replay table; malformed,
+  foreign-identity and revision-inconsistent current rows fail closed at the
+  shared decoder gate. Historical unknown update can remain unknown in low-level
+  replacements; only the application samples the clock. The SQL/async/refinement
+  limits above remain unchanged.
 - Terminal reconciliation keeps one production page iterator shared by Host and
   Worker. Kani calls that exact iterator over 0..3 arbitrary byte identities,
   arbitrary usize limits and initial cursor, and every early-drop position

@@ -87,6 +87,11 @@ Create compiles its idempotency receipt before observing root creation time.
 Root CAS persists update time. Its shared application kernel normalizes only the
 existing update field; the typed repository receipt accepts a candidate only on
 Applied, reloads durable truth on Replayed, and rejects Conflict/Mismatch.
+Fresh low-level replacements must also preserve the current durable creation
+observation, including historical unknown, and retain any known update without
+regression. Both SQL adapters enforce the same contract guard in their existing
+transaction after receipt/owner/revision checks, before row, receipt and outbox
+publication; callers cannot bypass this by constructing a complete candidate.
 Inbound processing persists its first observation,
 and realization failure retains its own time so later cleanup cannot rewrite it.
 Resource binding times belong to each existing resolved input: manifest replacement

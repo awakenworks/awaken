@@ -319,6 +319,39 @@ fn classify_mutation_replay(
     })
 }
 
+/// One current-root admission for both SQL adapters, after receipt replay and
+/// the transactional owner/revision fence but before any row, receipt or outbox
+/// write. Decoding the already-selected row is required to preserve observations
+/// even for callers that constructed their replacement without the application.
+fn validate_current_mutation(
+    mutation: &SessionMutation,
+    current_row: EncodedSessionRow,
+) -> Result<Option<String>, SessionRepositoryError> {
+    let current = decode(current_row).map_err(corrupt)?;
+    if current.session_id != mutation.payload.session_id() {
+        return Err(corrupt(
+            "managed Session aggregate id does not match its mutation target",
+        ));
+    }
+    match &mutation.payload {
+        SessionMutationPayload::Replace(replacement) => {
+            current
+                .validate_observation_replacement(replacement)
+                .map_err(|error| SessionRepositoryError::InvalidMutation(error.to_string()))?;
+            Ok(None)
+        }
+        SessionMutationPayload::Delete(tombstone) => {
+            if !current.admits_tombstone(&tombstone.session_id, tombstone.deleted_revision) {
+                return Err(SessionRepositoryError::InvalidMutation(
+                    "Session tombstone requires hidden terminal disposition and completed cleanup"
+                        .into(),
+                ));
+            }
+            Ok(Some(event_admissions::encode(&current)?))
+        }
+    }
+}
+
 fn decode_lifecycle(data: &str) -> Result<ManagedLifecycleFact, serde_json::Error> {
     serde_json::from_str(data)
 }

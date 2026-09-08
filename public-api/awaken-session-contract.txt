@@ -649,6 +649,7 @@ pub awaken_session_contract::SessionMutationResult::Replayed
 pub awaken_session_contract::SessionMutationResult::Replayed::new_revision: awaken_session_contract::SessionRevision
 pub enum awaken_session_contract::SessionMutationValidationError
 pub awaken_session_contract::SessionMutationValidationError::ActiveActivityStateMismatch
+pub awaken_session_contract::SessionMutationValidationError::CreationObservationChanged
 pub awaken_session_contract::SessionMutationValidationError::EmptyIdempotencyKey
 pub awaken_session_contract::SessionMutationValidationError::EmptyPayloadHash
 pub awaken_session_contract::SessionMutationValidationError::EmptySessionId
@@ -658,6 +659,7 @@ pub awaken_session_contract::SessionMutationValidationError::RevisionExhausted
 pub awaken_session_contract::SessionMutationValidationError::RuntimeIntervalFactMismatch
 pub awaken_session_contract::SessionMutationValidationError::RuntimeIntervalStateMismatch
 pub awaken_session_contract::SessionMutationValidationError::TombstoneRevisionMismatch
+pub awaken_session_contract::SessionMutationValidationError::UpdateObservationRegressed
 pub enum awaken_session_contract::SessionNetworkPolicy
 pub awaken_session_contract::SessionNetworkPolicy::Allowlist
 pub awaken_session_contract::SessionNetworkPolicy::Allowlist::hosts: alloc::vec::Vec<alloc::string::String>
@@ -1278,6 +1280,8 @@ pub fn awaken_session_contract::PersistedSession::begin_runtime_interval(&mut se
 pub fn awaken_session_contract::PersistedSession::close_runtime_interval(&mut self, u64) -> core::option::Option<awaken_session_contract::SessionRuntimeInterval>
 pub fn awaken_session_contract::PersistedSession::effective_runtime_active_millis(&self, u64) -> u64
 pub fn awaken_session_contract::PersistedSession::observe_runtime_interval(&mut self, awaken_session_contract::SessionRuntimeIntervalObservation) -> bool
+impl awaken_session_contract::PersistedSession
+pub fn awaken_session_contract::PersistedSession::validate_observation_replacement(&self, &Self) -> core::result::Result<(), awaken_session_contract::SessionMutationValidationError>
 pub struct awaken_session_contract::QuiescenceReceipt
 pub awaken_session_contract::QuiescenceReceipt::activity_epoch: u64
 pub awaken_session_contract::QuiescenceReceipt::effect_id: alloc::string::String

@@ -720,25 +720,13 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         if current_owner != owner_scope || current_revision != mutation.expected_revision {
             return Ok(SessionMutationResult::Conflict { current_revision });
         }
-        let deleted_admissions = if matches!(&mutation.payload, SessionMutationPayload::Delete(_)) {
-            let current_session = decode(EncodedSessionRow {
+        let deleted_admissions = validate_current_mutation(
+            &mutation,
+            EncodedSessionRow {
                 aggregate_json: current.try_get("aggregate_json").map_err(storage)?,
                 revision: current.try_get("revision").map_err(storage)?,
-            })
-            .map_err(corrupt)?;
-            let SessionMutationPayload::Delete(tombstone) = &mutation.payload else {
-                unreachable!("guarded above")
-            };
-            if !current_session.admits_tombstone(&session_id, tombstone.deleted_revision) {
-                return Err(SessionRepositoryError::InvalidMutation(
-                    "Session tombstone requires hidden terminal disposition and completed cleanup"
-                        .into(),
-                ));
-            }
-            Some(super::event_admissions::encode(&current_session)?)
-        } else {
-            None
-        };
+            },
+        )?;
         match &mutation.payload {
             SessionMutationPayload::Replace(replacement) => {
                 let mut replacement = replacement.clone();
