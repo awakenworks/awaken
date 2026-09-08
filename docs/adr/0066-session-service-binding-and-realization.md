@@ -646,11 +646,22 @@ Fourteen Host projection schedules cover direct/registered deployments, loss,
 same-byte slot ABA and renewal during observation/provider waits. The probe
 returns no physical Environment; the lower provider tests own resource effects.
 
+Restored-target adoption additionally exercises 96 actual Pending schedules over
+both public Provider ports, all four inspect/evidence/plan/continuation response
+cuts, unchanged/renewed/revoked/replaced/exhausted/cancelled authority and both
+Control timestamp classes. The existing FakeRuntime records the exact query
+prefix and retains the original target/evidence maps; a cold Provider without
+creation sources must retry the exact handle without recreation or disposal.
+No production owner or path is added. Independently omitting each of the four
+post-response admissions makes this table fail on the next-query or success
+assertion. These are deterministic adapter-boundary tests, not real daemon
+fault schedules or an implementation-refinement proof.
+
 The existing `SessionExecutionBinding` selector adds adoption/replay without
 changing its two-effect/slot/generation bounds: three phase-specific stale-effect
 mutants, one over-denial mutant and two reachability witnesses bring the totals
 to 43 mutants and 20 witnesses. It does not prove Rust refinement, remote renewal
-atomicity, actual restored-backend response schedules, kernel FUSE ownership on
+atomicity, real restored-backend response schedules, kernel FUSE ownership on
 Worker death, creation clocks, backend-specific observation clocks or real
 cloud/platform/credential qualification.
 
