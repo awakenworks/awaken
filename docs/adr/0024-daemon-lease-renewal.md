@@ -507,7 +507,9 @@ Host and Worker share `TerminalReconciliationScan`, a process-local cursor over
 the existing Dispatch primary key. `scan_dispatch_ids` reads at most the page
 budget without decoding execution requests; `dispatch_summary` reads one exact
 row. The scheduling budget counts inspected IDs, including nonterminal, missing
-and unreadable rows, capped at 256 per pass. Per-row failures are reported and
+and unreadable rows, capped at 256 per pass. The shared production page iterator
+also enforces this cap when a custom adapter returns too many IDs; it does not
+bound that adapter's allocation or query cost. Per-row failures are reported and
 retain the original Dispatch, but do not prevent visiting later IDs. Advance
 precedes per-row I/O; short/empty pages wrap, and restart forgets only scheduling
 position. A concurrent scan yields instead of adding a waiter. No durable cursor,
