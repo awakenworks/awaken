@@ -132,7 +132,7 @@ async fn compensation_preserves_phase_and_all_failure_evidence() {
                             guard,
                             &mut memory,
                             &isolated,
-                            &[secret.clone()],
+                            std::slice::from_ref(&secret),
                             "exact retry",
                             pc::SandboxError::new("retry cause"),
                         )
@@ -289,7 +289,7 @@ async fn compensation_reports_abort_conflict_without_deleting_foreign_stage() {
         guard,
         &mut memory,
         &isolated,
-        &[secret.clone()],
+        std::slice::from_ref(&secret),
         "conflicted creation",
         pc::SandboxError::new("original failure"),
     )
