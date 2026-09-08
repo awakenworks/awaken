@@ -3223,10 +3223,7 @@ async fn container_effect_retries_only_with_a_live_strict_same_effect_renewal() 
     let mut renewable_spec = spec("renewed-provider-boundary");
     renewable_spec.mounts.clear();
     renewable_spec.env.clear();
-    let source = {
-        let renewed = renewed.clone();
-        move |_asserted: &ContainerEffectFence| Ok(renewed.clone())
-    };
+    let source = pc::test_support::EffectAuthority::new(&renewed);
     provider
         .create_container_for_effect(
             &renewable_spec,
@@ -3245,6 +3242,14 @@ async fn container_effect_retries_only_with_a_live_strict_same_effect_renewal() 
 
     for (rule, source) in [
         ("R2", None),
+        ("R3-equal", Some(initial.clone())),
+        (
+            "R3-regressed",
+            Some(pc::SandboxEffectFence {
+                expires_at_unix_ms: initial.expires_at_unix_ms - 1,
+                ..initial.clone()
+            }),
+        ),
         (
             "R3",
             Some(
@@ -3264,16 +3269,14 @@ async fn container_effect_retries_only_with_a_live_strict_same_effect_renewal() 
         let mut rejected_spec = spec(&format!("rejected-provider-boundary-{rule}"));
         rejected_spec.mounts.clear();
         rejected_spec.env.clear();
-        let source_fn = |_: &ContainerEffectFence| {
-            source
-                .clone()
-                .ok_or_else(|| pc::SandboxError::new("missing renewal"))
-        };
+        let source = source.as_ref().map(pc::test_support::EffectAuthority::new);
         let error = match provider
             .create_container_for_effect(
                 &rejected_spec,
                 Some(&initial),
-                Some(&source_fn),
+                source
+                    .as_ref()
+                    .map(|source| source as &dyn pc::CurrentExecutionAuthority),
                 ContainerRealizationIntent::Create,
             )
             .await
@@ -3282,7 +3285,9 @@ async fn container_effect_retries_only_with_a_live_strict_same_effect_renewal() 
             Err(error) => error,
         };
         assert!(
-            error.to_string().contains("renewal") || error.to_string().contains("strict successor"),
+            error.to_string().contains("renewable")
+                || error.to_string().contains("strict successor")
+                || error.to_string().contains("permission denied"),
             "{rule}/E2: {error}"
         );
         assert_eq!(

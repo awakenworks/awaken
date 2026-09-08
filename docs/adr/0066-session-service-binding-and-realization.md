@@ -303,14 +303,19 @@ unfenced direct-provider creation entry remains unchanged.
 
 The captured provider target also exposes the existing synchronous
 `CurrentExecutionAuthority` port with the minimum current Worker/Session
-budget. Both interfaces use one held-lock decision; neither captures a copied
-deadline nor retains the Host or slot map. The common implementation is
+budget. Snapshot and effect callbacks use one port and held-lock decision;
+neither captures a copied deadline nor retains the Host or slot map. The common implementation is
 platform-neutral; only scoped process enrollment remains Linux-gated.
 Memory acknowledgement now uses this same authority. The existing
 `CurrentExecutionAuthority::with_current_effect` method binds the assertion to
 the captured operation/generation and supplies a current fence under the same
-guards; its default rejects an execution-only grant. Container's fence-query
-adapter delegates to that method rather than duplicating its identity checks.
+guards; its default rejects an execution-only grant. The redundant Container
+fence-query trait is removed: all callers use the neutral port's
+`current_effect_fence` projection, sharing the same checked callback with
+`with_current_sandbox_effect`. Snapshot success cannot authorize a later effect.
+Container's strict-successor retry rule remains in the Container provider;
+this consolidation does not remove creation/adoption wall-clock checks or
+establish remote commit fencing.
 The two Host callers (continuation release and terminal cleanup) capture this
 provider target and forward it through `SessionEnvironment` to the Sandbox.
 Local/Namespace and Container acquire their existing async Memory guard list,

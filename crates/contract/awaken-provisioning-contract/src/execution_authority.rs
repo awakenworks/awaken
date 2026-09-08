@@ -10,6 +10,16 @@ use std::{io, time::Duration};
 pub trait CurrentExecutionAuthority: Send + Sync {
     fn with_current(&self, effect: &mut dyn FnMut(Duration) -> io::Result<()>) -> io::Result<()>;
 
+    /// Snapshot the current same-effect proof under the canonical guards.
+    /// This is a retry projection, not authority for a later physical effect;
+    /// re-enter the guarded port after asynchronous work.
+    fn current_effect_fence(
+        &self,
+        asserted: &crate::SandboxEffectFence,
+    ) -> Result<crate::SandboxEffectFence, crate::SandboxError> {
+        with_checked_effect(asserted, self, |current| Ok(current.clone()))
+    }
+
     /// Commit an already admitted provider effect under the same guards. The
     /// implementation must bind the asserted operation and generation, reject
     /// future/regressed assertions, and supply the current same-effect fence.
@@ -38,6 +48,14 @@ pub fn with_current_sandbox_effect<T>(
     authority: &dyn CurrentExecutionAuthority,
     apply: impl FnOnce() -> Result<T, crate::SandboxError>,
 ) -> Result<T, crate::SandboxError> {
+    with_checked_effect(asserted, authority, |_| apply())
+}
+
+fn with_checked_effect<T, A: CurrentExecutionAuthority + ?Sized>(
+    asserted: &crate::SandboxEffectFence,
+    authority: &A,
+    apply: impl FnOnce(&crate::SandboxEffectFence) -> Result<T, crate::SandboxError>,
+) -> Result<T, crate::SandboxError> {
     asserted.validate_identity()?;
     let mut apply = Some(apply);
     let mut result = None;
@@ -50,7 +68,7 @@ pub fn with_current_sandbox_effect<T>(
                 return Err(io::ErrorKind::PermissionDenied.into());
             }
             let apply = apply.take().ok_or(io::ErrorKind::PermissionDenied)?;
-            result = Some(apply().map_err(io::Error::other)?);
+            result = Some(apply(current).map_err(io::Error::other)?);
             Ok(())
         })
         .map_err(|error| crate::SandboxError::new(error.to_string()))?;
@@ -60,6 +78,81 @@ pub fn with_current_sandbox_effect<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_and_effect_share_checked_admission() {
+        // Causes: C1 callback supplied/omitted/repeated; C2 same/foreign
+        // identity; C3 equal/renewed/regressed durable expiry; C4 positive/zero
+        // local budget; C5 port success/error after callback. Rules: only
+        // exactly one callback + same identity + nonregressed expiry + positive
+        // budget + successful port returns success. Invalid proof/omission
+        // executes zero effects; repeat/error cannot manufacture success or
+        // execute a second effect. Durable expiry=100 is deliberately unrelated
+        // to this machine's UTC. Both APIs use the same decision table.
+        struct Port {
+            fence: crate::SandboxEffectFence,
+            remaining: Duration,
+            calls: usize,
+            fail_after: bool,
+        }
+        impl CurrentExecutionAuthority for Port {
+            fn with_current(
+                &self,
+                _: &mut dyn FnMut(Duration) -> io::Result<()>,
+            ) -> io::Result<()> {
+                panic!("provider effects must not use generic admission")
+            }
+            fn with_current_effect(
+                &self,
+                _: &crate::SandboxEffectFence,
+                effect: &mut dyn FnMut(&crate::SandboxEffectFence, Duration) -> io::Result<()>,
+            ) -> io::Result<()> {
+                for _ in 0..self.calls {
+                    effect(&self.fence, self.remaining)?;
+                }
+                if self.fail_after {
+                    Err(io::ErrorKind::PermissionDenied.into())
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let initial = crate::SandboxEffectFence::new("op", "owner", "boot", 1, 100).unwrap();
+        for (rule, expiry, foreign, budget, calls, fail_after, admitted, effects) in [
+            ("equal", 100, false, 1, 1, false, true, 1),
+            ("renewed", 200, false, 1, 1, false, true, 1),
+            ("regressed", 99, false, 1, 1, false, false, 0),
+            ("foreign", 200, true, 1, 1, false, false, 0),
+            ("zero", 100, false, 0, 1, false, false, 0),
+            ("omitted", 100, false, 1, 0, false, false, 0),
+            ("repeated", 100, false, 1, 2, false, false, 1),
+            ("error_after", 100, false, 1, 1, true, false, 1),
+        ] {
+            let mut fence = initial.clone();
+            fence.expires_at_unix_ms = expiry;
+            if foreign {
+                fence.operation_id = "other".into();
+            }
+            let port = Port {
+                fence,
+                remaining: Duration::from_secs(budget),
+                calls,
+                fail_after,
+            };
+            let snapshot = (&port as &dyn CurrentExecutionAuthority).current_effect_fence(&initial);
+            assert_eq!(snapshot.is_ok(), admitted, "{rule}");
+            if admitted {
+                assert_eq!(snapshot.unwrap(), port.fence, "{rule}");
+            }
+            let mut count = 0;
+            let result = with_current_sandbox_effect(&initial, &port, || {
+                count += 1;
+                Ok(())
+            });
+            assert_eq!(result.is_ok(), admitted, "{rule}");
+            assert_eq!(count, effects, "{rule}");
+        }
+    }
 
     #[test]
     fn execution_only_authority_cannot_certify_an_unbound_provider_effect() {
@@ -77,6 +170,7 @@ mod tests {
         }
         ExecutionOnly.with_current(&mut |_| Ok(())).unwrap();
         let fence = crate::SandboxEffectFence::new("op", "owner", "boot", 1, 100).unwrap();
+        assert!(ExecutionOnly.current_effect_fence(&fence).is_err());
         assert!(
             ExecutionOnly
                 .with_current_effect(&fence, &mut |_, _| {

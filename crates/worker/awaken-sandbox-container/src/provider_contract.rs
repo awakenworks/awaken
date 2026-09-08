@@ -13,31 +13,6 @@ use awaken_sandbox_control::SandboxControlServicePublisher;
 
 use crate::RuntimeAgentProcess;
 
-/// Process-local projection of the current durable authority for one already
-/// admitted container effect. The source may extend only the renewable expiry
-/// of the asserted effect generation; it cannot assign work or create another
-/// authority. Long-running runtimes consult it only after a provider boundary
-/// reports that the prior fence expired, then replay the same idempotent effect
-/// with the refreshed proof.
-pub trait ContainerEffectFenceSource: Send + Sync {
-    fn current_effect_fence(
-        &self,
-        asserted: &ContainerEffectFence,
-    ) -> Result<ContainerEffectFence, pc::SandboxError>;
-}
-
-impl<F> ContainerEffectFenceSource for F
-where
-    F: Fn(&ContainerEffectFence) -> Result<ContainerEffectFence, pc::SandboxError> + Send + Sync,
-{
-    fn current_effect_fence(
-        &self,
-        asserted: &ContainerEffectFence,
-    ) -> Result<ContainerEffectFence, pc::SandboxError> {
-        self(asserted)
-    }
-}
-
 /// Stable namespace used to discover a provider effect after a Worker process
 /// replacement. Construction is centralized here so adapters cannot disagree
 /// about delimiter escaping, validation, or whether a process incarnation is
@@ -442,7 +417,7 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
         &self,
         spec: &pc::SandboxSpec,
         effect_fence: Option<&ContainerEffectFence>,
-        _effect_fence_source: Option<&dyn ContainerEffectFenceSource>,
+        _effect_fence_source: Option<&dyn pc::CurrentExecutionAuthority>,
         intent: ContainerRealizationIntent,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
         if effect_fence.is_some() {

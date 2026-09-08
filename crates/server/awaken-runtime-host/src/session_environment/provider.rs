@@ -391,7 +391,7 @@ impl SessionEnvironmentProvider {
         &self,
         spec: &pc::SandboxSpec,
         effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
-        effect_fence_source: Option<&dyn awaken_sandbox_container::ContainerEffectFenceSource>,
+        effect_fence_source: Option<&dyn pc::CurrentExecutionAuthority>,
         source_handle: Option<&pc::SandboxHandle>,
         intent: awaken_sandbox_container::ContainerRealizationIntent,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
