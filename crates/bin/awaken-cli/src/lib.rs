@@ -64,7 +64,7 @@ pub use crate::process_admin::{
 };
 pub use acp_local_credentials::{
     AcpLocalCredentialResolver, PreparedLocalAcp, PreparedLocalWorker, local_acp_diagnostics,
-    prepare_local_acp, prepare_local_worker, registered_memory_mounter_factory,
+    prepare_local_acp, prepare_local_worker,
 };
 pub use console_assets::mount as mount_console;
 pub use console_assets::mount_with_navigation as mount_console_with_navigation;

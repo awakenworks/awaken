@@ -72,7 +72,7 @@ fn echo_worker_builder(
         // Managed Session placement requires the standard per-kind Resource clients.
         // This is the same registered HTTP Memory adapter factory used by production;
         // File, Skill, and Repository clients are installed by WorkerNode itself.
-        .with_registered_memory_mounter_factory(awaken_cli::registered_memory_mounter_factory())
+        .with_remote_session_resource_support()
         .with_standard_manifest(Default::default())
 }
 

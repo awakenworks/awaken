@@ -476,7 +476,6 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-runtime-host",
  "awaken-sandbox-container",
- "awaken-sandbox-memoryd",
  "awaken-sandbox-policy-store",
  "awaken-scenario-host",
  "awaken-scoped-migration",
