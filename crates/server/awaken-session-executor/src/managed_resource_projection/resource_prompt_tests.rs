@@ -16,6 +16,15 @@ fn file(instructions: Option<&str>) -> ResolvedInput {
     }
 }
 
+fn expected_file_prompt(path: &str) -> String {
+    // Fixed fixture identity; keep JSON key ordering outside the contract.
+    // The separate matrix decodes JSON and checks every identity/path field.
+    format!(
+        "Read-only file reference (JSON data): {}",
+        serde_json::json!({"file_id":"file-1", "binding_id":"input-file", "path":path})
+    )
+}
+
 #[test]
 fn resource_prompt_variable_decision_table_is_closed_and_provider_relative() {
     // Cause/effect graph:
@@ -38,7 +47,10 @@ fn resource_prompt_variable_decision_table_is_closed_and_provider_relative() {
     );
     assert_eq!(
         absolute,
-        "A file is mounted read-only at `/mnt/session/uploads/brief.md`.\nbinding=input-file path=/mnt/session/uploads/brief.md dir=/mnt/session/uploads workspace=/workspace outputs=/mnt/session/outputs logical=/mnt/session/uploads/brief.md access=read-only",
+        format!(
+            "{}\nbinding=input-file path=/mnt/session/uploads/brief.md dir=/mnt/session/uploads workspace=/workspace outputs=/mnt/session/outputs logical=/mnt/session/uploads/brief.md access=read-only",
+            expected_file_prompt("/mnt/session/uploads/brief.md")
+        ),
         "R1 every variable has an exact oracle"
     );
 
@@ -60,7 +72,8 @@ fn resource_prompt_variable_decision_table_is_closed_and_provider_relative() {
     assert_eq!(
         relative,
         format!(
-            "A file is mounted read-only at `{path}`.\nbinding=input-file path={path} dir={parent} workspace=. outputs={outputs} logical=/mnt/session/uploads/brief.md access=read-only"
+            "{}\nbinding=input-file path={path} dir={parent} workspace=. outputs={outputs} logical=/mnt/session/uploads/brief.md access=read-only",
+            expected_file_prompt(&path)
         ),
         "R2 every variable, not only a substring"
     );
@@ -90,7 +103,7 @@ fn resource_prompt_templates_preserve_literals_and_never_expand_resource_data() 
                 crate::session_slot::ManagedContentDelivery::ManagedFilesystem,
                 AgentPathView::sandbox_absolute(),
             ),
-            "A file is mounted read-only at `/mnt/session/uploads/brief.md`.",
+            expected_file_prompt("/mnt/session/uploads/brief.md"),
             "L1"
         );
     }
@@ -323,11 +336,7 @@ fn every_managed_resource_kind_uses_the_same_prompt_projection() {
         );
     let relative_file =
         ["..", "mnt", "session", "uploads", "brief.md"].join(std::path::MAIN_SEPARATOR_STR);
-    assert_eq!(
-        file,
-        format!("A file is mounted read-only at `{relative_file}`."),
-        "E1 file"
-    );
+    assert_eq!(file, expected_file_prompt(&relative_file), "E1 file");
     let memory_files = ResourcePromptProjection::try_from_input(&memory(ResourceAccess::ReadOnly))
         .unwrap()
         .render(
@@ -353,4 +362,72 @@ fn every_managed_resource_kind_uses_the_same_prompt_projection() {
         );
     assert!(repository.contains("/workspace/repo"), "E1 repository");
     assert!(repository.contains("commit"), "E4");
+}
+
+#[test]
+fn selected_file_identity_and_environment_path_are_one_runtime_reference() {
+    // Causes: C1 equal filenames with different immutable File/binding IDs;
+    // C2 requested API mount is not the actual upload-root path;
+    // C3 Sandbox absolute / Workdir root / Workdir nested cwd;
+    // C4 identity contains quotes, newline or template-looking literal data.
+    // Effects: E1 exact File and binding are paired with their own usable path;
+    // E2 no client mount request masquerades as an executable path;
+    // E3 identity remains JSON data, not another prompt instruction/template.
+    // Rules: cross all 3 identity rows with all 3 Environment views (9 rows).
+    // OS separator projection has independent POSIX/Windows literal oracles in
+    // resource_prompt_variable_decision_table_is_closed_and_provider_relative.
+    for (id, binding, leaf) in [
+        ("file-a", "binding-a", "a"),
+        ("file-b", "binding-b", "b"),
+        (
+            "file-\"quoted\n{{awaken.resource.path}}",
+            "binding-\"quoted",
+            "c",
+        ),
+    ] {
+        let mut input = file(None);
+        input.source = ResolvedInputSource::File {
+            file_id: FileId::from(id),
+        };
+        input.binding_id = BindingId::from(binding);
+        input.mount_path = format!("/mnt/files/references/{leaf}/report.md");
+        let projection = ResourcePromptProjection::try_from_input(&input).unwrap();
+        for (view, expected) in [
+            (
+                AgentPathView::sandbox_absolute(),
+                format!("/mnt/session/uploads/mnt/files/references/{leaf}/report.md"),
+            ),
+            (
+                AgentPathView::workdir_relative("/workspace"),
+                format!("../mnt/session/uploads/mnt/files/references/{leaf}/report.md")
+                    .replace('/', std::path::MAIN_SEPARATOR_STR),
+            ),
+            (
+                AgentPathView::workdir_relative("/workspace/repo/src"),
+                format!("../../../mnt/session/uploads/mnt/files/references/{leaf}/report.md")
+                    .replace('/', std::path::MAIN_SEPARATOR_STR),
+            ),
+        ] {
+            let rendered = projection.render(
+                crate::session_slot::ManagedContentDelivery::ManagedFilesystem,
+                view,
+            );
+            assert_eq!(
+                rendered.lines().count(),
+                1,
+                "identity newline is escaped data"
+            );
+            let reference: serde_json::Value = serde_json::from_str(
+                rendered
+                    .strip_prefix("Read-only file reference (JSON data): ")
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                reference,
+                serde_json::json!({"file_id": id, "binding_id":binding, "path":expected})
+            );
+            assert_ne!(reference["path"], input.mount_path);
+        }
+    }
 }

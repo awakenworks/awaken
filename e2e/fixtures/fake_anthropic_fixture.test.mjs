@@ -3,6 +3,7 @@ import test from 'node:test';
 import http from 'node:http';
 import Anthropic from '@anthropic-ai/sdk';
 import { startFakeAnthropic } from './fake_anthropic_fixture.mjs';
+import { singleFileReference } from './resource_prompt_fixture.mjs';
 
 test('fragmented HTTP input preserves UTF-8 before parsing the inference request', { timeout:10_000 }, async () => {
   // W17-W19: ASCII/multibyte input x aligned/split UTF-8 code points -> the same
@@ -168,4 +169,27 @@ test('official SDK decodes the same callback tool arguments over JSON and SSE', 
     const reply = await new Anthropic({ baseURL:named.url, apiKey:'fixture-key', maxRetries:0 }).messages.create(params); // awaken-allow: secret -- loopback-only synthetic fixture credential
     assert.equal(reply.content[0].text, 'FAKE:fixture');
   } finally { await named.close(); }
+});
+
+
+test('Native and ACP resource peers consume one exact Runtime File reference', () => {
+  // Causes: C1 one/zero/multiple references; C2 complete/missing/invalid fields;
+  // C3 absolute/relative path; C4 quotes, newline and Unicode as literal data.
+  // Effects: R1 C1=one+C2=complete -> preserve every field without path rewriting
+  // (cross both C3 rows and C4); R2 all other rows -> fail, never guess a mount.
+  const render = record => `Read-only file reference (JSON data): ${JSON.stringify(record)}`;
+  for (const path of ['/mnt/session/uploads/报告.md', '../mnt/session/uploads/报告.md']) {
+    const reference = {file_id:'file-"quoted\n{{awaken.resource.path}}',binding_id:'binding-a',path};
+    assert.deepEqual(singleFileReference(`Resource list\n${render(reference)}\nOther instructions`),reference);
+  }
+  const valid = {file_id:'file-a',binding_id:'binding-a',path:'../input.txt'};
+  for (const input of ['', 'A file is mounted read-only at `/input.txt`.',
+    `${render(valid)}\n${render(valid)}`, 'Read-only file reference (JSON data): {broken']) {
+    assert.throws(() => singleFileReference(input));
+  }
+  for (const field of ['file_id','binding_id','path']) {
+    for (const value of [undefined,null,'',' ',42]) {
+      assert.throws(() => singleFileReference(render({...valid,[field]:value})));
+    }
+  }
 });

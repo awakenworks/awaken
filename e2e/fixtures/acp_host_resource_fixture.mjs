@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { singleFileReference } from './resource_prompt_fixture.mjs';
 import readline from 'node:readline';
 import { execFileSync } from 'node:child_process';
 
@@ -49,7 +50,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
         const workspace = variable('WORKSPACE');
         const memory = variable('MEMORY');
         const outputs = variable('OUTPUTS');
-        const file = /A file is mounted read-only at `([^`]+)`/u.exec(text)?.[1];
+        const file = singleFileReference(text).path;
         const repository = /A git repository is checked out at `([^`]+)`/u.exec(text)?.[1];
         assert.ok(file && repository, 'default File and Repository instructions');
         const seed = fs.readFileSync(file, 'utf8');

@@ -839,3 +839,27 @@ nor the passing local-process cross-check qualify that macOS execution row.
 
 Memory/Repository live addition remains an explicit
 create-time-only contract, not a missing hot-plug implementation to emulate.
+
+
+## Amendment — 2026-09-08: file identity accompanies the executable path
+
+The existing `ResourcePromptProjection` renders a File reference as JSON data
+containing the frozen File ID, binding ID and the `AgentPathView` path. This is
+a process-local projection of `ResolvedInput`, not another resource record or
+mount resolver. Namespace/Container use the sandbox path; Workdir uses the
+existing provider-relative view. No provider-private host prefix is published.
+
+A client selecting an existing File sends its immutable File and binding IDs.
+It must not present the requested Managed `mount_path` as a shell path: File
+realization confines that request beneath the upload root, and the Environment
+may further require a relative view. The Agent joins the selected identities
+to the current Runtime reference before reading or restoring bytes. Missing
+identity/path evidence cannot authorize a same-name replacement or a guessed
+mount prefix. Binding publication, attachment retries and File history retain
+their existing owners and persistence behavior.
+
+The resource-prompt decision tables own identity/path correlation, equal-name
+versions, escaped identity data and absolute/relative views. This change adds
+no authority transition or persistent state machine; those executable tests
+complement the existing projection models without claiming formal proof of
+model interpretation or filesystem availability.
