@@ -1,4 +1,5 @@
-import { InlineNotice, CheckPicker, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
+import { Info, TriangleAlert } from "@awaken/ui/icons";
+import { Tabs, TabList, Tab, TabPanel, InlineNotice, CheckPicker, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 
 import type {
   AgentConfig,
@@ -173,21 +174,19 @@ export default function AgentBuilder({
   };
 
   return (
-    <div className="editor-section">
-      <div className="subsection-tabs" role="tablist" aria-label={app.t("Build sections", "构建分区")}>
+    <Tabs className="editor-section" value={section} onValueChange={(value) => onSectionChange(value as BuilderSection)}>
+      <TabList aria-label={app.t("Build sections", "构建分区")}>
         {sections.map((item) => (
-          <Button
+          <Tab
             key={item.key}
-            role="tab"
-            aria-selected={section === item.key}
-            variant={section === item.key ? "primary" : "ghost"}
-            onClick={() => onSectionChange(item.key)}
+            value={item.key}
           >
             {app.t(item.label, item.zh)}
-          </Button>
+          </Tab>
         ))}
-      </div>
+      </TabList>
 
+      <TabPanel value={section}>
       {section === "instructions" && (
         <Card>
           <div className="row">
@@ -352,7 +351,7 @@ export default function AgentBuilder({
             {incompatibleTools.length > 0 && (
               <InlineNotice
                 tone="neutral"
-                icon={<span>!</span>}
+                icon={<TriangleAlert />}
                 actions={onRefreshRuntimes
                   ? <Button variant="ghost" onClick={onRefreshRuntimes}>{app.t("Refresh status", "刷新状态")}</Button>
                   : null}
@@ -371,7 +370,7 @@ export default function AgentBuilder({
               return (
                 <InlineNotice
                   tone="neutral"
-                  icon={<span>!</span>}
+                  icon={<TriangleAlert />}
                   actions={
                     <>
                       {hosted && <Button variant="ghost" onClick={() => onPatch({
@@ -459,7 +458,7 @@ export default function AgentBuilder({
               }}
             />
             {acp && (
-              <InlineNotice tone="info" icon={<span>ⓘ</span>} style={{ marginTop: 8 }}>
+              <InlineNotice tone="info" icon={<Info />} style={{ marginTop: 8 }}>
                 <span>{app.t(
                   "The selected ACP Harness cannot start new background tool executions. Existing selections remain visible so you can remove them before publishing.",
                   "所选 ACP Harness 不能启动新的后台工具执行；已有选择仍保持可见，以便在发布前移除。",
@@ -497,7 +496,7 @@ export default function AgentBuilder({
           {resourcesError ? (
             <InlineNotice
               tone="warning"
-              icon={<span>⚠</span>}
+              icon={<TriangleAlert />}
               actions={
                 <>
                   <Button variant="ghost" onClick={onRetryResources}>{app.t("Retry", "重试")}</Button>
@@ -523,6 +522,8 @@ export default function AgentBuilder({
           )}
         </>
       )}
-    </div>
+      </TabPanel>
+      {sections.filter((item) => item.key !== section).map((item) => <TabPanel key={item.key} value={item.key} />)}
+    </Tabs>
   );
 }

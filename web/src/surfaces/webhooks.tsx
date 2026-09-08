@@ -1,3 +1,4 @@
+import { ExternalLink, KeyRound, X } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card } from "@awaken/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -122,11 +123,11 @@ export default function WebhooksSurface() {
         <InlineNotice
           tone="warning"
           className="webhook-secret-banner"
-          icon={<span>🔑</span>}
+          icon={<KeyRound />}
           actions={
             <>
               <CopyButton value={created.secret} label={app.t("Copy secret", "复制密钥")} copiedLabel={app.t("Copied", "已复制")} />
-              <Button variant="ghost" aria-label={app.t("Dismiss", "关闭")} onClick={() => setCreated(null)}>✕</Button>
+              <Button variant="ghost" aria-label={app.t("Dismiss", "关闭")} onClick={() => setCreated(null)}><X /></Button>
             </>
           }
         >
@@ -152,7 +153,7 @@ export default function WebhooksSurface() {
           <li>{app.t("Deduplicate by the stable event id, fetch the referenced object, then return any 2xx response.", "按稳定 event id 去重，获取事件引用的对象，再返回任意 2xx 响应。")}</li>
         </ol>
         <a className="protocol-help-link" href="https://platform.claude.com/docs/en/managed-agents/webhooks" target="_blank" rel="noreferrer">
-          {app.t("Read the compatible Managed Agents webhook guide ↗", "阅读兼容的 Managed Agents Webhook 指南 ↗")}
+          {app.t("Read the compatible Managed Agents webhook guide", "阅读兼容的 Managed Agents Webhook 指南")} <ExternalLink />
         </a>
       </Card>
 

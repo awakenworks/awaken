@@ -1,4 +1,5 @@
-import { InlineNotice, Button } from "@awaken/ui";
+import { ArrowRight, CornerDownRight, Play, Sparkles } from "@awaken/ui/icons";
+import { Tab, TabList, InlineNotice, Button } from "@awaken/ui";
 import type { AgentConfig, Capabilities, RuntimeCap, ValidationIssue } from "../../lib/api/types";
 import { effectiveAgentToolPermission, selectedAgentToolIds } from "../../lib/agent-toolsets";
 import { labelForPath } from "../../lib/config-diff";
@@ -120,40 +121,35 @@ const STAGES: Array<{
 ];
 
 export function AgentEditorStageNavigation({
-  stage,
   changed,
-  onChange,
   canTry,
   onTry,
 }: {
-  stage: AuthorStage;
   changed: (stage: AuthorStage) => boolean;
-  onChange: (stage: AuthorStage) => void;
   canTry: boolean;
   onTry: () => void;
 }) {
   const app = useApp();
   return (
-    <div className="author-stage-nav" role="tablist" aria-label={app.t("Authoring stages", "创作阶段")}>
+    <div className="author-stage-controls">
+    <TabList className="author-stage-nav" aria-label={app.t("Authoring stages", "创作阶段")}>
       {STAGES.map((item, index) => (
-        <button
+        <Tab
           key={item.key}
           className="author-stage-button"
-          role="tab"
+          value={item.key}
           aria-label={app.t(item.label, item.zh)}
-          aria-selected={stage === item.key}
-          data-active={stage === item.key}
-          onClick={() => onChange(item.key)}
         >
           <span className="author-stage-index">{index + 1}</span>
           <span>
             <strong>{app.t(item.label, item.zh)}</strong>
             <small>{app.t(item.description, item.descriptionZh)}</small>
           </span>
-          {changed(item.key) && <span className="agent-change-dot">✦</span>}
-        </button>
+          {changed(item.key) && <Sparkles className="agent-change-dot" label={app.t("Changed", "已修改")} />}
+        </Tab>
       ))}
-      {canTry && <Button variant="ghost" onClick={onTry}>▷ {app.t("Try draft", "试运行草稿")}</Button>}
+    </TabList>
+      {canTry && <Button variant="ghost" onClick={onTry}><Play /> {app.t("Try draft", "试运行草稿")}</Button>}
     </div>
   );
 }
@@ -172,7 +168,7 @@ export function AgentValidationIssues({
       {issues.map((issue, index) => (
         <div className="row" key={`${issue.path}-${index}`} style={{ justifyContent: "space-between" }}>
           <span><strong>{labelForPath(issue.path) || app.t("Config", "配置")}</strong>{" — "}{issue.message}</span>
-          <Button variant="ghost" onClick={() => onOpen(issue.path)}>{app.t("Open field →", "打开对应字段 →")}</Button>
+          <Button variant="ghost" onClick={() => onOpen(issue.path)}>{app.t("Open field", "打开对应字段")} <ArrowRight /></Button>
         </div>
       ))}
     </InlineNotice>
@@ -186,7 +182,7 @@ export function AttachedAgentContext({ parentId, onBack }: { parentId: string; o
     <InlineNotice
       tone="info"
       className="attached-agent-context"
-      icon={<span>↳</span>}
+      icon={<CornerDownRight />}
       actions={
         <>
           <Button variant="ghost" style={{ marginLeft: "auto" }} onClick={onBack}>

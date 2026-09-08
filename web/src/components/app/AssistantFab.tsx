@@ -1,3 +1,4 @@
+import { Sparkles, X } from "@awaken/ui/icons";
 // The always-on Admin Assistant FAB: a floating button that opens the authoring copilot
 // as a NON-MODAL panel (the console stays usable behind it; Escape closes; open state
 // persists across navigation). It reads the route so that, opened over an agent editor,
@@ -90,12 +91,12 @@ export default function AssistantFab() {
         <section className="assistant-fab-panel" aria-label={app.t("Admin Assistant", "控制台助手")}>
           <header className="assistant-fab-head">
             <span className="row" style={{ gap: 8 }}>
-              <span className="assistant-fab-mark">✦</span>
+              <Sparkles className="assistant-fab-mark" />
               <strong>{app.t("Assistant", "助手")}</strong>
               {targetAgentId && <span className="mut" style={{ fontSize: 12 }}>· {targetAgentId}</span>}
             </span>
             <button className="assistant-fab-x" onClick={close} aria-label={app.t("Close", "关闭")}>
-              ✕
+              <X />
             </button>
           </header>
           <div className="assistant-fab-body">
@@ -129,7 +130,7 @@ export default function AssistantFab() {
         title={app.t("Ask a question or complete a Console task", "提问或完成 Console 任务")}
         aria-label={app.t("Admin Assistant", "控制台助手")}
       >
-        {open ? "✕" : "✦"}
+        {open ? <X /> : <Sparkles />}
       </button>
     </>
   );

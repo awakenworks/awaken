@@ -1,3 +1,4 @@
+import { Plus, X } from "@awaken/ui/icons";
 import { Button, Card, Switch } from "@awaken/ui";
 // Complete Agent tool authoring beyond the ordinary catalog checklist: dynamic
 // catalog patterns, client-executed tools, typed toolset policy, and bounded
@@ -128,14 +129,14 @@ export default function AgentAdvancedToolsEditor({
             <div className="row" style={{ alignItems: "flex-end" }}>
               <TextField label={app.t("Tool name", "工具名称")} mono value={tool.name} onChange={(event) => setCustom(index, { name: event.target.value })} />
               <TextField label={app.t("Description shown to the model", "向模型展示的描述")} style={{ flex: 1 }} value={tool.description} onChange={(event) => setCustom(index, { description: event.target.value })} />
-              <Button variant="ghost" onClick={() => {
+              <Button variant="ghost" aria-label={app.t(`Remove client tool ${index + 1}`, `移除客户端工具 ${index + 1}`)} onClick={() => {
                 setInvalidSchemas((current) => new Set(
                   [...current]
                     .filter((invalidIndex) => invalidIndex !== index)
                     .map((invalidIndex) => invalidIndex > index ? invalidIndex - 1 : invalidIndex),
                 ));
                 replaceAdvanced(customTools.filter((_, current) => current !== index), toolsets);
-              }}>✕</Button>
+              }}><X /></Button>
             </div>
             <ClientToolSchemaEditor
               value={tool.input_schema}
@@ -152,7 +153,7 @@ export default function AgentAdvancedToolsEditor({
         <Button onClick={() => replaceAdvanced([
           ...customTools,
           { type: "custom", name: "", description: "", input_schema: { type: "object", properties: {} } },
-        ], toolsets)}>+ {app.t("Custom tool", "Custom Tool")}</Button>
+        ], toolsets)}><Plus /> {app.t("Custom tool", "Custom Tool")}</Button>
       </div>
 
       <div className="ui-field">
@@ -181,24 +182,24 @@ export default function AgentAdvancedToolsEditor({
                   <span>{app.t("Enabled by default", "默认启用")}</span>
                   <Switch checked={defaults.enabled !== false} onChange={(event) => setToolset(index, { default_config: { ...defaults, enabled: event.target.checked } })} />
                 </label>
-                <Button variant="ghost" onClick={() => replaceAdvanced(customTools, toolsets.filter((_, current) => current !== index))}>✕</Button>
+                <Button variant="ghost" aria-label={app.t(`Remove toolset ${index + 1}`, `移除工具集 ${index + 1}`)} onClick={() => replaceAdvanced(customTools, toolsets.filter((_, current) => current !== index))}><X /></Button>
               </div>
               {configs.map((entry, configIndex) => (
                 <div className="row" style={{ alignItems: "flex-end" }} key={configIndex}>
                   <TextField label={app.t("Tool override", "覆盖工具")} mono value={entry.name} onChange={(event) => setConfig(configIndex, { name: event.target.value })} />
                   <label className="ui-field"><span>{app.t("Permission", "权限")}</span><select className="ui-input" value={entry.permission_policy?.type ?? "always_allow"} onChange={(event) => setConfig(configIndex, { permission_policy: { type: event.target.value as "always_allow" | "always_ask" } })}><option value="always_allow">always_allow</option><option value="always_ask">always_ask</option></select></label>
                   <label className="ui-field"><span>{app.t("Enabled", "启用")}</span><Switch checked={entry.enabled !== false} onChange={(event) => setConfig(configIndex, { enabled: event.target.checked })} /></label>
-                  <Button variant="ghost" onClick={() => setToolset(index, { configs: configs.filter((_, current) => current !== configIndex) })}>✕</Button>
+                  <Button variant="ghost" aria-label={app.t(`Remove tool override ${configIndex + 1}`, `移除工具覆盖 ${configIndex + 1}`)} onClick={() => setToolset(index, { configs: configs.filter((_, current) => current !== configIndex) })}><X /></Button>
                 </div>
               ))}
-              <Button onClick={() => setToolset(index, { configs: [...configs, { name: "", enabled: true, permission_policy: { type: "always_allow" } }] })}>+ {app.t("named override", "指定工具覆盖")}</Button>
+              <Button onClick={() => setToolset(index, { configs: [...configs, { name: "", enabled: true, permission_policy: { type: "always_allow" } }] })}><Plus /> {app.t("named override", "指定工具覆盖")}</Button>
             </div>
           );
         })}
         {toolsets.length === 0 && <Button onClick={() => replaceAdvanced(customTools, [...toolsets, {
           type: "agent_toolset_20260401", configs: [],
           default_config: { enabled: true, permission_policy: { type: "always_allow" } },
-        }])}>+ {app.t("Configure built-in ToolSet", "配置内置 ToolSet")}</Button>}
+        }])}><Plus /> {app.t("Configure built-in ToolSet", "配置内置 ToolSet")}</Button>}
       </div>
 
       <div className="ui-field">
@@ -212,10 +213,10 @@ export default function AgentAdvancedToolsEditor({
             <TextField label={app.t("Canonical tool id", "规范工具 ID")} mono value={toolId} onChange={(event) => replaceRecoveryKey(toolId, event.target.value)} />
             <label className="ui-field"><span>{app.t("Recovery mode", "恢复模式")}</span><select className="ui-input" value={policy.mode} onChange={(event) => onPatch({ recovery_policies: { ...recovery, [toolId]: { ...policy, mode: event.target.value as RecoveryPolicy["mode"] } } })}><option value="never_replay">never_replay</option><option value="replay_safe">replay_safe</option><option value="idempotent">idempotent</option><option value="durable_request">durable_request</option></select></label>
             <TextField label={app.t("Maximum attempts", "最大尝试次数")} type="number" min={1} value={policy.max_attempts} onChange={(event) => onPatch({ recovery_policies: { ...recovery, [toolId]: { ...policy, max_attempts: Math.max(1, Number(event.target.value) || 1) } } })} />
-            <Button variant="ghost" onClick={() => { const next = { ...recovery }; delete next[toolId]; onPatch({ recovery_policies: next }); }}>✕</Button>
+            <Button variant="ghost" aria-label={app.t(`Remove recovery policy ${toolId}`, `移除恢复策略 ${toolId}`)} onClick={() => { const next = { ...recovery }; delete next[toolId]; onPatch({ recovery_policies: next }); }}><X /></Button>
           </div>
         ))}
-        <Button onClick={() => onPatch({ recovery_policies: { ...recovery, [`tool_${Object.keys(recovery).length + 1}`]: { mode: "never_replay", max_attempts: 3 } } })}>+ {app.t("recovery policy", "恢复策略")}</Button>
+        <Button onClick={() => onPatch({ recovery_policies: { ...recovery, [`tool_${Object.keys(recovery).length + 1}`]: { mode: "never_replay", max_attempts: 3 } } })}><Plus /> {app.t("recovery policy", "恢复策略")}</Button>
       </div>
     </Card>
   );

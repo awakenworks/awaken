@@ -1,3 +1,4 @@
+import { Info } from "@awaken/ui/icons";
 import { InlineNotice, Button } from "@awaken/ui";
 import { Pill } from "../components/ui";
 import type { ConfigCapabilitiesView } from "../lib/api/types";
@@ -91,7 +92,7 @@ export function CloudModelNotice({
   return (
     <InlineNotice
       tone="info"
-      icon={<span>ⓘ</span>}
+      icon={<Info />}
       actions={state === "sign_in_required" && onSignIn ? (
         <Button disabled={loginPending} onClick={onSignIn}>
           {loginPending

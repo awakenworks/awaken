@@ -1,3 +1,4 @@
+import { Check, TriangleAlert } from "@awaken/ui/icons";
 import { InlineNotice, Button } from "@awaken/ui";
 import type { AgentConfig, RuntimeCap } from "../../lib/api/types";
 import { isAcpModelSelection } from "../../lib/agent-model-selection";
@@ -112,7 +113,7 @@ export default function RuntimeCapabilitySummary({
   return (
     <section className="runtime-capability-panel" aria-label={app.t("Runtime capability support", "Runtime 能力支持")}>
       <div className={`runtime-capability-overview ${acp && !bridgeReady ? "is-warning" : "is-ready"}`}>
-        <span className="runtime-capability-icon" aria-hidden="true">{acp && !bridgeReady ? "!" : "✓"}</span>
+        <span className="runtime-capability-icon" aria-hidden="true">{acp && !bridgeReady ? <TriangleAlert /> : <Check />}</span>
         <span>
           <strong>{acp
             ? bridgeReady
@@ -146,12 +147,12 @@ export default function RuntimeCapabilitySummary({
       </div>
       </details>
       {acp && runtime?.local?.remediation && (
-        <InlineNotice tone="warning" icon={<span>!</span>}>
+        <InlineNotice tone="warning" icon={<TriangleAlert />}>
           <span>{runtime.local.remediation}</span>
         </InlineNotice>
       )}
       {acp && !bridgeReady && (
-        <InlineNotice tone="warning" icon={<span>!</span>} role="alert">
+        <InlineNotice tone="warning" icon={<TriangleAlert />} role="alert">
           <span>{app.t(
             negotiated
               ? "This Harness did not negotiate a compatible MCP transport. Awaken read, write, Memory, Skill, and host Web tools will not be available. Choose another ready Runtime or repair the Harness before publishing."

@@ -26,6 +26,11 @@ for (const item of NAV) {
       await expect(main.locator(".err, .ui-state--danger")).toHaveCount(0);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 
+      // Icon rules I1/I2: every rendered control keeps a meaningful product name;
+      // hidden SVG decoration must neither supply nor erase that name.
+      for (const button of await main.getByRole("button").all()) {
+        await expect(button).toHaveAccessibleName(/[^\s✕✓ⓘ⚠⧉]/);
+      }
       const inventory = await main.evaluate((root) => ({
         headings: [...root.querySelectorAll("h1,h2,h3")].map((node) => node.textContent?.trim()).filter(Boolean),
         buttons: [...root.querySelectorAll("button")].map((node) => node.textContent?.trim()).filter(Boolean),
@@ -46,7 +51,8 @@ for (const item of NAV) {
   }
 }
 
-test("Agent configuration exposes every controllable capability by user intent", async ({ page }) => {
+test("Agent configuration exposes every controllable capability by user intent", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/w/default/agents/new");
   await expect(page.getByRole("button", { name: "Check draft", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Save draft", exact: true })).toBeVisible();
@@ -59,6 +65,12 @@ test("Agent configuration exposes every controllable capability by user intent",
   await expect(page.getByLabel("Display name", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Task sent to the new Session")).toBeVisible();
   await expect(page.getByLabel("Environment for this run")).toBeVisible();
+  // The existing UI inventory also owns the exact editor capture: real rendered
+  // controls, controlled local data, no fabricated interface or production claim.
+  await expect(page.locator("main .ui-skeleton-bar, main .ui-state--loading")).toHaveCount(0);
+  await testInfo.attach("agent-editor-desktop.png", {
+    body: await page.screenshot({ fullPage: true }), contentType: "image/png",
+  });
 
   await page.getByRole("tab", { name: "Build", exact: true }).click();
   await page.getByRole("tab", { name: "Instructions", exact: true }).click();
@@ -96,9 +108,16 @@ test("Agent configuration exposes every controllable capability by user intent",
 
   await page.getByRole("tab", { name: "Skills & MCP", exact: true }).click();
   await expect(page.getByRole("heading", { name: "MCP integrations" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "MCP connection and ToolSet guide ↗" }))
+  await expect(page.getByRole("link", { name: "MCP connection and ToolSet guide" }))
     .toHaveAttribute("href", "https://awakenworks.com/docs/agents/protocols/mcp/");
   await expect(page.getByRole("heading", { name: "Skill bindings" })).toBeVisible();
+  // I5 unsaved binding + named X control -> only that draft row is removed;
+  // no publication or server mutation is needed to exercise this local action.
+  await page.getByRole("button", { name: "Skill", exact: true }).click();
+  const removeSkill = page.getByRole("button", { name: "Remove Skill 1", exact: true });
+  await expect(removeSkill.locator('svg[data-icon="X"]')).toHaveAttribute("aria-hidden", "true");
+  await removeSkill.click();
+  await expect(removeSkill).toHaveCount(0);
   await expect(page.getByText(/state only the goal/)).toBeVisible();
 
   await page.getByRole("tab", { name: "Advanced", exact: true }).click();
@@ -139,7 +158,16 @@ test("Primary create flows disclose their required configuration before commit",
   await expect(connectionAddresses.nth(0)).toContainText(consoleOrigin);
   await expect(connectionAddresses.nth(1)).toContainText(`${consoleOrigin}/v1/capabilities`);
   await expect(page.locator(".protocol-endpoint").first()).toContainText(`${consoleOrigin}/v1/sessions`);
-  await expect(connectionAddresses.nth(0).getByRole("button", { name: "Copy Base URL" })).toBeVisible();
+  const copyBase = connectionAddresses.nth(0).getByRole("button", { name: "Copy Base URL" });
+  await expect(copyBase).toBeVisible();
+  // I4 clipboard permission granted + foreground page -> same control reports localized copied state,
+  // with the shared Check replacing Copy and no character-based glyph override.
+  await expect(copyBase.locator('svg[data-icon="Copy"]')).toHaveAttribute("aria-hidden", "true");
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.bringToFront();
+  await copyBase.click();
+  await expect(connectionAddresses.nth(0).getByRole("button", { name: "Copied" })
+    .locator('svg[data-icon="Check"]')).toBeVisible();
   for (const protocol of ["Managed Agents", "Vercel AI SDK", "AG-UI", "A2A", "MCP Server"]) {
     await expect(page.getByText(`How to connect ${protocol}`, { exact: true })).toBeVisible();
   }
@@ -177,6 +205,9 @@ test("shared command dialog preserves search, navigation and dismissal", async (
   // product route; R3 Escape -> closed; R4 selection -> navigation + closed.
   await page.goto("/w/default/agents");
   const trigger = page.getByRole("button", { name: /Search/ }).first();
+  // I3 shared search/close geometry retains open, keyboard focus, Escape and
+  // route selection behavior. The package owns exhaustive SVG geometry checks.
+  await expect(trigger.locator('svg[data-icon="Search"]')).toHaveAttribute("aria-hidden", "true");
   await trigger.click();
   const dialog = page.getByRole("dialog", { name: "Command palette" });
   const search = dialog.getByPlaceholder("Search pages and workflows…");

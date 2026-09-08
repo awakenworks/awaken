@@ -1,3 +1,4 @@
+import "@awaken/ui/brand/styles.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -6,7 +7,7 @@ import { AppProvider } from "./lib/app-state";
 import LocalSetupGate from "./components/app/LocalSetupGate";
 import { router } from "./routes";
 import "@awaken/ui/styles.css";
-import "@awaken/ui/styles/themes/awaken.css";
+import "@awaken/ui/brand/family.css";
 import "./styles/tokens.css";
 import "./styles/base.css";
 

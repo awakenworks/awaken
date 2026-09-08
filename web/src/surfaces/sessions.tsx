@@ -1,3 +1,4 @@
+import { ArrowRight, ExternalLink, Info, Plus, X } from "@awaken/ui/icons";
 import { InlineNotice, CheckPicker, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 
 // Workspace · Sessions: the scoped session list (GET /v1/sessions,
@@ -104,7 +105,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
           <label className="row" style={{ justifyContent: "space-between" }}>
             <span>Agent</span>
             <button className="manage-link" onClick={() => setManage("agents")}>
-              {app.t("Manage ↗", "管理 ↗")}
+              {app.t("Manage", "管理")} <ExternalLink />
             </button>
           </label>
           <select className="ui-input" aria-label="Agent" value={agent} onChange={(e) => setAgent(e.target.value)}>
@@ -116,14 +117,14 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
             ))}
           </select>
           {!agents.isLoading && visibleAgents(agents.data?.data).filter((a) => a.published).length === 0 && (
-            <InlineNotice tone="warning" icon={<span>→</span>}><span>{app.t("No published Agent is available. Create and publish an Agent before starting a Session.", "没有可用的已发布 Agent。请先创建并发布 Agent，再启动会话。")}</span></InlineNotice>
+            <InlineNotice tone="warning" icon={<ArrowRight />}><span>{app.t("No published Agent is available. Create and publish an Agent before starting a Session.", "没有可用的已发布 Agent。请先创建并发布 Agent，再启动会话。")}</span></InlineNotice>
           )}
         </div>
         <div className="ui-field">
           <label className="row" style={{ justifyContent: "space-between" }}>
             <span>{app.t("Environment", "运行环境")}</span>
             <button className="manage-link" onClick={() => setManage("environments")}>
-              {app.t("Manage ↗", "管理 ↗")}
+              {app.t("Manage", "管理")} <ExternalLink />
             </button>
           </label>
           <select
@@ -141,7 +142,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
               </option>
             ))}
           </select>
-          {selectedEnvironmentHasPackages && <InlineNotice tone="info" icon={<span>ⓘ</span>}><span>{app.t(
+          {selectedEnvironmentHasPackages && <InlineNotice tone="info" icon={<Info />}><span>{app.t(
             "This Environment requires package installation. Use it only with a package-capable Environment provider.",
             "此 Environment 需要安装 Package；请仅在具备 Package 安装能力的 Environment Provider 上使用。",
           )}</span></InlineNotice>}
@@ -186,13 +187,13 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
                 value={m.url}
                 onChange={(e) => setMcp(mcp.map((x, j) => (j === i ? { ...x, url: e.target.value } : x)))}
               />
-              <Button variant="ghost" onClick={() => setMcp(mcp.filter((_, j) => j !== i))}>
-                ✕
+              <Button variant="ghost" aria-label={app.t(`Remove MCP server ${i + 1}`, `移除 MCP 服务器 ${i + 1}`)} onClick={() => setMcp(mcp.filter((_, j) => j !== i))}>
+                <X />
               </Button>
             </div>
           ))}
           <Button variant="ghost" onClick={() => setMcp([...mcp, { name: "", url: "" }])}>
-            + {app.t("Add temporary server", "添加临时服务器")}
+            <Plus /> {app.t("Add temporary server", "添加临时服务器")}
           </Button>
           <span className="mut">{app.t("A non-empty list is an official one-session replacement of the Agent's MCP servers. Add reusable servers to the Agent instead.", "非空列表会按官方协议在本次 Session 中替换 Agent 的 MCP 服务器。可复用服务器应添加到 Agent。")}</span>
           </div>
@@ -219,7 +220,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
               });
             }}
           >
-            {app.t("Create", "创建")} ➤
+            {app.t("Create", "创建")} <ArrowRight />
           </Button>
         </div>
       </Modal>
@@ -291,7 +292,7 @@ export default function SessionsSurface() {
             ]}
           />
         <Button variant="primary" onClick={() => setCreating(true)}>
-          + {app.t("New session", "新建会话")}
+          <Plus /> {app.t("New session", "新建会话")}
         </Button>
       </div>
       {sessions.error instanceof Error && <div className="err">{sessions.error.message}</div>}

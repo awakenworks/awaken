@@ -1,4 +1,5 @@
-import { InlineNotice, Button, Card } from "@awaken/ui";
+import { ArrowRight, Check } from "@awaken/ui/icons";
+import { Tabs, TabList, Tab, TabPanel, InlineNotice, Button, Card } from "@awaken/ui";
 import type {
   AgentConfig,
   CredentialSource,
@@ -105,21 +106,19 @@ export default function AgentAdvanced({
   const { generation: _baselineGeneration, ...reviewedBaseline } = baseline;
 
   return (
-    <div className="editor-section">
-      <div className="subsection-tabs" role="tablist" aria-label={app.t("Advanced sections", "高级分区")}>
+    <Tabs className="editor-section" value={section} onValueChange={(value) => onSectionChange(value as AdvancedSection)}>
+      <TabList aria-label={app.t("Advanced sections", "高级分区")}>
         {sections.map((item) => (
-          <Button
+          <Tab
             key={item.key}
-            role="tab"
-            aria-selected={section === item.key}
-            variant={section === item.key ? "primary" : "ghost"}
-            onClick={() => onSectionChange(item.key)}
+            value={item.key}
           >
             {app.t(item.label, item.zh)}
-          </Button>
+          </Tab>
         ))}
-      </div>
+      </TabList>
 
+      <TabPanel value={section}>
       {section === "orchestration" && (
         <>
           {stateMachine && renderBehavior(stateMachine)}
@@ -148,7 +147,7 @@ export default function AgentAdvanced({
             {extensionPlugins.length > 0 ? (
               <div className="stack">{extensionPlugins.map(renderBehavior)}</div>
             ) : (
-              <InlineNotice tone="info" icon={<span>✓</span>}>
+              <InlineNotice tone="info" icon={<Check />}>
                 <span>{app.t(
                   "No additional runtime plugins are advertised by this host.",
                   "当前 Host 没有提供其他运行时 Plugin。",
@@ -198,11 +197,13 @@ export default function AgentAdvanced({
           </div>
           <div className="row" style={{ justifyContent: "flex-end", marginTop: 16 }}>
             <Button variant="primary" disabled={publishPending} onClick={onPublish}>
-              {app.t("Review & publish", "审阅并发布")} ➤
+              {app.t("Review & publish", "审阅并发布")} <ArrowRight />
             </Button>
           </div>
         </Card>
       )}
-    </div>
+      </TabPanel>
+      {sections.filter((item) => item.key !== section).map((item) => <TabPanel key={item.key} value={item.key} />)}
+    </Tabs>
   );
 }

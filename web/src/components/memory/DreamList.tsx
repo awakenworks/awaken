@@ -1,3 +1,4 @@
+import { Plus } from "@awaken/ui/icons";
 import { Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { useState } from "react";
@@ -54,7 +55,7 @@ export default function DreamList({ storeId }: { storeId?: string }) {
         ]} />
         <label className="row mut"><input type="checkbox" checked={archived} onChange={(event) => setArchived(event.target.checked)} />{app.t("Archived", "已归档")}</label>
       </span>
-      <Button variant="primary" onClick={() => setCreating(true)}>+ {app.t("Start Dream", "启动 Dream")}</Button>
+      <Button variant="primary" onClick={() => setCreating(true)}><Plus /> {app.t("Start Dream", "启动 Dream")}</Button>
     </div>
     <div className="row dream-date-filters">
       <TextField type="datetime-local" label={app.t("Created after", "创建晚于")} value={createdAfter} onChange={(event) => setCreatedAfter(event.target.value)} />

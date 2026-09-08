@@ -1,3 +1,4 @@
+import { Box, FileText, Play, Plus } from "@awaken/ui/icons";
 import { InlineNotice, Button as SharedButton, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 
 // Workspace · Skills: one immutable, versioned bundle catalog. Local directory,
@@ -333,7 +334,7 @@ function SkillEditorModal({ skill, onClose, onPublished }: { skill: Skill; onClo
       footer={<><span className="mut" style={{ marginRight: "auto" }}>{base ? `v${base.version} · ${diff.count} ${app.t("changes", "项变更")}` : app.t("Loading…", "加载中…")}</span><Button onClick={onClose}>{app.t("Cancel", "取消")}</Button><Button variant="primary" disabled={!base || diff.count === 0 || publish.isPending} onClick={() => publish.mutate()}>{app.t("Publish new version", "发布新版本")}</Button></>}
     >
       {loadingError && <div className="err">{loadingError}</div>}
-      {base && <InlineNotice tone={needsSandbox ? "warning" : "info"} icon={<span>{needsSandbox ? "▣" : "◇"}</span>}>
+      {base && <InlineNotice tone={needsSandbox ? "warning" : "info"} icon={needsSandbox ? <Box /> : <FileText />}>
         <span>{needsSandbox
           ? app.t("Sandbox required: this version declares filesystem access or includes supporting files.", "需要 Sandbox：当前版本声明了文件系统访问，或包含支持文件。")
           : app.t("Instruction-only: this version runs without creating a Sandbox.", "纯指令：当前版本无需创建 Sandbox 即可运行。")}</span>
@@ -354,7 +355,7 @@ function SkillEditorModal({ skill, onClose, onPublished }: { skill: Skill; onClo
             }}>{app.t("New", "新建")}</Button>
           </div>
           {files.map((file) => (
-            <SharedButton key={file.path} className="mono" variant={selected === file.path ? "primary" : "ghost"} style={{ width: "100%", textAlign: "left", marginBottom: 2 }} onClick={() => setSelected(file.path)}>{file.executable ? "▶ " : ""}{file.path}</SharedButton>
+            <SharedButton key={file.path} className="mono" variant={selected === file.path ? "primary" : "ghost"} style={{ width: "100%", textAlign: "left", marginBottom: 2 }} onClick={() => setSelected(file.path)}>{file.executable ? <Play label={app.t("Executable", "可执行")} /> : null}{file.path}</SharedButton>
           ))}
         </Card>
         <div className="stack">
@@ -423,7 +424,7 @@ export default function SkillsSurface() {
         <span />
         <span className="row">
           <Button onClick={() => setImporting(true)}>{app.t("Import Skill", "导入技能")}</Button>
-          <Button variant="primary" onClick={() => setCreating(true)}>+ {app.t("Create Skill", "在线新建")}</Button>
+          <Button variant="primary" onClick={() => setCreating(true)}><Plus /> {app.t("Create Skill", "在线新建")}</Button>
         </span>
       </div>
       {skills.error instanceof Error ? <Card><EmptyState

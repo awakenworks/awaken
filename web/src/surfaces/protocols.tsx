@@ -1,4 +1,5 @@
-import { Card } from "@awaken/ui";
+import { ArrowRight, ExternalLink } from "@awaken/ui/icons";
+import { Card, CopyButton as IconCopyButton } from "@awaken/ui";
 // Built-in connection guide for every execution/protocol adapter mounted by the
 // production binary. Keep the paths here aligned with router conformance tests.
 
@@ -155,7 +156,7 @@ export const PROTOCOL_HELP: Record<ProtocolId, ProtocolHelp> = {
     ],
     example: MANAGED_SDK,
     href: "access",
-    linkLabel: ["Create or manage service API keys →", "创建或管理 Service API Key →"],
+    linkLabel: ["Create or manage service API keys", "创建或管理 Service API Key"],
   },
   "ai-sdk": { credential: "Application access token", steps: ["Your backend resolves one Managed Session.", "Mint a short-lived token bound to that Session.", "Return only the token and external thread id to the browser."], example: FRONTEND_AI_SDK },
   "ag-ui": { credential: "Application access token", steps: ["Your backend resolves one Managed Session.", "Mint a short-lived token with the ag-ui protocol and required operations.", "Connect the AG-UI client with the token; renew against the same Session."], example: APPLICATION_TOKEN_CURL.replace('["ai-sdk"]', '["ag-ui"]') },
@@ -171,7 +172,7 @@ function internalHelpLabel(
   const label = help.linkLabel;
   return label
     ? t(label[0], label[1])
-    : t(`Open ${protocolName} help and status →`, `打开 ${protocolName} 帮助与状态 →`);
+    : t(`Open ${protocolName} help and status`, `打开 ${protocolName} 帮助与状态`);
 }
 
 export function managedCredentialLabel(
@@ -245,12 +246,10 @@ export default function ProtocolsSurface() {
             <span className="hint">{app.t("Client-visible Base URL", "客户端可访问的 Base URL")}</span>
             <div className="connection-address-value">
               <code>{baseUrl}</code>
-              <CopyButton
+              <IconCopyButton
                 value={baseUrl}
                 label={app.t("Copy Base URL", "复制 Base URL")}
-                visibleLabel="⧉"
                 copiedLabel={app.t("Copied", "已复制")}
-                visibleCopiedLabel="✓"
               />
             </div>
           </section>
@@ -258,12 +257,10 @@ export default function ProtocolsSurface() {
             <span className="hint">{app.t("Connection check", "连接检查")}</span>
             <div className="connection-address-value">
               <code>{capabilityUrl}</code>
-              <CopyButton
+              <IconCopyButton
                 value={capabilityUrl}
                 label={app.t("Copy check URL", "复制检查地址")}
-                visibleLabel="⧉"
                 copiedLabel={app.t("Copied", "已复制")}
-                visibleCopiedLabel="✓"
               />
             </div>
           </section>
@@ -284,12 +281,10 @@ export default function ProtocolsSurface() {
             </div>
             <div className="connection-address-value protocol-endpoint">
               <code>{connectionEndpoint(baseUrl, protocol.endpoint)}</code>
-              <CopyButton
+              <IconCopyButton
                 value={connectionEndpoint(baseUrl, protocol.endpoint)}
                 label={app.t("Copy endpoint", "复制端点")}
-                visibleLabel="⧉"
                 copiedLabel={app.t("Copied", "已复制")}
-                visibleCopiedLabel="✓"
               />
             </div>
             <p className="mut">{app.t(protocol.useWhen[0], protocol.useWhen[1])}</p>
@@ -317,7 +312,7 @@ export default function ProtocolsSurface() {
               )}
               {protocolHelp[protocol.id].href && (protocol.id !== "managed" || accessManagement) && (
                 <Link className="protocol-help-link" to={`/w/${ws}/${protocolHelp[protocol.id].href}`}>
-                  {internalHelpLabel(protocolHelp[protocol.id], protocol.name, app.t)}
+                  {internalHelpLabel(protocolHelp[protocol.id], protocol.name, app.t)} <ArrowRight />
                 </Link>
               )}
               {protocol.id === "managed" && (
@@ -327,7 +322,7 @@ export default function ProtocolsSurface() {
                   target="_blank"
                   rel="noreferrer"
                 >
-                  {app.t("Run the complete Getting Started guide ↗", "运行完整 Getting Started 指南 ↗")}
+                  {app.t("Run the complete Getting Started guide", "运行完整 Getting Started 指南")} <ExternalLink />
                 </a>
               )}
             </details>
@@ -337,7 +332,7 @@ export default function ProtocolsSurface() {
               target="_blank"
               rel="noreferrer"
             >
-              {app.t(`Read ${protocol.name} documentation ↗`, `阅读 ${protocol.name} 文档 ↗`)}
+              {app.t(`Read ${protocol.name} documentation`, `阅读 ${protocol.name} 文档`)} <ExternalLink />
             </a>
           </Card>
         ))}
@@ -359,7 +354,7 @@ export default function ProtocolsSurface() {
                 target="_blank"
                 rel="noreferrer"
               >
-                {app.t(`Read ${extension.name} documentation ↗`, `阅读 ${extension.name} 文档 ↗`)}
+                {app.t(`Read ${extension.name} documentation`, `阅读 ${extension.name} 文档`)} <ExternalLink />
               </a>
             </section>
           ))}
@@ -377,7 +372,7 @@ export default function ProtocolsSurface() {
           </div>
           <p className="mut">{app.t("Use signed Webhooks when your backend needs major Agent and Session state changes without polling. This direction is Awaken → your backend; it does not call an Agent.", "后端需要无需轮询地接收重要 Agent 与 Session 状态变化时，请使用签名 Webhook。方向是 Awaken → 你的后端，不用于调用 Agent。")}</p>
           <Link className="protocol-help-link" to={`/w/${ws}/webhooks`}>
-            {app.t("Create and monitor Webhooks →", "创建并监控 Webhook →")}
+            {app.t("Create and monitor Webhooks", "创建并监控 Webhook")} <ArrowRight />
           </Link>
         </section>
         <div className="stack" style={{ marginTop: 12 }}>

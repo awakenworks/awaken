@@ -1,3 +1,4 @@
+import { Plus, Sparkles } from "@awaken/ui/icons";
 import { Button, SegmentedControl as Segmented } from "@awaken/ui";
 // Workspace · Agents: the config-plane authoring list (GET /v1/config/agents).
 // The console authors the rich agent object here directly — our own management
@@ -70,10 +71,10 @@ export default function AgentsSurface() {
         {/* The Admin Assistant is an authoring aid, reached from here (not the rail):
             describe an agent in plain English and it drafts one for you. */}
         <Button variant="ghost" onClick={() => nav(`/w/${wsId}/assistant`)}>
-          ✦ {app.t("Ask Assistant", "询问助手")}
+          <Sparkles /> {app.t("Ask Assistant", "询问助手")}
         </Button>
         <Button variant="primary" onClick={() => nav(`/w/${wsId}/agents/new`)}>
-          + {app.t("New agent", "新建 Agent")}
+          <Plus /> {app.t("New agent", "新建 Agent")}
         </Button>
       </div>
       <Segmented

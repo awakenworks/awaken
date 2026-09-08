@@ -1,3 +1,4 @@
+import { ArrowRight, Check, Square, X } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card, TabNav, TabNavItem } from "@awaken/ui";
 // Session detail: header actions (rename/archive/interrupt) + an
 // agent/properties aside around the shared TranscriptView. This surface owns
@@ -288,7 +289,7 @@ export default function SessionDetailSurface() {
             </Button>
           )}
           <Button variant="danger" disabled={!admission.canInterrupt} onClick={() => void interruptSession()}>
-            ⏹ {needsRecovery ? app.t("Recover run", "恢复运行") : app.t("Stop run", "停止运行")}
+            <Square /> {needsRecovery ? app.t("Recover run", "恢复运行") : app.t("Stop run", "停止运行")}
           </Button>
         </span>
       </div>
@@ -310,7 +311,7 @@ export default function SessionDetailSurface() {
       {fromQuickstart && (
         <InlineNotice
           tone="info"
-          icon={<span>✓</span>}
+          icon={<Check />}
           actions={
             <>
               <Button
@@ -318,7 +319,7 @@ export default function SessionDetailSurface() {
                 aria-label={app.t("Dismiss Quickstart guidance", "关闭 Quickstart 引导")}
                 onClick={() => setSearchParams(withoutQuickstartProvenance(searchParams), { replace: true })}
               >
-                ✕
+                <X />
               </Button>
             </>
           }
@@ -335,7 +336,7 @@ export default function SessionDetailSurface() {
                 environmentId: session.data?.environment_id,
               })}
             >
-              {app.t("Open Managed Agents SDK setup →", "打开 Managed Agents SDK 配置 →")}
+              {app.t("Open Managed Agents SDK setup", "打开 Managed Agents SDK 配置")} <ArrowRight />
             </Link>
           </span>
         </InlineNotice>
@@ -416,7 +417,7 @@ export default function SessionDetailSurface() {
                     };
                     return (
                       <Link key={destination.kind} to={destination.href}>
-                        {labels[destination.kind]}{destination.count == null ? "" : ` · ${destination.count}`} →
+                        {labels[destination.kind]}{destination.count == null ? "" : ` · ${destination.count}`} <ArrowRight />
                       </Link>
                     );
                   })}

@@ -234,17 +234,6 @@ a {
   color: var(--accent);
   font-weight: 700;
 }
-.awaken-mark {
-  width: 27px;
-  height: 27px;
-  flex: none;
-  --mark-primary: #0f6f7b;
-  --mark-decision: #5c43b2;
-}
-[data-theme="dark"] .awaken-mark {
-  --mark-primary: #68ced9;
-  --mark-decision: #a392ff;
-}
 .brand-copy,
 .workspace-context {
   display: flex;
@@ -312,7 +301,7 @@ a {
   font-size: 10px;
   background: var(--soft);
   color: var(--fg3);
-  border-radius: 4px;
+  border-radius: var(--ui-radius-control);
   padding: 2px 5px;
 }
 .chrome-btn {
@@ -760,7 +749,7 @@ a {
 }
 .runtime-capability-summary {
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--ui-radius-surface);
   background: var(--surface2);
 }
 .runtime-capability-panel { display: grid; gap: 8px; margin-top: 12px; }
@@ -879,74 +868,13 @@ a {
   gap: 10px;
   margin-top: 10px;
 }
-.author-stage-nav {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
-  align-items: stretch;
-  gap: 7px;
-  margin-top: 10px;
-  padding: 7px;
-  border-radius: var(--r-lg);
-  background: var(--soft);
-  box-shadow: inset 0 0 0 1px var(--line);
-}
-.author-stage-button {
-  appearance: none;
-  border: 1px solid transparent;
-  border-radius: var(--r-md);
-  background: transparent;
-  color: var(--fg);
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 9px;
-  min-height: 52px;
-  padding: 7px 10px;
-  text-align: left;
-  cursor: pointer;
-}
-.author-stage-button:hover { background: var(--surface); border-color: var(--line); }
-.author-stage-button[data-active="true"] {
-  color: var(--accent-ink);
-  background: var(--surface);
-  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
-  box-shadow: var(--shadow-sm);
-}
+.author-stage-controls { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.author-stage-nav { flex: 1; }
+.author-stage-button { display: flex; align-items: center; gap: 9px; text-align: left; }
 .author-stage-button strong,
 .author-stage-button small { display: block; }
-.author-stage-button small {
-  margin-top: 2px;
-  color: var(--fg2);
-  font-size: 10.5px;
-  line-height: 1.25;
-}
-.author-stage-index {
-  width: 23px;
-  height: 23px;
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--fg2);
-  background: var(--soft);
-  box-shadow: inset 0 0 0 1px var(--line);
-  font-size: 11px;
-  font-weight: 700;
-}
-.author-stage-button[data-active="true"] .author-stage-index {
-  color: #fff;
-  background: var(--accent);
-  box-shadow: none;
-}
-.subsection-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 5px;
-  padding: 5px;
-  border-bottom: 1px solid var(--line);
-}
-.subsection-tabs .ui-button { min-width: 130px; justify-content: center; }
+.author-stage-button small { color: var(--fg2); font-size: 12px; line-height: 1.4; }
+.author-stage-index { font-size: 12px; font-weight: 700; }
 .section-title { margin: 0 0 4px; font-size: 14px; }
 .quickstart-layout {
   display: grid;
@@ -1324,7 +1252,7 @@ a {
 .transcript-empty-state span { max-width: 390px; font-size: 12px; line-height: 1.55; }
 .transcript-composer__input,
 .transcript-composer .ui-chat-composer__input {
-  min-height: 40px;
+  min-height: var(--ui-control-height-md);
   max-height: 180px;
   resize: none;
   overflow-y: auto;
@@ -1335,7 +1263,7 @@ a {
 .transcript-composer button,
 .transcript-composer .ui-chat-composer__actions button {
   height: 40px;
-  min-height: 40px;
+  min-height: var(--ui-control-height-md);
   width: auto;
   min-width: 72px;
   padding-inline: 14px;
@@ -1359,7 +1287,7 @@ a {
 .dream-date-filters > .ui-field { min-width: min(240px, 100%); }
 .dream-session-picker {
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--ui-radius-surface);
   max-height: min(42vh, 380px);
   overflow-y: auto;
 }
@@ -1534,7 +1462,7 @@ a {
 
 /* ── Responsive: stack the rail above the content on narrow viewports ───── */
 @media (max-width: 820px) {
-  .author-stage-nav { grid-template-columns: 1fr; }
+  .author-stage-controls { align-items: stretch; flex-direction: column; }
   .quickstart-layout { grid-template-columns: 1fr; }
   .quickstart-summary { position: static; }
   .template-grid { grid-template-columns: 1fr; }
@@ -1565,7 +1493,6 @@ a {
   .content { padding: 18px 24px 24px; }
   .content-inner { padding-left: 16px; padding-right: 16px; }
   .page-purpose { grid-template-columns: 1fr; gap: 10px; }
-  :root { --ui-control-height-md: 32px; }
   .chrome-btn { width: 34px; height: 34px; }
 }
 
@@ -1706,15 +1633,14 @@ a {
     justify-content: flex-end;
   }
   .search-box { flex: 1 1 auto; justify-content: space-between; min-width: 0; }
-  .search-box { height: 40px; }
-  .chrome-btn { width: 40px; height: 40px; }
+  .search-box { height: var(--ui-control-height-md); }
+  .chrome-btn { width: var(--ui-control-height-md); height: var(--ui-control-height-md); }
   .workspace-context { max-width: calc(100vw - 150px); }
 
-  :root { --ui-control-height-md: 40px; --ui-control-height-sm: 36px; }
-  .manage-link { min-height: 40px; }
-  .assistant-suggestions .ui-button { min-height: 40px; height: auto; }
+  .manage-link { min-height: var(--ui-control-height-md); }
+  .assistant-suggestions .ui-button { min-height: var(--ui-control-height-md); height: auto; }
   .protocol-help-link,
-  .empty-inline a { min-height: 40px; align-items: center; }
+  .empty-inline a { min-height: var(--ui-control-height-md); align-items: center; }
   .ui-card:has(> .ui-data-grid__table),
   .ui-card:has(> * + .ui-data-grid__table) { scrollbar-gutter: stable; }
 }
@@ -1731,8 +1657,8 @@ a {
   border: none;
   cursor: pointer;
   font-size: 22px;
-  color: #fff;
-  background: radial-gradient(circle at 34% 30%, #8ea2ff, var(--agent) 70%);
+  color: var(--agent-fg);
+  background: var(--agent);
   box-shadow: var(--shadow-pop, 0 8px 30px rgba(0, 0, 0, 0.4));
   transition: transform 0.15s ease, filter 0.15s ease;
 }
@@ -1748,7 +1674,7 @@ a {
   display: flex;
   flex-direction: column;
   background: var(--surface);
-  border-radius: 14px;
+  border-radius: var(--ui-radius-overlay);
   box-shadow: var(--shadow-pop, 0 12px 48px rgba(0, 0, 0, 0.5));
   overflow: hidden;
   animation: fab-rise 0.18s ease;
