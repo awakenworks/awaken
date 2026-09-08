@@ -6,7 +6,7 @@ use awaken_agent_contract::agent::content::{
 };
 use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, Error, LlmExecutor, StopReason, TokenUsage,
+    AssistantOutput, ChatRequest, ChatResponse, Error, LlmExecutor, TokenUsage,
 };
 use awaken_runtime_contract::model_operation::ModelExecutionEvidence;
 use awaken_runtime_contract::resolved::ProviderServerTool;
@@ -19,6 +19,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::classify_error;
+use crate::stop_reason::{
+    ProviderStopClass, map_responses_terminal_stop_reason, project_stop_class,
+};
 
 /// Dedicated OpenAI Responses API adapter. It never aliases the Responses wire
 /// onto the genai OpenAI Chat Completions adapter.
@@ -544,21 +547,12 @@ fn response_from_value(value: Value) -> Result<ChatResponse, Error> {
 }
 
 fn response_from_wire(wire: ResponsesResponse) -> Result<ChatResponse, Error> {
-    match wire.status.as_deref() {
-        Some("completed" | "incomplete") => {}
-        Some("failed" | "cancelled") => {
-            return Err(Error::Provider(format!(
-                "Responses operation ended with status {:?}",
-                wire.status
-            ))
-            .with_execution_evidence(ModelExecutionEvidence::Terminated));
-        }
-        _ => {
-            return Err(Error::Provider(
-                "Responses operation has no confirmed terminal status".into(),
-            ));
-        }
-    }
+    let terminal_stop_reason = map_responses_terminal_stop_reason(
+        wire.status.as_deref(),
+        wire.incomplete_details
+            .as_ref()
+            .and_then(|details| details.reason.as_deref()),
+    )?;
     let mut blocks = Vec::new();
     for item in wire.output {
         match item {
@@ -609,19 +603,9 @@ fn response_from_wire(wire: ResponsesResponse) -> Result<ChatResponse, Error> {
         .iter()
         .any(|block| matches!(block, ContentBlock::ToolUse { .. }))
     {
-        Some(StopReason::ToolUse)
-    } else if wire.status.as_deref() == Some("incomplete") {
-        match wire
-            .incomplete_details
-            .and_then(|details| details.reason)
-            .as_deref()
-        {
-            Some("max_output_tokens") => Some(StopReason::MaxTokens),
-            Some("content_filter") => Some(StopReason::ContentFilter),
-            _ => None,
-        }
+        project_stop_class(ProviderStopClass::ToolCall)
     } else {
-        Some(StopReason::NaturalEnd)
+        Some(terminal_stop_reason)
     };
     Ok(ChatResponse {
         output: AssistantOutput::from_blocks(blocks),
@@ -633,7 +617,7 @@ fn response_from_wire(wire: ResponsesResponse) -> Result<ChatResponse, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_runtime_contract::llm::{ChatMessage, LlmExecutor};
+    use awaken_runtime_contract::llm::{ChatMessage, LlmExecutor, StopReason};
     use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -983,6 +967,41 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(filtered.stop_reason, Some(StopReason::ContentFilter));
+    }
+
+    #[test]
+    fn incomplete_response_requires_a_classified_reason_before_output_can_escape() {
+        // Cause/effect graph: C1 Responses reports the terminal `incomplete`
+        // status; C2 its reason is absent, null, or a future unclassified value;
+        // C3 its payload contains text or an otherwise valid tool call. Effects:
+        // E1 every C1+C2 row returns provider_error with Terminated execution
+        // evidence; E2 no C3 payload can turn that unknown reason into natural
+        // completion or executable ToolUse. Decision table R1-R6 is the Cartesian
+        // product of the three C2 values and two C3 payloads. Known reasons are
+        // owned by the adjacent MaxTokens/ContentFilter tests. Constraint: the
+        // common stop-class projection remains the sole neutral mapping kernel.
+        for incomplete_details in [
+            None,
+            Some(json!({"reason": null})),
+            Some(json!({"reason": "future_reason"})),
+        ] {
+            for output in [
+                json!([{"type":"message","content":[{"type":"output_text","text":"partial"}]}]),
+                json!([{"type":"function_call","call_id":"c","name":"tool","arguments":"{}"}]),
+            ] {
+                let mut response = json!({"status":"incomplete","output":output});
+                if let Some(details) = incomplete_details.clone() {
+                    response["incomplete_details"] = details;
+                }
+                let error = response_from_value(response).expect_err("R1-R6/E1");
+                assert_eq!(error.code(), "provider_error", "R1-R6/E1");
+                assert_eq!(
+                    error.execution_evidence(),
+                    ModelExecutionEvidence::Terminated,
+                    "R1-R6/E1"
+                );
+            }
+        }
     }
 
     #[test]

@@ -1,10 +1,11 @@
 use awaken_runtime_contract::llm::{Error, Result, StopReason};
+use awaken_runtime_contract::model_operation::ModelExecutionEvidence;
 
-// The SDK's raw strings have already been classified by its enum variant. Keep
-// the production decision kernel free of payload ownership and allocation.
+// Provider-specific wire values are classified before entering this finite
+// kernel. Keep its neutral projection free of payload ownership and allocation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(kani, derive(kani::Arbitrary))]
-enum ProviderStopClass {
+pub(crate) enum ProviderStopClass {
     Completed,
     MaxTokens,
     ToolCall,
@@ -25,7 +26,7 @@ fn provider_stop_class(reason: &genai::chat::StopReason) -> ProviderStopClass {
     }
 }
 
-fn project_stop_class(class: ProviderStopClass) -> Option<StopReason> {
+pub(crate) const fn project_stop_class(class: ProviderStopClass) -> Option<StopReason> {
     match class {
         ProviderStopClass::Completed => Some(StopReason::NaturalEnd),
         ProviderStopClass::MaxTokens => Some(StopReason::MaxTokens),
@@ -34,6 +35,41 @@ fn project_stop_class(class: ProviderStopClass) -> Option<StopReason> {
         ProviderStopClass::ContentFilter => Some(StopReason::ContentFilter),
         ProviderStopClass::Unclassified => None,
     }
+}
+
+/// Interpret the terminal status fields of the OpenAI Responses dialect before
+/// any returned output may enter Runtime. The adapter's raw string vocabulary
+/// feeds the same finite stop-class projection as the SDK-backed dialect.
+pub(crate) fn map_responses_terminal_stop_reason(
+    status: Option<&str>,
+    incomplete_reason: Option<&str>,
+) -> Result<StopReason> {
+    let class = match status {
+        Some("completed") => ProviderStopClass::Completed,
+        Some("incomplete") => match incomplete_reason {
+            Some("max_output_tokens") => ProviderStopClass::MaxTokens,
+            Some("content_filter") => ProviderStopClass::ContentFilter,
+            _ => ProviderStopClass::Unclassified,
+        },
+        Some("failed" | "cancelled") => {
+            return Err(Error::Provider(format!(
+                "Responses operation ended with status {status:?}"
+            ))
+            .with_execution_evidence(ModelExecutionEvidence::Terminated));
+        }
+        _ => {
+            return Err(Error::Provider(
+                "Responses operation has no confirmed terminal status".into(),
+            ));
+        }
+    };
+    project_stop_class(class).ok_or_else(|| {
+        // A complete terminal response proves the operation ended, but an
+        // unclassified reason cannot be guessed into Runtime's compatibility
+        // convention that `None` means a natural end.
+        Error::Provider("Responses operation returned an unclassified incomplete reason".into())
+            .with_execution_evidence(ModelExecutionEvidence::Terminated)
+    })
 }
 
 /// Map the SDK's stop reason onto the neutral one. A provider-specific reason
