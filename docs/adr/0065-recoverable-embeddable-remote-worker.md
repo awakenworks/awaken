@@ -150,14 +150,17 @@ owns this dependency for signal, Worker completion and process-task failure.
 Opaque work without return remains fenced after cleanup expires. Prompt SIGINT
 and hard SIGKILL do not gain a physical completion guarantee from this policy.
 
-A committed A2A task identity supplies a narrower continuation proof. When the
-complete Run-scoped `TaskReference` matches the immutable remote endpoint, the
-A2A leaf classifies recovered execution as continuation-only: it reattaches with
-`tasks/get` and cannot submit `message:send` again. The Worker then asks the one
-Dispatch aggregate to atomically hand its physical slot from the predecessor to
-the exact current claim. Every other executor and every incomplete/mismatched
-reference keeps the fail-closed quiescence rule. Control still owns the slot,
-claim, and transaction; the Worker contributes only the executor-specific proof.
+A committed A2A `Accepted` operation supplies a narrower continuation proof.
+When its complete Run-scoped `TaskReference` matches the immutable remote
+endpoint, the A2A leaf classifies recovered execution as continuation-only: it
+reattaches with `tasks/get` and cannot submit `message:send` again. The Worker
+then asks the one Dispatch aggregate to atomically hand its physical slot from
+the predecessor to the exact current claim. A `Prepared` operation has only the
+pre-send identity and no accepted task; it therefore cannot hand off, resend, or
+use an older predecessor task as completion evidence. Every other executor and
+every incomplete/mismatched operation keeps the fail-closed quiescence rule.
+Control still owns the slot, claim, and transaction; the Worker contributes only
+the executor-specific proof.
 
 ## 2026-08-12 amendment
 

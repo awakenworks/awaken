@@ -925,15 +925,30 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         }
 
         // Cancellation is itself a durable claimed attempt. It deliberately runs
-        // before model/credential/sandbox materialization: terminal control must
-        // remain possible when the execution dependency being cancelled is down.
+        // before model/sandbox materialization. Only an authenticated remote A2A
+        // task may consume credential material here, through the same exact
+        // claim binding and receipt boundary as ordinary execution. Provider,
+        // advisor, MCP and sandbox credentials remain outside terminal control.
         if claimed.cancellation_requested {
+            awaken_dispatch_contract::verify_claim_credential_bindings(
+                &claimed.request,
+                &self.local_credential_capabilities,
+                claimed.lease.epoch,
+                now_ms,
+                awaken_dispatch_contract::ClaimCredentialOperation::Cancel,
+                &claimed.credential_bindings,
+            )
+            .map_err(|error| {
+                Error::Execution(awaken_runtime_contract::execution::Error::Execution(
+                    format!("claimed cancellation credential binding revalidation failed: {error}"),
+                ))
+            })?;
             let attempt_executor = self.attempt_executor();
             let context = self.execution_context_with(
                 &claim,
                 claimed.request.execution_scope.as_ref(),
                 &None,
-                &[],
+                &claimed.credential_bindings,
                 clock.clone(),
                 Some(&attempt_cancellation),
             );

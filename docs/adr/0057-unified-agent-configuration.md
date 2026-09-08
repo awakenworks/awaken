@@ -466,14 +466,18 @@ the exact Resource revision and resolved manifest; neither reconstructs fields
 from mutable Agent configuration or a process-local `prepare_session` path.
 
 A2A is not a fire-and-forget exception to this lifecycle. Its executor implements
-the same `RunAttemptExecutor` used by Native and ACP. Immediately after the first
-`message:send`, it commits the returned endpoint/task/context identity as Run-scoped
-state before polling. A cold replacement therefore reattaches with `tasks/get`, an
-awaiting run resumes on the committed context, and durable cancellation addresses
-the committed task before the local `Cancelled` commit. Poll and cancel delivery
-failures leave dispatch retryable; no recovery path sends a second initial message.
-Terminal settlement removes the opaque reference. `agent_run` creates an ordinary
-child Run from the target publication and reaches the same A2A
+the same `RunAttemptExecutor` used by Native and ACP. Before each
+`message:send`, it commits a versioned `Prepared` operation to the existing
+Run-scoped A2A StateCell; a validated response replaces that value with
+`Accepted` plus the exact endpoint/task/context identity before polling. A cold
+replacement reattaches with `tasks/get` only from `Accepted`. `Prepared` remains
+unknown and cannot be resent or discharged by observing its predecessor task.
+An awaiting Run resumes on the committed context, and durable cancellation
+addresses only the currently accepted task before the local `Cancelled` commit.
+Poll and cancel delivery failures retain the same physical obligation; no recovery
+path sends a second initial or resume message. Terminal settlement removes the
+operation state. `agent_run` creates an ordinary child Run from the target
+publication and reaches the same A2A
 `RunAttemptExecutor` as direct peer admission; no remote directory, transport,
 card route or protocol lifecycle is delegation-owned (G39).
 

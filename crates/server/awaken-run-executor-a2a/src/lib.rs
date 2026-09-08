@@ -10,6 +10,8 @@
 //! executor stays config-free; a [`TransportResolver`] is the one injected seam.
 //! The host resolves publication-pinned transport authentication behind that
 //! port; tests may substitute an anonymous or scripted transport.
+//! Each outbound message first commits a versioned Prepared operation to the
+//! existing Run StateCell; only the exact returned task advances it to Accepted.
 
 use std::sync::Arc;
 
@@ -727,8 +729,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_transport_error_vetoes_physical_ack_without_inventing_a_terminal_fact() {
-        // R1: entered send + opaque transport error => retain the attempt veto,
-        // return its diagnostic, issue one request and commit no false terminal.
+        // Causes: C1 Prepared commits; C2 send is entered; C3 response is lost.
+        // Effects: E1 retain Prepared as the only durable owner; E2 veto ACK;
+        // E3 issue exactly one request and commit no Accepted/terminal fiction.
+        //
+        // | Rule | Prepared | Send | Response | Effects |
+        // |---|---|---|---|---|
+        // | R1 | committed | entered | lost | E1+E2+E3 |
+        // | R2 | rejected | none | n/a | zero IO (sibling) |
         // The String transport seam cannot prove even "connection refused" was
         // pre-dispatch; HTTP/decode siblings cover the other error partitions.
         let transport = Arc::new(ScriptedTransport::new(vec![Err("response lost".into())]));
@@ -741,7 +749,11 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("response lost"));
         assert!(!latch.can_acknowledge_return());
-        assert!(rec.0.lock().unwrap().is_empty());
+        assert_eq!(
+            rec.0.lock().unwrap().len(),
+            1,
+            "the pre-send Prepared boundary remains durable"
+        );
         assert_eq!(transport.seen.lock().unwrap().len(), 1);
     }
 
@@ -897,7 +909,11 @@ mod tests {
                     .is_err()
             );
             assert!(!latch.can_acknowledge_return());
-            assert!(rec.0.lock().unwrap().is_empty());
+            assert_eq!(
+                rec.0.lock().unwrap().len(),
+                1,
+                "the pre-send Prepared boundary remains durable"
+            );
         }
     }
 
@@ -1013,16 +1029,16 @@ mod tests {
         // selects only its stated effect and preserves the authority constraint.
         // Cause/effect graph: C1=attempt authority is absent/current/lost/down;
         // C2=the task completes in message:send or remains pollable; C3=authority
-        // is lost after creation but before the first GET. Effects: E1=resolve
+        // is lost after Prepared but before send. Effects: E1=resolve
         // transport once and send exactly one message; E2=zero resolver/HTTP
-        // calls; E3=retain the one created-task POST but issue zero polling GETs.
+        // calls; E3=retain Prepared but issue zero outbound requests.
         // Absence is the direct/embedded compatibility path.
         //
         // | Rule | Authority sequence       | Task       | Effect |
         // | O1   | absent                   | completed  | E1     |
         // | O2   | current                  | completed  | E1     |
         // | O3   | lost/down                | -          | E2     |
-        // | O4   | current,current,lost     | working    | E3     |
+        // | O4   | current,current,lost     | -          | E3     |
         for (label, ownership) in [
             ("O1", None),
             (
@@ -1091,7 +1107,7 @@ mod tests {
                 .iter()
                 .map(|(_, path, _)| path.as_str())
                 .collect::<Vec<_>>(),
-            vec!["/v1/a2a/message:send"],
+            Vec::<&str>::new(),
             "O4/E3"
         );
     }
@@ -1218,7 +1234,7 @@ mod tests {
         assert!(first.is_err(), "the first process loses its poll response");
         assert_eq!(rec.run_state(&activation.run_id), Some(RunState::Running));
         assert_eq!(
-            restored_task_reference(&context(), &activation)
+            restored_accepted_reference(&context(), &activation)
                 .unwrap()
                 .unwrap()
                 .task_id,
@@ -1316,11 +1332,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_rejects_context_rebinding_without_replacing_the_committed_reference() {
+    async fn resume_rejects_context_rebinding_and_retains_the_prepared_operation() {
         // Causes: C1 the committed task reference owns context ctx-original;
         // C2 resume sends to that context; C3 the remote response instead names
-        // ctx-rebound. Effects: E1 reject the response; E2 leave the committed
-        // task/context reference unchanged. The positive C1+C2+matching row is
+        // ctx-rebound. Effects: E1 reject the response; E2 retain Prepared B
+        // with task A as predecessor. A cannot be used as proof that B stopped.
+        // The positive C1+C2+matching row is
         // covered by `replacement_executor_resumes_input_on_the_committed_context`.
         //
         // | Rule | committed context | response context | Effects |
@@ -1360,11 +1377,19 @@ mod tests {
             .expect_err("a remote response cannot rebind the committed context");
         assert!(error.to_string().contains("changed context"), "R2/E1");
 
-        let reference = restored_task_reference(&context(), &activation)
-            .expect("decode committed reference")
-            .expect("reference remains committed");
-        assert_eq!(reference.task_id, "remote-input", "R2/E2");
-        assert_eq!(reference.context_id, "ctx-original", "R2/E2");
+        let prepared = match restored_remote_operation(&context(), &activation)
+            .expect("decode committed operation")
+            .expect("Prepared B remains committed")
+        {
+            RemoteOperationState::Prepared(intent) => intent,
+            RemoteOperationState::Accepted(_) => panic!("rebound B must not be accepted"),
+        };
+        assert_eq!(
+            prepared.predecessor_task_id.as_deref(),
+            Some("remote-input"),
+            "R2/E2"
+        );
+        assert_eq!(prepared.context_id, "ctx-original", "R2/E2");
     }
 
     #[tokio::test]
@@ -1596,69 +1621,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn durable_reference_and_resume_projection_fail_closed() {
-        // Constraints/invariants: the current fenced attempt and committed context are
-        // authoritative; remote protocol state cannot become a parallel Run or transcript truth.
-        // Coverage rationale: `durable reference and resume projection fail closed` is one
-        // independent branch selecting `all output, state, side-effect, error, and terminal
-        // assertions below hold together`; a multi-row decision table is not applicable, and
-        // sibling tests own alternate causes.
-        // Causes: C1 exact non-empty reference; C2 missing/empty/unknown field;
-        // C3 endpoint mismatch; C4 concrete resume result; C5 native Continue.
-        // Effects: E1 typed decode; E2/E3 rejection; E4 payload; E5 no payload.
-        // Rules: C1=>E1; C2=>E2; C1+C3=>E3; C4=>E4; C5=>E5.
-        let valid = serde_json::json!({
-            "endpoint": "http://remote.invalid",
-            "task_id": "task-7",
-            "context_id": "ctx-7",
-        });
-        let reference = decode_task_reference(&valid).unwrap();
-        assert_eq!(reference.task_id, "task-7");
-        for field in ["endpoint", "task_id", "context_id"] {
-            let mut invalid = valid.clone();
-            invalid.as_object_mut().unwrap().remove(field);
-            assert!(decode_task_reference(&invalid).is_err(), "missing {field}");
-
-            let mut empty = valid.clone();
-            empty[field] = serde_json::Value::String(String::new());
-            assert!(decode_task_reference(&empty).is_err(), "empty {field}");
-        }
-        let mut unknown = valid.clone();
-        unknown["unexpected"] = serde_json::Value::Bool(true);
-        assert!(decode_task_reference(&unknown).is_err(), "unknown field");
-        assert!(matches!(
-            task_reference_decision(false, false),
-            TaskReferenceDecision::Fresh
-        ));
-        assert!(matches!(
-            task_reference_decision(true, true),
-            TaskReferenceDecision::Reattach
-        ));
-        assert!(matches!(
-            task_reference_decision(true, false),
-            TaskReferenceDecision::RejectEndpointMismatch
-        ));
-
-        assert_eq!(
-            resume_text(&ResumeResult::Input("input".into())).unwrap(),
-            "input"
-        );
-        assert_eq!(
-            resume_text(&ResumeResult::ToolResult(
-                awaken_runtime_contract::tool::ToolOutput::ok("call", "tool")
-            ))
-            .unwrap(),
-            "tool"
-        );
-        assert_eq!(resume_text(&ResumeResult::allow()).unwrap(), "allow");
-        assert_eq!(resume_text(&ResumeResult::deny(None)).unwrap(), "deny");
-        assert_eq!(
-            resume_text(&ResumeResult::deny(Some("because".into()))).unwrap(),
-            "because"
-        );
-        assert!(resume_text(&ResumeResult::Continue).is_err(), "C5/E5");
-    }
+    mod operation_state;
 
     fn resume_command(activation: &RunActivation) -> ResumeCommand {
         ResumeCommand {
@@ -1700,7 +1663,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            restored_task_reference(&context, &activation).unwrap(),
+            restored_accepted_reference(&context, &activation).unwrap(),
             None
         );
 
@@ -1714,12 +1677,12 @@ mod tests {
             &activation,
             RunDisposition::running(activation.run_id.clone()),
             Vec::new(),
-            vec![task_reference_state(&reference).unwrap()],
+            vec![accepted_reference_state(&reference).unwrap()],
         )
         .await
         .unwrap();
         assert_eq!(
-            restored_task_reference(&context, &activation).unwrap(),
+            restored_accepted_reference(&context, &activation).unwrap(),
             Some(reference)
         );
         commit_boundary(
@@ -1727,28 +1690,30 @@ mod tests {
             &activation,
             RunDisposition::running(activation.run_id.clone()),
             Vec::new(),
-            vec![clear_task_reference_state()],
+            vec![clear_remote_operation_state()],
         )
         .await
         .unwrap();
         assert_eq!(
-            restored_task_reference(&context, &activation).unwrap(),
+            restored_accepted_reference(&context, &activation).unwrap(),
             None
         );
     }
 
     #[tokio::test]
     async fn physical_attempt_recovery_requires_an_exact_committed_task_binding() {
-        // Cause C1: committed state contains a complete A2A task reference.
+        // Cause C1: committed state contains a complete A2A Accepted task.
         // Cause C2: its endpoint matches the immutable publication binding.
+        // Cause C3: state is Prepared without an accepted task.
         // Effect E1: only C1+C2 selects continuation handoff; all other rows
         // retain predecessor quiescence and cannot repeat `message:send`.
         //
-        // | Rule | C1 | C2 | Effect |
-        // |---|---|---|---|
-        // | R1 | no | n/a | require predecessor quiescence |
-        // | R2 | yes | no | require predecessor quiescence |
-        // | R3 | yes | yes | continue durable remote operation |
+        // | Rule | C1 | C2 | C3 | Effect |
+        // |---|---|---|---|---|
+        // | R1 | no | n/a | no | require predecessor quiescence |
+        // | R2 | yes | no | no | require predecessor quiescence |
+        // | R3 | yes | yes | no | continue durable remote operation |
+        // | R4 | no | n/a | yes | require predecessor quiescence |
         let executor = A2aRunExecutor::over_http();
         let activation = activation("a2a:http://remote.invalid");
         let empty = RuntimeRunContext::new();
@@ -1768,7 +1733,7 @@ mod tests {
             RunDisposition::running(activation.run_id.clone()),
             Vec::new(),
             vec![
-                task_reference_state(&TaskReference {
+                accepted_reference_state(&TaskReference {
                     endpoint: "http://other.invalid".into(),
                     task_id: "task-7".into(),
                     context_id: "ctx-7".into(),
@@ -1789,7 +1754,7 @@ mod tests {
             RunDisposition::running(activation.run_id.clone()),
             Vec::new(),
             vec![
-                task_reference_state(&TaskReference {
+                accepted_reference_state(&TaskReference {
                     endpoint: "http://remote.invalid".into(),
                     task_id: "task-7".into(),
                     context_id: "ctx-7".into(),
@@ -1803,6 +1768,28 @@ mod tests {
             executor.physical_attempt_recovery(&activation, &context),
             AttemptRecoveryMode::ContinueDurableRemoteOperation,
             "R3"
+        );
+        let prepared = prepare_remote_operation(
+            "http://remote.invalid",
+            "ctx-7",
+            Some("task-7"),
+            "message-next",
+            "next",
+        )
+        .unwrap();
+        commit_boundary(
+            &context,
+            &activation,
+            RunDisposition::running(activation.run_id.clone()),
+            Vec::new(),
+            vec![prepared_operation_state(&prepared).unwrap()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            executor.physical_attempt_recovery(&activation, &context),
+            AttemptRecoveryMode::RequirePredecessorQuiescence,
+            "R4"
         );
     }
 
@@ -1869,7 +1856,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_terminalizes_a_task_pinned_to_another_endpoint() {
+    async fn execute_preserves_a_task_pinned_to_another_endpoint() {
+        // Causes: C1 a durable accepted task exists; C2 the immutable endpoint
+        // differs. Effects: E1 reject before outbound IO; E2 retain the exact
+        // task and veto physical ACK. Terminalizing would erase the only owner
+        // of a possibly live remote effect.
+        //
+        // | Rule | C1 | C2 | Effects |
+        // |---|---|---|---|
+        // | R1 | yes | mismatch | E1+E2 |
         let rec = Arc::new(Rec::default());
         let activation = activation("a2a:http://remote.invalid");
         let context = RuntimeRunContext::new()
@@ -1881,7 +1876,7 @@ mod tests {
             RunDisposition::running(activation.run_id.clone()),
             Vec::new(),
             vec![
-                task_reference_state(&TaskReference {
+                accepted_reference_state(&TaskReference {
                     endpoint: "http://old.invalid".into(),
                     task_id: "task-7".into(),
                     context_id: "ctx-7".into(),
@@ -1892,17 +1887,20 @@ mod tests {
         .await
         .unwrap();
 
-        let state = A2aRunExecutor::over_http()
-            .execute(activation, context)
+        let latch = context.physical_quiescence.clone();
+        let error = A2aRunExecutor::over_http()
+            .execute(activation.clone(), context.clone())
             .await
-            .expect("endpoint mismatch is a deterministic terminal Run failure");
-        assert!(
-            matches!(
-                &state,
-                RunState::Ended(EndCause::Error(Failure::Inference { code, .. }))
-                    if code == "a2a_durable_state_invalid"
-            ),
-            "endpoint mismatch must not enter transient dispatch retry: {state:?}"
+            .expect_err("endpoint mismatch retains the remote obligation");
+        assert!(error.to_string().contains("belongs to endpoint"), "R1/E1");
+        assert!(!latch.can_acknowledge_return(), "R1/E2");
+        assert_eq!(
+            restored_accepted_reference(&context, &activation)
+                .unwrap()
+                .unwrap()
+                .task_id,
+            "task-7",
+            "R1/E2"
         );
     }
 
@@ -1931,7 +1929,7 @@ mod tests {
             RunDisposition::running(activation.run_id.clone()),
             Vec::new(),
             vec![
-                task_reference_state(&TaskReference {
+                accepted_reference_state(&TaskReference {
                     endpoint: "http://remote.invalid".into(),
                     task_id: "task-7".into(),
                     context_id: "ctx-7".into(),

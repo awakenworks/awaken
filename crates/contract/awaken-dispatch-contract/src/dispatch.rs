@@ -39,9 +39,10 @@ include!("dispatch/delivery.rs");
 
 mod credential_admission;
 pub use credential_admission::{
-    DispatchCredentialAdmissionError, can_admit_attempt_credentials,
-    compile_attempt_credential_bindings, verify_attempt_credential_bindings,
-    worker_credential_realization_capabilities,
+    ClaimCredentialOperation, DispatchCredentialAdmissionError, can_admit_attempt_credentials,
+    can_admit_claim_credentials, claim_credential_operation, compile_attempt_credential_bindings,
+    compile_claim_credential_bindings, verify_attempt_credential_bindings,
+    verify_claim_credential_bindings, worker_credential_realization_capabilities,
 };
 
 /// Admission or durable-store failure classified by what the caller may safely
@@ -125,7 +126,8 @@ pub struct Claimed {
     pub request: RunDispatch,
     pub lease: Lease,
     /// Exact credential decisions atomically committed with this lease epoch.
-    /// Empty for cancellation and credential-free candidates.
+    /// Cancellation carries only the selected authenticated remote A2A
+    /// transport binding; anonymous and non-remote cancellation remains empty.
     #[serde(default)]
     pub credential_bindings: Vec<AttemptCredentialBinding>,
     /// A durable cancellation intent recorded before any live signal or terminal
@@ -1284,6 +1286,9 @@ mod tests {
             }
         }
     }
+
+    #[path = "credential_admission_tests.rs"]
+    mod credential_admission_tests;
 
     /// Candidate-selection cause graph:
     ///

@@ -90,6 +90,46 @@ fn credential_dispatch(ns: &str, run: &str, thread: &str, holder: &PlaintextHold
     request
 }
 
+fn remote_credential_dispatch(
+    ns: &str,
+    run: &str,
+    thread: &str,
+    holder: &PlaintextHolder,
+) -> RunDispatch {
+    let endpoint = format!("https://{ns}.agent.invalid");
+    let mut request = dispatch(ns, run, thread);
+    request.activation.snapshot.resolved_spec.model_binding =
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::try_remote(
+            ModelBinding::new("", "", format!("a2a:{endpoint}")),
+            ns,
+            Some(
+                CredentialAccess::new(
+                    CredentialRef {
+                        id: format!("{ns}-remote-credential"),
+                        revision: 7,
+                    },
+                    CredentialMaterialSource::ControlPlaneReference,
+                    CredentialUsage::HttpHeader {
+                        name: "authorization".into(),
+                        scheme: Some("Bearer".into()),
+                    },
+                    CredentialExecutionPolicy::exact(
+                        holder.clone(),
+                        ModelExposurePolicy::Forbidden,
+                    ),
+                )
+                .with_target(awaken_runtime_contract::CredentialTarget::new(
+                    awaken_runtime_contract::credential::CredentialPurpose::RemoteAgentAuthorization,
+                    endpoint,
+                )),
+            ),
+            format!("sha256:{ns}-agent-card"),
+        )
+        .expect("testkit remote candidate is coherent");
+    request.inference_plaintext_holder = Some(holder.clone());
+    request
+}
+
 fn credential_candidate(
     workspace_id: &str,
     provider_id: &str,
@@ -156,16 +196,33 @@ fn ready_dispatch_worker(ns: &str, suffix: &str) -> WorkerSnapshot {
 }
 
 fn credential_worker(ns: &str, holder: &PlaintextHolder, capable: bool) -> WorkerSnapshot {
+    credential_worker_for(
+        ns,
+        holder,
+        capable.then_some(CredentialRealizationKind::WorkerProviderAdapter),
+    )
+}
+
+fn remote_credential_worker(ns: &str, holder: &PlaintextHolder) -> WorkerSnapshot {
+    credential_worker_for(ns, holder, Some(CredentialRealizationKind::WorkerRelay))
+}
+
+fn credential_worker_for(
+    ns: &str,
+    holder: &PlaintextHolder,
+    realization_kind: Option<CredentialRealizationKind>,
+) -> WorkerSnapshot {
     let mut manifest = ready_dispatch_worker(ns, "credential").manifest;
-    if capable {
+    let worker_kind = realization_kind
+        .map(|kind| format!("{kind:?}"))
+        .unwrap_or_else(|| "incapable".into());
+    if let Some(realization_kind) = realization_kind {
         let realization = CredentialRealizationCapabilities {
             holders: [holder.clone()].into_iter().collect(),
             material_sources: [CredentialMaterialSource::ControlPlaneReference]
                 .into_iter()
                 .collect(),
-            realization_kinds: [CredentialRealizationKind::WorkerProviderAdapter]
-                .into_iter()
-                .collect(),
+            realization_kinds: [realization_kind].into_iter().collect(),
             recipient_bound_envelopes: false,
             envelope_required: false,
             extension_consumers: Default::default(),
@@ -179,7 +236,7 @@ fn credential_worker(ns: &str, holder: &PlaintextHolder, capable: bool) -> Worke
         );
     }
     WorkerSnapshot {
-        identity: WorkerIdentity::new(format!("{ns}-credential-worker-{capable}"), "boot", 1),
+        identity: WorkerIdentity::new(format!("{ns}-credential-worker-{worker_kind}"), "boot", 1),
         capability_fingerprint: manifest
             .fingerprint()
             .expect("credential Worker manifest fingerprints"),

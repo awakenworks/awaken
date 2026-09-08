@@ -12,17 +12,21 @@ ASSUME /\ EndpointA # EndpointB
        /\ MaxReads \in Nat \ {0}
        /\ MaxCancels \in Nat \ {0}
 
-Phases == {"Ready", "Sent", "Running", "Recovering", "Awaiting",
-           "ResumeSent", "Terminal", "Cancelled", "FailedClosed"}
+Phases == {"Ready", "FreshPrepared", "FreshSent", "Running", "Recovering",
+           "Awaiting", "ResumePrepared", "ResumeSent", "Unconfirmed",
+           "Terminal", "Cancelled", "FailedClosed"}
 Endpoints == {EndpointA, EndpointB}
 Tasks == {Task0, Task1}
+Operations == {"NoOperation", "Execute", "Resume"}
 MessageIds == {"Execute", "Resume"}
 
 VARIABLES phase, configuredEndpoint, durableEndpoint, durableTask,
+          preparedOperation, acceptedOperation, predecessorTask,
           sentMessageIds, sends, reads, cancels, mismatchOutbound,
           cancelAddressedTask
 
 vars == <<phase, configuredEndpoint, durableEndpoint, durableTask,
+          preparedOperation, acceptedOperation, predecessorTask,
           sentMessageIds, sends, reads, cancels, mismatchOutbound,
           cancelAddressedTask>>
 
@@ -31,6 +35,9 @@ Init ==
     /\ configuredEndpoint = EndpointA
     /\ durableEndpoint = NoEndpoint
     /\ durableTask = NoTask
+    /\ preparedOperation = "NoOperation"
+    /\ acceptedOperation = "NoOperation"
+    /\ predecessorTask = NoTask
     /\ sentMessageIds = {}
     /\ sends = 0
     /\ reads = 0
@@ -38,58 +45,88 @@ Init ==
     /\ mismatchOutbound = FALSE
     /\ cancelAddressedTask = NoTask
 
-\* `message:send` is an external effect and therefore precedes the local
-\* ThreadCommit. A crash may expose this gap. Every replay nevertheless uses
-\* the same Run-derived message id; remote deduplication is an explicit peer
-\* contract, not an exactly-once claim made by this model.
-SendFresh ==
+\* The sole StateCell first records the exact operation coordinates. A failed
+\* commit remains Ready and cannot reach the external send action.
+PrepareFresh ==
     /\ phase = "Ready"
+    /\ phase' = "FreshPrepared"
+    /\ durableEndpoint' = configuredEndpoint
+    /\ preparedOperation' = "Execute"
+    /\ UNCHANGED <<configuredEndpoint, durableTask, acceptedOperation,
+                    predecessorTask, sentMessageIds, sends, reads, cancels,
+                    mismatchOutbound, cancelAddressedTask>>
+
+SendFresh ==
+    /\ phase = "FreshPrepared"
+    /\ preparedOperation = "Execute"
+    /\ "Execute" \notin sentMessageIds
     /\ sends < MaxSends
-    /\ phase' = "Sent"
+    /\ phase' = "FreshSent"
     /\ sends' = sends + 1
     /\ sentMessageIds' = sentMessageIds \cup {"Execute"}
-    /\ UNCHANGED <<configuredEndpoint, durableEndpoint, durableTask, reads,
-                    cancels, mismatchOutbound, cancelAddressedTask>>
-
-CrashBeforeFreshCommit ==
-    /\ phase = "Sent"
-    /\ phase' = "Ready"
     /\ UNCHANGED <<configuredEndpoint, durableEndpoint, durableTask,
+                    preparedOperation, acceptedOperation, predecessorTask,
+                    reads, cancels, mismatchOutbound, cancelAddressedTask>>
+
+\* A process can disappear on either side of send. Both gaps retain Prepared,
+\* have no exact task id, and therefore enter the same fail-safe state. There
+\* is intentionally no outbound transition from Unconfirmed.
+CrashPrepared ==
+    /\ phase \in {"FreshPrepared", "ResumePrepared"}
+    /\ phase' = "Unconfirmed"
+    /\ UNCHANGED <<configuredEndpoint, durableEndpoint, durableTask,
+                    preparedOperation, acceptedOperation, predecessorTask,
                     sentMessageIds, sends, reads, cancels, mismatchOutbound,
                     cancelAddressedTask>>
 
-CommitFreshReference ==
-    /\ phase = "Sent"
-    /\ phase' = "Running"
-    /\ durableEndpoint' = configuredEndpoint
-    /\ durableTask' = Task0
-    /\ UNCHANGED <<configuredEndpoint, sentMessageIds, sends, reads, cancels,
-                    mismatchOutbound, cancelAddressedTask>>
+CrashSent ==
+    /\ phase \in {"FreshSent", "ResumeSent"}
+    /\ phase' = "Unconfirmed"
+    /\ UNCHANGED <<configuredEndpoint, durableEndpoint, durableTask,
+                    preparedOperation, acceptedOperation, predecessorTask,
+                    sentMessageIds, sends, reads, cancels, mismatchOutbound,
+                    cancelAddressedTask>>
 
-CrashWithReference ==
+CommitFreshAcceptance ==
+    /\ phase = "FreshSent"
+    /\ phase' = "Running"
+    /\ durableTask' = Task0
+    /\ preparedOperation' = "NoOperation"
+    /\ acceptedOperation' = "Execute"
+    /\ UNCHANGED <<configuredEndpoint, durableEndpoint, predecessorTask,
+                    sentMessageIds, sends, reads, cancels, mismatchOutbound,
+                    cancelAddressedTask>>
+
+CrashWithAcceptedTask ==
     /\ phase = "Running"
     /\ phase' = "Recovering"
     /\ UNCHANGED <<configuredEndpoint, durableEndpoint, durableTask,
+                    preparedOperation, acceptedOperation, predecessorTask,
                     sentMessageIds, sends, reads, cancels, mismatchOutbound,
                     cancelAddressedTask>>
 
 \* Reattachment performs tasks/get only. It cannot send a second user message.
-RecoverMatchingReference ==
+RecoverMatchingAcceptedTask ==
     /\ phase = "Recovering"
     /\ configuredEndpoint = durableEndpoint
+    /\ durableTask # NoTask
     /\ reads < MaxReads
     /\ phase' = "Running"
     /\ reads' = reads + 1
     /\ UNCHANGED <<configuredEndpoint, durableEndpoint, durableTask,
+                    preparedOperation, acceptedOperation, predecessorTask,
                     sentMessageIds, sends, cancels, mismatchOutbound,
                     cancelAddressedTask>>
 
-\* A changed route cannot redirect a pinned remote task to another endpoint.
-RecoverMismatchedReference ==
-    /\ phase = "Recovering"
+\* A changed route cannot redirect or retire a pinned remote responsibility.
+RejectEndpointMismatch ==
+    /\ phase \in {"FreshPrepared", "FreshSent", "Running", "Recovering",
+                    "Awaiting", "ResumePrepared", "ResumeSent", "Unconfirmed"}
+    /\ durableEndpoint # NoEndpoint
     /\ configuredEndpoint # durableEndpoint
     /\ phase' = "FailedClosed"
     /\ UNCHANGED <<configuredEndpoint, durableEndpoint, durableTask,
+                    preparedOperation, acceptedOperation, predecessorTask,
                     sentMessageIds, sends, reads, cancels, mismatchOutbound,
                     cancelAddressedTask>>
 
@@ -97,37 +134,52 @@ RouteChange ==
     /\ phase \notin {"Terminal", "Cancelled", "FailedClosed"}
     /\ configuredEndpoint' = IF configuredEndpoint = EndpointA
                               THEN EndpointB ELSE EndpointA
-    /\ UNCHANGED <<phase, durableEndpoint, durableTask, sentMessageIds, sends,
+    /\ UNCHANGED <<phase, durableEndpoint, durableTask, preparedOperation,
+                    acceptedOperation, predecessorTask, sentMessageIds, sends,
                     reads, cancels, mismatchOutbound, cancelAddressedTask>>
 
 AwaitInput ==
     /\ phase = "Running"
     /\ phase' = "Awaiting"
     /\ UNCHANGED <<configuredEndpoint, durableEndpoint, durableTask,
+                    preparedOperation, acceptedOperation, predecessorTask,
                     sentMessageIds, sends, reads, cancels, mismatchOutbound,
                     cancelAddressedTask>>
 
-SendResume ==
+\* Resume overwrites Accepted A with Prepared B, but carries A only as a
+\* predecessor coordinate. From this point A cannot prove that B stopped.
+PrepareResume ==
     /\ phase = "Awaiting"
     /\ configuredEndpoint = durableEndpoint
+    /\ durableTask # NoTask
+    /\ phase' = "ResumePrepared"
+    /\ predecessorTask' = durableTask
+    /\ durableTask' = NoTask
+    /\ preparedOperation' = "Resume"
+    /\ acceptedOperation' = "NoOperation"
+    /\ UNCHANGED <<configuredEndpoint, durableEndpoint, sentMessageIds, sends,
+                    reads, cancels, mismatchOutbound, cancelAddressedTask>>
+
+SendResume ==
+    /\ phase = "ResumePrepared"
+    /\ preparedOperation = "Resume"
+    /\ predecessorTask # NoTask
+    /\ "Resume" \notin sentMessageIds
     /\ sends < MaxSends
     /\ phase' = "ResumeSent"
     /\ sends' = sends + 1
     /\ sentMessageIds' = sentMessageIds \cup {"Resume"}
-    /\ UNCHANGED <<configuredEndpoint, durableEndpoint, durableTask, reads,
-                    cancels, mismatchOutbound, cancelAddressedTask>>
-
-CrashBeforeResumeCommit ==
-    /\ phase = "ResumeSent"
-    /\ phase' = "Awaiting"
     /\ UNCHANGED <<configuredEndpoint, durableEndpoint, durableTask,
-                    sentMessageIds, sends, reads, cancels, mismatchOutbound,
-                    cancelAddressedTask>>
+                    preparedOperation, acceptedOperation, predecessorTask,
+                    reads, cancels, mismatchOutbound, cancelAddressedTask>>
 
-CommitResumeReference ==
+CommitResumeAcceptance ==
     /\ phase = "ResumeSent"
     /\ phase' = "Running"
     /\ durableTask' = Task1
+    /\ preparedOperation' = "NoOperation"
+    /\ acceptedOperation' = "Resume"
+    /\ predecessorTask' = NoTask
     /\ UNCHANGED <<configuredEndpoint, durableEndpoint, sentMessageIds, sends,
                     reads, cancels, mismatchOutbound, cancelAddressedTask>>
 
@@ -136,32 +188,39 @@ Complete ==
     /\ phase' = "Terminal"
     /\ durableEndpoint' = NoEndpoint
     /\ durableTask' = NoTask
-    /\ UNCHANGED <<configuredEndpoint, sentMessageIds, sends, reads, cancels,
-                    mismatchOutbound, cancelAddressedTask>>
+    /\ acceptedOperation' = "NoOperation"
+    /\ UNCHANGED <<configuredEndpoint, preparedOperation, predecessorTask,
+                    sentMessageIds, sends, reads, cancels, mismatchOutbound,
+                    cancelAddressedTask>>
 
 Cancel ==
     /\ phase \in {"Running", "Awaiting", "Recovering"}
     /\ configuredEndpoint = durableEndpoint
     /\ durableTask # NoTask
+    /\ preparedOperation = "NoOperation"
+    /\ acceptedOperation # "NoOperation"
     /\ cancels < MaxCancels
     /\ phase' = "Cancelled"
     /\ cancels' = cancels + 1
     /\ cancelAddressedTask' = durableTask
     /\ UNCHANGED <<configuredEndpoint, durableEndpoint, durableTask,
+                    preparedOperation, acceptedOperation, predecessorTask,
                     sentMessageIds, sends, reads, mismatchOutbound>>
 
 Next ==
+    \/ PrepareFresh
     \/ SendFresh
-    \/ CrashBeforeFreshCommit
-    \/ CommitFreshReference
-    \/ CrashWithReference
-    \/ RecoverMatchingReference
-    \/ RecoverMismatchedReference
+    \/ CrashPrepared
+    \/ CrashSent
+    \/ CommitFreshAcceptance
+    \/ CrashWithAcceptedTask
+    \/ RecoverMatchingAcceptedTask
+    \/ RejectEndpointMismatch
     \/ RouteChange
     \/ AwaitInput
+    \/ PrepareResume
     \/ SendResume
-    \/ CrashBeforeResumeCommit
-    \/ CommitResumeReference
+    \/ CommitResumeAcceptance
     \/ Complete
     \/ Cancel
 
@@ -172,6 +231,9 @@ TypeOK ==
     /\ configuredEndpoint \in Endpoints
     /\ durableEndpoint \in Endpoints \cup {NoEndpoint}
     /\ durableTask \in Tasks \cup {NoTask}
+    /\ preparedOperation \in Operations
+    /\ acceptedOperation \in Operations
+    /\ predecessorTask \in Tasks \cup {NoTask}
     /\ sentMessageIds \subseteq MessageIds
     /\ sends \in 0..MaxSends
     /\ reads \in 0..MaxReads
@@ -179,15 +241,37 @@ TypeOK ==
     /\ mismatchOutbound \in BOOLEAN
     /\ cancelAddressedTask \in Tasks \cup {NoTask}
 
-ReferenceIsComplete ==
-    (durableTask = NoTask) <=> (durableEndpoint = NoEndpoint)
+PreparedHasNoAddressableTask ==
+    phase \in {"FreshPrepared", "FreshSent", "ResumePrepared", "ResumeSent",
+               "Unconfirmed"}
+        => /\ preparedOperation \in {"Execute", "Resume"}
+           /\ acceptedOperation = "NoOperation"
+           /\ durableEndpoint # NoEndpoint
+           /\ durableTask = NoTask
 
-ActiveRemoteLifecycleHasReference ==
-    phase \in {"Running", "Recovering", "Awaiting", "ResumeSent", "Cancelled"}
-        => durableTask # NoTask
+AcceptedLifecycleHasExactTask ==
+    phase \in {"Running", "Recovering", "Awaiting", "Cancelled"}
+        => /\ preparedOperation = "NoOperation"
+           /\ acceptedOperation \in {"Execute", "Resume"}
+           /\ durableEndpoint # NoEndpoint
+           /\ durableTask # NoTask
 
-TerminalClearsReference ==
-    phase = "Terminal" => durableTask = NoTask
+ResumePreparedRetainsOnlyPredecessorCoordinate ==
+    phase \in {"ResumePrepared", "ResumeSent"}
+        => /\ predecessorTask # NoTask
+           /\ durableTask = NoTask
+
+UnconfirmedCannotClaimAcceptedTask ==
+    phase = "Unconfirmed"
+        => /\ preparedOperation \in {"Execute", "Resume"}
+           /\ acceptedOperation = "NoOperation"
+           /\ durableTask = NoTask
+
+TerminalClearsOperation ==
+    phase = "Terminal"
+        => /\ durableEndpoint = NoEndpoint
+           /\ durableTask = NoTask
+           /\ acceptedOperation = "NoOperation"
 
 StableReplayIdentity == sentMessageIds \subseteq {"Execute", "Resume"}
 
@@ -196,17 +280,22 @@ EndpointMismatchFailsClosed ==
 
 MismatchNeverProducesOutbound == ~mismatchOutbound
 
-CancellationTargetsPinnedTask ==
-    cancels > 0 => cancelAddressedTask = durableTask
+CancellationTargetsOnlyAcceptedTask ==
+    cancels > 0
+        => /\ cancelAddressedTask = durableTask
+           /\ acceptedOperation # "NoOperation"
+           /\ preparedOperation = "NoOperation"
 
 Safety ==
     /\ TypeOK
-    /\ ReferenceIsComplete
-    /\ ActiveRemoteLifecycleHasReference
-    /\ TerminalClearsReference
+    /\ PreparedHasNoAddressableTask
+    /\ AcceptedLifecycleHasExactTask
+    /\ ResumePreparedRetainsOnlyPredecessorCoordinate
+    /\ UnconfirmedCannotClaimAcceptedTask
+    /\ TerminalClearsOperation
     /\ StableReplayIdentity
     /\ EndpointMismatchFailsClosed
     /\ MismatchNeverProducesOutbound
-    /\ CancellationTargetsPinnedTask
+    /\ CancellationTargetsOnlyAcceptedTask
 
 =============================================================================

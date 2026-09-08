@@ -233,15 +233,18 @@ pub(super) fn claim_exact_transaction_with_mode(
             ))
         })?;
     let claim_epoch = claimed_transition.lease_epoch;
-    let credential_bindings = if terminal_resolution || cancellation_requested != 0 {
-        Vec::new()
-    } else {
-        compile_attempt_credential_bindings(&request, capabilities, claim_epoch, now_ms).map_err(
-            |error| {
-                DispatchError::Rejected(format!("credential attempt admission failed: {error}"))
-            },
-        )?
-    };
+    let credential_operation =
+        claim_credential_operation(terminal_resolution, cancellation_requested != 0);
+    let credential_bindings = compile_claim_credential_bindings(
+        &request,
+        capabilities,
+        claim_epoch,
+        now_ms,
+        credential_operation,
+    )
+    .map_err(|error| {
+        DispatchError::Rejected(format!("credential claim admission failed: {error}"))
+    })?;
     let expires = crate::clock::deadline_millis(now_ms, lease_ms);
     let claimed_status = crate::dispatch_state_db(claimed_transition.state);
     tx.execute(
