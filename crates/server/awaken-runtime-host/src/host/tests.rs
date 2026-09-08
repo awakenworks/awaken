@@ -7599,13 +7599,16 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         provisional.env.is_none(),
         "L9/E1 no reservation side effect"
     );
-    let provisional_prompt = host
+    let provisional_metadata = host
         .session_slots
         .read("deferred-managed-filesystem-skill", |slot| {
             slot.skill_prompt.clone()
         })
         .flatten()
         .expect("L9/E1 projected Skill metadata");
+    let provisional_prompt = provisional_metadata
+        .render(&Default::default(), None)
+        .unwrap();
     assert!(
         provisional_prompt.contains(".skills/release-signal/SKILL.md"),
         "L9/E1 stable path: {provisional_prompt}"
@@ -7650,10 +7653,9 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
             .read("deferred-managed-filesystem-skill", |slot| {
                 slot.skill_prompt.clone()
             })
-            .flatten()
-            .as_deref(),
-        Some(provisional_prompt.as_str()),
-        "L10/E2 execution retains the reservation path"
+            .flatten(),
+        Some(provisional_metadata),
+        "L10/E2 execution retains metadata while projecting its realized path"
     );
 }
 

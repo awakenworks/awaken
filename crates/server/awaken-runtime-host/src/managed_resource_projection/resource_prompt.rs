@@ -41,7 +41,7 @@ impl AgentPathView {
         }
     }
 
-    fn render(&self, logical: &str) -> String {
+    pub(crate) fn render(&self, logical: &str) -> String {
         self.render_with_separator(logical, std::path::MAIN_SEPARATOR)
     }
 

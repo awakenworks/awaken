@@ -41,6 +41,21 @@ pub(crate) enum SessionEnvironment {
 }
 
 impl SessionEnvironment {
+    /// Resolve the same directory interpretation used by Skill materialization
+    /// and discovery. Workdir's lexical root and an isolated workspace are
+    /// different physical layouts; neither may be inferred from a model's cwd.
+    pub(crate) fn skill_directory_path(&self, directory: &str) -> Result<String, pc::SandboxError> {
+        match self {
+            Self::Workdir { .. } => super::container_files::sandbox_absolute_path(&format!(
+                "/{}",
+                directory.trim_start_matches('/')
+            )),
+            Self::Namespace { .. } | Self::Container { .. } => {
+                super::container_files::logical_path(directory)
+            }
+        }
+    }
+
     pub(crate) fn agent_prompt_path_view(
         &self,
         working_directory: Option<&str>,
@@ -69,6 +84,18 @@ impl SessionEnvironment {
     ) -> super::AgentFilesystemView {
         match self {
             Self::Workdir { sandbox, hand } => {
+                // The embedded file/Bash tools are rooted at the physical
+                // sandbox root, unlike a Hand or ACP process launched inside
+                // /workspace. Use that same cwd for all prompt paths; only
+                // selected mount prefixes have absolute aliases in these tools.
+                if client == super::AgentFilesystemClient::NativeTools && hand.is_none() {
+                    return super::AgentFilesystemView {
+                        protocol_cwd: sandbox.workspace_path().to_string_lossy().into_owned(),
+                        command_cwd: "/".into(),
+                        prompt_paths:
+                            crate::managed_resource_projection::AgentPathView::workdir_relative("/"),
+                    };
+                }
                 // working_directory is an ACP session option. The Native Hand
                 // starts at WorkspaceLayout::ROOT; its Bash tool may cd later,
                 // but that must not rewrite the frozen prompt's reference cwd.
@@ -103,17 +130,10 @@ impl SessionEnvironment {
                             )
                         },
                     ),
-                    prompt_paths: match client {
-                        super::AgentFilesystemClient::NativeTools if hand.is_none() => {
-                            crate::managed_resource_projection::AgentPathView::sandbox_absolute()
-                        }
-                        super::AgentFilesystemClient::AcpProcess
-                        | super::AgentFilesystemClient::NativeTools => {
-                            crate::managed_resource_projection::AgentPathView::workdir_relative(
-                                logical_cwd,
-                            )
-                        }
-                    },
+                    prompt_paths:
+                        crate::managed_resource_projection::AgentPathView::workdir_relative(
+                            logical_cwd,
+                        ),
                 }
             }
             Self::Namespace { .. } | Self::Container { .. } => {

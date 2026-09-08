@@ -284,7 +284,12 @@ async fn discover_read_author_and_use_authored_skill_end_to_end() {
 
     // 1) discover and load the frozen Skill through its advertised path.
     let list = send_message(&app, &id, "please discover").await;
-    assert_eq!(tool_uses(&list), ["read"]);
+    assert_eq!(
+        tool_uses(&list),
+        ["read"],
+        "disclosure tool results: {:?}",
+        tool_results(&list)
+    );
     assert!(messages(&list).contains(&"DISCOVERED".to_string()));
     assert!(tool_results(&list).join("").contains("GREETING"));
 
