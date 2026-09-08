@@ -577,6 +577,9 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
 /// | Q4 | broad cancel | remote auth | missing relay | non-remote cancel | skip remote, claim non-remote |
 /// | Q5 | policy cancel | remote auth | missing relay | non-remote cancel | skip remote, claim non-remote |
 /// | Q6 | local broad cancel | remote auth | missing relay | non-remote cancel | skip remote, claim non-remote |
+/// | Q7 | broad | malformed Session projection | - | valid row | skip malformed, claim valid |
+/// | Q8 | exact | malformed Session projection | - | - | typed admission error, no mutation |
+/// | Q9 | exact cancel | malformed Session projection | not used by cancel | - | claim without execution credentials |
 async fn incompatible_credentials_do_not_poison_broad_claims(store: &dyn DispatchQueue, ns: &str) {
     let holder = PlaintextHolder::new(
         PlaintextBoundary::Worker,
@@ -829,6 +832,91 @@ async fn incompatible_credentials_do_not_poison_broad_claims(store: &dyn Dispatc
         )
         .await
         .expect("Q6 settle credential-free cancellation");
+
+    let invalid_runtime = dispatch(
+        ns,
+        "poison-runtime-invalid",
+        "poison-runtime-invalid-thread",
+    )
+    .with_session_runtime(SessionRuntimeEnvelope::new("{"));
+    let valid_runtime = dispatch(ns, "poison-runtime-valid", "poison-runtime-valid-thread");
+    store
+        .enqueue_with(
+            invalid_runtime.clone(),
+            SubmitOptions {
+                priority: 100,
+                ..SubmitOptions::default()
+            },
+        )
+        .await
+        .expect("Q7 enqueue malformed Session projection");
+    store
+        .enqueue(valid_runtime.clone())
+        .await
+        .expect("Q7 enqueue later valid row");
+    let claimed = store
+        .claim(
+            "runtime-projection-broad-worker",
+            LEASE_MS,
+            50_007,
+            &Default::default(),
+        )
+        .await
+        .expect("Q7 broad claim")
+        .expect("Q7 later valid row is claimable");
+    assert_eq!(claimed.request.run_id(), valid_runtime.run_id(), "Q7");
+    store
+        .settle(
+            valid_runtime.run_id(),
+            claimed.lease.epoch,
+            DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .expect("Q7 settle valid row");
+    let exact_error = store
+        .claim_run(
+            invalid_runtime.run_id(),
+            "runtime-projection-exact-worker",
+            LEASE_MS,
+            50_008,
+            &Default::default(),
+        )
+        .await
+        .expect_err("Q8 exact claim rejects malformed Session projection");
+    assert!(
+        exact_error
+            .to_string()
+            .contains("Session runtime credential projection is invalid"),
+        "Q8: {exact_error}"
+    );
+    store
+        .cancel(invalid_runtime.run_id())
+        .await
+        .expect("Q9 persist cancel for malformed execution projection");
+    let cancellation = store
+        .claim_run(
+            invalid_runtime.run_id(),
+            "runtime-projection-cancel-worker",
+            LEASE_MS,
+            50_009,
+            &Default::default(),
+        )
+        .await
+        .expect("Q9 cancellation uses its operation-specific admission")
+        .expect("Q9 canceled row is claimable");
+    assert!(cancellation.cancellation_requested, "Q9");
+    assert!(cancellation.credential_bindings.is_empty(), "Q9");
+    assert_eq!(cancellation.lease.epoch, 1, "Q8 did not mutate the row");
+    store
+        .settle(
+            invalid_runtime.run_id(),
+            cancellation.lease.epoch,
+            DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .expect("Q9 settle malformed-projection cancellation");
 }
 
 /// Claim-credential cause-effect graph:
