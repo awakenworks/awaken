@@ -1,3 +1,4 @@
+import { BrandMark } from "@awaken/ui/brand/react";
 import { Button as SharedButton, MenuPopover, SuiteSwitcher } from "@awaken/ui";
 
 import { useApp } from "../../lib/app-state";
@@ -5,15 +6,6 @@ import { suiteCloudUrl, suiteHubUrl, suiteProductEntryUrl, useSuiteNavigation } 
 
 export function openPalette() {
   window.dispatchEvent(new CustomEvent("awaken:open-palette"));
-}
-
-function AwakenMark() {
-  return (
-    <svg className="awaken-mark" aria-hidden="true" viewBox="0 0 32 32" fill="none">
-      <path data-silhouette="A" d="M14.2 6h3.6l8.6 20h-3L16 8.4 8.6 26h-3Z" fill="var(--mark-primary)" />
-      <circle data-role="decision" cx="16" cy="20.2" r="2.5" fill="var(--mark-decision)" />
-    </svg>
-  );
 }
 
 function SearchIcon() {
@@ -43,11 +35,11 @@ export default function TopChrome() {
           ]}
           placement="bottom-start"
           products={[
-            { id: "awaken", label: "Awaken Agents", description: app.workspaceName, icon: <AwakenMark />, isCurrent: true },
-            { id: "flow", label: "Awaken Workforce", description: app.t("Plan work and coordinate outcomes", "规划工作并协同成果"), href: suiteProductEntryUrl(hubUrl, "flow"), icon: <svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 4h6v6H5zM13 4h6v6h-6zM5 12h6v8H5zM13 12h6v8h-6z" /></svg> },
+            { id: "awaken", label: "Awaken Agents", description: app.workspaceName, icon: <BrandMark mark="agents" />, isCurrent: true },
+            { id: "flow", label: "Awaken Workforce", description: app.t("Plan work and coordinate outcomes", "规划工作并协同成果"), href: suiteProductEntryUrl(hubUrl, "flow"), icon: <BrandMark mark="workforce" /> },
           ]}
           trigger={<button className="brand-anchor brand-anchor--switcher" type="button">
-            <AwakenMark />
+            <BrandMark mark="agents" />
             <span className="brand-copy">
               <strong>Awaken</strong>
               <small>Agents</small>
@@ -57,7 +49,7 @@ export default function TopChrome() {
         />
       ) : (
         <div className="brand-anchor" aria-label="Awaken Agents">
-          <AwakenMark />
+          <BrandMark mark="agents" />
           <span className="brand-copy">
             <strong>Awaken</strong>
             <small>Agents</small>

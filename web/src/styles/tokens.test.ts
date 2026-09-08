@@ -1,3 +1,5 @@
+import { renderAdaptiveFaviconSvg } from "@awaken/ui/brand";
+import { brandFaviconPlugin } from "@awaken/ui/brand/vite";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
@@ -8,7 +10,7 @@ const sharedCore = readFileSync(new URL("../../node_modules/@awaken/ui/dist/styl
 const sharedContract = readFileSync(new URL("../../node_modules/@awaken/ui/dist/styles/contract.css", import.meta.url), "utf8");
 const html = readFileSync(new URL("../../index.html", import.meta.url), "utf8");
 const chrome = readFileSync(new URL("../components/app/TopChrome.tsx", import.meta.url), "utf8");
-const favicon = readFileSync(new URL("../../public/favicon.svg", import.meta.url), "utf8");
+const vite = readFileSync(new URL("../../vite.config.ts", import.meta.url), "utf8");
 
 describe("theme browser integration", () => {
   it("uses the awakenworks.com Agents watermetal and teal identity", () => {
@@ -18,16 +20,18 @@ describe("theme browser integration", () => {
   });
 
   it("uses the canonical Awaken Agents mark in chrome and favicon", () => {
-    const geometry = /M14\.2 6h3\.6l8\.6 20h-3L16 8\.4 8\.6 26h-3Z/;
-    for (const source of [chrome, favicon]) {
-      expect(source).toMatch(geometry);
-      expect(source).toMatch(/cx="16" cy="20\.2" r="2\.5"/);
-      expect(source).not.toMatch(/<span>A<\/span>|Platform|Harness/);
-    }
-    expect(base).toMatch(/\.awaken-mark\s*\{[^}]*--mark-primary:\s*#0f6f7b[^}]*--mark-decision:\s*#5c43b2/s);
-    expect(base).toMatch(/\[data-theme="dark"\] \.awaken-mark\s*\{[^}]*--mark-primary:\s*#68ced9[^}]*--mark-decision:\s*#a392ff/s);
+    // R1 every product entrance -> the shared brand renderer; R2 build/dev ->
+    // canonical inline favicon, no separately editable geometry or file request.
+    expect(chrome).toContain('from "@awaken/ui/brand/react"');
+    expect(chrome).toContain('<BrandMark mark="agents"');
+    expect(chrome).toContain('<BrandMark mark="workforce"');
+    expect(chrome).not.toMatch(/data-silhouette|function AwakenMark/);
+    expect(base).not.toContain("--mark-primary:");
+    expect(vite).toContain('brandFaviconPlugin("agents")');
+    const href = brandFaviconPlugin("agents").transformIndexHtml()[0]!.attrs.href;
+    expect(decodeURIComponent(href.split(",")[1]!)).toBe(renderAdaptiveFaviconSvg("agents"));
     expect(html).toMatch(/<title>Awaken Agents<\/title>/);
-    expect(html).toMatch(/href="\/favicon\.svg"/);
+    expect(html).not.toMatch(/rel="icon"/);
   });
 
   it("delegates suite interaction to the one shared component", () => {

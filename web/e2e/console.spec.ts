@@ -35,6 +35,10 @@ async function openAdvanced(page: Page, section: "Orchestration" | "Plugin confi
 test("shell renders the Awaken Agents brand, route scope and task-oriented rail", async ({ page }) => {
   await page.goto("/w/default/sessions");
   await expect(page.locator(".brand-anchor")).toContainText("Awaken");
+  // Brand B1: app chrome and injected favicon consume the pinned family source.
+  await expect(page.locator('.brand-anchor [data-brand-mark="agents"]')).toBeVisible();
+  await expect(page.locator('link[rel="icon"]')).toHaveCount(1);
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute("href", /^data:image\/svg\+xml,/);
   await expect(page.locator(".workspace-context")).toContainText("Local Workspace");
   await expect(page.locator(".workspace-context")).toHaveAttribute("title", "default");
   await expect(page.locator(".org-anchor,.ws-crumb")).toHaveCount(0);
@@ -108,6 +112,34 @@ test("Workspace overview exposes one live readiness path instead of a client ros
   await expect(page.locator(".readiness-panel")).toBeVisible();
   await expect(page.getByText("Workspace readiness")).toBeVisible();
   await expect(page.getByPlaceholder("ws_acme")).toHaveCount(0);
+});
+
+// Interaction decision table: R1 arrow/Home/End on stage tabs -> one selected
+// stage, linked visible panel and focus; R2 nested section tabs -> only that
+// section changes; R3 changing sections -> product draft survives; R4 returning
+// to the stage -> no save/publish mutation is implied by presentation changes.
+test("authoring tabs share keyboard navigation and preserve the current draft", async ({ page }) => {
+  await page.goto("/w/default/agents/new");
+  const stages = page.getByRole("tablist", { name: "Authoring stages" });
+  await stages.getByRole("tab", { name: "Quickstart", exact: true }).focus();
+  await page.keyboard.press("ArrowRight");
+  const build = stages.getByRole("tab", { name: "Build", exact: true });
+  await expect(build).toBeFocused();
+  await expect(build).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(`[id="${await build.getAttribute("aria-controls")}"]`)).toBeVisible();
+  const name = page.locator('input[placeholder="Coding Assistant"]');
+  await name.fill("Keyboard draft");
+  const sections = page.getByRole("tablist", { name: "Build sections" });
+  await sections.getByRole("tab", { name: "Instructions", exact: true }).focus();
+  await page.keyboard.press("End");
+  await expect(sections.getByRole("tab", { name: "Memory & resources", exact: true })).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(name).toHaveValue("Keyboard draft");
+  await build.focus();
+  await page.keyboard.press("End");
+  await expect(stages.getByRole("tab", { name: "Advanced", exact: true })).toBeFocused();
+  await page.keyboard.press("ArrowLeft");
+  await expect(name).toHaveValue("Keyboard draft");
 });
 
 test("agent editor Build/Advanced stages are data-driven from /v1/capabilities", async ({ page }) => {

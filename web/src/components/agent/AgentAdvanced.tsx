@@ -1,4 +1,4 @@
-import { InlineNotice, Button, Card } from "@awaken/ui";
+import { Tabs, TabList, Tab, TabPanel, InlineNotice, Button, Card } from "@awaken/ui";
 import type {
   AgentConfig,
   CredentialSource,
@@ -105,21 +105,19 @@ export default function AgentAdvanced({
   const { generation: _baselineGeneration, ...reviewedBaseline } = baseline;
 
   return (
-    <div className="editor-section">
-      <div className="subsection-tabs" role="tablist" aria-label={app.t("Advanced sections", "高级分区")}>
+    <Tabs className="editor-section" value={section} onValueChange={(value) => onSectionChange(value as AdvancedSection)}>
+      <TabList aria-label={app.t("Advanced sections", "高级分区")}>
         {sections.map((item) => (
-          <Button
+          <Tab
             key={item.key}
-            role="tab"
-            aria-selected={section === item.key}
-            variant={section === item.key ? "primary" : "ghost"}
-            onClick={() => onSectionChange(item.key)}
+            value={item.key}
           >
             {app.t(item.label, item.zh)}
-          </Button>
+          </Tab>
         ))}
-      </div>
+      </TabList>
 
+      <TabPanel value={section}>
       {section === "orchestration" && (
         <>
           {stateMachine && renderBehavior(stateMachine)}
@@ -203,6 +201,8 @@ export default function AgentAdvanced({
           </div>
         </Card>
       )}
-    </div>
+      </TabPanel>
+      {sections.filter((item) => item.key !== section).map((item) => <TabPanel key={item.key} value={item.key} />)}
+    </Tabs>
   );
 }
