@@ -764,6 +764,8 @@ impl CredentialMaterialResolver for PinnedCredentialMaterializer {
 // profile would itself violate the boundary under test.
 #[cfg(all(test, feature = "authority"))]
 mod tests {
+    mod native_capabilities;
+
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
