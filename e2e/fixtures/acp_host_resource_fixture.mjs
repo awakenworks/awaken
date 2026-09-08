@@ -84,6 +84,12 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
         fs.writeFileSync(path.join(memory, resultName + '.md'), combined);
         fs.writeFileSync(path.join(repository, resultName + '.txt'), combined);
         fs.mkdirSync(outputs, { recursive: true });
+        const parentNamespace = /^AWK_PARENT_PID_NAMESPACE=(.+)$/mu.exec(text)?.[1];
+        if (parentNamespace) {
+          const namespace = fs.readlinkSync('/proc/self/ns/pid');
+          assert.notEqual(namespace, parentNamespace, 'the ACP process uses the installed scope');
+          fs.writeFileSync(path.join(outputs, 'scope.txt'), `${namespace}\n${attempt}`);
+        }
         fs.writeFileSync(path.join(outputs, 'result.txt'), combined);
         execFileSync('git', ['-C', repository, 'add', '-N', resultName + '.txt']);
         fs.writeFileSync(path.join(outputs, 'repository.patch'),

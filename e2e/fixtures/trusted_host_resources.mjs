@@ -38,7 +38,7 @@ export async function installHostResourceFixture(root, temp, data, runtime) {
   return { ...process.env, PATH: [bin, process.env.PATH].join(path.delimiter) };
 }
 
-export async function verifyAgentResources({ client, request, temp, runtime, restart, nativeModel, nativeIsolation = 'namespace' }) {
+export async function verifyAgentResources({ client, request, temp, runtime, restart, nativeModel, nativeIsolation = 'namespace', requireScopedExecution = false }) {
   // Cause/effect graph:
   // C1 API binds trusted_host version 1; C2 cwd={default,repo/src};
   // C3 File+Memory+Repository; C4 two Sessions share a MemoryStore and host
@@ -57,9 +57,17 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
   // last receipt both Agents read those bases, then write identical/different
   // bytes at shared paths. Concurrent release => one version per path; conflict
   // never overwrites its winner, including after restart/reclamation retry.
+  // S1-S6 Linux scoped x Codex/Claude/Native x default/nested cwd: EACH
+  // resource receipt must export its actual PID namespace plus this attempt.
+  // Same-as-driver, absent/stale proof or an unconfigured boundary fails.
+  // The same oracle runs again after graceful and abrupt all-in-one replacement.
+  // This is real execution/resource wiring with synthetic inference/credentials;
+  // it is not distributed Worker failover or vendor authentication evidence.
   const native = runtime === 'native';
   assert.ok(['namespace', 'workdir'].includes(nativeIsolation));
   const trustedHost = !native || nativeIsolation === 'workdir';
+  assert.ok(!requireScopedExecution || (process.platform === 'linux' && trustedHost));
+  const parentNamespace = requireScopedExecution ? fs.readlinkSync('/proc/self/ns/pid') : undefined;
   assert.equal(native, typeof nativeModel === 'string', 'Native needs an explicit published model');
   const betas = ['managed-agents-2026-04-01'];
   const memoryHeaders = { 'anthropic-beta': 'agent-memory-2026-07-22' };
@@ -156,6 +164,7 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
         `AWK_RESOURCE_MISSION\nAWK_RESULT=result-${name}\nAWK_ATTEMPT=${attempt}\nRead the uploaded File using its mounted path, seed.md in Memory, and README.md in the mounted Repository. Their exact bytes are independent secrets not supplied in this user message. Obtain the Repository HEAD using git rev-parse HEAD. Construct exactly five lines: File bytes, Memory seed bytes, Repository README bytes, the HEAD hash, and this message's AWK_ATTEMPT value, joined by LF with NO trailing newline. Write this combined text into result-${name}.md inside Memory, result-${name}.txt inside Repository, and result.txt inside the injected outputs directory. Run git add -N result-${name}.txt and save git diff -- result-${name}.txt into repository.patch in the outputs directory. Do not publish to the remote. Reply RESOURCE_OK followed by the File bytes, a space, and this message's AWK_ATTEMPT value. Use the injected paths relative to your current working directory.`
         + (previous ? `\nAWK_PREVIOUS=${previous}\nBefore overwriting anything, verify that the existing Memory and Repository result files both still contain the same four resource lines followed by AWK_PREVIOUS. Stop with an error if either prior edit was lost during Worker replacement.` : '')
         + (native ? `\nAWK_TOOL_CWD=${trustedHost ? '.' : '/workspace'}${name === 'nested' ? '/repo/src' : ''}` : '')
+        + (requireScopedExecution ? `\nAWK_PARENT_PID_NAMESPACE=${parentNamespace}\nVerify your actual /proc/self/ns/pid differs from AWK_PARENT_PID_NAMESPACE. Export that actual namespace and AWK_ATTEMPT joined by LF with no final newline as scope.txt in the outputs directory.` : '')
         + (contention ? `\nAWK_CONTEND=${contention}\nBefore editing shared paths, verify shared-a-identical.md and shared-z-conflict.md in Memory both equal seed.md exactly. Write seed.md bytes followed by LF and AWK_CONTEND (no final newline) to shared-a-identical.md. Write the five-line combined result text to shared-z-conflict.md. These are intentional same-base concurrent edits; do not retry by reading a newer durable base.` : ''),
       }] }],
     });
@@ -178,9 +187,21 @@ export async function verifyAgentResources({ client, request, temp, runtime, res
     assert.equal(await (await client.beta.files.download(artifact.id, { betas })).text(), expected,
       'R1 downloaded artifact has exact bytes');
     let patch;
+    let scopeProof;
     for await (const file of client.beta.files.list({ scope_id: session.id, betas })) {
       if (file.filename?.endsWith('repository.patch')
         && (await (await client.beta.files.download(file.id, { betas })).text()).includes(attempt)) patch = file;
+      if (requireScopedExecution && file.filename?.endsWith('scope.txt')) {
+        const proof = await (await client.beta.files.download(file.id, { betas })).text();
+        if (proof.endsWith(`\n${attempt}`)) scopeProof = proof;
+      }
+    }
+    if (requireScopedExecution) {
+      assert.ok(scopeProof, 'S1 current resource receipt exports actual execution evidence');
+      const [namespace, receipt] = scopeProof.split('\n');
+      assert.match(namespace, /^pid:\[\d+\]$/u);
+      assert.notEqual(namespace, parentNamespace, 'S2 resource I/O ran inside the PID boundary');
+      assert.equal(receipt, attempt, 'S3 a prior namespace artifact cannot satisfy this receipt');
     }
     assert.ok(patch, 'R1 Repository changes exported through the same Artifact authority');
     const diff = await (await client.beta.files.download(patch.id, { betas })).text();

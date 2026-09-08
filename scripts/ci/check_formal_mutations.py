@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 from formal_model_mutation_runner import check_tlc_model_mutations
 from formal_memory_mutations import check_memory_invalidation_model_mutants, check_memory_participant_model_mutants
+from formal_execution_replacement_mutations import check_execution_replacement_model_mutants
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1162,6 +1163,7 @@ def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
                               dependencies=("SessionRealizationAuthority",))
     print("Worker execution authority: 7/7 mutants killed; admission/renewal/regression reachable")
     check_session_execution_binding_model_mutants(tlc_jar)
+    check_execution_replacement_model_mutants(tlc_jar)
 
 
 def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:

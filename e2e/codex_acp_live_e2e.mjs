@@ -48,6 +48,10 @@ const profile = process.env.CODEX_ACP_PROFILE;
 const runtime = process.env.AWAKEN_ACP_RUNTIME ?? 'codex';
 const nativeHost = profile === 'native-host-fixture';
 const native = profile === 'native-fixture' || nativeHost;
+// Linux deterministic TrustedHost rows must exercise the installed boundary,
+// not silently qualify the old unsupervised deployment. Other OSes retain
+// their existing native resource contract; live-login opt-in is unchanged.
+const scopedHost = process.platform === 'linux' && (profile === 'host-fixture' || nativeHost);
 assert.ok(native ? runtime === 'native' : ['codex', 'claude'].includes(runtime), 'select the exact runtime for this profile');
 if (!['host-fixture', 'native-fixture', 'native-host-fixture'].includes(profile) && process.env.CODEX_ACP_LIVE !== '1') {
   throw new Error('set CODEX_ACP_LIVE=1 to confirm this test may invoke the real Codex ACP adapter');
@@ -130,7 +134,11 @@ async function startHostLoginProfile() {
   const binary = snapshotExecutable(awakenBin(), path.join(temp, 'product',
     process.platform === 'win32' ? 'awaken.exe' : 'awaken'));
   snapshotExecutable(cargoExecutable({
-    cwd: ROOT, packageName: 'awaken-sandbox', targetName: 'awaken-sandbox', features: ['hand'],
+    cwd: ROOT, packageName: 'awaken-sandbox', targetName: 'awaken-sandbox',
+    // Scoped Repository I/O runs in this companion, not the Control binary.
+    // Give only this fixture build the SAME local-Git test aperture; production
+    // companion builds continue to reject anonymous non-HTTPS transports.
+    features: ['hand', ...(scopedHost ? ['awaken-sandbox-local/test-support'] : [])],
   }), path.join(path.dirname(binary), process.platform === 'win32' ? 'awaken-sandbox.exe' : 'awaken-sandbox'));
   const environment = profile === 'host-fixture'
     ? await installHostResourceFixture(ROOT, temp, path.join(temp, 'data'), runtime)
@@ -159,6 +167,7 @@ async function startHostLoginProfile() {
     // Host-login is the trusted local-process gate. Container isolation has its
     // own profile below, and native sandbox availability is host-specific.
     `sandbox_tier = "${native && !nativeHost ? 'namespace' : 'local'}"`,
+    `sandbox_trusted_host_scoped_execution = ${scopedHost}`,
     'log_filter = "warn"',
     `acp_clis = ${JSON.stringify(native ? [] : [runtime])}`,
     // Select the runtime under test, without configuring a default backend or
@@ -326,6 +335,7 @@ try {
     await client.beta.sessions.delete(session.id, { betas: BETAS });
     await verifyAgentResources({
       client, runtime, temp: deployment.temp, restart: deployment.restart,
+      requireScopedExecution: scopedHost,
       ...(native ? { nativeModel: 'fake-haiku', nativeIsolation: nativeHost ? 'workdir' : 'namespace' } : {}),
       request: (method, route, body) =>
         request(deployment.baseURL, deployment.apiKey, method, route, body),
