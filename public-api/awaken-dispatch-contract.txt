@@ -57,6 +57,9 @@ pub awaken_dispatch_contract::dispatch::AttemptAdmission::AlreadyApplied
 pub awaken_dispatch_contract::dispatch::AttemptAdmission::Applied
 pub awaken_dispatch_contract::dispatch::AttemptAdmission::Blocked
 pub awaken_dispatch_contract::dispatch::AttemptAdmission::Fenced
+pub awaken_dispatch_contract::dispatch::AttemptAdmission::Replaced
+impl awaken_dispatch_contract::dispatch::AttemptAdmission
+pub const fn awaken_dispatch_contract::dispatch::AttemptAdmission::permits_pre_start_no_effect_ack(self) -> bool
 pub enum awaken_dispatch_contract::dispatch::CasOutcome
 pub awaken_dispatch_contract::dispatch::CasOutcome::Applied
 pub awaken_dispatch_contract::dispatch::CasOutcome::NotFound
@@ -388,6 +391,9 @@ pub awaken_dispatch_contract::AttemptAdmission::AlreadyApplied
 pub awaken_dispatch_contract::AttemptAdmission::Applied
 pub awaken_dispatch_contract::AttemptAdmission::Blocked
 pub awaken_dispatch_contract::AttemptAdmission::Fenced
+pub awaken_dispatch_contract::AttemptAdmission::Replaced
+impl awaken_dispatch_contract::dispatch::AttemptAdmission
+pub const fn awaken_dispatch_contract::dispatch::AttemptAdmission::permits_pre_start_no_effect_ack(self) -> bool
 pub enum awaken_dispatch_contract::CancelTransition
 pub awaken_dispatch_contract::CancelTransition::Applied
 pub awaken_dispatch_contract::CancelTransition::Applied::revoked_lease: bool
