@@ -435,6 +435,8 @@ type checking are valuable executable evidence, but are not formal proofs.
   Both projections must retain the first admitted opening; choosing the latest
   Running after terminal or borrowing the next interval's Running for a
   terminal-only predecessor is rejected by the Cowork lifecycle mutants.
+  A successful cold read must return the opening; an empty result is distinct
+  from no read yet and is rejected by a separate omission mutant.
   The existing Rust recovery test exercises 24 source/terminal combinations,
   three observation cuts, warm/cold equality and bidirectional pagination.
   This is abstract model checking, not Rust refinement: Run/Thread selection,
