@@ -629,6 +629,21 @@ impl DispatchQueue for AnyDispatchStore {
     async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
         delegate!(self, list_dispatches())
     }
+
+    async fn scan_dispatch_ids(
+        &self,
+        after: Option<&RunId>,
+        limit: usize,
+    ) -> Result<Vec<RunId>, DispatchError> {
+        delegate!(self, scan_dispatch_ids(after, limit))
+    }
+
+    async fn dispatch_summary(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<DispatchSummary>, DispatchError> {
+        delegate!(self, dispatch_summary(run_id))
+    }
 }
 
 #[async_trait]

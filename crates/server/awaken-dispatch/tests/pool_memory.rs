@@ -435,6 +435,154 @@ async fn service_terminal_cadence_remains_independent_and_optional() {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn durable_delivery_returns_when_notification_never_returns() {
+    // C1 Service/Pool writes pending input durably; C2 publisher never returns.
+    // R1 C1+C2 => acknowledge durable write within the notification budget;
+    // one exact input remains, no resend or rollback. The helper's unit matrix
+    // covers success/error/cancellation; this crosses both public entry points.
+    struct PendingWake;
+    #[async_trait]
+    impl WakeSignal for PendingWake {
+        async fn publish(&self) -> Result<(), DispatchError> {
+            std::future::pending().await
+        }
+        async fn wait(&self) {
+            std::future::pending().await
+        }
+    }
+    for pooled in [false, true] {
+        let store = Arc::new(MemoryDispatchStore::new());
+        let clock = Arc::new(ManualClock::new(0));
+        let input = harness::pending(
+            "bounded-delivery",
+            "unstarted",
+            harness::TICKET,
+            ResumeResult::allow(),
+        );
+        let wake = Arc::new(PendingWake);
+        let config = DispatchServiceConfig {
+            poll_interval: Duration::from_secs(60),
+            terminal_reconciliation_interval: None,
+            ..Default::default()
+        };
+        tokio::time::timeout(Duration::from_millis(101), async {
+            if pooled {
+                let pool = DispatchPool::spawn_with_wake(
+                    store.clone(),
+                    clock,
+                    "pool",
+                    DEFAULT_LEASE_MS,
+                    config,
+                    Arc::new(MapResolver {
+                        workers: HashMap::new(),
+                    }),
+                    1,
+                    wake,
+                );
+                pool.deliver(input.clone()).await.unwrap();
+                pool.shutdown().await;
+            } else {
+                let service = awaken_dispatch::DispatchService::spawn_with_wake(
+                    worker_over(
+                        text_runtime(),
+                        store.clone(),
+                        Arc::new(MemoryCommitCoordinator::new()),
+                    ),
+                    clock,
+                    config,
+                    wake,
+                );
+                service.deliver(input.clone()).await.unwrap();
+                service.shutdown().await;
+            }
+        })
+        .await
+        .expect("R1 admission is not conditional on notification");
+        assert_eq!(store.list(&input.thread_id).await.unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn service_shutdown_joins_current_attempt_but_does_not_drain_the_backlog() {
+    // C1 first attempt blocked inside a real tool; C2 backlog remains runnable;
+    // C3 shutdown arrives. R1 C1+C3 => join waits (no false stop evidence).
+    // R2 C1 completes+C2+C3 => exit before another tick, retain backlog.
+    // This fails the old run_until_idle loop even with a finite backlog.
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let (runtime, _ran, entered) = blocking_tool_runtime_with_entry_signal(release.clone());
+    let store = Arc::new(MemoryDispatchStore::new());
+    for index in 0..70 {
+        store
+            .enqueue(RunDispatch::new(activation(&format!("backlog-{index:03}"))))
+            .await
+            .unwrap();
+    }
+    let service = awaken_dispatch::DispatchService::spawn(
+        worker_over(
+            runtime,
+            store.clone(),
+            Arc::new(MemoryCommitCoordinator::new()),
+        ),
+        Arc::new(SystemClock),
+        DispatchServiceConfig::default(),
+    );
+    tokio::time::timeout(Duration::from_secs(10), entered.notified())
+        .await
+        .unwrap();
+    let stopped = tokio::spawn(service.shutdown());
+    tokio::task::yield_now().await;
+    assert!(!stopped.is_finished(), "R1 actual attempt still executing");
+    release.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(10), stopped)
+        .await
+        .expect("R2 backlog is not a shutdown dependency")
+        .unwrap();
+    assert_eq!(
+        store.dispatch_count(),
+        69,
+        "R2 no successor attempt claimed"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn service_full_batch_continues_without_waiting_for_poll_interval() {
+    // C1 more ready work than the internal 64-tick batch; C2 60s fallback;
+    // C3 no cancellation. R1 C1+C2+C3 => yield then continue draining, not a
+    // 60s wait per batch. The paired shutdown test covers cancellation instead.
+    let store = Arc::new(MemoryDispatchStore::new());
+    for index in 0..70 {
+        store
+            .enqueue(RunDispatch::new(activation(&format!("batch-{index:03}"))))
+            .await
+            .unwrap();
+    }
+    let wake = Arc::new(ObservedWake::default());
+    let service = awaken_dispatch::DispatchService::spawn_with_wake(
+        worker_over(
+            text_runtime(),
+            store.clone(),
+            Arc::new(MemoryCommitCoordinator::new()),
+        ),
+        Arc::new(ManualClock::new(0)),
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(60),
+            terminal_reconciliation_interval: None,
+            ..Default::default()
+        },
+        wake.clone(),
+    );
+    tokio::time::timeout(Duration::from_secs(1), wake.waiting.notified())
+        .await
+        .expect("R1 first idle wait is after all batches");
+    assert_eq!(
+        store.dispatch_count(),
+        0,
+        "R1 no batch-boundary queue delay"
+    );
+    service.shutdown().await;
+}
+
 #[async_trait]
 impl WorkerResolver<MemoryDispatchStore> for MapResolver {
     async fn worker_for(

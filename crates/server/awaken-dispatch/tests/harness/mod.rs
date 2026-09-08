@@ -1073,6 +1073,22 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
     ) -> Result<Vec<awaken_dispatch::DispatchSummary>, awaken_dispatch::DispatchError> {
         self.inner.list_dispatches().await
     }
+
+    async fn scan_dispatch_ids(
+        &self,
+        after: Option<&RunId>,
+        limit: usize,
+    ) -> Result<Vec<RunId>, awaken_dispatch::DispatchError> {
+        self.inner.scan_dispatch_ids(after, limit).await
+    }
+
+    async fn dispatch_summary(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<awaken_dispatch::DispatchSummary>, awaken_dispatch::DispatchError>
+    {
+        self.inner.dispatch_summary(run_id).await
+    }
 }
 
 #[async_trait::async_trait]

@@ -361,6 +361,7 @@ pub struct SharedHost {
     /// The run-ingress-owned maintenance loop used by a coordinator-only Host.
     /// Local pools already own the same canonical maintenance mechanism.
     pub(crate) dispatch_reconciler: std::sync::OnceLock<awaken_dispatch::DispatchReconciler>,
+    pub(crate) terminal_scan: awaken_dispatch::TerminalReconciliationScan,
     /// Owns temporary run-id registrations for event-driven durable completion,
     /// foreground stream relay, and publication into the existing Thread hub.
     /// Injected into the pool as its `CompletionSink` and into each local Session

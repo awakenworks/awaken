@@ -1576,14 +1576,14 @@ async fn committed_resume_is_not_reapplied_after_a_crash(/* M1 */) {
 /// |------|----------|---------------|-----------------|
 /// | R1 | Awaiting, no input | absent/nonterminal | keep row; no completion |
 /// | R2 | Awaiting, no input | Ended | fenced Done; emit tombstone; never execute |
-/// | R3 | R1 precedes R2 and limit=1 | mixed | skip R1 and still repair one R2 |
+/// | R3 | R1 precedes R2 and limit=1 | mixed | inspect R1; next page repairs R2 |
 /// | R4 | expired Running recovery claim | Ended | reclaim; fenced Done; never execute |
 ///
 /// Constraints: committed Run truth is the only terminal cause; queue order is
-/// not outcome evidence; the limit bounds repaired terminals, not inspected rows;
+/// not outcome evidence; the limit bounds inspected IDs, not repaired terminals;
 /// a reconciliation-process crash cannot strand its own expired claim.
-/// Decision rule: execute R1-R4 together so a nonterminal prefix cannot consume
-/// the one-repair limit and both Awaiting and expired-Running terminals repair.
+/// Decision rule: execute R1-R4 together so the cursor advances beyond a
+/// nonterminal prefix without exceeding the per-cycle read budget.
 #[tokio::test]
 async fn reconciliation_repairs_committed_terminal_awaiting_and_expired_rows() {
     let (runtime, ran) = tool_runtime();
@@ -1591,7 +1591,7 @@ async fn reconciliation_repairs_committed_terminal_awaiting_and_expired_rows() {
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let ingress = DispatchTestHarness::new(runtime.clone(), store.clone(), commit.clone());
 
-    // R1 is deliberately first so it cannot consume the one-repair budget.
+    // R1 is deliberately first so it consumes exactly one inspection budget.
     let mut control = activation("run-control");
     control.thread_id = ThreadId("thread-control".to_string());
     store
@@ -1644,6 +1644,13 @@ async fn reconciliation_repairs_committed_terminal_awaiting_and_expired_rows() {
         .expect("claim terminal before modeled crash")
         .expect("terminal awaiting row is claimable");
 
+    assert!(
+        ingress
+            .reconcile_committed_terminals(harness::clock(2_000), 1)
+            .await
+            .expect("R3 first inspection consumes the page budget")
+            .is_empty()
+    );
     let reconciled = ingress
         .reconcile_committed_terminals(harness::clock(2_000), 1)
         .await

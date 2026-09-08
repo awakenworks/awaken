@@ -91,15 +91,21 @@ async fn listener_reconnects_after_its_connection_is_dropped() {
         );
     }
 
-    // Terminate every backend currently awaiting on a LISTEN — including this waiter's
-    // listener connection — forcing its `recv` to error and the loop to reconnect.
-    sqlx::query(
+    // C1 this fixture's listener is connected; C2 its backend is terminated.
+    // R1 reconnect restores its hints. Scope the fault to our exact LISTEN query:
+    // unrelated listeners (including concurrent lifecycle tests) must survive.
+    let terminated = sqlx::query_scalar::<_, bool>(
         "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
-         WHERE query ILIKE 'LISTEN%' AND pid <> pg_backend_pid()",
+         WHERE query = $1 AND datname = current_database() AND pid <> pg_backend_pid()",
     )
-    .execute(&pool)
+    .bind(format!("LISTEN \"{channel}\""))
+    .fetch_all(&pool)
     .await
     .expect("terminate the listener backends");
+    assert!(
+        terminated.iter().any(|terminated| *terminated),
+        "fault must reach this fixture's listener"
+    );
 
     // Give the loop time to notice the drop, back off (500ms), and re-LISTEN.
     tokio::time::sleep(Duration::from_millis(1_500)).await;
@@ -117,4 +123,77 @@ async fn listener_reconnects_after_its_connection_is_dropped() {
         woke.is_ok(),
         "the listener reconnected and delivered a wake after its connection dropped"
     );
+}
+
+#[tokio::test]
+async fn listener_ownership_releases_connection_on_shutdown_and_last_drop() {
+    // C1 one-connection pool is pinned by LISTEN; C2 shared owner released;
+    // C3 final owner shutdown/drop. R1 C1+C2 => listener remains alive;
+    // R2 C1+C3 => connection becomes available without closing the shared pool.
+    // R3 shutdown during pool acquisition cancels that wait and joins promptly.
+    let Some(url) = pg_url() else {
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    let observer = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    for explicit in [false, true] {
+        let wake = std::sync::Arc::new(PgNotifyWake::new(pool.clone(), "awaken_wake_lifecycle"));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                // Pool num_idle=0 also occurs while a prior connection is being
+                // returned. Observe the actual LISTEN, not that ambiguous count.
+                let listening: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE query = $1 AND state = 'idle' AND datname = current_database()")
+                    .bind("LISTEN \"awaken_wake_lifecycle\"")
+                    .fetch_one(&observer).await.unwrap();
+                if listening > 0 { break; }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let peer = wake.clone();
+        drop(wake);
+        assert!(
+            std::sync::Arc::try_unwrap(peer.clone()).is_err(),
+            "shared owner cannot consume shutdown"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), pool.acquire())
+                .await
+                .is_err(),
+            "R1"
+        );
+        let wake = match std::sync::Arc::try_unwrap(peer) {
+            Ok(wake) => wake,
+            Err(_) => panic!("last owner"),
+        };
+        if explicit {
+            wake.shutdown().await;
+        } else {
+            drop(wake);
+        }
+        drop(
+            tokio::time::timeout(Duration::from_secs(5), pool.acquire())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    let held = pool.acquire().await.unwrap();
+    let wake = PgNotifyWake::new(pool.clone(), "awaken_wake_acquisition");
+    tokio::task::yield_now().await;
+    tokio::time::timeout(Duration::from_secs(1), wake.shutdown())
+        .await
+        .expect("R3");
+    drop(held);
+    pool.close().await;
+    observer.close().await;
 }

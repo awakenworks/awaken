@@ -1640,65 +1640,55 @@ impl DispatchQueue for SqliteDispatchStore {
     }
 
     async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
+        self.read_dispatch_summaries(None).await
+    }
+
+    async fn scan_dispatch_ids(
+        &self,
+        after: Option<&RunId>,
+        limit: usize,
+    ) -> Result<Vec<RunId>, DispatchError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).map_err(|_| {
+            DispatchError::Rejected("dispatch scan limit exceeds database range".into())
+        })?;
+        let after = after.map(|id| id.0.clone());
         self.with_conn(move |conn, p| {
-            let mut stmt = conn
+            let clause = if after.is_some() {
+                "WHERE run_id > ?2"
+            } else {
+                ""
+            };
+            let mut statement = conn
                 .prepare(&format!(
-                    "SELECT run_id, thread_id, request, status, attempt_count, cancel_requested, sandbox, lease_until, active_attempt_epoch FROM {p}_dispatch \
-                     ORDER BY created_at"
+                    "SELECT run_id FROM {p}_dispatch {clause} ORDER BY run_id LIMIT ?1"
                 ))
                 .map_err(store_error)?;
-            let rows = stmt
-                .query_map([], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, String>(3)?,
-                        r.get::<_, i64>(4)?,
-                        r.get::<_, i64>(5)? != 0,
-                        r.get::<_, Option<String>>(6)?.is_some(),
-                        r.get::<_, Option<i64>>(7)?,
-                        r.get::<_, Option<i64>>(8)?.is_some(),
-                    ))
-                })
-                .map_err(store_error)?;
-            let mut out = Vec::new();
-            for row in rows {
-                let (
-                    run_id,
-                    thread_id,
-                    request,
-                    status,
-                    attempt_count,
-                    cancellation_requested,
-                    sandbox_bound,
-                    lease_until,
-                    physical_attempt_active,
-                ) = row.map_err(store_error)?;
-                let request = serde_json::from_str::<RunDispatch>(&request).map_err(json_err)?;
-                let state = DispatchState::from_db(&status).ok_or_else(|| {
-                    DispatchError::Rejected(format!("unknown persisted dispatch state {status}"))
-                })?;
-                out.push(DispatchSummary {
-                    run_id: RunId(run_id),
-                    thread_id: ThreadId(thread_id),
-                    session_thread_id: request.session_thread_id,
-                    session_activity_epoch: request.session_activity_epoch,
-                    reservation_deadline_ms: (state == DispatchState::Reserved)
-                        .then(|| lease_until.map(crate::clock::millis_from_db).transpose())
-                        .transpose()
-                        .map_err(|error| DispatchError::Rejected(error.to_string()))?
-                        .flatten(),
-                    state,
-                    cancellation_requested,
-                    attempt_count: durable_u64("dispatch attempt count", attempt_count)?,
-                    sandbox_bound,
-                    physical_attempt_active,
-                });
+            let mut rows = if let Some(after) = after {
+                statement.query(params![limit, after])
+            } else {
+                statement.query(params![limit])
             }
-            Ok(out)
+            .map_err(store_error)?;
+            let mut ids = Vec::new();
+            while let Some(row) = rows.next().map_err(store_error)? {
+                ids.push(RunId(row.get(0).map_err(store_error)?));
+            }
+            Ok(ids)
         })
         .await
+    }
+
+    async fn dispatch_summary(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<DispatchSummary>, DispatchError> {
+        Ok(self
+            .read_dispatch_summaries(Some(run_id.0.clone()))
+            .await?
+            .pop())
     }
 
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {

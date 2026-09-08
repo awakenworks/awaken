@@ -1786,6 +1786,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unsupported_bounded_queries_never_fall_back_to_full_scans() {
+        // Cause/effect rules: U1 backend has no bounded identity read -> error,
+        // even for budget zero; U2 backend has no exact projection -> error,
+        // never None. Constraint: default ports cannot disguise unsupported
+        // capabilities as successful absence or call the unbounded list path.
+        let q = CapturingQueue::default();
+        assert!(
+            matches!(
+                q.scan_dispatch_ids(None, 0).await,
+                Err(DispatchError::Rejected(_))
+            ),
+            "U1"
+        );
+        assert!(
+            matches!(
+                q.scan_dispatch_ids(None, 1).await,
+                Err(DispatchError::Rejected(_))
+            ),
+            "U1"
+        );
+        assert!(
+            matches!(
+                q.dispatch_summary(&RunId("unknown".into())).await,
+                Err(DispatchError::Rejected(_))
+            ),
+            "U2"
+        );
+    }
+
+    #[tokio::test]
     async fn enqueue_delegates_to_enqueue_with_at_default_options() {
         let q = CapturingQueue::default();
         q.enqueue(a_request()).await.expect("enqueue ok");

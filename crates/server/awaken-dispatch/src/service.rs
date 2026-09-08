@@ -19,7 +19,7 @@ use awaken_runtime_contract::activation::RunActivation;
 use crate::Error;
 use crate::clock::Clock;
 use crate::dispatch::{Dispatch, PendingInput};
-use crate::wake::{LocalWakeSignal, WakeSignal};
+use crate::wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
 use crate::worker::DispatchWorker;
 use awaken_dispatch_contract::RunDispatch;
 
@@ -104,27 +104,27 @@ impl<S: Dispatch + 'static> DispatchService<S> {
                     .with_traceparent(awaken_observability::current_traceparent()),
             )
             .await?;
-        let _ = self.wake.publish().await;
+        publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;
         Ok(())
     }
 
     /// Durably deliver pending input and nudge the daemon to resume the run.
     pub async fn deliver(&self, input: PendingInput) -> Result<(), Error> {
         self.worker.store().append(input).await?;
-        let _ = self.wake.publish().await;
+        publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;
         Ok(())
     }
 
     /// Stage a cross-thread delivery and nudge the daemon to relay it (M3b).
     pub async fn send(&self, input: PendingInput) -> Result<(), Error> {
         self.worker.store().stage(input).await?;
-        let _ = self.wake.publish().await;
+        publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;
         Ok(())
     }
 
     /// Wake the daemon to drain immediately.
     pub async fn notify(&self) {
-        let _ = self.wake.publish().await;
+        publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;
     }
 
     /// Stop the daemon and wait for the in-flight drain to finish.
@@ -148,27 +148,49 @@ async fn run_loop<S: Dispatch + 'static>(
         }
         // Resolve poison runs through committed terminal truth, GC aged manual
         // quarantines if a ttl is set, relay staged cross-thread deliveries,
-        // then drain everything runnable now. A store/commit error is transient:
+        // then drain a bounded batch. A store/commit error is transient:
         // the next tick retries, so keep the daemon alive.
         let now = clock.now_ms();
-        let exhausted = loop {
+        // Bound scheduling work, not an in-flight authoritative attempt. Never
+        // collect every result while arrivals can keep the queue nonempty.
+        const BATCH_LIMIT: usize = 64;
+        let mut exhausted = Ok(());
+        let mut exhaustion_batch_full = true;
+        for _ in 0..BATCH_LIMIT {
+            if shutdown.is_cancelled() {
+                return;
+            }
             match worker
                 .resolve_one_retry_exhausted(config.max_attempts, clock.clone())
                 .await
             {
                 Ok(true) => continue,
-                Ok(false) => break Ok(()),
-                Err(error) => break Err(error),
+                Ok(false) => {
+                    exhaustion_batch_full = false;
+                    break;
+                }
+                Err(error) => {
+                    exhaustion_batch_full = false;
+                    exhausted = Err(error);
+                    break;
+                }
             }
-        };
+        }
         if let Err(error) = &exhausted {
             tracing::warn!(%error, "retry-exhaustion terminal resolution failed; retrying");
         }
+        if shutdown.is_cancelled() {
+            break;
+        }
         if let Some(ttl) = config.dead_letter_ttl {
             let cutoff = now.saturating_sub(ttl.as_millis() as u64);
-            let _ = worker.store().purge_dead_letters_before(cutoff).await;
+            if let Err(error) = worker.store().purge_dead_letters_before(cutoff).await {
+                tracing::warn!(%error, "dispatch dead-letter purge failed; retrying");
+            }
         }
-        let _ = worker.store().relay().await;
+        if let Err(error) = worker.store().relay().await {
+            tracing::warn!(%error, "dispatch relay failed; retrying");
+        }
         if let Some(interval) = config.terminal_reconciliation_interval
             && tokio::time::Instant::now() >= next_terminal_reconciliation
         {
@@ -184,8 +206,30 @@ async fn run_loop<S: Dispatch + 'static>(
         // exhausted claim remains leased and is retried through the same command
         // after expiry; running an ordinary drain here could reopen another
         // exhausted row before terminal resolution converges.
-        if exhausted.is_ok() {
-            let _ = worker.run_until_idle(clock.clone()).await;
+        let mut drain_batch_full = false;
+        if exhausted.is_ok() && !exhaustion_batch_full {
+            drain_batch_full = true;
+            for _ in 0..BATCH_LIMIT {
+                if shutdown.is_cancelled() {
+                    return;
+                }
+                match worker.tick(clock.clone()).await {
+                    Ok(Some(_)) => {}
+                    Ok(None) => {
+                        drain_batch_full = false;
+                        break;
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "dispatch drain failed; retrying");
+                        drain_batch_full = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if exhaustion_batch_full || drain_batch_full {
+            tokio::task::yield_now().await;
+            continue;
         }
         tokio::select! {
             _ = shutdown.cancelled() => break,

@@ -490,6 +490,7 @@ impl SharedHost {
             gate_override: None,
             dispatch_pool: std::sync::OnceLock::new(),
             dispatch_reconciler: std::sync::OnceLock::new(),
+            terminal_scan: Default::default(),
             dispatch_store_override: None,
             authority: {
                 #[cfg(any(test, feature = "test-support"))]
