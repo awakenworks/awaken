@@ -2767,10 +2767,13 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "hmac 0.12.1",
+ "k8s-openapi",
+ "kube",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "thiserror",
  "tokio",
 ]

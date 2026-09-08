@@ -175,6 +175,45 @@ embedding through the attempt decorator.
 
 ## Static ownership
 
+### Pod-bound transport adapter (2026-09-09)
+
+The optional `awaken-worker-transport-security/kubernetes` adapter implements the
+existing request authenticator and authorizer ports. It is not a new Worker
+registry, execution lease, or recovery controller. Standalone and embedded CLI
+credential assembly now lower through `WorkerBootstrap::upstream`; transport
+parsing and the finite remote-security selector remain transport-owned.
+
+Static boundary: a canonical `k8s:namespace:pod-name:pod-uid` Worker ID is only a
+lookup coordinate. TokenReview against one configured API-server client,
+ServiceAccount, namespace and explicit audience authenticates that coordinate.
+The Registry remains authoritative for the registered incarnation/generation;
+Dispatch remains authoritative for physical occupancy and its exact binding.
+Tokens must be isolated from untrusted Sandbox workloads. The Pod token is not
+a stop receipt, and neither its claims nor the caller's headers prove process
+confinement or termination.
+
+Dynamic boundary: each request rereads the rotating projected token and obtains
+a fresh TokenReview. Missing/duplicate headers, mismatched Pod UID or Worker
+identity, revoked tokens, API errors and bounded review timeouts fail closed;
+there is no cached-success or unsigned fallback. Only POST registration can use
+an identity without the allocated incarnation. Production constructors require
+HTTPS, reject redirects, and reject a configured CA bundle containing no valid
+certificates. Local embedding remains an explicitly selected posture.
+
+This adapter is preparation, not completed Kubernetes crash recovery: production
+startup must still co-select it with the execution-binding source using the same
+trusted Kubernetes client. Independent closed-domain stop evidence, exact
+Dispatch retirement and the Native hard-crash k3d E2E are not established by its
+mock-API tests. No historical binding or remote termination can be inferred from
+successful caller authentication.
+
+The attached tests own the cause/effect matrices for TokenReview, projection
+rotation, transport posture and redirect/CA rejection. The existing Kani
+transport selector covers 252 finite combinations, admitting exactly HTTPS with
+signed or Pod-bound credential verification and exact identity. API-server
+honesty, TLS internals, startup wiring and physical stop are outside that proof;
+this stateless adapter does not add a parallel temporal recovery model.
+
 | Component | Owns | Must not own |
 |---|---|---|
 | Worker directory | Worker identity, incarnation, readiness, drain | Session desired state |

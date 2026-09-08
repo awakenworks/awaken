@@ -649,7 +649,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness observation_publication_budget_is_strict_and_overflow_safe \
     --harness worker_realization_scope_source_is_total_and_exact
   run_kani awaken-worker-transport-security \
-    --harness worker_transport_selector_admits_only_three_exact_postures \
+    --harness worker_transport_selector_admits_only_supported_exact_postures \
     --harness remote_transport_never_downgrades_or_widens_identity
 else
   echo "skipped Kani: run scripts/ci/bootstrap_kani.sh"

@@ -40,7 +40,65 @@ pub struct WorkerBootstrapInput {
     pub credential_observation_ttl_secs: Option<u64>,
 }
 
+/// Explicit transport posture: embedding may use a trusted local channel;
+/// standalone Workers must use the canonical authenticated HTTPS constructor.
+pub enum WorkerUpstreamSecurity<'a> {
+    Local,
+    Remote {
+        server_ca_certificate: Option<&'a [u8]>,
+    },
+}
+
 impl WorkerBootstrap {
+    /// One credential-loading boundary for standalone and embedded startup.
+    /// Credential parsing and secure remote admission remain transport-owned.
+    pub fn upstream(
+        &self,
+        server: impl Into<String>,
+        security: WorkerUpstreamSecurity<'_>,
+    ) -> Result<awaken_worker_transport_security::WorkerUpstream, String> {
+        use awaken_worker_transport_security::{
+            WorkerUpstream, parse_projected_signing_credentials, projected_request_authorizer,
+        };
+        let source = self
+            .request_credential_file
+            .as_ref()
+            .map(|path| {
+                std::fs::read_to_string(path).map_err(|error| {
+                    format!("read Worker request credential {}: {error}", path.display())
+                })
+            })
+            .transpose()?;
+        match security {
+            WorkerUpstreamSecurity::Local => {
+                let upstream = WorkerUpstream::new(server).with_worker_id(&self.worker_id);
+                match source {
+                    Some(source) => Ok(upstream.with_request_authorizer(
+                        projected_request_authorizer(&source, &self.worker_id)?,
+                    )),
+                    None => Ok(upstream),
+                }
+            }
+            WorkerUpstreamSecurity::Remote {
+                server_ca_certificate,
+            } => {
+                let source = source.ok_or_else(|| {
+                    "server-mode Worker requires worker_request_credential_file".to_owned()
+                })?;
+                let credentials = parse_projected_signing_credentials(&source)?;
+                match server_ca_certificate {
+                    Some(ca) => WorkerUpstream::remote_with_ca_certificate(
+                        server,
+                        &self.worker_id,
+                        credentials,
+                        ca,
+                    ),
+                    None => WorkerUpstream::remote(server, &self.worker_id, credentials),
+                }
+            }
+        }
+    }
+
     pub fn resolve(input: WorkerBootstrapInput, data_dir: &Path) -> Result<Self, String> {
         let worker = Self {
             worker_id: input.worker_id.unwrap_or_else(|| "awaken-worker".into()),
@@ -232,44 +290,24 @@ impl WorkerDaemonConfig {
         ));
         let credentials =
             awaken_credential_materializer::PinnedCredentialMaterializer::external_only(resolver);
-        let credential_file = self
-            .worker
-            .request_credential_file
-            .as_deref()
-            .ok_or_else(|| {
-                "server-mode Worker requires worker_request_credential_file".to_owned()
-            })?;
-        let credential_source = std::fs::read_to_string(credential_file).map_err(|error| {
-            format!(
-                "read Worker request credential {}: {error}",
-                credential_file.display()
-            )
-        })?;
-        let transport_credentials =
-            awaken_worker_transport_security::parse_projected_signing_credentials(
-                &credential_source,
-            )?;
-        let upstream = match self.server_ca_certificate_file.as_deref() {
-            Some(path) => {
-                let certificate = std::fs::read(path).map_err(|error| {
+        let certificate = self
+            .server_ca_certificate_file
+            .as_ref()
+            .map(|path| {
+                std::fs::read(path).map_err(|error| {
                     format!(
                         "read Worker server CA certificate {}: {error}",
                         path.display()
                     )
-                })?;
-                awaken_worker_transport_security::WorkerUpstream::remote_with_ca_certificate(
-                    &self.server,
-                    &self.worker.worker_id,
-                    transport_credentials,
-                    &certificate,
-                )?
-            }
-            None => awaken_worker_transport_security::WorkerUpstream::remote(
-                &self.server,
-                &self.worker.worker_id,
-                transport_credentials,
-            )?,
-        };
+                })
+            })
+            .transpose()?;
+        let upstream = self.worker.upstream(
+            &self.server,
+            WorkerUpstreamSecurity::Remote {
+                server_ca_certificate: certificate.as_deref(),
+            },
+        )?;
 
         let mut manifest = self
             .worker
@@ -366,6 +404,85 @@ impl WorkerDaemonConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_bootstrap_keeps_local_and_remote_security_postures_distinct() {
+        // B1 local + absent signer => explicit header transport. B2 remote +
+        // absent signer => reject. B3 exact signer => both construct; only
+        // remote requires HTTPS. B4 missing/malformed/mismatched signer => both
+        // reject without fallback. B5 invalid private CA => remote rejects.
+        // This is the shared decision boundary used by both startup callers.
+        let directory = tempfile::tempdir().unwrap();
+        let mut worker = WorkerBootstrap::resolve(
+            WorkerBootstrapInput {
+                worker_id: Some("worker-a".into()),
+                ..Default::default()
+            },
+            directory.path(),
+        )
+        .unwrap();
+        let remote = || WorkerUpstreamSecurity::Remote {
+            server_ca_certificate: None,
+        };
+        assert!(
+            worker
+                .upstream("http://coordinator", WorkerUpstreamSecurity::Local)
+                .is_ok(),
+            "B1"
+        );
+        assert!(
+            worker.upstream("https://coordinator", remote()).is_err(),
+            "B2"
+        );
+        let file = directory.path().join("credential.json");
+        worker.request_credential_file = Some(file.clone());
+        let valid = r#"{"worker_id":"worker-a","key_id":"key","credential_id":"credential","secret_base64":"c2VjcmV0"}"#;
+        for source in [None, Some("not-json"), Some("[]"), Some(valid)] {
+            if let Some(source) = source {
+                std::fs::write(&file, source).unwrap();
+            }
+            for is_remote in [false, true] {
+                let security = if is_remote {
+                    remote()
+                } else {
+                    WorkerUpstreamSecurity::Local
+                };
+                assert_eq!(
+                    worker.upstream("https://coordinator", security).is_ok(),
+                    source == Some(valid),
+                    "B3/B4 {is_remote}"
+                );
+            }
+        }
+        assert!(
+            worker
+                .upstream("http://coordinator", WorkerUpstreamSecurity::Local)
+                .is_ok(),
+            "B3 local"
+        );
+        assert!(
+            worker.upstream("http://coordinator", remote()).is_err(),
+            "B3 remote"
+        );
+        assert!(
+            worker
+                .upstream(
+                    "https://coordinator",
+                    WorkerUpstreamSecurity::Remote {
+                        server_ca_certificate: Some(b"invalid")
+                    }
+                )
+                .is_err(),
+            "B5"
+        );
+        worker.worker_id = "other".into();
+        for security in [WorkerUpstreamSecurity::Local, remote()] {
+            assert!(
+                worker.upstream("https://coordinator", security).is_err(),
+                "B4 mismatch"
+            );
+        }
+    }
 
     #[test]
     fn local_binding_configuration_requires_explicit_host_consent() {
