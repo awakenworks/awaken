@@ -45,7 +45,8 @@ use awaken_store_inmem::MemoryCommitCoordinator;
 const LOG_FILE: &str = "commits.ndjson";
 const LOG_LOCK_FILE: &str = "commits.lock";
 const LOG_VERSION_FILE: &str = "commits.version";
-const CURRENT_LOG_VERSION: &[u8] = b"1\n";
+const PREVIOUS_LOG_VERSION: &[u8] = b"1\n";
+const CURRENT_LOG_VERSION: &[u8] = b"2\n";
 static CHECKPOINT_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -83,6 +84,7 @@ fn read_next_log_entry<R: BufRead>(
     reader: &mut R,
     record: &mut Vec<u8>,
     durable_len: &mut u64,
+    normalize_historical_wire: bool,
 ) -> std::io::Result<Option<StoredCommitLogEntry>> {
     loop {
         record.clear();
@@ -98,7 +100,15 @@ fn read_next_log_entry<R: BufRead>(
         if payload.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        return serde_json::from_slice(payload).map(Some).map_err(|error| {
+        let mut value: serde_json::Value = serde_json::from_slice(payload).map_err(|error| {
+            invalid_log(format!(
+                "invalid newline-terminated commit log record at byte {offset}: {error}"
+            ))
+        })?;
+        if normalize_historical_wire {
+            normalize_historical_log_entry(&mut value)?;
+        }
+        return serde_json::from_value(value).map(Some).map_err(|error| {
             invalid_log(format!(
                 "invalid newline-terminated commit log record at byte {offset}: {error}"
             ))
@@ -106,11 +116,65 @@ fn read_next_log_entry<R: BufRead>(
     }
 }
 
-fn canonicalize_unversioned_log(source: &mut File, stage: &mut File) -> std::io::Result<()> {
+fn normalize_historical_log_entry(value: &mut serde_json::Value) -> std::io::Result<()> {
+    let is_operation = value
+        .as_object()
+        .is_some_and(|object| object.contains_key("operation_id"));
+    let commit = if is_operation {
+        value
+            .get_mut("commit")
+            .ok_or_else(|| invalid_log("historical commit operation has no commit payload"))?
+    } else {
+        value
+    };
+    let object = commit
+        .as_object_mut()
+        .ok_or_else(|| invalid_log("historical ThreadCommit is not an object"))?;
+
+    if let Some(waiting) = object.remove("waiting") {
+        if object.contains_key("resume_ticket") {
+            return Err(invalid_log(
+                "historical ThreadCommit contains both waiting and resume_ticket",
+            ));
+        }
+        object.insert("resume_ticket".to_string(), waiting);
+    }
+    if let Some(events) = object
+        .get_mut("events")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for event in events {
+            let Some(kind) = event.get_mut("kind") else {
+                continue;
+            };
+            match kind.as_str() {
+                Some("RunPhaseChanged") => {
+                    *kind = serde_json::Value::String("RunStateChanged".to_string());
+                }
+                Some("RunWaiting") => {
+                    *kind = serde_json::Value::String("RunAwaiting".to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn canonicalize_log(
+    source: &mut File,
+    stage: &mut File,
+    normalize_historical_wire: bool,
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(source);
     let mut record = Vec::new();
     let mut durable_len = 0_u64;
-    while let Some(entry) = read_next_log_entry(&mut reader, &mut record, &mut durable_len)? {
+    while let Some(entry) = read_next_log_entry(
+        &mut reader,
+        &mut record,
+        &mut durable_len,
+        normalize_historical_wire,
+    )? {
         serde_json::to_writer(&mut *stage, &entry)
             .map_err(|error| invalid_log(format!("serialize migrated commit log: {error}")))?;
         stage.write_all(b"\n")?;
@@ -120,7 +184,7 @@ fn canonicalize_unversioned_log(source: &mut File, stage: &mut File) -> std::io:
 
 fn migrate_log_if_needed(lock: &ExclusiveFileLock) -> std::io::Result<()> {
     let version_leaf = Path::new(LOG_VERSION_FILE);
-    match lock.classify_sibling_nofollow(version_leaf)? {
+    let previous_version = match lock.classify_sibling_nofollow(version_leaf)? {
         PathEntry::RegularFile => {
             let version = lock.read_sibling_regular_file_nofollow(version_leaf)?;
             if version == CURRENT_LOG_VERSION {
@@ -132,18 +196,22 @@ fn migrate_log_if_needed(lock: &ExclusiveFileLock) -> std::io::Result<()> {
                     _ => Err(invalid_log("filesystem commit log is not a regular file")),
                 };
             }
-            return Err(invalid_log(format!(
-                "unsupported filesystem commit log version `{}`",
-                String::from_utf8_lossy(&version).trim()
-            )));
+            if version == PREVIOUS_LOG_VERSION {
+                true
+            } else {
+                return Err(invalid_log(format!(
+                    "unsupported filesystem commit log version `{}`",
+                    String::from_utf8_lossy(&version).trim()
+                )));
+            }
         }
-        PathEntry::Absent => {}
+        PathEntry::Absent => false,
         _ => {
             return Err(invalid_log(
                 "filesystem commit log version is not a regular file",
             ));
         }
-    }
+    };
 
     let log_leaf = Path::new(LOG_FILE);
     let log_existed = match lock.classify_sibling_nofollow(log_leaf)? {
@@ -151,17 +219,31 @@ fn migrate_log_if_needed(lock: &ExclusiveFileLock) -> std::io::Result<()> {
         PathEntry::RegularFile => true,
         _ => return Err(invalid_log("filesystem commit log is not a regular file")),
     };
+    if previous_version && !log_existed {
+        return Err(invalid_log(
+            "filesystem commit log version exists without its commit log",
+        ));
+    }
 
     // Publication order is the crash protocol: the canonical log becomes
     // durable before its version. A crash before replacement leaves the old log;
     // a crash after replacement but before the marker leaves an idempotently
     // re-migratable current log. No state can claim the version before the data.
     if log_existed {
-        lock.transform_sibling_regular_file_atomic(log_leaf, canonicalize_unversioned_log)?;
+        lock.transform_sibling_regular_file_atomic(log_leaf, |source, stage| {
+            // A v1 marker proves phase 1 already emitted only current wire names.
+            // Unversioned logs are normalized structurally before the current-only
+            // domain decoder runs; no retired enum alias participates.
+            canonicalize_log(source, stage, !previous_version)
+        })?;
     } else {
         lock.publish_sibling_file_noreplace(log_leaf, b"")?;
     }
-    lock.publish_sibling_file_noreplace(version_leaf, CURRENT_LOG_VERSION)
+    if previous_version {
+        lock.replace_sibling_regular_file_atomic(version_leaf, CURRENT_LOG_VERSION)
+    } else {
+        lock.publish_sibling_file_noreplace(version_leaf, CURRENT_LOG_VERSION)
+    }
 }
 
 impl FsCommitCoordinator {
@@ -179,7 +261,8 @@ impl FsCommitCoordinator {
         if let Ok(file) = File::open(&path) {
             let mut reader = BufReader::new(file);
             let mut record = Vec::new();
-            while let Some(entry) = read_next_log_entry(&mut reader, &mut record, &mut durable_len)?
+            while let Some(entry) =
+                read_next_log_entry(&mut reader, &mut record, &mut durable_len, false)?
             {
                 match entry {
                     StoredCommitLogEntry {

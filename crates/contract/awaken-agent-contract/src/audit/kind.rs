@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 /// the message log, which it is not).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Kind {
-    #[serde(alias = "RunPhaseChanged")]
     RunStateChanged,
     /// A durable dispatch recovery admitted another execution attempt for this
     /// still-active Run. The dispatch aggregate remains retry authority; this
@@ -28,7 +27,6 @@ pub enum Kind {
     // A run awaits for a structured reason and may later resume. The
     // design dropped the "external tool" concept: a client-executed tool is just
     // one awaiting reason, so these names stay neutral (wait/resume).
-    #[serde(alias = "RunWaiting")]
     RunAwaiting,
     RunResumed,
     /// A protected tool call passed the permission gate; the payload records the
@@ -50,15 +48,20 @@ mod tests {
     use super::Kind;
 
     #[test]
-    fn legacy_lifecycle_kinds_decode_to_the_normalized_vocabulary() {
-        let state: Kind = serde_json::from_str("\"RunPhaseChanged\"").unwrap();
-        let awaiting: Kind = serde_json::from_str("\"RunWaiting\"").unwrap();
-        assert_eq!(state, Kind::RunStateChanged);
-        assert_eq!(awaiting, Kind::RunAwaiting);
+    fn only_current_lifecycle_kind_names_enter_the_domain() {
+        // Causes: C1 a current kind name reaches the domain decoder; C2 a
+        // retired persisted name bypasses the store migration boundary.
+        // Effects: E1 C1 round-trips exactly; E2 C2 is rejected. Decision table:
+        // R1=C1->E1; R2=C2->E2. Historical repair belongs only to each store's
+        // versioned migration, never to the public domain enum.
+        let state: Kind = serde_json::from_str("\"RunStateChanged\"").unwrap();
+        let awaiting: Kind = serde_json::from_str("\"RunAwaiting\"").unwrap();
         assert_eq!(
             serde_json::to_string(&state).unwrap(),
             "\"RunStateChanged\""
         );
         assert_eq!(serde_json::to_string(&awaiting).unwrap(), "\"RunAwaiting\"");
+        assert!(serde_json::from_str::<Kind>("\"RunPhaseChanged\"").is_err());
+        assert!(serde_json::from_str::<Kind>("\"RunWaiting\"").is_err());
     }
 }

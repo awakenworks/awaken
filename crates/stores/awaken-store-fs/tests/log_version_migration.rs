@@ -97,10 +97,10 @@ fn assert_current_log(log: &str) {
 async fn old_and_nested_wire_shapes_migrate_to_the_current_log_version() {
     // Cause/effect decision table: C1 an unversioned log contains old Audit Kind
     // values; C2 the old `waiting` field is nested in CommitOperation; C3 every
-    // record is newline-complete. R1=C1+C2+C3 -> E1 decode through the existing
-    // commit contract, E2 atomically publish only current spellings, E3 preserve
-    // record order and replayed state. A second decoder or a flat-operation
-    // compatibility path would violate E1.
+    // record is newline-complete. R1=C1+C2+C3 -> E1 structurally normalize at
+    // the one migration boundary before decoding through the current-only commit
+    // contract, E2 atomically publish only current spellings, E3 preserve record
+    // order and replayed state. A second domain decoder would violate E1.
     let dir = tempfile::tempdir().unwrap();
     let current = current_fixture(dir.path()).await;
     let historical = make_historical(dir.path(), &current);
@@ -124,7 +124,7 @@ async fn old_and_nested_wire_shapes_migrate_to_the_current_log_version() {
     );
     drop(migrated);
 
-    assert_eq!(std::fs::read(dir.path().join(VERSION)).unwrap(), b"1\n");
+    assert_eq!(std::fs::read(dir.path().join(VERSION)).unwrap(), b"2\n");
     assert_current_log(&std::fs::read_to_string(dir.path().join(LOG)).unwrap());
 }
 
@@ -170,6 +170,53 @@ async fn current_mixed_and_repeated_upgrade_are_idempotent() {
     let recovered = FsCommitCoordinator::open(mixed_dir.path()).await.unwrap();
     drop(recovered);
     assert_current_log(&std::fs::read_to_string(mixed_dir.path().join(LOG)).unwrap());
+}
+
+#[tokio::test]
+async fn phase_one_marker_upgrades_after_current_only_validation() {
+    // Causes: C1 phase 1 left a v1 marker and canonical log; C2 the phase 2
+    // decoder accepts every record without retired aliases; C3 a contradictory
+    // v1 log still contains a retired name. Effects: E1 the valid log is
+    // atomically revalidated and remains semantically identical; E2 its marker
+    // advances to v2 only after E1; E3 C3 fails without changing either file.
+    // Decision table: R1=C1+C2->E1+E2; R2=C1+C3->E3.
+    let dir = tempfile::tempdir().unwrap();
+    let current = current_fixture(dir.path()).await;
+    std::fs::write(dir.path().join(VERSION), b"1\n").unwrap();
+
+    let upgraded = FsCommitCoordinator::open(dir.path()).await.unwrap();
+    drop(upgraded);
+    assert_eq!(
+        std::fs::read(dir.path().join(VERSION)).unwrap(),
+        b"2\n",
+        "R1/E2"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(LOG)).unwrap(),
+        current,
+        "R1/E1"
+    );
+
+    let contradictory = tempfile::tempdir().unwrap();
+    let current = current_fixture(contradictory.path()).await;
+    let historical = current.replace("RunStateChanged", "RunPhaseChanged");
+    std::fs::write(contradictory.path().join(LOG), historical.as_bytes()).unwrap();
+    std::fs::write(contradictory.path().join(VERSION), b"1\n").unwrap();
+    let error = FsCommitCoordinator::open(contradictory.path())
+        .await
+        .err()
+        .expect("R2/E3");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(
+        std::fs::read(contradictory.path().join(LOG)).unwrap(),
+        historical.as_bytes(),
+        "R2/E3"
+    );
+    assert_eq!(
+        std::fs::read(contradictory.path().join(VERSION)).unwrap(),
+        b"1\n",
+        "R2/E3"
+    );
 }
 
 #[tokio::test]
@@ -252,18 +299,20 @@ async fn stale_private_stage_cannot_replace_the_authoritative_log() {
 
 #[tokio::test]
 async fn a_version_marker_can_never_substitute_for_missing_log_data() {
-    // Causes: C1 the current marker exists; C2 its authoritative log is absent.
-    // Effect: E1 open fails closed instead of constructing an empty history.
-    // Decision table: R1=C1+C2->E1. The valid publication protocol cannot create
-    // this order, but rejecting it prevents deletion/tampering from looking like
-    // a successfully migrated empty store.
-    let dir = tempfile::tempdir().unwrap();
-    let store = FsCommitCoordinator::open(dir.path()).await.unwrap();
-    drop(store);
-    std::fs::remove_file(dir.path().join(LOG)).unwrap();
-    let error = FsCommitCoordinator::open(dir.path())
-        .await
-        .err()
-        .expect("R1/E1");
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    // Causes: C1 a current marker exists; C2 a previous marker exists; C3 the
+    // authoritative log is absent. Effect: E1 either recognized marker fails
+    // closed instead of constructing an empty history. Decision table:
+    // R1=C1+C3->E1; R2=C2+C3->E1. The valid publication protocol cannot create
+    // either order, but rejecting both prevents deletion/tampering from looking
+    // like a successfully migrated empty store.
+    for (rule, version) in [("R1", b"2\n".as_slice()), ("R2", b"1\n".as_slice())] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(VERSION), version).unwrap();
+        let error = FsCommitCoordinator::open(dir.path())
+            .await
+            .err()
+            .expect("E1");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{rule}/E1");
+        assert!(!dir.path().join(LOG).exists(), "{rule}/E1");
+    }
 }
