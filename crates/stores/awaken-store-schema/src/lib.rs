@@ -154,6 +154,14 @@ pub fn commit_bundle() -> Result<MigrationBundle, MigrationError> {
          CREATE TRIGGER {prefix}_receipt_nonnegative_insert BEFORE INSERT ON {prefix}_commit_receipt WHEN NEW.operation_ordinal < 0 OR NEW.commit_sequence < 0 OR NEW.thread_version < 0 BEGIN SELECT RAISE(ABORT, 'negative commit receipt authority'); END;\
          CREATE TRIGGER {prefix}_receipt_nonnegative_update BEFORE UPDATE OF operation_ordinal, commit_sequence, thread_version ON {prefix}_commit_receipt WHEN NEW.operation_ordinal < 0 OR NEW.commit_sequence < 0 OR NEW.thread_version < 0 BEGIN SELECT RAISE(ABORT, 'negative commit receipt authority'); END",
     )?);
+    migrations.push(Migration::per_dialect(
+        10,
+        "canonicalize historical audit event kind names",
+        "UPDATE {prefix}_event SET kind = '\"RunStateChanged\"'::jsonb WHERE kind = '\"RunPhaseChanged\"'::jsonb;\
+         UPDATE {prefix}_event SET kind = '\"RunAwaiting\"'::jsonb WHERE kind = '\"RunWaiting\"'::jsonb",
+        "UPDATE {prefix}_event SET kind = '\"RunStateChanged\"' WHERE kind = '\"RunPhaseChanged\"';\
+         UPDATE {prefix}_event SET kind = '\"RunAwaiting\"' WHERE kind = '\"RunWaiting\"'",
+    )?);
     MigrationBundle::new(COMMIT_BUNDLE_ID, migrations)
 }
 
@@ -203,22 +211,22 @@ mod tests {
     }
 
     #[test]
-    fn commit_bundle_has_one_table_per_committed_field_plus_authority_constraint() {
+    fn commit_bundle_has_one_table_per_committed_field_plus_forward_migrations() {
         let bundle = commit_bundle().expect("bundle builds");
-        assert_eq!(bundle.migrations().len(), 9);
+        assert_eq!(bundle.migrations().len(), 10);
     }
 
     // The migrator requires a strictly increasing version stream; a duplicated or
     // out-of-order version (a copy-paste slip when appending a spec) must be caught
-    // here, not at first migration against a live DB. Pin the stream is dense 1..=9.
+    // here, not at first migration against a live DB. Pin the stream is dense 1..=10.
     #[test]
     fn commit_bundle_versions_are_dense_and_strictly_increasing() {
         let bundle = commit_bundle().expect("bundle builds");
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
-            "dense 1..=9, in order"
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            "dense 1..=10, in order"
         );
         assert!(
             versions.windows(2).all(|w| w[0] < w[1]),

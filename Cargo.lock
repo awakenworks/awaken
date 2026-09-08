@@ -2497,6 +2497,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-reliability-testkit",
+ "awaken-sandbox-fs",
  "awaken-store-conformance",
  "awaken-store-inmem",
  "serde",
