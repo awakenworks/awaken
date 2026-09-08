@@ -1,5 +1,62 @@
 use super::*;
-use awaken_sandbox_container::k8s::{PodProcessObserver, PodProcessTermination};
+use awaken_sandbox_container::k8s::{
+    ObservedPodProcessExit, PodProcessBinding, PodProcessObserver, PodProcessTermination,
+};
+
+async fn wait_for_binding(
+    observer: &PodProcessObserver,
+    pod: &str,
+    uid: &str,
+) -> PodProcessBinding {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if let Ok(binding) = observer.bind_pod_process(pod, uid).await {
+                break binding;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("process binding before fault")
+}
+
+async fn delete_and_observe(
+    pods: &kube::Api<k8s_openapi::api::core::v1::Pod>,
+    observer: &PodProcessObserver,
+    pod: &str,
+    expected_uid: &str,
+    binding: &PodProcessBinding,
+) -> ObservedPodProcessExit {
+    let current = pods.get(pod).await.unwrap();
+    assert_eq!(current.metadata.uid.as_deref(), Some(expected_uid));
+    pods.delete(
+        pod,
+        &kube::api::DeleteParams::default()
+            .grace_period(1)
+            .preconditions(kube::api::Preconditions {
+                uid: Some(expected_uid.into()),
+                resource_version: current.metadata.resource_version,
+            }),
+    )
+    .await
+    .unwrap();
+    // The DELETE reply is never the exit oracle. The test-owned finalizer keeps
+    // status available until the independent production observer sees all exits.
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if let PodProcessTermination::Observed(receipt) = observer
+                .observe_pod_process_termination(binding)
+                .await
+                .unwrap()
+            {
+                break receipt;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("independent exact exit observation")
+}
 
 #[tokio::test]
 async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_history() {
@@ -8,6 +65,12 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
     // SIGKILL with another container live => Unknown; KPT3 every container exits
     // => same fact; KPT4 delayed exec => rejected by the terminated domain;
     // KPT5 API deletion after exit => Unknown, not reconstructed history.
+    // KPT6 same-name replacement => old UID cannot bind, old query is Unknown;
+    // KPT7 delayed DELETE carrying only the old UID => API conflict, successor
+    // stays live; KPT8 successor exit => only its fresh binding yields evidence.
+    // KPT5/6/8 correspond to ExactCompleteObservation in the existing three-
+    // generation K8sProcessObservation model. KPT7 tests the API's UID-precondition
+    // trusted boundary, not a new Dispatch retirement or replay implementation.
     // The dedicated k3d harness owns infrastructure; no ambient cluster mutation
     // is permitted unless the existing explicit live-suite gate is enabled.
     if !require_live_cluster() {
@@ -43,16 +106,7 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
     let finalizer = "test.awaken.dev/retain-process-stop-evidence";
     k8s_common::set_test_finalizer(&pods, &pod, finalizer, true).await;
     let uid = pods.get(&pod).await.unwrap().metadata.uid.unwrap();
-    let binding = tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            if let Ok(binding) = observer.bind_pod_process(&pod, &uid).await {
-                break binding;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    })
-    .await
-    .expect("process binding before fault");
+    let binding = wait_for_binding(&observer, &pod, &uid).await;
     assert_eq!(
         observer
             .observe_pod_process_termination(&binding)
@@ -141,32 +195,7 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
         PodProcessTermination::Unknown,
         "KPT2 still-live projector vetoes whole-domain proof"
     );
-    let current = pods.get(&pod).await.unwrap();
-    pods.delete(
-        &pod,
-        &kube::api::DeleteParams::default()
-            .grace_period(1)
-            .preconditions(kube::api::Preconditions {
-                uid: current.metadata.uid,
-                resource_version: current.metadata.resource_version,
-            }),
-    )
-    .await
-    .unwrap();
-    let evidence = tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            let evidence = observer
-                .observe_pod_process_termination(&binding)
-                .await
-                .unwrap();
-            if matches!(evidence, PodProcessTermination::Observed(_)) {
-                break evidence;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    })
-    .await
-    .expect("KPT3 independent exact exit observation");
+    let receipt = delete_and_observe(&pods, &observer, &pod, &uid, &binding).await;
     let status = pods.get(&pod).await.unwrap().status.unwrap();
     let exit = status
         .container_statuses
@@ -179,9 +208,6 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
         .terminated
         .unwrap();
     assert_eq!(exit.exit_code, 137, "KPT2 must exercise SIGKILL");
-    let PodProcessTermination::Observed(receipt) = evidence else {
-        unreachable!()
-    };
     assert_eq!(
         receipt.binding(),
         &binding,
@@ -216,4 +242,75 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
         PodProcessTermination::Unknown,
         "KPT5 missing historical evidence remains unknown"
     );
+
+    // Reuse the production provider's stable-scope realization. A hand-authored
+    // replacement Pod would bypass the shape and naming contract under test.
+    let replacement = provider.create_container(&spec).await.unwrap();
+    assert_eq!(pod_of(&replacement), pod, "KPT6 exact name reuse");
+    let replacement_uid = pods.get(&pod).await.unwrap().metadata.uid.unwrap();
+    assert_ne!(replacement_uid, uid, "KPT6 different physical domain");
+    k8s_common::set_test_finalizer(&pods, &pod, finalizer, true).await;
+    let replacement_binding = wait_for_binding(&observer, &pod, &replacement_uid).await;
+    assert!(observer.bind_pod_process(&pod, &uid).await.is_err(), "KPT6");
+    assert_eq!(
+        observer
+            .observe_pod_process_termination(&binding)
+            .await
+            .unwrap(),
+        PodProcessTermination::Unknown,
+        "KPT6 no old evidence from a live successor"
+    );
+    let stale_delete = pods
+        .delete(
+            &pod,
+            &kube::api::DeleteParams::default().preconditions(kube::api::Preconditions {
+                uid: Some(uid),
+                resource_version: None,
+            }),
+        )
+        .await;
+    assert!(
+        matches!(stale_delete, Err(kube::Error::Api(error)) if error.code == 409),
+        "KPT7"
+    );
+    let survivor = pods.get(&pod).await.unwrap();
+    assert_eq!(
+        survivor.metadata.uid.as_deref(),
+        Some(replacement_uid.as_str())
+    );
+    assert!(
+        survivor.metadata.deletion_timestamp.is_none(),
+        "KPT7 no deletion intent"
+    );
+    assert!(
+        kubectl(&["-n", &namespace, "exec", &pod, "--", "true"])
+            .status
+            .success(),
+        "KPT7 successor still executes"
+    );
+    let replacement_receipt = delete_and_observe(
+        &pods,
+        &observer,
+        &pod,
+        &replacement_uid,
+        &replacement_binding,
+    )
+    .await;
+    assert_eq!(replacement_receipt.binding(), &replacement_binding, "KPT8");
+    assert_ne!(replacement_receipt.binding(), receipt.binding(), "KPT8");
+    assert_eq!(
+        receipt.binding(),
+        &binding,
+        "KPT8 old receipt keeps its subject"
+    );
+    assert_eq!(
+        observer
+            .observe_pod_process_termination(&binding)
+            .await
+            .unwrap(),
+        PodProcessTermination::Unknown,
+        "KPT8 successor exit cannot repair old missing history"
+    );
+    k8s_common::set_test_finalizer(&pods, &pod, finalizer, false).await;
+    pc::Sandbox::dispose(&replacement).await.unwrap();
 }
