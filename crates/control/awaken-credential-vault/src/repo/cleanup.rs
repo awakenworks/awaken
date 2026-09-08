@@ -8,6 +8,33 @@ use super::{
 };
 use crate::{CredentialError, CredentialSource, catalog::ManagedVaultCredential};
 
+/// Read only the candidate delta before Ready publication. Source and Managed
+/// recovery share this port decision; each still owns its publication/abort CAS.
+/// Missing candidate material selects abort, while an unavailable store retains
+/// the WAL for retry. Retained references belong to the prior durable revision.
+pub(super) async fn candidate_material_complete(
+    before: Option<&CredentialSource>,
+    after: &CredentialSource,
+    store: &dyn crate::SecretStore,
+) -> Result<bool, CredentialError> {
+    let before_refs = before
+        .into_iter()
+        .flat_map(CredentialSource::material_refs)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut complete = true;
+    for reference in after.material_refs() {
+        if before_refs.contains(reference) {
+            continue;
+        }
+        match store.get(reference).await {
+            Ok(_) => {}
+            Err(CredentialError::SecretNotFound(_)) => complete = false,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(complete)
+}
+
 // One reference-membership decision for both publication envelopes. Shared
 // refs are never reclaimed; a distinct replacement keeps its predecessor live.
 const fn reclamation_selected(
@@ -30,12 +57,12 @@ async fn reclaim_material(
     after: &CredentialSource,
     store: &dyn crate::SecretStore,
 ) -> Result<(), CredentialError> {
-    use std::collections::HashSet;
+    use std::collections::BTreeSet;
     let before = before
         .into_iter()
         .flat_map(CredentialSource::material_refs)
-        .collect::<HashSet<_>>();
-    let after = after.material_refs().collect::<HashSet<_>>();
+        .collect::<BTreeSet<_>>();
+    let after = after.material_refs().collect::<BTreeSet<_>>();
     // Check phase even when both sets are empty; empty IO is not authority to
     // skip Writing/Ready and retire a pending envelope.
     reclamation_selected(phase, distinct, false, false).ok_or_else(|| {
@@ -43,19 +70,14 @@ async fn reclaim_material(
             "credential material cleanup requires a terminal cleanup phase".into(),
         )
     })?;
-    let mut references = before
-        .union(&after)
-        .copied()
-        .filter(|reference| {
-            reclamation_selected(
-                phase,
-                distinct,
-                before.contains(reference),
-                after.contains(reference),
-            ) == Some(true)
-        })
-        .collect::<Vec<_>>();
-    references.sort_by(|left, right| left.0.cmp(&right.0));
+    let references = before.union(&after).copied().filter(|reference| {
+        reclamation_selected(
+            phase,
+            distinct,
+            before.contains(reference),
+            after.contains(reference),
+        ) == Some(true)
+    });
     for reference in references {
         store.delete(reference).await?;
         match store.get(reference).await {
@@ -316,6 +338,7 @@ pub(super) mod tests {
     #[derive(Default)]
     pub(crate) struct FaultyDeleteStore {
         pub(crate) inner: InMemorySecretStore,
+        pub(crate) delete_attempts: std::sync::Mutex<Vec<crate::SecretRef>>,
         pub(crate) fail_before_delete: AtomicBool,
         pub(crate) lose_first_response: AtomicBool,
         pub(crate) acknowledge_without_delete: AtomicBool,
@@ -345,6 +368,7 @@ pub(super) mod tests {
         }
 
         async fn delete(&self, r: &crate::SecretRef) -> Result<(), CredentialError> {
+            self.delete_attempts.lock().unwrap().push(r.clone());
             if self.fail_before_delete.load(Ordering::SeqCst) {
                 return Err(CredentialError::Storage("delete timeout".into()));
             }
@@ -392,12 +416,57 @@ pub(super) mod tests {
     ];
 
     #[tokio::test]
+    async fn candidate_readiness_uses_only_new_refs_and_retains_unknown_outcomes() {
+        // Causes: retained primary moved to aux, new material present/missing,
+        // store unavailable, no new refs. R1 only retained => true with no IO;
+        // R2 candidate present => true even if retained material is absent;
+        // R3 candidate missing => false (abort); R4 unavailable => error (retry).
+        // Existing Source/Managed recovery tables own the resulting WAL/CAS
+        // outcomes; this table isolates their shared external-read decision.
+        for new_ref in [false, true] {
+            for present in [false, true] {
+                for unavailable in [false, true] {
+                    let store = FaultyDeleteStore::default();
+                    let before = source();
+                    let mut after = before.clone();
+                    after.material_ref = None;
+                    after
+                        .auxiliary_material_refs
+                        .insert("retained".into(), before.material_ref.clone().unwrap());
+                    let candidate = SecretRef("candidate".into());
+                    if new_ref {
+                        after.material_ref = Some(candidate.clone());
+                    }
+                    if present {
+                        store
+                            .inner
+                            .put(&candidate, RedactedString::new("fixture"))
+                            .await
+                            .unwrap();
+                    }
+                    store
+                        .readback_unavailable
+                        .store(unavailable, Ordering::SeqCst);
+                    let result = candidate_material_complete(Some(&before), &after, &store).await;
+                    if new_ref && unavailable {
+                        assert!(matches!(result, Err(CredentialError::Storage(_))), "R4");
+                    } else {
+                        assert_eq!(result.unwrap(), !new_ref || present, "R1-R3");
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn material_delta_covers_phase_membership_and_distinct_predecessors() {
         // Decision table: 8 before sets x 8 after sets x 4 phases x 2 lineage
         // shapes. Include a duplicated primary/aux ref and an unrelated ref.
         // R1 Writing/Ready => zero deletes; R2 published => before-minus-after
         // except distinct predecessor; R3 abort => after-minus-before. Every
         // surviving physical ref is checked, not only the returned status.
+        // R4 selected refs are deleted once each in byte-lexical identity order;
+        // primary/aux aliases never create a second physical delete.
         fn with_refs(mask: u8) -> CredentialSource {
             let mut value = source();
             value.material_ref = (mask & 1 != 0).then(|| SecretRef("ref-0".into()));
@@ -414,7 +483,7 @@ pub(super) mod tests {
             for after in 0u8..8 {
                 for phase in PHASES {
                     for distinct in [false, true] {
-                        let store = InMemorySecretStore::new();
+                        let store = FaultyDeleteStore::default();
                         for index in 0..4 {
                             store
                                 .put(
@@ -445,6 +514,11 @@ pub(super) mod tests {
                             CredentialMaterialMutationPhase::ReclaimingAbort => after & !before,
                             _ => 0,
                         };
+                        let expected_order = (0..4)
+                            .filter(|index| removed & (1 << index) != 0)
+                            .map(|index| SecretRef(format!("ref-{index}")))
+                            .collect::<Vec<_>>();
+                        assert_eq!(*store.delete_attempts.lock().unwrap(), expected_order, "R4");
                         for index in 0..4 {
                             assert_eq!(
                                 store.get(&SecretRef(format!("ref-{index}"))).await.is_ok(),

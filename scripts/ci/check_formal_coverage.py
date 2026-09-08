@@ -78,15 +78,27 @@ for line in formal_gate.replace("\\\n", " ").splitlines():
     if len(tokens) < 4 or re.fullmatch(r"[a-z0-9_-]+", tokens[1]) is None:
         fail("strict CI Kani selection must name a literal package and exact harnesses")
     index = 2
+    unstable_options = False
     while index < len(tokens):
         flag = tokens[index]
+        if flag == "--cbmc-args":
+            # Only a literal positive memcmp loop bound may cross this escape
+            # hatch. No check-disabling, arbitrary CBMC options or shell values.
+            tail = tokens[index:]
+            if (not unstable_options or len(tail) != 3
+                    or tail[1] != "--unwindset"
+                    or re.fullmatch(r"memcmp\.0:[1-9][0-9]*", tail[2]) is None):
+                fail("strict CI Kani selection permits only a checked literal memcmp loop bound")
+            break
         if flag == "--no-default-features":
             index += 1
             continue
         if index + 1 >= len(tokens):
             fail("strict CI Kani selection must name a literal package and exact harnesses")
         value = tokens[index + 1]
-        if flag == "--harness" and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+        if flag == "-Z" and value == "unstable-options":
+            unstable_options = True
+        elif flag == "--harness" and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
             gate_harnesses.setdefault(value, []).append(tokens[1])
         elif flag not in {"--features", "--solver"} or re.fullmatch(r"[A-Za-z0-9_,.-]+", value) is None:
             fail("strict CI Kani selection must name a literal package and exact harnesses")

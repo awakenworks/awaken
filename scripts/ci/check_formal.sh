@@ -351,6 +351,11 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness credential_inventory_never_orphans_committed_pending_or_foreign_material \
     --harness managed_rollout_projection_preserves_committed_identity \
     --harness managed_rollout_ack_requires_converged_progress
+  # Two-slot material collections do not need the string comparison's loop
+  # budget. Keep every unwinding assertion; only builtin memcmp gets 16.
+  run_kani awaken-credential-vault -Z unstable-options \
+    --harness credential_material_input_facts_without_predecessor \
+    --cbmc-args --unwindset memcmp.0:16
   run_kani awaken-tool-relay \
     --harness hand_channel_only_exact_decoded_reply_restores_readiness \
     --harness hand_protocol_requires_supported_version_and_v2_operation_identity \

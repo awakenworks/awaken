@@ -540,22 +540,12 @@ async fn recover_managed_credential_mutation(
         }
         CredentialMaterialRecoveryAction::PublishReady => {}
     }
-    let mut material_complete = true;
-    let before = mutation
-        .before_source
-        .iter()
-        .flat_map(CredentialSource::material_refs)
-        .collect::<HashSet<_>>();
-    for reference in mutation.after_source.material_refs() {
-        if before.contains(reference) {
-            continue;
-        }
-        match store.get(reference).await {
-            Ok(_) => {}
-            Err(CredentialError::SecretNotFound(_)) => material_complete = false,
-            Err(error) => return Err(error.into()),
-        }
-    }
+    let material_complete = cleanup::candidate_material_complete(
+        mutation.before_source.as_ref(),
+        &mutation.after_source,
+        store,
+    )
+    .await?;
     if material_complete {
         match repo.commit_managed_mutation(&mutation).await {
             Ok(reclaiming) => {
@@ -1463,22 +1453,9 @@ async fn recover_credential_mutation(
         }
     };
 
-    let before_refs = mutation
-        .before
-        .iter()
-        .flat_map(CredentialSource::material_refs)
-        .collect::<HashSet<_>>();
-    let mut material_complete = true;
-    for reference in mutation.after.material_refs() {
-        if before_refs.contains(reference) {
-            continue;
-        }
-        match store.get(reference).await {
-            Ok(_) => {}
-            Err(CredentialError::SecretNotFound(_)) => material_complete = false,
-            Err(error) => return Err(error),
-        }
-    }
+    let material_complete =
+        cleanup::candidate_material_complete(mutation.before.as_ref(), &mutation.after, store)
+            .await?;
     if !material_complete {
         let abort = repo.abort_mutation(&mutation).await?;
         abort.reclaim_material(store).await?;

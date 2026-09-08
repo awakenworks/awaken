@@ -3,7 +3,7 @@
 //! separate port). Its own `credential` migration scope is what lets the whole
 //! domain be split into its own database/service (blast-radius isolation).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 pub use awaken_credential_contract::{ManagedCredentialOperation, ManagedCredentialRollout};
 
@@ -142,7 +142,7 @@ impl CredentialMutationIntent {
         let before_refs = before
             .iter()
             .flat_map(CredentialSource::material_refs)
-            .collect::<HashSet<_>>();
+            .collect::<BTreeSet<_>>();
         let writes_new_material = after
             .material_refs()
             .any(|reference| !before_refs.contains(reference));
@@ -183,22 +183,9 @@ impl CredentialMutationIntent {
     /// A higher application layer owns provider/descriptor replacement policy.
     pub fn validate_for_begin(&self) -> Result<(), CredentialError> {
         self.validate()?;
-        let before_refs = self
-            .before
-            .iter()
-            .flat_map(CredentialSource::material_refs)
-            .collect::<HashSet<_>>();
-        let writes_new_material = self
-            .after
-            .material_refs()
-            .any(|reference| !before_refs.contains(reference));
-        let suffix = format!(":attempt:{}", self.material_fence.attempt_id());
-        let new_refs_bound_to_attempt = !self.material_fence.attempt_id().is_empty()
-            && self
-                .after
-                .material_refs()
-                .filter(|reference| !before_refs.contains(reference))
-                .all(|reference| reference.0.ends_with(&suffix));
+        let (writes_new_material, new_refs_bound_to_attempt) = self
+            .material_fence
+            .material_input_facts(self.before.as_ref(), &self.after);
         self.material_fence
             .validate_fresh_for_begin(writes_new_material, new_refs_bound_to_attempt)
     }
@@ -241,8 +228,8 @@ impl CredentialMutationIntent {
             && before.version > 0
             && self.after.version == 1
             && self.after.replacement_of.as_ref() == Some(&expected_provenance);
-        let before_refs = before.material_refs().collect::<HashSet<_>>();
-        let after_refs = self.after.material_refs().collect::<HashSet<_>>();
+        let before_refs = before.material_refs().collect::<BTreeSet<_>>();
+        let after_refs = self.after.material_refs().collect::<BTreeSet<_>>();
         if !valid_publication || !before_refs.is_disjoint(&after_refs) {
             return Err(CredentialError::InvalidSource(
                 "a distinct replacement must preserve one active Workspace/kind publication boundary and own disjoint material"
@@ -253,22 +240,9 @@ impl CredentialMutationIntent {
     }
 
     fn validate_material_fence(&self) -> Result<(), CredentialError> {
-        let before_refs = self
-            .before
-            .iter()
-            .flat_map(CredentialSource::material_refs)
-            .collect::<HashSet<_>>();
-        let writes_new_material = self
-            .after
-            .material_refs()
-            .any(|reference| !before_refs.contains(reference));
-        let suffix = format!(":attempt:{}", self.material_fence.attempt_id());
-        let new_refs_bound_to_attempt = !self.material_fence.attempt_id().is_empty()
-            && self
-                .after
-                .material_refs()
-                .filter(|reference| !before_refs.contains(reference))
-                .all(|reference| reference.0.ends_with(&suffix));
+        let (writes_new_material, new_refs_bound_to_attempt) = self
+            .material_fence
+            .material_input_facts(self.before.as_ref(), &self.after);
         self.material_fence
             .validate(writes_new_material, new_refs_bound_to_attempt)
     }
@@ -401,6 +375,25 @@ mod publication_proofs {
     use super::*;
     use crate::catalog::ManagedCredentialAuth;
 
+    pub(super) fn source() -> CredentialSource {
+        CredentialSource {
+            id: CredentialSourceId("s".into()),
+            workspace_id: "w".into(),
+            kind: crate::CredentialKind::Vault,
+            replacement_of: None,
+            descriptor: None,
+            provider_id: None,
+            protocol_endpoint_id: None,
+            env_key: None,
+            material_ref: None,
+            auxiliary_material_refs: Default::default(),
+            oauth_command: None,
+            worker_local_binding: None,
+            status: CredentialStatus::Active,
+            version: 1,
+        }
+    }
+
     fn pending() -> PendingManagedCredentialMutation {
         // Distinct field identities expose swapped projections. This fixture
         // is a value input, never a replacement publication implementation.
@@ -414,22 +407,7 @@ mod publication_proofs {
             operation: ManagedCredentialOperation::Create,
             before_source: None,
             before_credential: None,
-            after_source: CredentialSource {
-                id: CredentialSourceId("s".into()),
-                workspace_id: "w".into(),
-                kind: crate::CredentialKind::Vault,
-                replacement_of: None,
-                descriptor: None,
-                provider_id: None,
-                protocol_endpoint_id: None,
-                env_key: None,
-                material_ref: None,
-                auxiliary_material_refs: Default::default(),
-                oauth_command: None,
-                worker_local_binding: None,
-                status: CredentialStatus::Active,
-                version: 1,
-            },
+            after_source: source(),
             after_credential: ManagedVaultCredential {
                 id: "c".into(),
                 vault_id: "v".into(),
@@ -612,22 +590,9 @@ impl PendingManagedCredentialMutation {
     /// rows are accepted only through recovery after deserialization.
     pub fn validate_for_begin(&self) -> Result<(), ManagedCredentialMutationError> {
         self.validate()?;
-        let before_refs = self
-            .before_source
-            .iter()
-            .flat_map(CredentialSource::material_refs)
-            .collect::<HashSet<_>>();
-        let writes_new_material = self
-            .after_source
-            .material_refs()
-            .any(|reference| !before_refs.contains(reference));
-        let suffix = format!(":attempt:{}", self.material_fence.attempt_id());
-        let new_refs_bound_to_attempt = !self.material_fence.attempt_id().is_empty()
-            && self
-                .after_source
-                .material_refs()
-                .filter(|reference| !before_refs.contains(reference))
-                .all(|reference| reference.0.ends_with(&suffix));
+        let (writes_new_material, new_refs_bound_to_attempt) = self
+            .material_fence
+            .material_input_facts(self.before_source.as_ref(), &self.after_source);
         self.material_fence
             .validate_fresh_for_begin(writes_new_material, new_refs_bound_to_attempt)
             .map_err(|_| ManagedCredentialMutationError::RevisionConflict)
@@ -650,22 +615,9 @@ impl PendingManagedCredentialMutation {
             return Err(ManagedCredentialMutationError::RevisionConflict);
         }
 
-        let before_refs = self
-            .before_source
-            .iter()
-            .flat_map(CredentialSource::material_refs)
-            .collect::<HashSet<_>>();
-        let writes_new_material = self
-            .after_source
-            .material_refs()
-            .any(|reference| !before_refs.contains(reference));
-        let suffix = format!(":attempt:{}", self.material_fence.attempt_id());
-        let new_refs_bound_to_attempt = !self.material_fence.attempt_id().is_empty()
-            && self
-                .after_source
-                .material_refs()
-                .filter(|reference| !before_refs.contains(reference))
-                .all(|reference| reference.0.ends_with(&suffix));
+        let (writes_new_material, new_refs_bound_to_attempt) = self
+            .material_fence
+            .material_input_facts(self.before_source.as_ref(), &self.after_source);
         self.material_fence
             .validate(writes_new_material, new_refs_bound_to_attempt)
             .map_err(|_| ManagedCredentialMutationError::RevisionConflict)?;

@@ -221,6 +221,15 @@ logical metadata/material slots, reads the
 actual durable refs, and verifies exact bytes, so retry converges without a
 second WAL or physical ref.
 
+Source and Managed command/recovery validation derive new-material membership
+and exact attempt binding through the same material-fence projection. Retained
+references remain retained when moved between primary and auxiliary slots.
+Ready recovery likewise uses one candidate-read decision: it skips retained
+references, aborts missing candidate material, and retries unavailable reads.
+Material lifecycle sets use the byte-lexical identity order of `SecretRef`;
+cleanup consumes their ordered union, deleting each selected physical reference
+once per pass in the existing deterministic order.
+
 Only the exact original writer may advance `Writing` to `Ready`, after every
 material put has returned. Recovery may repository-CAS claim an expired
 `Writing` fact, but the claimed epoch can only advance to `ReclaimingAbort`.
