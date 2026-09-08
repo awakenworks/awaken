@@ -55,6 +55,7 @@ async fn catalog() -> ProviderCatalog {
     .await
     .unwrap();
     repo.put_endpoint(ProtocolEndpoint {
+        workspace_id: None,
         id: ProtocolEndpointId::new("ep1"),
         provider_id: ProviderId::new("anthropic"),
         dialect: ApiDialect::AnthropicMessages,
@@ -235,6 +236,7 @@ async fn dual_endpoint_catalog() -> ProviderCatalog {
         ("ep2", "https://backup/v1/"),
     ] {
         repo.put_endpoint(ProtocolEndpoint {
+            workspace_id: None,
             id: ProtocolEndpointId::new(ep),
             provider_id: ProviderId::new("anthropic"),
             dialect: ApiDialect::AnthropicMessages,
@@ -386,6 +388,7 @@ async fn two_model_catalog() -> ProviderCatalog {
     .await
     .unwrap();
     repo.put_endpoint(ProtocolEndpoint {
+        workspace_id: None,
         id: ProtocolEndpointId::new("ep1"),
         provider_id: ProviderId::new("anthropic"),
         dialect: ApiDialect::AnthropicMessages,

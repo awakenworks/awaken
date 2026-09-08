@@ -38,6 +38,7 @@ async fn seed_catalog(base_url: &str, model_id: &str) -> InMemoryCatalogRepo {
     .await
     .unwrap();
     repo.put_endpoint(ProtocolEndpoint {
+        workspace_id: None,
         id: ProtocolEndpointId::new("ep1"),
         provider_id: ProviderId::new("anthropic"),
         dialect: ApiDialect::AnthropicMessages,

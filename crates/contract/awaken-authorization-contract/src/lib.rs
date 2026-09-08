@@ -135,6 +135,8 @@ pub enum WorkspaceProfileAuthority {
     ApiKeyRead,
     ModelSupplyAll,
     ModelSupplyRead,
+    ModelSupplyConnect,
+    ModelSupplyWrite,
     FileAll,
     FileRead,
     SkillAll,
@@ -151,6 +153,8 @@ impl WorkspaceProfileAuthority {
             Self::ApiKeyRead => "apikey.read",
             Self::ModelSupplyAll => "model_supply.*",
             Self::ModelSupplyRead => "model_supply.read",
+            Self::ModelSupplyConnect => "model_supply.connect",
+            Self::ModelSupplyWrite => "model_supply.write",
             Self::FileAll => "file.*",
             Self::FileRead => "file.read",
             Self::SkillAll => "skill.*",
@@ -178,6 +182,8 @@ const HOSTED_ADMIN_AUTHORITIES: &[WorkspaceProfileAuthority] = &[
     WorkspaceProfileAuthority::WorkspaceAll,
     WorkspaceProfileAuthority::ApiKeyAll,
     WorkspaceProfileAuthority::ModelSupplyRead,
+    WorkspaceProfileAuthority::ModelSupplyConnect,
+    WorkspaceProfileAuthority::ModelSupplyWrite,
     WorkspaceProfileAuthority::FileAll,
     WorkspaceProfileAuthority::SkillAll,
 ];
@@ -554,7 +560,7 @@ mod verification {
     }
 
     fn symbolic_workspace_profile_authority() -> WorkspaceProfileAuthority {
-        match kani::any::<u8>() % 10 {
+        match kani::any::<u8>() % 12 {
             0 => WorkspaceProfileAuthority::WorkspaceAll,
             1 => WorkspaceProfileAuthority::WorkspaceRead,
             2 => WorkspaceProfileAuthority::ApiKeyAll,
@@ -564,7 +570,9 @@ mod verification {
             6 => WorkspaceProfileAuthority::FileAll,
             7 => WorkspaceProfileAuthority::FileRead,
             8 => WorkspaceProfileAuthority::SkillAll,
-            _ => WorkspaceProfileAuthority::SkillRead,
+            9 => WorkspaceProfileAuthority::SkillRead,
+            10 => WorkspaceProfileAuthority::ModelSupplyConnect,
+            _ => WorkspaceProfileAuthority::ModelSupplyWrite,
         }
     }
 
@@ -647,7 +655,7 @@ mod verification {
     }
 
     #[kani::proof]
-    fn hosted_admin_role_contains_exactly_its_five_workspace_authorities() {
+    fn hosted_admin_role_contains_exactly_its_seven_workspace_authorities() {
         let authority = symbolic_workspace_profile_authority();
         assert_eq!(
             workspace_profile_role_contains(WorkspaceProfileRole::HostedAdmin, authority),
@@ -656,6 +664,8 @@ mod verification {
                 WorkspaceProfileAuthority::WorkspaceAll
                     | WorkspaceProfileAuthority::ApiKeyAll
                     | WorkspaceProfileAuthority::ModelSupplyRead
+                    | WorkspaceProfileAuthority::ModelSupplyConnect
+                    | WorkspaceProfileAuthority::ModelSupplyWrite
                     | WorkspaceProfileAuthority::FileAll
                     | WorkspaceProfileAuthority::SkillAll
             )

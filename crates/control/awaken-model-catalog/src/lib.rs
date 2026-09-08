@@ -96,6 +96,22 @@ impl ApiDialect {
 }
 
 impl ProtocolEndpointId {
+    /// Qualify the existing protocol coordinate by its owning Workspace.
+    /// Length framing preserves exact identity for namespaced Workspace ids.
+    #[must_use]
+    pub fn for_workspace_surface(
+        workspace: &str,
+        provider_id: &ProviderId,
+        dialect: ApiDialect,
+        endpoint_name: Option<&str>,
+    ) -> Self {
+        Self(format!(
+            "workspace:{}:{workspace}:{}",
+            workspace.len(),
+            Self::for_surface(provider_id, dialect, endpoint_name).as_str()
+        ))
+    }
+
     /// Canonical identity of one provider's protocol surface. The unnamed
     /// endpoint uses `(provider, dialect)`; an optional name qualifies a second
     /// endpoint speaking the same dialect without replacing either axis.
@@ -130,6 +146,10 @@ pub struct Provider {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProtocolEndpoint {
+    /// None denotes an operator-owned or brokered endpoint. Workspace commands
+    /// may only create and update their own explicitly scoped endpoints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     pub id: ProtocolEndpointId,
     pub provider_id: ProviderId,
     pub dialect: ApiDialect,
@@ -616,6 +636,23 @@ pub struct ProviderCatalog {
 }
 
 impl ProviderCatalog {
+    /// One read projection for authoring and publication. Unscoped operator
+    /// facts remain shared; a Workspace never observes a sibling's endpoints.
+    #[must_use]
+    pub fn for_workspace(mut self, workspace: &str) -> Self {
+        self.endpoints.retain(|_, endpoint| {
+            endpoint
+                .workspace_id
+                .as_deref()
+                .is_none_or(|owner| owner == workspace)
+        });
+        self.offerings.retain(|offering| {
+            self.endpoints
+                .contains_key(offering.protocol_endpoint_id.as_str())
+        });
+        self
+    }
+
     /// The published context window (max tokens) of `model_id`, when the catalog carries
     /// its [`ModelAttributes`]. This is the single source of truth both the ACP CLIs'
     /// auto-compact window and the native compaction ext derive their token budget from.
@@ -863,6 +900,7 @@ impl ProviderCatalog {
             self.endpoints.insert(
                 endpoint_id.0.clone(),
                 ProtocolEndpoint {
+                    workspace_id: None,
                     id: endpoint_id.clone(),
                     provider_id: ProviderId::new(provider),
                     dialect: model.dialect,
@@ -1058,6 +1096,7 @@ mod tests {
     }
     fn endpoint(id: &str, provider: &str, dialect: ApiDialect) -> ProtocolEndpoint {
         ProtocolEndpoint {
+            workspace_id: None,
             id: ProtocolEndpointId::new(id),
             provider_id: ProviderId::new(provider),
             dialect,

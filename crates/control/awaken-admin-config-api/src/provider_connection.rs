@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
 use awaken_credential_contract::CredentialSourceId;
-use awaken_credential_vault::repo::{CredentialRepo, enter_credential_idempotent};
+use awaken_credential_vault::repo::{
+    CredentialRepo, enter_credential_idempotent, enter_credential_idempotent_verified,
+};
 use awaken_credential_vault::{
     CredentialCreateParams, CredentialError, CredentialKind, CredentialSource, CredentialStatus,
     OAuthHelper, SecretStore,
@@ -133,6 +135,11 @@ impl ProviderConnectionService {
         &self,
         command: ConnectProviderCommand,
     ) -> Result<ProviderConnectionResult, ProviderConnectionError> {
+        if command.workspace_id.trim().is_empty() {
+            return Err(ProviderConnectionError::Invalid(
+                "workspace_id is required".into(),
+            ));
+        }
         if command.idempotency_key.trim().is_empty() || command.idempotency_key.len() > 200 {
             return Err(ProviderConnectionError::Invalid(
                 "idempotency_key must contain 1 to 200 characters".into(),
@@ -190,7 +197,8 @@ impl ProviderConnectionService {
         }
         let base_url = provider_base_url(&command, descriptor.as_ref())?;
         let provider_id = ProviderId::new(command.provider_id.clone());
-        let endpoint_id = ProtocolEndpointId::for_surface(
+        let endpoint_id = ProtocolEndpointId::for_workspace_surface(
+            &command.workspace_id,
             &provider_id,
             command.dialect,
             endpoint_name.as_deref(),
@@ -203,6 +211,7 @@ impl ProviderConnectionService {
             version: 1,
         };
         let endpoint = ProtocolEndpoint {
+            workspace_id: Some(command.workspace_id.clone()),
             id: endpoint_id,
             provider_id: provider.id.clone(),
             dialect: command.dialect,
@@ -335,7 +344,7 @@ impl ProviderConnectionService {
         let (mut credential, command_owned, created) = match authentication {
             ConnectionCredential::Existing(source) => (*source, false, false),
             ConnectionCredential::ApiKey(secret) => {
-                let entry = enter_credential_idempotent(
+                let entry = enter_credential_idempotent_verified(
                     credential_id,
                     CredentialCreateParams {
                         workspace_id: command.workspace_id.clone(),
@@ -694,6 +703,7 @@ mod tests {
             .unwrap();
         let command = command("deepseek", ApiDialect::AnthropicMessages, None);
         let endpoint = ProtocolEndpoint {
+            workspace_id: None,
             id: ProtocolEndpointId::new("deepseek.anthropic_messages"),
             provider_id: ProviderId::new("deepseek"),
             dialect: ApiDialect::AnthropicMessages,

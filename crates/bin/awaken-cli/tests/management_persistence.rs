@@ -73,6 +73,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
         .unwrap();
     catalog
         .put_endpoint(ProtocolEndpoint {
+            workspace_id: None,
             id: ProtocolEndpointId::new("ep1"),
             provider_id: ProviderId::new("anthropic"),
             dialect: ApiDialect::AnthropicMessages,

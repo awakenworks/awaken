@@ -758,3 +758,9 @@
   physical adoption and execution exclusively on the claimed Worker.
 - Added the resident-binding second-Run causal row so request-context cache
   invalidation cannot reintroduce a Coordinator Environment demand.
+
+## 2026-09-09 — Hosted Workspace model supply
+
+- Linked the exact BYOK grants and request capability projection to the existing Credential/Catalog owners.
+- Recorded Workspace endpoint isolation and one Profile compiler with delegated managed route publication.
+- Added lifecycle recovery and HTTP composition test coverage without a second policy or catalog authority.

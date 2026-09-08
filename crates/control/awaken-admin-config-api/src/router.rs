@@ -118,6 +118,14 @@ pub struct ModelSupplyCapabilityView {
     pub profile_authoring_enabled: bool,
 }
 
+/// Request-scoped projection of the existing IAM decisions. Only the PEP may
+/// attach this extension; deployment capability remains an independent gate.
+#[derive(Debug, Clone, Copy)]
+pub struct ModelSupplyAuthorization {
+    pub connect: bool,
+    pub write: bool,
+}
+
 impl Default for ModelSupplyCapabilityView {
     fn default() -> Self {
         Self {
@@ -342,8 +350,14 @@ pub fn admin_router_with_runtime_capabilities(
 }
 
 async fn get_config_capabilities(
-    State(capabilities): State<ConfigCapabilitiesView>,
+    State(mut capabilities): State<ConfigCapabilitiesView>,
+    authorization: Option<Extension<ModelSupplyAuthorization>>,
 ) -> Json<ConfigCapabilitiesView> {
+    if let Some(Extension(authorization)) = authorization {
+        capabilities.models.byok_enabled &= authorization.connect;
+        capabilities.models.profile_authoring_enabled &= authorization.write;
+        capabilities.models.local_catalog_enabled &= authorization.write;
+    }
     Json(capabilities)
 }
 
@@ -698,6 +712,7 @@ pub struct PutModelAttributesRequest {
 async fn get_catalog(
     State(state): State<AdminState>,
     State(capabilities): State<ConfigCapabilitiesView>,
+    scope: Option<Extension<ResourceWorkspace>>,
     headers: HeaderMap,
 ) -> Result<Json<awaken_model_catalog::ProviderCatalog>, Problem> {
     let mut catalog = state
@@ -705,6 +720,9 @@ async fn get_catalog(
         .snapshot()
         .await
         .map_err(|e| repo_problem(&e, &req_id(&headers)))?;
+    if let Some(Extension(scope)) = scope {
+        catalog = catalog.for_workspace(&scope.0);
+    }
     if !capabilities.models.cloud_models_enabled {
         for offering in &mut catalog.offerings {
             if offering.source == OfferingSource::Brokered {
@@ -848,6 +866,7 @@ async fn resolve_route(
         .await
         .map_err(|e| repo_problem(&e, &rid))?;
     let workspace = scope.map_or_else(|| request.workspace_id.clone(), |Extension(scope)| scope.0);
+    let catalog = catalog.for_workspace(&workspace);
     let lookup = workspace_lookup(&state, &workspace, &rid).await?;
     let resolved = resolve_inference_target(
         &catalog,
@@ -910,6 +929,7 @@ async fn resolve_profile_candidates_route(
         .snapshot()
         .await
         .map_err(|e| repo_problem(&e, &rid))?;
+    let catalog = catalog.for_workspace(&workspace);
     let lookup = workspace_lookup(&state, &workspace, &rid).await?;
     let resolved = resolve_profile_candidates(&catalog, &profile, &lookup, &*state.secrets)
         .await
@@ -1207,6 +1227,7 @@ async fn resolve_profile_route(
         .snapshot()
         .await
         .map_err(|e| repo_problem(&e, &rid))?;
+    let catalog = catalog.for_workspace(&workspace);
     let lookup = workspace_lookup(&state, &workspace, &rid).await?;
     let resolved = resolve_profile(&catalog, &profile, &lookup, &*state.secrets)
         .await
@@ -1450,6 +1471,7 @@ async fn validate_credential(
         .snapshot()
         .await
         .map_err(|e| repo_problem(&e, &rid))?;
+    let catalog = catalog.for_workspace(&workspace);
     let lookup = workspace_lookup(&state, &workspace, &rid).await?;
     let resolved = resolve_inference(
         &catalog,
