@@ -250,6 +250,22 @@ type checking are valuable executable evidence, but are not formal proofs.
   OS-thread races. This is bounded model linkage, not Rust/Mutex refinement;
   remote binding delivery, revision rotation and asynchronous login-probe
   freshness remain separate obligations. No second credential store is added.
+  The Worker-owned implementation now resides in
+  `awaken-run-executor-acp::host`; Coordinator registration translates its
+  Control rows into the same exact binding DTO.
+- `AcpProjectedBindingUse.tla` checks two consumers under one async gate with
+  at most two external file replacements (active, rotated revision, different
+  CLI, disabled, absent, invalid). Four mutants check post-probe comparison,
+  exact CLI identity, serialization and cancellation release; three witnesses
+  require successful use, revoked denial and a peer succeeding after cancel.
+  Executable tables exercise Codex/Claude, all login states, actual bounded
+  file reads/replacements and a paused login probe, both heartbeat and exact
+  use ports, and standalone Worker configuration/assembly. This proves neither
+  automatic authenticated projection delivery nor rollback/ABA detection,
+  OS IO correctness, the final check-to-launch interval, arbitrary live cloud
+  failures or Rust refinement. AllInOne source lifecycle refresh remains a
+  separate integration obligation; these bounds must not be reported as full
+  cloud/local or Windows/macOS production qualification.
 - Circuit admission and completion now consume one owner-local Rust reducer.
   Both Closed requests and HalfOpen probes carry phase/epoch fences. Late
   completions stutter, zero probe capacity rejects even the first probe, and

@@ -36,6 +36,7 @@ from formal_credential_mutations import (
     check_mcp_credential_model_mutants, check_credential_effect_model_mutants,
     check_acp_binding_model_mutants,
     check_acp_observation_model_mutants,
+    check_acp_projection_model_mutants,
 )
 from formal_dispatch_mutations import check_resolution_failure_model_mutant, check_terminal_scan_model_mutants
 
@@ -562,6 +563,7 @@ def main() -> None:
         "credential-effect-model-mutants": check_credential_effect_model_mutants,
         "acp-binding-model-mutants": check_acp_binding_model_mutants,
         "acp-observation-model-mutants": check_acp_observation_model_mutants,
+        "acp-projection-model-mutants": check_acp_projection_model_mutants,
     }
     model_selection = parser.add_mutually_exclusive_group()
     for name in model_checks:

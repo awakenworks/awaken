@@ -922,6 +922,19 @@ Implemented consolidation evidence:
   unselected installed CLIs are excluded and a Provider-owned route does not
   disappear merely because no host-login binding is active. Each credential
   refresh invalidates the previous host-probe cache before capability refresh;
+- standalone host Workers reuse `awaken-run-executor-acp::host` for discovery,
+  acquisition, protocol preparation and the single liveness resolver. The
+  Coordinator `awaken-acp-application` owns only credential registration and
+  source-to-binding translation; its registration result wraps that host result
+  without copying its state. CLI and Coordinator share one production adapter
+  assembly. Worker bootstrap never depends on the Control registration service;
+- an explicitly configured local binding file carries exact references, CLI IDs
+  and enabled intent only. Its read-only adapter atomically replaces the one
+  resolver map, serializes probe/reload consumers, and rechecks the projection
+  after asynchronous probes. Deleted, malformed and changed projections cannot
+  create fresh successful use evidence. The external publisher and observation
+  cache expiry remain separate boundaries; this adds no credential store,
+  automatic remote projection service or universal immediate revocation claim;
 - successful AllInOne heartbeats feed one observation-fingerprint gate; split
   Control reads the same Coordinator authority through its authenticated private
   service boundary and polls that gate every five seconds; changes invoke the

@@ -98,16 +98,14 @@ pub use worker_registry::test_directory as test_worker_directory;
 pub async fn prepare_local_acp(
     input: awaken_acp_application::LocalAcpPreparation,
 ) -> Result<awaken_acp_application::PreparedAcpCapabilities, String> {
+    let adapters = awaken_acp_application::HostAcpAdapters::production(std::sync::Arc::new(
+        awaken_protocol_acp::ProtocolAcpCapabilityHandshake,
+    ));
     awaken_acp_application::prepare_host_acp_with(
         input,
-        std::sync::Arc::new(awaken_acp_application::AcpHostDiscovery::local(
-            std::time::Duration::from_secs(3),
-        )),
-        std::sync::Arc::new(awaken_acp_application::NpmWrapperInstaller),
-        std::sync::Arc::new(awaken_acp_application::HostAcpCapabilityNegotiator::new(
-            std::time::Duration::from_secs(10),
-            std::sync::Arc::new(awaken_protocol_acp::ProtocolAcpCapabilityHandshake),
-        )),
+        adapters.discovery,
+        adapters.installer,
+        adapters.negotiator,
     )
     .await
 }

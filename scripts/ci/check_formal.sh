@@ -938,6 +938,10 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -config formal/tla/AcpObservationRefresh.cfg formal/tla/AcpObservationRefresh.tla
   python3 scripts/ci/check_formal_mutations.py --acp-observation-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/acp-projected-binding-use" \
+    -config formal/tla/AcpProjectedBindingUse.cfg formal/tla/AcpProjectedBindingUse.tla
+  python3 scripts/ci/check_formal_mutations.py --acp-projection-model-mutants "$tla_jar"
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/audit-commit" \
     -config formal/tla/AuditCommit.cfg formal/tla/AuditCommit.tla
   python3 scripts/ci/check_formal_mutations.py --audit-commit-model-mutants "$tla_jar"
