@@ -847,11 +847,14 @@ mod tests {
         let fence =
             crate::ContainerEffectFence::new("operation-1", "owner-1", "runtime-1", 1, u64::MAX)
                 .unwrap();
+        // R3's durable fence identifies the operation; its current proof is
+        // independently required and must survive the pool's delegation.
+        let authority = pc::test_support::EffectAuthority::new(&fence);
         let fenced = pool
             .create_environment_for_effect(
                 &ephemeral,
                 Some(&fence),
-                None,
+                Some(&authority),
                 crate::ContainerRealizationIntent::Create,
             )
             .await

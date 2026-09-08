@@ -353,36 +353,21 @@ full provider clock correspondence, live upgrade qualification, real cloud/local
 fault qualification and real Windows/macOS qualification remain open. Passing
 these tests or bounded models must not promote `process_tree_supervision`.
 
-The existing Container creation retry source now captures the operation and the
-two original Session slot lock allocations before cache preparation. Its
-projection and physical execution now reuse the same
-`SessionExecutionAuthority` implementation and the slot's `remaining_for`
-decision under Worker -> Session guards. Its closed target enum distinguishes
-the exact enrolled Environment required for execution from the immutable
-operation required before provider creation. The previous Host-specific
-slot/lease-checking closure has been removed. An absent, closed,
-expired or replaced slot cannot supply a fence; neither can a changed operation,
-owner, incarnation, epoch or regressed expiry. A zero Worker budget denies the
-shared effect callback. Preparation checks run before and after its await, and
-Container retries use that same captured source rather than looking up a new
-slot by Session id. No persistent fields or lease owners are added. The
-unfenced direct-provider creation entry remains unchanged.
-
-The captured provider target also exposes the existing synchronous
-`CurrentExecutionAuthority` port with the minimum current Worker/Session
-budget. Snapshot and effect callbacks use one port and held-lock decision;
-neither captures a copied deadline nor retains the Host or slot map. The common implementation is
-platform-neutral; only scoped process enrollment remains Linux-gated.
-Memory acknowledgement now uses this same authority. The existing
-`CurrentExecutionAuthority::with_current_effect` method binds the assertion to
-the captured operation/generation and supplies a current fence under the same
-guards; its default rejects an execution-only grant. The redundant Container
-fence-query trait is removed: all callers use the neutral port's
-`current_effect_fence` projection, sharing the same checked callback with
-`with_current_sandbox_effect`. Snapshot success cannot authorize a later effect.
-Container's strict-successor retry rule remains in the Container provider;
-creation still has wall-clock checks. The adoption migration below is separate
-from remote commit fencing.
+The Container creation source captures the operation and both original Session
+slot locks before cache preparation. Projection and physical execution share
+`SessionExecutionAuthority::remaining_for` under Worker -> Session guards,
+using the minimum current budget. The closed target distinguishes enrolled
+Environment execution from an immutable pre-creation operation. Missing, closed,
+expired or replaced slots, changed operation/owner/incarnation/epoch, regressed
+expiry and zero budget deny admission. No later Session-id lookup, copied deadline,
+Host retention, additional persistent state or separate fence-query trait is used.
+The neutral `CurrentExecutionAuthority::with_current_effect` binds each assertion
+and callback to that captured operation/generation; execution-only grants reject.
+`current_effect_fence` and `with_current_sandbox_effect` share this held-lock rule,
+including Memory acknowledgement. Snapshot success cannot grant a later effect.
+The implementation is platform-neutral; scoped process enrollment remains
+Linux-gated. Container retains its strict-successor retry rule; creation clock
+and remote-commit qualification remain separate, as described below.
 The two Host callers (continuation release and terminal cleanup) capture this
 provider target and forward it through `SessionEnvironment` to the Sandbox.
 Local/Namespace and Container acquire their existing async Memory guard list,
@@ -530,8 +515,18 @@ requires current proof. A further 60-row File/Secret response table includes
 optional absent files and checks that neither bytes nor empty placeholders are
 written after lost authority. This is executable port/filesystem ownership evidence,
 not real FUSE, Worker-death, credential or cross-platform runtime qualification.
-Container's neutral port forwards current authority into its existing adapter;
-its creation clock/remote-commit qualifications remain open.
+Container's neutral, Environment and warm-pool creation paths now check the same
+captured authority at entry and after each provider-level asynchronous boundary,
+not only after runtime expiry. CA1-CA5 beside the tests cross ten boundaries,
+four proof changes and all three paths (120 Pending schedules); renewal succeeds,
+loss denies the next call/publication. Pre-create rejection retains the existing
+retryable staging owner; post-create rejection preserves physical input bytes in
+its ambiguous owner and blocks recreation. It never invents absence or disposal.
+Explicitly unfenced creation remains on this same implementation. The existing
+`SessionExecutionBinding` creation phase owns the abstract wait/check obligation.
+Compound-call internal awaits, callback-to-remote-command atomicity, pending-create
+cancellation, clocks and durable discovery remain outside that correspondence.
+Cowork's Unmaterialized no-handle terminal cleanup is still unresolved.
 
 ### Terminal Provider clock ownership
 

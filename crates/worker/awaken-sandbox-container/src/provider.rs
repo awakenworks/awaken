@@ -265,6 +265,22 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         if let Some(effect_fence) = effect_fence {
             effect_fence.validate_live_at(container_runtime_unix_now_ms()?)?;
         }
+        // The copied durable fence is identity, not current admission. Both
+        // public creation ports carry the original captured authority here;
+        // legacy explicitly unfenced creation continues through this same path.
+        let admit = || match effect_fence {
+            Some(fence) => pc::with_current_sandbox_effect(
+                fence,
+                effect_fence_source.ok_or_else(|| {
+                    pc::SandboxError::new(
+                        "fenced container creation requires current Session authority",
+                    )
+                })?,
+                || Ok(()),
+            ),
+            None => Ok(()),
+        };
+        admit()?;
         let create_attempt = ContainerCreateAttempt::fresh();
         // Fail closed against our capabilities before touching the runtime.
         pc::prepare_environment(spec, &self.runtime_sandbox_capabilities())
@@ -300,6 +316,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             .preflight_create_for_effect(&initial_realization_context, &plan, None)
             .await
             .map_err(err)?;
+        admit()?;
         if !plan.packages.is_empty() {
             let base_image = match &plan.rootfs {
                 RootfsPlan::Image(reference) => reference.clone(),
@@ -323,6 +340,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             };
             plan.rootfs = RootfsPlan::Image(plan.image.clone());
         }
+        admit()?;
         let realization_fingerprint =
             container_realization_fingerprint(spec, &adoption_fingerprint, &plan.image);
         // This read-only pass rejects foreign, duplicate, newer, or ambiguous
@@ -337,7 +355,9 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             )
             .await
             .map_err(err)?;
+        admit()?;
         self.recover_retained_staging().await?;
+        admit()?;
         // Resolve + materialize each mount's bytes: self-contained content (codex config,
         // ADR-0038 resources) ships in the plan; File/Resource/Secret resolve by id through
         // the seed then the injected BlobSource, hash-verified. Bytes are staged to a host
@@ -358,6 +378,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             self.runtime.uses_host_bind_materialization(),
         )
         .await?;
+        if let Err(error) = admit() {
+            self.retain_retryable_staging(staging).await;
+            return Err(error);
+        }
         if self.runtime.uses_host_live_input_bind() {
             live_inputs::stage_host_projection(&spec.scope, &mut plan.binds, &mut staging.guard)?;
         }
@@ -383,6 +407,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         }
         let mut current_effect_fence = effect_fence.cloned();
         let container_id = loop {
+            if let Err(error) = admit() {
+                // No new backend call has been made. Preserve the existing
+                // exact participant owner for the canonical recovery path.
+                self.retain_retryable_staging(staging).await;
+                return Err(error);
+            }
             let realization_context = ContainerRealizationContext::new(
                 &spec.scope,
                 &adoption_fingerprint,
@@ -438,6 +468,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         {
             guard.retain_for_restoration();
         }
+        if let Err(error) = admit() {
+            self.retain_ambiguous_staging(staging).await;
+            return Err(error);
+        }
         let runtime_handle = match self.runtime.handle_extra(&container_id).await {
             Ok(evidence) => evidence,
             // `create` is exact-idempotent and may have recovered a Ready effect
@@ -449,6 +483,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 return Err(err(error.after_mutation()));
             }
         };
+        if let Err(error) = admit() {
+            self.retain_ambiguous_staging(staging).await;
+            return Err(error);
+        }
         let control_services = spec.control_services.clone();
         let sandbox_control_incarnation = if control_services.is_empty() {
             None
@@ -476,6 +514,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 }
             }
         };
+        if let Err(error) = admit() {
+            self.retain_ambiguous_staging(staging).await;
+            return Err(error);
+        }
         // Report each mount's realization: a byte mount is a Bind and a Memory
         // store is the canonical mounter's copy projection. Built from spec.mounts
         // directly because native volumes do not align with the byte-bind list.
