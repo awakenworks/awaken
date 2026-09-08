@@ -77,9 +77,11 @@ step "G1 Namespace SessionEnvironment path fidelity against real bwrap"
 # Reuse the E2E graph's one bwrap/user-namespace probe instead of maintaining a
 # second shell approximation. Ordinary developer runs report a clean substrate
 # skip; required release profiles fail on that skip in the common summary below.
+namespace_available=false
 if command -v node >/dev/null 2>&1 && node --input-type=module --eval \
   'import { bwrapAvailable } from "./e2e/bwrap_capability.mjs"; process.exit(bwrapAvailable() ? 0 : 1);'
 then
+  namespace_available=true
   run "bwrap:runtime-host-one-workspace" \
     env AWAKEN_TEST_REQUIRE_NAMESPACE_WORKSPACE=1 \
     cargo test -q -p awaken-session-executor --lib \
@@ -148,6 +150,14 @@ if [ -e /dev/fuse ] && { command -v fusermount >/dev/null || command -v fusermou
   run "sandbox-local memory_mount" cargo test -q -p awaken-sandbox-local --test memory_mount
   # ADR-0053 item 2: a host FUSE mount spliced LIVE into the bwrap namespace (write-through).
   run "bwrap fuse-splice" cargo test -q -p awaken-sandbox-local --test namespace_provider bwrap_splices
+  # Reuse the scoped owner-crash fixture; this explicit case requires real FUSE
+  # and bwrap and must never turn Copy fallback into a passing qualification.
+  if [ "$namespace_available" = true ]; then
+    run "scoped owner crash with durable FUSE recovery" cargo test -q -p awaken-sandbox --test linux_scoped \
+      scoped_provider::memory::provider_owner_crash_reacquires_fuse_before_new_scoped_execution -- --exact --ignored
+  else
+    skip "scoped FUSE owner recovery requires the existing bwrap capability probe"
+  fi
 else
   skip "/dev/fuse or fusermount unavailable (copy fallback path is the alternative)"
 fi
