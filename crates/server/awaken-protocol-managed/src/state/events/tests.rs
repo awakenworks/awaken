@@ -11262,213 +11262,315 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
     // Cancelled/Failed x observation live/terminal-before-settle/closed x warm/
     // cold. Exact opening and every issued payload survive every combination;
     // each paging direction/limit must enumerate the same immutable identities.
-    for extra_running in [0, 1, 3] {
-        for (terminal_kind, terminal_state) in [
-            (RunLifecycleEventKind::Awaiting, RunState::Awaiting),
-            (
-                RunLifecycleEventKind::Completed,
-                RunState::Ended(EndCause::NaturalEnd),
-            ),
-            (
-                RunLifecycleEventKind::Cancelled,
-                RunState::Ended(EndCause::Cancelled),
-            ),
-            (
-                RunLifecycleEventKind::Failed,
-                RunState::Ended(EndCause::Indeterminate),
-            ),
-        ] {
-            let runtime = LifecycleRuntime::default();
-            let state = ManagedState::new(runtime.clone());
-            let session = state
-                .create_session(
-                    serde_json::from_value(serde_json::json!({
-                        "agent":"coder", "environment_id":"env_local"
-                    }))
-                    .unwrap(),
-                    None,
-                )
-                .await
-                .unwrap();
-            let run = RunId("worker-recovered-approval".into());
-            let first = state.application.begin_activity(&session.id).await.unwrap();
-            runtime.lifecycle.lock().unwrap().extend([
-                lifecycle(
-                    1,
-                    &session.id,
-                    &run,
-                    RunLifecycleEventKind::Running,
-                    RunState::Running,
+    // R5 first interval with/without Running x every R4 rule: a terminal-only
+    // opening remains issued after a later interval begins; cold replay cannot
+    // borrow that later opening or lose the original aggregate/thread bracket.
+    // The retained User/ToolReply anchors, exact Run state, live ResumeTicket,
+    // historical AwaitTarget and committed ToolResult are all required causes;
+    // omitting the ticket would withhold Awaiting and make this test vacuous.
+    for first_has_running in [true, false] {
+        for extra_running in [0, 1, 3] {
+            for (terminal_kind, terminal_state) in [
+                (RunLifecycleEventKind::Awaiting, RunState::Awaiting),
+                (
+                    RunLifecycleEventKind::Completed,
+                    RunState::Ended(EndCause::NaturalEnd),
                 ),
-                lifecycle(
+                (
+                    RunLifecycleEventKind::Cancelled,
+                    RunState::Ended(EndCause::Cancelled),
+                ),
+                (
+                    RunLifecycleEventKind::Failed,
+                    RunState::Ended(EndCause::Indeterminate),
+                ),
+            ] {
+                let runtime = LifecycleRuntime::default();
+                runtime
+                    .include_runs_in_snapshot
+                    .store(true, Ordering::SeqCst);
+                let state = ManagedState::new(runtime.clone());
+                let session = state
+                    .create_session(
+                        serde_json::from_value(serde_json::json!({
+                            "agent":"coder", "environment_id":"env_local"
+                        }))
+                        .unwrap(),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                let retained = state
+                    .application
+                    .append_session_event_batch(
+                        &session.id,
+                        vec![SessionEventInput::UserMessage {
+                            content: vec![ContentBlock::text("start")],
+                        }],
+                        None,
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                let run = match &retained.events[0].event {
+                    SessionEventCommand::UserMessage { run_id, .. } => run_id.clone(),
+                    _ => unreachable!(),
+                };
+                persist_batch_projection_anchors(&state, &session.id, &retained.batch_id, &[1])
+                    .await;
+                let first = state.application.begin_activity(&session.id).await.unwrap();
+                if first_has_running {
+                    runtime.lifecycle.lock().unwrap().push(lifecycle(
+                        1,
+                        &session.id,
+                        &run,
+                        RunLifecycleEventKind::Running,
+                        RunState::Running,
+                    ));
+                }
+                runtime.lifecycle.lock().unwrap().push(lifecycle(
                     2,
                     &session.id,
                     &run,
                     RunLifecycleEventKind::Awaiting,
                     RunState::Awaiting,
-                ),
-            ]);
-            state
-                .application
-                .settle_activity_observed(
-                    &session.id,
-                    first.activity_epoch,
-                    Some(awaken_session_contract::SessionRuntimeIntervalObservation {
-                        activity_epoch: first.activity_epoch,
-                        thread_id: ThreadId(session.id.clone()),
-                        run_id: run.clone(),
-                        lifecycle_cursor: lifecycle_cursor(2),
-                        source_commit_cursor: 2,
-                    }),
-                )
-                .await
-                .unwrap();
-            state.refresh_committed_events(&session.id).await.unwrap();
-            let second = state.application.begin_activity(&session.id).await.unwrap();
-            state.refresh_committed_events(&session.id).await.unwrap();
-            runtime.lifecycle.lock().unwrap().push(lifecycle(
-                3,
-                &session.id,
-                &run,
-                RunLifecycleEventKind::Resumed,
-                RunState::Running,
-            ));
-            // R4 the resumed Run can commit another Running transition before the
-            // Session closes its interval. Every prefix issued before that observation
-            // must survive terminal reduction and cold reconstruction byte-for-byte.
-            state.refresh_committed_events(&session.id).await.unwrap();
-            let issued = state
-                .list_events(&session.id, None, Some(1000), false)
-                .unwrap()
-                .data;
-            let opening_id = managed_multiagent_event_id(
-                &session.id,
-                &session.id,
-                "aggregate-status-running",
-                ManagedMultiagentEventProvenance::Lifecycle {
-                    cursor: lifecycle_cursor(3).0,
-                },
-            );
-            assert!(
-                issued.iter().any(|event| event.id == opening_id),
-                "R4 opening must actually be issued"
-            );
-            assert!(
+                ));
+                *runtime.pending.lock().unwrap() = Some(Pending {
+                    tool_use_id: "test-call".into(),
+                    name: "write".into(),
+                    input: serde_json::json!({"file_path":"first.txt","content":"first"}),
+                    client_executed: false,
+                });
+                runtime.push_committed_message(
+                    2,
+                    Message::new(
+                        MessageId::assistant(&run, 0),
+                        Role::Assistant,
+                        vec![ContentBlock::tool_use(
+                            "test-call",
+                            "write",
+                            serde_json::json!({"file_path":"first.txt","content":"first"}),
+                        )],
+                    ),
+                );
+                runtime.audit_events.lock().unwrap().push(awaken_agent_contract::audit::record::Record {
+                    sequence: 2, run_id: run.clone(), kind: awaken_agent_contract::audit::kind::Kind::RunStateChanged,
+                    payload: serde_json::json!({"state":"Awaiting","await_target":{"ToolCall":{
+                        "reason":"Permission", "call_id":"test-call", "tool":{"tool_id":"write","arguments":{"file_path":"first.txt","content":"first"}}, "authority":"RuntimeToolBatch"
+                    }}}),
+                });
                 state
                     .application
-                    .session(&session.id)
+                    .settle_activity_observed(
+                        &session.id,
+                        first.activity_epoch,
+                        Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                            activity_epoch: first.activity_epoch,
+                            thread_id: ThreadId(session.id.clone()),
+                            run_id: run.clone(),
+                            lifecycle_cursor: lifecycle_cursor(2),
+                            source_commit_cursor: 2,
+                        }),
+                    )
                     .await
+                    .unwrap();
+                state.refresh_committed_events(&session.id).await.unwrap();
+                let first_issued = state
+                    .list_events(&session.id, None, Some(1000), false)
                     .unwrap()
-                    .running_interval
-                    .is_some()
-            );
-
-            for offset in 0..extra_running {
+                    .data;
+                assert_eq!(
+                    first_issued
+                        .iter()
+                        .filter(|event| event.type_str() == "session.status_running")
+                        .count(),
+                    1,
+                    "R5 first opening must be issued, first_has_running={first_has_running}"
+                );
+                let reply = state.application.append_session_event_batch(&session.id,
+                    vec![SessionEventInput::ToolReply(awaken_session_contract::SessionEventToolReply {
+                        tool_request_event_id: first_issued.iter().find(|event| event.type_str() == "agent.tool_use").unwrap().id.clone(),
+                        target: awaken_session_contract::SessionThreadTarget::Primary,
+                        expected_run_id: run.clone(), expected_correlation_id: "test-ticket".into(),
+                        expected_thread_version: Some(2), answered_pending_commit_cursor: Some(2),
+                        runtime_tool_use_id: "test-call".into(),
+                        reply: awaken_session_contract::SessionEventToolReplyKind::Confirmation { allow: true, deny_message: None },
+                    })], None, None).await.unwrap();
+                persist_batch_projection_anchors(&state, &session.id, &reply.batch_id, &[3]).await;
+                let second = state.application.begin_activity(&session.id).await.unwrap();
+                state.refresh_committed_events(&session.id).await.unwrap();
+                *runtime.pending.lock().unwrap() = None;
+                runtime.push_committed_message(
+                    3,
+                    Message::new(
+                        MessageId("test-reply".into()),
+                        Role::Tool,
+                        vec![ContentBlock::tool_result(
+                            "test-call",
+                            vec![ContentBlock::text("ok")],
+                        )],
+                    ),
+                );
                 runtime.lifecycle.lock().unwrap().push(lifecycle(
-                    4 + offset,
+                    3,
                     &session.id,
                     &run,
-                    RunLifecycleEventKind::Running,
+                    RunLifecycleEventKind::Resumed,
                     RunState::Running,
                 ));
-            }
-            let terminal_cursor = 4 + extra_running;
-            for terminal in 0..3 {
-                if terminal == 1 {
-                    runtime.lifecycle.lock().unwrap().push(lifecycle(
-                        terminal_cursor,
-                        &session.id,
-                        &run,
-                        terminal_kind,
-                        terminal_state.clone(),
-                    ));
-                }
-                if terminal == 2 {
+                // R4 the resumed Run can commit another Running transition before the
+                // Session closes its interval. Every prefix issued before that observation
+                // must survive terminal reduction and cold reconstruction byte-for-byte.
+                state.refresh_committed_events(&session.id).await.unwrap();
+                let issued = state
+                    .list_events(&session.id, None, Some(1000), false)
+                    .unwrap()
+                    .data;
+                let opening_id = managed_multiagent_event_id(
+                    &session.id,
+                    &session.id,
+                    "aggregate-status-running",
+                    ManagedMultiagentEventProvenance::Lifecycle {
+                        cursor: lifecycle_cursor(3).0,
+                    },
+                );
+                assert!(
+                    issued.iter().any(|event| event.id == opening_id),
+                    "R4 opening must actually be issued"
+                );
+                assert!(
                     state
                         .application
-                        .settle_activity_observed(
-                            &session.id,
-                            second.activity_epoch,
-                            Some(awaken_session_contract::SessionRuntimeIntervalObservation {
-                                activity_epoch: second.activity_epoch,
-                                thread_id: ThreadId(session.id.clone()),
-                                run_id: run.clone(),
-                                lifecycle_cursor: lifecycle_cursor(terminal_cursor),
-                                source_commit_cursor: terminal_cursor,
-                            }),
-                        )
+                        .session(&session.id)
                         .await
-                        .unwrap();
-                }
-                state.refresh_committed_events(&session.id).await.unwrap();
-                let baseline = state
-                    .list_events(&session.id, None, Some(1000), false)
-                    .unwrap()
-                    .data;
-                for event in &issued {
-                    assert_eq!(
-                        serde_json::to_value(
-                            baseline.iter().find(|current| current.id == event.id)
-                        )
-                        .unwrap(),
-                        serde_json::to_value(Some(event)).unwrap(),
-                        "R4 issued event survives terminal={terminal}: {}",
-                        event.id,
-                    );
-                }
-                let cold = ManagedState::new(runtime.clone())
-                    .with_session_repo(state.application.session_repository_handle());
-                cold.refresh_committed_events(&session.id).await.unwrap();
-                assert_eq!(
-                    cold.list_events(&session.id, None, Some(1000), false)
                         .unwrap()
-                        .data,
-                    baseline,
-                    "R4 cold reconstruction preserves the warm prefix at terminal={terminal}",
+                        .running_interval
+                        .is_some()
                 );
-                for _ in 0..60 {
-                    state.refresh_committed_events(&session.id).await.unwrap();
+
+                for offset in 0..extra_running {
+                    runtime.lifecycle.lock().unwrap().push(lifecycle(
+                        4 + offset,
+                        &session.id,
+                        &run,
+                        RunLifecycleEventKind::Running,
+                        RunState::Running,
+                    ));
                 }
-                let actual = state
-                    .list_events(&session.id, None, Some(1000), false)
-                    .unwrap()
-                    .data;
-                assert_eq!(
-                    actual
-                        .iter()
-                        .map(|e| &e.id)
-                        .collect::<std::collections::HashSet<_>>()
-                        .len(),
-                    actual.len(),
-                    "R2/R3 unique event identities"
-                );
-                assert_eq!(
-                    serde_json::to_value(&actual).unwrap(),
-                    serde_json::to_value(&baseline).unwrap(),
-                    "R2/R3 repeated projection is stable"
-                );
-                for descending in [false, true] {
-                    for limit in [1, 2, 50] {
-                        let mut cursor = None;
-                        let mut seen = std::collections::HashSet::new();
-                        loop {
-                            let page = state
-                                .list_events(
-                                    &session.id,
-                                    cursor.as_deref(),
-                                    Some(limit),
-                                    descending,
-                                )
-                                .unwrap();
-                            for event in page.data {
-                                assert!(seen.insert(event.id), "R2 cursor cannot cycle");
-                            }
-                            match page.next_page {
-                                Some(next) => cursor = Some(next),
-                                None => break,
-                            }
+                let terminal_cursor = 4 + extra_running;
+                for terminal in 0..3 {
+                    if terminal == 1 {
+                        if terminal_kind == RunLifecycleEventKind::Awaiting {
+                            runtime.audit_events.lock().unwrap().push(awaken_agent_contract::audit::record::Record {
+                                sequence: terminal_cursor, run_id: run.clone(), kind: awaken_agent_contract::audit::kind::Kind::RunStateChanged,
+                                payload: serde_json::json!({"state":"Awaiting","await_target":{"ToolCall":{
+                                    "reason":"Permission", "call_id":"second-call", "tool":{"tool_id":"write","arguments":{"file_path":"second.txt","content":"second"}}, "authority":"RuntimeToolBatch"
+                                }}}),
+                            });
+                            *runtime.pending.lock().unwrap() = Some(Pending {
+                                tool_use_id: "second-call".into(),
+                                name: "write".into(),
+                                input: serde_json::json!({"file_path":"second.txt","content":"second"}),
+                                client_executed: false,
+                            });
+                            runtime.push_committed_message(terminal_cursor, Message::new(MessageId::assistant(&run, 1), Role::Assistant,
+                                vec![ContentBlock::tool_use("second-call", "write", serde_json::json!({"file_path":"second.txt","content":"second"}))]));
                         }
-                        assert_eq!(seen.len(), baseline.len(), "R2 all events reached");
+                        runtime.lifecycle.lock().unwrap().push(lifecycle(
+                            terminal_cursor,
+                            &session.id,
+                            &run,
+                            terminal_kind,
+                            terminal_state.clone(),
+                        ));
+                    }
+                    if terminal == 2 {
+                        state
+                            .application
+                            .settle_activity_observed(
+                                &session.id,
+                                second.activity_epoch,
+                                Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                                    activity_epoch: second.activity_epoch,
+                                    thread_id: ThreadId(session.id.clone()),
+                                    run_id: run.clone(),
+                                    lifecycle_cursor: lifecycle_cursor(terminal_cursor),
+                                    source_commit_cursor: terminal_cursor,
+                                }),
+                            )
+                            .await
+                            .unwrap();
+                    }
+                    state.refresh_committed_events(&session.id).await.unwrap();
+                    let baseline = state
+                        .list_events(&session.id, None, Some(1000), false)
+                        .unwrap()
+                        .data;
+                    for event in first_issued.iter().chain(&issued) {
+                        assert_eq!(
+                            serde_json::to_value(
+                                baseline.iter().find(|current| current.id == event.id)
+                            )
+                            .unwrap(),
+                            serde_json::to_value(Some(event)).unwrap(),
+                            "R4 issued event survives terminal={terminal}: {}",
+                            event.id,
+                        );
+                    }
+                    let cold = ManagedState::new(runtime.clone())
+                        .with_session_repo(state.application.session_repository_handle());
+                    cold.refresh_committed_events(&session.id).await.unwrap();
+                    assert_eq!(
+                        cold.list_events(&session.id, None, Some(1000), false)
+                            .unwrap()
+                            .data,
+                        baseline,
+                        "R4 cold reconstruction preserves the warm prefix at terminal={terminal}",
+                    );
+                    for _ in 0..60 {
+                        state.refresh_committed_events(&session.id).await.unwrap();
+                    }
+                    let actual = state
+                        .list_events(&session.id, None, Some(1000), false)
+                        .unwrap()
+                        .data;
+                    assert_eq!(
+                        actual
+                            .iter()
+                            .map(|e| &e.id)
+                            .collect::<std::collections::HashSet<_>>()
+                            .len(),
+                        actual.len(),
+                        "R2/R3 unique event identities"
+                    );
+                    assert_eq!(
+                        serde_json::to_value(&actual).unwrap(),
+                        serde_json::to_value(&baseline).unwrap(),
+                        "R2/R3 repeated projection is stable"
+                    );
+                    for descending in [false, true] {
+                        for limit in [1, 2, 50] {
+                            let mut cursor = None;
+                            let mut seen = std::collections::HashSet::new();
+                            loop {
+                                let page = state
+                                    .list_events(
+                                        &session.id,
+                                        cursor.as_deref(),
+                                        Some(limit),
+                                        descending,
+                                    )
+                                    .unwrap();
+                                for event in page.data {
+                                    assert!(seen.insert(event.id), "R2 cursor cannot cycle");
+                                }
+                                match page.next_page {
+                                    Some(next) => cursor = Some(next),
+                                    None => break,
+                                }
+                            }
+                            assert_eq!(seen.len(), baseline.len(), "R2 all events reached");
+                        }
                     }
                 }
             }
