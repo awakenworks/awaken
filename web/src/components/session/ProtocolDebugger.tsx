@@ -1,3 +1,4 @@
+import { ArrowLeft, ArrowRight, RefreshCw, X } from "@awaken/ui/icons";
 import { InlineNotice, Button, ChatComposer, ChatMarkdown, ChatMessage, ChatMessageList, ChatThinking, ToolCallCard } from "@awaken/ui";
 // Protocol-specific Preview adapters and their bounded event inspector. Both
 // adapters use one Session-bound Application Access Token; management cookies
@@ -132,7 +133,7 @@ export function ProtocolEventInspector({
         ) : retainProtocolEvents(events, 60).map((event) => (
           <details className="agent-preview-event" key={event.id}>
             <summary>
-              <span aria-hidden="true">{event.direction === "request" ? "→" : "←"}</span>{" "}
+              <span aria-hidden="true">{event.direction === "request" ? <ArrowRight /> : <ArrowLeft />}</span>{" "}
               <code>{event.type}</code>
             </summary>
             <pre>{typeof event.payload === "string" ? event.payload : JSON.stringify(event.payload, null, 2)}</pre>
@@ -319,11 +320,11 @@ export function AgUiConversation({
         stopIcon={<span>{app.t("Stop", "停止")}</span>}
         hint={app.t("Enter to send · Shift+Enter for a new line", "Enter 发送 · Shift+Enter 换行")}
       /> : (
-        <InlineNotice tone="info" icon={<span>↻</span>} role="status">
+        <InlineNotice tone="info" icon={<RefreshCw />} role="status">
           <span>{app.t("Loading the shared Session history for AG-UI…", "正在为 AG-UI 加载同一个 Session 的历史…")}</span>
         </InlineNotice>
       )}
-      {error && <InlineNotice tone="danger" icon={<span>✕</span>} role="alert"><span>{error}</span></InlineNotice>}
+      {error && <InlineNotice tone="danger" icon={<X />} role="alert"><span>{error}</span></InlineNotice>}
     </div>
   );
 }

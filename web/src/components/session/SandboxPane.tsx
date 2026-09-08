@@ -1,3 +1,4 @@
+import { ArrowRight, RefreshCw, TriangleAlert, X } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card, ChatComposer, ChatMarkdown, ChatMessage, ChatMessageList, ChatThinking, ToolCallCard, type ToolCallTone } from "@awaken/ui";
 // In-editor Live Preview over the official Vercel AI SDK and AG-UI clients. The
 // console's management credential only mints one short-lived, Session-bound
@@ -271,7 +272,7 @@ function ProtocolPreview({
           {latencyMs != null && <Pill tone="neutral">{latencyMs} ms</Pill>}
         </span>
         <Button variant="ghost" style={{ height: 24 }} onClick={onNew}>
-          ↻ {app.t("New preview", "新预览")}
+          <RefreshCw /> {app.t("New preview", "新预览")}
         </Button>
       </div>
       <div className="agent-preview-protocol-bar">
@@ -292,11 +293,11 @@ function ProtocolPreview({
           {app.t("Use AI SDK or AG-UI with the same Session.", "使用 AI SDK 或 AG-UI 调试同一个 Session。")}
         </span>
         <Link className="protocol-help-link" to={protocolHelpPath(app.workspaceId, protocol)}>
-          {app.t("Connection and API key guide →", "连接与 API Key 指南 →")}
+          {app.t("Connection and API key guide", "连接与 API Key 指南")} <ArrowRight />
         </Link>
       </div>
       {stale && (
-        <InlineNotice tone="warning" icon={<span>⚠</span>} style={{ marginBottom: 8 }}>
+        <InlineNotice tone="warning" icon={<TriangleAlert />} style={{ marginBottom: 8 }}>
           <span>
             {app.t(
               "The draft changed after this preview started. Start a new preview to test the latest edits.",
@@ -380,7 +381,7 @@ function ProtocolPreview({
         hint={app.t("Enter to send · Shift+Enter for a new line", "Enter 发送 · Shift+Enter 换行")}
       />
       {error && (
-        <InlineNotice tone="danger" icon={<span>✕</span>} role="alert">
+        <InlineNotice tone="danger" icon={<X />} role="alert">
           <span>
             <strong>{app.t("Preview failed", "预览失败")}</strong><br />
             {error.message}<br />

@@ -1,3 +1,4 @@
+import { ExternalLink, Flag } from "@awaken/ui/icons";
 import { InlineNotice, Card } from "@awaken/ui";
 import { useNavigate, useParams } from "react-router";
 import { useApp } from "../lib/app-state";
@@ -20,12 +21,12 @@ export default function SettingsSurface() {
         <strong>{label}</strong>
         <small>{hint}</small>
       </span>
-      <span>↗</span>
+      <ExternalLink />
     </button>
   );
   return (
     <>
-      <InlineNotice tone="info" icon={<span>⚑</span>}>
+      <InlineNotice tone="info" icon={<Flag />}>
         <span>
           {app.t("Changes made from the linked pages apply only to", "通过下方页面进行的配置只作用于")} <strong>{app.workspaceName}</strong>
         </span>

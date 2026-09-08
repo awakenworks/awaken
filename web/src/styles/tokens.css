@@ -1,114 +1,49 @@
-/* Awaken Agents uses the same watermetal console identity as awakenworks.com:
- * teal for product action and Agent activity, amber when a person is needed,
- * and the red spark for exceptional attention. */
-
-:root,
-[data-theme="light"] {
-  color-scheme: light;
-  --bg: #f4f6f7;
-  --canvas: #eef1f3;
-  --surface: #ffffff;
-  --soft: #f0f2f4;
-  --muted: #eef1f3;
-  --rail: #f4f6f7;
-  --sunk: #e0e4e8;
-  --fg: #080d12;
-  --fg-strong: #080d12;
-  --fg2: #565f68;
-  --fg3: #8a939c;
-  --line: #e0e4e8;
-  --line-strong: #c4ccd3;
-  --edge: rgba(8, 13, 18, 0.09);
-
-  --accent: #0f7d8c;
-  --accent-hover: #0b626f;
-  --accent-ink: #0b626f;
-  --accent-tint: rgb(15 125 140 / 0.13);
-  --accent-fg: #ffffff;
-
-  --agent: #0f7d8c;
-  --agent-ink: #0b626f;
-  --agent-tint: rgb(15 125 140 / 0.1);
-  --agent-fg: #ffffff;
-
-  --spark: #cf4040;
-  --ok: oklch(60% 0.12 150);
-  --ok-tint: oklch(60% 0.12 150 / 0.1);
-  --warn: oklch(70% 0.135 78);
-  --warn-ink: oklch(52% 0.13 72);
-  --warn-tint: oklch(70% 0.135 78 / 0.14);
-  --danger: oklch(58% 0.18 25);
-  --danger-tint: oklch(58% 0.18 25 / 0.1);
-  --info: oklch(60% 0.11 240);
-  --info-tint: oklch(60% 0.11 240 / 0.1);
-  --dawn: rgba(224, 151, 90, 0.08);
-
-  --shadow-card: 0 0 0 1px var(--edge), 0 1px 1px rgba(26, 29, 30, 0.03);
-  --shadow-pop: 0 0 0 1px var(--edge), 0 16px 40px rgba(20, 16, 12, 0.16);
-}
-
-[data-theme="dark"] {
-  color-scheme: dark;
-  --bg: #0b1216;
-  --canvas: #0e171c;
-  --surface: #131e23;
-  --soft: #1d2b32;
-  --muted: #131e23;
-  --rail: #0e171c;
-  --sunk: #0b1216;
-  --fg: #d6dde1;
-  --fg-strong: #f1f6f8;
-  --fg2: #93a0a7;
-  --fg3: #66747d;
-  --line: #28373e;
-  --line-strong: #3c4d55;
-  --edge: rgba(255, 255, 255, 0.09);
-
-  --accent: #3fb3c2;
-  --accent-hover: #57c3d1;
-  --accent-ink: #57c3d1;
-  --accent-tint: rgb(63 179 194 / 0.18);
-  --accent-fg: #03161a;
-
-  --agent: #3fb3c2;
-  --agent-ink: #57c3d1;
-  --agent-tint: rgb(63 179 194 / 0.16);
-  --agent-fg: #03161a;
-
-  --spark: #fa6863;
-  --ok: oklch(74% 0.13 150);
-  --ok-tint: oklch(74% 0.13 150 / 0.14);
-  --warn: oklch(82% 0.15 78);
-  --warn-ink: oklch(84% 0.13 82);
-  --warn-tint: oklch(82% 0.15 78 / 0.14);
-  --danger: oklch(70% 0.18 28);
-  --danger-tint: oklch(70% 0.18 28 / 0.14);
-  --info: oklch(74% 0.14 240);
-  --info-tint: oklch(74% 0.14 240 / 0.14);
-  --dawn: rgba(224, 151, 90, 0.12);
-
-  --shadow-card: 0 0 0 1px var(--edge), 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-pop: 0 0 0 1px var(--line-strong), 0 16px 40px rgba(0, 0, 0, 0.55);
-}
-
+/* Product vocabulary maps to the shared Awaken family foundation. */
 :root {
-  /* Match awakenworks.com body typography without a network font dependency.
-   * Monospace remains reserved for code, endpoints, identifiers, and compact
-   * technical evidence. */
-  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-    "Segoe UI", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei",
-    "Hiragino Sans GB", Roboto, sans-serif;
-  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
-  --r-sm: 4px;
-  --r-md: 4px;
-  --r-lg: 4px;
-  --r-card: 4px;
+  --bg: var(--aw-bg);
+  --canvas: var(--aw-canvas);
+  --surface: var(--aw-surface);
+  --soft: var(--aw-soft);
+  --muted: var(--aw-canvas);
+  --rail: var(--aw-bg);
+  --sunk: var(--aw-border);
+  --fg: var(--aw-text);
+  --fg-strong: var(--aw-strong);
+  --fg2: var(--aw-muted);
+  --fg3: var(--aw-faint);
+  --line: var(--aw-border);
+  --line-strong: var(--aw-border-strong);
+  --edge: var(--aw-edge);
+  --accent: var(--aw-accent);
+  --accent-hover: var(--aw-accent-hover);
+  --accent-ink: var(--aw-accent-hover);
+  --accent-fg: var(--aw-on-accent);
+  --agent: var(--aw-accent);
+  --agent-ink: var(--aw-accent-hover);
+  --agent-fg: var(--aw-on-accent);
+  --spark: var(--aw-danger);
+  --ok: var(--aw-success);
+  --warn: var(--aw-warning);
+  --warn-ink: var(--aw-warning);
+  --danger: var(--aw-danger);
+  --info: var(--aw-info);
+  --shadow-card: var(--aw-shadow-surface);
+  --shadow-pop: var(--aw-shadow-overlay);
+  --font-sans: var(--aw-font-body);
+  --font-mono: var(--aw-font-mono);
+  --r-sm: var(--aw-radius-control);
+  --r-md: var(--aw-radius-control);
+  --r-lg: var(--aw-radius-overlay);
+  --r-card: var(--aw-radius-surface);
+  --row-h: var(--aw-control-md);
+  --accent-tint: color-mix(in srgb, var(--accent) 13%, transparent);
+  --agent-tint: color-mix(in srgb, var(--agent) 13%, transparent);
+  --ok-tint: color-mix(in srgb, var(--ok) 13%, transparent);
+  --warn-tint: color-mix(in srgb, var(--warn) 13%, transparent);
+  --danger-tint: color-mix(in srgb, var(--danger) 13%, transparent);
+  --info-tint: color-mix(in srgb, var(--info) 13%, transparent);
+  --dawn: color-mix(in srgb, var(--aw-warning) 8%, transparent);
   --r-pill: 9999px;
-  /* Awaken Agents density = compact (row-height 34px). */
-  --row-h: 34px;
-}
-
-:root {
   --ui-dialog-width-md: 560px;
   --ui-drawer-width-md: 640px;
 }

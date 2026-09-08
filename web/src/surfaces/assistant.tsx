@@ -1,3 +1,4 @@
+import { ArrowRight, Check, Info, LoaderCircle } from "@awaken/ui/icons";
 import { InlineNotice, Skeleton, Button, Card, ChatComposer } from "@awaken/ui";
 
 // Admin Assistant: an in-console copilot that authors agents in plain English. It is a
@@ -63,7 +64,7 @@ function DraftCard({ id, wsId }: { id: string; wsId: string }) {
         style={{ marginLeft: "auto", height: 26 }}
         onClick={() => nav(`/w/${wsId}/agents/${id}`)}
       >
-        {app.t("Open in editor →", "在编辑器打开 →")}
+        {app.t("Open in editor", "在编辑器打开")} <ArrowRight />
       </Button>
     </Card>
   );
@@ -145,11 +146,11 @@ function NoModel({ wsId }: { wsId: string }) {
     <InlineNotice
       tone="neutral"
       className="assistant-prerequisite"
-      icon={<span>ⓘ</span>}
+      icon={<Info />}
       actions={
         <>
           <Button variant="ghost" onClick={() => nav(`/w/${wsId}/models`)}>
-            {app.t("Go to Models & providers →", "前往模型与供应商 →")}
+            {app.t("Go to Models & providers", "前往模型与供应商")} <ArrowRight />
           </Button>
         </>
       }
@@ -335,7 +336,7 @@ export function AssistantPanel({
       <InlineNotice
         tone="neutral"
         className="assistant-prerequisite"
-        icon={<span>{ensureAssistant.isPending ? "◔" : "◌"}</span>}
+        icon={<LoaderCircle className={ensureAssistant.isPending ? "ui-icon--spin" : undefined} />}
         actions={
           <>
             <Button
@@ -412,7 +413,7 @@ export function AssistantPanel({
         ) : (
           <>
             <div className="assistant-context">
-              <span className="readiness-icon ready">✓</span>
+              <Check className="readiness-icon ready" />
               <span>
                 <strong>{app.t("Using existing Workspace configuration", "正在使用现有工作区配置")}</strong>
                 <small>

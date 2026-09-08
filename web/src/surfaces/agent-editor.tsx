@@ -1,3 +1,4 @@
+import { Tabs, TabPanel } from "@awaken/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
@@ -513,16 +514,15 @@ export default function AgentEditorSurface() {
       />
       <ReadinessPanel compact />
 
+      <Tabs value={stage} onValueChange={(value) => setStage(value as AuthorStage)}>
       <AgentEditorStageNavigation
-        stage={stage}
         changed={stageChanged}
-        onChange={setStage}
         canTry={managedRuntime}
         onTry={() => setShowSandbox(true)}
       />
       <AgentValidationIssues issues={issues} onOpen={routeIssue} />
 
-      <div className="agent-editor">
+      <TabPanel className="agent-editor" value={stage}>
         <AgentEditorStages
           stage={stage} builderSection={builderSection} advancedSection={advancedSection}
           config={cfg} baseline={baseline} resources={resourceInputs} resourcesError={resourcesError}
@@ -551,7 +551,9 @@ export default function AgentEditorSurface() {
           onIntegrationsValidityChange={setIntegrationsValid} onRawValidityChange={setRawValid}
           onPublish={() => void review.preparePublish(publish.isPending)}
         />
-      </div>
+      </TabPanel>
+      {(["quickstart", "build", "advanced"] as const).filter((value) => value !== stage).map((value) => <TabPanel key={value} value={value} />)}
+      </Tabs>
 
       {manageModels && (
         <Drawer title={app.t("Models", "模型")} onClose={() => setManageModels(false)}>

@@ -1,3 +1,4 @@
+import { ArrowRight, Check, Circle, Info } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card } from "@awaken/ui";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
@@ -289,7 +290,7 @@ export default function AgentQuickstart({
           <div className="readiness-list">
             {readiness.map((item) => (
               <div className="readiness-item" key={item.label} data-ready={item.ready}>
-                <span>{item.ready ? "✓" : "○"}</span>
+                <span>{item.ready ? <Check /> : <Circle />}</span>
                 <span>
                   <strong>{item.label}</strong>
                   <small>{item.detail}</small>
@@ -297,7 +298,7 @@ export default function AgentQuickstart({
               </div>
             ))}
           </div>
-          <InlineNotice tone="info" icon={<span>ⓘ</span>} style={{ marginTop: 12 }}>
+          <InlineNotice tone="info" icon={<Info />} style={{ marginTop: 12 }}>
             <span>{published
               ? app.t("This will publish the reviewed draft and create a new durable Session.", "将发布已审阅草稿并创建新的持久 Session。")
               : app.t("You will review the publication diff before the Agent becomes runnable.", "Agent 可运行前会先展示发布差异供你确认。")}</span>
@@ -308,7 +309,7 @@ export default function AgentQuickstart({
             disabled={!readiness.every((item) => item.ready) || runPending}
             onClick={() => onReviewRun(environmentId, task.trim())}
           >
-            {runPending ? app.t("Starting…", "正在启动…") : app.t("Review, publish & run", "审阅、发布并运行")} ➤
+            {runPending ? app.t("Starting…", "正在启动…") : app.t("Review, publish & run", "审阅、发布并运行")} <ArrowRight />
           </Button>
         </Card>
       </aside>

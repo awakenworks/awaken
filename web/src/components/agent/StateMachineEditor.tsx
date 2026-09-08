@@ -1,3 +1,4 @@
+import { ArrowLeft, Plus, X } from "@awaken/ui/icons";
 import { Button, Card } from "@awaken/ui";
 // Visual editor for the generic runtime State Machine DSL. The UI follows the
 // execution model: identify the instance, choose a trigger/guard, then configure
@@ -84,7 +85,7 @@ export default function StateMachineEditor({
             title={`${app.t(preset.hint, preset.hintZh)} ${app.t(preset.value, preset.valueZh)}`}
             onClick={() => addPreset(preset.machine)}
           >
-            + {app.t(preset.label, preset.labelZh)}
+            <Plus /> {app.t(preset.label, preset.labelZh)}
           </Button>
         ))}
         <Button variant="ghost" style={{ height: 28, marginLeft: "auto" }} onClick={() => setRaw(true)}>
@@ -149,7 +150,7 @@ function RawEditor({
       />
       {error && <span className="err" style={{ fontSize: 11 }}>{error}</span>}
       <Button variant="ghost" style={{ alignSelf: "flex-start" }} onClick={onClose}>
-        ← {app.t("Visual editor", "可视化编辑")}
+        <ArrowLeft /> {app.t("Visual editor", "可视化编辑")}
       </Button>
     </div>
   );
@@ -193,7 +194,7 @@ function MachineEditor({
               : app.t("Persist across runs in this thread", "在同一 thread 的多个 run 间持久化")}
           </div>
         </div>
-        <Button variant="ghost" style={{ height: 26 }} onClick={onRemove}>✕</Button>
+        <Button variant="ghost" aria-label={app.t("Remove state machine", "移除状态机")} style={{ height: 26 }} onClick={onRemove}><X /></Button>
       </div>
 
       <div className="row" style={{ gap: 7, flexWrap: "wrap" }}>
@@ -263,7 +264,7 @@ function MachineEditor({
           />
         ))}
         <Button variant="ghost" style={{ alignSelf: "flex-start", height: 28 }} onClick={addTransition}>
-          + {app.t("Transition", "转移")}
+          <Plus /> {app.t("Transition", "转移")}
         </Button>
       </div>
     </Card>
@@ -316,7 +317,7 @@ function TransitionRow({
         <span className="ui-status-pill" style={{ fontSize: 10 }}>
           {kind === "tool" ? app.t("pre + post", "执行前 + 后") : app.t("atomic fact", "原子事实")}
         </span>
-        <Button variant="ghost" style={{ height: 26 }} onClick={onRemove}>✕</Button>
+        <Button variant="ghost" aria-label={app.t("Remove transition", "移除转移")} style={{ height: 26 }} onClick={onRemove}><X /></Button>
       </div>
 
       {kind === "tool" && (

@@ -35,6 +35,10 @@ async function openAdvanced(page: Page, section: "Orchestration" | "Plugin confi
 test("shell renders the Awaken Agents brand, route scope and task-oriented rail", async ({ page }) => {
   await page.goto("/w/default/sessions");
   await expect(page.locator(".brand-anchor")).toContainText("Awaken");
+  // Brand B1: app chrome and injected favicon consume the pinned family source.
+  await expect(page.locator('.brand-anchor [data-brand-mark="agents"]')).toBeVisible();
+  await expect(page.locator('link[rel="icon"]')).toHaveCount(1);
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute("href", /^data:image\/svg\+xml,/);
   await expect(page.locator(".workspace-context")).toContainText("Local Workspace");
   await expect(page.locator(".workspace-context")).toHaveAttribute("title", "default");
   await expect(page.locator(".org-anchor,.ws-crumb")).toHaveCount(0);
@@ -108,6 +112,34 @@ test("Workspace overview exposes one live readiness path instead of a client ros
   await expect(page.locator(".readiness-panel")).toBeVisible();
   await expect(page.getByText("Workspace readiness")).toBeVisible();
   await expect(page.getByPlaceholder("ws_acme")).toHaveCount(0);
+});
+
+// Interaction decision table: R1 arrow/Home/End on stage tabs -> one selected
+// stage, linked visible panel and focus; R2 nested section tabs -> only that
+// section changes; R3 changing sections -> product draft survives; R4 returning
+// to the stage -> no save/publish mutation is implied by presentation changes.
+test("authoring tabs share keyboard navigation and preserve the current draft", async ({ page }) => {
+  await page.goto("/w/default/agents/new");
+  const stages = page.getByRole("tablist", { name: "Authoring stages" });
+  await stages.getByRole("tab", { name: "Quickstart", exact: true }).focus();
+  await page.keyboard.press("ArrowRight");
+  const build = stages.getByRole("tab", { name: "Build", exact: true });
+  await expect(build).toBeFocused();
+  await expect(build).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(`[id="${await build.getAttribute("aria-controls")}"]`)).toBeVisible();
+  const name = page.locator('input[placeholder="Coding Assistant"]');
+  await name.fill("Keyboard draft");
+  const sections = page.getByRole("tablist", { name: "Build sections" });
+  await sections.getByRole("tab", { name: "Instructions", exact: true }).focus();
+  await page.keyboard.press("End");
+  await expect(sections.getByRole("tab", { name: "Memory & resources", exact: true })).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(name).toHaveValue("Keyboard draft");
+  await build.focus();
+  await page.keyboard.press("End");
+  await expect(stages.getByRole("tab", { name: "Advanced", exact: true })).toBeFocused();
+  await page.keyboard.press("ArrowLeft");
+  await expect(name).toHaveValue("Keyboard draft");
 });
 
 test("agent editor Build/Advanced stages are data-driven from /v1/capabilities", async ({ page }) => {
@@ -523,7 +555,7 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   await expect(page.getByText("Runtime-discovered MCP tool; resolved when the server connects.")).toBeVisible();
 
   await openBuild(page, "Skills & MCP");
-  await page.getByRole("button", { name: "+ MCP integration", exact: true }).click();
+  await page.getByRole("button", { name: "MCP integration", exact: true }).click();
   await page.getByLabel("Server name").fill("issues");
   await page.getByLabel("URL").fill("https://mcp.example.test/issues");
   await page.getByLabel("Credential source").selectOption(
@@ -532,10 +564,10 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   await page.getByLabel("Prompts as skills").check();
   const issuesIntegration = page.locator(".mcp-integration-card").first();
   await issuesIntegration.getByLabel("Default permission").selectOption("always_allow");
-  await issuesIntegration.getByRole("button", { name: "+ Named tool override" }).click();
+  await issuesIntegration.getByRole("button", { name: "Named tool override" }).click();
   await issuesIntegration.getByLabel("Named tool override").fill("create_issue");
   await issuesIntegration.getByLabel("Tool permission", { exact: true }).selectOption("always_ask");
-  await page.getByRole("button", { name: "+ MCP integration", exact: true }).click();
+  await page.getByRole("button", { name: "MCP integration", exact: true }).click();
   await page.getByLabel("Transport").last().selectOption("sandbox_stdio");
   await page.getByLabel("Server name").last().fill("browser");
   await page.getByLabel("Sandbox command").fill("playwright-mcp");
@@ -624,7 +656,7 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   await expect(issuesRow.getByText("Allow without asking", { exact: true })).toBeVisible();
   await expect(issuesRow.getByText("1 named override", { exact: true })).toBeVisible();
   await expect(page.getByText("sandbox stdio · playwright-mcp").first()).toBeVisible();
-  await expect(page.getByRole("link", { name: "Review the MCP and ToolSet guide ↗" }))
+  await expect(page.getByRole("link", { name: "Review the MCP and ToolSet guide" }))
     .toHaveAttribute("href", "https://awakenworks.com/docs/agents/protocols/mcp/");
   const agentLink = issuesRow.locator(`a[href*="/agents/${id}"]`);
   await expect(agentLink.getByText(displayName, { exact: true })).toBeVisible();
@@ -717,7 +749,7 @@ test("Agent orchestration authors a typed auxiliary roster, pins a version, and 
   await page.getByLabel("Model", { exact: true }).selectOption({ label: model });
   await openAdvanced(page, "Orchestration");
   await page.getByLabel("Add a published specialist").selectOption(auxiliary);
-  await page.getByRole("button", { name: "+ Add", exact: true }).click();
+  await page.getByRole("button", { name: "Add", exact: true }).click();
   await expect(page.getByRole("list", { name: "Auxiliary Agent roster" })).toContainText(auxiliary);
   await expect(page.getByLabel("Budget profile")).toHaveValue("conservative");
   await page.getByLabel("Version policy").selectOption("pinned");
@@ -1217,14 +1249,14 @@ test("Session Integrations shows only the durable active MCP projection", async 
   await expect(effective).toContainText("revision 7");
   await expect(effective).toContainText("immutable snapshot");
   await expect(page.getByRole("navigation", { name: "Open current Agent configuration" })
-    .getByRole("link", { name: "MCP integrations · 1 →" }))
+    .getByRole("link", { name: "MCP integrations · 1" }))
     .toHaveAttribute("href", "/w/default/agents/mcp-agent?stage=build&section=integrations");
   await page.getByRole("navigation", { name: "Session views" }).getByRole("link", { name: "Integrations", exact: true }).click();
   await expect(page.getByRole("heading", { name: "MCP connections used by this Session" })).toBeVisible();
   await expect(page.getByText("https://mcp.example.test/docs")).toBeVisible();
   await expect(page.getByText("remote Skills")).toBeVisible();
   await expect(page.getByText("active", { exact: true }).last()).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open current MCP configuration →" }))
+  await expect(page.getByRole("link", { name: "Open current MCP configuration" }))
     .toHaveAttribute("href", "/w/default/agents/mcp-agent?stage=build&section=integrations");
 });
 
@@ -1323,7 +1355,7 @@ test("Deployments keeps successful and failed run history visible after the tran
   const successful = page.locator("tr", { hasText: "deprun_success" });
   await expect(successful).toContainText("Repository maintenance");
   await expect(successful).toContainText("scheduled");
-  await expect(successful.getByRole("link", { name: "Open Session →" }))
+  await expect(successful.getByRole("link", { name: "Open Session" }))
     .toHaveAttribute("href", "/w/default/sessions/session_maintenance");
   const failed = page.locator("tr", { hasText: "deprun_failed" });
   await expect(failed).toContainText("manual");

@@ -1,3 +1,4 @@
+import { ClipboardCheck, TriangleAlert, X } from "@awaken/ui/icons";
 import { InlineNotice, Button, ChatApproval, ChatComposer, ChatMarkdown, ChatMessage, ChatMessageList, ChatThinking, ToolCallCard as SharedToolCallCard } from "@awaken/ui";
 // The session transcript: a pure view over one SessionLog owner, with inline
 // HITL and a composer. The default export is the thin standalone owner used by
@@ -52,7 +53,7 @@ function ToolCard({
   const statusLabel = pendingConfirm
     ? app.t("awaiting approval", "待确认")
     : result
-      ? isError ? "error" : "done ✓"
+      ? isError ? app.t("error", "错误") : app.t("done", "完成")
       : app.t("running", "运行中");
   return (
     <section aria-label={toolRegionLabel(name, app.locale === "zh")} data-tool={name}>
@@ -361,7 +362,7 @@ export function TranscriptView({
             return (
               <InlineNotice
                 key={ev.id}
-                tone={sr.type === "retries_exhausted" ? "warning" : "neutral"} icon={<span>{sr.type === "requires_action" ? "⚠" : "✕"}</span>}
+                tone={sr.type === "retries_exhausted" ? "warning" : "neutral"} icon={sr.type === "requires_action" ? <TriangleAlert /> : <X />}
               >
                 <span className="mono" style={{ fontSize: 11.5 }}>
                   {sr.type}
@@ -371,7 +372,7 @@ export function TranscriptView({
           }
           case "session.error":
             return (
-              <InlineNotice key={ev.id} tone="warning" icon={<span>✕</span>} style={{ alignItems: "flex-start" }}>
+              <InlineNotice key={ev.id} tone="warning" icon={<X />} style={{ alignItems: "flex-start" }}>
                 <span>
                   <strong>{app.t("Run failed", "运行失败")}</strong>
                   <br />
@@ -383,7 +384,7 @@ export function TranscriptView({
           case "span.outcome_evaluation_end":
             return (
               <div key={ev.id} className="row mut" style={{ fontSize: 12 }}>
-                ◇ outcome · iteration {"iteration" in ev ? String(ev.iteration) : "?"}
+                <ClipboardCheck /> outcome · iteration {"iteration" in ev ? String(ev.iteration) : "?"}
                 {"result" in ev ? ` → ${String(ev.result)}` : ""}
               </div>
             );
@@ -404,7 +405,7 @@ export function TranscriptView({
                 ? app.t("send failed — message retained", "发送失败——消息已保留")
                 : sending || active
                   ? app.t("sending…", "发送中…")
-                  : app.t("sent ✓", "已发送 ✓")}
+                  : app.t("sent", "已发送")}
             </span>
           </ChatMessage>
         )}

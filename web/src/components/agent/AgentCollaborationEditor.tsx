@@ -1,3 +1,4 @@
+import { ExternalLink, Info, Plus, TriangleAlert, X } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card, Switch } from "@awaken/ui";
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -213,7 +214,7 @@ export default function AgentCollaborationEditor({
                   variant="ghost"
                   aria-label={app.t(`Remove ${view.id}`, `移除 ${view.id}`)}
                   onClick={() => removeDelegate(index)}
-                >✕</Button>
+                ><X /></Button>
               </div>
             );
           })}
@@ -235,20 +236,20 @@ export default function AgentCollaborationEditor({
           ))}
         </SelectField>
         <Button disabled={!candidateId || roster.length >= 20} onClick={addDelegate}>
-          + {app.t("Add", "添加")}
+          <Plus /> {app.t("Add", "添加")}
         </Button>
         {config.id.trim() && config.generation !== undefined && (
           <Link className="ui-button" to={`/w/${app.workspaceId}/agents/new?parent=${encodeURIComponent(config.id.trim())}`}>
-            + {app.t("New specialist", "新建专属辅助 Agent")}
+            <Plus /> {app.t("New specialist", "新建专属辅助 Agent")}
           </Link>
         )}
         <Link className="mut" to={`/w/${app.workspaceId}/agents?view=collaborations`}>
-          {app.t("View all relationships ↗", "查看全部关系 ↗")}
+          {app.t("View all relationships", "查看全部关系")} <ExternalLink />
         </Link>
       </div>
       {authored.error instanceof Error && <div className="err">{app.t("Agent catalog could not load.", "无法加载 Agent 目录。")} {authored.error.message}</div>}
       {!authored.isLoading && available.length === 0 && delegates.length === 0 && (
-        <InlineNotice tone="info" icon={<span>ⓘ</span>}>
+        <InlineNotice tone="info" icon={<Info />}>
           <span>{app.t(
             "The built-in auxiliary is ready. Create a specialist here only when it needs a different model, prompt, tools, or permissions.",
             "内置辅助 Agent 已可使用。仅在需要不同模型、提示词、工具或权限时，再创建专属辅助 Agent。",
@@ -321,7 +322,7 @@ export default function AgentCollaborationEditor({
 
       {validationErrors.map((error) => <div role="alert" className="err" key={error}>{error}</div>)}
       {delegates.some((target) => catalogById.get(targetId(target, config.id))?.published !== true) && (
-        <InlineNotice tone="warning" icon={<span>!</span>}>
+        <InlineNotice tone="warning" icon={<TriangleAlert />}>
           <span>{app.t(
             "One or more referenced Agents are missing or not published. The existing reference is preserved, but publish validation may reject it.",
             "一个或多个被引用的 Agent 缺失或尚未发布。现有引用会保留，但发布校验可能拒绝它。",

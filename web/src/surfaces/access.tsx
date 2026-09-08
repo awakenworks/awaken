@@ -1,3 +1,4 @@
+import { ArrowRight, KeyRound, LockKeyhole, X } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card } from "@awaken/ui";
 // Workspace · Access: embedded-IAM token management. The mint response is the
 // ONLY time the cleartext is visible — surfaced once with a copy affordance.
@@ -110,15 +111,15 @@ export default function AccessSurface() {
       {minted && (
         <InlineNotice
           tone="warning"
-          icon={<span>🔑</span>}
+          icon={<KeyRound />}
           actions={
             <>
               <CopyButton value={minted.secret} label={app.t("Copy", "复制")} copiedLabel={app.t("Copied", "已复制")} />
               <Link className="protocol-help-link" to={protocolHelpPath(wsId, "managed")}>
-                {app.t("Open SDK setup →", "打开 SDK 配置 →")}
+                {app.t("Open SDK setup", "打开 SDK 配置")} <ArrowRight />
               </Link>
-              <Button variant="ghost" onClick={() => setMinted(null)}>
-                ✕
+              <Button variant="ghost" aria-label={app.t("Dismiss secret", "关闭密钥提示")} onClick={() => setMinted(null)}>
+                <X />
               </Button>
             </>
           }
@@ -129,7 +130,7 @@ export default function AccessSurface() {
           </span>
         </InlineNotice>
       )}
-      <InlineNotice tone="info" icon={<span>🔐</span>}>
+      <InlineNotice tone="info" icon={<LockKeyhole />}>
         <span>{app.t("Create long-lived, workspace-scoped service API keys here for trusted backends. Browser/mobile clients must use short-lived application access tokens from API & protocols.", "在这里为可信后端创建长期、限定 Workspace 的 Service API Key；浏览器和移动端必须使用“API 与协议”中的短期 Application Access Token。")}</span>
       </InlineNotice>
       <Card>
@@ -143,7 +144,7 @@ export default function AccessSurface() {
           {app.t("Application access tokens are for browser and mobile protocols. They do not replace this service key for a trusted Managed Agents backend.", "Application Access Token 用于浏览器和移动端协议，不能替代可信 Managed Agents 后端使用的 Service API Key。")}
         </p>
         <Link className="protocol-help-link" to={protocolHelpPath(wsId, "managed")}>
-          {app.t("Open Managed Agents SDK setup →", "打开 Managed Agents SDK 配置 →")}
+          {app.t("Open Managed Agents SDK setup", "打开 Managed Agents SDK 配置")} <ArrowRight />
         </Link>
       </Card>
       <Card className="responsive-table-card" style={{ padding: 0 }}>

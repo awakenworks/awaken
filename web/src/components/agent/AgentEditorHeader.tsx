@@ -1,3 +1,4 @@
+import { ArrowLeft, ArrowRight, Check, Sparkles } from "@awaken/ui/icons";
 import { Button } from "@awaken/ui";
 import { Pill, TechnicalId } from "../ui";
 import { useApp } from "../../lib/app-state";
@@ -42,7 +43,7 @@ export default function AgentEditorHeader({
   return (
     <div className="row" style={{ justifyContent: "space-between" }}>
       <span className="row">
-        <Button variant="ghost" style={{ height: 26 }} onClick={onBack}>← {app.t("Agents", "Agent")}</Button>
+        <Button variant="ghost" style={{ height: 26 }} onClick={onBack}><ArrowLeft /> {app.t("Agents", "Agent")}</Button>
         <span className="crumb-title">
           {isNew
             ? app.t("New Agent", "新建 Agent")
@@ -52,8 +53,8 @@ export default function AgentEditorHeader({
         {dirty && <Pill tone="warn">{app.t("unsaved", "未保存")}</Pill>}
         {status === "saving" && <Pill tone="neutral">{app.t("Saving draft…", "正在保存草稿…")}</Pill>}
         {status === "validating" && <Pill tone="agent">{app.t("Validating…", "正在校验…")}</Pill>}
-        {status === "fixing" && <Pill tone="agent">✦ {app.t("Agent is fixing the draft…", "Agent 正在修复草稿…")}</Pill>}
-        {status === "ready" && <Pill tone="ok">✓ {app.t("Draft checked", "草稿检查通过")}</Pill>}
+        {status === "fixing" && <Pill tone="agent"><Sparkles /> {app.t("Agent is fixing the draft…", "Agent 正在修复草稿…")}</Pill>}
+        {status === "ready" && <Pill tone="ok"><Check /> {app.t("Draft checked", "草稿检查通过")}</Pill>}
         {status === "needs_input" && <Pill tone="danger">{app.t("Needs input", "需要处理")}</Pill>}
         {canSave && !canPublish && <Pill tone="danger" title={publishBlockedReason}>{app.t("Publication blocked", "发布受阻")}</Pill>}
       </span>
@@ -66,7 +67,7 @@ export default function AgentEditorHeader({
           title={publishBlockedReason ?? app.t("Saves and checks the draft, then shows the exact changes before publishing", "保存并检查草稿，然后在发布前展示确切差异")}
           onClick={onPublish}
         >
-          {app.t("Review & publish", "审阅并发布")} ➤
+          {app.t("Review & publish", "审阅并发布")} <ArrowRight />
         </Button>
       </span>
     </div>

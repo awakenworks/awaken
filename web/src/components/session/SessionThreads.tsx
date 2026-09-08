@@ -1,3 +1,4 @@
+import { CornerDownRight } from "@awaken/ui/icons";
 import { Button, Card } from "@awaken/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { isManagedSessionActiveStatus } from "@awaken/managed-session-projection";
@@ -144,7 +145,7 @@ export default function SessionThreads({ base, workspaceId }: { base: string; wo
             {children.map((thread) => (
               <Card className="thread-node thread-node-child" key={thread.id}>
                 <div className="thread-node-main">
-                  <span className="thread-tree-branch" aria-hidden="true">↳</span>
+                  <CornerDownRight className="thread-tree-branch" />
                   <div>
                     <span className="thread-node-kind">{app.t("Auxiliary Agent", "辅助 Agent")}</span>
                     <strong>{agentLabel(thread)}</strong>

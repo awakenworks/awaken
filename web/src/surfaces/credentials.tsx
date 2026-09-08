@@ -1,3 +1,4 @@
+import { Plus } from "@awaken/ui/icons";
 import { Skeleton, Button, Card } from "@awaken/ui";
 
 // Workspace credential sources: one secret-in / secret-free-out materialization
@@ -177,10 +178,10 @@ export default function CredentialsSurface() {
         </span>
         <span className="row">
           <Button variant="ghost" onClick={() => setAddingSetupToken(true)}>
-            + {app.t("Claude Code setup token", "Claude Code setup token")}
+            <Plus /> {app.t("Claude Code setup token", "Claude Code setup token")}
           </Button>
           <Button variant="primary" onClick={() => navigate(`/w/${workspace}/models`)}>
-            + {app.t("Connect model provider", "连接模型供应商")}
+            <Plus /> {app.t("Connect model provider", "连接模型供应商")}
           </Button>
         </span>
       </div>

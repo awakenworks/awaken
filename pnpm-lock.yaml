@@ -65,8 +65,8 @@ importers:
         specifier: workspace:*
         version: link:../packages/managed-session-projection
       '@awaken/ui':
-        specifier: file:vendor/awaken-ui-0.4.0.tgz
-        version: file:web/vendor/awaken-ui-0.4.0.tgz(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+        specifier: file:vendor/awaken-ui-0.8.0.tgz
+        version: file:web/vendor/awaken-ui-0.8.0.tgz(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@tanstack/react-query':
         specifier: ^5.62.0
         version: 5.101.2(react@19.2.7)
@@ -190,9 +190,9 @@ packages:
     resolution: {integrity: sha512-60vepv88RwcJtSHrD6MjIL6Ta3SOYbgfnkHb+ppAVK+o9mXprRtulx7VlRl3lN3bbvysAfCS7WMVfhUYemB0IQ==}
     engines: {node: '>= 16'}
 
-  '@awaken/ui@file:web/vendor/awaken-ui-0.4.0.tgz':
-    resolution: {integrity: sha512-dYCdB5TFWO6zo9S40hJWcVKn2vit6Ato88dTS71PeijdDX4VYTmMZWsLYvcXeFmskHRRxhXNhwh71fnI80UZjQ==, tarball: file:web/vendor/awaken-ui-0.4.0.tgz}
-    version: 0.4.0
+  '@awaken/ui@file:web/vendor/awaken-ui-0.8.0.tgz':
+    resolution: {integrity: sha512-26mI3dZfDaPnRUCJc4O9UKsdfPnp0n1f+400dMqv/BO/0TX+sokz5VFi7R3Na5HdLzo2XTDe7NMlL7QmZ3tmDQ==, tarball: file:web/vendor/awaken-ui-0.8.0.tgz}
+    version: 0.8.0
     engines: {node: '>=22', pnpm: '>=11'}
     peerDependencies:
       react: ^19.0.0
@@ -963,6 +963,9 @@ packages:
   lru-cache@5.1.1:
     resolution: {integrity: sha512-KpNARQA3Iwv+jTA0utUVVbrh+Jlrr1Fv0e56GGzAFOXN7dk/FviaDW8LHmK52DlcH4WP2n6gI8vN1aesBFgo9w==}
 
+  lucide@0.468.0:
+    resolution: {integrity: sha512-UFbgwji/ZnAV7iTTE4jujyTV7J95AILKyATDUrqOJrMcUGfXvGjw3c1mcuHZUX2oJfkrAGU9KoxkrLQk2jjtiA==}
+
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
 
@@ -1389,10 +1392,11 @@ snapshots:
       '@types/json-schema': 7.0.15
       js-yaml: 4.3.1
 
-  '@awaken/ui@file:web/vendor/awaken-ui-0.4.0.tgz(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
+  '@awaken/ui@file:web/vendor/awaken-ui-0.8.0.tgz(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
     dependencies:
       '@base-ui/react': 1.6.0(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       dompurify: 3.3.0
+      lucide: 0.468.0
       marked: 18.0.4
       react: 19.2.7
       react-dom: 19.2.7(react@19.2.7)
@@ -2058,6 +2062,8 @@ snapshots:
   lru-cache@5.1.1:
     dependencies:
       yallist: 3.1.1
+
+  lucide@0.468.0: {}
 
   magic-string@0.30.21:
     dependencies:

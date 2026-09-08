@@ -1,3 +1,4 @@
+import { ArrowDown, ArrowRight, ChevronDown, Plus } from "@awaken/ui/icons";
 import { Button, SegmentedControl as Segmented } from "@awaken/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useRef, useState } from "react";
@@ -169,7 +170,7 @@ export default function FileCatalog({ purpose }: { purpose: "input" | "artifact"
               disabled={upload.isPending}
               onClick={() => picker.current?.click()}
             >
-              + {upload.isPending ? app.t("Uploading…", "上传中…") : app.t("Upload file", "上传文件")}
+              <Plus /> {upload.isPending ? app.t("Uploading…", "上传中…") : app.t("Upload file", "上传文件")}
             </Button>
           </>}
         </span>
@@ -206,7 +207,7 @@ export default function FileCatalog({ purpose }: { purpose: "input" | "artifact"
       /> : <div className="ui-card responsive-table-card" style={{ padding: 0, overflow: "hidden" }}>
         <div className="mut" style={{ padding: "10px 14px", borderBottom: "1px solid var(--line)" }}>{app.t("Names containing / are grouped into folders for easier browsing. Moving between folder and list views does not change the files.", "名称中的 / 会显示为目录，便于浏览。切换目录或列表视图不会修改文件。")}</div>
         <table className="ui-data-grid__table"><thead><tr><th>{app.t("Folder / file", "目录 / 文件")}</th><th>{app.t("Type", "类型")}</th><th>{app.t("Size", "大小")}</th>{purpose === "artifact" && <th />}</tr></thead><tbody>
-          {tree.map((row) => row.directory ? <tr key={row.key}><td colSpan={purpose === "artifact" ? 4 : 3} className="mono mut" style={{ paddingLeft: 14 + row.depth * 18 }}>▾ {row.path.split("/").at(-1)}/</td></tr> : row.file && <tr key={row.key}><td data-label={app.t("Folder / file", "目录 / 文件")} style={{ paddingLeft: 14 + row.depth * 18 }}><strong>└ {row.path.split("/").at(-1)}</strong><TechnicalId value={row.file.id} /></td><td data-label={app.t("Type", "类型")} className="mut">{row.file.mime_type || "—"}</td><td data-label={app.t("Size", "大小")} className="mut">{bytesLabel(row.file.size_bytes)}</td>{purpose === "artifact" && <td className="responsive-table-actions" style={{ textAlign: "right" }}><Button variant="ghost" disabled={row.file.downloadable === false} onClick={() => void download(row.file!)}>↓ {app.t("Download", "下载")}</Button></td>}</tr>)}
+          {tree.map((row) => row.directory ? <tr key={row.key}><td colSpan={purpose === "artifact" ? 4 : 3} className="mono mut" style={{ paddingLeft: 14 + row.depth * 18 }}><ChevronDown /> {row.path.split("/").at(-1)}/</td></tr> : row.file && <tr key={row.key}><td data-label={app.t("Folder / file", "目录 / 文件")} style={{ paddingLeft: 14 + row.depth * 18 }}><strong>└ {row.path.split("/").at(-1)}</strong><TechnicalId value={row.file.id} /></td><td data-label={app.t("Type", "类型")} className="mut">{row.file.mime_type || "—"}</td><td data-label={app.t("Size", "大小")} className="mut">{bytesLabel(row.file.size_bytes)}</td>{purpose === "artifact" && <td className="responsive-table-actions" style={{ textAlign: "right" }}><Button variant="ghost" disabled={row.file.downloadable === false} onClick={() => void download(row.file!)}><ArrowDown /> {app.t("Download", "下载")}</Button></td>}</tr>)}
           {!files.isLoading && tree.length === 0 && <tr><td colSpan={purpose === "artifact" ? 4 : 3}>
             <div className="empty-inline">
               <strong>{app.t(purpose === "artifact" ? "No artifacts yet." : "No input files yet.", purpose === "artifact" ? "还没有产物。" : "还没有输入文件。")}</strong>
@@ -214,7 +215,7 @@ export default function FileCatalog({ purpose }: { purpose: "input" | "artifact"
                 purpose === "artifact" ? "Run a published Agent that writes an output file." : "Upload a reusable input, then bind it under Agent → Build → Knowledge.",
                 purpose === "artifact" ? "运行一个会写出文件的已发布 Agent，产物会出现在这里。" : "上传可复用输入后，在“Agent → 构建 → 知识”中绑定。",
               )}</span>
-              {purpose === "artifact" && <Link to={`/w/${app.workspaceId}/sessions`}>{app.t("Open Sessions →", "前往会话 →")}</Link>}
+              {purpose === "artifact" && <Link to={`/w/${app.workspaceId}/sessions`}>{app.t("Open Sessions", "前往会话")} <ArrowRight /></Link>}
               {purpose === "input" && <Button variant="primary" onClick={() => picker.current?.click()}>{app.t("Upload first file", "上传第一个文件")}</Button>}
             </div>
           </td></tr>}
