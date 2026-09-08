@@ -6,6 +6,49 @@ use std::sync::Arc;
 /// The contract crate is the sole field/validation authority.
 pub use pc::SandboxEffectFence as ContainerEffectFence;
 
+/// Exact physical reservation returned by the backend authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedContainer {
+    pub locator: String,
+    pub authority_attempt_id: String,
+    pub disposition: PreparedContainerDisposition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreparedContainerDisposition {
+    FreshReservation,
+    RecoveringReservation,
+    AlreadyActive,
+}
+
+impl PreparedContainer {
+    pub(crate) fn fresh(locator: String, authority_attempt_id: String) -> Self {
+        Self {
+            locator,
+            authority_attempt_id,
+            disposition: PreparedContainerDisposition::FreshReservation,
+        }
+    }
+
+    #[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
+    pub(crate) fn recovering(locator: String, authority_attempt_id: String) -> Self {
+        Self {
+            locator,
+            authority_attempt_id,
+            disposition: PreparedContainerDisposition::RecoveringReservation,
+        }
+    }
+
+    #[cfg(any(test, feature = "docker", feature = "podman", feature = "k8s"))]
+    pub(crate) fn already_active(locator: String, authority_attempt_id: String) -> Self {
+        Self {
+            locator,
+            authority_attempt_id,
+            disposition: PreparedContainerDisposition::AlreadyActive,
+        }
+    }
+}
+
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
 use awaken_provisioning_contract as pc;

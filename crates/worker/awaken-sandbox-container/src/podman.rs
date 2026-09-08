@@ -34,8 +34,8 @@ use crate::runtime::{
 use crate::{
     ContainerCreateAttempt, ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent,
     ContainerRealizationNamespace, ContainerRuntime, ContainerState, MANAGED_SANDBOX_LABEL,
-    PackageImageProvisioner, RUNTIME_OWNER_LABEL, RuntimeAgentProcess, RuntimeError,
-    RuntimeRestoreTarget, SANDBOX_ADOPTION_LABEL, SANDBOX_ATTEMPT_LABEL,
+    PackageImageProvisioner, PreparedContainer, RUNTIME_OWNER_LABEL, RuntimeAgentProcess,
+    RuntimeError, RuntimeRestoreTarget, SANDBOX_ADOPTION_LABEL, SANDBOX_ATTEMPT_LABEL,
     SANDBOX_EFFECT_EPOCH_LABEL, SANDBOX_EFFECT_EXPIRY_LABEL, SANDBOX_EFFECT_LABEL,
     SANDBOX_EFFECT_OWNER_LABEL, SANDBOX_EFFECT_RUNTIME_LABEL, SANDBOX_REALIZATION_LABEL,
     SANDBOX_SCOPE_LABEL, container_effect_fence_from_values, container_effect_label_values,
@@ -799,7 +799,7 @@ impl ContainerRuntime for PodmanRuntime {
         context: &ContainerRealizationContext<'_>,
         plan: &ContainerPlan,
         realization_fingerprint: &pc::SandboxRealizationFingerprint,
-    ) -> Result<String, RuntimeError> {
+    ) -> Result<PreparedContainer, RuntimeError> {
         let name = runtime_container_name(self.realization_namespace.as_str(), context.scope)?;
         let mut args = podman_create_argv(&name, plan, &plan.rootfs);
         // Publish the agent's internal port to an ephemeral 127.0.0.1 host port so
@@ -839,7 +839,12 @@ impl ContainerRuntime for PodmanRuntime {
         for _ in 0..4 {
             match decision {
                 ExistingRealizationDecision::Create => match self.run(&args).await {
-                    Ok(created) if !created.trim().is_empty() => return Ok(created),
+                    Ok(created) if !created.trim().is_empty() => {
+                        return Ok(PreparedContainer::fresh(
+                            created,
+                            context.attempt.as_str().to_owned(),
+                        ));
+                    }
                     Ok(_) => {
                         decision = self
                             .create_decision(context, Some(realization_fingerprint))
@@ -857,9 +862,23 @@ impl ContainerRuntime for PodmanRuntime {
                         decision = after;
                     }
                 },
-                ExistingRealizationDecision::ConvergeCreating(observed)
-                | ExistingRealizationDecision::ReuseReady(observed) => {
-                    return Ok(observed.incarnation.identity);
+                ExistingRealizationDecision::ConvergeCreating(observed) => {
+                    let attempt_id = observed.attempt_id.ok_or_else(|| {
+                        backend("Podman prepared realization has no Memory attempt identity")
+                    })?;
+                    return Ok(PreparedContainer::recovering(
+                        observed.incarnation.identity,
+                        attempt_id,
+                    ));
+                }
+                ExistingRealizationDecision::ReuseReady(observed) => {
+                    let attempt_id = observed.attempt_id.ok_or_else(|| {
+                        backend("Podman active realization has no Memory attempt identity")
+                    })?;
+                    return Ok(PreparedContainer::already_active(
+                        observed.incarnation.identity,
+                        attempt_id,
+                    ));
                 }
                 ExistingRealizationDecision::ReplaceExact(observed) => {
                     // Only the shared fingerprint+Session-fence decision can

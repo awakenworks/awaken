@@ -1039,3 +1039,34 @@ a crash boundary. Provider ordering is still `Memory -> combined create` at
 this amendment point, so this split alone does not claim cross-process Memory
 responsibility. That requires the provider to call the two phases explicitly
 and recover the backend-owned staging locator before mounting.
+
+### Memory publication amendment (2026-09-08)
+
+The provider now completes that ordering through the same physical authority:
+
+1. Docker/Podman reserve an exact stopped container; Kubernetes reserves its
+   UID-fenced Pod. Existing backend labels and annotations remain authoritative.
+2. The provider resolves the reservation's staging root, recovers an unfinished
+   attempt when necessary, and materializes a copy through the one injected
+   `MemoryMounter`.
+3. Secret-free original-head evidence is atomically recorded inside that exact
+   backend-bound root. Only then may the runtime start the container or release
+   the Pod projection gate.
+4. If activation succeeds but its response is lost, a later Worker observes the
+   same active object and reads that manifest without remounting the live copy.
+   A prepared object instead compensates the exact old path before remounting.
+
+The provisioning contract adds only a pure `MemoryMountAttempt` transition
+value. It carries logical coordinates and phases; host paths, container IDs,
+Pod UIDs, futures, guards, and persistence remain in their established owners.
+Local/Namespace consume this kernel while `realization_marker` remains their
+sole durable physical authority. The former Container process-local retained
+staging ledger is removed rather than synchronized with backend state.
+
+Container providers accept only restart-recoverable copy materialization.
+`WriteThroughRequired` is rejected before backend or Memory effects because a
+live FUSE participant cannot currently be transferred after Worker death. This
+is an explicit capability boundary, not a write-through-to-copy fallback. The
+recovery guarantee covers Worker process loss while the backend-bound staging
+directory remains available; host loss and cross-node staging recovery remain
+outside this contract and fail closed.

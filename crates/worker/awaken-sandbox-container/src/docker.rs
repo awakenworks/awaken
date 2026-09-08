@@ -37,8 +37,8 @@ use crate::runtime::{
 use crate::{
     ContainerPlan, ContainerRealizationContext, ContainerRealizationIntent,
     ContainerRealizationNamespace, ContainerRuntime, ContainerState, MANAGED_SANDBOX_LABEL,
-    PackageImageProvisioner, RUNTIME_OWNER_LABEL, RuntimeAgentProcess, RuntimeError,
-    RuntimeRestoreTarget, SANDBOX_ADOPTION_LABEL, SANDBOX_ATTEMPT_LABEL,
+    PackageImageProvisioner, PreparedContainer, RUNTIME_OWNER_LABEL, RuntimeAgentProcess,
+    RuntimeError, RuntimeRestoreTarget, SANDBOX_ADOPTION_LABEL, SANDBOX_ATTEMPT_LABEL,
     SANDBOX_EFFECT_EPOCH_LABEL, SANDBOX_EFFECT_EXPIRY_LABEL, SANDBOX_EFFECT_LABEL,
     SANDBOX_EFFECT_OWNER_LABEL, SANDBOX_EFFECT_RUNTIME_LABEL, SANDBOX_REALIZATION_LABEL,
     SANDBOX_SCOPE_LABEL, container_effect_fence_from_values, container_effect_label_values,
@@ -1149,7 +1149,7 @@ impl ContainerRuntime for DockerRuntime {
         context: &ContainerRealizationContext<'_>,
         plan: &ContainerPlan,
         realization_fingerprint: &pc::SandboxRealizationFingerprint,
-    ) -> Result<String, RuntimeError> {
+    ) -> Result<PreparedContainer, RuntimeError> {
         // Stable namespace+scope and immutable fingerprint are recovery
         // evidence. The process incarnation remains a diagnostic/liveness label
         // and never participates in identity or deletion authorization.
@@ -1209,11 +1209,28 @@ impl ContainerRuntime for DockerRuntime {
                             continue;
                         }
                     };
-                    return Ok(created.id);
+                    return Ok(PreparedContainer::fresh(
+                        created.id,
+                        context.attempt.as_str().to_owned(),
+                    ));
                 }
-                ExistingRealizationDecision::ConvergeCreating(observed)
-                | ExistingRealizationDecision::ReuseReady(observed) => {
-                    return Ok(observed.incarnation.identity);
+                ExistingRealizationDecision::ConvergeCreating(observed) => {
+                    let attempt_id = observed.attempt_id.ok_or_else(|| {
+                        backend("Docker prepared realization has no Memory attempt identity")
+                    })?;
+                    return Ok(PreparedContainer::recovering(
+                        observed.incarnation.identity,
+                        attempt_id,
+                    ));
+                }
+                ExistingRealizationDecision::ReuseReady(observed) => {
+                    let attempt_id = observed.attempt_id.ok_or_else(|| {
+                        backend("Docker active realization has no Memory attempt identity")
+                    })?;
+                    return Ok(PreparedContainer::already_active(
+                        observed.incarnation.identity,
+                        attempt_id,
+                    ));
                 }
                 ExistingRealizationDecision::ReplaceExact(observed) => {
                     let removal = self

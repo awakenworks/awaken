@@ -52,6 +52,7 @@ pub use egress::{
 };
 pub use live_inputs::{LIVE_INPUTS_ROOT, live_input_relative_path};
 pub use packages::package_containerfile;
+#[cfg(any(test, feature = "podman"))]
 pub(crate) use podman_plan::podman_create_argv;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 use podman_plan::{image_of, rootfs_of};
@@ -59,7 +60,8 @@ pub use provider_contract::{
     ContainerCreateAttempt, ContainerEffectFence, ContainerEnvironment,
     ContainerEnvironmentAdoption, ContainerEnvironmentProvider, ContainerObservationExpectation,
     ContainerObservationPurpose, ContainerRealizationContext, ContainerRealizationIntent,
-    ContainerRealizationNamespace, EnvironmentFile,
+    ContainerRealizationNamespace, EnvironmentFile, PreparedContainer,
+    PreparedContainerDisposition,
 };
 pub use resident_hand::ResidentHandConfig;
 #[cfg(any(test, feature = "docker", feature = "podman"))]
@@ -94,7 +96,7 @@ use runtime::{
     container_realization_fingerprint, container_runtime_unix_now_ms,
 };
 pub use secret::SecretBytes;
-use staged_mounts::{StagedMemoryMount, StagedMounts};
+use staged_mounts::{StagedMemoryMount, StagedMounts, reserve_memory_binds};
 pub use writable::{
     checkpoint_writable_roots, checkpoint_writable_roots_from_output_path,
     validate_checkpoint_writable_roots, writable_dirs,
@@ -584,12 +586,15 @@ async fn reject_unaccepted_memory_mount(
     }
 }
 
-async fn stage_memory_binds(
+async fn materialize_memory_binds(
     spec: &pc::SandboxSpec,
     plan: &mut ContainerPlan,
     staged: &mut StagedMounts,
     mounter: Option<Arc<dyn pc::MemoryMounter>>,
     native_runtime_volume: bool,
+    authority_attempt_id: &str,
+    recovering_reservation: bool,
+    admit: &(impl Fn() -> Result<(), pc::SandboxError> + Sync),
 ) -> Result<(), pc::SandboxError> {
     let memory = memory_projections(spec);
     if memory.is_empty() {
@@ -599,13 +604,40 @@ async fn stage_memory_binds(
         .ok_or_else(|| pc::SandboxError::new("container MemoryStore mount has no MemoryMounter"))?;
     let root = staging_dir(&mut staged.guard, &spec.scope)?;
     for projection in memory {
+        admit()?;
         let host_path = root.join(format!("memory-{}", stage_name(&projection.mount_path)));
         let store_reference = projection.store_reference.clone();
         let access = projection.access;
+        if recovering_reservation {
+            mounter
+                .recover_unknown_mount(&store_reference, &host_path, access)
+                .await?;
+            admit()?;
+        }
+        let mut attempt = pc::MemoryMountAttempt::new(
+            format!(
+                "{authority_attempt_id}:{}:{}",
+                projection.store_id, projection.mount_path
+            ),
+            store_reference.clone(),
+            projection.mount_path.clone(),
+            access,
+        )?;
+        attempt.apply(pc::MemoryMountAttemptTransition::Begin)?;
+        admit()?;
         let handle = match mounter.mount(&store_reference, &host_path, access).await {
-            pc::MemoryMountOutcome::Mounted(handle) => handle,
-            pc::MemoryMountOutcome::NoEffect(error) => return Err(error),
+            pc::MemoryMountOutcome::Mounted(handle) => {
+                attempt.apply(pc::MemoryMountAttemptTransition::Mounted(
+                    handle.realization(),
+                ))?;
+                handle
+            }
+            pc::MemoryMountOutcome::NoEffect(error) => {
+                attempt.apply(pc::MemoryMountAttemptTransition::NoEffect)?;
+                return Err(error);
+            }
             pc::MemoryMountOutcome::RecoveryRequired(error) => {
+                attempt.apply(pc::MemoryMountAttemptTransition::OutcomeUnknown)?;
                 staged.retain_unknown_memory(
                     Arc::clone(&mounter),
                     store_reference,
@@ -640,7 +672,16 @@ async fn stage_memory_binds(
                     }
                 }
             }
-            pc::Realization::Fuse => None,
+            pc::Realization::Fuse => {
+                return Err(reject_unaccepted_memory_mount(
+                    staged,
+                    handle,
+                    pc::SandboxError::new(
+                        "container Memory requires a restart-recoverable copy realization",
+                    ),
+                )
+                .await);
+            }
             _ => {
                 return Err(reject_unaccepted_memory_mount(
                     staged,
@@ -650,16 +691,6 @@ async fn stage_memory_binds(
                 .await);
             }
         };
-        if projection.write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
-            && realization != pc::Realization::Fuse
-        {
-            return Err(reject_unaccepted_memory_mount(
-                staged,
-                handle,
-                pc::SandboxError::new("MemoryStore mount requires write-through FUSE realization"),
-            )
-            .await);
-        }
         if native_runtime_volume && realization != pc::Realization::Copy {
             return Err(reject_unaccepted_memory_mount(
                 staged,
@@ -694,19 +725,9 @@ async fn stage_memory_binds(
             };
             planned.snapshot_tar = snapshot_tar;
             planned.access = projection.access;
-        } else {
-            plan.binds.push(BindPlan {
-                source_ref: host_path.to_string_lossy().into_owned(),
-                mount_path: projection.mount_path.clone(),
-                read_only: projection.access == pc::MountAccess::ReadOnly,
-                content: None,
-                content_bytes: None,
-                secret_content: None,
-                secret_writeback: false,
-                credential_file_path: None,
-            });
         }
         staged.memory.push(StagedMemoryMount {
+            attempt,
             handle,
             host_path,
             mount_path: projection.mount_path,
@@ -715,6 +736,7 @@ async fn stage_memory_binds(
             native_runtime_volume,
             writeback_prepared: false,
         });
+        admit()?;
     }
     Ok(())
 }
@@ -1659,11 +1681,14 @@ impl ContainerCleanupState {
     ) -> Result<(), pc::SandboxError> {
         let mut memory = self.memory.lock().await;
         admit(&mut || Ok(()))?;
-        if let Some(mounts) = memory.as_ref() {
+        if let Some(mounts) = memory.as_mut() {
             for mount in mounts {
                 admit(&mut || Ok(()))?;
                 mount.handle.teardown().await?;
                 admit(&mut || Ok(()))?;
+                mount
+                    .attempt
+                    .apply(pc::MemoryMountAttemptTransition::Retired)?;
             }
             admit(&mut || {
                 *memory = None;
@@ -1827,6 +1852,14 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
                     // do not call RunV1 teardown after Host terminal-v2 CAS.
                     // FUSE remains mounted and staging remains owned until the
                     // runtime proves physical removal.
+                    for mount in mounts
+                        .iter_mut()
+                        .filter(|mount| mount.materialization.is_some())
+                    {
+                        mount
+                            .attempt
+                            .apply(pc::MemoryMountAttemptTransition::Retired)?;
+                    }
                     mounts.retain(|mount| mount.materialization.is_none());
                 }
                 Ok(())

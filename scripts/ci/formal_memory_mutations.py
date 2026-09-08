@@ -33,12 +33,13 @@ def check_memory_invalidation_model_mutants(tlc_jar: Path) -> None:
 
 
 def check_memory_participant_model_mutants(tlc_jar: Path) -> None:
-    # MP1-MP12: cancel/response/pruning/unknown/recovery-failure must retain
+    # MP1-MP14: cancel/response/pruning/unknown/recovery-failure must retain
     # ownership; resume/reuse must not remount; mutex/current/root/Copy-baseline/
-    # settled-ack predicates must hold independently. Exact action/invariant
-    # oracles require a green base. Six negative reachability invariants prevent
-    # vacuous cancellation, failure, unknown, late-return, Copy-ack and terminal
-    # cleanup coverage.
+    # settled-ack predicates must hold independently. Container mounting must
+    # follow a backend reservation, and activation must follow a committed Copy
+    # manifest. Exact action/invariant oracles require a green base. Six negative
+    # reachability invariants prevent vacuous cancellation, failure, unknown,
+    # late-return, Copy-ack and terminal cleanup coverage.
     source = (ROOT / "formal/tla/MemoryParticipantOwnership.tla").read_text()
     config = (ROOT / "formal/tla/MemoryParticipantOwnership.cfg").read_text()
     header = "SPECIFICATION Spec\nCHECK_DEADLOCK FALSE\n"
@@ -66,6 +67,10 @@ def check_memory_participant_model_mutants(tlc_jar: Path) -> None:
          'FailUnknownRecovery == /\\ s.stage = "recover"\n'
          '                       /\\ s\' = [s EXCEPT !.stage = "idle", !.failed = TRUE, !.held = FALSE]',
          "RetainedWhilePhysical"),
+        ('/\\ (s.owner = "local" \\/ s.backend = "prepared")',
+         '/\\ TRUE', "ContainerMountRequiresReservation"),
+        ('                     /\\ s.manifest /\\ Admitted',
+         '                     /\\ Admitted', "ContainerActiveHasManifest"),
     ]
     mutations = []
     for anchor, broken, oracle in changes:
@@ -85,7 +90,7 @@ def check_memory_participant_model_mutants(tlc_jar: Path) -> None:
                     "NoLateMountReturn", "NoCopyAck", "NoCleanedTerminal"):
         mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
     check_tlc_model_mutations(tlc_jar, "MemoryParticipantOwnership", source, config, mutations)
-    print("Memory participant ownership: 12/12 mutants killed; 6 lifecycle witnesses reachable")
+    print("Memory participant ownership: 14/14 mutants killed; 6 lifecycle witnesses reachable")
 
 
 def check_memory_extraction_model_mutants(tlc_jar: Path) -> None:

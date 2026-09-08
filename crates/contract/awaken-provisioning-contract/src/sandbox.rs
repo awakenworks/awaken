@@ -40,7 +40,7 @@ mod tests {
     use super::*;
     use crate::SandboxRealizationFingerprint;
     use crate::spec::{Command, SandboxSpec};
-    use crate::vocab::NetworkPolicy;
+    use crate::vocab::{NetworkPolicy, Realization};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -1257,6 +1257,77 @@ mod tests {
             MemoryMaterializationEvidence::canonicalize_all(&mut invalid).is_err(),
             "M3"
         );
+    }
+
+    #[test]
+    fn memory_mount_attempt_rejects_illegal_release_and_unknown_retry() {
+        /* Memory participant cause/effect table MA1. Causes: C1 a logical
+         * attempt is planned/in-flight/mounted/unknown/published; C2 its mount
+         * outcome is confirmed/no-effect/unknown; C3 the owning physical
+         * realization publishes or compensates it. Effects: E1 only Begin may
+         * leave Planned; E2 unknown blocks publication and another Begin until
+         * exact RecoveryCompleted retires that attempt; E3 mounted may be
+         * compensated before publication; E4 published may be retired only at
+         * terminal ownership release. Rules A1 Planned+Begin=>InFlight;
+         * A2 InFlight+Unknown=>RecoveryRequired; A3 Unknown+Begin=>reject;
+         * A4 Unknown+RecoveryCompleted=>Retired; A5 Mounted+Published=>Published;
+         * A6 Published+Compensated=>reject; A7 Published+Retired=>Retired.
+         * Host paths and backend markers are intentionally absent: their
+         * concrete providers remain the only physical authority. */
+        let attempt = || {
+            MemoryMountAttempt::new(
+                "memory-op-1",
+                "claim-bound-store",
+                "/workspace/memory",
+                MountAccess::ReadWrite,
+            )
+            .unwrap()
+        };
+
+        let mut unknown = attempt();
+        unknown.apply(MemoryMountAttemptTransition::Begin).unwrap();
+        unknown
+            .apply(MemoryMountAttemptTransition::OutcomeUnknown)
+            .unwrap();
+        assert_eq!(
+            unknown.phase(),
+            MemoryMountAttemptPhase::RecoveryRequired,
+            "A1+A2"
+        );
+        assert!(
+            unknown.apply(MemoryMountAttemptTransition::Begin).is_err(),
+            "A3"
+        );
+        unknown
+            .apply(MemoryMountAttemptTransition::RecoveryCompleted)
+            .unwrap();
+        assert_eq!(unknown.phase(), MemoryMountAttemptPhase::Retired, "A4");
+
+        let mut published = attempt();
+        published
+            .apply(MemoryMountAttemptTransition::Begin)
+            .unwrap();
+        published
+            .apply(MemoryMountAttemptTransition::Mounted(Realization::Copy))
+            .unwrap();
+        published
+            .apply(MemoryMountAttemptTransition::Published)
+            .unwrap();
+        assert_eq!(
+            published.phase(),
+            MemoryMountAttemptPhase::Published(Realization::Copy),
+            "A5"
+        );
+        assert!(
+            published
+                .apply(MemoryMountAttemptTransition::Compensated)
+                .is_err(),
+            "A6"
+        );
+        published
+            .apply(MemoryMountAttemptTransition::Retired)
+            .unwrap();
+        assert_eq!(published.phase(), MemoryMountAttemptPhase::Retired, "A7");
     }
 
     #[test]

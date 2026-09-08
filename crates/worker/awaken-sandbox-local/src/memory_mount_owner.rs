@@ -24,6 +24,7 @@ struct PendingMount {
     reference: String,
     access: pc::MountAccess,
     mounter: Arc<dyn pc::MemoryMounter>,
+    attempt: pc::MemoryMountAttempt,
     phase: PendingMountPhase,
 }
 
@@ -68,6 +69,7 @@ enum PendingMountCompletion {
 pub(crate) struct MemoryMountParticipant {
     key: Option<MountKey>,
     confirmed: bool,
+    attempt: pc::MemoryMountAttempt,
     guard: Box<dyn pc::MemoryMount>,
 }
 
@@ -148,16 +150,27 @@ impl MemoryMountState {
         };
         match outcome {
             pc::MemoryMountOutcome::Mounted(guard) => {
-                let pending = self.pending.take().expect("completed pending Memory mount");
+                let mut pending = self.pending.take().expect("completed pending Memory mount");
+                pending
+                    .attempt
+                    .apply(pc::MemoryMountAttemptTransition::Mounted(
+                        guard.realization(),
+                    ))
+                    .expect("in-flight Memory attempt accepts a mounted outcome");
                 self.mounts.push(MemoryMountParticipant {
                     key: Some(pending.key),
                     confirmed: false,
+                    attempt: pending.attempt,
                     guard,
                 });
                 Some(PendingMountCompletion::Mounted)
             }
             pc::MemoryMountOutcome::NoEffect(error) => {
-                self.pending.take();
+                let mut pending = self.pending.take().expect("completed pending Memory mount");
+                pending
+                    .attempt
+                    .apply(pc::MemoryMountAttemptTransition::NoEffect)
+                    .expect("in-flight Memory attempt accepts a no-effect outcome");
                 if self.mounts.is_empty() {
                     self.identity = None;
                 }
@@ -165,10 +178,15 @@ impl MemoryMountState {
             }
             pc::MemoryMountOutcome::RecoveryRequired(error) => {
                 let detail = error.to_string();
-                self.pending
+                let pending = self
+                    .pending
                     .as_mut()
-                    .expect("unknown Memory operation remains retained")
-                    .phase = PendingMountPhase::RecoveryRequired {
+                    .expect("unknown Memory operation remains retained");
+                pending
+                    .attempt
+                    .apply(pc::MemoryMountAttemptTransition::OutcomeUnknown)
+                    .expect("in-flight Memory attempt accepts an unknown outcome");
+                pending.phase = PendingMountPhase::RecoveryRequired {
                     detail: detail.clone(),
                 };
                 Some(PendingMountCompletion::RecoveryRequired(
@@ -195,7 +213,11 @@ impl MemoryMountState {
         mounter
             .recover_unknown_mount(&reference, &path, access)
             .await?;
-        self.pending.take();
+        let mut pending = self.pending.take().expect("recovered pending Memory mount");
+        pending
+            .attempt
+            .apply(pc::MemoryMountAttemptTransition::RecoveryCompleted)
+            .expect("unknown Memory attempt accepts exact recovery");
         if self.mounts.is_empty() {
             self.identity = None;
         }
@@ -222,6 +244,13 @@ impl MemoryMountState {
             );
         }
         Self::validate_root(&self.root, self.identity)?;
+        let attempt_id = format!("{}:{}", requirement.mount_id, requirement.mount_path);
+        let attempt = pc::MemoryMountAttempt::new(
+            attempt_id,
+            reference.clone(),
+            requirement.mount_path.clone(),
+            access,
+        )?;
         let key = MountKey {
             requirement,
             path: path.clone(),
@@ -236,11 +265,14 @@ impl MemoryMountState {
         let operation_mounter = mounter.clone();
         let operation_reference = reference.clone();
         let operation_path = path.clone();
+        let mut attempt = attempt;
+        attempt.apply(pc::MemoryMountAttemptTransition::Begin)?;
         self.pending = Some(PendingMount {
             key,
             reference,
             access,
             mounter,
+            attempt,
             phase: PendingMountPhase::Running(MountFuture {
                 inner: Box::pin(async move {
                     operation_mounter
@@ -258,6 +290,12 @@ impl MemoryMountState {
 
     pub(crate) fn confirm_all(&mut self) {
         for mount in &mut self.mounts {
+            if !mount.confirmed {
+                mount
+                    .attempt
+                    .apply(pc::MemoryMountAttemptTransition::Published)
+                    .expect("mounted Memory attempt accepts publication");
+            }
             mount.confirmed = true;
         }
     }
@@ -269,6 +307,12 @@ impl MemoryMountState {
                 .as_ref()
                 .is_some_and(|key| key.requirement == *requirement && key.path == path)
             {
+                if !mount.confirmed {
+                    mount
+                        .attempt
+                        .apply(pc::MemoryMountAttemptTransition::Published)
+                        .expect("mounted Memory attempt accepts publication");
+                }
                 mount.confirmed = true;
             }
         }
@@ -327,6 +371,15 @@ impl MemoryMountState {
     pub(crate) fn acknowledge_copy_reconciliation(&mut self) -> Result<(), pc::SandboxError> {
         self.require_no_pending()?;
         Self::validate_root(&self.root, self.identity)?;
+        for mount in self
+            .mounts
+            .iter_mut()
+            .filter(|mount| mount.realization() == pc::Realization::Copy)
+        {
+            mount
+                .attempt
+                .apply(pc::MemoryMountAttemptTransition::Retired)?;
+        }
         self.mounts
             .retain(|mount| mount.realization() != pc::Realization::Copy);
         if self.mounts.is_empty() {
@@ -377,6 +430,16 @@ impl MemoryMountState {
             Ok(())
         })
         .await?;
+        for mount in self.mounts.iter_mut().filter(|mount| retire(mount)) {
+            mount
+                .attempt
+                .apply(if mount.confirmed {
+                    pc::MemoryMountAttemptTransition::Retired
+                } else {
+                    pc::MemoryMountAttemptTransition::Compensated
+                })
+                .expect("accepted Memory participant release follows its ownership phase");
+        }
         self.mounts.retain(|mount| !retire(mount));
         if self.mounts.is_empty() {
             self.identity = None;
@@ -401,6 +464,7 @@ impl From<Vec<Box<dyn pc::MemoryMount>>> for MemoryMountState {
                 .map(|guard| MemoryMountParticipant {
                     key: None,
                     confirmed: true,
+                    attempt: published_test_attempt(guard.realization()),
                     guard,
                 })
                 .collect(),
@@ -415,9 +479,29 @@ impl MemoryMountState {
         self.mounts.push(MemoryMountParticipant {
             key: None,
             confirmed: true,
+            attempt: published_test_attempt(guard.realization()),
             guard,
         });
     }
+}
+
+#[cfg(test)]
+fn published_test_attempt(realization: pc::Realization) -> pc::MemoryMountAttempt {
+    let mut attempt = pc::MemoryMountAttempt::new(
+        "test-memory-attempt",
+        "test-memory-store",
+        "/test-memory",
+        pc::MountAccess::ReadWrite,
+    )
+    .expect("valid test Memory attempt");
+    for transition in [
+        pc::MemoryMountAttemptTransition::Begin,
+        pc::MemoryMountAttemptTransition::Mounted(realization),
+        pc::MemoryMountAttemptTransition::Published,
+    ] {
+        attempt.apply(transition).expect("valid test transition");
+    }
+    attempt
 }
 
 #[cfg(test)]

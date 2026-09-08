@@ -201,6 +201,133 @@ pub enum MemoryMountOutcome {
     RecoveryRequired(SandboxError),
 }
 
+/// Logical identity and lifecycle of one Memory projection attempt.
+///
+/// This value deliberately carries only provider-neutral coordinates. The
+/// concrete provider remains the sole owner of the resolved host path and of
+/// physical recovery evidence such as a realization marker, container, or Pod.
+/// It is a transition kernel for those owners, not a persistence mechanism.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryMountAttempt {
+    id: String,
+    store_reference: String,
+    mount_path: String,
+    access: MountAccess,
+    phase: MemoryMountAttemptPhase,
+}
+
+impl MemoryMountAttempt {
+    pub fn new(
+        id: impl Into<String>,
+        store_reference: impl Into<String>,
+        mount_path: impl Into<String>,
+        access: MountAccess,
+    ) -> Result<Self, SandboxError> {
+        let attempt = Self {
+            id: id.into(),
+            store_reference: store_reference.into(),
+            mount_path: mount_path.into(),
+            access,
+            phase: MemoryMountAttemptPhase::Planned,
+        };
+        if attempt.id.trim().is_empty()
+            || attempt.store_reference.trim().is_empty()
+            || !attempt.mount_path.starts_with('/')
+            || !validate_canonical_sandbox_path(&attempt.mount_path, true)
+        {
+            return Err(SandboxError::new(
+                "Memory mount attempt requires a non-empty identity/reference and canonical sandbox path",
+            ));
+        }
+        Ok(attempt)
+    }
+
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    #[must_use]
+    pub fn store_reference(&self) -> &str {
+        &self.store_reference
+    }
+
+    #[must_use]
+    pub fn mount_path(&self) -> &str {
+        &self.mount_path
+    }
+
+    #[must_use]
+    pub const fn access(&self) -> MountAccess {
+        self.access
+    }
+
+    #[must_use]
+    pub const fn phase(&self) -> MemoryMountAttemptPhase {
+        self.phase
+    }
+
+    pub fn apply(&mut self, transition: MemoryMountAttemptTransition) -> Result<(), SandboxError> {
+        match next_memory_mount_attempt_phase(self.phase, transition) {
+            Some(phase) => {
+                self.phase = phase;
+                Ok(())
+            }
+            None => Err(SandboxError::new(format!(
+                "invalid Memory mount attempt transition {transition:?} from {:?}",
+                self.phase,
+            ))),
+        }
+    }
+}
+
+/// Provider-neutral phases. `Published` means that the owning physical
+/// realization may expose this participant; only its owner can establish that
+/// fact. `RecoveryRequired` blocks a new attempt until exact compensation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryMountAttemptPhase {
+    Planned,
+    InFlight,
+    Mounted(Realization),
+    NoEffect,
+    RecoveryRequired,
+    Published(Realization),
+    Retired,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryMountAttemptTransition {
+    Begin,
+    Mounted(Realization),
+    NoEffect,
+    OutcomeUnknown,
+    RecoveryCompleted,
+    Published,
+    Compensated,
+    Retired,
+}
+
+fn next_memory_mount_attempt_phase(
+    phase: MemoryMountAttemptPhase,
+    transition: MemoryMountAttemptTransition,
+) -> Option<MemoryMountAttemptPhase> {
+    use MemoryMountAttemptPhase as Phase;
+    use MemoryMountAttemptTransition as Transition;
+    match (phase, transition) {
+        (Phase::Planned, Transition::Begin) => Some(Phase::InFlight),
+        (Phase::InFlight, Transition::Mounted(realization)) => Some(Phase::Mounted(realization)),
+        (Phase::InFlight, Transition::NoEffect) => Some(Phase::NoEffect),
+        (Phase::InFlight, Transition::OutcomeUnknown) => Some(Phase::RecoveryRequired),
+        (Phase::RecoveryRequired, Transition::RecoveryCompleted)
+        | (Phase::Mounted(_), Transition::Compensated) => Some(Phase::Retired),
+        (Phase::Mounted(realization), Transition::Published) => Some(Phase::Published(realization)),
+        (Phase::Published(_), Transition::Retired) | (Phase::Retired, Transition::Retired) => {
+            Some(Phase::Retired)
+        }
+        _ => None,
+    }
+}
+
 impl MemoryMountOutcome {
     /// Adapt an in-process implementation whose error paths are proven to leave
     /// no physical effect. Production adapters must use this only when that
@@ -792,4 +919,50 @@ pub trait RepositoryRealizer: Send + Sync {
         expectation: &RepositoryPublicationExpectation,
         credential: Option<&RepositoryHttpBasicCredential>,
     ) -> Result<RepositoryPublicationReceipt, RepositoryPublicationError>;
+}
+
+#[cfg(kani)]
+mod memory_mount_attempt_proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn memory_mount_unknown_cannot_be_published() {
+        let phase = next_memory_mount_attempt_phase(
+            MemoryMountAttemptPhase::InFlight,
+            MemoryMountAttemptTransition::OutcomeUnknown,
+        )
+        .unwrap();
+        assert_eq!(phase, MemoryMountAttemptPhase::RecoveryRequired);
+        assert!(
+            next_memory_mount_attempt_phase(phase, MemoryMountAttemptTransition::Published)
+                .is_none()
+        );
+    }
+
+    #[kani::proof]
+    fn memory_mount_publication_requires_confirmed_mount() {
+        assert!(
+            next_memory_mount_attempt_phase(
+                MemoryMountAttemptPhase::Planned,
+                MemoryMountAttemptTransition::Published,
+            )
+            .is_none()
+        );
+        assert!(
+            next_memory_mount_attempt_phase(
+                MemoryMountAttemptPhase::InFlight,
+                MemoryMountAttemptTransition::Published,
+            )
+            .is_none()
+        );
+        let phase = next_memory_mount_attempt_phase(
+            MemoryMountAttemptPhase::InFlight,
+            MemoryMountAttemptTransition::Mounted(Realization::Copy),
+        )
+        .unwrap();
+        assert_eq!(
+            next_memory_mount_attempt_phase(phase, MemoryMountAttemptTransition::Published),
+            Some(MemoryMountAttemptPhase::Published(Realization::Copy))
+        );
+    }
 }

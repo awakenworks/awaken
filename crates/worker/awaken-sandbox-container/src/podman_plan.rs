@@ -144,6 +144,7 @@ pub fn podman_run_argv(name: &str, plan: &ContainerPlan, rootfs: &RootfsPlan) ->
 /// starting its workload. Keeping this as a projection of the single plan
 /// prevents reservation and activation from acquiring different mounts,
 /// limits, network policy, labels, or command.
+#[cfg(any(test, feature = "podman"))]
 pub(crate) fn podman_create_argv(
     name: &str,
     plan: &ContainerPlan,

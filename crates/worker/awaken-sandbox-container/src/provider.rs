@@ -5,6 +5,151 @@
 
 use super::*;
 
+pub(crate) const MEMORY_MATERIALIZATION_MANIFEST: &str = ".awaken-memory-materializations.json";
+
+fn rebase_staged_paths(
+    plan: &mut ContainerPlan,
+    staging: &mut StagedMounts,
+    source: &std::path::Path,
+    destination: &std::path::Path,
+) {
+    for bind in &mut plan.binds {
+        let path = std::path::Path::new(&bind.source_ref);
+        if let Ok(relative) = path.strip_prefix(source) {
+            bind.source_ref = destination.join(relative).to_string_lossy().into_owned();
+        }
+    }
+    for writeback in &mut staging.secret_writebacks {
+        if let Some(path) = writeback.staged_path.as_mut()
+            && let Ok(relative) = path.strip_prefix(source)
+        {
+            *path = destination.join(relative);
+        }
+    }
+}
+
+fn authority_staging_root(
+    staging: &mut StagedMounts,
+    scope: &str,
+    authority_attempt_id: &str,
+    disposition: PreparedContainerDisposition,
+) -> Result<(), pc::SandboxError> {
+    let path = authority_staging_path(scope, authority_attempt_id);
+    if let Some(existing) = staging.guard.as_ref() {
+        return if existing.path() == path {
+            Ok(())
+        } else {
+            Err(pc::SandboxError::new(
+                "container Memory staging belongs to a different backend attempt",
+            ))
+        };
+    }
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if !metadata.is_dir() || metadata.file_type().is_symlink() => {
+            return Err(pc::SandboxError::new(
+                "container Memory staging identity is not a physical directory",
+            ));
+        }
+        Ok(_) if disposition == PreparedContainerDisposition::FreshReservation => {
+            return Err(pc::SandboxError::new(
+                "fresh container Memory reservation collided with prior staging",
+            ));
+        }
+        Ok(_) => {}
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && disposition == PreparedContainerDisposition::FreshReservation =>
+        {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                let mut builder = std::fs::DirBuilder::new();
+                builder.mode(0o700);
+                builder
+                    .create(&path)
+                    .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            }
+            #[cfg(not(unix))]
+            std::fs::create_dir(&path).map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(pc::SandboxError::new(
+                "container Memory recovery staging is missing for the exact backend attempt",
+            ));
+        }
+        Err(error) => return Err(pc::SandboxError::new(error.to_string())),
+    }
+    staging.guard = Some(StagingGuard {
+        path,
+        remove_on_drop: disposition == PreparedContainerDisposition::FreshReservation,
+    });
+    Ok(())
+}
+
+fn authority_staging_path(scope: &str, authority_attempt_id: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "awaken-acp-stage-{}-memory-{}",
+        stage_name(scope),
+        stage_name(authority_attempt_id)
+    ))
+}
+
+fn write_memory_manifest(staging: &StagedMounts) -> Result<(), pc::SandboxError> {
+    let Some(root) = staging.guard.as_ref().map(StagingGuard::path) else {
+        return if staging.memory.is_empty() {
+            Ok(())
+        } else {
+            Err(pc::SandboxError::new(
+                "container Memory materialization has no backend-bound staging root",
+            ))
+        };
+    };
+    let mut evidence = staging
+        .memory
+        .iter()
+        .filter_map(|mount| mount.materialization.clone())
+        .collect::<Vec<_>>();
+    evidence.sort_by(|left, right| {
+        (&left.mount_path, &left.store_id).cmp(&(&right.mount_path, &right.store_id))
+    });
+    pc::MemoryMaterializationEvidence::validate_all(&evidence)?;
+    let bytes =
+        serde_json::to_vec(&evidence).map_err(|error| pc::SandboxError::new(error.to_string()))?;
+    let pending = root.join(format!("{MEMORY_MATERIALIZATION_MANIFEST}.pending"));
+    std::fs::write(&pending, bytes).map_err(|error| pc::SandboxError::new(error.to_string()))?;
+    std::fs::rename(&pending, root.join(MEMORY_MATERIALIZATION_MANIFEST))
+        .map_err(|error| pc::SandboxError::new(error.to_string()))
+}
+
+fn read_memory_manifest(
+    staging: &StagedMounts,
+    spec: &pc::SandboxSpec,
+) -> Result<Vec<pc::MemoryMaterializationEvidence>, pc::SandboxError> {
+    let root = staging
+        .guard
+        .as_ref()
+        .map(StagingGuard::path)
+        .ok_or_else(|| pc::SandboxError::new("active container has no Memory staging root"))?;
+    let bytes = std::fs::read(root.join(MEMORY_MATERIALIZATION_MANIFEST))
+        .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+    let evidence: Vec<pc::MemoryMaterializationEvidence> =
+        serde_json::from_slice(&bytes).map_err(|error| pc::SandboxError::new(error.to_string()))?;
+    pc::MemoryMaterializationEvidence::validate_all(&evidence)?;
+    let projections = memory_projections(spec);
+    if evidence.len() != projections.len()
+        || projections.iter().any(|projection| {
+            !evidence.iter().any(|item| {
+                item.store_id == projection.store_id && item.mount_path == projection.mount_path
+            })
+        })
+    {
+        return Err(pc::SandboxError::new(
+            "container Memory manifest differs from the frozen specification",
+        ));
+    }
+    Ok(evidence)
+}
+
 fn refresh_effect_fence(
     asserted: &ContainerEffectFence,
     source: Option<&dyn pc::CurrentExecutionAuthority>,
@@ -53,17 +198,7 @@ pub struct ContainerProvider<R: ContainerRuntime> {
     /// Neutral MemoryStore projection injected by the composition root. Interior
     /// mutability lets an already-shared provider receive the platform adapter.
     pub(super) memory_mounter: std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>,
-    /// Process-local participants that could not yet transfer into a Sandbox.
-    /// Retryable rows own exact Memory cleanup identities; ambiguous rows block
-    /// every later realization because a container may already reference them.
-    retained_staging: tokio::sync::Mutex<RetainedContainerStaging>,
     pub(super) resident_hand: Option<ResidentHandConfig>,
-}
-
-#[derive(Default)]
-struct RetainedContainerStaging {
-    retryable: Vec<StagedMounts>,
-    ambiguous: Vec<StagedMounts>,
 }
 
 impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
@@ -94,48 +229,8 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             file_store: None,
             secret_broker: std::sync::RwLock::new(None),
             memory_mounter: std::sync::RwLock::new(None),
-            retained_staging: tokio::sync::Mutex::new(RetainedContainerStaging::default()),
             resident_hand: None,
         }
-    }
-
-    async fn recover_retained_staging(&self) -> Result<(), pc::SandboxError> {
-        let mut retained = self.retained_staging.lock().await;
-        if !retained.ambiguous.is_empty() {
-            return Err(pc::SandboxError::new(
-                "container realization remains blocked by an ambiguous prior participant transfer",
-            ));
-        }
-        let mut unresolved = Vec::new();
-        let mut first_error = None;
-        for staging in std::mem::take(&mut retained.retryable) {
-            match staging
-                .recover_memory_after_definite_no_backend_effect()
-                .await
-            {
-                Ok(()) => {}
-                Err(error) => {
-                    if first_error.is_none() {
-                        first_error = Some(error);
-                    }
-                    unresolved.push(staging);
-                }
-            }
-        }
-        retained.retryable = unresolved;
-        first_error.map_or(Ok(()), |error| {
-            Err(pc::SandboxError::new(format!(
-                "container Memory participant recovery remains incomplete: {error}"
-            )))
-        })
-    }
-
-    async fn retain_retryable_staging(&self, staging: StagedMounts) {
-        self.retained_staging.lock().await.retryable.push(staging);
-    }
-
-    async fn retain_ambiguous_staging(&self, staging: StagedMounts) {
-        self.retained_staging.lock().await.ambiguous.push(staging);
     }
 
     /// Make the existing Hand the Session container's resident process. This is
@@ -296,6 +391,13 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     .to_string(),
             )));
         }
+        if memory_projections(spec).iter().any(|projection| {
+            projection.write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
+        }) {
+            return Err(pc::SandboxError::new(
+                "container Memory cannot satisfy restart-safe write-through ownership; use a copy-compatible requirement",
+            ));
+        }
 
         // A Session owns one live environment. The pure adoption plan is the
         // only projection of its provider-effective immutable configuration.
@@ -356,8 +458,6 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             .await
             .map_err(err)?;
         admit()?;
-        self.recover_retained_staging().await?;
-        admit()?;
         // Resolve + materialize each mount's bytes: self-contained content (codex config,
         // ADR-0038 resources) ships in the plan; File/Resource/Secret resolve by id through
         // the seed then the injected BlobSource, hash-verified. Bytes are staged to a host
@@ -379,40 +479,34 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         )
         .await?;
         if let Err(error) = admit() {
-            self.retain_retryable_staging(staging).await;
             return Err(error);
         }
         if self.runtime.uses_host_live_input_bind() {
             live_inputs::stage_host_projection(&spec.scope, &mut plan.binds, &mut staging.guard)?;
         }
         let native_memory = self.runtime.has_native_memory_mounts();
+        let has_memory = !memory_projections(spec).is_empty();
+        reserve_memory_binds(spec, &mut plan, &mut staging, native_memory)?;
+        if !self.runtime.uses_host_bind_materialization() && has_memory {
+            // Native backends derive their process-surviving staging identity
+            // from the same attempt stamped on the physical reservation. Create
+            // it first so a lost prepare response cannot leave a Pod whose
+            // Memory responsibility was never addressable by its successor.
+            authority_staging_root(
+                &mut staging,
+                &spec.scope,
+                create_attempt.as_str(),
+                PreparedContainerDisposition::FreshReservation,
+            )?;
+        }
         let mounter = self
             .memory_mounter
             .read()
             .expect("container memory mounter lock poisoned")
             .clone();
-        if let Err(error) =
-            stage_memory_binds(spec, &mut plan, &mut staging, mounter, native_memory).await
-        {
-            if let Err(cleanup_error) = staging
-                .recover_memory_after_definite_no_backend_effect()
-                .await
-            {
-                self.retain_retryable_staging(staging).await;
-                return Err(pc::SandboxError::new(format!(
-                    "{error}; Memory participant cleanup failed: {cleanup_error}"
-                )));
-            }
-            return Err(error);
-        }
         let mut current_effect_fence = effect_fence.cloned();
-        let container_id = loop {
-            if let Err(error) = admit() {
-                // No new backend call has been made. Preserve the existing
-                // exact participant owner for the canonical recovery path.
-                self.retain_retryable_staging(staging).await;
-                return Err(error);
-            }
+        let prepared = loop {
+            admit()?;
             let realization_context = ContainerRealizationContext::new(
                 &spec.scope,
                 &adoption_fingerprint,
@@ -422,13 +516,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             );
             match self
                 .runtime
-                .create_for_effect(&realization_context, &plan, &realization_fingerprint)
+                .prepare_for_effect(&realization_context, &plan, &realization_fingerprint)
                 .await
             {
-                Ok(id) => break id,
+                Ok(prepared) => break prepared,
                 Err(RuntimeError::EffectFenceExpired) => {
                     let Some(asserted) = current_effect_fence.as_ref() else {
-                        self.retain_retryable_staging(staging).await;
                         return Err(pc::SandboxError::new(
                             "unfenced container realization reported an expired effect fence",
                         ));
@@ -436,42 +529,196 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     let refreshed = refresh_effect_fence(asserted, effect_fence_source);
                     match refreshed {
                         Ok(refreshed) => current_effect_fence = Some(refreshed),
-                        Err(error) => {
-                            self.retain_retryable_staging(staging).await;
-                            return Err(error);
-                        }
+                        Err(error) => return Err(error),
                     }
                 }
                 Err(RuntimeError::MayHaveCommitted(message)) => {
-                    self.retain_ambiguous_staging(staging).await;
+                    if let Some(guard) = staging.guard.as_mut() {
+                        guard.retain_for_restoration();
+                    }
                     return Err(err(RuntimeError::MayHaveCommitted(message)));
                 }
-                Err(error) => {
-                    if let Err(cleanup_error) = staging
-                        .recover_memory_after_definite_no_backend_effect()
-                        .await
-                    {
-                        self.retain_retryable_staging(staging).await;
-                        return Err(pc::SandboxError::new(format!(
-                            "{error}; Memory participant cleanup failed: {cleanup_error}"
-                        )));
-                    }
-                    return Err(err(error));
-                }
+                Err(error) => return Err(err(error)),
             }
         };
-        // A successful physical create outlives this process-local wrapper.
-        // Reuse the restore path's ownership transition: only explicit terminal
-        // disposal may remove host binds once a container can reference them.
-        if self.runtime.uses_host_bind_materialization()
-            && let Some(guard) = staging.guard.as_mut()
+
+        if self.runtime.uses_host_bind_materialization() && self.runtime.uses_host_live_input_bind()
         {
+            let recovered_root = self
+                .runtime
+                .recovered_host_staging_root(&prepared.locator)
+                .await
+                .map_err(|error| err(error.after_mutation()))?
+                .ok_or_else(|| {
+                    pc::SandboxError::new(
+                        "prepared host-bind container has no exact staging-root evidence",
+                    )
+                })?;
+            let current_root = staging
+                .guard
+                .as_ref()
+                .map(StagingGuard::path)
+                .ok_or_else(|| {
+                    pc::SandboxError::new("host-bind container has no staged participant root")
+                })?
+                .to_owned();
+            if current_root != recovered_root {
+                if prepared.disposition == PreparedContainerDisposition::FreshReservation {
+                    if let Some(guard) = staging.guard.as_mut() {
+                        guard.retain_for_restoration();
+                    }
+                    return Err(err(RuntimeError::MayHaveCommitted(
+                        "fresh container reservation reported a different staging root".into(),
+                    )));
+                }
+                rebase_staged_paths(&mut plan, &mut staging, &current_root, &recovered_root);
+                let recovered = crate::restore_target::retained_host_staging_path(recovered_root)
+                    .map_err(err)?;
+                staging.guard = Some(recovered);
+            }
+        } else if self.runtime.uses_host_bind_materialization()
+            && prepared.disposition != PreparedContainerDisposition::FreshReservation
+        {
+            return Err(pc::SandboxError::new(
+                "host-bind reservation cannot recover its staging root",
+            ));
+        } else if !self.runtime.uses_host_bind_materialization() && has_memory {
+            let authority_path =
+                authority_staging_path(&spec.scope, &prepared.authority_attempt_id);
+            if staging
+                .guard
+                .as_ref()
+                .is_some_and(|guard| guard.path() != authority_path)
+            {
+                // The candidate belongs to this call and no Memory effect has
+                // started yet. A recovered backend reservation selects its old
+                // exact attempt root; never copy fresh bytes into that root.
+                drop(staging.guard.take());
+            }
+            authority_staging_root(
+                &mut staging,
+                &spec.scope,
+                &prepared.authority_attempt_id,
+                prepared.disposition,
+            )?;
+        }
+        // The physical reservation is now the recovery root. Process-local Drop
+        // cannot remove a path that the exact container/Pod may still reference.
+        if let Some(guard) = staging.guard.as_mut() {
             guard.retain_for_restoration();
         }
-        if let Err(error) = admit() {
-            self.retain_ambiguous_staging(staging).await;
-            return Err(error);
-        }
+        admit()?;
+        let recovering =
+            prepared.disposition == PreparedContainerDisposition::RecoveringReservation;
+        let already_active = prepared.disposition == PreparedContainerDisposition::AlreadyActive;
+        let memory_materializations = if already_active {
+            if memory_projections(spec).is_empty() {
+                Vec::new()
+            } else {
+                read_memory_manifest(&staging, spec)?
+            }
+        } else {
+            if let Err(error) = materialize_memory_binds(
+                spec,
+                &mut plan,
+                &mut staging,
+                mounter,
+                native_memory,
+                &prepared.authority_attempt_id,
+                recovering,
+                &admit,
+            )
+            .await
+            {
+                let cleanup = staging.recover_memory_before_activation().await;
+                return Err(match cleanup {
+                    Ok(()) => error,
+                    Err(cleanup_error) => pc::SandboxError::new(format!(
+                        "{error}; Memory participant cleanup failed: {cleanup_error}"
+                    )),
+                });
+            }
+            if let Err(error) = admit() {
+                let cleanup = staging.recover_memory_before_activation().await;
+                return Err(match cleanup {
+                    Ok(()) => error,
+                    Err(cleanup_error) => pc::SandboxError::new(format!(
+                        "{error}; Memory participant cleanup failed: {cleanup_error}"
+                    )),
+                });
+            }
+            if let Err(error) = write_memory_manifest(&staging) {
+                let cleanup = staging.recover_memory_before_activation().await;
+                return Err(match cleanup {
+                    Ok(()) => error,
+                    Err(cleanup_error) => pc::SandboxError::new(format!(
+                        "{error}; Memory participant cleanup failed: {cleanup_error}"
+                    )),
+                });
+            }
+            let container_id = loop {
+                if let Err(error) = admit() {
+                    let cleanup = staging.recover_memory_before_activation().await;
+                    return Err(match cleanup {
+                        Ok(()) => error,
+                        Err(cleanup_error) => pc::SandboxError::new(format!(
+                            "{error}; Memory participant cleanup failed: {cleanup_error}"
+                        )),
+                    });
+                }
+                let realization_context = ContainerRealizationContext::new(
+                    &spec.scope,
+                    &adoption_fingerprint,
+                    current_effect_fence.as_ref(),
+                    &intent,
+                    &create_attempt,
+                );
+                match self
+                    .runtime
+                    .activate_for_effect(
+                        &realization_context,
+                        &plan,
+                        &realization_fingerprint,
+                        &prepared.locator,
+                    )
+                    .await
+                {
+                    Ok(container_id) => break container_id,
+                    Err(RuntimeError::EffectFenceExpired) => {
+                        let asserted = current_effect_fence.as_ref().ok_or_else(|| {
+                            pc::SandboxError::new(
+                                "unfenced container activation reported an expired effect fence",
+                            )
+                        })?;
+                        current_effect_fence =
+                            Some(refresh_effect_fence(asserted, effect_fence_source)?);
+                    }
+                    Err(error @ RuntimeError::MayHaveCommitted(_)) => return Err(err(error)),
+                    Err(error) => {
+                        let cleanup = staging.recover_memory_before_activation().await;
+                        return Err(match cleanup {
+                            Ok(()) => err(error),
+                            Err(cleanup_error) => pc::SandboxError::new(format!(
+                                "{error}; Memory participant cleanup failed: {cleanup_error}"
+                            )),
+                        });
+                    }
+                }
+            };
+            if container_id != prepared.locator {
+                return Err(err(RuntimeError::MayHaveCommitted(
+                    "container activation returned a different physical locator".into(),
+                )));
+            }
+            admit()?;
+            staging.publish_memory()?;
+            staging
+                .memory
+                .iter()
+                .filter_map(|mount| mount.materialization.clone())
+                .collect()
+        };
+        let container_id = prepared.locator;
         let runtime_handle = match self.runtime.handle_extra(&container_id).await {
             Ok(evidence) => evidence,
             // `create` is exact-idempotent and may have recovered a Ready effect
@@ -479,14 +726,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             // on a later evidence-read failure; the next root-driven retry must be
             // able to rediscover and converge it.
             Err(error) => {
-                self.retain_ambiguous_staging(staging).await;
                 return Err(err(error.after_mutation()));
             }
         };
-        if let Err(error) = admit() {
-            self.retain_ambiguous_staging(staging).await;
-            return Err(error);
-        }
+        admit()?;
         let control_services = spec.control_services.clone();
         let sandbox_control_incarnation = if control_services.is_empty() {
             None
@@ -503,21 +746,16 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             {
                 Ok(Some(binding)) => Some(binding),
                 Ok(None) => {
-                    self.retain_ambiguous_staging(staging).await;
                     return Err(err(RuntimeError::MayHaveCommitted(
                         "container runtime omitted a demanded Sandbox control incarnation".into(),
                     )));
                 }
                 Err(error) => {
-                    self.retain_ambiguous_staging(staging).await;
                     return Err(err(error.after_mutation()));
                 }
             }
         };
-        if let Err(error) = admit() {
-            self.retain_ambiguous_staging(staging).await;
-            return Err(error);
-        }
+        admit()?;
         // Report each mount's realization: a byte mount is a Bind and a Memory
         // store is the canonical mounter's copy projection. Built from spec.mounts
         // directly because native volumes do not align with the byte-bind list.
@@ -536,11 +774,6 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 },
                 content_hash: None,
             })
-            .collect();
-        let memory_materializations = staging
-            .memory
-            .iter()
-            .filter_map(|mount| mount.materialization.clone())
             .collect();
         Ok(ContainerSandbox {
             retained_attempt: Some(create_attempt),
@@ -572,12 +805,12 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             ),
             adopted_handle: None,
             realized,
-            recovered: false,
+            recovered: already_active,
             lifecycle: Arc::new(ContainerCleanupState {
                 staging: std::sync::Mutex::new(staging.guard),
                 secret_writebacks: staging.secret_writebacks,
                 secret_broker,
-                memory: tokio::sync::Mutex::new(Some(staging.memory)),
+                memory: tokio::sync::Mutex::new((!already_active).then_some(staging.memory)),
                 memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
                 writeback_done: tokio::sync::Mutex::new(false),
                 remove_done: tokio::sync::Mutex::new(false),

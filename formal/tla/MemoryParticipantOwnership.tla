@@ -1,19 +1,20 @@
 --------------------- MODULE MemoryParticipantOwnership ---------------------
 EXTENDS Naturals
 
-\* Live Provider only: one physical root, one Copy/FUSE mount operation, two
-\* callers. The retained mount future and returned guard are one participant.
-\* Current marker/Session admission and root identity are assumed ports, NOT a
-\* second lifecycle authority. The typed mount outcome and retained unknown
-\* recovery identity are modeled here. Worker death, backend commit fencing,
-\* kernel teardown and Rust refinement are outside this model.
+\* One physical root, one Copy/FUSE mount operation, and two callers. Local
+\* ownership retains its future/guard; Container ownership composes the same
+\* attempt phases with one backend reservation, a Copy manifest, activation,
+\* and response-loss adoption. Current Session admission, root identity, and
+\* truthful backend observation are assumed ports, not second authorities.
+\* Host loss, kernel teardown and Rust refinement remain outside this model.
 VARIABLE s
 Callers == {1, 2}
 Init == s \in [phase : {"empty"}, held : {FALSE}, stage : {"idle"},
     borrower : {0}, confirmed : {FALSE}, mode : {"copy", "fuse"},
     current : {TRUE}, root : {TRUE}, matching : {TRUE}, calls : {0},
     ack : {FALSE}, cleaned : {FALSE}, purpose : {"replay", "terminal"},
-    cancelled : {FALSE}, failed : {FALSE}]
+    cancelled : {FALSE}, failed : {FALSE}, owner : {"local", "container"},
+    backend : {"none"}, manifest : {FALSE}, crashed : {FALSE}]
 Admitted == s.current /\ s.root
 Borrow(c) == /\ s.borrower = 0
              /\ s' = [s EXCEPT !.borrower = c]
@@ -22,7 +23,10 @@ Cancel == /\ s.borrower \in Callers
 Observe == \/ s' = [s EXCEPT !.current = ~@]
            \/ s' = [s EXCEPT !.root = ~@]
            \/ s' = [s EXCEPT !.matching = ~@]
+ReserveContainer == /\ s.owner = "container" /\ s.backend = "none" /\ Admitted
+                    /\ s' = [s EXCEPT !.backend = "prepared", !.held = TRUE]
 Start == /\ s.borrower \in Callers /\ s.stage = "idle" /\ s.phase = "empty"
+         /\ (s.owner = "local" \/ s.backend = "prepared")
          /\ Admitted
          /\ s' = [s EXCEPT !.phase = "pending", !.held = TRUE,
                           !.stage = "mount", !.calls = @ + 1]
@@ -49,8 +53,23 @@ ReturnUnknownRecovery == /\ s.stage = "recover"
 FailUnknownRecovery == /\ s.stage = "recover"
                        /\ s' = [s EXCEPT !.stage = "idle", !.failed = TRUE]
 Confirm == /\ s.borrower \in Callers /\ s.stage = "idle" /\ s.phase = "live"
-           /\ Admitted /\ ~s.confirmed /\ ~s.cleaned
+           /\ s.owner = "local" /\ Admitted /\ ~s.confirmed /\ ~s.cleaned
            /\ s' = [s EXCEPT !.confirmed = TRUE]
+WriteManifest == /\ s.owner = "container" /\ s.backend = "prepared"
+                 /\ s.phase = "live" /\ s.stage = "idle"
+                 /\ s.mode = "copy" /\ ~s.cleaned
+                 /\ Admitted
+                 /\ s' = [s EXCEPT !.manifest = TRUE]
+ActivateContainer == /\ s.owner = "container" /\ s.backend = "prepared"
+                     /\ s.phase = "live" /\ s.stage = "idle"
+                     /\ s.manifest /\ Admitted
+                     /\ s' = [s EXCEPT !.backend = "active", !.confirmed = TRUE]
+LoseActivationResponse == /\ s.owner = "container" /\ s.backend = "active"
+                          /\ s.confirmed /\ s.held
+                          /\ s' = [s EXCEPT !.crashed = TRUE, !.borrower = 0]
+AdoptActive == /\ s.owner = "container" /\ s.backend = "active"
+               /\ s.manifest /\ s.crashed /\ Admitted
+               /\ s' = [s EXCEPT !.crashed = FALSE]
 Reuse == /\ s.borrower \in Callers /\ s.phase = "live" /\ s.confirmed
          /\ s.mode = "fuse" /\ s.matching /\ Admitted /\ s.stage = "idle"
          /\ s' = [s EXCEPT !.borrower = 0]
@@ -74,16 +93,21 @@ AckCopy == /\ s.borrower \in Callers /\ s.stage = "idle" /\ Admitted
                             !.ack = TRUE, !.borrower = 0]
 Prune == /\ s.borrower = 0 /\ s.phase \in {"empty", "released"}
          /\ s' = [s EXCEPT !.held = FALSE]
-Next == (\E c \in Callers: Borrow(c)) \/ Cancel \/ Observe \/ Start \/ Resume
+Next == (\E c \in Callers: Borrow(c)) \/ Cancel \/ Observe
+        \/ ReserveContainer \/ Start \/ Resume
         \/ ReturnMount \/ ReturnNoEffect \/ ReturnUnknown
         \/ BeginUnknownRecovery \/ ReturnUnknownRecovery \/ FailUnknownRecovery
-        \/ Confirm \/ Reuse \/ BeginTeardown \/ ReturnTeardown \/ FailTeardown
+        \/ Confirm \/ WriteManifest \/ ActivateContainer
+        \/ LoseActivationResponse \/ AdoptActive \/ Reuse
+        \/ BeginTeardown \/ ReturnTeardown \/ FailTeardown
         \/ Retire \/ AckCopy \/ Prune
 Spec == Init /\ [][Next]_s
 TypeOK == /\ s.phase \in {"empty", "pending", "unknown", "live", "noeffect", "released"}
           /\ s.stage \in {"idle", "mount", "recover", "teardown", "finish"}
           /\ s.borrower \in Callers \cup {0}
           /\ s.calls \in 0..2
+          /\ s.owner \in {"local", "container"}
+          /\ s.backend \in {"none", "prepared", "active"}
 RetainedWhilePhysical == s.phase \in {"pending", "unknown", "live"} => s.held
 SingleExternalMount == s.calls <= 1
 BorrowIsExclusive == [][s.borrower # 0 => s'.borrower \in {0, s.borrower}]_s
@@ -97,6 +121,12 @@ CopyReplayKeepsBaseline ==
        => s'.stage # "teardown"]_s
 AcknowledgementRequiresSettledMount ==
     [][(~s.ack /\ s'.ack) => s.phase = "live" /\ s.confirmed]_s
+ContainerActiveHasManifest ==
+    s.backend = "active" => s.owner = "container" /\ s.mode = "copy"
+                            /\ s.manifest /\ s.confirmed
+ContainerMountRequiresReservation ==
+    s.owner = "container" /\ s.phase \in {"pending", "unknown", "live"}
+    => s.backend \in {"prepared", "active"}
 NoCancelledPending == ~(s.cancelled /\ s.phase = "pending" /\ s.borrower = 0)
 NoFailedRetained == ~(s.failed /\ s.held)
 NoUnknownRetained == ~(s.phase = "unknown" /\ s.held)
