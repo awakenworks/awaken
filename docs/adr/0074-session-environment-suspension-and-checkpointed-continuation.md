@@ -815,3 +815,25 @@ mismatched plan/handle, or ambiguous substrate observation fails closed and
 keeps the existing cleanup retry pending. The Session aggregate, root CAS and
 terminal cleanup receipt remain the only durable journals; no provider database,
 queue, slot cache, marker or restore store is added.
+
+## 2026-09-08 amendment: one checkpoint-upload evidence value
+
+The existing filesystem provider's checkpoint participant carries no filesystem
+mechanism: its operation identity, request fingerprint, snapshot digest/size,
+and optional complete receipt describe one exact upload. That value and its
+pending/replay/completion comparisons belong to `awaken-provisioning-contract`
+as `SandboxCheckpointUpload`. Concrete providers persist it within their
+existing physical realization authority; it is not a separate journal or a
+Session lifecycle model. Local and Namespace keep their existing marker,
+exclusive lock, root identity, and write-ahead persistence unchanged. Existing
+marker JSON fields and legacy missing-operation decoding remain unchanged.
+
+The value only admits exact replay and rejects changed input or receipt before
+mutation. Provider ordering remains current-authority/physical-identity check,
+durable pending evidence, exact idempotent object upload, verified complete
+receipt persistence, then Session root acknowledgement. Storage concurrency,
+quiescence, current execution authority, terminal takeover and object deletion
+remain at their existing owners. In particular, decoding this value or adding
+an archive codec does not establish a conforming container checkpoint provider;
+the concrete provider must implement both fenced upload and terminal replay
+before it advertises the format.

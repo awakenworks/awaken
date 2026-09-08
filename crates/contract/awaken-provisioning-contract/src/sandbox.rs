@@ -3,6 +3,7 @@
 //! backends (lexical / bubblewrap / container) implement these in their own
 //! crates and are selected by [`SandboxCapabilities`].
 
+mod checkpoint_upload;
 mod control_incarnation;
 mod foundation;
 mod repository_publication;
@@ -10,6 +11,7 @@ mod restore_contract;
 mod restore_wire;
 mod runtime;
 
+pub use checkpoint_upload::SandboxCheckpointUpload;
 pub use control_incarnation::{KubernetesPodUid, SandboxControlIncarnation};
 pub use foundation::*;
 pub use repository_publication::{

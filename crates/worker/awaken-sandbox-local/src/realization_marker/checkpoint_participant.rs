@@ -1,29 +1,5 @@
 use super::*;
 
-impl CheckpointParticipant {
-    fn pending(
-        operation_id: String,
-        request_fingerprint: &str,
-        snapshot_digest: &str,
-        snapshot_size_bytes: u64,
-    ) -> Self {
-        Self {
-            operation_id: Some(operation_id),
-            request_fingerprint: request_fingerprint.to_owned(),
-            snapshot_digest: snapshot_digest.to_owned(),
-            snapshot_size_bytes,
-            reference: None,
-        }
-    }
-
-    fn matches_pending(&self, pending: &Self) -> bool {
-        self.operation_id == pending.operation_id
-            && self.request_fingerprint == pending.request_fingerprint
-            && self.snapshot_digest == pending.snapshot_digest
-            && self.snapshot_size_bytes == pending.snapshot_size_bytes
-    }
-}
-
 impl ReadyOperationGuard {
     pub(super) fn current_marker(&self) -> Result<RealizationMarker, pc::SandboxError> {
         let marker = read_marker_locked(&self.root, &self.lock)?
@@ -72,21 +48,14 @@ fn completed_checkpoint(
     let Some(participant) = &marker.checkpoint else {
         return Ok(None);
     };
-    if participant.request_fingerprint != request_fingerprint
-        || participant.operation_id.as_deref() != Some(operation_id)
-    {
-        return Err(err(
-            "filesystem checkpoint participant belongs to another request or operation",
-        ));
-    }
-    Ok(participant.reference.clone())
+    participant.completed_for(request_fingerprint, operation_id)
 }
 
 fn begin_checkpoint_upload(
     root: &Path,
     lock: &awaken_sandbox_fs::ExclusiveFileLock,
     marker: &mut RealizationMarker,
-    pending: CheckpointParticipant,
+    pending: pc::SandboxCheckpointUpload,
 ) -> Result<Option<pc::SandboxCheckpointRef>, pc::SandboxError> {
     if let Some(participant) = &marker.checkpoint {
         if !participant.matches_pending(&pending) {
@@ -94,7 +63,7 @@ fn begin_checkpoint_upload(
                 "filesystem checkpoint replay changed request metadata or snapshot bytes",
             ));
         }
-        return Ok(participant.reference.clone());
+        return Ok(participant.reference().cloned());
     }
     let mut next = marker.clone();
     next.checkpoint = Some(pending);
@@ -111,34 +80,14 @@ fn complete_checkpoint_upload(
     request_fingerprint: &str,
     reference: &pc::SandboxCheckpointRef,
 ) -> Result<(), pc::SandboxError> {
-    let participant = marker
-        .checkpoint
-        .as_ref()
-        .ok_or_else(|| err("filesystem checkpoint completion has no pending participant"))?;
-    if participant.operation_id.as_deref() != Some(operation_id)
-        || participant.request_fingerprint != request_fingerprint
-        || participant.snapshot_digest != reference.digest
-        || participant.snapshot_size_bytes != reference.size_bytes
-        || reference.suspend_effect_id != operation_id
-    {
-        return Err(err(
-            "filesystem checkpoint receipt does not match pending snapshot evidence",
-        ));
-    }
-    if let Some(recorded) = &participant.reference {
-        return if recorded == reference {
-            Ok(())
-        } else {
-            Err(err(
-                "filesystem checkpoint completion conflicts with its durable receipt",
-            ))
-        };
-    }
     let mut next = marker.clone();
-    next.checkpoint
+    let participant = next
+        .checkpoint
         .as_mut()
-        .expect("checkpoint participant was validated")
-        .reference = Some(reference.clone());
+        .ok_or_else(|| err("filesystem checkpoint completion has no pending participant"))?;
+    if !participant.complete(operation_id, request_fingerprint, reference)? {
+        return Ok(());
+    }
     replace_marker_locked(root, lock, marker, &next)?;
     *marker = next;
     Ok(())
@@ -196,7 +145,7 @@ impl CheckpointParticipantGuard for ReadyOperationGuard {
     ) -> Result<Option<pc::SandboxCheckpointRef>, pc::SandboxError> {
         self.current_marker()?;
         let operation_id = self.operation_effect_fence.operation_id.clone();
-        let pending = CheckpointParticipant::pending(
+        let pending = pc::SandboxCheckpointUpload::pending(
             operation_id,
             request_fingerprint,
             snapshot_digest,
@@ -254,7 +203,7 @@ impl CheckpointParticipantGuard for RemovalGuard {
             .ok_or_else(|| err("terminal checkpoint participant has no bound Suspend effect"))?
             .operation_id
             .clone();
-        let pending = CheckpointParticipant::pending(
+        let pending = pc::SandboxCheckpointUpload::pending(
             operation_id,
             request_fingerprint,
             snapshot_digest,

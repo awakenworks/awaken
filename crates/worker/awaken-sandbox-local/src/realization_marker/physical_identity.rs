@@ -45,15 +45,14 @@ pub(super) fn validate_removed_restore_source(
         .as_ref()
         .ok_or_else(|| err("Removed filesystem tombstone has no checkpoint participant"))?;
     let checkpoint = participant
-        .reference
-        .as_ref()
+        .reference()
         .ok_or_else(|| err("Removed filesystem tombstone has no completed checkpoint receipt"))?;
-    let checkpoint_operation_id = participant.operation_id.as_deref().ok_or_else(|| {
+    let checkpoint_operation_id = participant.operation_id().ok_or_else(|| {
         err("Removed filesystem tombstone has no durable checkpoint operation identity")
     })?;
     if source.phase != RealizationPhase::Removed
         || source.terminal_source.is_none()
-        || participant.request_fingerprint.trim().is_empty()
+        || participant.request_fingerprint().trim().is_empty()
         || checkpoint_operation_id.trim().is_empty()
         || checkpoint.suspend_effect_id.trim().is_empty()
         || checkpoint.suspend_effect_id != checkpoint_operation_id

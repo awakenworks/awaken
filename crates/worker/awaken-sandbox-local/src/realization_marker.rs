@@ -31,7 +31,7 @@ struct RealizationMarker {
     /// pre-participant schema-2 markers readable without a parallel marker
     /// version or lifecycle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    checkpoint: Option<CheckpointParticipant>,
+    checkpoint: Option<pc::SandboxCheckpointUpload>,
     /// Immutable evidence consumed when the same lifecycle crosses into
     /// terminal cleanup. The marker's top-level fence is the last provider
     /// preparation admitted by this lifecycle; effect-free reconstruction may
@@ -115,7 +115,7 @@ struct RebuildSourceRecord {
     physical_incarnation: String,
     root: RootRecord,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    checkpoint: Option<CheckpointParticipant>,
+    checkpoint: Option<pc::SandboxCheckpointUpload>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     terminal_source: Option<TerminalSourceRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -134,21 +134,6 @@ fn ready_phase() -> RealizationPhase {
 
 mod receipt;
 pub(crate) use receipt::RealizationCompletionReceipt;
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CheckpointParticipant {
-    /// Exact checkpoint operation recorded when the participant WAL is first
-    /// published. It remains the Suspend identity after the marker's top-level
-    /// fence advances to terminal cleanup.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    operation_id: Option<String>,
-    request_fingerprint: String,
-    snapshot_digest: String,
-    snapshot_size_bytes: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    reference: Option<pc::SandboxCheckpointRef>,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TerminalSourceRecord {
