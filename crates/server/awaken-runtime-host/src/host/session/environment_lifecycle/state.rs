@@ -151,6 +151,7 @@ enum DurableProjectionIdentityDecision {
 enum CandidateCommitClass {
     New,
     Adoption,
+    AdoptionFrom,
     DurableCreate,
     DurableAdoption,
 }
@@ -166,10 +167,15 @@ enum CandidateCommitDecision {
 const fn candidate_commit_decision(
     class: CandidateCommitClass,
     committed_identity_is_exact: bool,
+    source_identity_is_compatible: bool,
 ) -> CandidateCommitDecision {
     match class {
         CandidateCommitClass::New => CandidateCommitDecision::BindCreate,
         CandidateCommitClass::Adoption => CandidateCommitDecision::BindAdoption,
+        CandidateCommitClass::AdoptionFrom if source_identity_is_compatible => {
+            CandidateCommitDecision::BindAdoption
+        }
+        CandidateCommitClass::AdoptionFrom => CandidateCommitDecision::Conflict,
         CandidateCommitClass::DurableCreate | CandidateCommitClass::DurableAdoption
             if committed_identity_is_exact =>
         {
@@ -179,6 +185,45 @@ const fn candidate_commit_decision(
             CandidateCommitDecision::Conflict
         }
     }
+}
+
+// Source receipts and the current effect receipt have different roles. Both
+// publication and post-commit retention use this decision; otherwise dispatch
+// success could accept a receipt that the failure/retry path rejects.
+fn candidate_receipt_decision(
+    origin: &UnboundSessionEnvironmentOrigin,
+    identity: &BoundSessionEnvironmentIdentity,
+) -> CandidateCommitDecision {
+    let (class, exact, compatible) = match origin {
+        UnboundSessionEnvironmentOrigin::New => (CandidateCommitClass::New, false, false),
+        UnboundSessionEnvironmentOrigin::Adoption => (CandidateCommitClass::Adoption, false, false),
+        UnboundSessionEnvironmentOrigin::AdoptionFrom(source) => (
+            CandidateCommitClass::AdoptionFrom,
+            false,
+            source == identity
+                || same_durable_generation(source, identity)
+                || matches!(
+                    (source, identity),
+                    (
+                        BoundSessionEnvironmentIdentity::LegacyDirect(
+                            LegacyDirectEnvironmentProvenance::DurableBinding { .. }
+                        ),
+                        BoundSessionEnvironmentIdentity::Durable { .. }
+                    )
+                ),
+        ),
+        UnboundSessionEnvironmentOrigin::DurableCreate(current) => (
+            CandidateCommitClass::DurableCreate,
+            current == identity,
+            false,
+        ),
+        UnboundSessionEnvironmentOrigin::DurableAdoption(current) => (
+            CandidateCommitClass::DurableAdoption,
+            current == identity,
+            false,
+        ),
+    };
+    candidate_commit_decision(class, exact, compatible)
 }
 
 const fn durable_projection_identity_decision(
@@ -215,17 +260,7 @@ impl SessionEnvironmentOwner {
                 "committed Session Environment Candidate lost its exact fence",
             ));
         }
-        let (class, exact) = match &current.origin {
-            UnboundSessionEnvironmentOrigin::New => (CandidateCommitClass::New, false),
-            UnboundSessionEnvironmentOrigin::Adoption => (CandidateCommitClass::Adoption, false),
-            UnboundSessionEnvironmentOrigin::DurableCreate(current) => {
-                (CandidateCommitClass::DurableCreate, current == &identity)
-            }
-            UnboundSessionEnvironmentOrigin::DurableAdoption(current) => {
-                (CandidateCommitClass::DurableAdoption, current == &identity)
-            }
-        };
-        match candidate_commit_decision(class, exact) {
+        match candidate_receipt_decision(&current.origin, &identity) {
             CandidateCommitDecision::BindCreate => {
                 current.origin = UnboundSessionEnvironmentOrigin::DurableCreate(identity);
             }
@@ -458,7 +493,7 @@ impl SessionEnvironmentOwner {
                 }),
                 awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
             ) if *expected == binding => {
-                UnboundSessionEnvironmentOrigin::DurableAdoption(identity.clone())
+                UnboundSessionEnvironmentOrigin::AdoptionFrom(identity.clone())
             }
             (Self::Preparing(SessionEnvironmentPreparation::Candidate(existing)), current_kind)
                 if existing.binding == binding
@@ -520,6 +555,13 @@ impl SessionEnvironmentOwner {
         if !current.exact_matches(expected) {
             return Err(HostError::internal(
                 "Session Environment publication lost its exact candidate fence",
+            ));
+        }
+        if candidate_receipt_decision(&current.origin, &identity)
+            == CandidateCommitDecision::Conflict
+        {
+            return Err(HostError::internal(
+                "Session Environment publication changed durable identity",
             ));
         }
         let resident = BoundSessionEnvironment {
@@ -753,7 +795,7 @@ impl SessionEnvironmentOwner {
             {
                 (
                     &owned.binding,
-                    UnboundSessionEnvironmentOrigin::DurableAdoption(owned.identity.clone()),
+                    UnboundSessionEnvironmentOrigin::AdoptionFrom(owned.identity.clone()),
                 )
             }
             RetiringEnvironmentOwner::Unbound(candidate) => (
@@ -818,23 +860,34 @@ fn durable_projection_identity_is_exact_or_a_same_physical_owner_stutter() {
 fn committed_candidate_retains_effect_kind_and_rejects_identity_relabeling() {
     // Cause/effect decision table: C1 is the closed Candidate origin class; C2
     // a previously committed identity is exact. E1 New binds DurableCreate;
-    // E2 Adoption binds DurableAdoption; E3 either durable class plus exact C2
+    // E2 Adoption binds DurableAdoption; source adoption binds only a compatible
+    // physical generation (or typed legacy upgrade). E3 either committed class plus exact C2
     // replays; E4 either durable class plus !C2 conflicts. The reducer returns
     // no Resident decision, so every row remains hidden until the canonical
     // publication or terminal-retirement owner consumes it.
-    let class = match kani::any::<u8>() % 4 {
+    let class = match kani::any::<u8>() % 5 {
         0 => CandidateCommitClass::New,
         1 => CandidateCommitClass::Adoption,
         2 => CandidateCommitClass::DurableCreate,
-        _ => CandidateCommitClass::DurableAdoption,
+        3 => CandidateCommitClass::DurableAdoption,
+        _ => CandidateCommitClass::AdoptionFrom,
     };
     let exact: bool = kani::any();
-    let decision = candidate_commit_decision(class, exact);
+    let compatible: bool = kani::any();
+    let decision = candidate_commit_decision(class, exact, compatible);
     match class {
         CandidateCommitClass::New => assert_eq!(decision, CandidateCommitDecision::BindCreate),
         CandidateCommitClass::Adoption => {
             assert_eq!(decision, CandidateCommitDecision::BindAdoption)
         }
+        CandidateCommitClass::AdoptionFrom => assert_eq!(
+            decision,
+            if compatible {
+                CandidateCommitDecision::BindAdoption
+            } else {
+                CandidateCommitDecision::Conflict
+            }
+        ),
         CandidateCommitClass::DurableCreate | CandidateCommitClass::DurableAdoption if exact => {
             assert_eq!(decision, CandidateCommitDecision::Replay)
         }

@@ -123,16 +123,12 @@ impl SharedHost {
         thread: &str,
         candidate: &UnboundSessionEnvironment,
     ) -> Result<BoundSessionEnvironmentIdentity, HostError> {
-        let source_binding = match &candidate.origin {
-            crate::session_slot::UnboundSessionEnvironmentOrigin::New
-            | crate::session_slot::UnboundSessionEnvironmentOrigin::DurableCreate(_) => None,
-            crate::session_slot::UnboundSessionEnvironmentOrigin::Adoption
-            | crate::session_slot::UnboundSessionEnvironmentOrigin::DurableAdoption(_) => {
-                Some(candidate.binding.as_str())
-            }
-        };
         let effect = self
-            .authorize_environment_effect_before_io(thread, candidate.effect_kind(), source_binding)
+            .authorize_environment_effect_before_io(
+                thread,
+                candidate.effect_kind(),
+                candidate.source_binding(),
+            )
             .await?;
         self.persist_authorized_environment_before_publish(thread, candidate, &effect)
             .await
