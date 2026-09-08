@@ -425,7 +425,7 @@ mod tests {
         ignore = "requires Linux mount-namespace path fidelity"
     )]
     async fn claimed_ready_durable_revocation_adopts_a_fresh_hand_and_runtime() {
-        claimed_ready_durable_replacement(false, true, false).await;
+        claimed_ready_durable_replacement(false, true, false, false).await;
     }
 
     #[cfg(target_os = "linux")]
@@ -436,7 +436,7 @@ mod tests {
         // + exact Ready durable binding => fresh executable B, same root/bytes;
         // A remains denied. A fresh Hand around A's closed execution binding is
         // insufficient. This reuses DH1's production projection/receipt path.
-        claimed_ready_durable_replacement(true, true, false).await;
+        claimed_ready_durable_replacement(true, true, false, false).await;
     }
 
     #[cfg(target_os = "linux")]
@@ -447,7 +447,7 @@ mod tests {
         // => stop A before publishing executable B; preserve the exact physical
         // binding. This is the warm approval/resume path, distinct from SR1.
         // Both rules assert real process admission, not merely wrapper identity.
-        claimed_ready_durable_replacement(true, false, false).await;
+        claimed_ready_durable_replacement(true, false, false, false).await;
     }
 
     #[cfg(target_os = "linux")]
@@ -458,10 +458,47 @@ mod tests {
         // exact local tree but retain A as Retiring, old lease and root bytes;
         // do not publish a Candidate/new proof. Restore exact observer evidence
         // under this fixture's exclusive ownership => retry reaches SR2's B.
-        claimed_ready_durable_replacement(true, false, true).await;
+        claimed_ready_durable_replacement(true, false, true, false).await;
     }
 
-    async fn claimed_ready_durable_replacement(scoped: bool, revoke: bool, unknown: bool) {
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "required real Linux helper supplied by the portability supervision gate"]
+    async fn trusted_host_scoped_session_committed_candidate_replaces_execution() {
+        // SC1: Create returned, sink readback committed, local publication did
+        // not happen; a new Session generation must retire that exact hidden
+        // Candidate and adopt fresh execution over the same root. SC2: renewal
+        // must retain its Arc and hidden phase; a foreign binding must neither
+        // publish nor stop it. Reuse SR2's real execution and receipt oracles.
+        claimed_ready_durable_replacement(true, false, false, true).await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "required real Linux helper supplied by the portability supervision gate"]
+    async fn trusted_host_scoped_session_committed_candidate_unknown_then_retry() {
+        // SC3: SC1 + unknown predecessor observation => retain exact Bound
+        // Retiring owner, old authority, no Adopt receipt. Exact evidence on
+        // retry => fresh executable successor, old Arc permanently denied.
+        claimed_ready_durable_replacement(true, false, true, true).await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "required real Linux helper supplied by the portability supervision gate"]
+    async fn trusted_host_scoped_session_committed_candidate_explicit_revocation() {
+        // SC4: committed hidden Candidate + explicit revocation before new
+        // projection => Bound retirement, not Unbound cleanup; ordinary Ready
+        // adoption must still preserve the root and create fresh execution.
+        claimed_ready_durable_replacement(true, true, false, true).await;
+    }
+
+    async fn claimed_ready_durable_replacement(
+        scoped: bool,
+        revoke: bool,
+        unknown: bool,
+        committed_candidate: bool,
+    ) {
         use awaken_session_contract::SessionProjectionSynchronizer as _;
 
         let thread = "claimed-ready-durable-hand-rebuild";
@@ -526,14 +563,67 @@ mod tests {
         )
         .await
         .expect("DH1 install complete durable projection");
-        let cached_runtime = host
-            .ctx_for_snapshot(thread, Some("agent-a"), Some(snapshot.clone()))
-            .await
-            .expect("DH1/C1 build durable Runtime R1");
+        let cached_runtime = if committed_candidate {
+            // Stop at the production sink-readback/local-publication boundary.
+            // No synthetic generation or Resident -> Candidate demotion: use
+            // the canonical authorization, fenced Provider and retention edges.
+            let lifecycle = host
+                .session_slots
+                .update(thread, |slot| slot.lifecycle.clone());
+            let _lifecycle = lifecycle.lock().await;
+            let effect = host
+                .authorize_environment_effect_before_io(
+                    thread,
+                    awaken_session_contract::SessionEnvironmentEffectKind::Create,
+                    None,
+                )
+                .await
+                .unwrap();
+            let fence = effect.provider_fence.as_ref().unwrap();
+            let authority = host
+                .session_slots
+                .provider_effect_authority(thread, fence, host.execution_authority.as_ref())
+                .unwrap();
+            let environment = Arc::new(
+                host.session_provider
+                    .create_effective_for_effect(
+                        &host.sandbox_spec(thread),
+                        Some(fence),
+                        Some(&authority),
+                        None,
+                        awaken_sandbox_container::ContainerRealizationIntent::Create,
+                    )
+                    .await
+                    .unwrap(),
+            );
+            let candidate = host
+                .begin_session_environment_preparation(thread, environment)
+                .unwrap();
+            let identity = host
+                .persist_environment_before_publish(thread, &candidate)
+                .await
+                .unwrap();
+            host.retain_committed_session_environment_candidate(thread, &candidate, identity)
+                .unwrap();
+            assert!(
+                host.session_environment(thread).await.is_none(),
+                "SC1 still hidden"
+            );
+            None
+        } else {
+            Some(
+                host.ctx_for_snapshot(thread, Some("agent-a"), Some(snapshot.clone()))
+                    .await
+                    .expect("DH1/C1 build durable Runtime R1"),
+            )
+        };
         let original = host
-            .session_environment(thread)
-            .await
-            .expect("DH1/C1 durable Resident Environment A");
+            .session_slots
+            .read(thread, |slot| {
+                slot.environment_owner.execution_environment().cloned()
+            })
+            .flatten()
+            .expect("DH1/SC1 exact owned Environment A");
         let original_handle = original.handle();
         let original_hand = original.tool_executor();
         let projection = control.current_projection();
@@ -566,8 +656,20 @@ mod tests {
             .unwrap();
             assert!(Arc::ptr_eq(
                 &original,
-                &host.session_environment(thread).await.unwrap()
+                &host
+                    .session_slots
+                    .read(thread, |slot| slot
+                        .environment_owner
+                        .execution_environment()
+                        .cloned())
+                    .flatten()
+                    .unwrap()
             ));
+            assert_eq!(
+                host.session_environment(thread).await.is_none(),
+                committed_candidate,
+                "SR4/SC2 renewal preserves publication phase"
+            );
             assert_eq!(binding_sink.calls(), 1, "SR4 no adoption receipt");
             scoped_admission(&original)
                 .await
@@ -639,47 +741,68 @@ mod tests {
             action: awaken_session_contract::SessionRealizationAction::Complete,
         };
         if scoped && !revoke {
-            // SR5: a newer root with a foreign binding is not retirement
+            // SR5/SC2: a newer root with a foreign binding OR generation is not retirement
             // authority. Validate the prospective owner before any tree stop;
             // final publication validation alone would reject too late.
-            let mut foreign = projection.clone();
-            foreign.revision.0 += 1;
-            if let awaken_session_contract::SessionEnvironmentState::Resident { binding, .. } =
-                &mut foreign.environment
-            {
-                binding.push_str("-foreign");
-            } else {
-                panic!("SR5 Resident projection")
-            }
-            assert!(
-                host.install_frozen_session_projection(
-                    thread,
-                    foreign,
-                    None,
-                    true,
-                    Some(crate::session_slot::test_observed_lease(lease.clone()))
-                )
-                .await
-                .is_err()
-            );
-            assert!(Arc::ptr_eq(
-                &original,
-                &host.session_environment(thread).await.unwrap()
-            ));
-            assert!(
-                predecessor
-                    .as_ref()
-                    .unwrap()
-                    .0
-                    .poll()
+            for foreign_generation in [false, true] {
+                let mut foreign = projection.clone();
+                foreign.revision.0 += 1;
+                if let awaken_session_contract::SessionEnvironmentState::Resident {
+                    binding,
+                    generation,
+                    ..
+                } = &mut foreign.environment
+                {
+                    if foreign_generation {
+                        generation.as_mut().unwrap().id.push_str("-foreign");
+                    } else {
+                        binding.push_str("-foreign");
+                    }
+                } else {
+                    panic!("SR5 Resident projection")
+                }
+                assert!(
+                    host.install_frozen_session_projection(
+                        thread,
+                        foreign,
+                        None,
+                        true,
+                        Some(crate::session_slot::test_observed_lease(lease.clone()))
+                    )
                     .await
-                    .unwrap()
-                    .is_none()
-            );
-            scoped_admission(&original)
-                .await
-                .expect("SR5 valid prior execution was not retired");
-            assert_eq!(binding_sink.calls(), 1);
+                    .is_err()
+                );
+                assert!(Arc::ptr_eq(
+                    &original,
+                    &host
+                        .session_slots
+                        .read(thread, |slot| slot
+                            .environment_owner
+                            .execution_environment()
+                            .cloned())
+                        .flatten()
+                        .unwrap()
+                ));
+                assert_eq!(
+                    host.session_environment(thread).await.is_none(),
+                    committed_candidate,
+                    "SR5/SC2 foreign projection preserves publication phase"
+                );
+                assert!(
+                    predecessor
+                        .as_ref()
+                        .unwrap()
+                        .0
+                        .poll()
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+                scoped_admission(&original)
+                    .await
+                    .expect("SR5 valid prior execution was not retired");
+                assert_eq!(binding_sink.calls(), 1);
+            }
         }
         if unknown {
             let marker = root_sentinel
@@ -807,10 +930,12 @@ mod tests {
             .ctx_for_claimed_snapshot(thread, Some("agent-a"), snapshot, attempt)
             .await
             .expect("DH1/E4 claimed Runtime R2");
-        assert!(
-            !Arc::ptr_eq(&cached_runtime, &fresh_runtime),
-            "DH1/E4 R2 cannot reuse revoked R1"
-        );
+        if let Some(cached_runtime) = cached_runtime {
+            assert!(
+                !Arc::ptr_eq(&cached_runtime, &fresh_runtime),
+                "DH1/E4 R2 cannot reuse revoked R1"
+            );
+        }
         assert!(
             fresh_runtime
                 .env

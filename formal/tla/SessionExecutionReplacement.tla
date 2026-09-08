@@ -7,12 +7,15 @@ EXTENDS SessionExecutionBinding
    renewal, close and generation-install actions. Two callers share the Host
    lifecycle lock; cancellation releases the caller, never the physical owner.
    One old tree, two generations, one successor, one cancellation per caller.
+   The original owner is either Resident or a Store-read committed Candidate.
+   Commitment is an assumption here; uncommitted/response-lost Candidates and
+   a second replacement after the successor becomes Candidate are not modeled.
    Observer truth, exact root/Memory identity and atomic Host publication are
    assumptions discharged separately by executable tests, not Rust refinement.
    Unknown evidence has no liveness guarantee. Enabledness below forbids a
    vacuously safe implementation which simply never admits the new scope. *)
-VARIABLES phase, caller, cancelled, tree, observation, nextCapture, newEffect, badNewEffect
-replacementVars == <<phase, caller, cancelled, tree, observation, nextCapture, newEffect, badNewEffect>>
+VARIABLES phase, caller, cancelled, tree, observation, nextCapture, newEffect, badNewEffect, originalPhase
+replacementVars == <<phase, caller, cancelled, tree, observation, nextCapture, newEffect, badNewEffect, originalPhase>>
 replacementAll == <<bindingAll, replacementVars>>
 Successor == INSTANCE SessionExecutionBinding
   WITH boundSlot <- nextCapture[1], boundGeneration <- nextCapture[2],
@@ -21,15 +24,16 @@ Successor == INSTANCE SessionExecutionBinding
 ReplacementInit == BindingInit
   /\ registeredWorker = TRUE /\ providerSource = FALSE /\ providerPhase = "adoption"
   /\ phase = "initial" /\ caller = 0 /\ cancelled = {}
+  /\ originalPhase \in {"candidate", "resident"}
   /\ tree = "absent" /\ observation = "unknown"
   /\ nextCapture = <<0, 0, 0>> /\ newEffect = FALSE /\ badNewEffect = FALSE
 
 Setup == /\ phase = "initial"
   /\ (ProbeReady \/ ((Select \/ Bind \/
-      (EnvironmentChanges /\ environmentIdentity' = 1 /\ environmentPhase' = "resident"))
+      (EnvironmentChanges /\ environmentIdentity' = 1 /\ environmentPhase' = originalPhase))
       /\ UNCHANGED deploymentReady))
   /\ UNCHANGED <<registeredWorker, providerSource, providerPhase, memoryVars, replacementVars>>
-StartOriginal == /\ phase = "initial" /\ CurrentBinding /\ environmentPhase = "resident"
+StartOriginal == /\ phase = "initial" /\ CurrentBinding /\ environmentPhase = originalPhase
   /\ phase' = "old" /\ tree' = "live"
   /\ UNCHANGED <<bindingAll, caller, cancelled, observation, nextCapture, newEffect, badNewEffect>>
 
@@ -81,14 +85,16 @@ ExecuteSuccessor == /\ phase \in {"fresh", "ready"} /\ Successor!CurrentBinding
        \/ environmentPhase \notin {"candidate", "resident"}
        \/ tree # "absent" \/ observation # "absent")
   /\ UNCHANGED <<bindingAll, phase, caller, cancelled, tree, observation, nextCapture>>
-ReplacementNext == Setup \/ StartOriginal \/ Authority
+ReplacementNext == /\ UNCHANGED originalPhase
+  /\ (Setup \/ StartOriginal \/ Authority
   \/ (\E c \in Callers : Acquire(c)) \/ Cancel \/ Retire \/ Stop
-  \/ ObserveAbsent \/ ObserveUnknown \/ Install \/ Adopt \/ Publish \/ ExecuteSuccessor
+  \/ ObserveAbsent \/ ObserveUnknown \/ Install \/ Adopt \/ Publish \/ ExecuteSuccessor)
 ReplacementSpec == ReplacementInit /\ [][ReplacementNext]_replacementAll
 
 ReplacementTypeOK == BindingTypeOK
   /\ phase \in {"initial", "old", "retiring", "adoptable", "fresh", "ready"}
   /\ caller \in 0..2 /\ cancelled \subseteq Callers
+  /\ originalPhase \in {"candidate", "resident"}
   /\ tree \in {"live", "absent"} /\ observation \in {"unknown", "absent"}
   /\ nextCapture \in (0..2) \X (0..2) \X (0..2) /\ newEffect \in BOOLEAN /\ badNewEffect \in BOOLEAN
 SuccessorCommitsOnlyCurrent == ~badNewEffect
@@ -98,8 +104,10 @@ FreshCaptureMatchesOwner == phase \in {"fresh", "ready"} =>
   nextCapture = <<slotIdentity, 2, environmentIdentity>>
 FreshExecutionEnabled == (phase \in {"fresh", "ready"} /\ RootCurrent
   /\ projection = "Live" /\ ~sessionExpired /\ ~newEffect) => ENABLED ExecuteSuccessor
+CommittedOwnerRetirementEnabled == (caller # 0 /\ phase = "old") => ENABLED Retire
 CancellationRetainsOwner == [][Cancel => UNCHANGED <<phase, environmentIdentity, nextCapture, tree>>]_replacementAll
 SuccessorCaptureIsWriteOnce == [][nextCapture # <<0, 0, 0>> => UNCHANGED nextCapture]_replacementAll
 NoSuccessorReached == ~newEffect
 NoCancelledRecoveryReached == ~(newEffect /\ cancelled = Callers)
+NoCandidateSuccessorReached == ~(newEffect /\ originalPhase = "candidate")
 =============================================================================

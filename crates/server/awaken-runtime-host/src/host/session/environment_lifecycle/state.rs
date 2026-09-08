@@ -373,7 +373,19 @@ impl SessionEnvironmentOwner {
                     // A projection can confirm durable truth but cannot publish
                     // a physical candidate. Only the Store-read sink receipt
                     // consumed by `publish_prepared` crosses that boundary.
-                    Self::Preparing(SessionEnvironmentPreparation::Candidate(_)) => {}
+                    Self::Preparing(SessionEnvironmentPreparation::Candidate(candidate)) => {
+                        if let Some(committed) = candidate.durable_identity()
+                            && durable_projection_identity_decision(
+                                committed == &identity,
+                                candidate.binding == binding,
+                                same_durable_generation(committed, &identity),
+                            ) == DurableProjectionIdentityDecision::Conflict
+                        {
+                            return Err(HostError::internal(
+                                "committed Candidate projection changed its durable identity",
+                            ));
+                        }
+                    }
                     Self::Resident(owned) => {
                         match durable_projection_identity_decision(
                             owned.identity == identity,
@@ -572,6 +584,17 @@ impl SessionEnvironmentOwner {
                 if !selected_matches(&candidate.environment) {
                     return Ok(None);
                 }
+                if cause == SessionEnvironmentRetirementCause::RealizationRevocation
+                    && candidate.durable_identity().is_some()
+                {
+                    // Root readback, not projected binding equality, permits
+                    // the existing Bound retirement/adoption path. Preserve
+                    // uncommitted Candidates as Unbound cleanup owners.
+                    let candidate = candidate.clone();
+                    return self
+                        .begin_retirement_with_committed_candidate(&candidate, cause)
+                        .map(Some);
+                }
                 RetiringEnvironmentOwner::Unbound(candidate.clone())
             }
             Self::Resident(owned) => {
@@ -647,9 +670,9 @@ impl SessionEnvironmentOwner {
     }
 
     /// Move a root-committed but locally unpublished Candidate directly behind
-    /// the terminal fence. It never becomes Resident/tool-visible; the durable
+    /// a retirement fence. It never becomes Resident/tool-visible; the durable
     /// identity and exact Arc become one Bound retirement owner so preparation
-    /// and disposal retries share the ordinary terminal path.
+    /// and disposal/revocation retries share their ordinary lifecycle paths.
     pub(super) fn begin_retirement_with_committed_candidate(
         &mut self,
         expected: &UnboundSessionEnvironment,
@@ -657,16 +680,16 @@ impl SessionEnvironmentOwner {
     ) -> Result<RetiringSessionEnvironment, HostError> {
         let Self::Preparing(SessionEnvironmentPreparation::Candidate(current)) = self else {
             return Err(HostError::internal(
-                "terminal committed Candidate has no Preparing owner",
+                "committed Candidate retirement has no Preparing owner",
             ));
         };
         if !current.exact_matches(expected) {
             return Err(HostError::internal(
-                "terminal committed Candidate lost its exact local fence",
+                "committed Candidate retirement lost its exact local fence",
             ));
         }
         let identity = current.durable_identity().cloned().ok_or_else(|| {
-            HostError::internal("terminal Candidate has no Store-read durable identity")
+            HostError::internal("Candidate retirement has no Store-read durable identity")
         })?;
         let retiring = RetiringSessionEnvironment {
             cause,

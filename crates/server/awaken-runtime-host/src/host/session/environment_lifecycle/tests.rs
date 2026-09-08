@@ -2253,6 +2253,122 @@ async fn committed_hidden_create_candidate_is_terminally_retired_without_publica
 }
 
 #[tokio::test]
+async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
+    use awaken_session_contract::SessionEnvironmentEffectKind::{Adopt, Create};
+    // Causes: C1 Create/Adopt origin; C2 Store-read identity retained or absent;
+    // C3 selected Arc exact/foreign; C4 revocation/unpublished cleanup;
+    // C5 projected identity exact/same-generation receipt/new generation;
+    // C6 projected binding exact/foreign. Effects and decision rules:
+    // CR1 !C3 => no transition, original Candidate unchanged.
+    // CR2 C3+C2+revocation => same Arc/binding/identity becomes Bound Retiring.
+    // CR3 C3+(!C2 or cleanup) => Unbound Retiring, no invented durable identity.
+    // CP1 !C6 or (C2+new generation) => reject, same Candidate retained.
+    // CP2 all remaining projections => accept but NEVER publish a Candidate.
+    // Fully cross C1-C4 for retirement and C1+C2 with each independent identity
+    // conflict for projection. Same-generation receipt stutter is intentional;
+    // without Store readback a projection alone cannot establish commitment.
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let owned = environment(&provider, "candidate-evidence").await;
+    let foreign = environment(&provider, "candidate-foreign").await;
+    for kind in [Create, Adopt] {
+        for committed in [false, true] {
+            let mut base = SessionEnvironmentOwner::Vacant;
+            let mut candidate = base.begin_preparing(owned.clone(), kind.clone()).unwrap();
+            let identity = identity("candidate-evidence");
+            if committed {
+                candidate = base
+                    .retain_committed_candidate(&candidate, identity.clone())
+                    .unwrap();
+            }
+            for exact in [false, true] {
+                for cause in [
+                    SessionEnvironmentRetirementCause::RealizationRevocation,
+                    SessionEnvironmentRetirementCause::UnpublishedCandidate,
+                ] {
+                    let mut owner = base.clone();
+                    let retirement = owner
+                        .begin_retirement(
+                            cause.clone(),
+                            RetirementSelection::Exact(if exact { &owned } else { &foreign }),
+                        )
+                        .unwrap();
+                    if !exact {
+                        assert!(retirement.is_none(), "CR1");
+                        assert!(
+                            owner
+                                .unpublished_candidate()
+                                .unwrap()
+                                .exact_matches(&candidate)
+                        );
+                        continue;
+                    }
+                    let retirement = retirement.unwrap();
+                    assert!(Arc::ptr_eq(&retirement.owned.environment(), &owned));
+                    match retirement.owned {
+                        RetiringEnvironmentOwner::Bound(bound) => {
+                            assert!(
+                                committed
+                                    && cause
+                                        == SessionEnvironmentRetirementCause::RealizationRevocation,
+                                "CR2"
+                            );
+                            assert_eq!(bound.identity, identity);
+                            assert_eq!(bound.binding, candidate.binding);
+                        }
+                        RetiringEnvironmentOwner::Unbound(unbound) => {
+                            assert!(
+                                !committed
+                                    || cause
+                                        == SessionEnvironmentRetirementCause::UnpublishedCandidate,
+                                "CR3"
+                            );
+                            assert!(unbound.exact_matches(&candidate));
+                        }
+                    }
+                }
+            }
+            for rule in ["exact", "receipt", "generation", "binding"] {
+                let mut owner = base.clone();
+                let mut projected = identity.clone();
+                let mut binding = candidate.binding.clone();
+                if let BoundSessionEnvironmentIdentity::Durable {
+                    effect_id,
+                    generation,
+                } = &mut projected
+                {
+                    match rule {
+                        "receipt" => effect_id.push_str("-successor"),
+                        "generation" => generation.id.push_str("-foreign"),
+                        "binding" => binding.push_str("-foreign"),
+                        _ => {}
+                    }
+                }
+                let result = owner.install_projection(
+                    ProjectedEnvironmentOwner::AwaitingAdoption {
+                        identity: projected,
+                        binding,
+                    },
+                    true,
+                );
+                assert_eq!(
+                    result.is_err(),
+                    rule == "binding" || (committed && rule == "generation"),
+                    "CP1/CP2 {kind:?} {committed} {rule}"
+                );
+                assert!(
+                    owner
+                        .unpublished_candidate()
+                        .unwrap()
+                        .exact_matches(&candidate),
+                    "CP1/CP2 stays hidden"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn stale_unmaterialized_projection_cannot_unbind_a_candidate_or_resident() {
     // Projection-order cause/effect decision table: C1 an Unmaterialized
     // FrozenSessionProjection is read before the lifecycle guard; C2 the exact
