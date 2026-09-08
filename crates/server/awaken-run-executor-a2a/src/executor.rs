@@ -59,87 +59,80 @@ impl RunExecutor for A2aRunExecutor {
                 return finish_invalid_task_reference(&context, &activation, error).await;
             }
         };
-        verify_attempt_ownership(context.ownership.as_deref()).await?;
-        let transport = self
-            .transport_resolver
-            .resolve(candidate, &context)
-            .await
-            .map_err(Error::Execution)?;
-        let task = match route {
-            TaskReferenceRoute::Reattach(reference) => {
-                verify_attempt_ownership(context.ownership.as_deref()).await?;
-                let task = get_task(transport.as_ref(), &reference.task_id)
+        let resolve = async {
+            verify_attempt_ownership(context.ownership.as_deref()).await?;
+            self.transport_resolver
+                .resolve(candidate, &context)
+                .await
+                .map_err(Error::Execution)
+        };
+        let transport = if matches!(route, TaskReferenceRoute::Reattach(_)) {
+            // A resolver failure cannot establish that the existing remote task
+            // stopped. Fresh pre-dispatch resolution has no such participant.
+            task_driver::observe_remote_operation(&context, resolve).await?
+        } else {
+            resolve.await?
+        };
+        let task = task_driver::observe_remote_operation(&context, async {
+            let task = match route {
+                TaskReferenceRoute::Reattach(reference) => {
+                    verify_attempt_ownership(context.ownership.as_deref()).await?;
+                    let task = get_task(transport.as_ref(), &reference.task_id)
+                        .await
+                        .map_err(|error| Error::Execution(error.to_string()))?;
+                    validate_reattached_task(&reference, &task)?;
+                    task
+                }
+                TaskReferenceRoute::Fresh => {
+                    let normalized = awaken_runtime_contract::NormalizedModelInput::new(
+                        &activation.snapshot.resolved_spec.instructions,
+                        &context.request_context,
+                        &activation.input,
+                    );
+                    let trace = normalized.trace();
+                    tracing::debug!(
+                        run_id = %activation.run_id.0,
+                        thread_id = %activation.thread_id.0,
+                        publication_id = %activation.snapshot.fingerprint.0,
+                        backend = "a2a",
+                        has_instructions = trace.has_instructions,
+                        request_context_supplied = trace.request_context_supplied,
+                        request_context_visible = trace.request_context_visible,
+                        durable_input_supplied = trace.durable_input_supplied,
+                        durable_input_visible = trace.durable_input_visible,
+                        legacy_derived_filtered = trace.legacy_derived_filtered,
+                        "projected privacy-safe model input"
+                    );
+                    let prompt = normalized.text_envelope();
+                    let message_id = stable_message_id(&activation.run_id, None)?;
+                    verify_attempt_ownership(context.ownership.as_deref()).await?;
+                    let task = send_message(
+                        transport.as_ref(),
+                        None,
+                        &activation.thread_id.0,
+                        &message_id,
+                        &prompt,
+                    )
                     .await
                     .map_err(|error| Error::Execution(error.to_string()))?;
-                validate_reattached_task(&reference, &task)?;
-                task
-            }
-            TaskReferenceRoute::Fresh => {
-                let normalized = awaken_runtime_contract::NormalizedModelInput::new(
-                    &activation.snapshot.resolved_spec.instructions,
-                    &context.request_context,
-                    &activation.input,
-                );
-                let trace = normalized.trace();
-                tracing::debug!(
-                    run_id = %activation.run_id.0,
-                    thread_id = %activation.thread_id.0,
-                    publication_id = %activation.snapshot.fingerprint.0,
-                    backend = "a2a",
-                    has_instructions = trace.has_instructions,
-                    request_context_supplied = trace.request_context_supplied,
-                    request_context_visible = trace.request_context_visible,
-                    durable_input_supplied = trace.durable_input_supplied,
-                    durable_input_visible = trace.durable_input_visible,
-                    legacy_derived_filtered = trace.legacy_derived_filtered,
-                    "projected privacy-safe model input"
-                );
-                let prompt = normalized.text_envelope();
-                let message_id = stable_message_id(&activation.run_id, None)?;
-                verify_attempt_ownership(context.ownership.as_deref()).await?;
-                let task = match send_message(
-                    transport.as_ref(),
-                    None,
-                    &activation.thread_id.0,
-                    &message_id,
-                    &prompt,
-                )
-                .await
-                {
-                    Ok(task) => task,
-                    Err(err) => {
-                        let mut messages = activation.input.clone();
-                        messages.push(assistant_message(
-                            &context,
-                            &activation,
-                            format!("remote agent error: {err}"),
-                        ));
-                        return finish_terminal(
-                            &context,
-                            &activation,
-                            messages,
-                            EndCause::Error(Failure::Inference {
-                                code: "a2a_error".to_string(),
-                                message: err.to_string(),
-                            }),
-                        )
-                        .await;
-                    }
-                };
-                commit_boundary(
-                    &context,
-                    &activation,
-                    RunDisposition::running(activation.run_id.clone()),
-                    activation.input.clone(),
-                    vec![task_reference_state(&TaskReference::from_task(
-                        &endpoint, &task,
-                    ))?],
-                )
-                .await?;
-                task
-            }
-        };
-        task_driver::drive_task(transport, &endpoint, &activation, &context, task).await
+                    let reference = TaskReference::from_task(&endpoint, &task);
+                    validate_reattached_task(&reference, &task)?;
+                    commit_boundary(
+                        &context,
+                        &activation,
+                        RunDisposition::running(activation.run_id.clone()),
+                        activation.input.clone(),
+                        vec![task_reference_state(&reference)?],
+                    )
+                    .await?;
+                    task
+                }
+            };
+            let reference = TaskReference::from_task(&endpoint, &task);
+            task_driver::poll_to_boundary(transport, &reference, task, &context).await
+        })
+        .await?;
+        task_driver::finish_task(&endpoint, &activation, &context, task).await
     }
 }
 
@@ -220,25 +213,29 @@ impl RunAttemptExecutor for A2aRunExecutor {
             .map_err(Error::Execution)?;
         let message_id = stable_message_id(&activation.run_id, Some(&ticket.correlation_id))?;
         verify_attempt_ownership(context.ownership.as_deref()).await?;
-        let task = send_message(
-            transport.as_ref(),
-            None,
-            &reference.context_id,
-            &message_id,
-            &text,
-        )
-        .await
-        .map_err(|error| Error::Execution(error.to_string()))?;
-        let reference = continued_task_reference(&endpoint, &reference, &task)?;
-        commit_boundary(
-            &context,
-            &activation,
-            RunDisposition::running(activation.run_id.clone()),
-            Vec::new(),
-            vec![task_reference_state(&reference)?],
-        )
+        let task = task_driver::observe_remote_operation(&context, async {
+            let task = send_message(
+                transport.as_ref(),
+                None,
+                &reference.context_id,
+                &message_id,
+                &text,
+            )
+            .await
+            .map_err(|error| Error::Execution(error.to_string()))?;
+            let reference = continued_task_reference(&endpoint, &reference, &task)?;
+            commit_boundary(
+                &context,
+                &activation,
+                RunDisposition::running(activation.run_id.clone()),
+                Vec::new(),
+                vec![task_reference_state(&reference)?],
+            )
+            .await?;
+            task_driver::poll_to_boundary(transport, &reference, task, &context).await
+        })
         .await?;
-        task_driver::drive_task(transport, &endpoint, &activation, &context, task).await
+        task_driver::finish_task(&endpoint, &activation, &context, task).await
     }
 
     async fn cancel(&self, activation: RunActivation, context: RuntimeRunContext) -> Result<()> {
@@ -248,26 +245,24 @@ impl RunAttemptExecutor for A2aRunExecutor {
             TaskReferenceRoute::Fresh => return Ok(()),
             TaskReferenceRoute::Reattach(reference) => reference,
         };
-        verify_attempt_ownership(context.ownership.as_deref()).await?;
-        let transport = self
-            .transport_resolver
-            .resolve(candidate, &context)
-            .await
-            .map_err(Error::Execution)?;
-        verify_attempt_ownership(context.ownership.as_deref()).await?;
-        let task = get_task(transport.as_ref(), &reference.task_id)
-            .await
-            .map_err(|error| Error::Execution(error.to_string()))?;
-        validate_reattached_task(&reference, &task)?;
-        if matches!(
-            task.status.state,
-            TaskState::Completed | TaskState::Failed | TaskState::Canceled | TaskState::Rejected
-        ) {
-            return Ok(());
-        }
-        verify_attempt_ownership(context.ownership.as_deref()).await?;
-        try_cancel_task(transport.as_ref(), &reference.task_id)
-            .await
-            .map_err(|error| Error::Execution(error.to_string()))
+        task_driver::observe_remote_operation(&context, async {
+            verify_attempt_ownership(context.ownership.as_deref()).await?;
+            let transport = self
+                .transport_resolver
+                .resolve(candidate, &context)
+                .await
+                .map_err(Error::Execution)?;
+            verify_attempt_ownership(context.ownership.as_deref()).await?;
+            let task = get_task(transport.as_ref(), &reference.task_id)
+                .await
+                .map_err(|error| Error::Execution(error.to_string()))?;
+            validate_reattached_task(&reference, &task)?;
+            if task.status.state.is_terminal() {
+                return Ok(());
+            }
+            task_driver::cancel_and_observe(transport.as_ref(), &reference, &context).await?;
+            Ok(())
+        })
+        .await
     }
 }

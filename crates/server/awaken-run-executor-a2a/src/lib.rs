@@ -30,8 +30,9 @@ use awaken_agent_contract::agent::state::{MergePolicy, Scope};
 use awaken_agent_contract::thread::commit::RunDisposition;
 #[cfg(test)]
 use awaken_protocol_a2a::Task;
+#[cfg(test)]
 use awaken_protocol_a2a::TaskState;
-use awaken_protocol_a2a::client::{get_task, send_message, try_cancel_task};
+use awaken_protocol_a2a::client::{get_task, send_message};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{
     AttemptRecoveryMode, Cancellation, Error, ExecutorCapabilities, Result, RunAttemptExecutor,
@@ -141,13 +142,13 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    struct ScriptedTransport {
+    pub(super) struct ScriptedTransport {
         replies: Mutex<std::collections::VecDeque<std::result::Result<Response, String>>>,
-        seen: Mutex<Vec<(String, String, Option<String>)>>,
+        pub(super) seen: Mutex<Vec<(String, String, Option<String>)>>,
     }
 
     impl ScriptedTransport {
-        fn new(replies: Vec<std::result::Result<Response, String>>) -> Self {
+        pub(super) fn new(replies: Vec<std::result::Result<Response, String>>) -> Self {
             Self {
                 replies: Mutex::new(replies.into()),
                 seen: Mutex::new(Vec::new()),
@@ -176,7 +177,7 @@ mod tests {
         }
     }
 
-    fn response(body: &str) -> std::result::Result<Response, String> {
+    pub(super) fn response(body: &str) -> std::result::Result<Response, String> {
         Ok(Response::new(200, body.as_bytes().to_vec()))
     }
 
@@ -206,23 +207,23 @@ mod tests {
         }
     }
 
-    fn scripted_executor(transport: Arc<ScriptedTransport>) -> A2aRunExecutor {
+    pub(super) fn scripted_executor(transport: Arc<ScriptedTransport>) -> A2aRunExecutor {
         A2aRunExecutor::new(Arc::new(FixedTransportResolver::new(transport)))
     }
 
     #[derive(Clone, Copy)]
-    enum OwnershipDecision {
+    pub(super) enum OwnershipDecision {
         Current,
         Lost,
         Unavailable,
     }
 
-    struct ScriptedOwnership {
+    pub(super) struct ScriptedOwnership {
         decisions: Mutex<VecDeque<OwnershipDecision>>,
     }
 
     impl ScriptedOwnership {
-        fn new(decisions: impl IntoIterator<Item = OwnershipDecision>) -> Self {
+        pub(super) fn new(decisions: impl IntoIterator<Item = OwnershipDecision>) -> Self {
             Self {
                 decisions: Mutex::new(decisions.into_iter().collect()),
             }
@@ -249,7 +250,7 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct Rec(Mutex<Vec<ThreadCommit>>);
+    pub(super) struct Rec(pub(super) Mutex<Vec<ThreadCommit>>);
     #[async_trait]
     impl Coordinator for Rec {
         async fn commit(&self, c: ThreadCommit) -> std::result::Result<CommitRecord, CommitError> {
@@ -359,7 +360,7 @@ mod tests {
         }
     }
 
-    fn activation(backend_ref: &str) -> RunActivation {
+    pub(super) fn activation(backend_ref: &str) -> RunActivation {
         RunActivation {
             run_id: RunId("r".into()),
             thread_id: ThreadId("t".into()),
@@ -408,7 +409,7 @@ mod tests {
         );
     }
 
-    struct RejectingTransportResolver;
+    pub(super) struct RejectingTransportResolver;
 
     #[async_trait]
     impl TransportResolver for RejectingTransportResolver {
@@ -724,43 +725,24 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_transport_error_ends_with_a2a_error() {
-        // C1: the remote candidate resolves through the test-only fixed resolver.
-        // C2: its first message send returns a deterministic transport error.
-        // E1: execution ends with the classified `a2a_error` terminal cause.
-        // E2: the committed assistant message reports a remote-agent error.
-        // K1: no socket, port reuse, retry, sleep, or second driver participates.
-        // K2: the scripted transport is the existing test seam; production HTTP semantics stay
-        // unchanged. Decision: C1 && C2 => E1 && E2; sibling cases cover successful, HTTP-error,
-        // and response-decoding outcomes.
-        let transport = Arc::new(ScriptedTransport::new(vec![Err(
-            "connection refused".to_string()
-        )]));
+    #[tokio::test]
+    async fn a_transport_error_vetoes_physical_ack_without_inventing_a_terminal_fact() {
+        // R1: entered send + opaque transport error => retain the attempt veto,
+        // return its diagnostic, issue one request and commit no false terminal.
+        // The String transport seam cannot prove even "connection refused" was
+        // pre-dispatch; HTTP/decode siblings cover the other error partitions.
+        let transport = Arc::new(ScriptedTransport::new(vec![Err("response lost".into())]));
         let rec = Arc::new(Rec::default());
-        let state = scripted_executor(transport)
-            .execute(
-                activation("a2a:http://remote.invalid"),
-                RuntimeRunContext::new().with_commit(rec.clone()),
-            )
+        let context = RuntimeRunContext::new().with_commit(rec.clone());
+        let latch = context.physical_quiescence.clone();
+        let error = scripted_executor(transport.clone())
+            .execute(activation("a2a:http://remote.invalid"), context)
             .await
-            .unwrap();
-        assert!(matches!(
-            state,
-            RunState::Ended(EndCause::Error(Failure::Inference { ref code, .. })) if code == "a2a_error"
-        ));
-        assert!(
-            rec.0
-                .lock()
-                .unwrap()
-                .last()
-                .unwrap()
-                .messages
-                .last()
-                .unwrap()
-                .text_content()
-                .contains("remote agent error")
-        );
+            .unwrap_err();
+        assert!(error.to_string().contains("response lost"));
+        assert!(!latch.can_acknowledge_return());
+        assert!(rec.0.lock().unwrap().is_empty());
+        assert_eq!(transport.seen.lock().unwrap().len(), 1);
     }
 
     /// A real A2A server that records the inbound request (uri + body) and answers a
@@ -896,42 +878,27 @@ mod tests {
         format!("a2a:http://{addr}")
     }
 
-    /// A non-2xx HTTP status from the remote is classified `a2a_error` (not a panic),
-    /// mirroring the connection-refused test but for a reachable-but-erroring server.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn an_http_500_ends_with_a2a_error() {
-        let backend = serve_status(500, "upstream boom").await;
-        let rec = Arc::new(Rec::default());
-        let state = A2aRunExecutor::over_http()
-            .execute(
-                activation(&backend),
-                RuntimeRunContext::new().with_commit(rec.clone()),
-            )
-            .await
-            .unwrap();
-        assert!(matches!(
-            state,
-            RunState::Ended(EndCause::Error(Failure::Inference { ref code, .. })) if code == "a2a_error"
-        ));
-    }
-
-    /// A 2xx whose body is not a valid A2A task fails the parse and is classified
-    /// `a2a_error` — a garbage remote reply fails closed rather than panicking.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_malformed_2xx_body_ends_with_a2a_error() {
-        let backend = serve("this is not a2a json at all").await;
-        let rec = Arc::new(Rec::default());
-        let state = A2aRunExecutor::over_http()
-            .execute(
-                activation(&backend),
-                RuntimeRunContext::new().with_commit(rec.clone()),
-            )
-            .await
-            .unwrap();
-        assert!(matches!(
-            state,
-            RunState::Ended(EndCause::Error(Failure::Inference { ref code, .. })) if code == "a2a_error"
-        ));
+    async fn real_http_failures_veto_ack_without_fabricating_remote_completion() {
+        // C1 HTTP 500 / C2 HTTP 200 malformed body. Both were admitted sends,
+        // neither is a remote terminal receipt => diagnostic + veto + no commit.
+        // This table exercises the real HTTP adapter, not just a fake transport.
+        for backend in [
+            serve_status(500, "upstream boom").await,
+            serve("this is not a2a json at all").await,
+        ] {
+            let rec = Arc::new(Rec::default());
+            let context = RuntimeRunContext::new().with_commit(rec.clone());
+            let latch = context.physical_quiescence.clone();
+            assert!(
+                A2aRunExecutor::over_http()
+                    .execute(activation(&backend), context)
+                    .await
+                    .is_err()
+            );
+            assert!(!latch.can_acknowledge_return());
+            assert!(rec.0.lock().unwrap().is_empty());
+        }
     }
 
     /// FMECA / cause-effect design for the external commit capability:
@@ -1402,11 +1369,14 @@ mod tests {
 
     #[tokio::test]
     async fn durable_cancel_addresses_the_committed_remote_task() {
+        // C1 exact waiting task + C2 delivered cancel + C3 exact terminal GET
+        // => success; HTTP 204 alone is not proof. Preserve the reference.
         let active = r#"{"kind":"task","id":"remote-cancel","contextId":"ctx-cancel","status":{"state":"input-required"}}"#;
         let transport = Arc::new(ScriptedTransport::new(vec![
             response(&format!(r#"{{"task":{active}}}"#)),
             response(active),
             Ok(Response::new(204, Vec::new())),
+            response(&active.replace("input-required", "canceled")),
         ]));
         let rec = Arc::new(Rec::default());
         let activation = activation("a2a:http://remote.invalid");
@@ -1439,7 +1409,8 @@ mod tests {
             vec![
                 "/v1/a2a/message:send",
                 "/v1/a2a/tasks/remote-cancel",
-                "/v1/a2a/tasks/remote-cancel:cancel"
+                "/v1/a2a/tasks/remote-cancel:cancel",
+                "/v1/a2a/tasks/remote-cancel"
             ]
         );
     }
@@ -1500,6 +1471,9 @@ mod tests {
 
     #[tokio::test]
     async fn failed_remote_cancel_is_retryable_against_the_same_committed_task() {
+        // R1 lost cancel reply + working observation => veto/error, exact
+        // reference retained. R2 a new observer cancels/observes the SAME task
+        // terminal => success; never repeat message:send or clear the old veto.
         let active = r#"{"kind":"task","id":"remote-retry","contextId":"ctx-retry","status":{"state":"working"}}"#;
         let transport = Arc::new(ScriptedTransport::new(vec![
             response(&format!(r#"{{"task":{active}}}"#)),
@@ -1509,7 +1483,9 @@ mod tests {
             response(active),
             Err("remote cancel unavailable".to_string()),
             response(active),
+            response(active),
             Ok(Response::new(204, Vec::new())),
+            response(&active.replace("working", "canceled")),
         ]));
         let rec = Arc::new(Rec::default());
         let activation = activation("a2a:http://remote.invalid");
@@ -1551,7 +1527,9 @@ mod tests {
                 "/v1/a2a/tasks/remote-retry",
                 "/v1/a2a/tasks/remote-retry:cancel",
                 "/v1/a2a/tasks/remote-retry",
+                "/v1/a2a/tasks/remote-retry",
                 "/v1/a2a/tasks/remote-retry:cancel",
+                "/v1/a2a/tasks/remote-retry",
             ]
         );
     }
@@ -1972,11 +1950,16 @@ mod tests {
 
     #[tokio::test]
     async fn a_pre_cancelled_poll_commits_a_cancelled_terminal_boundary() {
+        // R1 cooperative cancel + exact canceled observation => committed
+        // Cancelled; the HTTP delivery response alone cannot select this row.
         let transport = Arc::new(ScriptedTransport::new(vec![
             response(
                 r#"{"task":{"kind":"task","id":"task-7","contextId":"ctx-7","status":{"state":"working"}}}"#,
             ),
             Ok(Response::new(204, Vec::new())),
+            response(
+                r#"{"kind":"task","id":"task-7","contextId":"ctx-7","status":{"state":"canceled"}}"#,
+            ),
         ]));
         let cancellation = awaken_runtime_contract::CancellationToken::new();
         cancellation.cancel();
