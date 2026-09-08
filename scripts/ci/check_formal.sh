@@ -260,6 +260,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-credential-vault \
     --harness credential_material_phase_transitions_preserve_exact_writer_fence \
     --harness credential_material_recovery_action_is_total_and_expiry_exact \
+    --harness credential_material_takeover_preserves_attempt_and_cannot_restore_original_writer \
     --harness credential_cleanup_requires_exact_authority_and_phase_truth \
     --harness credential_reclamation_never_deletes_shared_or_live_predecessor_material \
     --harness injection_location_represents_exactly_the_three_usable_states \

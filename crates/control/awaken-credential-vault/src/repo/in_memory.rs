@@ -211,9 +211,9 @@ impl CredentialRepo for InMemoryCredentialRepo {
         let Some(durable) = state.intents.get_mut(&intent.after.id.0) else {
             return Ok(None);
         };
-        if durable != intent
-            || durable.material_fence.phase != CredentialMaterialMutationPhase::Writing
-        {
+        // Successful claim already requires Writing; full snapshot equality
+        // also fences phase changes before this locked write.
+        if durable != intent {
             return Ok(None);
         }
         *durable = claimed.clone();
@@ -532,9 +532,9 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
         let Some(durable) = state.managed_mutations.get_mut(&pending.after_source.id.0) else {
             return Ok(None);
         };
-        if durable != pending
-            || durable.material_fence.phase != CredentialMaterialMutationPhase::Writing
-        {
+        // Successful claim already requires Writing; full snapshot equality
+        // also fences phase changes before this locked write.
+        if durable != pending {
             return Ok(None);
         }
         *durable = claimed.clone();

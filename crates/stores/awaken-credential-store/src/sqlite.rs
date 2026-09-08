@@ -811,9 +811,9 @@ impl CredentialRepo for SqliteCredentialRepo {
                 return Ok(None);
             };
             let durable: CredentialMutationIntent = serde_json::from_str(&data).map_err(storage)?;
-            if durable != intent
-                || durable.material_fence.phase != CredentialMaterialMutationPhase::Writing
-            {
+            // Successful claim already requires Writing; full snapshot equality
+            // also fences phase changes before this locked write.
+            if durable != intent {
                 tx.commit().map_err(storage)?;
                 return Ok(None);
             }

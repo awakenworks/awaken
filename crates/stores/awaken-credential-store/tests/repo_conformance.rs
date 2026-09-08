@@ -746,6 +746,214 @@ async fn get_is_an_unscoped_by_id_primitive(repo: &dyn CredentialRepo) {
     assert_eq!(cross.workspace_id, "ws-owner");
 }
 
+/// Shared takeover table for Source/Managed x InMemory/SQLite/PostgreSQL.
+/// T1 absent WAL or live/non-Writing snapshot => no claim; T2 invalid successor
+/// lease => error without a WAL change; T3 same key but stale token/epoch/lease/payload
+/// => no claim; T4 two expired-snapshot callers => one successor; T5 stale owner
+/// cannot Ready/publish/abort/claim; T6 repeated takeover advances epoch, retains every
+/// other envelope field, and permits only durable abort/cleanup. No material IO
+/// is performed: these are repository CAS witnesses, not SecretStore recovery.
+async fn expired_writer_claims_are_exact_snapshot_cas(repo: &dyn ManagedCredentialRepository) {
+    // Both ports have distinct envelopes; the same rule body prevents a second
+    // assertion table drifting between source-only and Managed publication.
+    macro_rules! check_claim {
+        ($writing:expr, $begin:ident, $claim:ident, $ready:ident, $publish:ident, $abort:ident,
+         $complete:ident, $pending:ident, $changed_payload:expr) => {{
+            let writing = $writing;
+            let now = writing.material_fence.writer_lease_expires_at_unix_ms;
+            let deadline = now.checked_add(10_000).unwrap();
+            assert!(
+                repo.$claim(&writing, now, deadline)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "T1 absent"
+            );
+            assert!(repo.$begin(writing.clone()).await.unwrap());
+            assert!(
+                !repo.$begin(writing.clone()).await.unwrap(),
+                "begin replay retains the sole writer"
+            );
+            assert!(
+                repo.$claim(&writing, now - 1, deadline)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "T1 live"
+            );
+            assert!(
+                repo.$claim(&writing.with_material_ready().unwrap(), now, deadline)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "T1 non-Writing"
+            );
+            assert!(
+                matches!(
+                    repo.$claim(&writing, now, now).await,
+                    Err(CredentialError::MutationConflict(_))
+                ),
+                "T2"
+            );
+            for coordinate in 0..4 {
+                let mut stale = writing.clone();
+                match coordinate {
+                    0 => stale.material_fence.writer_token.push('x'),
+                    1 => stale.material_fence.writer_epoch += 1,
+                    2 => stale.material_fence.writer_lease_expires_at_unix_ms -= 1,
+                    _ => ($changed_payload)(&mut stale),
+                }
+                stale.validate().unwrap(); // T3 must reach CAS, not fail command validation.
+                assert!(
+                    repo.$claim(&stale, now, deadline).await.unwrap().is_none(),
+                    "T3"
+                );
+            }
+            assert_eq!(
+                repo.$pending().await.unwrap(),
+                vec![writing.clone()],
+                "T1-T3 preserve WAL"
+            );
+            let (left, right) = tokio::join!(
+                repo.$claim(&writing, now, deadline),
+                repo.$claim(&writing, now, deadline)
+            );
+            let claims = [left.unwrap(), right.unwrap()];
+            assert_eq!(
+                claims.iter().filter(|claim| claim.is_some()).count(),
+                1,
+                "T4"
+            );
+            let mut claimed = claims.into_iter().flatten().next().unwrap();
+            for (expected_epoch, claim_time) in [(2, now), (3, deadline)] {
+                if expected_epoch == 3 {
+                    claimed = repo
+                        .$claim(&claimed, claim_time, deadline + 10_000)
+                        .await
+                        .unwrap()
+                        .unwrap();
+                }
+                assert_eq!(claimed.material_fence.writer_epoch, expected_epoch, "T4/T6");
+                assert_ne!(
+                    claimed.material_fence.writer_token, writing.material_fence.writer_token,
+                    "UUID wrapper smoke witness; Kani also allows collisions"
+                );
+                assert_eq!(claimed.material_fence.writer_token.len(), 32);
+                assert!(
+                    claimed
+                        .material_fence
+                        .writer_token
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit())
+                );
+                assert_eq!(
+                    claimed.material_fence.writer_lease_expires_at_unix_ms,
+                    claim_time + 10_000
+                );
+                let mut normalized = claimed.clone();
+                normalized.material_fence.writer_token =
+                    writing.material_fence.writer_token.clone();
+                normalized.material_fence.writer_epoch = writing.material_fence.writer_epoch;
+                normalized.material_fence.writer_lease_expires_at_unix_ms = now;
+                assert_eq!(normalized, writing, "T6 complete envelope preservation");
+                assert_eq!(repo.$pending().await.unwrap(), vec![claimed.clone()]);
+                assert!(
+                    matches!(
+                        repo.$ready(&writing).await,
+                        Err(CredentialError::MutationConflict(_))
+                    ),
+                    "T5 stale Ready"
+                );
+                assert!(
+                    matches!(
+                        repo.$abort(&writing).await,
+                        Err(CredentialError::MutationConflict(_))
+                    ),
+                    "T5 stale abort"
+                );
+                assert!(
+                    repo.$claim(&writing, deadline, deadline + 10_000)
+                        .await
+                        .unwrap()
+                        .is_none(),
+                    "T5 stale claim"
+                );
+                assert!(
+                    repo.$publish(&writing.with_material_ready().unwrap())
+                        .await
+                        .is_err(),
+                    "T5 stale Ready cannot publish"
+                );
+                assert!(
+                    repo.$ready(&claimed).await.is_err(),
+                    "T6 successor is abort-only"
+                );
+            }
+            let aborted = repo.$abort(&claimed).await.unwrap();
+            assert_eq!(
+                aborted.material_fence.phase,
+                CredentialMaterialMutationPhase::ReclaimingAbort
+            );
+            assert!(
+                repo.$claim(&aborted, deadline + 10_000, deadline + 20_000)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "T1 terminal"
+            );
+            assert!(
+                repo.$claim(&claimed, deadline + 10_000, deadline + 20_000)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "T3 phase-only durable drift fences the otherwise exact expired snapshot"
+            );
+            repo.$complete(&aborted).await.unwrap();
+            assert!(repo.$pending().await.unwrap().is_empty());
+        }};
+    }
+    let mut source = source("cred:claim", "ws");
+    source.provider_id = None;
+    source.env_key = None;
+    source.material_ref = Some(SecretRef("sec:claim".into()));
+    check_claim!(
+        CredentialMutationIntent::prepare(None, source.clone()).unwrap(),
+        begin_mutation,
+        claim_expired_mutation,
+        mark_mutation_ready,
+        apply_mutation,
+        abort_mutation,
+        complete_mutation,
+        pending_mutations,
+        |pending: &mut CredentialMutationIntent| pending.after.version += 1
+    );
+    let child = ManagedVaultCredential {
+        id: "child-claim".into(),
+        vault_id: "vault-claim".into(),
+        workspace_id: "ws".into(),
+        source_id: source.id.clone(),
+        auth: ManagedCredentialAuth::StaticBearer {
+            mcp_server_url: "https://mcp.example.test".into(),
+        },
+        metadata: Default::default(),
+        display_name: None,
+        revision: 1,
+        lifecycle: ManagedCredentialLifecycle::Active,
+    };
+    check_claim!(
+        PendingManagedCredentialMutation::create(source, child).unwrap(),
+        begin_managed_mutation,
+        claim_expired_managed_mutation,
+        mark_managed_mutation_ready,
+        commit_managed_mutation,
+        abort_managed_mutation,
+        complete_managed_mutation,
+        pending_managed_mutations,
+        |pending: &mut PendingManagedCredentialMutation| pending.after_credential.display_name =
+            Some("changed".into())
+    );
+}
+
 /// Cause/effect table V1-V3: proposed Workspace matches or differs from the
 /// request; the durable id is absent, same-owner, or foreign-owner; operation
 /// is insert or ensure. These 2x3x2 rules cover authority errors before effects,
@@ -830,6 +1038,7 @@ async fn managed_vault_workspace_authority_conforms(repo: &dyn ManagedCredential
 async fn managed_material_mutation_begin_and_phases_conform(
     repo: &dyn ManagedCredentialRepository,
 ) {
+    expired_writer_claims_are_exact_snapshot_cas(repo).await;
     managed_vault_workspace_authority_conforms(repo).await;
     let vault = ManagedVault {
         id: "vault-begin-owner".into(),
@@ -1846,69 +2055,6 @@ mod postgres {
             repo.list("ws-a").await.unwrap().len() + repo.list("ws-b").await.unwrap().len(),
             1
         );
-    }
-
-    #[tokio::test]
-    async fn postgres_expired_writer_claim_is_exact_snapshot_cas() {
-        // Writer-claim cause/effect table: a material-bearing command starts in
-        // Writing (C1); two recovery callers present the same expired snapshot
-        // (C2). Exactly one claims epoch N+1 (E1), the other observes the CAS
-        // loss (E2), and the former owner cannot mutate or abort afterward (E3).
-        let Some(pool) = schema_pool("t_cred_managed_writer_claim").await else {
-            return;
-        };
-        let repo = PostgresCredentialRepo::with_pool(pool.clone())
-            .await
-            .expect("store");
-        let mut source = managed_source("cred:claim", "ws");
-        source.material_ref = Some(SecretRef("sec:claim".into()));
-        let writing = PendingManagedCredentialMutation::create(
-            source.clone(),
-            managed_child("child-claim", "vault-claim", "ws", source.id),
-        )
-        .unwrap();
-        assert_eq!(
-            writing.material_fence.phase,
-            CredentialMaterialMutationPhase::Writing,
-            "C1 material-bearing create owns a writer lease"
-        );
-        repo.begin_managed_mutation(writing.clone()).await.unwrap();
-        let now = writing.material_fence.writer_lease_expires_at_unix_ms;
-        let deadline = now.checked_add(10_000).unwrap();
-
-        let (left, right) = tokio::join!(
-            repo.claim_expired_managed_mutation(&writing, now, deadline),
-            repo.claim_expired_managed_mutation(&writing, now, deadline)
-        );
-        let claims = [left.unwrap(), right.unwrap()];
-        assert_eq!(claims.iter().filter(|claim| claim.is_some()).count(), 1);
-        let claimed = claims.into_iter().flatten().next().unwrap();
-        assert_eq!(
-            claimed.material_fence.writer_epoch,
-            writing.material_fence.writer_epoch + 1
-        );
-        assert_ne!(
-            claimed.material_fence.writer_token,
-            writing.material_fence.writer_token
-        );
-        assert_eq!(
-            claimed.material_fence.writer_lease_expires_at_unix_ms,
-            deadline
-        );
-        assert_eq!(
-            repo.pending_managed_mutations().await.unwrap(),
-            vec![claimed.clone()]
-        );
-        assert!(matches!(
-            repo.abort_managed_mutation(&writing).await,
-            Err(CredentialError::MutationConflict(_))
-        ));
-        let reclaiming = repo.abort_managed_mutation(&claimed).await.unwrap();
-        assert_eq!(
-            reclaiming.material_fence.phase,
-            CredentialMaterialMutationPhase::ReclaimingAbort
-        );
-        repo.complete_managed_mutation(&reclaiming).await.unwrap();
     }
 
     #[tokio::test]
