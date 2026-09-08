@@ -125,6 +125,22 @@ impl ClaimedSnapshotAuthority {
     }
 }
 
+/// Select whether the executor may prove that this claim can continue one
+/// already-committed remote operation. A recovered execution claim and a fresh
+/// durable-cancellation claim both inherit an earlier physical responsibility;
+/// ordinary fresh execution must not inspect continuation state.
+fn select_physical_attempt_recovery(
+    recovered: bool,
+    cancellation_requested: bool,
+    continuation: impl FnOnce() -> AttemptRecoveryMode,
+) -> AttemptRecoveryMode {
+    if recovered || cancellation_requested {
+        continuation()
+    } else {
+        AttemptRecoveryMode::RequirePredecessorQuiescence
+    }
+}
+
 #[async_trait::async_trait]
 impl CredentialRealizationRecorder for ClaimBoundCredentialRecorder {
     async fn record(
@@ -954,11 +970,11 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             );
             let cancel_executor = attempt_executor.clone();
             let cancel_activation = activation.clone();
-            let recovery_mode = if claimed.recovered {
-                attempt_executor.physical_attempt_recovery(&activation, &context)
-            } else {
-                AttemptRecoveryMode::RequirePredecessorQuiescence
-            };
+            let recovery_mode = select_physical_attempt_recovery(
+                claimed.recovered,
+                claimed.cancellation_requested,
+                || attempt_executor.physical_attempt_recovery(&activation, &context),
+            );
             let state = match self
                 .run_physical_attempt(
                     PhysicalAttemptRequest {
@@ -1301,11 +1317,14 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     }
                     // Consumed on settle, not on read, so a crash re-delivers them.
                     all_pending.extend(unbound.into_iter().map(|input| input.message_id));
-                    let recovery_mode = if claimed.recovered {
-                        attempt_executor.physical_attempt_recovery(&activation, &execution_context)
-                    } else {
-                        AttemptRecoveryMode::RequirePredecessorQuiescence
-                    };
+                    let recovery_mode = select_physical_attempt_recovery(
+                        claimed.recovered,
+                        claimed.cancellation_requested,
+                        || {
+                            attempt_executor
+                                .physical_attempt_recovery(&activation, &execution_context)
+                        },
+                    );
                     let execute_executor = attempt_executor.clone();
                     match self
                         .run_physical_attempt(

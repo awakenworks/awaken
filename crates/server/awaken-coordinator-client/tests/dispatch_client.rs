@@ -260,12 +260,12 @@ async fn renew(
         owner: worker_id(&headers).to_string(),
         epoch: req["lease_epoch"].as_u64().expect("lease_epoch"),
     };
-    let renewed = state
+    let outcome = state
         .store
         .renew_lease(&claim, 1_000, state.now_ms.load(Ordering::SeqCst))
         .await
         .expect("renew");
-    Json(json!({ "renewed": renewed }))
+    Json(json!({ "outcome": outcome }))
 }
 
 async fn begin_attempt(
@@ -897,7 +897,7 @@ async fn continuation_handoff_preserves_replacement_provenance_over_http() {
 /// rejected without mutating B's run. Rules: L1 C1=>E1; L2 C2+C3=>E2;
 /// L3 C3+C4=>E3. The rows cover both live and superseded ownership.
 #[tokio::test]
-async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
+async fn renew_lease_returns_typed_loss_over_the_wire_when_the_lease_was_stolen() {
     let (base, store, clock, _) = spawn_transport_server().await;
     let queue_a =
         HttpDispatchQueue::new(base.clone(), WorkerIdentity::new("worker-A", "boot-A", 1));
@@ -923,7 +923,8 @@ async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
         queue_a
             .renew_lease(&RunClaim::from(&a.lease), 1_000, 100)
             .await
-            .unwrap(),
+            .unwrap()
+            .is_current(),
         "the current owner renews its own live lease"
     );
 
@@ -941,15 +942,16 @@ async fn renew_lease_returns_false_over_the_wire_when_the_lease_was_stolen() {
         "recovery re-owns the same row, not a second"
     );
 
-    // A's renew now returns FALSE over the wire — the lease was stolen; the stale
+    // A's renew now returns Lost over the wire — the lease was stolen; the stale
     // holder must stop (the whole point of the multi-node liveness knob).
     clock.store(2_100, Ordering::SeqCst);
-    assert!(
-        !queue_a
+    assert_eq!(
+        queue_a
             .renew_lease(&RunClaim::from(&a.lease), 1_000, 2_100)
             .await
             .unwrap(),
-        "a stale owner's renew fails so it abandons the run"
+        awaken_dispatch::LeaseRenewalOutcome::Lost,
+        "a stale owner's renew fails so it abandons the run",
     );
     // And A's settle at its old epoch is fenced, leaving B's in-flight run inviolate.
     assert_eq!(

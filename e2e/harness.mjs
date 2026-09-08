@@ -535,6 +535,15 @@ export async function waitForSessionEventReceipt(
 // E3=no forbidden execution/terminal effect is added. Decision rules:
 // U1 C1+C2=>E1; U2 C1+C2+C3=>E1+E2+E3. The pending receipt is durable command
 // provenance, not evidence that its Runtime effect committed.
+/**
+ * @param {{
+ *   history: Array<{ id: string, processed_at?: string | null, type: string }>,
+ *   priorHistory?: Array<{ id: string, processed_at?: string | null, type: string }>,
+ *   receiptId: string,
+ *   forbiddenEventTypes: Set<string>,
+ *   description: string,
+ * }} observation
+ */
 export function assertPendingReceiptHasNoRuntimeEffects({
   history,
   priorHistory = [],

@@ -11,7 +11,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::clock::Clock;
-use crate::dispatch::{Dispatch, RunClaim};
+use crate::dispatch::{Dispatch, LeaseRenewalOutcome, RunClaim};
 
 /// One exact claim's renewal lifecycle. Renewal belongs beside the drive that
 /// owns the claim, rather than to each caller (pool, daemon, or foreground child),
@@ -128,7 +128,7 @@ pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
                     )
                     .await;
                     match renewal {
-                        Ok(Ok(true)) => {
+                        Ok(Ok(LeaseRenewalOutcome::Current)) => {
                             consecutive_failures = 0;
                             // Renewal was applied sometime after dispatch and no
                             // later than receipt. Anchor at dispatch so transport
@@ -140,7 +140,20 @@ pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
                                 );
                             next_attempt = next_regular_renewal;
                         }
-                        Ok(Ok(false)) => {
+                        Ok(Ok(LeaseRenewalOutcome::CancellationRequested)) => {
+                            tracing::info!(
+                                run_id = %claim.run_id.0,
+                                owner = %claim.owner,
+                                lease_epoch = claim.epoch,
+                                "durable cancellation requested for exact physical attempt"
+                            );
+                            // The Dispatch row remains the sole authority. This
+                            // projects its exact cancelled-attempt observation
+                            // into Runtime's already-installed cooperative token.
+                            task_attempt_cancellation.cancel();
+                            break;
+                        }
+                        Ok(Ok(LeaseRenewalOutcome::Lost)) => {
                             tracing::warn!(
                                 run_id = %claim.run_id.0,
                                 owner = %claim.owner,

@@ -975,7 +975,7 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
         claim: &awaken_dispatch::RunClaim,
         lease_ms: u64,
         now_ms: u64,
-    ) -> Result<bool, awaken_dispatch::DispatchError> {
+    ) -> Result<awaken_dispatch::LeaseRenewalOutcome, awaken_dispatch::DispatchError> {
         self.renewal_attempts.fetch_add(1, Ordering::SeqCst);
         if let Some(gate) = &self.renewal_gate {
             gate.acquire()
@@ -1585,7 +1585,8 @@ pub async fn assert_millis_boundaries<S: awaken_dispatch::Dispatch>(
                 max_signed - 1,
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .is_current(),
         "TM12: huge renewal succeeds without overflow"
     );
     assert!(
@@ -2718,18 +2719,24 @@ pub async fn assert_idle_thread_inbox<S: awaken_dispatch::Dispatch>(store: &S) {
 }
 
 /// Shared exact-renewal cause/effect table. C1=run/owner match, C2=epoch match,
-/// C3=lease is later reclaimed, including by the same owner string. E1=extend
-/// only the exact claim; E2=return false without mutating the current lease.
+/// C3=lease is later reclaimed, including by the same owner string; C4=durable
+/// cancellation revoked the mutation claim while its exact physical attempt is
+/// still present. E1=extend only the exact current claim; E2=return Lost without
+/// mutating the current lease; E3=return CancellationRequested only to the exact
+/// cancelled physical participant.
 ///
 /// | Rule | Run/owner | Epoch | Current claim | Effect |
 /// | LR1 | match | match | original | E1 |
 /// | LR2 | owner differs | any | original | E2 |
 /// | LR3 | match | stale | same-owner replacement | E2 |
 /// | LR4 | match | current | same-owner replacement | E1 |
+/// | LR5 | exact active attempt | revoked by cancel | cancelled row | E3 |
+/// | LR6 | wrong owner or epoch | revoked by cancel | cancelled row | E2 |
+/// | LR7 | cancellation worker | current | cancelled row | E1 |
 ///
 /// Constraint: `lease_epoch` is the same fencing authority used by commit and
 /// settlement; renewal cannot infer exact ownership from a reusable owner name.
-/// Every backend executes the same rules.
+/// Every backend executes the same rules from one locked Dispatch-row snapshot.
 pub async fn assert_lease_renewal<S: awaken_dispatch::Dispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
@@ -2759,6 +2766,7 @@ pub async fn assert_lease_renewal<S: awaken_dispatch::Dispatch>(
             )
             .await
             .unwrap()
+            .is_current()
     );
     clock.advance_past(first.lease.expires_ms).await;
     assert!(
@@ -2788,6 +2796,7 @@ pub async fn assert_lease_renewal<S: awaken_dispatch::Dispatch>(
             )
             .await
             .unwrap()
+            .is_current()
     );
 
     // Once the renewed lease expires, recovery reclaims for the new owner.
@@ -2841,8 +2850,8 @@ pub async fn assert_lease_renewal<S: awaken_dispatch::Dispatch>(
         replacement.lease.epoch > old.lease.epoch,
         "LR3 precondition"
     );
-    assert!(
-        !store
+    assert_eq!(
+        store
             .renew_lease(
                 &awaken_dispatch::RunClaim::from(&old.lease),
                 100,
@@ -2850,7 +2859,8 @@ pub async fn assert_lease_renewal<S: awaken_dispatch::Dispatch>(
             )
             .await
             .unwrap(),
-        "LR3/E2 stale epoch cannot renew a same-owner replacement"
+        awaken_dispatch::LeaseRenewalOutcome::Lost,
+        "LR3/E2 stale epoch cannot renew a same-owner replacement",
     );
     assert!(
         store
@@ -2860,10 +2870,106 @@ pub async fn assert_lease_renewal<S: awaken_dispatch::Dispatch>(
                 replacement_at,
             )
             .await
-            .unwrap(),
+            .unwrap()
+            .is_current(),
         "LR4/E1 current epoch renews"
     );
     assert_eq!(replacement.request.run_id(), &same_owner_run);
+    assert_eq!(
+        store
+            .settle(
+                &same_owner_run,
+                replacement.lease.epoch,
+                awaken_dispatch::DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .unwrap(),
+        awaken_dispatch::SettleOutcome::Applied,
+        "LR4 cleanup keeps the later cancellation rules independent",
+    );
+
+    let cancelled_run = RunId("run-active-cancellation-signal".to_string());
+    store
+        .enqueue(RunDispatch::new(activation(
+            "run-active-cancellation-signal",
+        )))
+        .await
+        .unwrap();
+    let active = store
+        .claim(
+            "active-owner",
+            100,
+            replacement_at.saturating_add(1),
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .expect("LR5 active owner claim");
+    let active_claim = awaken_dispatch::RunClaim::from(&active.lease);
+    assert_eq!(
+        store
+            .begin_attempt(&active_claim, replacement_at.saturating_add(1))
+            .await
+            .unwrap(),
+        awaken_dispatch::AttemptAdmission::Applied,
+        "LR5 physical participant installed",
+    );
+    assert_eq!(
+        store.cancel(&cancelled_run).await.unwrap(),
+        Some(ThreadId(THREAD.to_string())),
+        "LR5 durable cancellation accepted",
+    );
+    assert_eq!(
+        store
+            .renew_lease(&active_claim, 100, replacement_at.saturating_add(2))
+            .await
+            .unwrap(),
+        awaken_dispatch::LeaseRenewalOutcome::CancellationRequested,
+        "LR5/E3 exact physical participant receives the durable signal",
+    );
+    for foreign in [
+        awaken_dispatch::RunClaim {
+            owner: "foreign-owner".into(),
+            ..active_claim.clone()
+        },
+        awaken_dispatch::RunClaim {
+            epoch: active_claim.epoch.saturating_add(1),
+            ..active_claim.clone()
+        },
+    ] {
+        assert_eq!(
+            store
+                .renew_lease(&foreign, 100, replacement_at.saturating_add(2))
+                .await
+                .unwrap(),
+            awaken_dispatch::LeaseRenewalOutcome::Lost,
+            "LR6/E2 cancellation never crosses the physical owner/epoch fence",
+        );
+    }
+    let cancellation = store
+        .claim(
+            "cancel-owner",
+            100,
+            replacement_at.saturating_add(2),
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .expect("LR7 cancellation intent claim");
+    assert!(cancellation.cancellation_requested, "LR7 precondition");
+    assert_eq!(
+        store
+            .renew_lease(
+                &awaken_dispatch::RunClaim::from(&cancellation.lease),
+                100,
+                replacement_at.saturating_add(2),
+            )
+            .await
+            .unwrap(),
+        awaken_dispatch::LeaseRenewalOutcome::Current,
+        "LR7/E1 the cancellation worker renews its own current claim",
+    );
 }
 
 /// Shared spec (every backend must match): the fencing token. A claim bumps the
