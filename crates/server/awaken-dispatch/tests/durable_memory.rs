@@ -1456,7 +1456,6 @@ async fn worker_recovery_runs_a_crashed_dispatch_to_completion() {
         ],
         "R1/E1-E2+E4: recovery and the logical model request are observed once"
     );
-    harness::assert_one_model_invocation(commit.as_ref());
     assert_eq!(store.dispatch_count(), 0);
 }
 

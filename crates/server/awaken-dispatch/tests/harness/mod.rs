@@ -60,7 +60,8 @@ pub fn assert_completed_model_invocations(commit: &dyn CommittedThreadView, coun
     // M1 each successful Native call => exact Entered/Unknown then
     // Returned/Terminated, same ordinal and Run. Extra journal writes or a
     // missing entry/return are failures, not ignored implementation detail.
-    let observations = commit
+    // M2 entry/return retain one binding, never completing a different model.
+    let operations = commit
         .committed_state(&ThreadId(THREAD.into()))
         .into_iter()
         .filter(|command| command.key.0 == ActiveModelOperation::KEY)
@@ -69,9 +70,17 @@ pub fn assert_completed_model_invocations(commit: &dyn CommittedThreadView, coun
             let Action::Set(value) = command.action else {
                 panic!("M1 model evidence is retained");
             };
-            let operation = serde_json::from_value::<Option<ModelOperation>>(value)
+            serde_json::from_value::<Option<ModelOperation>>(value)
                 .unwrap()
-                .unwrap();
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    for pair in operations.chunks_exact(2) {
+        assert_eq!(pair[0].binding, pair[1].binding, "same invocation binding");
+    }
+    let observations = operations
+        .into_iter()
+        .map(|operation| {
             (
                 operation.ordinal.get(),
                 operation.phase,
@@ -3105,36 +3114,4 @@ pub async fn assert_awaiting_settle_fences_stale_epoch<S: awaken_dispatch::Dispa
             .unwrap(),
         SettleOutcome::Applied,
     );
-}
-
-// The logical invocation owns two durable receipts, not two model calls.
-// Reuse the actual Thread state log; R1 enter=Unknown precedes R2 return=Terminated,
-// both at ordinal 1, with no hidden second invocation or fabricated termination.
-pub fn assert_one_model_invocation(commit: &(impl CommittedThreadView + ?Sized)) {
-    use awaken_agent_contract::agent::state::{Action, StateKey};
-    use awaken_runtime_contract::model_operation::{
-        ActiveModelOperation, ModelExecutionEvidence, ModelOperation, ModelOperationPhase,
-    };
-    let operations: Vec<ModelOperation> = commit
-        .committed_state(&ThreadId(THREAD.into()))
-        .into_iter()
-        .filter(|command| command.key.0 == ActiveModelOperation::KEY)
-        .map(|command| {
-            assert_eq!(command.run_id, Some(RunId("run-1".into())));
-            let Action::Set(value) = command.action else {
-                panic!("model evidence must be Set")
-            };
-            serde_json::from_value(value).unwrap()
-        })
-        .collect();
-    assert_eq!(operations.len(), 2);
-    assert!(operations.iter().all(|op| op.ordinal.get() == 1));
-    assert_eq!(
-        operations[0].binding, operations[1].binding,
-        "same invocation binding"
-    );
-    assert_eq!(operations[0].phase, ModelOperationPhase::Entered);
-    assert_eq!(operations[0].execution, ModelExecutionEvidence::Unknown);
-    assert_eq!(operations[1].phase, ModelOperationPhase::Returned);
-    assert_eq!(operations[1].execution, ModelExecutionEvidence::Terminated);
 }
