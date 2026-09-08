@@ -399,6 +399,8 @@ pub(crate) struct BlockingBindingSink {
     block: std::sync::atomic::AtomicBool,
     pub(crate) entered: tokio::sync::Notify,
     calls: AtomicUsize,
+    delegate: Option<Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>>,
+    commit_before_block: bool,
 }
 
 impl BlockingBindingSink {
@@ -407,6 +409,19 @@ impl BlockingBindingSink {
             block: std::sync::atomic::AtomicBool::new(true),
             entered: tokio::sync::Notify::new(),
             calls: AtomicUsize::new(0),
+            delegate: None,
+            commit_before_block: false,
+        }
+    }
+
+    pub(crate) fn around(
+        delegate: Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,
+        commit_before_block: bool,
+    ) -> Self {
+        Self {
+            delegate: Some(delegate),
+            commit_before_block,
+            ..Self::blocked()
         }
     }
 
@@ -423,7 +438,7 @@ impl BlockingBindingSink {
 impl awaken_session_contract::SessionEnvironmentBindingSink for BlockingBindingSink {
     async fn authorize(
         &self,
-        _intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
+        intent: &awaken_session_contract::SessionEnvironmentEffectIntent,
     ) -> Result<
         awaken_session_contract::SessionEnvironmentEffectAuthorization,
         awaken_session_contract::RunError,
@@ -432,7 +447,10 @@ impl awaken_session_contract::SessionEnvironmentBindingSink for BlockingBindingS
         // E1 only the following persist await may be cancelled and retried.
         // Using the contract authorization seam keeps the fixture from
         // reviving the removed persist-without-authorization path.
-        Ok(awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized)
+        match &self.delegate {
+            Some(delegate) => delegate.authorize(intent).await,
+            None => Ok(awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized),
+        }
     }
 
     async fn persist(
@@ -441,11 +459,30 @@ impl awaken_session_contract::SessionEnvironmentBindingSink for BlockingBindingS
     ) -> Result<awaken_session_contract::SessionEnvironmentState, awaken_session_contract::RunError>
     {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        // Fault schedules share one blocking seam. With a delegate, the real
+        // fixture root owns authorization and commitment; cancellation before
+        // persist leaves it unchanged, cancellation after persist loses only
+        // the response. Neither path manufactures a second root identity.
+        let committed = if self.commit_before_block {
+            Some(
+                self.delegate
+                    .as_ref()
+                    .expect("commit-first delegate")
+                    .persist(receipt.clone())
+                    .await?,
+            )
+        } else {
+            None
+        };
         if self.block.load(Ordering::SeqCst) {
             self.entered.notify_one();
             std::future::pending::<()>().await;
         }
-        Ok(committed_environment(receipt))
+        match (committed, &self.delegate) {
+            (Some(committed), _) => Ok(committed),
+            (None, Some(delegate)) => delegate.persist(receipt).await,
+            (None, None) => Ok(committed_environment(receipt)),
+        }
     }
 }
 

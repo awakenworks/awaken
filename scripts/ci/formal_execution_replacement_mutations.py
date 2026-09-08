@@ -5,7 +5,7 @@ from formal_model_mutation_runner import ROOT, check_tlc_model_mutations
 
 
 def check_execution_replacement_model_mutants(tlc_jar: Path) -> None:
-    # SR1-SR4 and SC1-SC4 match the real Host projection/retirement tests. Semantic kills
+    # SR/SC/UC match the real Host projection/retirement tests. Semantic kills
     # distinguish old-wrapper reuse, unknown/live predecessor, cancellation
     # loss and over-denial; parser failures/timeouts never count as evidence.
     source = (ROOT / "formal/tla/SessionExecutionReplacement.tla").read_text()
@@ -23,6 +23,15 @@ def check_execution_replacement_model_mutants(tlc_jar: Path) -> None:
          'phase \\in {"fresh", "ready"}', "SuccessorCommitsOnlyCurrent"),
         ('Retire == /\\ caller', 'Retire == /\\ originalPhase = "resident" /\\ caller',
          "CommittedOwnerRetirementEnabled"),
+        ('/\\ observedReceipt = 2\n  /\\ phase\' = "ready"',
+         '/\\ phase\' = "ready"', "PublicationHasReadback"),
+        ('/\\ rootReceipt = 2 /\\ observedReceipt # 2 /\\ observedReceipt\' = 2',
+         '/\\ observedReceipt # 2 /\\ observedReceipt\' = 2', "ReadbackNamesCommittedRoot"),
+        ('/\\ rootReceipt # 2 /\\ rootWrites < 2',
+         '/\\ rootWrites < 2', "RootReceiptWrittenOnce"),
+        ('CommitRoot == /\\ caller # 0 /\\ phase = "fresh" /\\ Successor!CurrentBinding',
+         'CommitRoot == /\\ caller # 0 /\\ phase = "fresh"', "RootCommitIsCurrent"),
+        ('CommitRoot == /\\ caller', 'CommitRoot == /\\ FALSE /\\ caller', "FreshRootCommitEnabled"),
     ]:
         if source.count(anchor) != 1:
             raise SystemExit(f"execution replacement mutation anchor drifted: {oracle}")
@@ -32,8 +41,9 @@ def check_execution_replacement_model_mutants(tlc_jar: Path) -> None:
     broken = broken.replace("<<bindingAll, phase, tree", "<<bindingAll, tree")
     mutations.append((source.replace(cancel, broken),
                       header + "PROPERTY CancellationRetainsOwner\n", "action:CancellationRetainsOwner"))
-    for witness in ("NoSuccessorReached", "NoCancelledRecoveryReached", "NoCandidateSuccessorReached"):
+    for witness in ("NoSuccessorReached", "NoCancelledRecoveryReached", "NoCandidateSuccessorReached",
+                    "NoUncommittedRecoveryReached", "NoLostResponseRecoveryReached", "NoPostCommitCancellationRecoveryReached"):
         mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
     check_tlc_model_mutations(tlc_jar, "SessionExecutionReplacement", source, config, mutations,
                              dependencies=("SessionExecutionBinding", "WorkerExecutionAuthority", "SessionRealizationAuthority"))
-    print("Execution replacement: 7/7 mutants killed; successor, two-caller cancelled recovery and committed Candidate recovery reachable")
+    print("Execution replacement: 12/12 mutants killed; 6 recovery witnesses including lost commit response and post-commit cancellation")

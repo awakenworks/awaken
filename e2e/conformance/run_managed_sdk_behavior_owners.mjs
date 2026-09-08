@@ -21,7 +21,6 @@ import {
   cargoExecutable,
   cargoScenarioHostBundle,
 } from '../cargo_binary.mjs';
-import { snapshotExecutable } from '../executable_snapshot.mjs';
 import { extractOperationsFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-operations.mjs';
 import {
   auditRequestTypesFromPackageRoot,
@@ -203,26 +202,7 @@ if (!Number.isSafeInteger(OWNER_TIMEOUT_MS) || OWNER_TIMEOUT_MS <= 0) {
   throw new Error('AWAKEN_MANAGED_OWNER_TIMEOUT_MS must be a positive safe integer');
 }
 
-// Build once outside every behavior timeout. A clean checkout or a contended
-// shared cache may legitimately spend minutes compiling; neither is a hung SDK
-// call. The resulting executables are hard-linked into an immutable suite
-// snapshot so 20+ child processes never re-enter Cargo or observe replacement
-// artifacts from another worktree. Cargo publishes a rebuilt executable by
-// replacing its directory entry, so the snapshot retains the prebuild inode
-// without duplicating hundreds of megabytes.
 const repositoryRoot = resolve(E2E, '..');
-const { scenarioHost, handCompanion } = cargoScenarioHostBundle({
-  cwd: repositoryRoot,
-  environment: BASE_OWNER_PROCESS_ENVIRONMENT,
-  prebuiltEnvironmentName: SCENARIO_HOST_BIN_ENV,
-});
-const productionAwaken = cargoExecutable({
-  cwd: repositoryRoot,
-  packageName: 'awaken-cli',
-  targetName: 'awaken',
-  environment: BASE_OWNER_PROCESS_ENVIRONMENT,
-  prebuiltEnvironmentName: AWAKEN_BIN_ENV,
-});
 async function executeOwner(owner, receiptFile, resolutionFile, ownerEnvironment) {
   const args = owner.endsWith('.ts') ? [TSX_CLI, owner] : [owner];
   await new Promise((resolveOwner, rejectOwner) => {
@@ -321,13 +301,23 @@ let receiptCount = 0;
 const ownerFailures = [];
 const executableDirectory = mkdtempSync(resolve(tmpdir(), 'awaken-managed-sdk-binaries-'));
 try {
-  const snapshotNamedExecutable = (source) => {
-    const destination = resolve(executableDirectory, path.basename(source));
-    return snapshotExecutable(source, destination);
-  };
-  const scenarioHostSnapshot = snapshotNamedExecutable(scenarioHost);
-  snapshotNamedExecutable(handCompanion);
-  const productionAwakenSnapshot = snapshotNamedExecutable(productionAwaken);
+  // Build outside behavior timeouts. The canonical resolver pins each exact
+  // build through an exclusive Cargo output directory and independent copy;
+  // child scenarios never observe a later rebuild or re-enter Cargo.
+  const { scenarioHost: scenarioHostSnapshot } = cargoScenarioHostBundle({
+    cwd: repositoryRoot,
+    environment: BASE_OWNER_PROCESS_ENVIRONMENT,
+    prebuiltEnvironmentName: SCENARIO_HOST_BIN_ENV,
+    snapshotDirectory: executableDirectory,
+  });
+  const productionAwakenSnapshot = cargoExecutable({
+    cwd: repositoryRoot,
+    packageName: 'awaken-cli',
+    targetName: 'awaken',
+    environment: BASE_OWNER_PROCESS_ENVIRONMENT,
+    prebuiltEnvironmentName: AWAKEN_BIN_ENV,
+    snapshotDestination: resolve(executableDirectory, process.platform === 'win32' ? 'awaken.exe' : 'awaken'),
+  });
   const ownerEnvironment = {
     ...BASE_OWNER_PROCESS_ENVIRONMENT,
     [AWAKEN_BIN_ENV]: productionAwakenSnapshot,
