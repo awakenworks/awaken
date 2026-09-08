@@ -29,6 +29,7 @@ pub async fn seed_model(
     .await
     .expect("seed provider");
     repo.put_endpoint(ProtocolEndpoint {
+        workspace_id: None,
         id: ProtocolEndpointId::new(endpoint),
         provider_id: ProviderId::new(provider),
         dialect,

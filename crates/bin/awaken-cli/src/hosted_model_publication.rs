@@ -50,6 +50,14 @@ impl HostedAndDirectModelPublicationResolver {
         workspace: &ScopeId,
         selection: &ModelSelection,
     ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
+        if matches!(
+            selection,
+            ModelSelection::Target { .. }
+                | ModelSelection::BackendDefault { .. }
+                | ModelSelection::BackendExact { .. }
+        ) {
+            return self.direct.resolve_models(workspace, selection, &[]).await;
+        }
         match self.hosted.resolve_models(workspace, selection, &[]).await {
             Ok(resolved) => Ok(resolved),
             Err(
@@ -69,12 +77,16 @@ impl ModelPublicationResolver for HostedAndDirectModelPublicationResolver {
         selection: &ModelSelection,
         fallbacks: &[ModelBinding],
     ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
-        // Auto and Profile own their fallback policy inside one authoritative
-        // resolver. Splitting them here would duplicate catalog/profile logic.
-        if matches!(
-            selection,
-            ModelSelection::Auto | ModelSelection::Profile { .. }
-        ) {
+        // Profiles belong to the canonical Workspace compiler, which delegates
+        // brokered candidates to Cloud after validating each authored binding.
+        if matches!(selection, ModelSelection::Profile { .. }) {
+            return self
+                .direct
+                .resolve_models(workspace, selection, fallbacks)
+                .await;
+        }
+        // Auto retains Cloud's default policy; an empty supply may use BYOK.
+        if matches!(selection, ModelSelection::Auto) {
             return match self
                 .hosted
                 .resolve_models(workspace, selection, fallbacks)
@@ -94,30 +106,22 @@ impl ModelPublicationResolver for HostedAndDirectModelPublicationResolver {
         }
 
         let mut primary = self.resolve_one(workspace, selection).await?;
-        if !primary.candidates.is_empty() {
-            return Err(PublicationResolutionError::Invalid(
-                "a single-candidate resolver returned undeclared fallbacks".into(),
-            ));
-        }
-
-        let mut seen = HashSet::from([primary.primary.binding().clone()]);
-        let mut candidates = Vec::with_capacity(fallbacks.len());
+        let mut seen = std::iter::once(&primary.primary)
+            .chain(primary.candidates.iter())
+            .map(|candidate| candidate.binding().clone())
+            .collect::<HashSet<_>>();
+        let mut candidates = std::mem::take(&mut primary.candidates);
         for binding in fallbacks {
             let resolved = self
                 .resolve_one(workspace, &ModelSelection::Pinned(binding.clone()))
                 .await?;
-            if !resolved.candidates.is_empty() {
-                return Err(PublicationResolutionError::Invalid(
-                    "a single-candidate resolver returned undeclared fallbacks".into(),
-                ));
+            for candidate in std::iter::once(resolved.primary).chain(resolved.candidates) {
+                let binding = candidate.binding().clone();
+                if !seen.insert(binding.clone()) {
+                    return Err(PublicationResolutionError::DuplicateBinding(binding));
+                }
+                candidates.push(candidate);
             }
-            let candidate_binding = resolved.primary.binding().clone();
-            if !seen.insert(candidate_binding.clone()) {
-                return Err(PublicationResolutionError::DuplicateBinding(
-                    candidate_binding,
-                ));
-            }
-            candidates.push(resolved.primary);
         }
         primary.candidates = candidates;
         Ok(primary)
@@ -254,5 +258,54 @@ mod tests {
             "R3/E3"
         );
         assert!(untouched.calls.lock().unwrap().is_empty(), "R3/E2");
+    }
+
+    // Causes: authored Profile/Target versus Cloud-owned Auto; Cloud outage;
+    // canonical compiler outcome. Rules: authored selections consult the
+    // Workspace compiler, Auto propagates Cloud outage without trying direct.
+    // The compiler's own tests cover its per-candidate delegation to Cloud.
+    #[tokio::test]
+    async fn authored_selections_reach_the_workspace_compiler() {
+        let hosted = SourceResolver::unavailable(PublicationResolutionError::CatalogUnavailable(
+            "cloud offline".into(),
+        ));
+        let direct = SourceResolver::unavailable(PublicationResolutionError::Invalid(
+            "compiler reached".into(),
+        ));
+        let resolver = HostedAndDirectModelPublicationResolver {
+            hosted: hosted.clone(),
+            direct: direct.clone(),
+        };
+        let workspace = ScopeId::from("workspace-a");
+        for selection in [
+            ModelSelection::Profile {
+                profile_id: "profile-a".into(),
+            },
+            ModelSelection::Target {
+                target: awaken_agent_contract::ModelTarget {
+                    model_id: "model-a".into(),
+                    provider_id: Some("openai".into()),
+                    api_dialect: None,
+                    protocol_endpoint_id: None,
+                    endpoint_name: None,
+                },
+                backend_ref: "genai".into(),
+                configuration: Default::default(),
+            },
+        ] {
+            assert!(
+                matches!(resolver.resolve_models(&workspace, &selection, &[]).await,
+                Err(PublicationResolutionError::Invalid(message)) if message == "compiler reached")
+            );
+            assert_eq!(direct.calls.lock().unwrap().last(), Some(&selection));
+            assert!(hosted.calls.lock().unwrap().is_empty());
+        }
+        assert!(matches!(
+            resolver
+                .resolve_models(&workspace, &ModelSelection::Auto, &[])
+                .await,
+            Err(PublicationResolutionError::CatalogUnavailable(_))
+        ));
+        assert_eq!(direct.calls.lock().unwrap().len(), 2);
     }
 }

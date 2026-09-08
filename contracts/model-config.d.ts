@@ -139,6 +139,12 @@ export type CredentialPurpose =
       type: "mcp_authorization";
     }
   | {
+      type: "remote_agent_authorization";
+    }
+  | {
+      type: "web_provider_authorization";
+    }
+  | {
       type: "http_effect";
     }
   | {
@@ -741,6 +747,11 @@ export interface ProtocolEndpoint {
    */
   timeout_secs: number;
   version: number;
+  /**
+   * None denotes an operator-owned or brokered endpoint. Workspace commands
+   * may only create and update their own explicitly scoped endpoints.
+   */
+  workspace_id?: string | null;
   [k: string]: unknown;
 }
 /**

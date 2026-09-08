@@ -91,8 +91,8 @@ pub awaken_admin_config_api::CredentialValidation::credential_version: core::opt
 pub awaken_admin_config_api::CredentialValidation::status: awaken_admin_config_api::ProbeStatus
 pub struct awaken_admin_config_api::EnterCredentialRequest
 impl awaken_admin_config_api::EnterCredentialRequest
-pub fn awaken_admin_config_api::EnterCredentialRequest::compat_hosted_vault(alloc::string::String, alloc::string::String, alloc::string::String, awaken_credential_contract::CredentialMaterial) -> core::result::Result<Self, awaken_credential_vault::CredentialError>
-pub fn awaken_admin_config_api::EnterCredentialRequest::described_hosted_vault(alloc::string::String, alloc::string::String, awaken_credential_contract::descriptor::CredentialDescriptor, awaken_credential_contract::CredentialMaterial) -> core::result::Result<Self, awaken_credential_vault::CredentialError>
+pub fn awaken_admin_config_api::EnterCredentialRequest::compat_hosted_vault(alloc::string::String, alloc::string::String, alloc::string::String, awaken_credential_contract::material_resolution::CredentialMaterial) -> core::result::Result<Self, awaken_credential_vault::CredentialError>
+pub fn awaken_admin_config_api::EnterCredentialRequest::described_hosted_vault(alloc::string::String, alloc::string::String, awaken_credential_contract::descriptor::CredentialDescriptor, awaken_credential_contract::material_resolution::CredentialMaterial) -> core::result::Result<Self, awaken_credential_vault::CredentialError>
 pub fn awaken_admin_config_api::EnterCredentialRequest::provider_id(&self) -> core::option::Option<&str>
 pub fn awaken_admin_config_api::EnterCredentialRequest::with_replacement_of(self, awaken_credential_contract::CredentialRef) -> core::result::Result<Self, awaken_credential_vault::CredentialError>
 pub fn awaken_admin_config_api::EnterCredentialRequest::workspace_id(&self) -> &str
@@ -100,6 +100,9 @@ pub struct awaken_admin_config_api::IdentityCapabilityView
 pub awaken_admin_config_api::IdentityCapabilityView::authenticated: bool
 pub awaken_admin_config_api::IdentityCapabilityView::cloud_login_enabled: bool
 pub awaken_admin_config_api::IdentityCapabilityView::mode: alloc::string::String
+pub struct awaken_admin_config_api::ModelSupplyAuthorization
+pub awaken_admin_config_api::ModelSupplyAuthorization::connect: bool
+pub awaken_admin_config_api::ModelSupplyAuthorization::write: bool
 pub struct awaken_admin_config_api::ModelSupplyCapabilityView
 pub awaken_admin_config_api::ModelSupplyCapabilityView::byok_enabled: bool
 pub awaken_admin_config_api::ModelSupplyCapabilityView::cloud_models_enabled: bool

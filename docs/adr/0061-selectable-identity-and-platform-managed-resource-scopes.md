@@ -735,3 +735,20 @@ the existing Workspace profile compiler and Cloud role composition are
 extended; the sole new product mechanism is the finite `hosted_builder` role.
 No Builder subscription, Runtime-equivalent role, action evaluator, or
 permission table outside the product profile is added.
+
+## Amendment (2026-09-09): hosted administrators can connect Workspace supply
+
+The exact hosted-admin profile now grants `model_supply.read`,
+`model_supply.connect`, and `model_supply.write`, without a model-supply wildcard.
+Viewer and Builder keep read-only supply authority. This follows the hosted
+BYOK composition in ADR-0043: IAM permission and installed deployment capability
+are independent required gates, and the capabilities response exposes their
+intersection. Hosted local-catalog editing stays disabled.
+
+The endpoint's optional Workspace owner is persisted in the existing Catalog
+row. New provider connections derive Workspace-qualified endpoint ids; read,
+readiness and publication use the same scoped catalog projection. Legacy
+operator-authored endpoints stay shared. No Cloud-side policy, credential store
+or Profile compiler is introduced. Cloud still supplies exact managed routes;
+Awaken compiles the authored ordered Profile and delegates brokered candidates
+through the existing model-publication port.

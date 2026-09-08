@@ -711,7 +711,10 @@ async fn test_and_save_activates_all_facts_only_after_discovery_succeeds() {
     assert_eq!(status, StatusCode::CREATED, "{result}");
     assert_eq!(result["sync"]["discovered"], 2);
     assert_eq!(result["credential"]["status"], "active");
-    assert_eq!(result["endpoint"]["id"], "anthropic.anthropic_messages");
+    assert_eq!(
+        result["endpoint"]["id"],
+        "workspace:11:workspace-a:anthropic.anthropic_messages"
+    );
     assert_eq!(
         result["endpoint"]["base_url"],
         "https://api.anthropic.com/v1"
@@ -719,7 +722,10 @@ async fn test_and_save_activates_all_facts_only_after_discovery_succeeds() {
     assert!(!result.to_string().contains(secret));
     assert_eq!(
         harness.discovery.secret_calls.lock().unwrap().as_slice(),
-        &[("anthropic.anthropic_messages".into(), secret.into())]
+        &[(
+            "workspace:11:workspace-a:anthropic.anthropic_messages".into(),
+            secret.into()
+        )]
     );
     let catalog = harness.catalog.snapshot().await.unwrap();
     assert_eq!(catalog.providers.len(), 1);
@@ -802,16 +808,19 @@ async fn provider_and_dialect_are_the_only_authored_endpoint_identity() {
     );
     assert_eq!(invalid_status, StatusCode::UNPROCESSABLE_ENTITY, "R5");
     assert_eq!(
-        responses["endpoint"]["id"], "openai.open_ai_responses",
+        responses["endpoint"]["id"], "workspace:11:workspace-a:openai.open_ai_responses",
         "R1"
     );
-    assert_eq!(chat["endpoint"]["id"], "openai.open_ai_chat", "R2");
     assert_eq!(
-        chat["credential"]["protocol_endpoint_id"], "openai.open_ai_chat",
+        chat["endpoint"]["id"], "workspace:11:workspace-a:openai.open_ai_chat",
+        "R2"
+    );
+    assert_eq!(
+        chat["credential"]["protocol_endpoint_id"], "workspace:11:workspace-a:openai.open_ai_chat",
         "the connection credential is scoped to the endpoint it proved"
     );
     assert_eq!(
-        named_chat["endpoint"]["id"], "openai.open_ai_chat.regional",
+        named_chat["endpoint"]["id"], "workspace:11:workspace-a:openai.open_ai_chat.regional",
         "R3"
     );
     assert_eq!(
@@ -919,7 +928,7 @@ async fn oauth_connection_uses_the_same_command_and_persists_only_the_helper() {
     assert_eq!(
         harness.discovery.calls.lock().unwrap().as_slice(),
         &[(
-            "vertex.vertex_gemini".into(),
+            "workspace:11:workspace-a:vertex.vertex_gemini".into(),
             "cred:provider-connection-probe".into()
         )]
     );
@@ -1373,7 +1382,9 @@ async fn connection_summaries_cover_not_configured_ready_stale_and_unavailable()
     harness
         .catalog
         .reconcile_discovered_models(
-            &awaken_model_catalog::ProtocolEndpointId::new("anthropic.anthropic_messages"),
+            &awaken_model_catalog::ProtocolEndpointId::new(
+                "workspace:11:workspace-a:anthropic.anthropic_messages",
+            ),
             vec![DiscoveredModel {
                 model_id: "provider-a".into(),
                 upstream_model: None,
@@ -1394,7 +1405,9 @@ async fn connection_summaries_cover_not_configured_ready_stale_and_unavailable()
     harness
         .catalog
         .reconcile_discovered_models(
-            &awaken_model_catalog::ProtocolEndpointId::new("anthropic.anthropic_messages"),
+            &awaken_model_catalog::ProtocolEndpointId::new(
+                "workspace:11:workspace-a:anthropic.anthropic_messages",
+            ),
             Vec::new(),
             2,
         )
@@ -1513,4 +1526,117 @@ async fn discovery_fails_closed_across_workspace() {
             .offerings
             .is_empty()
     );
+}
+
+// Cause/effect rules W1-W4: same Provider/dialect in two Workspaces with
+// different endpoints -> independent Catalog rows and credential proofs;
+// replay -> same rows; cross-Workspace read/resolve -> no foreign endpoint;
+// same command with changed key -> conflict and incumbent secret unchanged.
+#[tokio::test]
+async fn workspace_connections_are_isolated_and_conflicting_key_replay_is_rejected() {
+    let harness = harness();
+    let request = |workspace: &str, origin: &str, secret: &str| {
+        json!({
+            "idempotency_key":"workspace-command", "workspace_id": workspace,
+            "provider_id":"openai", "display_name":"OpenAI", "dialect":"open_ai_chat",
+            "base_url":origin, "secret":secret
+        })
+    };
+    let path = "/v1/config/provider-connections";
+    let (status_a, a) = call(
+        &harness.app,
+        "POST",
+        path,
+        request("workspace-a", "https://a.invalid", "fixture-a"),
+    )
+    .await;
+    let (status_b, b) = call(
+        &harness.app,
+        "POST",
+        path,
+        request("workspace-b", "https://b.invalid", "fixture-b"),
+    )
+    .await;
+    assert_eq!(status_a, StatusCode::CREATED, "W1 {a}");
+    assert_eq!(status_b, StatusCode::CREATED, "W1 {b}");
+    assert_ne!(a["endpoint"]["id"], b["endpoint"]["id"]);
+    assert_ne!(a["credential"]["id"], b["credential"]["id"]);
+    let snapshot = harness.catalog.snapshot().await.unwrap();
+    for (workspace, connection, other) in [("workspace-a", &a, &b), ("workspace-b", &b, &a)] {
+        let projected = snapshot.clone().for_workspace(workspace);
+        assert!(
+            projected
+                .endpoints
+                .contains_key(connection["endpoint"]["id"].as_str().unwrap()),
+            "W3"
+        );
+        assert!(
+            !projected
+                .endpoints
+                .contains_key(other["endpoint"]["id"].as_str().unwrap()),
+            "W3"
+        );
+    }
+    let (replayed, replay) = call(
+        &harness.app,
+        "POST",
+        path,
+        request("workspace-a", "https://a.invalid", "fixture-a"),
+    )
+    .await;
+    assert_eq!(replayed, StatusCode::CREATED, "W2 {replay}");
+    assert_eq!(replay["credential"]["id"], a["credential"]["id"]);
+    // A successful replay re-observes models and may advance last_seen; the
+    // conflicting command must preserve that most recent observation exactly.
+    let snapshot = harness.catalog.snapshot().await.unwrap();
+    let (conflict, _) = call(
+        &harness.app,
+        "POST",
+        path,
+        request("workspace-a", "https://a.invalid", "changed-fixture"),
+    )
+    .await;
+    assert!(!conflict.is_success(), "W4");
+    assert_eq!(
+        harness.credentials.list("workspace-a").await.unwrap().len(),
+        1
+    );
+    assert_eq!(harness.catalog.snapshot().await.unwrap(), snapshot);
+}
+
+// C1 hosted BYOK enabled, C2 request IAM connect/write decisions.
+// P1 both allow -> BYOK+Profiles; P2 deny -> neither; P3 connect only ->
+// BYOK only. Global Catalog authoring stays disabled for every principal.
+#[tokio::test]
+async fn capability_projection_intersects_exact_authorization_without_opening_platform_writes() {
+    for (connect, write) in [(true, true), (false, false), (true, false), (false, true)] {
+        let mut capability = hosted_capabilities();
+        capability.models.byok_enabled = true;
+        capability.models.profile_authoring_enabled = true;
+        let harness = harness_with_capabilities(capability);
+        let app = harness.app.layer(axum::Extension(
+            awaken_admin_config_api::ModelSupplyAuthorization { connect, write },
+        ));
+        let (status, view) = call(&app, "GET", "/v1/config/capabilities", Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(view["models"]["byok_enabled"], connect);
+        assert_eq!(view["models"]["profile_authoring_enabled"], write);
+        assert_eq!(view["models"]["local_catalog_enabled"], false);
+        let (status, _) = call(
+            &app,
+            "PUT",
+            "/v1/config/model-attributes/platform-model",
+            json!({"context_window":1}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/v1/config/brokered-models/refresh",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
 }

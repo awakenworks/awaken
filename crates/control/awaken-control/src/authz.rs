@@ -1045,6 +1045,24 @@ pub async fn management_guard(
             // decides (Global binding ⇒ any workspace; workspace binding ⇒
             // that workspace only).
             let mut req = req;
+            if req.uri().path() == "/v1/config/capabilities" {
+                let scope = ScopeRef::Workspace {
+                    workspace_id: workspace.clone(),
+                };
+                let allows = |action| {
+                    authz.authorize_action(
+                        principal.clone(),
+                        action,
+                        scope.clone(),
+                        ActionNamespace::Workspace,
+                    ) == AuthorizationDecision::Allow
+                };
+                req.extensions_mut()
+                    .insert(awaken_admin_config_api::ModelSupplyAuthorization {
+                        connect: allows(MODEL_SUPPLY_CONNECT),
+                        write: allows(MODEL_SUPPLY_WRITE),
+                    });
+            }
             req.extensions_mut().insert(memory_actor(&principal));
             req.extensions_mut().insert(AuthedPrincipal(principal));
             let workspace_id = workspace.0;
@@ -1254,6 +1272,33 @@ pub async fn cloud_management_guard(
     };
     match decision {
         AuthorizationDecision::Allow => {
+            if req.uri().path() == "/v1/config/capabilities" {
+                let authz = authz.clone();
+                let principal = principal.clone();
+                let scope = ScopeRef::Workspace {
+                    workspace_id: WorkspaceId(workspace.clone()),
+                };
+                let projection = tokio::task::spawn_blocking(move || {
+                    let allows = |action| {
+                        authz.authorize_action(
+                            principal.clone(),
+                            action,
+                            scope.clone(),
+                            ActionNamespace::Workspace,
+                        ) == AuthorizationDecision::Allow
+                    };
+                    awaken_admin_config_api::ModelSupplyAuthorization {
+                        connect: allows(MODEL_SUPPLY_CONNECT),
+                        write: allows(MODEL_SUPPLY_WRITE),
+                    }
+                })
+                .await
+                .unwrap_or(awaken_admin_config_api::ModelSupplyAuthorization {
+                    connect: false,
+                    write: false,
+                });
+                req.extensions_mut().insert(projection);
+            }
             req.extensions_mut().insert(memory_actor(&principal));
             req.extensions_mut().insert(principal);
             req.extensions_mut()

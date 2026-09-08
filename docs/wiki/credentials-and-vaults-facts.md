@@ -97,3 +97,11 @@ Owner: [credentials-and-vaults.md](../design/credentials-and-vaults.md).
 - Fact: Namespace and Kubernetes may realize the same fixed Repository Git credential endpoint and publish a bounded typed service, but the provider does not select or authorize a holder, exposure, claim, verifier, Repository, Vault material, or Git configuration. The Repository pin remains `Forbidden`; a later Session-owned projection must activate Agent and Native/Resident-Hand paths through the existing credential authorities.
 - Links: [ADR-0041 Amendment 7](../adr/0041-sandbox-execution-environment-provider.md#amendment-7-2026-08-29-dormant-provider-neutral-sandbox-control-transport); [ADR-0067 boundary note](../adr/0067-credential-custody-model-exposure-and-secret-delivery.md#2026-08-29-boundary-note-sandbox-control-transport-is-not-credential-activation)
 - Verification: provider contract/path/adoption/lifecycle tests plus static absence of `GIT_CONFIG*`, helper overlay, holder selection, and material persistence in the provider slice.
+
+## FACT-CRED-012: Hosted BYOK shares Workspace credential and publication owners
+
+- Status: active
+- Owner: [Hosted Workspace provider connections](../design/credentials-and-vaults.md#hosted-workspace-provider-connections)
+- Fact: hosted BYOK requires exact IAM permission and deployment capability. Workspace-owned endpoints, Vault ingress and Profile compilation use existing product authorities; brokered candidates retain Cloud's route authority.
+- Links: [ADR-0061](../adr/0061-selectable-identity-and-platform-managed-resource-scopes.md)
+- Verification: exact-role, request-capability, Workspace isolation, idempotent material replay and hosted catalog lifecycle tests; composed Cloud HTTP E2E.

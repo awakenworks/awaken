@@ -115,12 +115,14 @@ pub awaken_model_catalog::ProtocolEndpoint::id: awaken_model_catalog::ProtocolEn
 pub awaken_model_catalog::ProtocolEndpoint::provider_id: awaken_model_catalog::ProviderId
 pub awaken_model_catalog::ProtocolEndpoint::timeout_secs: u64
 pub awaken_model_catalog::ProtocolEndpoint::version: i64
+pub awaken_model_catalog::ProtocolEndpoint::workspace_id: core::option::Option<alloc::string::String>
 pub struct awaken_model_catalog::ProtocolEndpointId(pub alloc::string::String)
 impl awaken_model_catalog::ProtocolEndpointId
 pub fn awaken_model_catalog::ProtocolEndpointId::as_str(&self) -> &str
 pub fn awaken_model_catalog::ProtocolEndpointId::new(impl core::convert::Into<alloc::string::String>) -> Self
 impl awaken_model_catalog::ProtocolEndpointId
 pub fn awaken_model_catalog::ProtocolEndpointId::for_surface(&awaken_model_catalog::ProviderId, awaken_model_catalog::ApiDialect, core::option::Option<&str>) -> Self
+pub fn awaken_model_catalog::ProtocolEndpointId::for_workspace_surface(&str, &awaken_model_catalog::ProviderId, awaken_model_catalog::ApiDialect, core::option::Option<&str>) -> Self
 impl core::fmt::Display for awaken_model_catalog::ProtocolEndpointId
 pub fn awaken_model_catalog::ProtocolEndpointId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_model_catalog::Provider
@@ -135,6 +137,7 @@ pub awaken_model_catalog::ProviderCatalog::offerings: alloc::vec::Vec<awaken_mod
 pub awaken_model_catalog::ProviderCatalog::providers: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_model_catalog::Provider>
 impl awaken_model_catalog::ProviderCatalog
 pub fn awaken_model_catalog::ProviderCatalog::context_window(&self, &str) -> core::option::Option<u32>
+pub fn awaken_model_catalog::ProviderCatalog::for_workspace(self, &str) -> Self
 pub fn awaken_model_catalog::ProviderCatalog::max_output_tokens(&self, &str) -> core::option::Option<u32>
 impl awaken_model_catalog::ProviderCatalog
 pub fn awaken_model_catalog::ProviderCatalog::reconcile_brokered_projection(&mut self, awaken_model_catalog::BrokeredCatalogProjection) -> core::result::Result<awaken_model_catalog::CatalogSyncResult, awaken_model_catalog::CatalogError>

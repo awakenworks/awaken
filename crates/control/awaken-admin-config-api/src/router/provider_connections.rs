@@ -74,7 +74,8 @@ pub(super) async fn list_provider_connections(
         .catalog
         .snapshot()
         .await
-        .map_err(|error| repo_problem(&error, &rid))?;
+        .map_err(|error| repo_problem(&error, &rid))?
+        .for_workspace(&workspace_id);
     let credentials = state
         .credentials
         .list(&workspace_id)
@@ -190,7 +191,8 @@ pub(super) async fn list_executable_models(
         .catalog
         .snapshot()
         .await
-        .map_err(|error| repo_problem(&error, &rid))?;
+        .map_err(|error| repo_problem(&error, &rid))?
+        .for_workspace(&workspace_id);
     let credentials = state
         .credentials
         .list(&workspace_id)

@@ -138,6 +138,7 @@ mod tests {
             .unwrap();
         catalog
             .put_endpoint(ProtocolEndpoint {
+                workspace_id: None,
                 id: ProtocolEndpointId::new("ep1"),
                 provider_id: ProviderId::new("anthropic"),
                 dialect: ApiDialect::AnthropicMessages,
@@ -795,6 +796,7 @@ mod tests {
         let pinned = resolve_activation(&p.resolver, &activation).await.unwrap();
         p.catalog
             .put_endpoint(ProtocolEndpoint {
+                workspace_id: None,
                 id: ProtocolEndpointId::new("ep1"),
                 provider_id: ProviderId::new("anthropic"),
                 dialect: ApiDialect::AnthropicMessages,
@@ -828,6 +830,7 @@ mod tests {
             .unwrap();
         p.catalog
             .put_endpoint(ProtocolEndpoint {
+                workspace_id: None,
                 id: ProtocolEndpointId::new("ep-openai"),
                 provider_id: ProviderId::new("openai"),
                 dialect: ApiDialect::OpenAiChat,

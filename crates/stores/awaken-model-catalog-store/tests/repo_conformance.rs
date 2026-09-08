@@ -27,6 +27,7 @@ fn provider(id: &str) -> Provider {
 
 fn endpoint(id: &str, provider: &str, dialect: ApiDialect) -> ProtocolEndpoint {
     ProtocolEndpoint {
+        workspace_id: None,
         id: ProtocolEndpointId::new(id),
         provider_id: ProviderId::new(provider),
         dialect,

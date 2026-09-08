@@ -32,6 +32,7 @@ pub(crate) async fn scenario_model_catalog(
         .expect("put scenario provider");
     catalog
         .put_endpoint(awaken_model_catalog::ProtocolEndpoint {
+            workspace_id: None,
             id: awaken_model_catalog::ProtocolEndpointId::new("ep"),
             provider_id: awaken_model_catalog::ProviderId::new("default"),
             dialect: awaken_model_catalog::ApiDialect::AnthropicMessages,

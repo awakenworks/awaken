@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use awaken_acp_contract::AcpPublicationCapability;
 use awaken_agent_config::ModelSelection;
 use awaken_config_resolver::{
-    ExecutorModelCapability, InferenceProfile, InferenceProfileStore, ModelTarget,
-    derive_vendor_pool, get_workspace_profile, validate_executor_offering,
+    ExecutorModelCapability, InferenceProfileStore, ModelTarget, derive_vendor_pool,
+    get_workspace_profile, validate_executor_offering,
 };
 use awaken_config_service::{
     ModelPublicationResolver, PublicationResolutionError, ResolvedPublicationModels,
@@ -35,6 +35,7 @@ mod acp_publication;
 mod composition;
 mod credential_publication;
 mod offering_resolution;
+mod profile_publication;
 mod selection;
 pub use a2a_remote::A2aCardDiscovery;
 use a2a_remote::HttpA2aCardDiscovery;
@@ -53,6 +54,7 @@ pub struct CatalogModelPublicationResolver {
     credentials: Arc<dyn CredentialRepo>,
     profiles: Option<Arc<dyn InferenceProfileStore>>,
     brokered_access_enabled: bool,
+    brokered_publication: Option<Arc<dyn ModelPublicationResolver>>,
     direct_credential_policy: CredentialExecutionPolicy,
     direct_holder: Option<awaken_runtime_contract::PlaintextHolder>,
     credential_material_delivery: Option<(
@@ -178,100 +180,6 @@ impl CatalogModelPublicationResolver {
             binding,
         })
     }
-
-    async fn resolve_profile_models(
-        &self,
-        catalog: &ProviderCatalog,
-        workspace: &ScopeId,
-        profile: &InferenceProfile,
-    ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
-        if profile.workspace_id != workspace.as_str() {
-            return Err(PublicationResolutionError::Invalid(
-                "default inference profile belongs to another Workspace".into(),
-            ));
-        }
-        let authored = std::iter::once(&profile.primary)
-            .chain(profile.fallbacks.iter())
-            .collect::<Vec<_>>();
-        let offerings = authored
-            .iter()
-            .map(|candidate| {
-                offering_for_target(catalog, &candidate.target, &profile.disabled_endpoint_ids)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let needs_inventory = authored.iter().any(|candidate| {
-            !matches!(
-                candidate.credential_binding,
-                CredentialBinding::None | CredentialBinding::Brokered
-            )
-        });
-        let sources = if needs_inventory {
-            self.credentials
-                .list(workspace.as_str())
-                .await
-                .map_err(|error| {
-                    PublicationResolutionError::CredentialInventoryUnavailable(error.to_string())
-                })?
-        } else {
-            Vec::new()
-        };
-        let mut resolved = Vec::with_capacity(authored.len());
-        for (candidate, offering) in authored.into_iter().zip(offerings) {
-            if offering.source == awaken_model_catalog::OfferingSource::Brokered
-                && !self.brokered_access_enabled
-            {
-                return Err(PublicationResolutionError::CandidateUnavailable {
-                    binding: Self::binding_of(offering),
-                    reason: "cloud_models_disabled: brokered model supply is disabled".into(),
-                });
-            }
-            let pool = if let CredentialBinding::OneOfCredentialPool { credential_pool_id } =
-                &candidate.credential_binding
-            {
-                Some(
-                    self.credentials
-                        .get_pool(credential_pool_id)
-                        .await
-                        .map_err(|error| {
-                            PublicationResolutionError::CredentialInventoryUnavailable(
-                                error.to_string(),
-                            )
-                        })?,
-                )
-            } else {
-                None
-            };
-            let lookup = PublicationCredentialLookup {
-                sources: &sources,
-                pool: pool.as_ref(),
-            };
-            let binding = Self::binding_of(offering);
-            let access = self
-                .publication_access(
-                    &lookup,
-                    workspace,
-                    offering,
-                    &candidate.credential_binding,
-                    &binding,
-                )
-                .map_err(|reason| PublicationResolutionError::CandidateUnavailable {
-                    binding: binding.clone(),
-                    reason,
-                })?;
-            resolved.push(
-                self.provider_candidate(catalog, workspace, binding, offering, access, None)
-                    .await?,
-            );
-        }
-        let primary = resolved.remove(0);
-        let primary_model = primary.binding().model_ref.clone();
-        Ok(ResolvedPublicationModels {
-            primary,
-            candidates: resolved,
-            context_window: catalog.context_window(&primary_model),
-            max_output_tokens: catalog.max_output_tokens(&primary_model),
-        })
-    }
 }
 
 #[async_trait::async_trait]
@@ -282,7 +190,7 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
         selection: &ModelSelection,
         fallbacks: &[ModelBinding],
     ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
-        let catalog = self.snapshot().await?;
+        let catalog = self.snapshot().await?.for_workspace(workspace.as_str());
         if let Some(profile_id) = selection.profile_ref() {
             let profiles = self.profiles.as_ref().ok_or_else(|| {
                 PublicationResolutionError::Invalid(
@@ -304,6 +212,27 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
             return self
                 .resolve_profile_models(&catalog, workspace, &profile)
                 .await;
+        }
+        if let (
+            Some(resolver),
+            ModelSelection::Target {
+                target,
+                backend_ref,
+                configuration,
+            },
+        ) = (&self.brokered_publication, selection)
+        {
+            let offering = offering_for_target(&catalog, target, &[])?;
+            if offering.source == awaken_model_catalog::OfferingSource::Brokered {
+                if backend_ref != "genai" || !configuration.is_empty() {
+                    return Err(PublicationResolutionError::Invalid(
+                        "hosted brokered offerings require the native executor without ACP configuration".into(),
+                    ));
+                }
+                return self
+                    .resolve_brokered_offering(resolver.as_ref(), workspace, offering, fallbacks)
+                    .await;
+            }
         }
         let (primary_binding, fallback_bindings) =
             self.selected_bindings(&catalog, selection, fallbacks)?;
@@ -410,6 +339,7 @@ mod tests {
 
     use super::*;
     use awaken_agent_contract::RedactedString;
+    use awaken_config_resolver::InferenceProfile;
     use awaken_config_resolver::{InMemoryProfileStore, ProfileCandidate};
     use awaken_credential_contract::{
         CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialSourceId,
@@ -549,6 +479,7 @@ mod tests {
         catalog.endpoints.insert(
             "ep1".into(),
             ProtocolEndpoint {
+                workspace_id: None,
                 id: ProtocolEndpointId::new("ep1"),
                 provider_id: ProviderId::new("openai"),
                 dialect: ApiDialect::OpenAiChat,
@@ -670,6 +601,7 @@ mod tests {
         catalog.endpoints.insert(
             "ep2".into(),
             ProtocolEndpoint {
+                workspace_id: None,
                 id: ProtocolEndpointId::new("ep2"),
                 provider_id: ProviderId::new("openai"),
                 dialect: ApiDialect::OpenAiChat,
@@ -755,6 +687,7 @@ mod tests {
         catalog.endpoints.insert(
             "ep2".into(),
             ProtocolEndpoint {
+                workspace_id: None,
                 id: ProtocolEndpointId::new("ep2"),
                 provider_id: ProviderId::new("openai"),
                 dialect: ApiDialect::OpenAiChat,
@@ -1488,6 +1421,7 @@ mod tests {
         catalog.endpoints.insert(
             "anthropic-messages".into(),
             ProtocolEndpoint {
+                workspace_id: None,
                 id: ProtocolEndpointId::new("anthropic-messages"),
                 provider_id: ProviderId::new("anthropic"),
                 dialect: ApiDialect::AnthropicMessages,

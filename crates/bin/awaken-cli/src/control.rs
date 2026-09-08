@@ -13,11 +13,14 @@ use super::*;
 
 const HOSTED_MODEL_CATALOG_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(60);
 
-fn spawn_hosted_model_catalog_reconciliation(
+async fn start_hosted_model_catalog_reconciliation(
     catalog: Arc<dyn awaken_model_catalog::repo::CatalogRepo>,
     discovery: Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>,
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
-) {
+) -> Result<(), String> {
+    awaken_admin_config_api::reconcile_brokered_catalog(discovery.as_ref(), catalog.as_ref())
+        .await
+        .map_err(|error| format!("initial hosted model catalog reconciliation failed: {error}"))?;
     service_lifecycle.spawn("control-hosted-model-catalog", move |cancel| async move {
         let mut interval = tokio::time::interval(HOSTED_MODEL_CATALOG_RECONCILIATION_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -27,17 +30,19 @@ fn spawn_hosted_model_catalog_reconciliation(
                 () = cancel.cancelled() => break,
                 _ = interval.tick() => {}
             }
-            if let Err(error) = awaken_admin_config_api::reconcile_brokered_catalog(
-                discovery.as_ref(),
-                catalog.as_ref(),
-            )
-            .await
-            {
+            let result = tokio::select! {
+                () = cancel.cancelled() => break,
+                result = awaken_admin_config_api::reconcile_brokered_catalog(
+                    discovery.as_ref(), catalog.as_ref(),
+                ) => result,
+            };
+            if let Err(error) = result {
                 eprintln!("hosted model catalog reconciliation failed: {error}");
             }
         }
         Ok(())
     });
+    Ok(())
 }
 
 /// Canonical hosted authoring/control process. It reuses the same stores,
@@ -314,12 +319,8 @@ async fn prepare_control_process_with_model_supply_and_installations(
         .catalog
         .clone();
     if let Some(discovery) = brokered_catalog.as_ref() {
-        awaken_admin_config_api::reconcile_brokered_catalog(discovery.as_ref(), catalog.as_ref())
-            .await
-            .map_err(|error| {
-                format!("initial hosted model catalog reconciliation failed: {error}")
-            })?;
-        spawn_hosted_model_catalog_reconciliation(catalog, discovery.clone(), &service_lifecycle);
+        start_hosted_model_catalog_reconciliation(catalog, discovery.clone(), &service_lifecycle)
+            .await?;
     }
     let executable_agent_wiring =
         executable_agent_registration::ExecutableAgentWiring::control(deployment)?;
@@ -347,7 +348,7 @@ async fn prepare_control_process_with_model_supply_and_installations(
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
             cloud_developer_key_file: deployment.cloud_iam.developer_key_file.clone(),
             model_supply: awaken_admin_config_api::ModelSupplyCapabilityView {
-                local_catalog_enabled: hosted_byok_enabled,
+                local_catalog_enabled: false,
                 byok_enabled: hosted_byok_enabled,
                 cloud_models_enabled: true,
                 profile_authoring_enabled: hosted_byok_enabled,
@@ -391,3 +392,7 @@ async fn prepare_control_process_with_model_supply_and_installations(
         admin_tools: prepared.admin_tools,
     })
 }
+
+#[cfg(test)]
+#[path = "control_model_catalog_tests.rs"]
+mod model_catalog_tests;

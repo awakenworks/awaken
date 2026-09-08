@@ -910,6 +910,33 @@
                 "additionalProperties": false,
                 "properties": {
                   "type": {
+                    "const": "remote_agent_authorization",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "One registered Host Web provider identified by its immutable provider id.",
+                "properties": {
+                  "type": {
+                    "const": "web_provider_authorization",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
                     "const": "http_effect",
                     "type": "string"
                   }
@@ -1596,6 +1623,33 @@
                 "properties": {
                   "type": {
                     "const": "mcp_authorization",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "remote_agent_authorization",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "One registered Host Web provider identified by its immutable provider id.",
+                "properties": {
+                  "type": {
+                    "const": "web_provider_authorization",
                     "type": "string"
                   }
                 },
@@ -2802,6 +2856,13 @@
           "version": {
             "format": "int64",
             "type": "integer"
+          },
+          "workspace_id": {
+            "description": "None denotes an operator-owned or brokered endpoint. Workspace commands\nmay only create and update their own explicitly scoped endpoints.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -3049,6 +3110,13 @@
               "version": {
                 "format": "int64",
                 "type": "integer"
+              },
+              "workspace_id": {
+                "description": "None denotes an operator-owned or brokered endpoint. Workspace commands\nmay only create and update their own explicitly scoped endpoints.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -3438,6 +3506,33 @@
                 "properties": {
                   "type": {
                     "const": "mcp_authorization",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "remote_agent_authorization",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "One registered Host Web provider identified by its immutable provider id.",
+                "properties": {
+                  "type": {
+                    "const": "web_provider_authorization",
                     "type": "string"
                   }
                 },
@@ -3914,6 +4009,13 @@
               "version": {
                 "format": "int64",
                 "type": "integer"
+              },
+              "workspace_id": {
+                "description": "None denotes an operator-owned or brokered endpoint. Workspace commands\nmay only create and update their own explicitly scoped endpoints.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -4598,6 +4700,33 @@
                 "properties": {
                   "type": {
                     "const": "mcp_authorization",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "remote_agent_authorization",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "One registered Host Web provider identified by its immutable provider id.",
+                "properties": {
+                  "type": {
+                    "const": "web_provider_authorization",
                     "type": "string"
                   }
                 },

@@ -275,15 +275,15 @@ fn workspace_publisher_can_discover_but_cannot_administer_model_supply() {
 }
 
 #[test]
-fn hosted_workspace_role_can_read_but_cannot_author_model_supply() {
+fn hosted_workspace_role_grants_exact_byok_actions_without_platform_wildcard() {
     // Cause-effect graph: one product-owned profile (C1) + hosted Workspace
     // role (C2) -> ordinary Workspace/API-key administration, model read, and
     // the separately named hosted Tunnel administration action
-    // (E1), with no connect/write model-supply grant (E2).
+    // (E1), with exact BYOK connect/write grants and no supply wildcard (E2).
     //
     // Decision table:
     // | Role | workspace | apikey | model read | model connect/write |
-    // | hosted_admin | allow | allow | allow | deny/absent |
+    // | hosted_admin | allow | allow | allow | allow exact actions |
     // | local workspace_admin | allow | allow | allow | allow |
     let profile = workspace_authorization_profile();
     let hosted_grants = profile
@@ -305,6 +305,8 @@ fn hosted_workspace_role_can_read_but_cannot_author_model_supply() {
             "awaken.workspace::workspace.*",
             "awaken.workspace::apikey.*",
             "awaken.workspace::model_supply.read",
+            "awaken.workspace::model_supply.connect",
+            "awaken.workspace::model_supply.write",
             "awaken.workspace::file.*",
             "awaken.workspace::skill.*",
             "awaken.workspace::tunnel.manage",

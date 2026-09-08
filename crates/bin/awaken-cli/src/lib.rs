@@ -1083,7 +1083,8 @@ fn resolve_model_services(
         } => {
             let publication_resolver = if let Some(execution) = direct_credential_execution {
                 let direct = direct_resolver()
-                    .with_brokered_access(false)
+                    .with_brokered_access(cloud_models_enabled)
+                    .with_brokered_publication(resolver.clone())
                     .with_direct_provider_credential_execution(execution.policy, execution.holder);
                 Arc::new(HostedAndDirectModelPublicationResolver {
                     hosted: resolver,

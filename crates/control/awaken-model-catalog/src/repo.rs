@@ -279,6 +279,7 @@ mod tests {
     }
     fn endpoint() -> ProtocolEndpoint {
         ProtocolEndpoint {
+            workspace_id: None,
             id: ProtocolEndpointId::new("ep1"),
             provider_id: ProviderId::new("anthropic"),
             dialect: ApiDialect::AnthropicMessages,

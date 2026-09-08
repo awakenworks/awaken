@@ -882,3 +882,28 @@ parallel aggregates:
 ## Guardrails
 
 G8 and G9 in [INVARIANTS](../INVARIANTS.md).
+
+## Hosted Workspace provider connections
+
+Hosted administrators connect Provider supply through the same Workspace
+Credential Vault and Catalog application as self-hosted administrators, subject
+to the exact product IAM grants and the deployment's provider-execution seam.
+No account-specific bypass or second hosted credential store exists. Endpoint
+ownership is explicit: newly connected endpoints belong to their Workspace,
+while operator-authored shared endpoints have no Workspace owner. Catalog
+reads, executable readiness and model publication share one ownership filter.
+
+The provider is tested with the configured deadline before new credential or
+catalog facts become executable. The canonical idempotent Vault ingress checks
+that a replay carries the same material; a conflicting key cannot silently
+reuse the earlier credential. Failed discovery publishes no executable facts;
+failed catalog reconciliation keeps a newly sealed credential disabled.
+
+Profiles remain Awaken-owned. Their authored sequence may combine exact BYOK
+credentials and Brokered bindings. The canonical compiler validates Workspace,
+offering and credential-source agreement, then asks the injected Cloud resolver
+to freeze managed routes. Cloud account-pool candidates expand at their authored
+position, preserving route revision and custody. An unavailable authority fails
+publication rather than replacing that candidate with another supply source.
+See [ADR-0043](../adr/0043-management-plane-config-credential-model-and-runtime-unaware-secret-seam.md)
+and [ADR-0061](../adr/0061-selectable-identity-and-platform-managed-resource-scopes.md).

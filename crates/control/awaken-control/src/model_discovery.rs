@@ -31,16 +31,22 @@ impl GenaiModelDiscovery {
         endpoint: &ProtocolEndpoint,
         secret: &RedactedString,
     ) -> Result<Vec<DiscoveredModel>, ModelCatalogDiscoveryError> {
-        awaken_provider_genai::discover_model_ids(
-            Self::adapter(endpoint),
-            endpoint.base_url.as_deref().ok_or_else(|| {
-                ModelCatalogDiscoveryError::Provider(
-                    "model discovery requires a materialized endpoint URL".into(),
-                )
-            })?,
-            secret.expose_secret(),
+        tokio::time::timeout(
+            std::time::Duration::from_secs(endpoint.timeout_secs),
+            awaken_provider_genai::discover_model_ids(
+                Self::adapter(endpoint),
+                endpoint.base_url.as_deref().ok_or_else(|| {
+                    ModelCatalogDiscoveryError::Provider(
+                        "model discovery requires a materialized endpoint URL".into(),
+                    )
+                })?,
+                secret.expose_secret(),
+            ),
         )
         .await
+        .map_err(|_| {
+            ModelCatalogDiscoveryError::Provider("provider model discovery timed out".into())
+        })?
         .map(|ids| {
             ids.into_iter()
                 .map(|model_id| DiscoveredModel {
@@ -97,6 +103,7 @@ mod tests {
         ] {
             let provider_id = awaken_model_catalog::ProviderId::new("provider");
             let endpoint = ProtocolEndpoint {
+                workspace_id: None,
                 id: awaken_model_catalog::ProtocolEndpointId::for_surface(
                     &provider_id,
                     dialect,
@@ -123,6 +130,7 @@ mod tests {
         // request-capture tests, which assert the exact path and authentication.
         let provider_id = awaken_model_catalog::ProviderId::new("provider");
         let endpoint = ProtocolEndpoint {
+            workspace_id: None,
             id: awaken_model_catalog::ProtocolEndpointId::for_surface(
                 &provider_id,
                 ApiDialect::AnthropicMessages,
