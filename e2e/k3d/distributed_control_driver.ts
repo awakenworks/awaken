@@ -478,6 +478,17 @@ async function createParallelSessions(client: Anthropic, environmentId: string, 
   }));
 }
 
+export async function disposeFixtureSessions(
+  sessionIds: string[],
+  dispose: (sessionId: string) => Promise<unknown>,
+) {
+  const results = await Promise.allSettled(sessionIds.map((sessionId) => dispose(sessionId)));
+  const failures = results.flatMap((result, index) => result.status === 'rejected'
+    ? [`${sessionIds[index]}: ${String(result.reason)}`]
+    : []);
+  assert.deepEqual(failures, [], 'every temporary batch Session accepted terminal disposal');
+}
+
 async function batch(
   base: string,
   originalSessionId: string,
@@ -489,12 +500,19 @@ async function batch(
   // both Workers carry real parallel claims; C2 each maxRetries=0 SDK send returns
   // one exact receipt and only its marker+later idle terminates that rule;
   // C3 claim fencing -> no duplicate Provider response after recovery/reclaim;
-  // C4 the original durable Session remains one member of the same batch.
+  // C4 the original durable Session remains one member of the same batch; C5
+  // after those assertions, every auxiliary Session has no later-stage consumer.
+  // E1 C5 publishes their ids for the shell fixture to observe exact Pod/PVC
+  // identities before asking the public lifecycle owner to dispose them. The
+  // original Session is deliberately excluded because stages 8 and 9 still use it.
   const client = clientFor(base);
   const markers = Array.from({ length: count }, (_, index) => `${prefix}-${index}`);
+  const auxiliarySessions = await createParallelSessions(
+    client, environmentId, Math.max(0, count - 1),
+  );
   const sessions = [
     originalSessionId,
-    ...await createParallelSessions(client, environmentId, Math.max(0, count - 1)),
+    ...auxiliarySessions,
   ];
   const observations = await Promise.all(markers.map((marker, index) =>
     sendAndWaitForAgentMarker(client, sessions[index], marker, 240_000)));
@@ -503,7 +521,17 @@ async function batch(
     assertProviderResponseCount(observations[index].events, marker);
     assertProviderResponsesAreUnique(observations[index].events);
   }
-  console.log(`OK batch ${prefix} ${count}`);
+  console.log(`OK batch ${prefix} ${count} auxiliary=${auxiliarySessions.join(',')}`);
+}
+
+async function disposeBatch(base: string, encodedSessionIds: string) {
+  const sessionIds = encodedSessionIds.split(',').filter(Boolean);
+  assert.ok(sessionIds.length > 0, 'temporary batch Session ids are required');
+  const client = clientFor(base);
+  await disposeFixtureSessions(sessionIds, (sessionId) => client.beta.sessions.delete(
+    sessionId, { betas: BETAS },
+  ));
+  console.log(`OK disposed auxiliary batch Sessions ${sessionIds.length}`);
 }
 
 export function auditLoadResults(
@@ -640,6 +668,7 @@ async function main() {
     case 'retry-publication': return retryPublication(base);
     case 'verify-durable': return verifyDurable(base, args[0], args[1], args[2]);
     case 'batch': return batch(base, args[0], args[1], args[2], Number(args[3]));
+    case 'dispose-batch': return disposeBatch(base, args[0]);
     case 'load': return load(base, args[0]);
     default: throw new Error(`unknown mode ${mode}`);
   }

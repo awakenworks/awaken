@@ -175,6 +175,16 @@ grep -q "sync_state = 'sync'" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 # The dedicated physical-attempt suites own that fail-closed decision table.
 ! grep -q 'ADR71-CHAOS-SLOW' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 ! grep -q 'WORKER_ZERO_CONTAINER' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+# Stage-boundary capacity table: C1 the fault batch owns temporary retained
+# Session Pods/PVCs; C2 later node/database checks retain only the original
+# Session; C3 public disposal is followed by exact backend deletion joins.
+# E1 C1+C2+C3 removes the dead fixture load before Stage 8, while missing either
+# terminal intent or one physical join rejects the static scenario contract.
+# The live lane establishes that these commands actually converge.
+STAGE7="$(sed -n '/log "7\/10/,/log "8\/10/p' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")"
+grep -q 'dispose-batch' <<<"$STAGE7"
+grep -Fq 'wait --for=delete "${BATCH_AUXILIARY_POD_TARGETS[@]}"' <<<"$STAGE7"
+grep -Fq 'wait --for=delete "${BATCH_AUXILIARY_CLAIM_TARGETS[@]}"' <<<"$STAGE7"
 grep -q "get endpoints kubernetes" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 # Promotion decision table: P1 the old synchronous writer dies and its standby
 # is promoted -> clear the inherited dead-peer requirement before publication;
