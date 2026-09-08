@@ -315,5 +315,17 @@ SessionReceiptRequiresAllParticipants ==
 EffectsRequireHandQuiescence ==
   [][((~resourceEffect /\ resourceEffect') \/ (~deletion /\ deletion'))
      => handQuiescent]_allVars
+\* FUSE cold adoption is an instance of the existing resource effect, not a
+\* second mount state machine. Its actual detach/remount/fsync and successor
+\* execution are kernel/SQLite test obligations; this model checks admission.
+ResourceRecoveryRequiresReadyOwnership ==
+  [][(~resourceEffect /\ resourceEffect')
+     => markerLock = "resource" /\ markerPhase = "ready"]_allVars
+NoCrashResourceRecoveryReached ==
+  [][(phase = "crashed" /\ markerRecorded)
+     => ~(~resourceEffect /\ resourceEffect')]_allVars
+NoCrashUnknownResourceAttemptReached ==
+  ~(phase = "crashed" /\ markerRecorded /\ markerLock = "resource"
+    /\ recoveryObservation = "unknown" /\ ~resourceEffect)
 RecoverySpec == RecoveryInit /\ [][RecoveryNext]_allVars
 =============================================================================

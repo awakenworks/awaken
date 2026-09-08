@@ -284,6 +284,37 @@ credential qualification remain outside this process-local closure. Actual
 kernel FUSE tests are separate from fake-guard timing fixtures;
 cross-compilation is not platform execution.
 
+#### Provider process death and cold FUSE adoption qualification
+
+The strict G7 substrate gate now composes the existing Linux scoped owner-crash
+fixture with the real SQLite repository and Memoryd FUSE mounter. Production
+owners are unchanged: the filesystem marker admits adoption, the shared
+`prepare_adoption_memory_replay` retains the Ready operation across remount,
+and Memoryd clears the disconnected projection before mounting the same store.
+No new recovery registry, daemon, Session lease or standard Worker FUSE policy
+is introduced; the registered default Worker composition remains Copy-backed.
+
+The adjacent F1–F4 test comments own the cause/effect table. An actual scoped
+child writes and fsyncs before its Provider owner is killed with SIGKILL. Three
+detached process-tree sockets and the recorded identity establish exit. Live
+trees and unknown boot identity reject adoption without replacing the mount or
+changing the independent SQLite head. Exact retry uses the original handle,
+detaches the busy dead mount, and lets a fresh scoped child read those committed
+bytes and commit a new head. The old open descriptor still fails while the new
+path works; recycled Linux mount IDs are not a connection-identity oracle.
+Terminal disposal unmounts and removes only the Session root, preserving the
+external Store and sentinel. The case is explicitly selected by the existing
+strict substrate runner, never silently satisfied by Copy or a missing FUSE SDK.
+
+The existing `LocalProcessRecovery` model additionally checks exclusive Ready
+ownership for resource recovery. Its combined suite kills 25 semantic mutants
+and reaches ten witnesses, including post-crash resource recovery and rejection
+with unknown identity. Resource effects remain abstract: kernel behavior,
+partial/unflushed I/O, backend commit atomicity and Rust refinement are not
+proved by TLC. This real Linux test closes Provider death plus durable FUSE
+reacquisition, not the complete distributed Worker/Control restart, cross-host
+invalidation, macOS/Windows execution or real credential qualification.
+
 ### D6 — The unit of work is the provisioning-contract mount, not a legacy bolt-on
 
 The FUSE mount is implemented as a **realization of the

@@ -91,5 +91,11 @@ awaken-provisioning-contract = { workspace = true, features = ["test-support"] }
 awaken-sandbox-local = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# Strict substrate qualification composes the real scoped owner with durable
+# Memory and FUSE. These are test adapters, not new binary runtime dependencies.
+awaken-memory-store = { workspace = true, features = ["sqlite"] }
+awaken-sandbox-memoryd.workspace = true
+
 [lints]
 workspace = true

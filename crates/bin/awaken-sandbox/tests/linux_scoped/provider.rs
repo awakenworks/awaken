@@ -6,6 +6,9 @@ use std::sync::{Arc, Mutex};
 #[path = "repository.rs"]
 mod repository;
 
+#[path = "memory.rs"]
+mod memory;
+
 struct Authority(
     Mutex<(Option<Duration>, usize, bool)>,
     Mutex<Option<AuthorityPause>>,
@@ -754,41 +757,11 @@ async fn provider_owner_crash_preserves_marker_and_recovery_never_signals_saved_
     // no successful adoption; restoring the original bytes permits retry.
     let base = tempfile::tempdir().unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut owner = tokio::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "scoped_provider::provider_owner_participant",
-            "--ignored",
-            "--nocapture",
-        ])
-        .env("SCOPED_PROVIDER_BASE", base.path())
-        .env(
-            "SCOPED_TREE_PORT",
-            listener.local_addr().unwrap().port().to_string(),
-        )
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::inherit())
-        .kill_on_drop(true)
-        .spawn()
-        .unwrap();
+    let mut owner = spawn_owner(base.path(), &listener, false);
     let nodes = observe_tree(&listener).await;
     let original = marker(base.path());
     assert_eq!(original["executions"].as_array().unwrap().len(), 1);
-    let identity: awaken_local_process::ProcessExecutionIdentity =
-        serde_json::from_value(original["executions"][0].clone()).unwrap();
-    assert!(!identity.is_quiescent().unwrap());
-    owner.kill().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(5), assert_tree_closed(nodes))
-        .await
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !identity.is_quiescent().unwrap() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
+    kill_owner_and_observe_exit(&mut owner, nodes, &original).await;
     let provider = LocalProvider::trusted_host(base.path());
     let recreated = provider
         .create_sandbox_for_effect(
@@ -843,6 +816,53 @@ async fn provider_owner_crash_preserves_marker_and_recovery_never_signals_saved_
         .unwrap();
     dispose(&adopted).await;
     assert_eq!(marker(base.path())["phase"], "removed");
+}
+
+fn spawn_owner(
+    base: &Path,
+    listener: &tokio::net::TcpListener,
+    memory: bool,
+) -> tokio::process::Child {
+    tokio::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "scoped_provider::provider_owner_participant",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("SCOPED_PROVIDER_BASE", base)
+        .env("SCOPED_PROVIDER_MEMORY", if memory { "1" } else { "0" })
+        .env(
+            "SCOPED_TREE_PORT",
+            listener.local_addr().unwrap().port().to_string(),
+        )
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap()
+}
+
+async fn kill_owner_and_observe_exit(
+    owner: &mut tokio::process::Child,
+    nodes: Vec<ObservedNode>,
+    original: &serde_json::Value,
+) {
+    let identities: Vec<awaken_local_process::ProcessExecutionIdentity> =
+        serde_json::from_value(original["executions"].clone()).unwrap();
+    assert!(identities.iter().any(|id| !id.is_quiescent().unwrap()));
+    owner.kill().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), assert_tree_closed(nodes))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while identities.iter().any(|id| !id.is_quiescent().unwrap()) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -911,10 +931,16 @@ async fn provider_terminal_retry_retains_resources_until_the_last_tree_is_absent
 #[ignore = "subprocess participant invoked by provider owner-crash test"]
 async fn provider_owner_participant() {
     let base = std::env::var_os("SCOPED_PROVIDER_BASE").unwrap();
-    let provider = LocalProvider::trusted_host(base);
+    let base = Path::new(&base);
+    let memory = std::env::var("SCOPED_PROVIDER_MEMORY").as_deref() == Ok("1");
+    let (provider, specification) = if memory {
+        (memory::provider(base), memory::specification())
+    } else {
+        (LocalProvider::trusted_host(base), spec())
+    };
     let sandbox = provider
         .create_sandbox_for_effect(
-            &spec(),
+            &specification,
             &fence("create"),
             None,
             &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("create")),
@@ -928,6 +954,9 @@ async fn provider_owner_participant() {
             Authority::live(),
         )
         .unwrap();
+    if memory {
+        memory::prepare_owner(base, &sandbox).await;
+    }
     let _process = sandbox
         .spawn(tree(
             std::env::var("SCOPED_TREE_PORT").unwrap().parse().unwrap(),
