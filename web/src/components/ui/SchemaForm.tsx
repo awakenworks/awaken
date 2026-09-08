@@ -96,17 +96,6 @@ export function SchemaForm(props: SchemaFormProps) {
     <SharedSchemaForm
       {...props}
       schema={schema}
-      classes={{
-        button: "btn ghost",
-        error: "err",
-        field: "field",
-        input: "input",
-        mono: "mono",
-        muted: "mut",
-        object: "schema-object",
-        root: "schema-form",
-        row: "row",
-      }}
       labels={{
         addItem: app.t("+ add", "+ 添加"),
         invalidJson: app.t("invalid JSON — not saved", "JSON 非法 — 未保存"),

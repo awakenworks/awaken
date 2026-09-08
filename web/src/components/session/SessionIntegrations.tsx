@@ -1,5 +1,6 @@
+import { Card } from "@awaken/ui";
 import { Link } from "react-router";
-import { Card, EmptyState, Pill } from "../ui";
+import { EmptyState, Pill } from "../ui";
 import type { Session } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
 

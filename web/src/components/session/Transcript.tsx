@@ -1,19 +1,12 @@
+import { Button, ChatApproval, ChatComposer, ChatMarkdown, ChatMessage, ChatMessageList, ChatThinking, ToolCallCard as SharedToolCallCard } from "@awaken/ui";
 // The session transcript: a pure view over one SessionLog owner, with inline
 // HITL and a composer. The default export is the thin standalone owner used by
 // isolated chats; parent surfaces can render TranscriptView with their existing
 // owner so controls never fork transport identity or pending state.
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import {
-  ChatApproval,
-  ChatComposer,
-  ChatMarkdown,
-  ChatMessage,
-  ChatMessageList,
-  ChatThinking,
-  ToolCallCard as SharedToolCallCard,
-} from "@awaken/ui";
-import { Button, Pill } from "../ui";
+
+import { Pill } from "../ui";
 import type { ContentBlock, InboundEvent, Session, SessionEvent } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
 import { sessionErrorText, textOf } from "../../lib/session-log";

@@ -1,7 +1,7 @@
+import { Button, Card } from "@awaken/ui";
 import { useMutation } from "@tanstack/react-query";
 import { api } from "../lib/api/client";
 import { useApp } from "../lib/app-state";
-import { Button, Card } from "../components/ui";
 
 export default function A2aSurface() {
   const app = useApp();

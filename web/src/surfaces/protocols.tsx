@@ -1,9 +1,10 @@
+import { Card } from "@awaken/ui";
 // Built-in connection guide for every execution/protocol adapter mounted by the
 // production binary. Keep the paths here aligned with router conformance tests.
 
 import { useApp } from "../lib/app-state";
 import { Link, useParams, useSearchParams } from "react-router";
-import { Card, CopyButton, Pill } from "../components/ui";
+import { CopyButton, Pill } from "../components/ui";
 import { useCapabilities } from "../lib/useCapabilities";
 import { useConfigCapabilities } from "../lib/useConfigCapabilities";
 import { runtimeStatus } from "../lib/readiness";

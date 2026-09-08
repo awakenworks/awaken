@@ -1,9 +1,10 @@
+import { Button } from "@awaken/ui";
 import type { AgentConfig, Capabilities, RuntimeCap, ValidationIssue } from "../../lib/api/types";
 import { effectiveAgentToolPermission, selectedAgentToolIds } from "../../lib/agent-toolsets";
 import { labelForPath } from "../../lib/config-diff";
 import { CONSERVATIVE_DELEGATION_LIMITS } from "../../lib/agent-collaboration";
 import { useApp } from "../../lib/app-state";
-import { Button } from "../ui";
+
 import type { AuthorStage } from "./agent-editor-navigation";
 import { acpWorkingDirectoryIssue } from "../../lib/agent-runtime-capabilities";
 import { runtimeStatus } from "../../lib/readiness";

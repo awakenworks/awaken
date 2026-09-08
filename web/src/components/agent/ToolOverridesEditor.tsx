@@ -1,3 +1,4 @@
+import { Button, Switch } from "@awaken/ui";
 // Per-tool presentation overrides (ADR-0053): a row per override — the target tool id,
 // an alias (rename for the model), a description override, and an exposure toggle. `target`
 // is an editable canonical id. Static tools are suggested, while runtime-discovered
@@ -5,7 +6,7 @@
 // the static tool catalog.
 
 import { useId } from "react";
-import { Button, Switch, TextField } from "../ui";
+import { TextField } from "../ui";
 import type { ToolOverride } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
 
@@ -66,7 +67,7 @@ export default function ToolOverridesEditor({
             />
             <TextField label={app.t("Alias", "别名")} disabled={aliasUnavailable} mono style={{ width: 130 }} placeholder="rename" value={r.alias ?? ""} onChange={(e) => set(i, { alias: e.target.value || undefined })} />
             <TextField label={app.t("Description", "描述")} disabled={descriptionUnavailable} style={{ flex: 1, minWidth: 160 }} placeholder="override description" value={r.description ?? ""} onChange={(e) => set(i, { description: e.target.value || undefined })} />
-            <div className="field">
+            <div className="ui-field">
               <label>{app.t("Show to model on demand", "仅在需要时向模型展示")}</label>
               <div style={{ height: 30, display: "flex", alignItems: "center" }}>
                 <Switch
@@ -78,7 +79,7 @@ export default function ToolOverridesEditor({
               </div>
             </div>
             {onBackgroundToolsChange && (
-              <div className="field">
+              <div className="ui-field">
                 <label>{app.t("Allow background execution", "允许后台执行")}</label>
                 <div style={{ height: 30, display: "flex", alignItems: "center" }}>
                   <Switch

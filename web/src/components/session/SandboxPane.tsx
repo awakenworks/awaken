@@ -1,3 +1,4 @@
+import { Button, Card, ChatComposer, ChatMarkdown, ChatMessage, ChatMessageList, ChatThinking, ToolCallCard, type ToolCallTone } from "@awaken/ui";
 // In-editor Live Preview over the official Vercel AI SDK and AG-UI clients. The
 // console's management credential only mints one short-lived, Session-bound
 // application token; neither browser transport receives a service credential.
@@ -11,15 +12,7 @@ import {
   type ToolUIPart,
   type UIMessage,
 } from "ai";
-import {
-  ChatComposer,
-  ChatMarkdown,
-  ChatMessage,
-  ChatMessageList,
-  ChatThinking,
-  ToolCallCard,
-  type ToolCallTone,
-} from "@awaken/ui";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { protocolHelpPath } from "../../lib/navigation/paths";
@@ -35,7 +28,7 @@ import {
 } from "../../lib/api/client";
 import type { AgentConfig, InputBinding } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
-import { Button, Card, EmptyState, Pill } from "../ui";
+import { EmptyState, Pill } from "../ui";
 import {
   AgUiConversation,
   ProtocolEventInspector,

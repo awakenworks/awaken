@@ -1,5 +1,6 @@
+import { Card, Switch } from "@awaken/ui";
 import type { AgentConfig, CompactionStrategy } from "../../lib/api/types";
-import { Card, Switch, TextField } from "../ui";
+import { TextField } from "../ui";
 import { useApp } from "../../lib/app-state";
 
 export default function AgentCompactionEditor({
@@ -23,7 +24,7 @@ export default function AgentCompactionEditor({
             "让长 Session 保持在所选模型的可用上下文预算内；留空时使用感知模型能力的安全默认值。",
           )}</p>
         </div>
-        <label className="field">
+        <label className="ui-field">
           <span>{app.t("Configure", "配置")}</span>
           <Switch checked={enabled} onChange={(event) => onChange(event.target.checked ? {} : null)} />
         </label>

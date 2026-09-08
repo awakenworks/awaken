@@ -1,3 +1,4 @@
+import { Button, Card, Switch } from "@awaken/ui";
 // Managed-Agent integration fields that were previously reachable only through the
 // API: direct MCP servers, Skill references, metadata, and multi-agent topology.
 // Common shapes get compact controls; the full Agent JSON view remains the lossless
@@ -17,7 +18,7 @@ import {
   renameMcpIntegrationReferences,
 } from "../../lib/agent-toolsets";
 import { useApp } from "../../lib/app-state";
-import { Button, Card, Switch, TextAreaField, TextField } from "../ui";
+import { TextAreaField, TextField } from "../ui";
 import AgentCollaborationEditor from "./AgentCollaborationEditor";
 
 type JsonObject = Record<string, unknown>;
@@ -152,10 +153,10 @@ export default function AgentIntegrationsEditor({
               <span className="badge ok">{app.t("ToolSet policy attached", "已关联 ToolSet 策略")}</span>
             </div>
             <div className="agent-integration-row">
-              <label className="field">
+              <label className="ui-field">
                 <span>{app.t("Transport", "传输方式")}</span>
                 <select
-                  className="input mono"
+                  className="ui-input mono"
                   value={sandboxStdio ? "sandbox_stdio" : "url"}
                   onChange={(event) => replaceServer(index, event.target.value === "sandbox_stdio"
                     ? {
@@ -211,10 +212,10 @@ export default function AgentIntegrationsEditor({
                 />
               )}
               {!sandboxStdio && (
-              <label className="field">
+              <label className="ui-field">
                 <span>{app.t("Credential source", "凭据来源")}</span>
                 <select
-                  className="input mono"
+                  className="ui-input mono"
                   value={credentialValue(server.credential)}
                   onChange={(event) => {
                     const selected = activeCredentials.find((credential) =>
@@ -238,7 +239,7 @@ export default function AgentIntegrationsEditor({
                 </select>
               </label>
               )}
-              <label className="field" style={{ alignSelf: "center" }}>
+              <label className="ui-field" style={{ alignSelf: "center" }}>
                 <span>{app.t("Prompts as skills", "将 Prompt 作为 Skill")}</span>
                 <input
                   type="checkbox"
@@ -249,16 +250,16 @@ export default function AgentIntegrationsEditor({
               <Button aria-label={app.t(`Remove ${server.name || "MCP"} integration`, `移除 ${server.name || "MCP"} 集成`)} variant="ghost" onClick={() => onChange(removeMcpIntegration(config, server.name))}>✕</Button>
             </div>
             <div className="mcp-policy-row">
-              <label className="field">
+              <label className="ui-field">
                 <span>{app.t("Default permission", "默认权限")}</span>
-                <select aria-label={app.t("Default permission", "默认权限")} className="input" value={defaults?.permission_policy?.type ?? "always_ask"} onChange={(event) => updateToolset({
+                <select aria-label={app.t("Default permission", "默认权限")} className="ui-input" value={defaults?.permission_policy?.type ?? "always_ask"} onChange={(event) => updateToolset({
                   default_config: { ...defaults, permission_policy: { type: event.target.value as "always_allow" | "always_ask" } },
                 })}>
                   <option value="always_ask">{app.t("Ask before use", "使用前询问")}</option>
                   <option value="always_allow">{app.t("Allow without asking", "无需询问即可使用")}</option>
                 </select>
               </label>
-              <label className="field compact-switch">
+              <label className="ui-field compact-switch">
                 <span>{app.t("Available by default", "默认可用")}</span>
                 <Switch checked={defaults?.enabled !== false} onChange={(event) => updateToolset({ default_config: { ...defaults, enabled: event.target.checked } })} />
               </label>
@@ -267,8 +268,8 @@ export default function AgentIntegrationsEditor({
             {configs.map((entry, configIndex) => (
               <div className="agent-integration-row mcp-tool-override" key={`${entry.name}-${configIndex}`}>
                 <TextField label={app.t("Named tool override", "指定工具覆盖")} mono value={entry.name} onChange={(event) => updateToolset({ configs: configs.map((item, current) => current === configIndex ? { ...item, name: event.target.value } : item) })} />
-                <label className="field"><span>{app.t("Tool permission", "工具权限")}</span><select aria-label={app.t("Tool permission", "工具权限")} className="input" value={entry.permission_policy?.type ?? defaults?.permission_policy?.type ?? "always_ask"} onChange={(event) => updateToolset({ configs: configs.map((item, current) => current === configIndex ? { ...item, permission_policy: { type: event.target.value as "always_allow" | "always_ask" } } : item) })}><option value="always_ask">{app.t("Ask", "询问")}</option><option value="always_allow">{app.t("Allow", "允许")}</option></select></label>
-                <label className="field compact-switch"><span>{app.t("Available", "可用")}</span><Switch checked={entry.enabled !== false} onChange={(event) => updateToolset({ configs: configs.map((item, current) => current === configIndex ? { ...item, enabled: event.target.checked } : item) })} /></label>
+                <label className="ui-field"><span>{app.t("Tool permission", "工具权限")}</span><select aria-label={app.t("Tool permission", "工具权限")} className="ui-input" value={entry.permission_policy?.type ?? defaults?.permission_policy?.type ?? "always_ask"} onChange={(event) => updateToolset({ configs: configs.map((item, current) => current === configIndex ? { ...item, permission_policy: { type: event.target.value as "always_allow" | "always_ask" } } : item) })}><option value="always_ask">{app.t("Ask", "询问")}</option><option value="always_allow">{app.t("Allow", "允许")}</option></select></label>
+                <label className="ui-field compact-switch"><span>{app.t("Available", "可用")}</span><Switch checked={entry.enabled !== false} onChange={(event) => updateToolset({ configs: configs.map((item, current) => current === configIndex ? { ...item, enabled: event.target.checked } : item) })} /></label>
                 <Button aria-label={app.t("Remove named override", "移除指定工具覆盖")} variant="ghost" onClick={() => updateToolset({ configs: configs.filter((_, current) => current !== configIndex) })}>✕</Button>
               </div>
             ))}
@@ -297,11 +298,11 @@ export default function AgentIntegrationsEditor({
           const catalog = skillCatalog.data?.data ?? [];
           return (
           <div className="agent-integration-row" key={index}>
-            <label className="field">
+            <label className="ui-field">
               <span>{app.t("Skill", "Skill")}</span>
               <select
                 aria-label={app.t("Skill", "Skill")}
-                className="input"
+                className="ui-input"
                 value={selectedId}
                 onChange={(event) => setSkill(index, event.target.value)}
               >

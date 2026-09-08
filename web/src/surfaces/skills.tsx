@@ -1,3 +1,5 @@
+import { Button as SharedButton, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
+
 // Workspace · Skills: one immutable, versioned bundle catalog. Local directory,
 // ZIP import, and browser edits all publish through the same multipart Skills API;
 // the browser owns only an ephemeral draft and never becomes a second content store.
@@ -7,7 +9,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ws, type MultipartFile } from "../lib/api/client";
 import type { Page, Skill, SkillVersion } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { Button, Card, EmptyState, Modal, Pill, Segmented, SkeletonRows, TechnicalId, TextAreaField, TextField, useConfirm, useToast } from "../components/ui";
+import { EmptyState, Modal, Pill, SkeletonRows, TechnicalId, TextAreaField, TextField, useConfirm, useToast } from "../components/ui";
 import { identifierLabel } from "../lib/presentation";
 
 export interface DraftFile {
@@ -143,7 +145,7 @@ function CreateSkillModal({ onClose, onCreated }: { onClose: () => void; onCreat
           <TextField label={app.t("Display title", "显示名称")} value={title} onChange={(event) => setTitle(event.target.value)} />
         </div>
         <TextField label={app.t("Description", "描述")} value={description} onChange={(event) => setDescription(event.target.value)} />
-        <div className="field">
+        <div className="ui-field">
           <label>{app.t("Execution substrate", "运行载体")}</label>
           <Segmented
             value={environment}
@@ -353,7 +355,7 @@ function SkillEditorModal({ skill, onClose, onPublished }: { skill: Skill; onClo
             }}>{app.t("New", "新建")}</Button>
           </div>
           {files.map((file) => (
-            <button key={file.path} className={selected === file.path ? "btn primary mono" : "btn ghost mono"} style={{ width: "100%", textAlign: "left", marginBottom: 2 }} onClick={() => setSelected(file.path)}>{file.executable ? "▶ " : ""}{file.path}</button>
+            <SharedButton key={file.path} className="mono" variant={selected === file.path ? "primary" : "ghost"} style={{ width: "100%", textAlign: "left", marginBottom: 2 }} onClick={() => setSelected(file.path)}>{file.executable ? "▶ " : ""}{file.path}</SharedButton>
           ))}
         </Card>
         <div className="stack">
@@ -430,7 +432,7 @@ export default function SkillsSurface() {
         hint={skills.error.message}
         action={<Button onClick={() => void skills.refetch()}>{app.t("Try again", "重试")}</Button>}
       /></Card> : <Card className="responsive-table-card" style={{ padding: 0 }}>
-        <table className="table">
+        <table className="ui-data-grid__table">
           <thead><tr><th>{app.t("Skill", "技能")}</th><th>{app.t("Version", "版本")}</th><th>{app.t("Sandbox", "Sandbox")}</th><th /></tr></thead>
           {skills.isLoading ? <SkeletonRows rows={4} cols={4} /> : <tbody>
             {rows.map((skill) => (

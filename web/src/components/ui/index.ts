@@ -1,27 +1,20 @@
-// The reusable UI kit barrel (oversight-next pattern): feature code imports every
-// primitive from one place — `import { Button, Card, Pill, DataGrid, useToast } from "../components/ui"`.
-// Styling lives in styles/base.css keyed on the semantic classes these render.
-
+// Product adapters for copy, domain projections, and page composition.
+// Product-neutral primitives are imported directly from @awaken/ui.
 export { cx, type Tone, type ClassValue } from "./cx";
-export { Button, type ButtonProps, type ButtonVariant } from "./Button";
 export { CopyButton, type CopyButtonProps } from "./CopyButton";
-export { Card, CardHeader, CardBody } from "./Card";
+export { CardHeader } from "./Card";
 export { Pill, Badge } from "./Pill";
 export { TextField, TextAreaField, SelectField } from "./Field";
-export { Segmented, type SegmentedOption } from "./Segmented";
-export { Switch, type SwitchProps } from "./Switch";
-export { CheckPicker, type CheckOption } from "./CheckPicker";
 export { SchemaForm, type JsonSchema } from "./SchemaForm";
 export { default as Drawer } from "./Drawer";
 export { default as Modal } from "./Modal";
 export { DataGrid, type Column } from "./DataGrid";
 export { SecretField, type SecretIntent, type SecretMode } from "./SecretField";
 export { ToastProvider, useToast } from "./Toast";
-export { ConfirmProvider, useConfirm } from "./Confirm";
+export { useConfirm } from "./Confirm";
 export {
   JsonInspector,
   EmptyState,
-  Skeleton,
   SkeletonRows,
   TechnicalId,
   UsageBadges,

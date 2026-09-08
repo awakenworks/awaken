@@ -1,3 +1,4 @@
+import { Button, Card } from "@awaken/ui";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import {
@@ -11,7 +12,7 @@ import { api, BUILTIN_LOCAL_ENVIRONMENT_ID, ws } from "../../lib/api/client";
 import { selectedAgentToolIds, withSelectedAgentTools } from "../../lib/agent-toolsets";
 import { useApp } from "../../lib/app-state";
 import AgentModelSelectionEditor from "./AgentModelSelectionEditor";
-import { Button, Card, Pill, TextAreaField, TextField } from "../ui";
+import { Pill, TextAreaField, TextField } from "../ui";
 import { entityDisplayName, identifierLabel } from "../../lib/presentation";
 
 interface StarterTemplate {
@@ -241,10 +242,10 @@ export default function AgentQuickstart({
 
         <Card className="quickstart-step">
           <h2 className="section-title">{app.t("4 · Choose where the first run executes", "4 · 选择首次运行环境")}</h2>
-          <label className="field">
+          <label className="ui-field">
             <span>{app.t("Environment for this run", "本次运行的 Environment")}</span>
             <select
-              className="input"
+              className="ui-input"
               aria-label={app.t("Environment for this run", "本次运行的 Environment")}
               value={environmentId}
               onChange={(event) => setEnvironmentId(event.target.value)}

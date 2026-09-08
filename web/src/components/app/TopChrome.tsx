@@ -1,4 +1,5 @@
-import { MenuPopover, SuiteSwitcher } from "@awaken/ui";
+import { Button as SharedButton, MenuPopover, SuiteSwitcher } from "@awaken/ui";
+
 import { useApp } from "../../lib/app-state";
 import { suiteCloudUrl, suiteHubUrl, suiteProductEntryUrl, useSuiteNavigation } from "../../lib/suite-navigation";
 
@@ -76,12 +77,12 @@ export default function TopChrome() {
           <span>{app.t("Search…", "搜索…")}</span>
           <kbd>⌘K</kbd>
         </button>
-        <button className="chrome-btn" onClick={app.toggleLocale} title={app.t("Switch language", "切换语言")} aria-label={app.t("Switch language", "切换语言")}>
+        <SharedButton className="chrome-btn" onClick={app.toggleLocale} title={app.t("Switch language", "切换语言")} aria-label={app.t("Switch language", "切换语言")}>
           {app.locale === "en" ? "EN" : "中"}
-        </button>
-        <button className="chrome-btn" onClick={app.toggleTheme} title={app.t("Switch theme", "切换主题")} aria-label={app.t("Switch theme", "切换主题")}>
+        </SharedButton>
+        <SharedButton className="chrome-btn" onClick={app.toggleTheme} title={app.t("Switch theme", "切换主题")} aria-label={app.t("Switch theme", "切换主题")}>
           <ThemeIcon dark={app.theme === "dark"} />
-        </button>
+        </SharedButton>
         <MenuPopover
           aria-label={app.t("Account and organization", "账号与组织")}
           content={<div className="identity-menu">
@@ -93,9 +94,9 @@ export default function TopChrome() {
           </div>}
           placement="bottom-end"
         >
-          <button className="chrome-btn identity-trigger" type="button" title={app.userName} aria-label={app.t(`Account: ${app.userName}`, `账号：${app.userName}`)}>
+          <SharedButton className="chrome-btn identity-trigger" type="button" title={app.userName} aria-label={app.t(`Account: ${app.userName}`, `账号：${app.userName}`)}>
             {app.userName.trim().charAt(0).toUpperCase() || "U"}
-          </button>
+          </SharedButton>
         </MenuPopover>
       </div>
     </header>

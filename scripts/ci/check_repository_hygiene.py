@@ -47,9 +47,6 @@ GENERATED_PARTS = {
     "target",
 }
 GENERATED_SUFFIXES = {".pyc", ".pyo"}
-VENDORED_GENERATED_ROOTS = {
-    Path("web/vendor/awaken-ui/dist"),
-}
 TEXT_SUFFIXES = {
     ".css",
     ".html",
@@ -140,11 +137,8 @@ def check_path_shape(files: list[str], added_files: list[str]) -> list[str]:
         if FORBIDDEN_ROOT_DIR_RE.search(rel):
             violations.append(f"{rel}: root fixture/profile data belongs under tests/fixtures/ or config examples")
         parts = set(path.parts)
-        is_vendored_distribution = any(
-            path == root or root in path.parents for root in VENDORED_GENERATED_ROOTS
-        )
         if (
-            ((parts & GENERATED_PARTS) and not is_vendored_distribution)
+            (parts & GENERATED_PARTS)
             or path.suffix in GENERATED_SUFFIXES
         ):
             violations.append(f"{rel}: generated/cache/build output must not be tracked")
@@ -182,12 +176,9 @@ def check_text_content(files: list[str], staged: bool) -> list[str]:
 
 def self_test() -> int:
     failures: list[str] = []
-    # Cause/effect graph:
-    # - ordinary generated output -> reject;
-    # - the single audited, pinned third-party distribution -> accept;
-    # - a similarly named distribution outside that exact root -> reject.
-    # Decision-table rules are represented by the three paths below so the
-    # portability exception cannot silently become a general `dist` exemption.
+    # Cause/effect table: R1 expanded generated output (any package) -> reject;
+    # R2 immutable dependency archive -> accept without a dist exception.
+    # This removes the former UI-only exemption together with its manual fork.
     shape_hits = check_path_shape(
         [
             "README.md",
@@ -196,6 +187,7 @@ def self_test() -> int:
             "scripts/ci/__pycache__/x.pyc",
             "web/vendor/awaken-ui/dist/index.js",
             "web/vendor/other-ui/dist/index.js",
+            "web/vendor/awaken-ui-0.4.0.tgz",
         ],
         ["docs/new-progress.md"],
     )
@@ -205,12 +197,14 @@ def self_test() -> int:
         "__pycache__",
         "new-progress.md",
         "web/vendor/other-ui/dist/index.js",
+        "web/vendor/awaken-ui/dist/index.js",
     ]
     for fragment in expected_fragments:
         if not any(fragment in hit for hit in shape_hits):
             failures.append(f"expected shape violation containing {fragment!r}")
-    if any("web/vendor/awaken-ui/dist/index.js" in hit for hit in shape_hits):
-        failures.append("audited vendored distribution must be accepted")
+
+    if any("awaken-ui-0.4.0.tgz" in hit for hit in shape_hits):
+        failures.append("immutable dependency archive must be accepted")
     content = "ok\nbad\u200b\n<<<<<<< HEAD\nPermission is hereby granted, free of charge\n"
     hits: list[str] = []
     for lineno, line in enumerate(content.splitlines(), 1):

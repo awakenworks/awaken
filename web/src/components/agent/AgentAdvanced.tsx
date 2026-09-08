@@ -1,3 +1,4 @@
+import { Button, Card } from "@awaken/ui";
 import type {
   AgentConfig,
   CredentialSource,
@@ -5,7 +6,7 @@ import type {
   PluginCap,
 } from "../../lib/api/types";
 import type { JsonSchema } from "../ui";
-import { Button, Card, Pill } from "../ui";
+import { Pill } from "../ui";
 import { useApp } from "../../lib/app-state";
 import type { AdvancedSection } from "./agent-editor-navigation";
 import AgentIntegrationsEditor from "./AgentIntegrationsEditor";

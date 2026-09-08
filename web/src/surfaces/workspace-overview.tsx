@@ -1,3 +1,4 @@
+import { Button, Card } from "@awaken/ui";
 // Workspace · Overview: readiness and recent runtime activity for the active scope.
 // session list (GET /v1/sessions via ws()). Observation only — the console
 // operates the platform; end users interact through the SDK.
@@ -11,7 +12,7 @@ import { useApp } from "../lib/app-state";
 import { WORKSPACE_JOURNEY, hasSurface, navPath } from "../lib/navigation/paths";
 import { useConfigCapabilities } from "../lib/useConfigCapabilities";
 import { StatusPill } from "./sessions";
-import { Button, Card, TechnicalId } from "../components/ui";
+import { TechnicalId } from "../components/ui";
 import { entityDisplayName, identifierLabel, sessionDisplayTitle } from "../lib/presentation";
 import ReadinessPanel from "../components/app/ReadinessPanel";
 
@@ -81,7 +82,7 @@ export default function WorkspaceOverviewSurface() {
           <h2 style={{ margin: 0, fontSize: 14 }}>{app.t("Recent session evidence", "最近会话证据")}</h2>
           <span className="mut">{app.t("newest first", "最新在前")}</span>
         </div>
-        <table className="table">
+        <table className="ui-data-grid__table">
           <thead>
             <tr><th>{app.t("Session", "会话")}</th><th>Agent</th><th>{app.t("State", "状态")}</th><th><span className="sr-only">{app.t("Open", "打开")}</span></th></tr>
           </thead>

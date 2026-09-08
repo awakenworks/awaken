@@ -1,10 +1,11 @@
+import { Button, Card } from "@awaken/ui";
 // Visual editor for the generic runtime State Machine DSL. The UI follows the
 // execution model: identify the instance, choose a trigger/guard, then configure
 // the state update and optional effect. Raw JSON remains the lossless escape hatch.
 
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { Button, Card } from "../ui";
+
 import { useApp } from "../../lib/app-state";
 import StateDiagram from "./StateDiagram";
 import {
@@ -133,7 +134,7 @@ function RawEditor({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <textarea
-        className="input mono"
+        className="ui-input mono"
         style={{ minHeight: 260, fontSize: 12 }}
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
@@ -200,7 +201,7 @@ function MachineEditor({
           <input {...inp} style={{ ...inp.style, width: 160 }} value={machine.name} onChange={(e) => onChange({ ...machine, name: e.target.value })} />
         </Labeled>
         <Labeled label={app.t("Scope", "作用域")}>
-          <select className="input mono" style={{ height: 30 }} value={machine.scope ?? "thread"} onChange={(e) => onChange({ ...machine, scope: e.target.value as "thread" | "run" })}>
+          <select className="ui-input mono" style={{ height: 30 }} value={machine.scope ?? "thread"} onChange={(e) => onChange({ ...machine, scope: e.target.value as "thread" | "run" })}>
             <option value="thread">thread</option>
             <option value="run">run</option>
           </select>
@@ -209,7 +210,7 @@ function MachineEditor({
           <input {...inp} style={{ ...inp.style, width: 135 }} placeholder="{file_path}" value={machine.key ?? ""} onChange={(e) => onChange({ ...machine, key: e.target.value || undefined })} />
         </Labeled>
         <Labeled label={app.t("Normalize", "标准化")}>
-          <select className="input mono" style={{ height: 30 }} value={machine.key_normalizer ?? "none"} onChange={(e) => onChange({ ...machine, key_normalizer: e.target.value as SmMachine["key_normalizer"] })}>
+          <select className="ui-input mono" style={{ height: 30 }} value={machine.key_normalizer ?? "none"} onChange={(e) => onChange({ ...machine, key_normalizer: e.target.value as SmMachine["key_normalizer"] })}>
             {['none', 'trim', 'lowercase', 'path', 'url'].map((value) => <option key={value}>{value}</option>)}
           </select>
         </Labeled>
@@ -293,26 +294,26 @@ function TransitionRow({
       <summary style={{ cursor: "pointer", fontSize: 12 }}>
         <span className="mono">{kind}:{triggerText(transition.on) || "*"}</span>
         <span className="mut"> · {fromList(transition.from).join(", ")} → {transition.to}</span>
-        {transition.emit && <span className="pill" style={{ marginLeft: 6 }}>{app.t("reminder", "提醒")}</span>}
+        {transition.emit && <span className="ui-status-pill" style={{ marginLeft: 6 }}>{app.t("reminder", "提醒")}</span>}
       </summary>
       <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 8 }}>
       <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-          <select aria-label={app.t("Trigger type", "触发类型")} className="input mono" style={{ height: 30, width: 92 }} value={kind} onChange={(e) => onChange(withTriggerKind(transition, e.target.value as "tool" | "event"))}>
+          <select aria-label={app.t("Trigger type", "触发类型")} className="ui-input mono" style={{ height: 30, width: 92 }} value={kind} onChange={(e) => onChange(withTriggerKind(transition, e.target.value as "tool" | "event"))}>
           <option value="tool">tool</option>
           <option value="event">event</option>
         </select>
         <input
           {...inp}
-          className="input mono"
+          className="ui-input mono"
           style={{ ...inp.style, flex: 1, minWidth: 190 }}
           placeholder={kind === "tool" ? 'write(file_path ~ "*")' : "step.before_inference"}
           value={triggerText(transition.on)}
           onChange={(e) => onChange({ ...transition, on: kind === "tool" ? e.target.value : { event: e.target.value } })}
         />
-        <input {...inp} className="input mono" style={{ ...inp.style, width: 130 }} placeholder="from: a, b" value={fromList(transition.from).join(", ")} onChange={(e) => onChange({ ...transition, from: splitList(e.target.value) })} />
+        <input {...inp} className="ui-input mono" style={{ ...inp.style, width: 130 }} placeholder="from: a, b" value={fromList(transition.from).join(", ")} onChange={(e) => onChange({ ...transition, from: splitList(e.target.value) })} />
         <span className="mut">→</span>
-        <input {...inp} className="input mono" style={{ ...inp.style, width: 100 }} placeholder="to" value={transition.to} onChange={(e) => onChange({ ...transition, to: e.target.value })} />
-        <span className="pill" style={{ fontSize: 10 }}>
+        <input {...inp} className="ui-input mono" style={{ ...inp.style, width: 100 }} placeholder="to" value={transition.to} onChange={(e) => onChange({ ...transition, to: e.target.value })} />
+        <span className="ui-status-pill" style={{ fontSize: 10 }}>
           {kind === "tool" ? app.t("pre + post", "执行前 + 后") : app.t("atomic fact", "原子事实")}
         </span>
         <Button variant="ghost" style={{ height: 26 }} onClick={onRemove}>✕</Button>
@@ -321,7 +322,7 @@ function TransitionRow({
       {kind === "tool" && (
         <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
           <span className="mut" style={{ fontSize: 11, width: 72 }}>{app.t("Before run", "执行前")}</span>
-          <select aria-label={app.t("Before run action", "执行前动作")} className="input mono" style={{ height: 28 }} value={transition.on_violation?.action ?? ""} onChange={(e) => onChange({ ...transition, on_violation: e.target.value ? { action: e.target.value as "deny" | "ask" | "warn", reason: transition.on_violation?.reason } : undefined })}>
+          <select aria-label={app.t("Before run action", "执行前动作")} className="ui-input mono" style={{ height: 28 }} value={transition.on_violation?.action ?? ""} onChange={(e) => onChange({ ...transition, on_violation: e.target.value ? { action: e.target.value as "deny" | "ask" | "warn", reason: transition.on_violation?.reason } : undefined })}>
             <option value="">{app.t("allow", "允许")}</option>
             <option value="deny">deny</option>
             <option value="ask">ask</option>
@@ -340,7 +341,7 @@ function TransitionRow({
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 7, marginTop: 7 }}>
           {kind === "tool" && (
             <div className="row" style={{ gap: 6 }}>
-              <select className="input mono" style={{ height: 28, flex: 1 }} value={whenStatus ?? ""} onChange={(e) => onChange({ ...transition, when: e.target.value || whenContent ? { status: e.target.value || undefined, content: whenContent } : undefined })}>
+              <select className="ui-input mono" style={{ height: 28, flex: 1 }} value={whenStatus ?? ""} onChange={(e) => onChange({ ...transition, when: e.target.value || whenContent ? { status: e.target.value || undefined, content: whenContent } : undefined })}>
                 <option value="">when: success (default)</option>
                 <option value="success">when: success</option>
                 <option value="error">when: error</option>
@@ -361,7 +362,7 @@ function TransitionRow({
         <input {...inp} style={{ ...inp.style, flex: 1, minWidth: 240, height: 28 }} placeholder={app.t("Optional message to the model", "可选：给模型的消息")} value={emit?.content ?? ""} onChange={(e) => onChange({ ...transition, emit: e.target.value ? { ...emit, target: kind === "event" ? "context" : emit?.target ?? "suffix_system", content: e.target.value } : undefined })} />
         {emit && (
           <>
-            <select aria-label={app.t("Reminder target", "提醒目标")} className="input mono" style={{ height: 28 }} value={kind === "event" ? "context" : emit.target ?? "suffix_system"} disabled={kind === "event"} onChange={(e) => onChange({ ...transition, emit: { ...emit, target: e.target.value as NonNullable<typeof emit.target> } })}>
+            <select aria-label={app.t("Reminder target", "提醒目标")} className="ui-input mono" style={{ height: 28 }} value={kind === "event" ? "context" : emit.target ?? "suffix_system"} disabled={kind === "event"} onChange={(e) => onChange({ ...transition, emit: { ...emit, target: e.target.value as NonNullable<typeof emit.target> } })}>
               <option value="context">context</option>
               <option value="system">system</option>
               <option value="suffix_system">suffix_system</option>
@@ -369,7 +370,7 @@ function TransitionRow({
               <option value="conversation">conversation</option>
             </select>
             <input {...inp} type="number" min={0} style={{ ...inp.style, width: 118, height: 28 }} placeholder="cooldown steps" title={app.t("Completed inference steps between reminders", "两次提醒之间完成的 inference step 数")} value={emit.cooldown_steps ?? ""} onChange={(e) => onChange({ ...transition, emit: { ...emit, cooldown_steps: Number(e.target.value) || 0 } })} />
-            <select aria-label={app.t("Reminder role", "提醒角色")} className="input mono" style={{ height: 28 }} value={emit.role ?? ""} onChange={(e) => onChange({ ...transition, emit: { ...emit, role: (e.target.value || undefined) as typeof emit.role } })}>
+            <select aria-label={app.t("Reminder role", "提醒角色")} className="ui-input mono" style={{ height: 28 }} value={emit.role ?? ""} onChange={(e) => onChange({ ...transition, emit: { ...emit, role: (e.target.value || undefined) as typeof emit.role } })}>
               <option value="">{app.t("default role", "默认角色")}</option>
               <option value="user">user</option>
               <option value="assistant">assistant</option>
@@ -417,7 +418,7 @@ function JsonObjectField<T extends Record<string, unknown>>({
   return (
     <input
       {...inp}
-      className={`input mono${error ? " err" : ""}`}
+      className={`ui-input mono${error ? " err" : ""}`}
       style={{ ...inp.style, height: 28 }}
       aria-label={label}
       title={label}

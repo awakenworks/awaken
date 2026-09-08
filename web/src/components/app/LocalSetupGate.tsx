@@ -1,3 +1,4 @@
+import { Button, Card } from "@awaken/ui";
 import { useQueryClient } from "@tanstack/react-query";
 import { FormEvent, ReactNode, useEffect, useState } from "react";
 import {
@@ -14,7 +15,7 @@ import {
   hostedSessionEntry,
   suiteNavigationQuery,
 } from "../../lib/suite-navigation";
-import { Button, Card } from "../ui";
+
 import { useApp } from "../../lib/app-state";
 
 type State = "checking" | "ready" | "setup" | "denied" | "unavailable";

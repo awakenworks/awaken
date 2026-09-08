@@ -1,3 +1,5 @@
+import { Skeleton, Button, Card, ChatComposer } from "@awaken/ui";
+
 // Admin Assistant: an in-console copilot that authors agents in plain English. It is a
 // chat against the built-in `__admin_assistant` agent (same <Transcript> engine as the
 // session detail and editor Sandbox). Its authoring tools PERSIST each draft as an
@@ -6,11 +8,11 @@
 // when opened over an agent editor it targets that agent (patch), not a fresh draft.
 
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ChatComposer } from "@awaken/ui";
+
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 import { TranscriptView } from "../components/session/Transcript";
-import { Button, Card, Pill, Skeleton } from "../components/ui";
+import { Pill } from "../components/ui";
 import { assistantContextForLocation, type AssistantSurfaceContext } from "../lib/assistant-guidance";
 import {
   BUILTIN_LOCAL_ENVIRONMENT_ID,

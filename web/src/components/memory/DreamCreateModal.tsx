@@ -1,3 +1,4 @@
+import { Button } from "@awaken/ui";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
@@ -12,7 +13,7 @@ import type {
 import { api, ws } from "../../lib/api/client";
 import { eligibleDreamSessions, readyDreamModels } from "../../lib/dreams";
 import { useApp } from "../../lib/app-state";
-import { Button, Modal, Pill, SelectField, TextAreaField } from "../ui";
+import { Modal, Pill, SelectField, TextAreaField } from "../ui";
 
 export default function DreamCreateModal({
   initialStoreId,

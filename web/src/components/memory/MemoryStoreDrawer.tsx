@@ -1,3 +1,4 @@
+import { Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type {
@@ -8,20 +9,7 @@ import type {
 } from "../../lib/api/types";
 import { api, ws } from "../../lib/api/client";
 import { useApp } from "../../lib/app-state";
-import {
-  Button,
-  Card,
-  Drawer,
-  EmptyState,
-  Modal,
-  Pill,
-  Segmented,
-  SkeletonRows,
-  TextAreaField,
-  TextField,
-  useConfirm,
-  useToast,
-} from "../ui";
+import { Drawer, EmptyState, Modal, Pill, SkeletonRows, TextAreaField, TextField, useConfirm, useToast } from "../ui";
 import DreamList from "./DreamList";
 import DreamPolicyPanel from "./DreamPolicyPanel";
 
@@ -196,7 +184,7 @@ export default function MemoryStoreDrawer({ store, onClose }: { store: MemorySto
               <span className="mut">{app.t("ID is stable and machine-owned; name is the human label. Memory paths form virtual folders.", "ID 是稳定的机器标识，名称用于人类识别；记忆路径组成虚拟目录。")}</span>
               <Button variant="primary" onClick={() => setEditing("new")}>+ {app.t("New memory", "新建记忆")}</Button>
             </div>
-            <table className="table">
+            <table className="ui-data-grid__table">
               <thead><tr><th>{app.t("Path", "路径")}</th><th>{app.t("Content", "内容")}</th><th>{app.t("Size", "大小")}</th><th>{app.t("Updated", "更新时间")}</th><th /></tr></thead>
               {memories.isLoading ? <SkeletonRows rows={4} cols={5} /> : (
                 <tbody>
@@ -235,7 +223,7 @@ export default function MemoryStoreDrawer({ store, onClose }: { store: MemorySto
         )}
         {tab === "history" && !versions.error && (
           <Card style={{ padding: 0, overflow: "auto" }}>
-            <table className="table">
+            <table className="ui-data-grid__table">
               <thead><tr><th>{app.t("Version", "版本")}</th><th>{app.t("Path", "路径")}</th><th>{app.t("Operation", "操作")}</th><th>{app.t("Created", "创建时间")}</th><th /></tr></thead>
               {versions.isLoading ? <SkeletonRows rows={4} cols={5} /> : (
                 <tbody>
