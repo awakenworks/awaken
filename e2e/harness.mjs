@@ -453,6 +453,22 @@ export const RED_PNG_B64 =
   'iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAIAAADTED8xAAADGklEQVR4nO3OQQ0AMBAEofVvupUxjyNBAHsbnNUPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPINQPIPQBWUwO8hhpVuIAAAAASUVORK5CYII=';
 export const RED_PNG_DATA_URI = `data:image/png;base64,${RED_PNG_B64}`;
 
+// One classification authority for failures observed while repeating a
+// side-effect-free read. HTTP status and SDK transport names are returned for
+// diagnostics; null means the caller must fail immediately. This classifier
+// must never be attached to an unkeyed write: retry orchestration remains in
+// waitForValue, whose caller owns proof that its read is replay-safe.
+export function retryableReadStatus(error) {
+  const status = error?.status;
+  if (typeof status === 'number') {
+    return [408, 409, 429, 500, 502, 503, 504].includes(status) ? status : null;
+  }
+  const name = error?.name;
+  return name === 'APIConnectionError' || name === 'APIConnectionTimeoutError'
+    ? String(name)
+    : null;
+}
+
 // Canonical bounded wait for committed-state E2Es. The read function owns the
 // authoritative projection (HTTP, database, or filesystem); this helper only
 // coordinates observation and never drives the product state machine.
@@ -460,7 +476,9 @@ export const RED_PNG_DATA_URI = `data:image/png;base64,${RED_PNG_B64}`;
 // before deadline => retry; predicate false at deadline => fail with the last
 // value; unclassified read failure => surface it immediately instead of masking
 // corruption; caller-classified transient read failure => retry the observation
-// only, never the product command that produced the state being observed.
+// only, never the product command that produced the state being observed;
+// classified failures continuing through the deadline => surface the last exact
+// error rather than manufacture an undefined-value predicate timeout.
 export async function waitForValue(
   read,
   predicate,
@@ -469,17 +487,25 @@ export async function waitForValue(
 ) {
   const deadline = performance.now() + timeoutMs;
   let value;
+  let lastRetryableReadError;
   do {
     try {
       value = await read();
+      lastRetryableReadError = undefined;
     } catch (error) {
       if (retryReadError?.(error) !== true || performance.now() >= deadline) throw error;
+      lastRetryableReadError = error;
       await new Promise((resolve) => setTimeout(resolve, pollMs));
       continue;
     }
     if (await predicate(value)) return value;
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   } while (performance.now() < deadline);
+  // If every observation since the last successful read failed transiently,
+  // the last exact transport/product error is the useful terminal evidence.
+  // A generic predicate timeout remains reserved for a successfully read value
+  // that never reached the requested state.
+  if (lastRetryableReadError !== undefined) throw lastRetryableReadError;
   // Cause/effect rule: durable SQLite observations may contain exact u64
   // BigInts; timeout diagnostics must preserve those tokens instead of masking
   // the product state with JSON.stringify's BigInt TypeError. Reuse the one

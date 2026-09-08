@@ -7,7 +7,7 @@ import type {
 import type { BetaManagedAgentsSessionEvent } from '@anthropic-ai/sdk/resources/beta/sessions/events';
 import type { BetaManagedAgentsAgentWithOverridesParams } from '@anthropic-ai/sdk/resources/beta/sessions/sessions';
 // @ts-ignore -- the shared JavaScript harness deliberately serves TypeScript fixtures.
-import { waitForSessionEventReceipt } from '../harness.mjs';
+import { retryableReadStatus, waitForSessionEventReceipt } from '../harness.mjs';
 
 export type McpServer = BetaManagedAgentsURLMCPServerParams;
 
@@ -50,12 +50,16 @@ export async function sendManagedMessage(
   betas: string[],
 ): Promise<BetaManagedAgentsSessionEvent[]> {
   // Cause/effect graph: C1=the official SDK returns the exact durable User
-  // Event receipt; C2=the Session lifecycle may process its Run later. Effects:
-  // E1=observe that receipt with processed_at; E2=observe its later committed
-  // idle terminal before any MCP fixture/event assertion. Constraint: listing
-  // committed events is observation only; this helper may not sleep, drive the
-  // Runtime, or accept an older Run's terminal. Decision rules: W1 !E1=>retry;
-  // W2 E1&&!E2=>retry; W3 E1&&E2=>return; W4 deadline=>fail with last history.
+  // Event receipt; C2=the Session lifecycle may process its Run later; C3=the
+  // idempotent history read may report a classified transient after recovery;
+  // C4=history reports an unclassified error or C3 persists to the deadline.
+  // Effects: E1=observe that receipt with processed_at; E2=observe its later
+  // committed idle terminal before any MCP fixture/event assertion; E3=retry
+  // only events.list after C3; E4=surface C4 exactly. Constraint: the unkeyed
+  // Event send runs once and is never replayed here; listing committed events is
+  // observation only, and this helper may not drive the Runtime or accept an
+  // older Run's terminal. Decision rules: W1 !E1=>retry read; W2 E1&&!E2=>retry
+  // read; W3 E1&&E2=>return; W4 C3=>E3; W5 C4=>E4.
   const receipt = await client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas,
@@ -70,6 +74,11 @@ export async function sendManagedMessage(
     ({ delta }: { delta: BetaManagedAgentsSessionEvent[] }) => delta
       .some((event) => event.type === 'session.status_idle'),
     `Managed Run for ${JSON.stringify(text)} to commit after its exact receipt`,
+    {
+      // A seqlock conflict means this one list attempt could not assemble a
+      // stable prefix. Keep the accepted receipt identity and repeat only GET.
+      retryReadError: (error: unknown) => retryableReadStatus(error) !== null,
+    },
   );
   return events;
 }

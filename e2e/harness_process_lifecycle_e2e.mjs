@@ -13,6 +13,7 @@ import {
   deploymentEnv,
   ensureProductionBuilt,
   initializeE2EInstallation,
+  retryableReadStatus,
   scenarioMemoryStore,
   spawnServer,
   stopServer,
@@ -483,13 +484,37 @@ async function main() {
   );
   assert.deepEqual(listRequests, [{ limit: 1 }], 'W6 beta stays absent and limit is forwarded');
 
-  // Receipt-read failure table: C1 the non-idempotent send already returned its
-  // exact receipt; C2 the next idempotent history read may fail transiently;
-  // C3 the caller explicitly classifies that failure; C4 a permanent failure is
-  // not classified. Effects: E1 C1+C2+C3 retries list without replaying send;
-  // E2 C1+C4 surfaces the original error immediately. Rules W7 and W8 keep the
-  // retry authority with the failover scenario rather than changing the shared
-  // waiter's fail-closed default.
+  // Receipt-read failure table: C1 the unkeyed send already returned its exact
+  // receipt; C2 the next idempotent history read may fail with a classified
+  // HTTP/transport transient; C3 history may fail with an unclassified product
+  // error; C4 classified failures may persist to the deadline. Effects: E1
+  // C1+C2 retries list without replaying send; E2 C1+C3 surfaces the original
+  // error immediately; E3 C1+C4 surfaces the last exact transient after bounded
+  // observation. Constraints: only the read callback is inside waitForValue;
+  // the retry classifier is never command authorization. Decision rules W7,
+  // W8 and W9 cover transient recovery, permanent failure, and exhaustion.
+  const retryableStatuses = [408, 409, 429, 500, 502, 503, 504];
+  for (const status of retryableStatuses) {
+    assert.equal(retryableReadStatus({ status }), status, `W7 classifies HTTP ${status}`);
+  }
+  for (const name of ['APIConnectionError', 'APIConnectionTimeoutError']) {
+    assert.equal(retryableReadStatus({ name }), name, `W7 classifies SDK ${name}`);
+  }
+  const permanentReadErrors = [
+    { status: 400 },
+    { status: 401 },
+    { status: 403 },
+    { status: 404 },
+    { status: 422 },
+    new Error('product invariant'),
+  ];
+  for (const error of permanentReadErrors) {
+    assert.equal(
+      retryableReadStatus(error),
+      null,
+      'W8 rejects an unclassified read failure',
+    );
+  }
   let transientReads = 0;
   const transient = Object.assign(new Error('projection sources changed'), { status: 503 });
   const transientClient = {
@@ -512,7 +537,7 @@ async function main() {
     undefined,
     ({ delta }) => delta.some((event) => event.id === 'new-idle'),
     'W7 retry classified history read only',
-    { timeoutMs: 1_000, pollMs: 1, retryReadError: (error) => error?.status === 503 },
+    { timeoutMs: 1_000, pollMs: 1, retryReadError: (error) => retryableReadStatus(error) !== null },
   );
   assert.equal(transientReads, 2, 'W7 retries exactly the failed idempotent list');
   assert.equal(afterTransient.receiptEvent.id, 'receipt', 'W7 retains the exact receipt scope');
@@ -539,11 +564,43 @@ async function main() {
       undefined,
       () => true,
       'W8 permanent history error',
-      { timeoutMs: 1_000, pollMs: 1, retryReadError: (error) => error?.status === 503 },
+      { timeoutMs: 1_000, pollMs: 1, retryReadError: (error) => retryableReadStatus(error) !== null },
     ),
     (error) => error === permanent,
   );
   assert.equal(permanentReads, 1, 'W8 preserves fail-closed default for unclassified errors');
+
+  let exhaustedReads = 0;
+  const exhausted = Object.assign(new Error('projection sources keep changing'), { status: 503 });
+  const exhaustedClient = {
+    beta: {
+      sessions: {
+        events: {
+          list: async function* list() {
+            exhaustedReads += 1;
+            throw exhausted;
+          },
+        },
+      },
+    },
+  };
+  await assert.rejects(
+    waitForSessionEventReceipt(
+      exhaustedClient,
+      'session',
+      'receipt',
+      undefined,
+      () => true,
+      'W9 bounded transient history error',
+      {
+        timeoutMs: 5,
+        pollMs: 1,
+        retryReadError: (error) => retryableReadStatus(error) !== null,
+      },
+    ),
+    (error) => error === exhausted,
+  );
+  assert.ok(exhaustedReads >= 1, 'W9 attempts the idempotent read before surfacing it');
 
   await assert.rejects(
     waitForSessionEventReceipt(fakeClient, 'session', '', [], () => true, 'W5'),

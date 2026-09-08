@@ -9,6 +9,7 @@ import Anthropic from '@anthropic-ai/sdk';
 // @ts-expect-error -- harness.mjs is the canonical runtime implementation.
 import {
   managedFileUploadForm,
+  retryableReadStatus,
   waitForSessionEventReceipt,
   waitForValue,
 } from '../harness.mjs';
@@ -100,17 +101,6 @@ async function expectRawIdempotentStatusEventually(
   }
   assert.equal(result.status, status, `${method} ${route}: ${JSON.stringify(result.value)}`);
   return result.value;
-}
-
-function retryableReadStatus(error: unknown) {
-  const status = (error as { status?: unknown })?.status;
-  if (typeof status === 'number') {
-    return [408, 409, 429, 500, 502, 503, 504].includes(status) ? status : null;
-  }
-  const name = (error as { name?: unknown })?.name;
-  return name === 'APIConnectionError' || name === 'APIConnectionTimeoutError'
-    ? String(name)
-    : null;
 }
 
 async function retrieveSessionProbe(client: Anthropic, sessionId: string) {
