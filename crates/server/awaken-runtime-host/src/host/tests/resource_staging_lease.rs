@@ -633,6 +633,79 @@ impl StagingFixture {
 struct WorkerProofGate(std::sync::Mutex<bool>);
 
 #[tokio::test]
+async fn claimed_reassignment_stages_resources_after_same_process_retirement() {
+    // R1 normal Work retirement closed a still-live predecessor generation;
+    // R2 authenticated same-process reassignment uses the Session root's one
+    // assignment kernel; R3 a stale retirement response arrives after staging
+    // starts. E1 File preparation can publish under the successor; E2 the
+    // closed predecessor never reopens; E3 old revocation cannot cancel new I/O.
+    // The existing ordinary-replay and forced-close tests own their negative
+    // cases; this crosses the previously omitted retirement/continuation edge.
+    let mut f = StagingFixture::new();
+    let old = f.lease.clone();
+    f.host
+        .install_session_realization_lease(SESSION, old.clone())
+        .unwrap();
+    f.host.session_slots.update(SESSION, |slot| {
+        assert!(slot.close_realization_authority(Some(&old)), "R1");
+    });
+    assert!(
+        f.host
+            .install_session_realization_lease(SESSION, old.clone())
+            .is_err(),
+        "E2"
+    );
+    let epoch = match awaken_session_contract::session_realization_assignment(
+        Some(old.epoch),
+        true,
+        true,
+        true,
+        true,
+    ) {
+        awaken_session_contract::SessionRealizationAssignment::Assign { epoch } => epoch,
+        other => panic!("R2 requires a successor, got {other:?}"),
+    };
+    f.lease.epoch = epoch;
+    let task = f.start().await;
+    let lock = f.host.session_slots.realization_lock(SESSION);
+    assert!(
+        !f.host
+            .revoke_session_realization(SESSION, Some((&old, &lock)))
+            .await
+            .unwrap(),
+        "R3/E3"
+    );
+    assert!(!task.is_finished(), "R3/E3 new File read stays live");
+    f.source.release.notify_one();
+    task.await
+        .unwrap()
+        .expect("E1 successor publishes Resource projection");
+    assert_eq!(
+        f.host.session_slots.realization_leases()[0].1.lease.epoch,
+        epoch,
+        "E1"
+    );
+    // This installer stages the desired transition; only its later physical
+    // activation publishes the active manifest. Do not confuse these phases.
+    assert_eq!(
+        f.host
+            .session_slots
+            .read(SESSION, |slot| {
+                assert!(
+                    slot.baseline.is_some() && slot.frozen_projection_receipt.is_some(),
+                    "E1"
+                );
+                slot.resource_transition
+                    .as_ref()
+                    .map(|transition| transition.desired().revision)
+            })
+            .flatten(),
+        Some(f.projection.resource_revision),
+        "E1 staged desired revision"
+    );
+}
+
+#[tokio::test]
 async fn local_runtime_renewal_port_selects_exact_owner_without_requiring_mcp_or_http_control() {
     // Local supervision decision table, through the actual SessionRuntime port:
     // L1 exact owner/incarnation + due, no MCP -> renew; L2 same with MCP ->

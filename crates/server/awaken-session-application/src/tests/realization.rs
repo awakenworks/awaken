@@ -1259,6 +1259,47 @@ async fn local_realization_uses_stable_owner_and_process_incarnation() {
         "L4/E4"
     );
     assert_eq!(reassigned.authority.lease.owner, "other-worker", "L4/E4");
+
+    // L5: after Work settlement, the same process can hold a CLOSED local
+    // predecessor while Control still has its live root lease. An explicit
+    // claim-authorized resume must persist a successor before resource staging.
+    // L6: a delayed predecessor renewal cannot extend this successor; ordinary
+    // exact replay above (L1) remains unchanged. Cross repeated continuations
+    // to rule out a one-time owner-change fix.
+    let mut predecessor = reassigned.authority.lease;
+    for _ in 0..3 {
+        let successor =
+            awaken_session_contract::SessionRealizationControl::begin_session_realization(
+                &other,
+                awaken_session_contract::BeginSessionRealization {
+                    expected_resources: None,
+                    session_id: "local-restart".into(),
+                    target: awaken_session_contract::SessionRealizationTarget {
+                        owner: predecessor.owner.clone(),
+                        runtime_incarnation: predecessor.runtime_incarnation.clone(),
+                        lease_expires_at_unix_ms: u64::MAX,
+                        reassign_existing_lease: true,
+                    },
+                },
+            )
+            .await
+            .expect("L5 same-process continuation");
+        assert_eq!(successor.authority.lease.epoch, predecessor.epoch + 1, "L5");
+        assert_eq!(
+            awaken_session_contract::SessionRealizationControl::renew_session_realization(
+                &other,
+                awaken_session_contract::RenewSessionRealization {
+                    session_id: "local-restart".into(),
+                    asserted_lease: predecessor,
+                    requested_expires_at_unix_ms: u64::MAX,
+                },
+            )
+            .await,
+            Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership),
+            "L6 old renewal cannot extend successor"
+        );
+        predecessor = successor.authority.lease;
+    }
 }
 
 /// Reference-projection FMECA and cause/effect decision table. C1 the

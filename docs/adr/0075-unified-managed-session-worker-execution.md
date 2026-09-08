@@ -126,6 +126,16 @@ Worker deregistration releases any residual active Session Work for that exact
 incarnation; crash recovery remains lease-expiry based. A later admitted event
 wakes the same stable Work item.
 
+Claim-authenticated frozen Session resume explicitly reassigns the realization
+lease through the existing Session root CAS, including when owner and process
+incarnation are unchanged. Normal Work retirement can already have closed that
+process-local predecessor while its durable lease is still live. Returning the
+same epoch would make the next approval continuation reuse a closed authority;
+the successor epoch also excludes delayed predecessor renewal/retirement from
+the new Resource preparation. Ordinary application replay without explicit
+reassignment continues to reuse the exact live owner/incarnation. This changes
+neither the Work identity nor the claim/physical-quiescence requirements.
+
 ### D4: Worker Control realizes only committed truth
 
 The Worker resumes an already-frozen projection through the claim-fenced
