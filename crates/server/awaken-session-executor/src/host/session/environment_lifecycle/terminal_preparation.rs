@@ -124,13 +124,13 @@ impl SharedHost {
             expected_effect_fence,
             effect_fence,
         } = installation;
-        let adopted = resident.is_none();
+        let mut adopted = resident.is_none();
         let authority = self.session_slots.provider_effect_authority(
             thread,
             effect_fence,
             self.execution_authority.as_ref(),
         )?;
-        let environment = match resident {
+        let mut environment = match resident {
             Some(environment) => environment,
             None => match mode {
                 BoundEnvironmentPreparationMode::LiveSource => Arc::new(
@@ -177,6 +177,34 @@ impl SharedHost {
                 }
             },
         };
+        if adopted
+            && mode != BoundEnvironmentPreparationMode::LiveSource
+            && let Some(retiring) = self
+                .session_slots
+                .read(thread, |slot| match &slot.environment_owner {
+                    SessionEnvironmentOwner::Retiring(retiring) => Some(retiring.clone()),
+                    _ => None,
+                })
+                .flatten()
+        {
+            // Primary absence still requires the Provider's auxiliary/total
+            // absence decision. A reconstructed descriptor is not permission
+            // to replace the retained owner and lose in-memory participants.
+            // Keep its exact Arc; only a genuinely cold owner is installed.
+            if !matches!(
+                retiring.cause,
+                SessionEnvironmentRetirementCause::Terminal { .. }
+            ) || binding != Some(retiring.owned.binding())
+                || environment.handle() != retiring.owned.environment().handle()
+            {
+                return Err(HostError::unavailable_classified(
+                    "session_terminal_environment_owner_changed",
+                    "terminal reconstruction conflicts with the exact retained owner",
+                ));
+            }
+            environment = retiring.owned.environment();
+            adopted = false;
+        }
         match mode {
             BoundEnvironmentPreparationMode::LiveSource => {
                 if adopted {
@@ -309,6 +337,27 @@ impl SharedHost {
         resolved_resources: Option<&awaken_session_contract::ResolvedSessionResources>,
         mode: BoundEnvironmentPreparationMode,
     ) -> Result<PreparedBoundEnvironment, HostError> {
+        if mode == BoundEnvironmentPreparationMode::LiveSource
+            && self
+                .session_slots
+                .read(thread, |slot| {
+                    matches!(
+                        &slot.environment_owner,
+                        SessionEnvironmentOwner::Preparing(
+                            SessionEnvironmentPreparation::Candidate(_)
+                        ) | SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+                            owned: RetiringEnvironmentOwner::Unbound(_),
+                            ..
+                        })
+                    )
+                })
+                .unwrap_or(false)
+        {
+            return Err(HostError::unavailable_classified(
+                "session_terminal_unpublished_candidate",
+                "live source preparation cannot consume an unpublished Environment Candidate",
+            ));
+        }
         let provider = self.projected_session_environment_provider(thread, None)?;
         let (handle, spec, resident, candidate) = self.validated_session_environment_adoption(
             thread,
@@ -316,26 +365,13 @@ impl SharedHost {
             provider,
             resolved_resources,
         )?;
-        let committed_candidate = match candidate {
-            Some(candidate)
-                if mode != BoundEnvironmentPreparationMode::LiveSource
-                    && candidate.durable_identity().is_some() =>
-            {
-                Some(candidate)
-            }
-            Some(_) => {
-                return Err(HostError::unavailable_classified(
-                    "session_terminal_unpublished_candidate",
-                    "terminal preparation cannot consume an uncommitted Environment Candidate",
-                ));
-            }
-            None => None,
+        let (resident, committed_candidate) = match candidate {
+            Some(candidate) => (
+                Some(candidate.environment.clone()),
+                candidate.durable_identity().is_some().then_some(candidate),
+            ),
+            None => (resident, None),
         };
-        let resident = resident.or_else(|| {
-            committed_candidate
-                .as_ref()
-                .map(|candidate| candidate.environment.clone())
-        });
         let observation = provider
             .observe_effective_for_effect(&spec, &handle, resident.as_deref(), effect_fence)
             .await
@@ -580,6 +616,18 @@ impl SharedHost {
         } else {
             None
         };
+        // An Adoption Candidate already knows a durable binding even when its
+        // new effect response is absent. Only unknown Create commitment can
+        // coexist with Unmaterialized; reuse the owner's provenance decision.
+        let unacknowledged = owner.durable_binding().is_none()
+            && matches!(
+                &owner,
+                SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(_))
+                    | SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+                        owned: RetiringEnvironmentOwner::Unbound(_),
+                        ..
+                    })
+            );
         let binding = match &state {
             awaken_session_contract::SessionEnvironmentState::Resident { binding, .. } => {
                 Some(binding.as_str())
@@ -587,6 +635,11 @@ impl SharedHost {
             awaken_session_contract::SessionEnvironmentState::Suspending {
                 source_binding, ..
             } => Some(source_binding.as_str()),
+            // The frozen terminal assignment, not a fabricated Create/Adopt
+            // receipt, may take over a locally retained pre-commit root.
+            awaken_session_contract::SessionEnvironmentState::Unmaterialized if unacknowledged => {
+                owner.physical_binding()
+            }
             awaken_session_contract::SessionEnvironmentState::Unmaterialized
             | awaken_session_contract::SessionEnvironmentState::Hibernated { .. } => None,
             awaken_session_contract::SessionEnvironmentState::Restoring { .. } => None,
@@ -717,7 +770,9 @@ impl SharedHost {
                 pending_checkpoint,
             });
         };
-        if owner.durable_binding() != Some(binding) {
+        if owner.durable_binding() != Some(binding)
+            && !(unacknowledged && owner.physical_binding() == Some(binding))
+        {
             return Err(HostError::classified(
                 "session_terminal_environment_binding_mismatch",
                 "terminal Runtime owner conflicts with the frozen aggregate binding",

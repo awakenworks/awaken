@@ -203,6 +203,23 @@ pub(crate) enum SessionEnvironmentOwner {
 }
 
 impl SessionEnvironmentOwner {
+    /// Exact physical binding descriptor, including pending adoption and an
+    /// unacknowledged Candidate. This asserts neither local realization nor
+    /// root commitment; durable_binding owns the latter distinction.
+    pub(crate) fn physical_binding(&self) -> Option<&str> {
+        match self {
+            Self::Vacant | Self::Restoring(_) => None,
+            Self::Preparing(SessionEnvironmentPreparation::AwaitingAdoption {
+                binding, ..
+            }) => Some(binding),
+            Self::Preparing(SessionEnvironmentPreparation::Candidate(candidate)) => {
+                Some(&candidate.binding)
+            }
+            Self::Resident(owned) => Some(&owned.binding),
+            Self::Retiring(retiring) => Some(retiring.owned.binding()),
+        }
+    }
+
     /// External/tool readers deliberately see only the Resident phase.
     pub(crate) fn resident(&self) -> Option<Arc<crate::session_environment::SessionEnvironment>> {
         match self {
