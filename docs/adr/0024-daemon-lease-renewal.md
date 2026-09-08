@@ -193,6 +193,18 @@ Only the whole drive returns an ACK; there is no release/reacquire between
 stages under the same claim. An uncertain stage cannot launch the next stage.
 Retirement is not evidence of process or remote termination. This prerequisite
 does not wire the provider observation below into Native recovery.
+The existing registered Worker runtime protocol floor advances to v4 for this
+whole-claim ACK boundary and typed Dispatch renewal outcomes. A v3 incarnation
+must not be admitted merely because an old queued request pins v3: it would ACK
+a scheduled stage and then try to reuse the now-retired claim. Registration,
+placement and physical begin/handoff reuse the same current-version check.
+The Worker builder also uses that predicate rather than a separate `contains(1)`
+check; an explicit current-only manifest is valid, while omitted/ANY or v3-only
+manifests fail before registration. No compatibility fallback is introduced.
+The exact authenticated predecessor ACK remains available independently of that
+execution floor, so upgrade cannot itself prevent observed-stop retirement.
+This retains ADR-0066's coordinated Control cutover requirement; it does not make
+mixed-version Control replicas safe, or replace independent stop evidence.
 The Kubernetes adapter now offers a narrower independent local observation:
 `bind_pod_process` freezes the complete ordinary-container set before effects,
 and `observe_pod_process_termination` requires the same Pod UID, node, container

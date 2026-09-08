@@ -780,8 +780,11 @@ async fn incompatible_control_registration_withdraws_before_runtime_startup() {
     // P1 missing/null/old/future/non-integer/out-of-range => preserve C1 for
     // one bounded withdrawal, return protocol error, no factories/probes/Ready/
     // claims. P2 current integer => normal startup (the lifecycle test above).
+    // P3 includes a v3 Control: it cannot select whole-claim v4 execution.
     // C2 is never defaulted to current. Real HTTP exercises tolerant metadata
     // decoding and the single post-registration exit, not just a predicate.
+    let current = awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION.to_string();
+    let future = (awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION + 1).to_string();
     for zero_ttl in [false, true] {
         for declaration in [
             None,
@@ -789,7 +792,8 @@ async fn incompatible_control_registration_withdraws_before_runtime_startup() {
             Some("0"),
             Some("1"),
             Some("2"),
-            Some("4"),
+            Some("3"),
+            Some(future.as_str()),
             Some("-1"),
             Some("3.5"),
             Some("\"3\""),
@@ -797,9 +801,9 @@ async fn incompatible_control_registration_withdraws_before_runtime_startup() {
             Some("{}"),
             Some("[]"),
             Some("true"),
-            Some("3"),
+            Some(current.as_str()),
         ] {
-            if !zero_ttl && declaration == Some("3") {
+            if !zero_ttl && declaration == Some(current.as_str()) {
                 continue; // P2 current+positive is the normal lifecycle journey.
             }
             let upstream = if zero_ttl {

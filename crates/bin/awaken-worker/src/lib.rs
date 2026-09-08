@@ -793,9 +793,13 @@ fn validate_worker_manifest(
             "Worker manifest max_concurrent must be greater than zero".to_string(),
         ));
     }
-    if !manifest.dispatch_contract.contains(1) || !manifest.runtime_protocol.contains(1) {
+    if !manifest
+        .dispatch_contract
+        .contains(awaken_worker_contract::CURRENT_CONTRACT_VERSION)
+        || !manifest.supports_current_runtime_protocol()
+    {
         return Err(WorkerNodeBuildError(
-            "Worker manifest must support dispatch and runtime protocol version 1".to_string(),
+            "Worker manifest must support the current dispatch contract and explicitly support the current runtime protocol".to_string(),
         ));
     }
     let installed_recovery = deployment

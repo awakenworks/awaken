@@ -125,6 +125,12 @@ mod verification {
             worker.supports_current_runtime_protocol(),
             min > 0 && range.contains(request.runtime_protocol_version)
         );
+        // Upgrade rule U1: every pre-whole-claim peer (maximum <= v3)
+        // is denied even when old queued work asks for a version it supports.
+        // Pin the semantic boundary, not just the mutable current constant.
+        if max <= 3 {
+            assert!(!worker.supports_current_runtime_protocol());
+        }
     }
 
     #[kani::proof]
@@ -305,7 +311,10 @@ mod tests {
             },
             sandbox_backends: BTreeSet::from(["kubernetes".to_string()]),
             dispatch_contract: VersionRange { min: 1, max: 2 },
-            runtime_protocol: VersionRange { min: 1, max: 3 },
+            runtime_protocol: VersionRange {
+                min: 1,
+                max: CURRENT_RUNTIME_PROTOCOL_VERSION,
+            },
             checkpoint_formats: BTreeSet::from(["stream-v1".to_string()]),
             capacity: WorkerCapacity {
                 max_concurrent: 4,
@@ -446,15 +455,27 @@ mod tests {
         // E1 claim iff C1 && C2. Otherwise E2 reject, without rewriting the
         // requirement. ANY/omitted and zero-based ranges never prove C1.
         // Rows cover old, current, future, inverted and broad declarations;
-        // each crosses legacy/current/future queued versions 0..4.
+        // each crosses legacy/current/future queued versions 0..=current+1.
+        // Regression R3: v3 peers ACK individual scheduled stages; whole-claim
+        // retirement makes that ACK final. Both v3-pinned and current queued
+        // work must reject those peers. The existing matrix owns these rows
+        // rather than a second stage-protocol compatibility test/policy.
         for (range, current) in [
             (VersionRange::ANY, false),
             (VersionRange { min: 0, max: 3 }, false),
             (VersionRange { min: 3, max: 2 }, false),
             (VersionRange::exact(1), false),
             (VersionRange { min: 1, max: 2 }, false),
-            (VersionRange { min: 1, max: 3 }, true),
-            (VersionRange::exact(3), true),
+            (VersionRange { min: 1, max: 3 }, false),
+            (VersionRange::exact(3), false),
+            (
+                VersionRange {
+                    min: 1,
+                    max: CURRENT_RUNTIME_PROTOCOL_VERSION,
+                },
+                true,
+            ),
+            (VersionRange::exact(CURRENT_RUNTIME_PROTOCOL_VERSION), true),
             (
                 VersionRange {
                     min: 2,
@@ -462,12 +483,15 @@ mod tests {
                 },
                 true,
             ),
-            (VersionRange::exact(4), false),
+            (
+                VersionRange::exact(CURRENT_RUNTIME_PROTOCOL_VERSION + 1),
+                false,
+            ),
         ] {
             let mut worker = manifest("protocol", 0).manifest;
             worker.runtime_protocol = range;
             assert_eq!(worker.supports_current_runtime_protocol(), current);
-            for version in 0..=4 {
+            for version in 0..=CURRENT_RUNTIME_PROTOCOL_VERSION + 1 {
                 let mut queued = requirements();
                 queued.runtime_protocol_version = version;
                 assert_eq!(
