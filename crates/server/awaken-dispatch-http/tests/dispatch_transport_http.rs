@@ -386,7 +386,7 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
 
     // Renewal transport rule H1. Causes: the authenticated Worker still owns the
     // exact run+epoch returned by claim. Effect: Control derives owner/time/lease
-    // policy, renews that exact claim, and returns true. The complementary missing-
+    // policy, renews that exact claim, and returns `current`. The complementary missing-
     // epoch and wrong-epoch rules live in the contract and transport-client tests.
     clock.set(1_000);
     let (s, v) = post(
@@ -397,7 +397,10 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(v["renewed"], true, "the owner renews its live lease: {v}");
+    assert_eq!(
+        v["outcome"], "current",
+        "the owner renews its live lease: {v}"
+    );
 
     // a claim by a second worker finds nothing runnable (single owner per run).
     let (_, v) = post(&router, "worker-2", "/v1/worker/dispatch/claim", json!({})).await;

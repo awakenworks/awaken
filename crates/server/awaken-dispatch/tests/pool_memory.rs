@@ -1728,6 +1728,64 @@ async fn lost_renewal_cancels_the_in_flight_attempt() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn durable_cancel_signals_the_exact_live_attempt_before_lease_expiry() {
+    // Cause/effect decision table: C1=an exact claim owns the active physical
+    // attempt; C2=durable cancel is committed before lease expiry; C3=the next
+    // renewal observes the same row and exact physical owner/epoch. E1=the
+    // existing Runtime token is cancelled; E2=the executor returns and clears
+    // only its own slot; E3=no stale Thread commit is accepted.
+    // R1=C1+C2+C3 -> E1+E2+E3. Wrong owner/epoch and the current cancellation
+    // worker are covered by the shared three-backend LR6/LR7 table.
+    // Constraint: this uses the sole renewal loop; no direct live-control signal,
+    // extra poller, or cancellation registry participates.
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = Arc::new(
+        DispatchWorker::new(text_runtime(), store.clone(), commit.clone(), "owner-a")
+            .with_lease_ms(90),
+    );
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let cancellation_observed = Arc::new(tokio::sync::Notify::new());
+    worker.install_attempt_executor(Arc::new(OwnershipCancellationAttemptExecutor {
+        entered: entered.clone(),
+        cancellation_observed: cancellation_observed.clone(),
+        cleanup_release: None,
+    }));
+    let run_id = RunId("live-durable-cancellation".into());
+    store
+        .enqueue(RunDispatch::new(activation(&run_id.0)))
+        .await
+        .unwrap();
+    let claimed = store
+        .claim("owner-a", 90, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("C1 current claim");
+    let driven = tokio::spawn({
+        let worker = worker.clone();
+        async move {
+            worker
+                .drive_claimed(claimed, Arc::new(ManualClock::new(0)))
+                .await
+        }
+    });
+    entered.notified().await;
+    assert_eq!(
+        store.cancel(&run_id).await.unwrap(),
+        Some(ThreadId(harness::THREAD.into())),
+        "C2 durable cancellation",
+    );
+    let observed = cancellation_observed.notified();
+    tokio::time::advance(Duration::from_millis(30)).await;
+    observed.await;
+    assert!(driven.await.expect("attempt joins").is_err(), "R1/E1");
+    assert_eq!(commit.commit_count(), 0, "R1/E3");
+    let row = store.list_dispatches().await.unwrap();
+    assert_eq!(row.len(), 1, "cancellation intent remains claimable");
+    assert!(!row[0].physical_attempt_active, "R1/E2");
+}
+
+#[tokio::test(start_paused = true)]
 async fn non_quiescing_attempt_blocks_replacement_after_lease_takeover() {
     // Rule RG9 extends the renewal decision table. Causes: C1 A has entered an
     // opaque executor; C2 B replaces A's expired mutation claim; C3 cancellation

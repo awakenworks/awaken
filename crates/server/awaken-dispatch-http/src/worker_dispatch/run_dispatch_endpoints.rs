@@ -207,7 +207,7 @@ pub(super) async fn renew(
     let result = async {
         let authority =
             claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
-        let renewed = service
+        let outcome = service
             .dispatch
             .renew_lease(
                 &RunClaim {
@@ -220,7 +220,7 @@ pub(super) async fn renew(
             )
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
-        Ok(json!({ "renewed": renewed }))
+        Ok(json!({ "outcome": outcome }))
     }
     .await;
     respond(result)

@@ -33,7 +33,11 @@ must deliver; the authoritative run outcome remains a committed runtime fact.
 
 A pending or awaiting cancellation is claimable without external input. Cancelling
 a running row revokes its epoch, makes the cancellation immediately claimable, and
-also signals the old live attempt so it stops wasting work. If that process has
+also leaves the exact physical-attempt identity on the same row. The existing
+exact-claim renewal observes that locked row as `CancellationRequested` only for
+that former physical owner and epoch, then projects it into Runtime's existing
+cooperative token. A wrong owner or epoch observes `Lost`; the new worker that
+claims the durable cancellation remains `Current` and renews normally. If that process has
 already crashed, no timeout is required. `Claimed::cancellation_requested` travels
 over the same local/remote dispatch boundary as the request and lease.
 
@@ -79,6 +83,12 @@ durable. The pool remains the sole claim driver, so an HTTP/control caller never
 becomes a competing synchronous Worker. A live-only inline run without a dispatch
 row can still be signalled, but durable ingress never reports cancellation success
 after only an in-memory notification.
+
+The Dispatch renewal loop is the sole live signal bridge for durable attempts.
+There is no cancellation registry, additional polling loop, or A2A-specific
+signal path. A remote cancel delivery acknowledgement is not a stop receipt;
+the exact remote task must subsequently be observed terminal before its physical
+slot can be released.
 
 ## Consequences
 

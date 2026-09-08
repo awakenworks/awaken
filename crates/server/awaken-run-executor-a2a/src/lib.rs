@@ -1706,7 +1706,10 @@ mod tests {
         // Cause C2: its endpoint matches the immutable publication binding.
         // Cause C3: state is Prepared without an accepted task.
         // Effect E1: only C1+C2 selects continuation handoff; all other rows
-        // retain predecessor quiescence and cannot repeat `message:send`.
+        // retain predecessor quiescence and cannot repeat `message:send`. The
+        // Dispatch Worker consults this same decision for both recovered work
+        // and a fresh durable-cancellation claim, so these three rules also own
+        // the fresh-cancel no-state/wrong-endpoint/exact-state choice.
         //
         // | Rule | C1 | C2 | C3 | Effect |
         // |---|---|---|---|---|

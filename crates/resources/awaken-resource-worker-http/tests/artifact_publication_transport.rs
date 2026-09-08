@@ -1876,7 +1876,13 @@ async fn complete_capture_round_trip_is_fenced_and_never_rebases_stale_outputs()
     // capture I/O. Advance the isolated fixture to that state without sleeping.
     let reads = counting.capture_reads.load(Ordering::SeqCst);
     let replacements = counting.capture_replaces.load(Ordering::SeqCst);
-    assert!(dispatch.renew_lease(&claim, 0, 0).await.unwrap());
+    assert!(
+        dispatch
+            .renew_lease(&claim, 0, 0)
+            .await
+            .unwrap()
+            .is_current()
+    );
     assert!(
         publisher
             .capture(workspace, session, Some(&fence))

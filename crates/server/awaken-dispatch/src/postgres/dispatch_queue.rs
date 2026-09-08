@@ -995,25 +995,60 @@ impl DispatchQueue for PostgresDispatchStore {
         claim: &RunClaim,
         lease_ms: u64,
         _now_ms: u64,
-    ) -> Result<bool, DispatchError> {
-        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
+    ) -> Result<LeaseRenewalOutcome, DispatchError> {
         let claim_epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
         let p = NS;
-        let result = sqlx::query(&format!(
-            "UPDATE {p}_dispatch SET lease_until = $1 \
-             WHERE run_id = $2 AND status IN ('running', 'reservation_running') \
-             AND lease_owner = $3 AND lease_epoch = $4"
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
+        let current = sqlx::query(&format!(
+            "SELECT status, lease_owner, lease_epoch, cancel_requested, \
+             active_attempt_owner, active_attempt_epoch FROM {p}_dispatch \
+             WHERE run_id = $1 FOR UPDATE"
         ))
-        .bind(crate::clock::db_millis(crate::clock::deadline_millis(
-            now_ms, lease_ms,
-        )))
         .bind(&claim.run_id.0)
-        .bind(&claim.owner)
-        .bind(claim_epoch)
-        .execute(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(store_error)?;
-        Ok(result.rows_affected() > 0)
+        let Some(current) = current else {
+            tx.commit().await.map_err(store_error)?;
+            return Ok(LeaseRenewalOutcome::Lost);
+        };
+        let status: String = current.try_get("status").map_err(store_error)?;
+        let owner: Option<String> = current.try_get("lease_owner").map_err(store_error)?;
+        let persisted_epoch: i64 = current.try_get("lease_epoch").map_err(store_error)?;
+        let cancellation_requested: i64 =
+            current.try_get("cancel_requested").map_err(store_error)?;
+        let attempt_owner: Option<String> = current
+            .try_get("active_attempt_owner")
+            .map_err(store_error)?;
+        let attempt_epoch: Option<i64> = current
+            .try_get("active_attempt_epoch")
+            .map_err(store_error)?;
+        let current_claim = matches!(status.as_str(), "running" | "reservation_running")
+            && owner.as_deref() == Some(&claim.owner)
+            && persisted_epoch == claim_epoch;
+        let cancelled_physical_attempt = cancellation_requested != 0
+            && attempt_owner.as_deref() == Some(&claim.owner)
+            && attempt_epoch == Some(claim_epoch);
+        let outcome = decide_lease_renewal(current_claim, cancelled_physical_attempt);
+        if outcome == LeaseRenewalOutcome::Current {
+            sqlx::query(&format!(
+                "UPDATE {p}_dispatch SET lease_until = $1 WHERE run_id = $2 \
+                 AND status IN ('running', 'reservation_running') \
+                 AND lease_owner = $3 AND lease_epoch = $4"
+            ))
+            .bind(crate::clock::db_millis(crate::clock::deadline_millis(
+                now_ms, lease_ms,
+            )))
+            .bind(&claim.run_id.0)
+            .bind(&claim.owner)
+            .bind(claim_epoch)
+            .execute(&mut *tx)
+            .await
+            .map_err(store_error)?;
+        }
+        tx.commit().await.map_err(store_error)?;
+        Ok(outcome)
     }
 
     async fn bind_sandbox(

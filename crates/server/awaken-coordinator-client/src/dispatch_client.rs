@@ -28,10 +28,11 @@ use awaken_dispatch_contract::{
     AttemptAdmission, AttemptExecutionRequest, BindSandboxRequest, CasOutcome, CheckpointRequest,
     ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest, Claimed, CommitEpochGuard,
     CredentialRealizationReceipt, CredentialRealizationRequest, DeliverAndClaimRequest,
-    DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary, EnqueueRequest, Inbox, Outbox,
-    PendingInput, PendingRecord, RecoveryRequest, RelinquishRequest, RenewRequest, RunClaim,
-    RunDispatch, SessionRunReservationResolution, SessionRunReservationResolutionRequest,
-    SettleOutcome, SettleRequest, StreamEventRequest, StreamObservationRequest, SubmitOptions,
+    DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary, EnqueueRequest, Inbox,
+    LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, RecoveryRequest, RelinquishRequest,
+    RenewRequest, RunClaim, RunDispatch, SessionRunReservationResolution,
+    SessionRunReservationResolutionRequest, SettleOutcome, SettleRequest, StreamEventRequest,
+    StreamObservationRequest, SubmitOptions,
 };
 use awaken_dispatch_contract::{
     ClaimedStreamPublisher, WorkerIdentity, WorkerSnapshot,
@@ -738,7 +739,7 @@ impl DispatchQueue for HttpDispatchQueue {
         claim: &RunClaim,
         lease_ms: u64,
         now_ms: u64,
-    ) -> Result<bool, DispatchError> {
+    ) -> Result<LeaseRenewalOutcome, DispatchError> {
         let v = self
             .post(
                 "/v1/worker/dispatch/renew",
@@ -751,7 +752,12 @@ impl DispatchQueue for HttpDispatchQueue {
             )
             .await?;
         let _ = (lease_ms, now_ms);
-        Ok(v.get("renewed").and_then(|r| r.as_bool()).unwrap_or(false))
+        serde_json::from_value(
+            v.get("outcome")
+                .cloned()
+                .ok_or_else(|| DispatchError::Rejected("renewal response has no outcome".into()))?,
+        )
+        .map_err(|error| DispatchError::Rejected(format!("invalid renewal outcome: {error}")))
     }
 
     async fn begin_attempt(
