@@ -769,6 +769,7 @@ pub enum FinishFault {
 
 #[cfg(feature = "test-support")]
 pub struct FlakyDispatchStore {
+    maintenance_probe: Option<Arc<maintenance::MaintenanceProbe>>,
     inner: Arc<awaken_dispatch::MemoryDispatchStore>,
     local_maintenance: bool,
     oversized_scan_page: bool,
@@ -791,6 +792,7 @@ impl FlakyDispatchStore {
     /// Wrap a fresh in-memory store that fails its first `fail_claims` claims.
     pub fn new(fail_claims: usize) -> Self {
         Self {
+            maintenance_probe: None,
             inner: Arc::new(awaken_dispatch::MemoryDispatchStore::new()),
             local_maintenance: true,
             oversized_scan_page: false,
@@ -817,6 +819,22 @@ impl FlakyDispatchStore {
     pub fn with_local_maintenance(mut self, owns: bool) -> Self {
         self.local_maintenance = owns;
         self
+    }
+
+    pub fn with_maintenance_probe(mut self, probe: Arc<maintenance::MaintenanceProbe>) -> Self {
+        self.maintenance_probe = Some(probe);
+        self
+    }
+
+    async fn observe_maintenance<T>(
+        &self,
+        operation: maintenance::Operation,
+        future: impl std::future::Future<Output = Result<T, awaken_dispatch::DispatchError>>,
+    ) -> Result<T, awaken_dispatch::DispatchError> {
+        match &self.maintenance_probe {
+            Some(probe) => probe.observe(operation, future).await,
+            None => future.await,
+        }
     }
 
     pub fn with_oversized_scan_page(mut self) -> Self {
@@ -938,6 +956,9 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
         capabilities: &CredentialRealizationCapabilities,
     ) -> Result<Option<awaken_dispatch::Claimed>, awaken_dispatch::DispatchError> {
         self.claim_attempts.fetch_add(1, Ordering::SeqCst);
+        if let Some(probe) = &self.maintenance_probe {
+            probe.event("drain", None);
+        }
         if self.fail_claims.load(Ordering::SeqCst) > 0 {
             self.fail_claims.fetch_sub(1, Ordering::SeqCst);
             return Err(awaken_dispatch::DispatchError::Rejected(
@@ -1105,7 +1126,11 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
         cutoff_ms: u64,
     ) -> Result<usize, awaken_dispatch::DispatchError> {
         self.maintenance_calls[0].fetch_add(1, Ordering::SeqCst);
-        self.inner.purge_dead_letters_before(cutoff_ms).await
+        self.observe_maintenance(
+            maintenance::Operation::Gc,
+            self.inner.purge_dead_letters_before(cutoff_ms),
+        )
+        .await
     }
     async fn superseded(&self) -> Result<Vec<RunId>, awaken_dispatch::DispatchError> {
         self.inner.superseded().await
@@ -1137,7 +1162,11 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
             ids.sort_by(|left, right| left.0.cmp(&right.0));
             Ok(ids)
         } else {
-            self.inner.scan_dispatch_ids(after, limit).await
+            self.observe_maintenance(
+                maintenance::Operation::Scan,
+                self.inner.scan_dispatch_ids(after, limit),
+            )
+            .await
         }
     }
 
@@ -1193,7 +1222,8 @@ impl awaken_dispatch::Outbox for FlakyDispatchStore {
     }
     async fn relay(&self) -> Result<usize, awaken_dispatch::DispatchError> {
         self.maintenance_calls[1].fetch_add(1, Ordering::SeqCst);
-        self.inner.relay().await
+        self.observe_maintenance(maintenance::Operation::Relay, self.inner.relay())
+            .await
     }
 }
 
@@ -3395,3 +3425,6 @@ pub async fn assert_awaiting_settle_fences_stale_epoch<S: awaken_dispatch::Dispa
         SettleOutcome::Applied,
     );
 }
+
+#[cfg(feature = "test-support")]
+pub mod maintenance;

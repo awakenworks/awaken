@@ -714,130 +714,7 @@ struct FlakyResolver {
 
 #[tokio::test(start_paused = true)]
 async fn only_the_queue_owner_runs_maintenance_without_disabling_worker_drains() {
-    // Causes: M1 adapter owns local maintenance; M2 Service/Pool/Reconciler;
-    // M3 terminal timer enabled/disabled; M4 initial tick, hint, then lost-hint
-    // fallback. Effects: E1 local purge+relay continue; E2 remote performs zero
-    // maintenance; E3 execution owners keep claiming; E4 shutdown joins; E5 a
-    // disabled remote terminal timer must not spin on its expired deadline.
-    // Decision table: all 2x3x2 rows. M1=>E1; !M1=>E2; M2!=Reconciler=>E3/E5;
-    // every row=>E4. M4 repeats each row across async scheduling boundaries.
-    // Adapter refusal remains independently tested at the real HTTP boundary.
-    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
-    struct ObservedResolver {
-        inner: FlakyResolver,
-        scans: AtomicUsize,
-    }
-    #[async_trait]
-    impl WorkerResolver<FlakyDispatchStore> for ObservedResolver {
-        async fn worker_for(
-            &self,
-            thread: &ThreadId,
-            agent: Option<&str>,
-        ) -> Result<Arc<FlakyWorker>, Error> {
-            self.inner.worker_for(thread, agent).await
-        }
-        async fn reconcile_committed_terminals(
-            &self,
-            _: Arc<dyn Clock>,
-            _: usize,
-        ) -> Result<Vec<(RunId, RunState)>, Error> {
-            self.scans.fetch_add(1, SeqCst);
-            Ok(Vec::new())
-        }
-    }
-    for owns in [false, true] {
-        for topology in 0..3 {
-            for terminal in [None, Some(Duration::from_millis(10))] {
-                let store = Arc::new(FlakyDispatchStore::new(0).with_local_maintenance(owns));
-                let clock = Arc::new(ManualClock::new(0));
-                let wake = Arc::new(LocalWakeSignal::new());
-                let worker = Arc::new(DispatchWorker::new(
-                    text_runtime(),
-                    store.clone(),
-                    Arc::new(MemoryCommitCoordinator::new()),
-                    "pool",
-                ));
-                let resolver = Arc::new(ObservedResolver {
-                    inner: FlakyResolver {
-                        worker: worker.clone(),
-                    },
-                    scans: AtomicUsize::new(0),
-                });
-                let config = DispatchServiceConfig {
-                    poll_interval: Duration::from_millis(50),
-                    dead_letter_ttl: Some(Duration::from_secs(1)),
-                    terminal_reconciliation_interval: terminal,
-                    ..Default::default()
-                };
-                let stop: std::pin::Pin<Box<dyn std::future::Future<Output = ()>>> = match topology
-                {
-                    0 => {
-                        let service = awaken_dispatch::DispatchService::spawn_with_wake(
-                            worker,
-                            clock,
-                            config,
-                            wake.clone(),
-                        );
-                        Box::pin(service.shutdown())
-                    }
-                    1 => {
-                        let pool = DispatchPool::spawn_with_wake(
-                            store.clone(),
-                            clock,
-                            "pool",
-                            DEFAULT_LEASE_MS,
-                            config,
-                            resolver.clone(),
-                            1,
-                            wake.clone(),
-                        );
-                        Box::pin(pool.shutdown())
-                    }
-                    _ => {
-                        let reconciler = DispatchReconciler::spawn(
-                            store.clone(),
-                            clock,
-                            wake.clone(),
-                            config,
-                            resolver.clone(),
-                            None,
-                        );
-                        Box::pin(reconciler.shutdown())
-                    }
-                };
-                tokio::task::yield_now().await;
-                wake.publish().await.unwrap();
-                tokio::task::yield_now().await;
-                for _ in 0..3 {
-                    tokio::time::advance(Duration::from_millis(50)).await;
-                    tokio::task::yield_now().await;
-                }
-                let calls = store.maintenance_calls();
-                assert!(
-                    calls.iter().all(|count| (*count > 0) == owns),
-                    "M1={owns}/M2={topology}/M3={terminal:?}: {calls:?}"
-                );
-                if topology != 0 {
-                    assert_eq!(resolver.scans.load(SeqCst) > 0, owns && terminal.is_some());
-                }
-                if topology != 2 {
-                    assert!(store.claim_attempts() > 0, "E3 remote still drains");
-                    if !owns {
-                        assert!(store.claim_attempts() <= 16, "E5 no past-deadline spin");
-                    }
-                } else {
-                    assert_eq!(
-                        store.claim_attempts(),
-                        0,
-                        "reconciliation never claims ordinary work"
-                    );
-                }
-                tokio::time::timeout(Duration::from_millis(1), stop)
-                    .await
-                    .expect("E4");
-            }
-        }
-    }
+    maintenance_observations::check_all().await;
 }
 
 #[async_trait]
@@ -3762,3 +3639,6 @@ async fn authority_suspension_does_not_cancel_an_in_flight_run() {
     );
     pool.shutdown().await;
 }
+
+#[path = "pool_memory/maintenance_observations.rs"]
+mod maintenance_observations;
