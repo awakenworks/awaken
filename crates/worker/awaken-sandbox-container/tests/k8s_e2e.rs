@@ -1394,7 +1394,7 @@ async fn an_expired_hand_exec_is_indeterminate_but_a_later_call_uses_the_same_se
      * process is killed before the next request; C3 the same dead executor is
      * invoked; C4 one replacement Hand receives a different operation in the
      * unchanged Pod. Effects: E1 the initial call succeeds; E2 the attempted send
-     * on the dead stream is conservatively Indeterminate/Execution; E3 the later
+     * on the dead stream is the typed Indeterminate outcome; E3 the later
      * operation executes on the replacement; E4 the Session Pod identity is
      * unchanged and is disposed. Constraint K1: a stream write cannot prove that
      * zero bytes were dispatched, so C3 must never become the pre-dispatch retry
@@ -1462,10 +1462,7 @@ async fn an_expired_hand_exec_is_indeterminate_but_a_later_call_uses_the_same_se
         .await
         .expect_err("the expired channel cannot dispatch another call");
     assert!(
-        matches!(
-            error,
-            ToolError::Execution(ref message) if message.contains("indeterminate")
-        ),
+        matches!(error, ToolError::Indeterminate(_)),
         "an attempted stream write is never safe to replay: {error:?}"
     );
 
