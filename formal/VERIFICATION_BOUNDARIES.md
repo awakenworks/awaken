@@ -428,6 +428,18 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Credential effect and MCP delivery evidence
 
+Catalog Vault insert/ensure now share the actual workspace predicate across
+InMemory, SQLite and PostgreSQL. Its Kani proof exhausts u8 identities and row
+presence; shared backend rules V1-V3 cover all 12 operation/owner/presence cases,
+including rejection without mutation and ensure replay preserving durable truth.
+The child workspace harness calls `admit_managed_credential_insert` itself,
+covering fixed a/b owners, v/x parent IDs, parent presence/archive/deletion,
+all child lifecycle variants and full-width revision with unwind 4. Environment
+auth and empty siblings are fixed; a unit success witness rules out a vacuous
+all-reject fixture. The obsolete proof-only child predicate was removed.
+These are bounded admission-kernel proofs, not arbitrary String/URL proofs or
+universal refinement of SQL concurrency, sibling uniqueness and child-ID CAS.
+
 Managed begin/commit and cleanup use the same typed `is_unpublished_at`
 comparison under each adapter's existing transaction. Its creation-presence
 Kani harness covers all four present/absent pairs; shared adapter rule M6
