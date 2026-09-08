@@ -17276,6 +17276,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
         &self,
         adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
         effect_fence: Option<&awaken_sandbox_container::ContainerEffectFence>,
+        authority: Option<&dyn pc::CurrentExecutionAuthority>,
     ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError> {
         if !matches!(self.scenario, TerminalRecoveryScenario::LiveMemory) {
             return Err(pc::SandboxError::new(
@@ -17286,7 +17287,10 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for TerminalRecovery
             pc::SandboxError::new("live terminal Memory adoption requires an exact effect fence")
         })?;
         effect_fence.validate_identity()?;
-        self.events.lock().unwrap().push("adopt-live-memory");
+        pc::with_current_sandbox_effect(effect_fence, authority.unwrap(), || {
+            self.events.lock().unwrap().push("adopt-live-memory");
+            Ok(())
+        })?;
         Ok(Arc::new(TerminalRecoveryEnvironment {
             handle: adoption.handle.clone(),
             events: self.events.clone(),

@@ -80,7 +80,9 @@ fn observe_adoption_inner(
         }
     };
     if let Some(current_fence) = current_fence {
-        validate_live_effect_fence(current_fence)?;
+        // Observation is effect-free. Current admission belongs to the caller's
+        // guarded port, not a comparison of Control expiry with Worker UTC.
+        current_fence.validate_identity()?;
     }
 
     let marker = match match lock {

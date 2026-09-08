@@ -269,7 +269,12 @@ async fn provider_spawn_records_all_trees_and_cold_adoption_waits_for_exact_exit
     let handle = sandbox.handle();
     assert!(
         provider
-            .adopt_sandbox_for_effect(&spec(), &handle, &fence("adopt"))
+            .adopt_sandbox_for_effect(
+                &spec(),
+                &handle,
+                &fence("adopt"),
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("adopt"))
+            )
             .await
             .is_err()
     );
@@ -284,7 +289,12 @@ async fn provider_spawn_records_all_trees_and_cold_adoption_waits_for_exact_exit
     agent.wait().await.unwrap();
     assert!(
         provider
-            .adopt_sandbox_for_effect(&spec(), &handle, &fence("adopt"))
+            .adopt_sandbox_for_effect(
+                &spec(),
+                &handle,
+                &fence("adopt"),
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("adopt"))
+            )
             .await
             .is_err()
     );
@@ -299,7 +309,12 @@ async fn provider_spawn_records_all_trees_and_cold_adoption_waits_for_exact_exit
             .is_err()
     );
     let adopted = provider
-        .adopt_sandbox_for_effect(&spec(), &handle, &fence("adopt"))
+        .adopt_sandbox_for_effect(
+            &spec(),
+            &handle,
+            &fence("adopt"),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("adopt")),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -743,7 +758,12 @@ async fn provider_owner_crash_preserves_marker_and_recovery_never_signals_saved_
     std::fs::write(&path, serde_json::to_vec(&foreign).unwrap()).unwrap();
     assert!(
         provider
-            .adopt_sandbox_for_effect(&spec(), &handle, &fence("adopt"))
+            .adopt_sandbox_for_effect(
+                &spec(),
+                &handle,
+                &fence("adopt"),
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("adopt"))
+            )
             .await
             .is_err()
     );
@@ -764,7 +784,12 @@ async fn provider_owner_crash_preserves_marker_and_recovery_never_signals_saved_
     std::fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
     drop(recreated); // Release a retained terminal guard before cold retry.
     let adopted = provider
-        .adopt_sandbox_for_effect(&spec(), &handle, &fence("adopt"))
+        .adopt_sandbox_for_effect(
+            &spec(),
+            &handle,
+            &fence("adopt"),
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("adopt")),
+        )
         .await
         .unwrap();
     dispose(&adopted).await;

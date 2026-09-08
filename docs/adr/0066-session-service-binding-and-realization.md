@@ -314,8 +314,8 @@ fence-query trait is removed: all callers use the neutral port's
 `current_effect_fence` projection, sharing the same checked callback with
 `with_current_sandbox_effect`. Snapshot success cannot authorize a later effect.
 Container's strict-successor retry rule remains in the Container provider;
-this consolidation does not remove creation/adoption wall-clock checks or
-establish remote commit fencing.
+creation still has wall-clock checks. The adoption migration below is separate
+from remote commit fencing.
 The two Host callers (continuation release and terminal cleanup) capture this
 provider target and forward it through `SessionEnvironment` to the Sandbox.
 Local/Namespace and Container acquire their existing async Memory guard list,
@@ -350,8 +350,8 @@ renewal. Container tests poll actual Pending lock/read/write-response futures
 before revocation, renewal or replacement, and verify no subsequent credential
 effect or successful preparation. Already-admitted broker commits remain
 possible; exact writeback identity is retained for retry. The terminal
-marker/physical-removal clock migration is described below; creation/adoption,
-checkpoint WAL admission is covered below; backend commit fencing remains separate.
+marker/physical-removal, checkpoint WAL and adoption migrations are described
+below; creation and backend commit fencing remain separate.
 
 The Host source decision table and barrier tests cover direct/registered
 topologies, same-byte slot replacement, renewal and closure during Worker,
@@ -405,8 +405,8 @@ The existing model shares one provider wait across fixed preparation/disposal
 selectors; 26 semantic mutants and 12 reachability witnesses include disposal
 and cached completion. Its two-effect bound does not establish ordering across
 both aggregate phases, callback elapsed time or asynchronous remote commit
-fencing. Creation/adoption clock admission and real
-cloud/platform qualification, remain open. Cold reconstruction extends this wiring:
+fencing. Creation clock admission and real cloud/platform qualification remain
+open; live adoption is addressed below. Cold reconstruction extends this wiring:
 the Host captures its existing operation-bound Session/Worker authority before
 calling the Provider, and both public provider ports require it. Local and
 Namespace reuse `prepare_terminal_memory_replay`: exact marker takeover is
@@ -472,7 +472,7 @@ clock fixed in its rejecting class; the oracle independently expands the
 current authority coordinates. This checks that a fresh provider callback can
 enter, not eventual cleanup, callback duration, Rust refinement, real clock
 conversion or remote commit fencing. The existing two-effect bound is unchanged.
-Checkpoint WAL migration is described below. Creation/adoption clock correspondence,
+Checkpoint WAL and live-adoption migrations are described below. Creation and backend clock correspondence,
 FUSE cancellation/compensation ownership and real cloud/platform/credential
 qualification still require their own closure; no such guarantee is inferred
 from the physical-removal tests.
@@ -601,8 +601,8 @@ exact marker/request/snapshot/receipt identity, never Worker UTC. Ready's redund
 inherent checkpoint methods and forwarding implementations are consolidated into
 the one trait implementation; no alternative journal, clock or upload path is
 introduced. The legacy unfenced method still rejects current realizations.
-Ordinary adoption keeps its existing receipt-reconstruction check and is not
-silently granted checkpoint's current-authority guarantee.
+Ordinary adoption is migrated independently below; checkpoint tests alone do
+not establish its current-authority guarantee.
 
 The adjacent ordinary-upload table crosses new/cached WAL, past/future Control
 timestamps and current/revoked/exhausted/wrong-operation/wrong-generation proof
@@ -619,6 +619,40 @@ positive witnesses bring it to 39 mutants and 18 witnesses. The unchanged
 neither model proves snapshot bytes, backend atomicity or Rust refinement.
 Committed checkpoint deletion independently captures the same Host authority
 before calling the existing store and rechecks it after the response.
+
+Live adoption now forwards the same captured `CurrentExecutionAuthority` through
+both Host callers, `SessionEnvironmentProvider` and the neutral/Container provider
+ports. Ordinary recovery captures the exact slot before observation; live-source
+terminal preparation reuses the authority captured for its existing preparation
+branch. Local/Namespace reuse `verify_adoption`, `ReadyOperationGuard` and the
+Provider-owned Memory registry unchanged. Their read-only observation and receipt
+validator no longer compare Control expiry with Worker UTC. Container reuses its
+existing observation, recovered-staging and control-binding implementation, and
+the restored-target verifier receives the same admission callback. Host renews
+only after an admitted adoption response and checks again after renewal and
+Environment construction. No new lifecycle, lease, registry or recovery port is
+added; only existing signatures and their callers change.
+
+Dynamic order is capture original authority -> observe exact handle -> re-enter
+authority -> reopen original participants -> re-enter after each async response ->
+existing publication. Revocation, replacement and exhausted budgets reject the
+next effect/success; they do not revoke an already accepted remote commit.
+Cancelled and unconfirmed Memory mounts remain with the existing Provider owner
+for authenticated retry. Local/Namespace's 40 Pending schedules cover both guard
+allocation timings and both Control timestamp classes. The existing Container
+matrix expands to 80 schedules across live adoption/terminal reconstruction,
+observation/staging/control waits and five authority/cancellation transitions.
+Fourteen Host projection schedules cover direct/registered deployments, loss,
+same-byte slot ABA and renewal during observation/provider waits. The probe
+returns no physical Environment; the lower provider tests own resource effects.
+
+The existing `SessionExecutionBinding` selector adds adoption/replay without
+changing its two-effect/slot/generation bounds: three phase-specific stale-effect
+mutants, one over-denial mutant and two reachability witnesses bring the totals
+to 43 mutants and 20 witnesses. It does not prove Rust refinement, remote renewal
+atomicity, actual restored-backend response schedules, kernel FUSE ownership on
+Worker death, creation clocks, backend-specific observation clocks or real
+cloud/platform/credential qualification.
 
 Adjacent Local tests cross Ready/Removing, slot/put/delete response waits and
 revocation/replacement/expiry/renewal/cancellation and both Control timestamp classes

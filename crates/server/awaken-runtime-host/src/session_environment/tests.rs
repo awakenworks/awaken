@@ -596,7 +596,12 @@ async fn trusted_host_installed_hand_is_lazy_and_never_falls_back_after_launch_f
     drop(executor);
     drop(environment);
     let adopted = provider
-        .adopt_effective_for_effect(&spec(), &handle, Some(&create_fence))
+        .adopt_effective_for_effect(
+            &spec(),
+            &handle,
+            Some(&create_fence),
+            Some(&pc::test_support::EffectAuthority::new(&create_fence)),
+        )
         .await
         .unwrap();
     assert!(adopted.tool_executor().invoke(&call).await.is_err());
@@ -2830,7 +2835,12 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         assert_eq!(ready_replay.handle(), fuse_handle, "M1 {label} binding");
         drop(ready_replay);
         let adopted = fuse_provider
-            .adopt_effective_for_effect(&fuse_spec, &fuse_handle, Some(&fuse_effect))
+            .adopt_effective_for_effect(
+                &fuse_spec,
+                &fuse_handle,
+                Some(&fuse_effect),
+                Some(&pc::test_support::EffectAuthority::new(&fuse_effect)),
+            )
             .await
             .expect("M1 adoption reuses Fuse");
         assert_eq!(fuse_mounts.load(Ordering::SeqCst), 1, "M1 {label}");
@@ -2937,7 +2947,12 @@ async fn local_and_namespace_restart_replay_exact_memory_participants_before_lat
         .expect("M2 Ready replay retains Copy");
     drop(copy_replay);
     let copy_adopted = copy_provider
-        .adopt_effective_for_effect(&copy_spec, &copy_handle, Some(&copy_effect))
+        .adopt_effective_for_effect(
+            &copy_spec,
+            &copy_handle,
+            Some(&copy_effect),
+            Some(&pc::test_support::EffectAuthority::new(&copy_effect)),
+        )
         .await
         .expect("M2 adoption retains Copy");
     copy_adopted
@@ -3502,7 +3517,12 @@ async fn provider_rebasing_adoption_and_container_mount_jail_cover_every_tier() 
     let handle = created.handle();
     drop(created);
     let adopted = namespace
-        .adopt_effective_for_effect(&namespace_spec, &handle, Some(&create_fence))
+        .adopt_effective_for_effect(
+            &namespace_spec,
+            &handle,
+            Some(&create_fence),
+            Some(&pc::test_support::EffectAuthority::new(&create_fence)),
+        )
         .await
         .unwrap();
     assert_eq!(adopted.handle(), handle);

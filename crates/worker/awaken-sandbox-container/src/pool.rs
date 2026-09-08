@@ -528,9 +528,10 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
         &self,
         adoption: crate::ContainerEnvironmentAdoption<'_>,
         effect_fence: Option<&ContainerEffectFence>,
+        authority: Option<&dyn pc::CurrentExecutionAuthority>,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
         self.inner
-            .adopt_environment_for_effect(adoption, effect_fence)
+            .adopt_environment_for_effect(adoption, effect_fence, authority)
             .await
     }
 

@@ -388,6 +388,7 @@ impl crate::cache_volume::CacheVolumeInitializer for Boundary {
 #[derive(Default)]
 struct ProjectionProbe {
     boundary: Boundary,
+    observation_boundary: Option<Arc<Boundary>>,
     replies: Mutex<Vec<SandboxEffectFence>>,
 }
 
@@ -426,6 +427,39 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ProjectionProbe 
         panic!("creation must not adopt")
     }
 
+    async fn observe_environment_for_effect(
+        &self,
+        _: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        _: &SandboxEffectFence,
+    ) -> Result<
+        awaken_provisioning_contract::SandboxObservation,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        if let Some(boundary) = &self.observation_boundary {
+            boundary.pause().await;
+        }
+        Ok(awaken_provisioning_contract::SandboxObservation::Ready)
+    }
+
+    async fn adopt_environment_for_effect(
+        &self,
+        adoption: awaken_sandbox_container::ContainerEnvironmentAdoption<'_>,
+        fence: Option<&SandboxEffectFence>,
+        source: Option<&dyn CurrentExecutionAuthority>,
+    ) -> Result<
+        Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        // Same projection recorder for both provider entrances, no mock lease.
+        self.create_environment_for_effect(
+            adoption.spec,
+            fence,
+            source,
+            awaken_sandbox_container::ContainerRealizationIntent::Create,
+        )
+        .await
+    }
+
     async fn create_environment_for_effect(
         &self,
         _: &awaken_provisioning_contract::SandboxSpec,
@@ -451,6 +485,109 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ProjectionProbe 
         Err(awaken_provisioning_contract::SandboxError::new(
             "projection probe finished",
         ))
+    }
+}
+
+#[tokio::test]
+async fn adoption_forwards_original_authority_across_observation_and_provider_waits() {
+    // H1-H14: direct/registered x observation/adoption Pending x Session close,
+    // same-byte slot ABA, renewal, or registered Worker exhaustion. C1 authority
+    // must be captured BEFORE observation. E1 renewal alone reaches one current
+    // projection with original Control coordinates; E2 loss/ABA reaches zero.
+    // The probe deliberately returns an error after recording, so no physical
+    // Container or publication is fabricated. Provider tests own real resource
+    // retention/retry; this table owns Host forwarding and original-slot capture.
+    for registered in [false, true] {
+        for wait in ["observation", "provider"] {
+            for change in ["closed", "aba", "renewed", "worker_zero"] {
+                if !registered && change == "worker_zero" {
+                    continue;
+                }
+                let worker = Arc::new(Worker(Mutex::new(Some(Duration::from_secs(30)))));
+                let mut host = host();
+                if registered {
+                    host = host.with_execution_authority(worker.clone());
+                }
+                install(&host, lease());
+                let observation = Arc::new(Boundary::default());
+                let probe = Arc::new(ProjectionProbe {
+                    observation_boundary: Some(observation.clone()),
+                    ..Default::default()
+                });
+                let provider = crate::session_environment::SessionEnvironmentProvider::container(
+                    probe.clone(),
+                    vec![],
+                    Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+                    "unused",
+                );
+                let spec = host.sandbox_spec_for_provider("session", &provider);
+                let handle =
+                    crate::host::tests::terminal_fixture_container_handle("session", &spec);
+                let binding = serde_json::to_string(&handle).unwrap();
+                let intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
+                    "session",
+                    awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
+                    Some(lease()),
+                )
+                .from_binding(&binding);
+                let effect = AuthorizedSessionEnvironmentEffect {
+                    provider_fence: Some(lease().sandbox_effect_fence(intent.effect_id()).unwrap()),
+                    intent,
+                    authorization:
+                        awaken_session_contract::SessionEnvironmentEffectAuthorization::Authorized,
+                };
+                let adopt = host.adopt_bound_session_environment_under_lifecycle(
+                    "session",
+                    &binding,
+                    &provider,
+                    None,
+                    SessionEnvironmentUnavailablePolicy::Reject,
+                    Some(&effect),
+                );
+                let transition = async {
+                    observation.entered.notified().await;
+                    if wait == "provider" {
+                        observation.release.notify_one();
+                        probe.boundary.entered.notified().await;
+                    }
+                    match change {
+                        "closed" => {
+                            host.session_slots.close_realization("session", None);
+                        }
+                        "aba" => {
+                            let old = host.session_slots.remove("session").unwrap();
+                            host.session_slots.update("session", |slot| {
+                                slot.realization_authority = old.realization_authority;
+                            });
+                        }
+                        "renewed" => {
+                            let mut renewed = lease();
+                            renewed.expires_at_unix_ms += 30_000;
+                            install(&host, renewed);
+                        }
+                        "worker_zero" => *worker.0.lock().unwrap() = Some(Duration::ZERO),
+                        _ => unreachable!(),
+                    }
+                    observation.release.notify_one();
+                    probe.boundary.release.notify_one();
+                };
+                let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+                    tokio::join!(adopt, transition)
+                })
+                .await
+                .unwrap();
+                assert!(result.is_err(), "probe never publishes");
+                let replies = probe.replies.lock().unwrap();
+                assert_eq!(
+                    replies.len(),
+                    usize::from(change == "renewed"),
+                    "{registered}/{wait}/{change}"
+                );
+                if let Some(fence) = replies.first() {
+                    assert_eq!(fence.expires_at_unix_ms, 90_000);
+                }
+            }
+        }
     }
 }
 

@@ -184,12 +184,22 @@ pub(crate) async fn prepare_adoption_memory_replay(
     root: &Path,
     current_evidence: Option<&super::realization_marker::RealizationEvidence>,
     effect_fence: Option<&pc::SandboxEffectFence>,
+    authority: Option<&dyn pc::CurrentExecutionAuthority>,
     spec: Option<&pc::SandboxSpec>,
     receipt: &super::realization_marker::RealizationCompletionReceipt,
     handle: &pc::SandboxHandle,
     ordinary_realization: pc::Realization,
     host_paths: Option<&[PathBuf]>,
 ) -> Result<AdoptionMemoryReplay, pc::SandboxError> {
+    let admit = || match effect_fence {
+        Some(fence) => pc::with_current_sandbox_effect(
+            fence,
+            authority.ok_or_else(|| pc::SandboxError::new("adoption has no current authority"))?,
+            || Ok(()),
+        ),
+        None => Ok(()),
+    };
+    admit()?;
     let (realized, materializations) = match spec {
         Some(spec) => super::replay_completion_receipt(spec, receipt, ordinary_realization)?,
         None => (receipt.mounts(), receipt.memory_materializations().to_vec()),
@@ -228,7 +238,10 @@ pub(crate) async fn prepare_adoption_memory_replay(
                 spec,
                 &realized,
                 host_paths,
-                || operation.validate_receipt_before_effect(receipt),
+                || {
+                    admit()?;
+                    operation.validate_receipt_before_effect(receipt)
+                },
             )
             .await?
         } else {
@@ -241,6 +254,7 @@ pub(crate) async fn prepare_adoption_memory_replay(
         memory_mounts.lock().await.require_no_pending()?;
         memory_mounts
     };
+    admit()?;
     Ok(AdoptionMemoryReplay {
         realized,
         materializations,
