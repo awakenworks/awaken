@@ -24,6 +24,16 @@ neutral attempt boundary to adapt product envelopes and results. It cannot
 replace Worker registration, dispatch, recovery, commit, Session realization,
 or backend selection.
 
+Standalone bootstrap, embedded CLI Workers, examples and Scenario Host select
+standard Session Resource support through
+`WorkerNodeBuilder::with_remote_session_resource_support`. Registration then
+supplies the exact Worker upstream identity to the existing HTTP Memory adapter
+and Copy mounter; WorkerNode owns the other per-kind Resource clients. The CLI's
+duplicate `registered_memory_mounter_factory` export is removed: callers migrate
+to that builder method. The generic registration-bound factory injection remains
+available for genuinely custom adapters, not as a standard parallel composition.
+No registry, Memory store, lifecycle or timing protocol changes in this migration.
+
 ```text
 Control                                      Worker
   register/heartbeat <-------------------------+

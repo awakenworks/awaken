@@ -129,19 +129,6 @@ async fn prepare_local_acp_with_workspace(
     .await
 }
 
-/// Provide the one registration-bound Memory adapter at the executable edge.
-/// The Worker crate receives only the neutral repository factory and mounter service.
-pub fn registered_memory_mounter_factory() -> awaken_worker::RegisteredMemoryMounterFactory {
-    Arc::new(|context| {
-        let repository = Arc::new(awaken_resource_worker_http::HttpMemoryRepository::new(
-            context.upstream().clone(),
-        ));
-        Ok(Arc::new(
-            awaken_sandbox_memoryd::MemoryStoreMounter::copy_only(repository),
-        ))
-    })
-}
-
 fn configured_worker_upstream(
     upstream: impl Into<String>,
     deployment: &crate::config::ResolvedDeployment,
@@ -198,7 +185,7 @@ fn configured_worker_builder(
             std::time::Duration::from_secs(worker.credential_probe_interval_secs),
             std::time::Duration::from_secs(worker.credential_observation_ttl_secs),
         )
-        .with_registered_memory_mounter_factory(registered_memory_mounter_factory())
+        .with_remote_session_resource_support()
         .with_standard_manifest(Default::default());
     builder = match &worker.admin_listen {
         Some(address) => builder.with_admin_listen(address),
@@ -843,10 +830,11 @@ mod tests {
 
     #[tokio::test]
     async fn all_in_one_worker_exists_without_an_acp_capability() {
-        // Cause/effect graph: C1=AllInOne; C2=local ACP resolver absent.
+        // Cause/effect graph: C1=AllInOne; C2=local ACP resolver present.
         // Effects: E1=the canonical WorkerNode still exists; E2=Native and generic
-        // outbound A2A capabilities are advertised; E3=no invented ACP capability.
-        // Decision table: W1 C1&&!C2 -> E1+E2+E3. The C1+C2 row is owned by the
+        // outbound A2A capabilities are advertised; E3=no invented ACP capability;
+        // E4=the canonical registration-bound Session Resource adapter is installed.
+        // Decision table: W1 C1&&!C2 -> E1+E2+E3+E4. The C1+C2 row is owned by the
         // startup-discovery test below and adds exact ACP observations to this base.
         let directory = tempfile::tempdir().unwrap();
         let mut deployment = crate::config::local_test_deployment(directory.path().into());
@@ -864,6 +852,13 @@ mod tests {
             .build_worker("http://127.0.0.1:1", &deployment)
             .await
             .expect("W1 WorkerNode");
+        assert!(
+            worker
+                .manifest()
+                .capabilities
+                .contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY),
+            "W1/E4 Native composition retains the standard Resource adapter"
+        );
         assert!(
             worker.manifest().capabilities.contains("native-runtime"),
             "W1"
@@ -892,7 +887,8 @@ mod tests {
         // repeated startup reaches the same repository key.
         //
         // Decision table:
-        // P1 detected+available -> route + binding + acp capability
+        // P1 detected+available -> route + binding + acp capability + the same
+        // registration-bound Resource adapter used without ACP (W1/E4 above).
         // P2 repeated startup   -> same binding, no duplicate
         // P3 missing rows       -> diagnostics only, no route or binding
         // P4 explicitly unselected detected row -> diagnostic only, no acquisition
@@ -958,6 +954,13 @@ mod tests {
             .await
             .unwrap();
         assert!(worker.manifest().capabilities.contains("acp:codex"), "P1");
+        assert!(
+            worker
+                .manifest()
+                .capabilities
+                .contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY),
+            "P1/E4 ACP composition retains the standard Resource adapter"
+        );
         assert!(
             worker
                 .manifest()
