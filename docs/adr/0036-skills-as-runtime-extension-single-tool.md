@@ -77,6 +77,20 @@ failure, unsafe mount, missing attached bytes, hash mismatch, missing filesystem
 capability, unsupported lazy prompt source, or attempted mode change fails
 closed before the model receives a competing surface.
 
+Skill metadata retains its name, description and materialized directory until
+the attempt builds its model request. The Session's existing `AgentPathView`
+then projects Skill paths together with Resource paths using the current
+Environment and the selected ACP working directory. An isolated workspace
+advertises sandbox-absolute paths; a trusted local ACP process receives paths
+relative to its actual cwd, without a provider-private host prefix. Embedded
+Native tools likewise use their actual sandbox-root cwd, rather than pretending
+that their selected mount aliases accept every sandbox-absolute path. The
+Environment resolves directory spelling through the same layout used by its
+materialization and discovery adapters. A provisional reservation may retain
+unrendered metadata, but may not freeze that provisional spelling into the
+later executable request. This changes no Skill selection, version, mount,
+permission, or durable authority, and introduces no additional catalog.
+
 ADR-0063 D9 remains authoritative for Managed Session version pinning. The
 run-scoped portions of D7/D8 below apply only to direct, agent-created Skills.
 

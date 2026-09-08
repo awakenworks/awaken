@@ -725,7 +725,8 @@ async fn trusted_host_filesystem_view_maps_workspace_relative_cwd_once() {
     // the platform-native physical path; E4 process gets the provider-neutral
     // logical path; E5 prompts contain no host prefix. Decision rules:
     // T1 ACP+default=>E1+E5; T2 ACP+configured=>E2+E3+E4+E5;
-    // T3 Native=>sandbox-logical prompt paths; T4 Workdir+mixed=>reject.
+    // T3 embedded Native=>paths relative to its actual sandbox-root cwd;
+    // T4 Workdir+mixed=>reject. A selected mount alias is not a general root alias.
     let base = tempfile::tempdir().unwrap();
     let provider =
         SessionEnvironmentProvider::trusted_host_workdir_with_agent_stderr(base.path(), false);
@@ -767,9 +768,11 @@ async fn trusted_host_filesystem_view_maps_workspace_relative_cwd_once() {
     let native = environment.agent_filesystem_view(None, AgentFilesystemClient::NativeTools);
     assert_eq!(
         native.prompt_paths,
-        crate::managed_resource_projection::AgentPathView::sandbox_absolute(),
-        "Native Hand paths remain sandbox-logical"
+        crate::managed_resource_projection::AgentPathView::workdir_relative("/"),
+        "Embedded Native paths use the actual rooted-tools cwd"
     );
+    assert_eq!(native.protocol_cwd, root);
+    assert_eq!(native.command_cwd, "/");
     assert!(
         environment
             .agent_prompt_path_view(None, true, true)
@@ -1073,6 +1076,110 @@ async fn namespace_native_process_and_agent_channel_share_one_live_environment()
         "N3 new Hand still owns the original root"
     );
     rebound.dispose().await.unwrap();
+}
+
+#[tokio::test]
+async fn skill_paths_follow_the_materialization_layout_and_attempt_client() {
+    // P4 decision table: provider={Workdir rooted tools, Workdir Hand,
+    // Namespace, Container} x client={Native,ACP} x cwd={default,repo/src}
+    // x source={attached relative,repository relative,repository absolute}.
+    // Isolated providers expose exact /workspace paths regardless of cwd;
+    // local ACP/Hand paths are relative to the actual client cwd and expose no
+    // host prefix. Native ignores the ACP-only cwd option. No materialization
+    // alias is created. P5 unsafe metadata fails before prompt publication.
+    // This is adapter/path evidence; the Workdir read test proves actual bytes,
+    // and real Cowork Native/ACP E2E owns isolated tool execution evidence.
+    for tier in ["rooted", "hand", "namespace", "container"] {
+        let root = tempfile::tempdir().unwrap();
+        let provider = match tier {
+            "namespace" => SessionEnvironmentProvider::namespace_with_agent_stderr(
+                root.path(),
+                false,
+                Arc::new(FakeHandExecutorFactory),
+                "/bin/sh",
+                std::time::Duration::ZERO,
+            ),
+            "container" => SessionEnvironmentProvider::container(
+                Arc::new(FakeContainerProvider::default()),
+                Vec::new(),
+                Arc::new(FakeHandExecutorFactory),
+                "/bin/sh",
+            ),
+            _ => {
+                let mut provider = SessionEnvironmentProvider::workdir(root.path());
+                if tier == "hand" {
+                    provider.install_workdir_hand(
+                        Arc::new(FakeHandExecutorFactory),
+                        "/bin/sh".into(),
+                        std::time::Duration::ZERO,
+                    );
+                }
+                provider
+            }
+        };
+        let environment = provider.create(&spec()).await.unwrap();
+        for client in [
+            AgentFilesystemClient::NativeTools,
+            AgentFilesystemClient::AcpProcess,
+        ] {
+            for cwd in [None, Some("repo/src")] {
+                let view = environment.agent_filesystem_view(cwd, client);
+                for directory in [
+                    ".skills/s",
+                    "workspace/repo/.claude/skills/s",
+                    "/workspace/repo/.claude/skills/s",
+                ] {
+                    let attached = directory == ".skills/s";
+                    let expected = if matches!(tier, "namespace" | "container") {
+                        if attached {
+                            "/workspace/.skills/s"
+                        } else {
+                            "/workspace/repo/.claude/skills/s"
+                        }
+                    } else if tier == "rooted" && client == AgentFilesystemClient::NativeTools {
+                        if attached {
+                            ".skills/s"
+                        } else {
+                            "workspace/repo/.claude/skills/s"
+                        }
+                    } else if client == AgentFilesystemClient::AcpProcess && cwd.is_some() {
+                        if attached {
+                            "../../../.skills/s"
+                        } else {
+                            "../.claude/skills/s"
+                        }
+                    } else if attached {
+                        "../.skills/s"
+                    } else {
+                        "repo/.claude/skills/s"
+                    };
+                    let logical = environment.skill_directory_path(directory).unwrap();
+                    assert_eq!(
+                        view.prompt_paths.render(&logical),
+                        if expected.starts_with('/') {
+                            expected.to_owned()
+                        } else {
+                            expected.replace('/', std::path::MAIN_SEPARATOR_STR)
+                        },
+                        "P4 {tier} {client:?} {cwd:?} {directory}"
+                    );
+                }
+            }
+        }
+        for bad in [
+            "",
+            "../escape",
+            "skill/../escape",
+            "skill\\escape",
+            "skill\0escape",
+        ] {
+            assert!(
+                environment.skill_directory_path(bad).is_err(),
+                "P5 {tier} {bad:?}"
+            );
+        }
+        environment.dispose().await.unwrap();
+    }
 }
 
 #[tokio::test]

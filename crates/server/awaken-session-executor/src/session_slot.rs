@@ -499,7 +499,7 @@ pub(crate) struct SessionRuntimeSlot {
     pub skills: Option<Vec<awaken_resource_contract::SkillVersion>>,
     /// Managed-filesystem Skill discovery metadata. Full instructions remain
     /// in each materialized `SKILL.md` and are read on demand by file tools.
-    pub skill_prompt: Option<String>,
+    pub skill_prompt: Option<crate::skills::FilesystemSkillPrompt>,
     pub resources: StagedResources,
     pub manifest: Option<awaken_session_contract::SessionResourceManifest>,
     /// Exact aggregate-owned physical replacement currently being replayed.
@@ -728,7 +728,8 @@ impl SessionRuntimeSlots {
         self.read(session, |slot| {
             let mut prompts = slot.resources.prompts.clone();
             let delivery = slot.content_delivery.unwrap_or_default();
-            let path_view = match slot.environment_owner.resident() {
+            let environment = slot.environment_owner.resident();
+            let path_view = match environment.as_deref() {
                 Some(environment) => environment
                     .agent_prompt_path_view(working_directory, has_acp, has_native)
                     .map_err(str::to_owned)?,
@@ -744,7 +745,7 @@ impl SessionRuntimeSlots {
                 prompts.extend(baseline.prompts.clone());
             }
             if let Some(skill_prompt) = &slot.skill_prompt {
-                prompts.push(skill_prompt.clone());
+                prompts.push(skill_prompt.render(&path_view, environment.as_deref())?);
             }
             Ok(prompts)
         })
