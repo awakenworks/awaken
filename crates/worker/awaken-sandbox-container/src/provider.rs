@@ -7,7 +7,7 @@ use super::*;
 
 fn refresh_effect_fence(
     asserted: &ContainerEffectFence,
-    source: Option<&dyn ContainerEffectFenceSource>,
+    source: Option<&dyn pc::CurrentExecutionAuthority>,
 ) -> Result<ContainerEffectFence, pc::SandboxError> {
     let source = source.ok_or_else(|| {
         pc::SandboxError::new(
@@ -209,7 +209,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         spec: &pc::SandboxSpec,
         effect_fence: Option<&ContainerEffectFence>,
-        effect_fence_source: Option<&dyn ContainerEffectFenceSource>,
+        effect_fence_source: Option<&dyn pc::CurrentExecutionAuthority>,
         intent: ContainerRealizationIntent,
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
         if let Some(effect_fence) = effect_fence {
@@ -867,7 +867,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for ContainerPr
         &self,
         spec: &pc::SandboxSpec,
         effect_fence: Option<&ContainerEffectFence>,
-        effect_fence_source: Option<&dyn ContainerEffectFenceSource>,
+        effect_fence_source: Option<&dyn pc::CurrentExecutionAuthority>,
         intent: ContainerRealizationIntent,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
         Ok(Arc::new(
