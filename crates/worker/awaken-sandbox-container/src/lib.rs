@@ -52,6 +52,7 @@ pub use egress::{
 };
 pub use live_inputs::{LIVE_INPUTS_ROOT, live_input_relative_path};
 pub use packages::package_containerfile;
+pub(crate) use podman_plan::podman_create_argv;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 use podman_plan::{image_of, rootfs_of};
 pub use provider_contract::{
@@ -350,6 +351,22 @@ mod planner_tests {
         assert_eq!(arg_after(&argv, "-v"), Some("/host/data:/data:ro"));
         // Session environment: the image then the PID-1 keepalive are the tail.
         assert_eq!(&argv[argv.len() - 3..], &["img:2", "claude", "--acp"]);
+    }
+
+    #[test]
+    fn podman_prepare_projects_the_same_object_without_starting_it() {
+        // Cause/effect table: C1 one canonical ContainerPlan; C2 projection is
+        // direct-run/reservation. R1 both rows preserve every immutable argv
+        // field after the lifecycle prefix; R2 direct uses `run -d`; R3 the
+        // reservation uses `create` without detach, so activation is the sole
+        // `start` authority. This guards against a second plan renderer.
+        let run = podman_run_argv("run-1", &podman_plan(), &RootfsPlan::Image("img:2".into()));
+        let prepared =
+            podman_create_argv("run-1", &podman_plan(), &RootfsPlan::Image("img:2".into()));
+        assert_eq!(&run[..2], &["run", "-d"], "R2");
+        assert_eq!(prepared.first().map(String::as_str), Some("create"), "R3");
+        assert!(!prepared.iter().any(|argument| argument == "-d"), "R3");
+        assert_eq!(&run[2..], &prepared[1..], "R1");
     }
 
     #[test]

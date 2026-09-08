@@ -39,8 +39,8 @@ use crate::{
     SANDBOX_EFFECT_EPOCH_LABEL, SANDBOX_EFFECT_EXPIRY_LABEL, SANDBOX_EFFECT_LABEL,
     SANDBOX_EFFECT_OWNER_LABEL, SANDBOX_EFFECT_RUNTIME_LABEL, SANDBOX_REALIZATION_LABEL,
     SANDBOX_SCOPE_LABEL, container_effect_fence_from_values, container_effect_label_values,
-    podman_run_argv, restoration_metadata, restoration_plan_fingerprint, restore_container_name,
-    runtime_container_name, sandbox_scope_identity,
+    podman_create_argv, podman_run_argv, restoration_metadata, restoration_plan_fingerprint,
+    restore_container_name, runtime_container_name, sandbox_scope_identity,
 };
 use command::podman_command;
 #[cfg(test)]
@@ -794,14 +794,14 @@ impl ContainerRuntime for PodmanRuntime {
         self.create_for_effect(&context, plan, &fingerprint).await
     }
 
-    async fn create_for_effect(
+    async fn prepare_for_effect(
         &self,
         context: &ContainerRealizationContext<'_>,
         plan: &ContainerPlan,
         realization_fingerprint: &pc::SandboxRealizationFingerprint,
     ) -> Result<String, RuntimeError> {
         let name = runtime_container_name(self.realization_namespace.as_str(), context.scope)?;
-        let mut args = podman_run_argv(&name, plan, &plan.rootfs);
+        let mut args = podman_create_argv(&name, plan, &plan.rootfs);
         // Publish the agent's internal port to an ephemeral 127.0.0.1 host port so
         // `open_channel` can dial it (inserted after `--name <name>`, before the image).
         if let Some(i) = args.iter().position(|a| a == &name) {
@@ -857,27 +857,8 @@ impl ContainerRuntime for PodmanRuntime {
                         decision = after;
                     }
                 },
-                ExistingRealizationDecision::ConvergeCreating(observed) => {
-                    if let Err(error) = self
-                        .run(&["start".into(), observed.incarnation.identity.clone()])
-                        .await
-                    {
-                        let after = self
-                            .create_decision(context, Some(realization_fingerprint))
-                            .await
-                            .map_err(RuntimeError::after_mutation)?;
-                        if let ExistingRealizationDecision::ReuseReady(observed) = &after {
-                            return Ok(observed.incarnation.identity.clone());
-                        }
-                        if after == ExistingRealizationDecision::Create {
-                            return Err(error.after_mutation());
-                        }
-                        decision = after;
-                        continue;
-                    }
-                    return Ok(observed.incarnation.identity);
-                }
-                ExistingRealizationDecision::ReuseReady(observed) => {
+                ExistingRealizationDecision::ConvergeCreating(observed)
+                | ExistingRealizationDecision::ReuseReady(observed) => {
                     return Ok(observed.incarnation.identity);
                 }
                 ExistingRealizationDecision::ReplaceExact(observed) => {
@@ -910,7 +891,63 @@ impl ContainerRuntime for PodmanRuntime {
                 }
             }
         }
-        Err(backend("Podman exact realization did not converge").after_mutation())
+        Err(backend("Podman exact reservation did not converge").after_mutation())
+    }
+
+    async fn activate_for_effect(
+        &self,
+        context: &ContainerRealizationContext<'_>,
+        _plan: &ContainerPlan,
+        realization_fingerprint: &pc::SandboxRealizationFingerprint,
+        prepared_locator: &str,
+    ) -> Result<String, RuntimeError> {
+        if context.effect_fence.is_none() {
+            self.run(&["start".into(), prepared_locator.into()])
+                .await
+                .map_err(RuntimeError::after_mutation)?;
+            return Ok(prepared_locator.to_owned());
+        }
+        let decision = self
+            .create_decision(context, Some(realization_fingerprint))
+            .await?;
+        match decision {
+            ExistingRealizationDecision::ConvergeCreating(observed)
+                if observed.incarnation.identity == prepared_locator =>
+            {
+                let start = self
+                    .run(&["start".into(), observed.incarnation.identity.clone()])
+                    .await;
+                let after = self
+                    .create_decision(context, Some(realization_fingerprint))
+                    .await
+                    .map_err(RuntimeError::after_mutation)?;
+                match after {
+                    ExistingRealizationDecision::ReuseReady(ready)
+                        if ready.incarnation.identity == prepared_locator =>
+                    {
+                        Ok(ready.incarnation.identity)
+                    }
+                    _ => Err(match start {
+                        Ok(_) => {
+                            backend("Podman activation did not publish the prepared realization")
+                        }
+                        Err(error) => error,
+                    }
+                    .after_mutation()),
+                }
+            }
+            ExistingRealizationDecision::ReuseReady(observed)
+                if observed.incarnation.identity == prepared_locator =>
+            {
+                Ok(observed.incarnation.identity)
+            }
+            ExistingRealizationDecision::Create => Err(backend(
+                "Podman prepared realization disappeared before activation",
+            )),
+            _ => Err(backend(
+                "Podman activation resolved a different or inadmissible realization",
+            )),
+        }
     }
 
     async fn recover_restore_target(
