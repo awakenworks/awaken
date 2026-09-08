@@ -1385,25 +1385,41 @@ mod tests {
         assert_eq!(reclaimed.state, WorkState::Active);
     }
 
+    async fn reclaim_age_boundary_cases(q: &impl WorkQueue) {
+        // Adapter decision table: live TTL throughout; absent age or age > now
+        // must retain the current lease. age == now selects refresh zero;
+        // after re-claim at time one, age 1000 at time 1001 selects refresh one.
+        // These distinguish None from Some(0), catch an omitted shared cutoff,
+        // and assert the same Work identity survives each accepted re-claim.
+        let environment = "env_reclaim_cutoff";
+        let id = q.enqueue_session(environment, "s1").await.unwrap();
+        assert_eq!(q.claim(environment, "a", 0).await.unwrap().unwrap().id, id);
+        for (now, age, expected) in [
+            (1, None, false),
+            (1, Some(2), false),
+            (1, Some(1), true),
+            (1_001, Some(1_000), true),
+        ] {
+            let actual = q
+                .claim_with_reclaim(environment, "b", "b", now, age)
+                .await
+                .unwrap();
+            assert_eq!(
+                actual.is_some(),
+                expected,
+                "refresh cutoff row {now}/{age:?}"
+            );
+            if let Some(item) = actual {
+                assert_eq!(item.id, id);
+                assert_eq!(item.state, WorkState::Active);
+            }
+        }
+        q.remove_env(environment).await.unwrap();
+    }
+
     #[tokio::test]
     async fn sqlite_honors_requested_reclaim_age_before_lease_expiry() {
-        let q = q();
-        let w1 = q.enqueue_session("env_a", "s1").await.expect("enqueue");
-        assert_eq!(
-            q.claim("env_a", "a", 0)
-                .await
-                .expect("claim query")
-                .expect("lease")
-                .id,
-            w1
-        );
-        let reclaimed = q
-            .claim_with_reclaim("env_a", "b", "b", 1_001, Some(1_000))
-            .await
-            .expect("claim query")
-            .expect("requested reclaim age reclaims the active lease");
-        assert_eq!(reclaimed.id, w1);
-        assert_eq!(reclaimed.state, WorkState::Active);
+        reclaim_age_boundary_cases(&q()).await;
     }
 
     #[tokio::test]
@@ -1833,6 +1849,7 @@ mod tests {
             .is_some(),
             "PT1/E2"
         );
+        reclaim_age_boundary_cases(&q).await;
         q.remove_env("env_a").await.unwrap();
         assert!(
             q.list("env_a").await.expect("list").is_empty(),

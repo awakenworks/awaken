@@ -267,6 +267,14 @@ pub(super) fn db_millis(now_ms: u64) -> i64 {
     i64::try_from(now_ms).unwrap_or(i64::MAX)
 }
 
+/// Shared refresh-age cutoff for both durable claim adapters. An absent age
+/// or an age older than the clock's origin cannot select a refreshed lease.
+pub(super) fn reclaim_cutoff(now_ms: u64, age_ms: Option<u64>) -> Option<i64> {
+    age_ms
+        .and_then(|age| now_ms.checked_sub(age))
+        .map(db_millis)
+}
+
 pub(super) fn effective_ttl_seconds(desired: Option<u64>) -> u64 {
     desired.unwrap_or(HEARTBEAT_TTL_SECONDS).max(1)
 }
@@ -336,6 +344,118 @@ pub(super) fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkItem>
             Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
         )
     })
+}
+
+#[cfg(any(test, kani))]
+mod clock_proofs {
+    use super::*;
+
+    fn check_deadline(now: u64, ttl: u64, requested: bool) {
+        // Causes: full-width time and TTL, requested/default TTL, zero TTL,
+        // multiplication/addition overflow, and the signed database ceiling.
+        // D1 absent request => 60 seconds; D2 explicit zero => one second;
+        // D3 positive request => unchanged. D4 exact deadline below i64::MAX;
+        // D5 larger mathematical result => i64::MAX, never wrap or go negative.
+        // A u128 sum/product is independent of production saturation and
+        // conversion. The raw helper's zero-TTL case is checked as well.
+        let ceiling = i64::MAX as u128;
+        let expected_ttl = if requested {
+            if ttl == 0 { 1 } else { ttl }
+        } else {
+            60
+        };
+        let actual_ttl = effective_ttl_seconds(requested.then_some(ttl));
+        assert_eq!(actual_ttl, expected_ttl);
+        assert_eq!(db_millis(now) as u128, u128::from(now).min(ceiling));
+        assert_eq!(
+            lease_expiry(now, ttl) as u128,
+            (u128::from(now) + u128::from(ttl) * 1000).min(ceiling)
+        );
+        assert_eq!(
+            lease_expiry(now, actual_ttl) as u128,
+            (u128::from(now) + u128::from(expected_ttl) * 1000).min(ceiling)
+        );
+    }
+
+    fn check_cutoff(now: u64, age: Option<u64>) {
+        // C1 age absent => no age-based reclaim; C2 age > now => none, without
+        // unsigned underflow; C3 age <= now => exact difference, capped only
+        // at the database ceiling. Equality is included: age == now => Some(0),
+        // distinct from None, so a lease refreshed at zero is eligible.
+        // Signed i128 subtraction owns the oracle, not checked_sub/db_millis.
+        let expected = age.and_then(|age| {
+            let difference = i128::from(now) - i128::from(age);
+            (difference >= 0).then(|| difference.min(i128::from(i64::MAX)) as i64)
+        });
+        assert_eq!(reclaim_cutoff(now, age), expected);
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    fn work_lease_deadlines_clamp_without_wrapping() {
+        check_deadline(kani::any(), kani::any(), kani::any());
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    fn work_reclaim_cutoff_is_exact_and_underflow_free() {
+        check_cutoff(kani::any(), kani::any());
+    }
+
+    #[test]
+    fn lease_deadline_boundary_table() {
+        // D1-D5 boundary-value cross-product: both sides of the signed ceiling,
+        // seconds-to-ms multiplication ceiling and unsigned addition ceiling.
+        let ceiling = i64::MAX as u64;
+        let values = [
+            0,
+            1,
+            59,
+            60,
+            61,
+            999,
+            1000,
+            ceiling / 1000,
+            ceiling / 1000 + 1,
+            ceiling - 1,
+            ceiling,
+            ceiling + 1,
+            u64::MAX / 1000,
+            u64::MAX / 1000 + 1,
+            u64::MAX - 1,
+            u64::MAX,
+        ];
+        for now in values {
+            for ttl in values {
+                for requested in [false, true] {
+                    check_deadline(now, ttl, requested);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reclaim_cutoff_boundary_table() {
+        // C1-C3 cross-product includes absent, zero, equality, one-before/after,
+        // signed saturation and u64::MAX. All C1-C3 effects are observable.
+        let ceiling = i64::MAX as u64;
+        let values = [
+            0,
+            1,
+            2,
+            ceiling - 1,
+            ceiling,
+            ceiling + 1,
+            u64::MAX - 1,
+            u64::MAX,
+        ];
+        for now in values {
+            check_cutoff(now, None);
+            for age in values {
+                check_cutoff(now, Some(age));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
