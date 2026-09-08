@@ -41,6 +41,88 @@ use harness::{
 
 const LEASE: u64 = 1_000;
 
+#[tokio::test]
+async fn native_worker_freezes_binding_before_tool_entry_and_clears_on_return() {
+    // B18 registered exact binding + Native drive => the admitted slot retains
+    // the coordinate while a real Runtime tool is blocked, then the ordinary
+    // Worker ACK clears it. B19 wrong incarnation => zero tool entry, no slot.
+    // Provider truth and independent post-crash stopping are not asserted here.
+    for valid in [false, true] {
+        let store = Arc::new(MemoryDispatchStore::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let (directory, identity) =
+            awaken_dispatch_testkit::worker_http::ready_worker("binding-worker").await;
+        let snapshot = directory
+            .current(&identity.worker_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .snapshot;
+        store
+            .enqueue(
+                RunDispatch::new(activation("worker-binding"))
+                    .with_placement(awaken_dispatch::PlacementRequirements::remote_required()),
+            )
+            .await
+            .unwrap();
+        let claimed = store
+            .claim_compatible(&snapshot, 60_000, 0)
+            .await
+            .unwrap()
+            .unwrap();
+        let claim = RunClaim::from(&claimed.lease);
+        let binding = awaken_dispatch::AttemptExecutionBinding::new(
+            if valid {
+                identity.clone()
+            } else {
+                awaken_dispatch::WorkerIdentity::new("foreign", "boot", 1)
+            },
+            "cluster-a",
+            "pod-a",
+        )
+        .unwrap();
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let (runtime, calls, entered) =
+            harness::blocking_tool_runtime_with_entry_signal(release.clone());
+        let worker = DispatchWorker::new(runtime, store.clone(), commit, identity.lease_owner())
+            .with_execution_binding(binding.clone());
+        let drive =
+            tokio::spawn(async move { worker.drive_claimed(claimed, harness::clock(0)).await });
+        if valid {
+            tokio::time::timeout(Duration::from_secs(5), entered.notified())
+                .await
+                .expect("B18 tool entry");
+            assert_eq!(
+                store.load_physical_attempt(&claim.run_id).await.unwrap(),
+                Some(awaken_dispatch::PhysicalAttempt {
+                    claim: claim.clone(),
+                    binding: Some(binding)
+                })
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            release.add_permits(1);
+            tokio::time::timeout(Duration::from_secs(5), drive)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        } else {
+            assert!(
+                tokio::time::timeout(Duration::from_secs(5), drive)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .is_err()
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 0, "B19 no external effect");
+        }
+        assert_eq!(
+            store.load_physical_attempt(&claim.run_id).await.unwrap(),
+            None
+        );
+    }
+}
+
 struct ContinuationOnlyAttemptExecutor {
     calls: AtomicUsize,
 }
@@ -136,7 +218,7 @@ async fn pre_start_cancellation_acknowledges_only_a_freshly_installed_slot() {
     let stutter_claim = RunClaim::from(&stutter_claimed.lease);
     assert_eq!(
         stutter_store
-            .begin_attempt(&stutter_claim, 0)
+            .begin_attempt(&stutter_claim, 0, None)
             .await
             .unwrap(),
         AttemptAdmission::Applied,
@@ -189,7 +271,7 @@ async fn pre_start_cancellation_acknowledges_only_a_freshly_installed_slot() {
     let predecessor_claim = RunClaim::from(&predecessor.lease);
     assert_eq!(
         inherited_store
-            .begin_attempt(&predecessor_claim, 0)
+            .begin_attempt(&predecessor_claim, 0, None)
             .await
             .unwrap(),
         AttemptAdmission::Applied,
@@ -295,7 +377,7 @@ async fn a_returned_unknown_tool_result_cannot_release_the_durable_physical_slot
         .unwrap();
     assert_eq!(
         store
-            .begin_attempt(&RunClaim::from(&replacement.lease), LEASE + 1)
+            .begin_attempt(&RunClaim::from(&replacement.lease), LEASE + 1, None)
             .await
             .unwrap(),
         AttemptAdmission::Blocked
@@ -376,7 +458,7 @@ where
             .unwrap();
         assert_eq!(
             store
-                .begin_attempt(&RunClaim::from(&replacement.lease), LEASE + 1)
+                .begin_attempt(&RunClaim::from(&replacement.lease), LEASE + 1, None)
                 .await
                 .unwrap(),
             AttemptAdmission::Blocked
@@ -479,7 +561,10 @@ async fn replacement_claim_waits_for_predecessor_quiescence_before_model_entry()
         .expect("A claim");
     let claim_a = RunClaim::from(&first.lease);
     assert_eq!(
-        store.begin_attempt(&claim_a, 0).await.expect("W1 begin A"),
+        store
+            .begin_attempt(&claim_a, 0, None)
+            .await
+            .expect("W1 begin A"),
         AttemptAdmission::Applied
     );
     let replacement = store
@@ -877,7 +962,7 @@ async fn assert_occupied_attempt_terminal_recovery<S: awaken_dispatch::Dispatch 
         .unwrap();
     let predecessor = RunClaim::from(&first.lease);
     assert_eq!(
-        store.begin_attempt(&predecessor, 0).await.unwrap(),
+        store.begin_attempt(&predecessor, 0, None).await.unwrap(),
         AttemptAdmission::Applied
     );
     if cancel {
@@ -1241,7 +1326,7 @@ async fn reclaim_after_process_bound_attempt_quiesces_applies_never_replay_polic
         .expect("C2 B replacement claim");
     assert_eq!(
         store
-            .begin_attempt(&RunClaim::from(&replacement.lease), LEASE + 1)
+            .begin_attempt(&RunClaim::from(&replacement.lease), LEASE + 1, None)
             .await
             .expect("R1 B physical admission"),
         AttemptAdmission::Blocked,
@@ -1463,7 +1548,7 @@ async fn killed_process_does_not_fabricate_physical_quiescence_on_sqlite_reopen(
     assert!(replacement.recovered);
     assert_eq!(
         dispatch
-            .begin_attempt(&RunClaim::from(&replacement.lease), LEASE + 1)
+            .begin_attempt(&RunClaim::from(&replacement.lease), LEASE + 1, None)
             .await
             .unwrap(),
         AttemptAdmission::Blocked,
@@ -1547,7 +1632,7 @@ async fn native_cancelled_external_future_does_not_acknowledge_physical_return()
     );
     assert_eq!(
         store
-            .begin_attempt(&RunClaim::from(&replacement.lease), LEASE + 1)
+            .begin_attempt(&RunClaim::from(&replacement.lease), LEASE + 1, None)
             .await
             .unwrap(),
         AttemptAdmission::Blocked,

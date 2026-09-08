@@ -462,7 +462,7 @@ async fn occupied_physical_attempt_blocks_terminal_observers_and_work_release() 
     // must not unlock parent activity before the physical execution quiesces.
     for child in [false, true] {
         let (store, claim, session, thread) = claimed_terminal_dispatch("occupied", child).await;
-        store.begin_attempt(&claim, 0).await.unwrap();
+        store.begin_attempt(&claim, 0, None).await.unwrap();
         let observer = Arc::new(FailFirstTerminalSettlement::default());
         let work = Arc::new(RecordingSessionWork::default());
         let recovery = terminal_recovery(

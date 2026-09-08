@@ -6,6 +6,7 @@ impl PostgresDispatchStore {
         claim: &RunClaim,
         _now_ms: u64,
         handoff: bool,
+        binding: Option<&AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
         let p = NS;
         let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
@@ -19,7 +20,7 @@ impl PostgresDispatchStore {
         let now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
         let current = sqlx::query(&format!(
             "SELECT status, lease_owner, lease_epoch, lease_until, \
-             active_attempt_owner, active_attempt_epoch, retired_attempt_epoch \
+             active_attempt_owner, active_attempt_epoch, retired_attempt_epoch, active_attempt_binding, worker_assignment \
              FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
         ))
         .bind(&claim.run_id.0)
@@ -67,17 +68,40 @@ impl PostgresDispatchStore {
         )).bind(&thread).bind(&claim.run_id.0).fetch_one(&mut *tx).await.map_err(store_error)?;
         let (transition, admission) =
             crate::dispatch::decide_physical_attempt_admission(live, slot, handoff, peer_occupied)?;
+        let stored = crate::dispatch::decode_physical_attempt(
+            &claim.run_id,
+            active_owner,
+            active_epoch,
+            current
+                .try_get("active_attempt_binding")
+                .map_err(store_error)?,
+        )?;
+        let assignment: Option<Json<WorkerAssignment>> =
+            current.try_get("worker_assignment").map_err(store_error)?;
+        crate::dispatch::verify_physical_attempt_binding(
+            transition,
+            claim,
+            assignment.as_ref().map(|a| &a.0),
+            binding,
+            stored.as_ref().and_then(|a| a.binding.as_ref()),
+        )?;
         if matches!(
             transition,
             PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Replace
         ) {
             sqlx::query(&format!(
                 "UPDATE {p}_dispatch SET active_attempt_owner = $2, \
-                     active_attempt_epoch = $3 WHERE run_id = $1"
+                     active_attempt_epoch = $3, active_attempt_binding = $4 WHERE run_id = $1"
             ))
             .bind(&claim.run_id.0)
             .bind(&claim.owner)
             .bind(epoch)
+            .bind(
+                binding
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(DispatchError::unavailable)?,
+            )
             .execute(&mut *tx)
             .await
             .map_err(store_error)?;
@@ -1170,16 +1194,20 @@ impl DispatchQueue for PostgresDispatchStore {
         &self,
         claim: &RunClaim,
         now_ms: u64,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
-        self.admit_physical_attempt(claim, now_ms, false).await
+        self.admit_physical_attempt(claim, now_ms, false, _binding)
+            .await
     }
 
     async fn handoff_attempt(
         &self,
         claim: &RunClaim,
         now_ms: u64,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
-        self.admit_physical_attempt(claim, now_ms, true).await
+        self.admit_physical_attempt(claim, now_ms, true, _binding)
+            .await
     }
 
     async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
@@ -1216,7 +1244,7 @@ impl DispatchQueue for PostgresDispatchStore {
         if transition == PhysicalAttemptTransition::Clear {
             sqlx::query(&format!(
                 "UPDATE {p}_dispatch SET active_attempt_owner = NULL, \
-                     active_attempt_epoch = NULL, retired_attempt_epoch = $3 WHERE run_id = $1 \
+                     active_attempt_epoch = NULL, active_attempt_binding = NULL, retired_attempt_epoch = $3 WHERE run_id = $1 \
                      AND active_attempt_owner = $2 AND active_attempt_epoch = $3"
             ))
             .bind(&claim.run_id.0)
@@ -1228,6 +1256,28 @@ impl DispatchQueue for PostgresDispatchStore {
         }
         tx.commit().await.map_err(store_error)?;
         Ok(outcome)
+    }
+
+    async fn load_physical_attempt(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<PhysicalAttempt>, DispatchError> {
+        let p = NS;
+        let row = sqlx::query(&format!(
+            "SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding FROM {p}_dispatch WHERE run_id = $1"
+        )).bind(&run_id.0).fetch_optional(&self.pool).await.map_err(store_error)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let epoch: Option<i64> = row.try_get("active_attempt_epoch").map_err(store_error)?;
+        crate::dispatch::decode_physical_attempt(
+            run_id,
+            row.try_get("active_attempt_owner").map_err(store_error)?,
+            epoch
+                .map(|v| durable_u64("dispatch attempt epoch", v))
+                .transpose()?,
+            row.try_get("active_attempt_binding").map_err(store_error)?,
+        )
     }
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {

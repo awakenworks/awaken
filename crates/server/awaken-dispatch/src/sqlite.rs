@@ -19,10 +19,11 @@ use awaken_runtime_contract::resume::ResumeResult;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::dispatch::{
-    AttemptAdmission, AttemptCredentialBinding, CasOutcome, ClaimEpochStorageRow, Claimed,
-    CommitEpochGuard, ContinuationAdmission, CredentialRealizationReceipt, DispatchCompletion,
-    DispatchError, DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, ExactClaimMode,
-    Inbox, Lease, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, RunClaim,
+    AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CasOutcome,
+    ClaimEpochStorageRow, Claimed, CommitEpochGuard, ContinuationAdmission,
+    CredentialRealizationReceipt, DispatchCompletion, DispatchError, DispatchOutcome,
+    DispatchQueue, DispatchState, DispatchSummary, ExactClaimMode, Inbox, Lease,
+    LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, PhysicalAttempt, RunClaim,
     RunIdentityDecision, SessionChildAdmission, SessionRunReservationActivation,
     SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome,
     StoredRunIdentity, SubmitOptions, can_admit_claim_credentials, claim_credential_operation,
@@ -507,7 +508,7 @@ mod migration_history_tests {
     fn store_open_selects_and_converges_the_durable_expanded_history() {
         /* Adapter-selection cause/effect table:
          * Q1 no ledger -> fresh compact history; Q2 exact expanded V15 receipt
-         * with V1..V24 -> finish expanded V25..V29 then apply converged V1..V3;
+         * with V1..V24 -> finish expanded V25..V29 then apply converged V1..V5;
          * Q3 reopen Q2 -> no duplicate columns/triggers or receipts.
          * This test owns Q2/Q3; ordinary open-in-memory tests own Q1.
          */
@@ -543,8 +544,8 @@ mod migration_history_tests {
             .expect("Q2 convergence receipt");
         assert_eq!(published_max, 29, "Q2 expanded terminal");
         assert_eq!(
-            converged_count, 4,
-            "Q2/Q3 seal, paired slot, Thread exclusion, retired epoch"
+            converged_count, 5,
+            "Q2/Q3 seal, paired slot, Thread exclusion, retired epoch, execution binding"
         );
     }
 }

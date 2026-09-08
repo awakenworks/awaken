@@ -100,10 +100,14 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         let admission = loop {
             let admission = match recovery_mode {
                 AttemptRecoveryMode::RequirePredecessorQuiescence => {
-                    self.store.begin_attempt(&claim, clock.now_ms()).await?
+                    self.store
+                        .begin_attempt(&claim, clock.now_ms(), self.execution_binding.as_ref())
+                        .await?
                 }
                 AttemptRecoveryMode::ContinueDurableRemoteOperation => {
-                    self.store.handoff_attempt(&claim, clock.now_ms()).await?
+                    self.store
+                        .handoff_attempt(&claim, clock.now_ms(), self.execution_binding.as_ref())
+                        .await?
                 }
             };
             match admission {

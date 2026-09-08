@@ -1257,16 +1257,20 @@ impl DispatchQueue for SqliteDispatchStore {
         &self,
         claim: &RunClaim,
         now_ms: u64,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
-        self.admit_physical_attempt(claim, now_ms, false).await
+        self.admit_physical_attempt(claim, now_ms, false, _binding)
+            .await
     }
 
     async fn handoff_attempt(
         &self,
         claim: &RunClaim,
         now_ms: u64,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<AttemptAdmission, DispatchError> {
-        self.admit_physical_attempt(claim, now_ms, true).await
+        self.admit_physical_attempt(claim, now_ms, true, _binding)
+            .await
     }
 
     async fn finish_attempt(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
@@ -1305,7 +1309,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 tx.execute(
                     &format!(
                         "UPDATE {p}_dispatch SET active_attempt_owner = NULL, \
-                             active_attempt_epoch = NULL, retired_attempt_epoch = ?3 WHERE run_id = ?1 \
+                             active_attempt_epoch = NULL, active_attempt_binding = NULL, retired_attempt_epoch = ?3 WHERE run_id = ?1 \
                              AND active_attempt_owner = ?2 AND active_attempt_epoch = ?3"
                     ),
                     params![claim.run_id.0, claim.owner, epoch],
@@ -1316,6 +1320,23 @@ impl DispatchQueue for SqliteDispatchStore {
             Ok(outcome)
         })
         .await
+    }
+
+    async fn load_physical_attempt(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<PhysicalAttempt>, DispatchError> {
+        let run_id = run_id.clone();
+        self.with_conn(move |conn, p| {
+            let row: Option<(Option<String>, Option<i64>, Option<String>)> = conn.query_row(
+                &format!("SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding FROM {p}_dispatch WHERE run_id = ?1"),
+                params![run_id.0], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).optional().map_err(store_error)?;
+            let Some((owner, epoch, binding)) = row else { return Ok(None); };
+            crate::dispatch::decode_physical_attempt(
+                &run_id, owner, epoch.map(|v| durable_u64("dispatch attempt epoch", v)).transpose()?, binding,
+            )
+        }).await
     }
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {

@@ -70,6 +70,7 @@ pub struct DispatchWorker<S> {
     terminal_scan: crate::TerminalReconciliationScan,
     settlement_observer: Option<Arc<dyn crate::DispatchSettlementObserver>>,
     owner: String,
+    execution_binding: Option<crate::dispatch::AttemptExecutionBinding>,
     lease_ms: u64,
     cancellation: Option<CancellationToken>,
     local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
@@ -359,6 +360,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             terminal_scan: Default::default(),
             settlement_observer: None,
             owner: owner.into(),
+            execution_binding: None,
             lease_ms: DEFAULT_LEASE_MS,
             cancellation: None,
             local_credential_capabilities: Default::default(),
@@ -374,6 +376,19 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     pub fn with_context(mut self, context: RuntimeRunContext) -> Self {
         self.cancellation = context.cancellation.clone();
         self.exec = self.exec.with_context(context);
+        self
+    }
+
+    /// Install a coordinate obtained by trusted execution-provider composition,
+    /// never by an Agent or a caller-supplied stop receipt. Admission persists
+    /// it atomically and verifies the exact registered assignment before entry.
+    /// Transports without a trusted binding channel reject Some, not downgrade.
+    #[must_use]
+    pub fn with_execution_binding(
+        mut self,
+        binding: crate::dispatch::AttemptExecutionBinding,
+    ) -> Self {
+        self.execution_binding = Some(binding);
         self
     }
 

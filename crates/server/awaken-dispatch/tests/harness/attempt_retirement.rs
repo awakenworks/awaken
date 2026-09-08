@@ -25,20 +25,23 @@ pub async fn assert_retirement(store: &impl DispatchQueue, now: u64) {
         .unwrap()
         .unwrap();
     let a = RunClaim::from(&a.lease);
-    assert_eq!(store.begin_attempt(&a, now).await.unwrap(), A::Applied);
     assert_eq!(
-        store.begin_attempt(&a, now).await.unwrap(),
+        store.begin_attempt(&a, now, None).await.unwrap(),
+        A::Applied
+    );
+    assert_eq!(
+        store.begin_attempt(&a, now, None).await.unwrap(),
         A::AlreadyApplied,
         "R1"
     );
     assert_eq!(store.finish_attempt(&a).await.unwrap(), S::Applied);
     assert_eq!(
-        store.begin_attempt(&a, now).await.unwrap(),
+        store.begin_attempt(&a, now, None).await.unwrap(),
         A::Fenced,
         "R2 begin"
     );
     assert_eq!(
-        store.handoff_attempt(&a, now).await.unwrap(),
+        store.handoff_attempt(&a, now, None).await.unwrap(),
         A::Fenced,
         "R2 handoff"
     );
@@ -52,7 +55,7 @@ pub async fn assert_retirement(store: &impl DispatchQueue, now: u64) {
     let b = RunClaim::from(&b.lease);
     assert!(b.epoch > a.epoch);
     assert_eq!(
-        store.begin_attempt(&b, now).await.unwrap(),
+        store.begin_attempt(&b, now, None).await.unwrap(),
         A::Applied,
         "R4"
     );
@@ -62,7 +65,7 @@ pub async fn assert_retirement(store: &impl DispatchQueue, now: u64) {
         "R4 delayed ACK"
     );
     assert_eq!(
-        store.begin_attempt(&b, now).await.unwrap(),
+        store.begin_attempt(&b, now, None).await.unwrap(),
         A::AlreadyApplied,
         "R4 preserved"
     );
@@ -80,7 +83,7 @@ pub async fn assert_retirement(store: &impl DispatchQueue, now: u64) {
         .unwrap();
     let c = RunClaim::from(&c.lease);
     assert_eq!(
-        store.begin_attempt(&c, now).await.unwrap(),
+        store.begin_attempt(&c, now, None).await.unwrap(),
         A::Applied,
         "R6"
     );
@@ -100,18 +103,18 @@ pub async fn assert_retirement(store: &impl DispatchQueue, now: u64) {
     let d = RunClaim::from(&d.lease);
     assert_eq!(d.run_id, b.run_id);
     assert_eq!(
-        store.begin_attempt(&d, now + 1).await.unwrap(),
+        store.begin_attempt(&d, now + 1, None).await.unwrap(),
         A::Blocked,
         "R5"
     );
     assert_eq!(store.finish_attempt(&b).await.unwrap(), S::Applied);
     assert_eq!(
-        store.begin_attempt(&b, now).await.unwrap(),
+        store.begin_attempt(&b, now, None).await.unwrap(),
         A::Fenced,
         "R2 successor"
     );
     assert_eq!(
-        store.begin_attempt(&d, now + 1).await.unwrap(),
+        store.begin_attempt(&d, now + 1, None).await.unwrap(),
         A::Applied,
         "R5 after ACK"
     );

@@ -8,6 +8,7 @@
 
 #![allow(dead_code)]
 
+pub mod attempt_binding;
 pub mod attempt_retirement;
 
 use std::sync::Arc;
@@ -1007,15 +1008,17 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
         &self,
         claim: &awaken_dispatch::RunClaim,
         now_ms: u64,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<awaken_dispatch::AttemptAdmission, awaken_dispatch::DispatchError> {
-        self.inner.begin_attempt(claim, now_ms).await
+        self.inner.begin_attempt(claim, now_ms, _binding).await
     }
     async fn handoff_attempt(
         &self,
         claim: &awaken_dispatch::RunClaim,
         now_ms: u64,
+        _binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
     ) -> Result<awaken_dispatch::AttemptAdmission, awaken_dispatch::DispatchError> {
-        self.inner.handoff_attempt(claim, now_ms).await
+        self.inner.handoff_attempt(claim, now_ms, _binding).await
     }
     async fn finish_attempt(
         &self,
@@ -2235,12 +2238,12 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
         .expect("A claim");
     let claim_a = RunClaim::from(&first.lease);
     assert_eq!(
-        store.begin_attempt(&claim_a, 0).await.expect("A1"),
+        store.begin_attempt(&claim_a, 0, None).await.expect("A1"),
         AttemptAdmission::Applied,
         "A1"
     );
     assert_eq!(
-        store.begin_attempt(&claim_a, 1).await.expect("A2"),
+        store.begin_attempt(&claim_a, 1, None).await.expect("A2"),
         AttemptAdmission::AlreadyApplied,
         "A2 idempotent transport retry"
     );
@@ -2292,7 +2295,7 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
     let claim_b = RunClaim::from(&second.lease);
     assert_eq!(
         store
-            .begin_attempt(&claim_b, after_expiry)
+            .begin_attempt(&claim_b, after_expiry, None)
             .await
             .expect("A4"),
         AttemptAdmission::Blocked,
@@ -2319,7 +2322,7 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
     assert!(third.recovered, "A5 recovery evidence survives rollback");
     assert_eq!(
         store
-            .begin_attempt(&claim_c, after_expiry)
+            .begin_attempt(&claim_c, after_expiry, None)
             .await
             .expect("A5 blocked"),
         AttemptAdmission::Blocked,
@@ -2332,7 +2335,7 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
     );
     assert_eq!(
         store
-            .begin_attempt(&claim_c, after_expiry)
+            .begin_attempt(&claim_c, after_expiry, None)
             .await
             .expect("A7"),
         AttemptAdmission::Applied,
@@ -2390,7 +2393,7 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
     let claim_d = RunClaim::from(&predecessor.lease);
     assert_eq!(
         store
-            .begin_attempt(&claim_d, handoff_now)
+            .begin_attempt(&claim_d, handoff_now, None)
             .await
             .expect("A9 predecessor begin"),
         AttemptAdmission::Applied,
@@ -2408,7 +2411,7 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
     assert!(replacement.recovered, "A9 handoff requires recovery");
     assert_eq!(
         store
-            .begin_attempt(&claim_e, replacement_now)
+            .begin_attempt(&claim_e, replacement_now, None)
             .await
             .expect("A9 ordinary begin"),
         AttemptAdmission::Blocked,
@@ -2416,7 +2419,7 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
     );
     assert_eq!(
         store
-            .handoff_attempt(&claim_e, replacement_now)
+            .handoff_attempt(&claim_e, replacement_now, None)
             .await
             .expect("A9 continuation handoff"),
         AttemptAdmission::Replaced,
@@ -2424,7 +2427,7 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
     );
     assert_eq!(
         store
-            .handoff_attempt(&claim_e, replacement_now)
+            .handoff_attempt(&claim_e, replacement_now, None)
             .await
             .expect("A10 handoff retry"),
         AttemptAdmission::AlreadyApplied,
@@ -2478,7 +2481,7 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
         .unwrap();
     let a = RunClaim::from(&a.lease);
     assert_eq!(
-        store.begin_attempt(&a, now).await.unwrap(),
+        store.begin_attempt(&a, now, None).await.unwrap(),
         AttemptAdmission::Applied
     );
     store.cancel(&a.run_id).await.unwrap();
@@ -2495,12 +2498,12 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
         .unwrap();
     let b = RunClaim::from(&b.lease);
     assert_eq!(
-        store.begin_attempt(&b, now).await.unwrap(),
+        store.begin_attempt(&b, now, None).await.unwrap(),
         AttemptAdmission::Blocked,
         "P1/P2"
     );
     assert_eq!(
-        store.handoff_attempt(&b, now).await.unwrap(),
+        store.handoff_attempt(&b, now, None).await.unwrap(),
         AttemptAdmission::Blocked,
         "P3"
     );
@@ -2517,13 +2520,13 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
         .unwrap();
     let other = RunClaim::from(&other.lease);
     assert_eq!(
-        store.begin_attempt(&other, now).await.unwrap(),
+        store.begin_attempt(&other, now, None).await.unwrap(),
         AttemptAdmission::Applied,
         "E2"
     );
     store.finish_attempt(&a).await.unwrap();
     assert_eq!(
-        store.begin_attempt(&b, now).await.unwrap(),
+        store.begin_attempt(&b, now, None).await.unwrap(),
         AttemptAdmission::Applied,
         "E3"
     );
@@ -2533,7 +2536,7 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
         "E4 empty A retry"
     );
     assert_eq!(
-        store.begin_attempt(&b, now).await.unwrap(),
+        store.begin_attempt(&b, now, None).await.unwrap(),
         AttemptAdmission::AlreadyApplied,
         "E4 old Run A acknowledgement cannot clear Run B"
     );
@@ -2911,7 +2914,7 @@ pub async fn assert_lease_renewal<S: awaken_dispatch::Dispatch>(
     let active_claim = awaken_dispatch::RunClaim::from(&active.lease);
     assert_eq!(
         store
-            .begin_attempt(&active_claim, replacement_at.saturating_add(1))
+            .begin_attempt(&active_claim, replacement_at.saturating_add(1), None)
             .await
             .unwrap(),
         awaken_dispatch::AttemptAdmission::Applied,

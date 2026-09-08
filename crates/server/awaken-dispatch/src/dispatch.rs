@@ -4,6 +4,63 @@
 
 pub use awaken_dispatch_contract::dispatch::*;
 
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+pub(crate) fn verify_physical_attempt_binding(
+    transition: awaken_dispatch_contract::PhysicalAttemptTransition,
+    claim: &RunClaim,
+    assignment: Option<&crate::WorkerAssignment>,
+    requested: Option<&AttemptExecutionBinding>,
+    stored: Option<&AttemptExecutionBinding>,
+) -> Result<(), DispatchError> {
+    use awaken_dispatch_contract::PhysicalAttemptTransition as T;
+    if !matches!(transition, T::Install | T::Replace | T::Stutter) {
+        return Ok(());
+    }
+    if let Some(binding) = requested {
+        binding.validate_for(claim)?;
+        // Never recover a typed Worker identity by splitting the lease-owner
+        // string. The exact registered assignment is the pre-entry authority.
+        if assignment.map(|a| &a.identity) != Some(binding.worker()) {
+            return Err(DispatchError::Rejected(
+                "execution binding requires its exact registered Worker assignment".into(),
+            ));
+        }
+    }
+    if !attempt_binding_retry_is_exact(transition == T::Stutter, requested == stored) {
+        return Err(DispatchError::Conflict(
+            "physical attempt execution binding is immutable after admission".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "durable")]
+pub(crate) fn decode_physical_attempt(
+    run_id: &awaken_agent_contract::agent::run::Id,
+    owner: Option<String>,
+    epoch: Option<u64>,
+    binding: Option<String>,
+) -> Result<Option<PhysicalAttempt>, DispatchError> {
+    match (owner, epoch, binding) {
+        (None, None, None) => Ok(None),
+        (Some(owner), Some(epoch), binding) => {
+            let claim = RunClaim {
+                run_id: run_id.clone(),
+                owner,
+                epoch,
+            };
+            let binding: Option<AttemptExecutionBinding> = binding
+                .map(|json| serde_json::from_str(&json).map_err(DispatchError::unavailable))
+                .transpose()?;
+            if let Some(binding) = &binding {
+                binding.validate_for(&claim)?;
+            }
+            Ok(Some(PhysicalAttempt { claim, binding }))
+        }
+        _ => Err(corrupt_physical_attempt()),
+    }
+}
+
 /// Translate the existing physical-attempt kernel once for every backend.
 /// Stores provide one locked snapshot and apply only the returned mutation;
 /// neither the result/error policy nor the handoff exception belongs to SQL.
