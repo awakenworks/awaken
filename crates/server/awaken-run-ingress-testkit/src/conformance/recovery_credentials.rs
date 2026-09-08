@@ -574,6 +574,9 @@ async fn committed_terminal_recovery_reuses_fenced_settlement(
 /// | Q1 | broad | T | F | T | claim later valid row |
 /// | Q2 | exact invalid | T | F | - | admission error |
 /// | Q3 | policy broad | T | F | T | claim later valid row |
+/// | Q4 | broad cancel | remote auth | missing relay | non-remote cancel | skip remote, claim non-remote |
+/// | Q5 | policy cancel | remote auth | missing relay | non-remote cancel | skip remote, claim non-remote |
+/// | Q6 | local broad cancel | remote auth | missing relay | non-remote cancel | skip remote, claim non-remote |
 async fn incompatible_credentials_do_not_poison_broad_claims(store: &dyn DispatchQueue, ns: &str) {
     let holder = PlaintextHolder::new(
         PlaintextBoundary::Worker,
@@ -649,15 +652,193 @@ async fn incompatible_credentials_do_not_poison_broad_claims(store: &dyn Dispatc
         )
         .await
         .expect("Q3 settle valid row");
+
+    let mut remote_cancel =
+        remote_credential_dispatch(ns, "poison-remote-cancel", "poison-remote-cancel", &holder);
+    remote_cancel.placement = PlacementRequirements::remote_required();
+    let mut nonremote_cancel =
+        credential_dispatch(ns, "poison-local-cancel", "poison-local-cancel", &holder);
+    nonremote_cancel.placement = PlacementRequirements::remote_required();
+    nonremote_cancel.inference_plaintext_holder = None;
+    store
+        .enqueue_with(
+            remote_cancel.clone(),
+            SubmitOptions {
+                priority: 100,
+                ..SubmitOptions::default()
+            },
+        )
+        .await
+        .expect("Q4 enqueue authenticated remote cancellation");
+    store
+        .cancel(remote_cancel.run_id())
+        .await
+        .expect("Q4 persist remote cancellation");
+    store
+        .enqueue(nonremote_cancel.clone())
+        .await
+        .expect("Q4 enqueue credential-free cancellation");
+    store
+        .cancel(nonremote_cancel.run_id())
+        .await
+        .expect("Q4 persist credential-free cancellation");
+    let claimed = store
+        .claim_compatible(&worker, LEASE_MS, 50_004)
+        .await
+        .expect("Q4 broad cancellation claim")
+        .expect("Q4 later credential-free cancellation is claimable");
+    assert_eq!(claimed.request.run_id(), nonremote_cancel.run_id(), "Q4");
+    assert!(claimed.credential_bindings.is_empty(), "Q4");
+    store
+        .settle(
+            &claimed.lease.run_id,
+            claimed.lease.epoch,
+            DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .expect("Q4 settle credential-free cancellation");
+
+    let mut remote_placed_cancel = remote_credential_dispatch(
+        ns,
+        "poison-remote-placed-cancel",
+        "poison-remote-placed-cancel",
+        &holder,
+    );
+    remote_placed_cancel.placement = PlacementRequirements::remote_required();
+    let mut nonremote_placed_cancel = credential_dispatch(
+        ns,
+        "poison-local-placed-cancel",
+        "poison-local-placed-cancel",
+        &holder,
+    );
+    nonremote_placed_cancel.placement = PlacementRequirements::remote_required();
+    nonremote_placed_cancel.inference_plaintext_holder = None;
+    store
+        .enqueue_with(
+            remote_placed_cancel.clone(),
+            SubmitOptions {
+                priority: 100,
+                ..SubmitOptions::default()
+            },
+        )
+        .await
+        .expect("Q5 enqueue authenticated remote cancellation");
+    store
+        .cancel(remote_placed_cancel.run_id())
+        .await
+        .expect("Q5 persist remote cancellation");
+    store
+        .enqueue(nonremote_placed_cancel.clone())
+        .await
+        .expect("Q5 enqueue credential-free cancellation");
+    store
+        .cancel(nonremote_placed_cancel.run_id())
+        .await
+        .expect("Q5 persist credential-free cancellation");
+    let claimed = store
+        .claim_placed(
+            &worker,
+            vec![worker.clone()],
+            std::sync::Arc::new(LeastLoadedPolicy),
+            LEASE_MS,
+            50_005,
+        )
+        .await
+        .expect("Q5 policy cancellation claim")
+        .expect("Q5 later credential-free cancellation is claimable");
+    assert_eq!(
+        claimed.request.run_id(),
+        nonremote_placed_cancel.run_id(),
+        "Q5"
+    );
+    assert!(claimed.credential_bindings.is_empty(), "Q5");
+    store
+        .settle(
+            &claimed.lease.run_id,
+            claimed.lease.epoch,
+            DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .expect("Q5 settle credential-free cancellation");
+
+    let mut remote_local_cancel = remote_credential_dispatch(
+        ns,
+        "poison-remote-local-cancel",
+        "poison-remote-local-cancel",
+        &holder,
+    );
+    remote_local_cancel.placement = PlacementRequirements::remote_required();
+    let mut nonremote_local_cancel = credential_dispatch(
+        ns,
+        "poison-local-local-cancel",
+        "poison-local-local-cancel",
+        &holder,
+    );
+    nonremote_local_cancel.placement = PlacementRequirements::remote_required();
+    nonremote_local_cancel.inference_plaintext_holder = None;
+    store
+        .enqueue_with(
+            remote_local_cancel.clone(),
+            SubmitOptions {
+                priority: 100,
+                ..SubmitOptions::default()
+            },
+        )
+        .await
+        .expect("Q6 enqueue authenticated remote cancellation");
+    store
+        .cancel(remote_local_cancel.run_id())
+        .await
+        .expect("Q6 persist remote cancellation");
+    store
+        .enqueue(nonremote_local_cancel.clone())
+        .await
+        .expect("Q6 enqueue credential-free cancellation");
+    store
+        .cancel(nonremote_local_cancel.run_id())
+        .await
+        .expect("Q6 persist credential-free cancellation");
+    let local_capabilities = CredentialRealizationCapabilities::from_manifest_capabilities(
+        &worker.manifest.capabilities,
+    )
+    .expect("Q6 Worker capabilities decode");
+    let claimed = store
+        .claim(
+            "credential-local-broad-worker",
+            LEASE_MS,
+            50_006,
+            &local_capabilities,
+        )
+        .await
+        .expect("Q6 local broad cancellation claim")
+        .expect("Q6 later credential-free cancellation is claimable");
+    assert_eq!(
+        claimed.request.run_id(),
+        nonremote_local_cancel.run_id(),
+        "Q6"
+    );
+    assert!(claimed.credential_bindings.is_empty(), "Q6");
+    store
+        .settle(
+            &claimed.lease.run_id,
+            claimed.lease.epoch,
+            DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .expect("Q6 settle credential-free cancellation");
 }
 
 /// Claim-credential cause-effect graph:
 ///
 /// publication credential + exact holder + implemented backend cell + installed
 /// capability -> one binding committed with the lease epoch. Missing capability
-/// rejects without advancing the epoch; cancellation bypasses materialization and
-/// stores no binding; recovery advances the epoch and replaces the whole binding
-/// set. A receipt is accepted only for the current exact binding.
+/// rejects without advancing the epoch. Non-remote cancellation stays
+/// credential-free; authenticated A2A cancellation freezes only its exact
+/// WorkerRelay binding. Recovery advances the epoch and replaces the whole
+/// binding set. A receipt is accepted only for the current exact binding.
 ///
 /// | Rule | credential | cancel | capability | claim | Result |
 /// |---|---|---|---|---|---|
@@ -667,6 +848,8 @@ async fn incompatible_credentials_do_not_poison_broad_claims(store: &dyn Dispatc
 /// | A4 | exact | F | exact registered manifest after reject | fresh | epoch remains 1 |
 /// | A5 | exact | T | missing | fresh | claim, empty binding set |
 /// | A6 | exact | F | exact | recovery | replacement binding at epoch+1 |
+/// | A7 | remote exact | T | missing | fresh | reject, no mutation |
+/// | A8 | remote exact | T | exact relay | fresh | epoch-1 remote binding |
 ///
 /// | Rule | claim | receipt | Result |
 /// |---|---|---|---|
@@ -846,7 +1029,7 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
     assert!(cancellation_claim.cancellation_requested);
     assert!(
         cancellation_claim.credential_bindings.is_empty(),
-        "A5 terminal control never materializes a credential"
+        "A5 non-remote terminal control does not materialize a credential"
     );
     store
         .settle(
@@ -857,4 +1040,60 @@ async fn attempt_credentials_are_atomic_and_epoch_fenced(
         )
         .await
         .expect("settle cancellation control run");
+
+    let remote_cancel = remote_credential_dispatch(
+        ns,
+        "credential-remote-cancel",
+        "credential-remote-cancel-thread",
+        &holder,
+    )
+    .with_placement(PlacementRequirements::remote_required());
+    let remote_cancel_id = remote_cancel.run_id().clone();
+    store
+        .enqueue(remote_cancel)
+        .await
+        .expect("A7 enqueue authenticated remote cancellation");
+    store
+        .cancel(&remote_cancel_id)
+        .await
+        .expect("A7 cancellation becomes durable");
+    assert!(
+        store
+            .claim_run_compatible(&remote_cancel_id, &incapable_worker, LEASE_MS, 71_000,)
+            .await
+            .is_err(),
+        "A7 authenticated remote cancel cannot downgrade to anonymous"
+    );
+    let remote_worker = remote_credential_worker(ns, &holder);
+    let remote_claim = store
+        .claim_run_compatible(&remote_cancel_id, &remote_worker, LEASE_MS, 71_001)
+        .await
+        .expect("A8 exact remote cancellation claim")
+        .expect("A8 failed admission retained the runnable row");
+    assert_eq!(remote_claim.lease.epoch, 1, "A7 no claim mutation");
+    assert!(remote_claim.cancellation_requested, "A8");
+    assert_eq!(remote_claim.credential_bindings.len(), 1, "A8");
+    assert_eq!(
+        remote_claim.credential_bindings[0].credential.id,
+        format!("{ns}-remote-credential"),
+        "A8 exact remote credential"
+    );
+    assert_eq!(
+        remote_claim.credential_bindings[0].selected_realization_kind,
+        CredentialRealizationKind::WorkerRelay,
+        "A8 exact cancel mechanism"
+    );
+    assert_eq!(
+        remote_claim.credential_bindings[0].claim_epoch, remote_claim.lease.epoch,
+        "A8 current epoch"
+    );
+    store
+        .settle(
+            &remote_cancel_id,
+            remote_claim.lease.epoch,
+            DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .expect("settle authenticated remote cancellation");
 }

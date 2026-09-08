@@ -545,6 +545,17 @@ with the immutable versioned route, so another endpoint of the same provider
 cannot reuse it. Expiry is intentionally checked at compilation and again at
 materialization because time may advance between those two boundaries.
 
+Dispatch uses that same compiler and claim-pinned materializer for authenticated
+A2A cancellation and observation; this is not a second credential path. Execution
+claims compile every candidate and Session attachment that may execute, while a
+cancellation claim compiles only the selected remote publication's exact
+`RemoteAgentAuthorization` binding. Anonymous and non-remote cancellation compile
+no binding. The worker rederives the operation-specific set from the immutable
+manifest and exact claim epoch before any physical attempt, then the materializer
+rechecks current source revision/status and claim ownership before opening material.
+Failure retains the durable cancellation responsibility and cannot downgrade the
+remote request to anonymous access or manufacture terminal observation.
+
 Repository activation stores the exact secret-free pin, never opened HTTP Basic
 material or a short Gateway capability. Initial clone, hot replacement and
 terminal publish all pass through the same Git-effect function. A Worker-held

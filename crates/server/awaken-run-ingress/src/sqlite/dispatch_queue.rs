@@ -634,53 +634,80 @@ impl DispatchQueue for SqliteDispatchStore {
                     COALESCE(json_array_length(json_extract(\
                         d.request, '$.placement.required_credentials')), 0) = 0))";
                 let reservation_recovery = format!(
-                    "SELECT d.run_id FROM {p}_dispatch d \
+                    "SELECT d.run_id, d.request, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d \
                      WHERE {physical_eligible} AND d.status IN ('reserved', 'reservation_running') \
                      AND d.lease_until IS NOT NULL AND d.lease_until < ?1 \
-                     AND {} ORDER BY d.created_at LIMIT 1",
+                    AND {} ORDER BY d.created_at",
                     no_running_peer(p)
                 );
                 let recovery = format!(
-                    "SELECT d.run_id FROM {p}_dispatch d \
+                    "SELECT d.run_id, d.request, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d \
                      WHERE {physical_eligible} AND d.status = 'running' AND d.lease_until IS NOT NULL \
                      AND d.lease_until < ?1 AND {local_eligible} \
-                     ORDER BY d.cancel_requested DESC, d.created_at LIMIT 1"
+                     ORDER BY d.cancel_requested DESC, d.created_at"
                 );
                 // ADR-0022 single writer is an open-Run fence: an Awaiting Run keeps
                 // ownership until its exact reply/cancel resumes that same row.
                 let thread_available = thread_available_for_claim(p);
                 let wake = format!(
-                    "SELECT run_id FROM {p}_dispatch d \
+                    "SELECT d.run_id, d.request, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d \
                      WHERE {physical_eligible} AND d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
                          SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
-                         AND (pe.available_at IS NULL OR pe.available_at <= ?1))) \
+                     AND (pe.available_at IS NULL OR pe.available_at <= ?1))) \
                      AND {thread_available} AND {local_eligible} \
-                     ORDER BY d.cancel_requested DESC, d.created_at LIMIT 1"
+                     ORDER BY d.cancel_requested DESC, d.created_at"
                 );
                 let fresh = format!(
-                    "SELECT run_id FROM {p}_dispatch d \
+                    "SELECT d.run_id, d.request, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d \
                      WHERE {physical_eligible} AND d.status = 'pending' AND {thread_available} AND {local_eligible} \
-                     ORDER BY d.cancel_requested DESC, d.priority DESC, d.created_at LIMIT 1"
+                     ORDER BY d.cancel_requested DESC, d.priority DESC, d.created_at"
                 );
 
-                let row = |sql: &str, bind_now: bool| -> Result<Option<String>, DispatchError> {
-                    let map = |r: &rusqlite::Row| r.get::<_, String>(0);
-                    if bind_now {
-                        tx.query_row(sql, params![crate::clock::db_millis(now_ms)], map)
+                let row = |sql: &str,
+                           bind_now: bool,
+                           terminal_resolution: bool|
+                 -> Result<Option<String>, DispatchError> {
+                    let mut stmt = tx.prepare(sql).map_err(store_error)?;
+                    let mut rows = if bind_now {
+                        stmt.query(params![crate::clock::db_millis(now_ms)])
                     } else {
-                        tx.query_row(sql, [], map)
+                        stmt.query([])
                     }
-                    .optional()
-                    .map_err(store_error)
+                    .map_err(store_error)?;
+                    while let Some(candidate) = rows.next().map_err(store_error)? {
+                        let run_id = candidate.get::<_, String>(0).map_err(store_error)?;
+                        let request_json = candidate.get::<_, String>(1).map_err(store_error)?;
+                        let cancellation_requested =
+                            candidate.get::<_, i64>(2).map_err(store_error)? != 0;
+                        let lease_epoch = candidate.get::<_, i64>(3).map_err(store_error)?;
+                        let request: RunDispatch =
+                            serde_json::from_str(&request_json).map_err(json_err)?;
+                        let operation = claim_credential_operation(
+                            terminal_resolution,
+                            cancellation_requested,
+                        );
+                        if next_claim_epoch(lease_epoch).is_ok_and(|epoch| {
+                            can_admit_claim_credentials(
+                                &request,
+                                &capabilities,
+                                epoch,
+                                now_ms,
+                                operation,
+                            )
+                        }) {
+                            return Ok(Some(run_id));
+                        }
+                    }
+                    Ok(None)
                 };
 
-                let picked = match row(&reservation_recovery, true)? {
+                let picked = match row(&reservation_recovery, true, true)? {
                     Some(found) => Some(found),
-                    None => match row(&recovery, true)? {
+                    None => match row(&recovery, true, false)? {
                         Some(found) => Some(found),
-                        None => match row(&wake, true)? {
+                        None => match row(&wake, true, false)? {
                             Some(found) => Some(found),
-                            None => row(&fresh, false)?,
+                            None => row(&fresh, false, false)?,
                         },
                     },
                 };
@@ -768,8 +795,15 @@ impl DispatchQueue for SqliteDispatchStore {
                         .map(|value| serde_json::from_str(&value).map_err(json_err))
                         .transpose()?;
                     let next_epoch = next_claim_epoch(lease_epoch)?;
+                    let credentials_admitted = can_admit_claim_credentials(
+                        &request,
+                        &capabilities,
+                        next_epoch,
+                        now_ms,
+                        claim_credential_operation(false, cancellation_requested),
+                    );
                     if matches!(status.as_str(), "reserved" | "reservation_running")
-                        || cancellation_requested
+                        || (cancellation_requested && credentials_admitted)
                         || (can_assign(
                             &worker,
                             &request.placement,
@@ -778,12 +812,7 @@ impl DispatchQueue for SqliteDispatchStore {
                             now_ms,
                         )
                         .is_ok()
-                            && can_admit_attempt_credentials(
-                                &request,
-                                &capabilities,
-                                next_epoch,
-                                now_ms,
-                            ))
+                            && credentials_admitted)
                     {
                         selected = Some(run_id);
                         break;
@@ -871,8 +900,15 @@ impl DispatchQueue for SqliteDispatchStore {
                         .map(|value| serde_json::from_str(&value).map_err(json_err))
                         .transpose()?;
                     let next_epoch = next_claim_epoch(lease_epoch)?;
+                    let credentials_admitted = can_admit_claim_credentials(
+                        &request,
+                        &capabilities,
+                        next_epoch,
+                        now_ms,
+                        claim_credential_operation(false, cancellation_requested),
+                    );
                     if matches!(status.as_str(), "reserved" | "reservation_running")
-                        || cancellation_requested
+                        || (cancellation_requested && credentials_admitted)
                         || (policy_selects_requester(
                             &request,
                             policy.as_ref(),
@@ -884,12 +920,7 @@ impl DispatchQueue for SqliteDispatchStore {
                                 workers: &workers,
                                 now_ms,
                             },
-                        )? && can_admit_attempt_credentials(
-                            &request,
-                            &capabilities,
-                            next_epoch,
-                            now_ms,
-                        ))
+                        )? && credentials_admitted)
                     {
                         selected = Some(run_id);
                         break;

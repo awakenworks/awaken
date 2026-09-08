@@ -19,15 +19,16 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    AttemptAdmission, AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard,
-    ContinuationAdmission, CredentialRealizationReceipt, DispatchCompletion, DispatchError,
-    DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, ExactClaimMode, Inbox, Lease,
-    Outbox, PendingInput, PendingRecord, RunClaim, RunIdentityDecision, SessionChildAdmission,
-    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
-    SettleOutcome, StoredRunIdentity, SubmitOptions, can_admit_attempt_credentials,
-    claim_with_frozen, classify_completed_session_run_reservation, classify_exact_claim_mode,
+    AttemptAdmission, AttemptCredentialBinding, CasOutcome, ClaimCredentialOperation, Claimed,
+    CommitEpochGuard, ContinuationAdmission, CredentialRealizationReceipt, DispatchCompletion,
+    DispatchError, DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, ExactClaimMode,
+    Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim, RunIdentityDecision,
+    SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
+    SessionRunReservationResolution, SettleOutcome, StoredRunIdentity, SubmitOptions,
+    can_admit_claim_credentials, claim_credential_operation, claim_with_frozen,
+    classify_completed_session_run_reservation, classify_exact_claim_mode,
     classify_live_session_run_reservation, classify_session_run_reservation_activation,
-    compile_attempt_credential_bindings, decide_run_identity, ensure_session_child_capacity,
+    compile_claim_credential_bindings, decide_run_identity, ensure_session_child_capacity,
     installed_worker_credential_capabilities, normalize_pending_millis, session_child_parent,
     session_child_thread, validate_executable_dispatch_admission, validate_outbox_continuation,
     validate_session_resume_activity_transition, validate_session_resume_evidence,
@@ -365,6 +366,7 @@ fn select_in_physical_band(
             && row.cancellation_requested
             && matches!(row.state, DispatchState::Pending | DispatchState::Awaiting)
             && !thread_has_claim_blocking_peer(state, run, false)
+            && compatible(row)
         {
             return Some(run.clone());
         }
@@ -574,15 +576,18 @@ fn claim_exact_with_mode(
         return Ok(None);
     };
     let claim_epoch = claim_transition.lease_epoch;
-    let credential_bindings = if terminal_resolution || row.cancellation_requested {
-        Vec::new()
-    } else {
-        compile_attempt_credential_bindings(&request, capabilities, claim_epoch, now_ms).map_err(
-            |error| {
-                DispatchError::Rejected(format!("credential attempt admission failed: {error}"))
-            },
-        )?
-    };
+    let credential_operation =
+        claim_credential_operation(terminal_resolution, row.cancellation_requested);
+    let credential_bindings = compile_claim_credential_bindings(
+        &request,
+        capabilities,
+        claim_epoch,
+        now_ms,
+        credential_operation,
+    )
+    .map_err(|error| {
+        DispatchError::Rejected(format!("credential claim admission failed: {error}"))
+    })?;
     let assignment = (!terminal_resolution)
         .then(|| worker.map(WorkerAssignment::from))
         .flatten();
@@ -806,7 +811,16 @@ fn claim_next_local(
     capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
     let Some(run_id) = select_where(state, now_ms, |row| {
-        can_claim_locally(&row.request.placement)
+        (row.cancellation_requested || can_claim_locally(&row.request.placement))
+            && row.lease_epoch.checked_add(1).is_some_and(|epoch| {
+                can_admit_claim_credentials(
+                    &row.request,
+                    capabilities,
+                    epoch,
+                    now_ms,
+                    claim_credential_operation(false, row.cancellation_requested),
+                )
+            })
     }) else {
         return Ok(None);
     };
@@ -1209,18 +1223,34 @@ impl DispatchQueue for MemoryDispatchStore {
         let mut state = lock(&self.state)?;
         let capabilities = installed_worker_credential_capabilities(worker)?;
         let Some(run_id) = select_where(&state, now_ms, |row| {
-            row.cancellation_requested
-                || (can_assign(
-                    worker,
-                    &row.request.placement,
-                    row.assignment.as_ref(),
-                    row.sandbox.is_some(),
-                    now_ms,
-                )
-                .is_ok()
-                    && row.lease_epoch.checked_add(1).is_some_and(|epoch| {
-                        can_admit_attempt_credentials(&row.request, &capabilities, epoch, now_ms)
-                    }))
+            if row.cancellation_requested {
+                return row.lease_epoch.checked_add(1).is_some_and(|epoch| {
+                    can_admit_claim_credentials(
+                        &row.request,
+                        &capabilities,
+                        epoch,
+                        now_ms,
+                        ClaimCredentialOperation::Cancel,
+                    )
+                });
+            }
+            can_assign(
+                worker,
+                &row.request.placement,
+                row.assignment.as_ref(),
+                row.sandbox.is_some(),
+                now_ms,
+            )
+            .is_ok()
+                && row.lease_epoch.checked_add(1).is_some_and(|epoch| {
+                    can_admit_claim_credentials(
+                        &row.request,
+                        &capabilities,
+                        epoch,
+                        now_ms,
+                        ClaimCredentialOperation::Execute,
+                    )
+                })
         }) else {
             return Ok(None);
         };
@@ -1249,7 +1279,15 @@ impl DispatchQueue for MemoryDispatchStore {
         let capabilities = installed_worker_credential_capabilities(requester)?;
         let run_id = select_where(&state, now_ms, |row| {
             if row.cancellation_requested {
-                return true;
+                return row.lease_epoch.checked_add(1).is_some_and(|epoch| {
+                    can_admit_claim_credentials(
+                        &row.request,
+                        &capabilities,
+                        epoch,
+                        now_ms,
+                        ClaimCredentialOperation::Cancel,
+                    )
+                });
             }
             match policy_selects_requester(
                 &row.request,
@@ -1266,11 +1304,12 @@ impl DispatchQueue for MemoryDispatchStore {
                 Ok(selected) => {
                     selected
                         && row.lease_epoch.checked_add(1).is_some_and(|epoch| {
-                            can_admit_attempt_credentials(
+                            can_admit_claim_credentials(
                                 &row.request,
                                 &capabilities,
                                 epoch,
                                 now_ms,
+                                ClaimCredentialOperation::Execute,
                             )
                         })
                 }

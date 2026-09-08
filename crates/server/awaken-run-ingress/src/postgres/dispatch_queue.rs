@@ -660,8 +660,8 @@ impl DispatchQueue for PostgresDispatchStore {
         // ownership until its exact reply/cancel resumes that same row. V0012
         // remains the hard backstop for concurrent transitions into Running.
         let thread_available = thread_available_for_claim(p);
-        let candidates = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT d.run_id FROM {p}_dispatch d WHERE \
+        let candidates = sqlx::query(&format!(
+            "SELECT d.run_id, d.request, d.cancel_requested, d.lease_epoch, d.status FROM {p}_dispatch d WHERE \
              (d.status IN ('reserved', 'reservation_running') AND \
                d.lease_until IS NOT NULL AND d.lease_until < $1 AND {}) OR \
              (d.status = 'running' AND d.lease_until IS NOT NULL AND \
@@ -683,7 +683,23 @@ impl DispatchQueue for PostgresDispatchStore {
         .fetch_all(&self.pool)
         .await
         .map_err(store_error)?;
-        for run_id in candidates {
+        for candidate in candidates {
+            let run_id: String = candidate.try_get("run_id").map_err(store_error)?;
+            let Json(request): Json<RunDispatch> =
+                candidate.try_get("request").map_err(store_error)?;
+            let cancellation_requested: i64 =
+                candidate.try_get("cancel_requested").map_err(store_error)?;
+            let lease_epoch: i64 = candidate.try_get("lease_epoch").map_err(store_error)?;
+            let status: String = candidate.try_get("status").map_err(store_error)?;
+            let terminal_resolution = matches!(status.as_str(), "reserved" | "reservation_running");
+            let operation =
+                claim_credential_operation(terminal_resolution, cancellation_requested != 0);
+            let admitted = next_claim_epoch(lease_epoch).is_ok_and(|epoch| {
+                can_admit_claim_credentials(&request, capabilities, epoch, now_ms, operation)
+            });
+            if !admitted {
+                continue;
+            }
             let mut tx = self.pool.begin().await.map_err(store_error)?;
             let claimed = claim_exact_transaction(
                 &mut tx,
@@ -742,8 +758,15 @@ impl DispatchQueue for PostgresDispatchStore {
                 row.try_get("cancel_requested").map_err(store_error)?;
             let lease_epoch: i64 = row.try_get("lease_epoch").map_err(store_error)?;
             let next_epoch = next_claim_epoch(lease_epoch)?;
+            let credentials_admitted = can_admit_claim_credentials(
+                &request,
+                &capabilities,
+                next_epoch,
+                now_ms,
+                claim_credential_operation(false, cancellation_requested != 0),
+            );
             if matches!(status.as_str(), "reserved" | "reservation_running")
-                || cancellation_requested != 0
+                || (cancellation_requested != 0 && credentials_admitted)
                 || (can_assign(
                     worker,
                     &request.placement,
@@ -752,7 +775,7 @@ impl DispatchQueue for PostgresDispatchStore {
                     now_ms,
                 )
                 .is_ok()
-                    && can_admit_attempt_credentials(&request, &capabilities, next_epoch, now_ms))
+                    && credentials_admitted)
             {
                 selected.push(RunId(row.try_get("run_id").map_err(store_error)?));
             }
@@ -818,8 +841,15 @@ impl DispatchQueue for PostgresDispatchStore {
                 row.try_get("cancel_requested").map_err(store_error)?;
             let lease_epoch: i64 = row.try_get("lease_epoch").map_err(store_error)?;
             let next_epoch = next_claim_epoch(lease_epoch)?;
+            let credentials_admitted = can_admit_claim_credentials(
+                &request,
+                &capabilities,
+                next_epoch,
+                now_ms,
+                claim_credential_operation(false, cancellation_requested != 0),
+            );
             if matches!(status.as_str(), "reserved" | "reservation_running")
-                || cancellation_requested != 0
+                || (cancellation_requested != 0 && credentials_admitted)
                 || (policy_selects_requester(
                     &request,
                     policy.as_ref(),
@@ -831,12 +861,7 @@ impl DispatchQueue for PostgresDispatchStore {
                         workers: &workers,
                         now_ms,
                     },
-                )? && can_admit_attempt_credentials(
-                    &request,
-                    &capabilities,
-                    next_epoch,
-                    now_ms,
-                ))
+                )? && credentials_admitted)
             {
                 selected.push(RunId(row.try_get("run_id").map_err(store_error)?));
             }

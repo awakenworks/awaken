@@ -298,6 +298,13 @@ receipts. A failed/nonterminal observation retains the slot and the existing
 reference for recovery; it does not retry creation. The former Future-drop
 background cancellation is removed: drop propagates uncertainty, while the
 existing claimed cancellation/recovery owner remains responsible for progress.
+For an authenticated publication, dispatch compiles only the selected A2A
+candidate's secret-free `RemoteAgentAuthorization` binding at the current claim
+epoch. The same claim-bound materializer rechecks current ownership, holder,
+revision, usage, target, and source status before `tasks/get` or `tasks/cancel`.
+Missing or stale authority prevents the wire call; there is no anonymous fallback,
+and the failed authorization is not physical-stop evidence. Anonymous and non-A2A
+cancellation claims remain credential-free.
 No Session-wide stop, new receipt store, task schema or wire route is introduced.
 Task-state/identity/delivery decision tables, observer-drop and commit-failure
 tests cover this adapter; the existing Kani identity/route proofs remain narrow.
