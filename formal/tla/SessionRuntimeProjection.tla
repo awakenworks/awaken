@@ -231,8 +231,9 @@ OpeningClose ==
 OpeningColdRead ==
     /\ sourceVersion > 0
     /\ projectedVersion' = OpeningChoice
+    /\ refreshSucceeded' = TRUE
     /\ UNCHANGED <<phase, pending, resolving, lastError, sourceVersion,
-                    refreshSucceeded, history, aggregate>>
+                    history, aggregate>>
 \* A fast ACP first interval may contain only its terminal commit. After a
 \* second interval opens, its Running commits cannot replace the first bracket.
 OpeningTerminalOnly ==
@@ -250,6 +251,7 @@ OpeningReopen ==
 OpeningNext == OpeningAppend \/ OpeningWarmRead \/ OpeningClose \/ OpeningColdRead
                \/ OpeningTerminalOnly \/ OpeningReopen
 OpeningIdentityStable ==
+    /\ (refreshSucceeded => projectedVersion = 1)
     /\ pending \subseteq {1}
     /\ projectedVersion \in {0, 1}
     /\ (pending # {} /\ projectedVersion # 0 => projectedVersion \in pending)
