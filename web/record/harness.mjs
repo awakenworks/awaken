@@ -269,9 +269,8 @@ ctx.setDefaultNavigationTimeout(20_000);
 // Default scope — go straight to the local Workspace after browser authentication.
 await ctx.addInitScript(() => {
   try {
-    localStorage.setItem("awaken.console.workspace", "");
     localStorage.setItem("awaken.console.locale", "en");
-    localStorage.setItem("awaken.console.theme", "dark");
+    localStorage.setItem("awaken.theme", "dark");
   } catch {
     /* first navigation may run before storage is available */
   }

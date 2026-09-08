@@ -33,3 +33,19 @@ describe("initial presentation workspace", () => {
     }))).toBe(`<output>${expected}</output>`);
   });
 });
+
+// L1 supported stored locale -> render it; L2 invalid or unavailable storage ->
+// render English. This provider must not prevent the shared theme fallback from
+// mounting, and it must never recover a Workspace coordinate from browser storage.
+function LocaleProbe() {
+  return createElement("output", null, useApp().locale);
+}
+it.each(["zh", "invalid", "blocked"])("renders with locale storage %s", (value) => {
+  vi.stubGlobal("localStorage", {
+    getItem: () => { if (value === "blocked") throw new Error("blocked"); return value; },
+  });
+  try {
+    expect(renderToStaticMarkup(createElement(AppProvider, { children: createElement(LocaleProbe) })))
+      .toBe(`<output>${value === "zh" ? "zh" : "en"}</output>`);
+  } finally { vi.unstubAllGlobals(); }
+});

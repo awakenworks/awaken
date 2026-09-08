@@ -1,4 +1,4 @@
-import { brandFaviconPlugin } from "@awaken/ui/brand/vite";
+import { brandAppearancePlugin, brandFaviconPlugin } from "@awaken/ui/brand/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
@@ -20,7 +20,7 @@ const apiProxy = () => ({
 });
 
 export default defineConfig({
-  plugins: [react(), brandFaviconPlugin("agents")],
+  plugins: [react(), brandFaviconPlugin("agents"), brandAppearancePlugin("agents", { legacyStorageKeys: ["awaken.console.theme"] })],
   build: {
     rollupOptions: {
       output: {

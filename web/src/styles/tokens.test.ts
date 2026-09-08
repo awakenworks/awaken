@@ -4,6 +4,9 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const css = readFileSync(new URL("./tokens.css", import.meta.url), "utf8");
+const family = readFileSync(new URL("../../node_modules/@awaken/ui/dist/styles/family.css", import.meta.url), "utf8");
+const main = readFileSync(new URL("../main.tsx", import.meta.url), "utf8");
+const appState = readFileSync(new URL("../lib/app-state.tsx", import.meta.url), "utf8");
 const base = readFileSync(new URL("./base.css", import.meta.url), "utf8");
 const sharedForms = readFileSync(new URL("../../node_modules/@awaken/ui/dist/styles/components-forms-data.css", import.meta.url), "utf8");
 const sharedCore = readFileSync(new URL("../../node_modules/@awaken/ui/dist/styles/components-core.css", import.meta.url), "utf8");
@@ -13,10 +16,16 @@ const chrome = readFileSync(new URL("../components/app/TopChrome.tsx", import.me
 const vite = readFileSync(new URL("../../vite.config.ts", import.meta.url), "utf8");
 
 describe("theme browser integration", () => {
-  it("uses the awakenworks.com Agents watermetal and teal identity", () => {
-    expect(css).toMatch(/\[data-theme="light"\][\s\S]*?--canvas:\s*#eef1f3[\s\S]*?--accent:\s*#0f7d8c/);
-    expect(css).toMatch(/\[data-theme="dark"\][\s\S]*?--canvas:\s*#0e171c[\s\S]*?--accent:\s*#3fb3c2/);
-    expect(css).not.toMatch(/--accent:[^;]*\b(?:265|263|267)\b/);
+  it("maps Agents vocabulary to the shared family owner", () => {
+    // P1 existing product aliases -> shared values; no copied palette or font stack.
+    // P2 cold load -> shared prepaint bootstrap, with the old preference migrated.
+    expect(css).toContain("--canvas: var(--aw-canvas)");
+    expect(css).toContain("--accent: var(--aw-accent)");
+    expect(css).not.toMatch(/#[a-f0-9]{3,8}\b/i);
+    expect(main).toContain('"@awaken/ui/brand/family.css"');
+    expect(vite).toContain('brandAppearancePlugin("agents", { legacyStorageKeys: ["awaken.console.theme"] })');
+    expect(appState).not.toMatch(/awaken\.console\.theme|setTheme|data-theme/);
+    expect(chrome).toContain("<AppearanceSelect labels=");
   });
 
   it("uses the canonical Awaken Agents mark in chrome and favicon", () => {
@@ -48,9 +57,9 @@ describe("theme browser integration", () => {
     expect(base).not.toMatch(/\.suite-menu/);
   });
 
-  it("keeps browser-provided controls in sync with the explicit theme", () => {
-    expect(css).toMatch(/:root,\s*\[data-theme="light"\]\s*\{[^}]*color-scheme:\s*light/s);
-    expect(css).toMatch(/\[data-theme="dark"\]\s*\{[^}]*color-scheme:\s*dark/s);
+  it("delegates native control color-scheme to the family theme", () => {
+    expect(family).toContain('[data-theme="light"] { color-scheme: light; }');
+    expect(family).toContain('[data-theme="dark"] { color-scheme: dark; }');
   });
 
   // Cause → effect → assertions:
@@ -77,8 +86,10 @@ describe("theme browser integration", () => {
   it("keeps the production entrypoint free of remote font dependencies", () => {
     expect(html).not.toMatch(/fonts\.(googleapis|gstatic)\.com/);
     expect(html).not.toMatch(/<link[^>]+rel=["']stylesheet["'][^>]+https?:/);
-    expect(css).toMatch(/--font-sans:[^;]+ui-sans-serif[^;]+system-ui/);
-    expect(css).toMatch(/--font-mono:[^;]+ui-monospace/);
+    expect(css).toContain("--font-sans: var(--aw-font-body)");
+    expect(family).toMatch(/--aw-font-body:[^;]+ui-sans-serif[^;]+system-ui/);
+    expect(css).toContain("--font-mono: var(--aw-font-mono)");
+    expect(family).toMatch(/--aw-font-mono:[^;]+ui-monospace/);
   });
 
   // Native SVG dimensions default to 300x150. Without an explicit shared

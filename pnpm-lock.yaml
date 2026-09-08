@@ -65,8 +65,8 @@ importers:
         specifier: workspace:*
         version: link:../packages/managed-session-projection
       '@awaken/ui':
-        specifier: file:vendor/awaken-ui-0.5.0.tgz
-        version: file:web/vendor/awaken-ui-0.5.0.tgz(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+        specifier: file:vendor/awaken-ui-0.6.0.tgz
+        version: file:web/vendor/awaken-ui-0.6.0.tgz(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@tanstack/react-query':
         specifier: ^5.62.0
         version: 5.101.2(react@19.2.7)
@@ -190,9 +190,9 @@ packages:
     resolution: {integrity: sha512-60vepv88RwcJtSHrD6MjIL6Ta3SOYbgfnkHb+ppAVK+o9mXprRtulx7VlRl3lN3bbvysAfCS7WMVfhUYemB0IQ==}
     engines: {node: '>= 16'}
 
-  '@awaken/ui@file:web/vendor/awaken-ui-0.5.0.tgz':
-    resolution: {integrity: sha512-OF7um/ZlWAzlPK49AV+ytW5MnFomZgjxqwXrG3VcF4ITSYLuj1hc1KRLZeE/SdSclK22C7HWDemFf4LFXp03lg==, tarball: file:web/vendor/awaken-ui-0.5.0.tgz}
-    version: 0.5.0
+  '@awaken/ui@file:web/vendor/awaken-ui-0.6.0.tgz':
+    resolution: {integrity: sha512-Qa+a7BO99dlpG/d59LfedHqulVQe+Ep/0TjlNOJMhOpjMb6vpnNWR6JUQU/vA1xoV8owilH1kVRkGugMKbCffA==, tarball: file:web/vendor/awaken-ui-0.6.0.tgz}
+    version: 0.6.0
     engines: {node: '>=22', pnpm: '>=11'}
     peerDependencies:
       react: ^19.0.0
@@ -1389,7 +1389,7 @@ snapshots:
       '@types/json-schema': 7.0.15
       js-yaml: 4.3.1
 
-  '@awaken/ui@file:web/vendor/awaken-ui-0.5.0.tgz(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
+  '@awaken/ui@file:web/vendor/awaken-ui-0.6.0.tgz(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)':
     dependencies:
       '@base-ui/react': 1.6.0(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       dompurify: 3.3.0

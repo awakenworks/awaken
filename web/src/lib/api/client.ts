@@ -71,20 +71,10 @@ function signalAuthenticationRequired(): void {
   }
 }
 
-// ---- workspace scope seam (ADR-0048 path addressing / ADR-0051 tenancy) ----
-// Tenancy resolves to one opaque scope. With no route or server-resolved
-// workspace, scoped calls use the flat `/v1/…` surface (standalone default
-// scope). A hosted `/w/{workspace}` route is the sole browser-selected IAM
-// coordinate; the stored workspace below remains a presentation preference.
-const WS_KEY = "awaken.console.workspace";
+// ---- workspace scope seam (ADR-0048 addressing / ADR-0063 ownership) ----
+// Hosted routes select a coordinate authorized by the server. No browser storage
+// mirrors that coordinate; standalone calls use the server-resolved/default scope.
 let resolvedWorkspaceId = "";
-export function getWorkspace(): string {
-  return localStorage.getItem(WS_KEY) ?? "";
-}
-export function setWorkspace(workspace: string): void {
-  if (workspace) localStorage.setItem(WS_KEY, workspace);
-  else localStorage.removeItem(WS_KEY);
-}
 
 export function workspaceFromPath(pathname: string): string {
   const encoded = pathname.match(/^\/w\/([^/]+)/)?.[1];

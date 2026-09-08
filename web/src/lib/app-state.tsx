@@ -4,7 +4,7 @@
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { setWorkspace, workspaceFromPath } from "./api/client";
+import { workspaceFromPath } from "./api/client";
 
 export type Locale = "en" | "zh";
 
@@ -32,8 +32,6 @@ interface AppState {
   userName: string;
   setWorkspaceId: (id: string) => void;
   setIdentityPresentation: (value: { workspaceName?: string; organizationName?: string; userName?: string }) => void;
-  theme: string;
-  toggleTheme: () => void;
   locale: Locale;
   toggleLocale: () => void;
   t: (en: string, zh: string) => string;
@@ -47,12 +45,6 @@ export function useApp(): AppState {
   return v;
 }
 
-/** Store presentation only. Request addressing reads the route/server context
- * directly; this preference is not an authority or a second route parser. */
-function syncScope(id: string): void {
-  setWorkspace(id === DEFAULT_WS ? "" : id);
-}
-
 export function AppProvider({ children }: { children: ReactNode }) {
   const [workspaceId, setWorkspaceIdState] = useState(
     () => workspaceFromPath(globalThis.location?.pathname ?? "") || DEFAULT_WS,
@@ -62,45 +54,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
     organizationName: "",
     userName: "",
   });
-  // Awaken Agents brand defaults to dark (awaken-theme.js BRANDS.agents.defaultMode).
-  const [theme, setTheme] = useState(() => localStorage.getItem("awaken.console.theme") ?? "dark");
-  const [locale, setLocale] = useState<Locale>(
-    () => (localStorage.getItem("awaken.console.locale") as Locale) || "en",
-  );
-
-  // Keep the presentation preference current on mount + on change.
-  useEffect(() => {
-    syncScope(workspaceId);
-  }, [workspaceId]);
-  useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-    localStorage.setItem("awaken.console.theme", theme);
-  }, [theme]);
+  const [locale, setLocale] = useState<Locale>(() => {
+    try { return localStorage.getItem("awaken.console.locale") === "zh" ? "zh" : "en"; }
+    catch { return "en"; }
+  });
   useEffect(() => {
     document.documentElement.setAttribute("data-locale", locale);
-    localStorage.setItem("awaken.console.locale", locale);
+    try { localStorage.setItem("awaken.console.locale", locale); }
+    catch { /* The current document still supports language changes. */ }
   }, [locale]);
 
-  const setWorkspaceId = (id: string) => {
-    syncScope(id);
-    setWorkspaceIdState(id);
-  };
   const value: AppState = useMemo(
     () => ({
       workspaceId,
       workspaceName: identityPresentation.workspaceName || workspaceLabel(workspaceId),
       organizationName: identityPresentation.organizationName || "Local Organization",
       userName: identityPresentation.userName || "Local operator",
-      setWorkspaceId,
+      setWorkspaceId: setWorkspaceIdState,
       setIdentityPresentation: (next) => setIdentityPresentation((current) => ({ ...current, ...next })),
-      theme,
-      toggleTheme: () => setTheme(theme === "dark" ? "light" : "dark"),
       locale,
       toggleLocale: () => setLocale(locale === "en" ? "zh" : "en"),
       t: (en, zh) => (locale === "zh" ? zh : en),
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [workspaceId, theme, locale, identityPresentation],
+    [workspaceId, locale, identityPresentation],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
