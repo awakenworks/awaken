@@ -467,12 +467,19 @@ mod tests {
             // delegate the decision to the contract state machine; never
             // approximate AlreadyApplied from a cached binding.
             let projection = self.projection.lock().unwrap();
+            // Resource-bearing recovery shares the same frozen root. Derive
+            // its pending transition from that root, never from the intent
+            // being admitted (which would tautologically accept a foreign one).
+            let transition = projection.resource_transition(
+                awaken_session_contract::FrozenResourceTransitionUse::ApplyEffects,
+            )?;
+            let transition_fingerprint = transition.operation_fingerprint();
             projection
                 .environment
                 .authorize_effect(
                     intent,
                     &projection.baseline.environment.config_fingerprint.0,
-                    None,
+                    Some(&transition_fingerprint),
                 )
                 .map_err(|error| {
                     awaken_session_contract::RunError::classified(
@@ -489,7 +496,11 @@ mod tests {
             awaken_session_contract::SessionEnvironmentState,
             awaken_session_contract::RunError,
         > {
-            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // The recovery oracle counts Create/Adopt root receipts. Resource
+            // reservations still commit below, but are a distinct effect kind.
+            if !matches!(receipt.kind, awaken_session_contract::SessionEnvironmentEffectKind::ResourceProjectionReservation { .. }) {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             let committed = committed_environment(receipt);
             let mut projection = self.projection.lock().unwrap();
             if projection.environment != committed {

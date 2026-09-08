@@ -4723,8 +4723,9 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
 /// | prepare blocked by lifecycle | absent | expose neither Environment nor manifest |
 /// | durable active generation | absent beside an adopted live Environment | install as cold recovery |
 /// | exact replay | equal | idempotent success; retain the live environment |
+/// | original empty→Memory command, ACK lost | equal | preserve edited bytes and original heads |
 /// | concurrent exact replays | equal | serialize on the existing Session lifecycle and converge |
-/// | empty/different | mutation | fail closed because Memory is create-time only |
+/// | empty or any changed Memory field | mutation | reject before effects; retain bytes and manifest |
 ///
 /// This is the active-active recovery case: a peer may ask the Runtime to replay
 /// durable Session truth after the local projection has already been installed.
@@ -4736,13 +4737,11 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
 async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed() {
     use awaken_session_contract::SessionInit;
 
+    let sandbox_roots = tempfile::tempdir().unwrap();
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
     raw_host.session_provider =
         crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
-            std::env::temp_dir().join(format!(
-                "awaken-memory-recovery-namespace-{}",
-                std::process::id()
-            )),
+            sandbox_roots.path().to_path_buf(),
             false,
             Arc::new(crate::session_environment::UnusedHandExecutorFactory),
             "/bin/sh",
@@ -4814,6 +4813,35 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         .session_environment("memory-replay")
         .await
         .expect("live environment");
+    let memory_file = sandbox_roots
+        .path()
+        .join("memory-replay/mnt/memory/seed.md");
+    assert_eq!(std::fs::read(&memory_file).unwrap(), b"seed");
+    std::fs::write(&memory_file, b"agent edit without newline").unwrap();
+    let original_handle = environment.handle();
+
+    // R-ACK: installed Memory is complete, but Control still carries the
+    // original empty→Memory command. Both callers must succeed without a new
+    // mount, byte rewind, head refresh, or physical Environment replacement.
+    // This differs from a Memory→same-Memory no-op: its previous input is absent.
+    let unacknowledged = resource_transition(
+        host.local_workspace(),
+        0,
+        awaken_session_contract::ResolvedSessionResources::default(),
+        1,
+        resources.clone(),
+    );
+    let (left, right) = tokio::join!(
+        managed.apply_session_inputs("memory-replay", &unacknowledged),
+        managed.apply_session_inputs("memory-replay", &unacknowledged),
+    );
+    left.expect("original command replay after local completion");
+    right.expect("concurrent original command replay after local completion");
+    assert_eq!(
+        std::fs::read(&memory_file).unwrap(),
+        b"agent edit without newline"
+    );
+    assert_eq!(environment.handle(), original_handle);
 
     // Reproduce the active-active recovery state observed in the black-box
     // pressure test: the durable sandbox binding is resident, while this process
@@ -4847,6 +4875,85 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         &host.session_environment("memory-replay").await.unwrap()
     ));
 
+    let installed = host.thread_resource_manifest("memory-replay");
+    for field in [
+        "store",
+        "config",
+        "retention",
+        "path",
+        "access",
+        "binding",
+        "instructions",
+        "created",
+        "updated",
+    ] {
+        // R-MUT: vary each field independently; all other causes, including the
+        // live Environment and completed pin, stay fixed. No denied attempt may
+        // alter the installed projection, editable bytes or Copy baseline heads.
+        let mut changed = resources.inputs()[0].clone();
+        match field {
+            "store" => {
+                let awaken_session_contract::ResolvedInputSource::MemoryStore {
+                    memory_store_id,
+                    config,
+                } = &mut changed.source
+                else {
+                    unreachable!()
+                };
+                *memory_store_id = "other-store".into();
+                config.memory_store_id = memory_store_id.clone();
+            }
+            "config" | "retention" => {
+                let awaken_session_contract::ResolvedInputSource::MemoryStore { config, .. } =
+                    &mut changed.source
+                else {
+                    unreachable!()
+                };
+                if field == "config" {
+                    config.version = config.version.checked_next().unwrap();
+                } else {
+                    config.retention_policy.retention_days = Some(7);
+                }
+            }
+            "path" => changed.mount_path = "/other-memory".into(),
+            "access" => changed.access = ResourceAccess::ReadOnly,
+            "binding" => changed.binding_id = "other-binding".into(),
+            "instructions" => changed.instructions = Some("changed".into()),
+            "created" => changed.created_at_unix_ms = Some(1),
+            "updated" => changed.updated_at_unix_ms = Some(1),
+            _ => unreachable!(),
+        }
+        let changed =
+            awaken_session_contract::ResolvedSessionResources::try_new(vec![changed], Vec::new())
+                .unwrap();
+        // Cross every mutation with previous=installed and previous=desired.
+        // A no-op in the incoming command cannot override a different installed
+        // Memory pin; compare the completed projection, not command equality.
+        for previous in [resources.clone(), changed.clone()] {
+            let error = managed
+                .apply_session_inputs(
+                    "memory-replay",
+                    &resource_transition(host.local_workspace(), 1, previous, 2, changed.clone()),
+                )
+                .await
+                .expect_err(field);
+            assert!(
+                error.message.contains("create-time only"),
+                "{field}: {error:?}"
+            );
+        }
+        assert_eq!(
+            host.thread_resource_manifest("memory-replay"),
+            installed,
+            "{field}"
+        );
+        assert_eq!(environment.handle(), original_handle, "{field}");
+        assert_eq!(
+            std::fs::read(&memory_file).unwrap(),
+            b"agent edit without newline",
+            "{field}"
+        );
+    }
     let error = managed
         .apply_session_inputs(
             "memory-replay",
