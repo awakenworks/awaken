@@ -16,6 +16,9 @@ impl PermissionResolver for RejectPermission {
 struct ObservedToolCall {
     name: String,
     input: serde_json::Value,
+    // Disposable projection guard: closed by a terminal fact or an ambiguous
+    // post-Await identity change, never a durable execution-state assertion.
+    result_open: bool,
 }
 
 /// Attempt-local permission facts already projected from ACP `session/update`.
@@ -24,9 +27,24 @@ struct ObservedToolCall {
 #[derive(Default)]
 pub(super) struct PermissionContext {
     observed_tools: std::collections::BTreeMap<String, ObservedToolCall>,
+    settling_for: Option<String>,
+    session_id: Option<String>,
 }
 
 impl PermissionContext {
+    pub(super) fn for_session(session_id: &SessionId) -> Self {
+        Self {
+            session_id: Some(session_id.0.to_string()),
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn accepts_session(&self, session_id: &SessionId) -> bool {
+        self.session_id
+            .as_deref()
+            .is_none_or(|expected| expected == session_id.0.as_ref())
+    }
+
     pub(super) fn observe(&mut self, event: &AcpProjectedEvent) {
         if let AcpProjectedEvent::ToolCall { id, name, input } = event
             && !id.is_empty()
@@ -36,9 +54,49 @@ impl PermissionContext {
                 ObservedToolCall {
                     name: name.clone(),
                     input: crate::exact_mcp_tool_arguments(name, input),
+                    result_open: true,
                 },
             );
         }
+        if let AcpProjectedEvent::ToolResult { id, .. } = event
+            && let Some(observed) = self.observed_tools.get_mut(id)
+        {
+            observed.result_open = false;
+        }
+    }
+
+    pub(super) fn begin_settlement(&mut self, pending_call: &str) {
+        self.settling_for = Some(pending_call.to_owned());
+    }
+
+    pub(super) fn is_settling(&self) -> bool {
+        self.settling_for.is_some()
+    }
+
+    pub(super) fn settlement_result(
+        &mut self,
+        update: &agent_client_protocol::SessionUpdate,
+    ) -> Option<AcpProjectedEvent> {
+        if let Some(AcpProjectedEvent::ToolCall { id, .. }) = project_update(update) {
+            if let Some(observed) = self.observed_tools.get_mut(&id) {
+                observed.result_open = false;
+            }
+            return None;
+        }
+        let agent_client_protocol::SessionUpdate::ToolCallUpdate(update_call) = update else {
+            return None;
+        };
+        let id = update_call.tool_call_id.0.as_ref();
+        let observed = self.matching_observed_tool(id)?;
+        if self.settling_for.as_deref() == Some(id) || !observed.result_open {
+            return None;
+        }
+        if self.refined_call(update_call).is_some() {
+            // A later frame without rawInput must not erase the conflict.
+            self.observed_tools.get_mut(id)?.result_open = false;
+            return None;
+        }
+        project_update(update).filter(|event| matches!(event, AcpProjectedEvent::ToolResult { .. }))
     }
 
     /// Streaming progress refines only a previously observed exact call. Titles
@@ -117,7 +175,7 @@ pub(super) async fn answer_request(
                 .ok()
                 .map(|r| (p, r))
         }) {
-            Some((raw, req)) => {
+            Some((raw, req)) if context.accepts_session(&req.session_id) => {
                 let ask = permission_ask(&raw, context);
                 // Permission carries the resolved target and complete execution
                 // input. Refine the same call before policy/dispatch so transcript,
@@ -127,9 +185,11 @@ pub(super) async fn answer_request(
                     name: ask.tool.clone(),
                     input: ask.arguments.clone(),
                 };
-                *projection.1 += 1;
-                projection.0.append(*projection.1, &event).await?;
-                context.observe(&event);
+                if !context.is_settling() {
+                    *projection.1 += 1;
+                    projection.0.append(*projection.1, &event).await?;
+                    context.observe(&event);
+                }
                 match resolver.resolve(&ask).await {
                     PermissionVerdict::Await { correlation_id } => {
                         wire.send(&OutResult {
@@ -148,7 +208,7 @@ pub(super) async fn answer_request(
                     verdict => select_outcome(&req, verdict),
                 }
             }
-            None => RequestPermissionOutcome::Cancelled,
+            _ => RequestPermissionOutcome::Cancelled,
         };
         return wire
             .send(&OutResult {

@@ -2693,6 +2693,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
 
     struct PermissionSource {
         changed: bool,
+        settling_sibling: bool,
         tool_name: &'static str,
         opens: AtomicUsize,
         permission_replies: Arc<Mutex<Vec<String>>>,
@@ -2708,6 +2709,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
             _context: &RuntimeRunContext,
         ) -> std::result::Result<AgentSession, OpenError> {
             let tool_name = self.tool_name;
+            let settling_sibling = self.settling_sibling;
             let attempt = self.opens.fetch_add(1, Ordering::SeqCst);
             let changed = self.changed && attempt > 0;
             let wire_id = if attempt == 0 {
@@ -2790,6 +2792,14 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                                         .unwrap();
                                 }
                             }
+                            if attempt == 0 && settling_sibling {
+                                let sibling = serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"permission-session",
+                                    "update":{"sessionUpdate":"tool_call","toolCallId":"sibling-read","title":"mcp__awaken_session__read","rawInput":{"file_path":"/workspace/.skills/example/SKILL.md"}}}});
+                                output
+                                    .write_all(format!("{sibling}\n").as_bytes())
+                                    .await
+                                    .unwrap();
+                            }
                             // One wire request builder owns original/exact/changed
                             // cases; only call identity and input vary.
                             let permission = serde_json::json!({"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{
@@ -2806,6 +2816,21 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                             replies.lock().unwrap().push(line.trim().to_string());
                             events.notify_one();
                             if attempt == 0 || (changed && attempt == 1) {
+                                if settling_sibling {
+                                    line.clear();
+                                    lines.read_line(&mut line).await.unwrap();
+                                    assert!(line.contains("session/cancel"));
+                                    let sibling = serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"permission-session",
+                                        "update":{"sessionUpdate":"tool_call_update","toolCallId":"sibling-read","status":"completed",
+                                        "content":[{"type":"content","content":{"type":"text","text":"# Exact Skill bytes"}}]}}});
+                                    let output = lines.get_mut();
+                                    output
+                                        .write_all(format!("{sibling}\n").as_bytes())
+                                        .await
+                                        .unwrap();
+                                    output.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"cancelled\"}}\n").await.unwrap();
+                                    output.flush().await.unwrap();
+                                }
                                 return;
                             }
                             let rejected = line.contains("reject");
@@ -2847,9 +2872,15 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
     // RuntimeToolBatch ticket and matching durable batch; unowned tool =>
     // RunAttemptExecutor ticket and no batch. Cross the actual ACP request,
     // policy, await commit and Native batch validator, not a fabricated ticket.
+    // AS1 sibling Read starts before Await but completes during cancellation:
+    // both owned/unowned pending tool rows commit its exact bytes once in the
+    // original ThreadCommit. AS2 pending target still has no result and the
+    // original ticket/batch owner survives; projection must not borrow the
+    // sibling result as proof that the awaiting operation executed.
     for tool_name in ["write", "bash"] {
         let source = Arc::new(PermissionSource {
             changed: false,
+            settling_sibling: true,
             tool_name,
             opens: AtomicUsize::new(0),
             permission_replies: Default::default(),
@@ -2877,6 +2908,32 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
             RunState::Awaiting
         );
         let ticket = committed.resume_ticket_for(&RunId("run-1".into())).unwrap();
+        let messages = committed.messages();
+        let results = messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|block| {
+                if let ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                    ..
+                } = block
+                {
+                    Some((tool_use_id, content, *is_error))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(results.len(), 1, "AS1 only actual sibling result");
+        assert_eq!(results[0].0, "sibling-read");
+        assert_eq!(
+            results[0].1,
+            &vec![ContentBlock::text("# Exact Skill bytes")]
+        );
+        assert!(!results[0].2);
+        assert_eq!(ticket.call_id(), Some("tool-1"), "AS2 original wait target");
         let batch = awaken_runtime_contract::ActiveToolBatch::load(&Store::rebuild(
             &committed.committed_state(&ticket.thread_id),
         ))
@@ -2907,6 +2964,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
         let events = Arc::new(tokio::sync::Notify::new());
         let source: Arc<dyn AgentChannelSource> = Arc::new(PermissionSource {
             changed,
+            settling_sibling: false,
             tool_name: "bash",
             opens: AtomicUsize::new(0),
             permission_replies: replies.clone(),

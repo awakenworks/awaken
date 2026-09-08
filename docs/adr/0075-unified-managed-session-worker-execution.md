@@ -523,6 +523,21 @@ messages without source Run coordinates still require exact name matching.
 This is a disposable projection of existing facts, not a new ticket store or
 permission decision, and it never invents a ToolResult for unexecuted work.
 
+ACP permission suspension preserves the same distinction during bounded process
+settlement. Cancelling one pending request does not invalidate a sibling tool's
+already observed execution. The existing response pump retains a late terminal
+result only for a previously observed, still-unsettled sibling with unchanged
+arguments; it uses the original fact sink and monotonically increasing sequence.
+The Await target, unknown/new calls, repeated terminal facts, changed call
+identities and assistant text remain excluded. Later permission requests are
+rejected without invoking the original policy or minting grants. Prompt facts
+and permission requests must also match the active ACP Session identity. These facts
+join the existing executor ThreadCommit alongside the unchanged ResumeTicket;
+neither the protocol map nor the external SDK transcript becomes another store.
+EOF, malformed frames or a settlement deadline do not invent missing results or
+replace the original Await outcome. This closes loss of observed late facts; it
+does not prove receipt of every opaque side effect across physical process loss.
+
 Each interval freezes its opening/closing root revisions, exact Runtime
 lifecycle observations, cumulative neutral usage, and historical budget limit.
 Every accepted Event batch freezes the Runtime store high-water observed before
