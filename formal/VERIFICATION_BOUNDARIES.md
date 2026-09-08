@@ -428,6 +428,16 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Credential effect and MCP delivery evidence
 
+The Source and Managed creation envelopes share `CredentialMaterialMutationFence`.
+Production Kani harnesses check its actual String-bearing Ready/publication/abort
+methods, preservation of all non-phase fields, and recovery dispatch at the
+exact expiry boundary. Epochs and clocks use the full `u64` domain; identities
+use independent empty/a/b strings with unwind 4. The concrete takeover test
+checks successor abort-only behavior, invalid deadlines and epoch exhaustion.
+These checks do not prove UUID generation, arbitrary-length strings, the
+enclosing repository CAS, external material IO or the complete recovery protocol;
+the existing takeover obligation retains its abstract-model grade.
+
 `CredentialEffectBoundary` expands exactness into Workspace, Session, source,
 revision, holder, trust domain, target, usage, envelope, payload, generation,
 and claim epoch. Its full configuration checks all 4,096 initial binary
