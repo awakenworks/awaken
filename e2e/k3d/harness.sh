@@ -9,8 +9,16 @@
 
 set -euo pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/ci/_deadline.sh"
+
 K3D_PLATFORM="${AWAKEN_K3D_PLATFORM:-linux/amd64}"
 K3D_EXIT_CLEANUP_FUNCTION=""
+K3D_BUILD_TIMEOUT_SECONDS="${AWAKEN_K3D_BUILD_TIMEOUT_SECONDS:-1800}"
+K3D_DIAGNOSTIC_TIMEOUT_SECONDS="${AWAKEN_K3D_DIAGNOSTIC_TIMEOUT_SECONDS:-20}"
+
+k3d_validate_deadline() {
+  [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
 
 k3d_capacity_preflight() {
   local nodes="$1"
@@ -45,11 +53,33 @@ k3d_require_tools() {
 # scenarios while preserving Docker's default network unless the caller
 # explicitly selects another one (for example, `host`).
 k3d_docker_build() {
+  k3d_validate_deadline "$K3D_BUILD_TIMEOUT_SECONDS" || {
+    echo "AWAKEN_K3D_BUILD_TIMEOUT_SECONDS must be a positive integer" >&2
+    return 2
+  }
   if [[ -n "${AWAKEN_K3D_BUILD_NETWORK:-}" ]]; then
-    docker build --network "$AWAKEN_K3D_BUILD_NETWORK" "$@"
+    run_with_deadline "$K3D_BUILD_TIMEOUT_SECONDS" \
+      docker build --network "$AWAKEN_K3D_BUILD_NETWORK" "$@"
   else
-    docker build "$@"
+    run_with_deadline "$K3D_BUILD_TIMEOUT_SECONDS" docker build "$@"
   fi
+}
+
+# Diagnostics are observations, not another lifecycle owner. Bind each probe
+# to the exact cluster context and a whole-process deadline so a failed build or
+# unavailable API cannot turn the original failure into an ambient, unbounded
+# kubectl session.
+k3d_diagnostic_kubectl() {
+  local cluster="$1"
+  shift
+  k3d_validate_name "$cluster" || return 2
+  k3d_validate_deadline "$K3D_DIAGNOSTIC_TIMEOUT_SECONDS" || {
+    echo "AWAKEN_K3D_DIAGNOSTIC_TIMEOUT_SECONDS must be a positive integer" >&2
+    return 2
+  }
+  run_with_deadline "$K3D_DIAGNOSTIC_TIMEOUT_SECONDS" \
+    kubectl --context "k3d-$cluster" \
+    --request-timeout="${K3D_DIAGNOSTIC_TIMEOUT_SECONDS}s" "$@"
 }
 
 # k3d_admit_or_exit <scenario-label> [required: 0|1]
@@ -531,7 +561,7 @@ print(json.dumps(value))
       done
     done
   )
-  local k3d_calls=() docker_saves=() docker_execs=() docker_builds=()
+  local k3d_calls=() docker_saves=() docker_execs=() docker_builds=() deadline_calls=()
   local delete_fails=0 observation_error="" residue="" import_failure=0 transport_failure=0
   local capacity_failure=0 capacity_calls=() volume_missing=0
   k3d_capacity_preflight() {
@@ -571,6 +601,25 @@ print(json.dumps(value))
       [[ "$residue" != "context" ]] || printf '%s\n' '  k3d-awaken-test k3d-awaken-test admin@k3d-awaken-test'
     fi
   }
+
+  # Diagnostic/build deadline decision table: B1 a valid build deadline runs
+  # the exact Docker command once; B2 malformed/zero deadlines are rejected
+  # before Docker; D1 a valid cluster and diagnostic deadline bind kubectl to
+  # that exact context and request timeout; D2 invalid cluster/deadline issues
+  # no kubectl call. The shared deadline helper owns descendant termination.
+  run_with_deadline() {
+    local seconds="$1"
+    shift
+    deadline_calls+=("$seconds:$*")
+    "$@"
+  }
+  k3d_diagnostic_kubectl awaken-test -n exact get pods
+  [[ "${deadline_calls[0]}" = "${K3D_DIAGNOSTIC_TIMEOUT_SECONDS}:kubectl --context k3d-awaken-test --request-timeout=${K3D_DIAGNOSTIC_TIMEOUT_SECONDS}s -n exact get pods" ]]
+  local saved_diagnostic_timeout="$K3D_DIAGNOSTIC_TIMEOUT_SECONDS"
+  K3D_DIAGNOSTIC_TIMEOUT_SECONDS=0
+  ! k3d_diagnostic_kubectl awaken-test get pods
+  K3D_DIAGNOSTIC_TIMEOUT_SECONDS="$saved_diagnostic_timeout"
+  ! k3d_diagnostic_kubectl --all get pods
 
   k3d_validate_name "awaken-test-1"
   ! k3d_validate_name "--all"
@@ -799,8 +848,14 @@ print(json.dumps(value))
   unset AWAKEN_K3D_BUILD_NETWORK
   k3d_docker_build --load -t fixture:latest .
   [[ "${docker_builds[${#docker_builds[@]} - 1]}" = "build --load -t fixture:latest ." ]]
+  [[ "${deadline_calls[${#deadline_calls[@]} - 1]}" = "${K3D_BUILD_TIMEOUT_SECONDS}:docker build --load -t fixture:latest ." ]]
   AWAKEN_K3D_BUILD_NETWORK=host k3d_docker_build --load -t fixture:latest .
   [[ "${docker_builds[${#docker_builds[@]} - 1]}" = "build --network host --load -t fixture:latest ." ]]
+  [[ "${deadline_calls[${#deadline_calls[@]} - 1]}" = "${K3D_BUILD_TIMEOUT_SECONDS}:docker build --network host --load -t fixture:latest ." ]]
+  local saved_build_timeout="$K3D_BUILD_TIMEOUT_SECONDS"
+  K3D_BUILD_TIMEOUT_SECONDS=invalid
+  ! k3d_docker_build --load -t must-not-run .
+  K3D_BUILD_TIMEOUT_SECONDS="$saved_build_timeout"
 )
 
 if [[ "${BASH_SOURCE[0]}" = "$0" ]]; then

@@ -18,6 +18,7 @@ API_PF=""
 STOPPED_NODE=""
 WORKER_TLS_DIR=""
 CONTINUATION_VOLUME=""
+CLUSTER_CREATED=0
 export CARGO_CACHE_AUTOCLEAN=0
 
 log() { echo -e "\n\033[1;36m== $* ==\033[0m"; }
@@ -69,14 +70,23 @@ start_public_endpoint() {
 }
 
 diagnostics() {
-  kubectl -n "$NS" get pods -o wide || true
-  kubectl -n "$NS" get pods -l app=awaken-sandbox \
+  # Diagnostic decision table: C1 the exact cluster was created; C2 its API is
+  # observable within the harness deadline. D1 C1+C2 emits only this context's
+  # resources; D2 !C1 performs no kubectl call after a host build failure; D3
+  # C1+!C2 stops at the deadline and preserves the original ERR status.
+  [ "$CLUSTER_CREATED" = "1" ] || return 0
+  k3d_diagnostic_kubectl "$CLUSTER" -n "$NS" get pods -o wide || true
+  k3d_diagnostic_kubectl "$CLUSTER" -n "$NS" get pods -l app=awaken-sandbox \
     -o 'custom-columns=NAME:.metadata.name,UID:.metadata.uid,SCOPE:.metadata.annotations.awaken\.dev/sandbox-scope,CLAIM:.spec.volumes[*].persistentVolumeClaim.claimName' || true
-  kubectl -n "$NS" get pvc -o 'custom-columns=NAME:.metadata.name,UID:.metadata.uid,STATUS:.status.phase' || true
-  kubectl -n "$NS" get events --sort-by=.lastTimestamp | tail -60 || true
+  k3d_diagnostic_kubectl "$CLUSTER" -n "$NS" get pvc \
+    -o 'custom-columns=NAME:.metadata.name,UID:.metadata.uid,STATUS:.status.phase' || true
+  k3d_diagnostic_kubectl "$CLUSTER" -n "$NS" get events \
+    --sort-by=.lastTimestamp | tail -60 || true
   for app in control control-migrate coordinator coordinator-migrate worker provider postgres-primary postgres-standby; do
-    kubectl -n "$NS" logs -l "app=$app" --all-containers --tail=100 --prefix || true
+    k3d_diagnostic_kubectl "$CLUSTER" -n "$NS" logs -l "app=$app" \
+      --all-containers --tail=100 --prefix || true
   done
+  return 0
 }
 trap diagnostics ERR
 
@@ -156,6 +166,7 @@ echo "using immutable test image $IMAGE_ID"
 k3d_ensure_images "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine
 CONTINUATION_VOLUME=$(docker volume create --label "awaken.e2e.cluster=$CLUSTER")
 k3d_create_cluster "$CLUSTER" 3 128Mi "" --shared-volume "$CONTINUATION_VOLUME" "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine
+CLUSTER_CREATED=1
 # The installed local-path provisioner owns PVC/PV lifecycle. Its shared-filesystem
 # mode removes node affinity because this exact Docker volume is mounted on every
 # node. This is a node-crash fixture, not a proof of production storage durability.
