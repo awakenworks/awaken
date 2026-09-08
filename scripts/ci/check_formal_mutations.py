@@ -327,7 +327,7 @@ class MutationOracleTests(unittest.TestCase):
             "resolution-failure-model-mutant", "terminal-scan-model-mutants", "config-cas-model-mutant",
             "background-completion-model-mutant", "sandbox-control-model-mutants",
             "audit-commit-model-mutants", "effect-retirement-model-mutant",
-            "credential-removal-model-mutant", "verified-admission-model-mutants",
+            "credential-creation-model-mutants", "verified-admission-model-mutants",
             "session-network-model-mutant", "session-observation-model-mutants",
             "cowork-lifecycle-model-mutants", "local-process-model-mutant",
             "local-recovery-model-mutants", "checkpoint-recovery-model-mutants",
@@ -543,7 +543,7 @@ def main() -> None:
         "memory-extraction-model-mutants": check_memory_extraction_model_mutants,
         "audit-commit-model-mutants": check_audit_commit_model_mutants,
         "effect-retirement-model-mutant": check_effect_retirement_model_mutant,
-        "credential-removal-model-mutant": check_credential_removal_model_mutant,
+        "credential-creation-model-mutants": check_credential_creation_model_mutants,
         "verified-admission-model-mutants": check_verified_admission_model_mutants,
         "session-network-model-mutant": check_session_network_model_mutant,
         "session-observation-model-mutants": check_session_observation_model_mutants,
@@ -1408,19 +1408,39 @@ def check_effect_retirement_model_mutant(tlc_jar: Path) -> None:
     print("Effect retirement mutation score: 1/1 killed (stale receipt retires successor)")
 
 
-def check_credential_removal_model_mutant(tlc_jar: Path) -> None:
-    # R1: deleting the absence guard must expose Aborted with residual material,
-    # not magically perform the physical deletion inside the WAL transaction.
+def check_credential_creation_model_mutants(tlc_jar: Path) -> None:
+    # M1 absence guard omitted => residual material after WAL retirement.
+    # M2 legacy zero advances to reserved epoch one => recovery fence violation.
+    # M3 legacy claim disabled => abandoned legacy Writing never aborts.
+    # W1-W3 start from the same Init's legacy partition and require reachable
+    # takeover/repeated takeover/abort, excluding an empty legacy domain.
     source = (ROOT / "formal/tla/ManagedCredentialCreation.tla").read_text()
     config = (ROOT / "formal/tla/ManagedCredentialCreation.cfg").read_text()
-    config = config.replace("INVARIANT CreationSafety", "INVARIANTS AbortedCreationIsClean CreationSafety")
+    removal_config = config.replace("INVARIANT CreationSafety", "INVARIANTS AbortedCreationIsClean CreationSafety")
     guard = 'CompleteAbortCleanup ==\n    /\\ processUp /\\ phase = "ReclaimingAbort"\n    /\\ material = "None"'
-    if source.count(guard) != 1:
-        raise SystemExit("Credential removal mutation anchor drifted; review the model")
-    mutant = source.replace(guard, guard.rsplit("\n", 1)[0])
+    epoch = "ownerEpoch' = IF ownerEpoch = 0 THEN 2 ELSE ownerEpoch + 1"
+    admission = r"/\ ownerEpoch < MaxOwnerEpoch"
+    for anchor in (guard, epoch, admission):
+        if source.count(anchor) != 1:
+            raise SystemExit("Credential creation mutation anchor drifted; review the model")
+    mutations = [
+        (source.replace(guard, guard.rsplit("\n", 1)[0]), removal_config, "AbortedCreationIsClean"),
+        (source.replace(epoch, "ownerEpoch' = ownerEpoch + 1"),
+         config.replace("INVARIANT CreationSafety", "INVARIANTS RecoveryClaimChangesTheFence CreationSafety"),
+         "RecoveryClaimChangesTheFence"),
+        (source.replace(admission, r"/\ ownerEpoch > 0 /\ ownerEpoch < MaxOwnerEpoch"),
+         config.replace("PROPERTY ", "PROPERTIES "), "temporal:AbandonedWritingEventuallyAborts"),
+    ]
+    # W4 also preserves the original fresh-command publication path.
+    for initial, witness in (
+        ("LegacyInit", "NoRecoveryReached"), ("LegacyInit", "NoAbortReached"),
+        ("LegacyInit", "NoSuccessiveRecoveryReached"), ("FreshInit", "NoPublicationReached"),
+    ):
+        witness_config = f"INIT {initial}\nNEXT Next\nCONSTANT MaxOwnerEpoch = 3\nCHECK_DEADLOCK FALSE\n"
+        mutations.append((source, witness_config + f"INVARIANT {witness}\n", witness))
     check_tlc_model_mutations(tlc_jar, "ManagedCredentialCreation", source, config,
-                             [(mutant, config, "AbortedCreationIsClean")])
-    print("Credential removal mutation score: 1/1 killed (unobserved physical deletion)")
+                             mutations, heap_mb=1024, timeout_seconds=120)
+    print("Credential creation: 3/3 semantic mutants killed; legacy takeover/repeated takeover/abort and fresh publication witnesses reachable")
 
 
 def check_session_network_model_mutant(tlc_jar: Path) -> None:

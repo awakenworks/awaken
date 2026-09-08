@@ -11,6 +11,11 @@
 //! `SealedAeadSecretStore::over(&key, Arc::new(PostgresSealedBlobStore::connect(..).await?))`
 //! (features `sealed-aead` + `postgres`), which stores only sealed bytes.
 
+// CAS admission compares complete decoded domain rows under FOR UPDATE.
+// Keep keyed ownership predicates and affected-row checks, but do not compare
+// reserialized JSON with stored JSON: legacy omitted fields decode to defaults.
+// The held row lock, not a competing JSON encoding comparison, fences the write.
+
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
@@ -652,13 +657,12 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
                 .ok_or(ManagedCredentialMutationError::NotFound)?;
             sqlx::query(&format!(
                 "UPDATE {p}_source SET workspace_id = $1, data = $2 \
-                 WHERE id = $3 AND workspace_id = $4 AND data = $5"
+                 WHERE id = $3 AND workspace_id = $4"
             ))
             .bind(&pending.after_source.workspace_id)
             .bind(Json(&pending.after_source))
             .bind(&pending.after_source.id.0)
             .bind(&before.workspace_id)
-            .bind(Json(before))
             .execute(&mut *tx)
             .await
             .map_err(storage)?
@@ -691,7 +695,7 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
             sqlx::query(&format!(
                 "UPDATE {p}_managed_vault_credential SET vault_id = $1, workspace_id = $2, \
                  source_id = $3, data = $4 WHERE id = $5 AND vault_id = $6 \
-                 AND workspace_id = $7 AND source_id = $8 AND data = $9"
+                 AND workspace_id = $7 AND source_id = $8"
             ))
             .bind(&pending.after_credential.vault_id)
             .bind(&pending.after_credential.workspace_id)
@@ -701,7 +705,6 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
             .bind(&before.vault_id)
             .bind(&before.workspace_id)
             .bind(&before.source_id.0)
-            .bind(Json(before))
             .execute(&mut *tx)
             .await
             .map_err(storage)?
@@ -846,11 +849,10 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
         }
         let changed = sqlx::query(&format!(
             "UPDATE {NS}_managed_credential_mutation SET data = $1 \
-             WHERE source_id = $2 AND data = $3"
+             WHERE source_id = $2"
         ))
         .bind(Json(&claimed))
         .bind(&pending.after_source.id.0)
-        .bind(Json(pending))
         .execute(&mut *tx)
         .await
         .map_err(storage)?
@@ -917,11 +919,10 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
             pending.admit_abort(&durable, current_source.as_ref(), current_child.as_ref())?;
         let changed = sqlx::query(&format!(
             "UPDATE {NS}_managed_credential_mutation SET data = $1 \
-             WHERE source_id = $2 AND data = $3"
+             WHERE source_id = $2"
         ))
         .bind(Json(&reclaiming))
         .bind(&pending.after_source.id.0)
-        .bind(Json(pending))
         .execute(&mut *tx)
         .await
         .map_err(storage)?
@@ -986,10 +987,9 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
         .transpose()?;
         pending.admit_completion(&durable, current_source.as_ref(), current_child.as_ref())?;
         let deleted = sqlx::query(&format!(
-            "DELETE FROM {NS}_managed_credential_mutation WHERE source_id = $1 AND data = $2"
+            "DELETE FROM {NS}_managed_credential_mutation WHERE source_id = $1"
         ))
         .bind(&pending.after_source.id.0)
-        .bind(Json(pending))
         .execute(&mut *tx)
         .await
         .map_err(storage)?
@@ -1403,13 +1403,12 @@ impl CredentialRepo for PostgresCredentialRepo {
             let changed = if let Some(before) = intent.before.as_ref() {
                 sqlx::query(&format!(
                     "UPDATE {NS}_source SET workspace_id = $1, data = $2 \
-                     WHERE id = $3 AND workspace_id = $4 AND data = $5"
+                     WHERE id = $3 AND workspace_id = $4"
                 ))
                 .bind(&intent.after.workspace_id)
                 .bind(Json(&intent.after))
                 .bind(&intent.after.id.0)
                 .bind(&before.workspace_id)
-                .bind(Json(before))
                 .execute(&mut *tx)
                 .await
                 .map_err(storage)?

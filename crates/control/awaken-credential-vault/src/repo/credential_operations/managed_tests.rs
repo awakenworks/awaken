@@ -1140,8 +1140,12 @@ fn legacy_writing_json_defaults_to_an_expired_unowned_lease() {
     assert_eq!(decoded.material_fence.writer_epoch, 0);
     assert_eq!(decoded.material_fence.writer_lease_expires_at_unix_ms, 0);
     let claimed = decoded.claim_after_expiry(0, 1).unwrap().unwrap();
-    assert_eq!(claimed.material_fence.writer_epoch, 1);
+    // Legacy zero is unowned, never a route back to the reserved original
+    // writer epoch. Deserialization/recovery must enter abort-only epoch two.
+    assert_eq!(claimed.material_fence.writer_epoch, 2);
     claimed.validate().unwrap();
+    assert!(claimed.with_material_ready().is_err());
+    assert!(claimed.with_material_reclaiming().is_err());
 }
 
 #[tokio::test]

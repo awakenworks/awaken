@@ -22,14 +22,28 @@ IntentIds == {"intent-a", "intent-b"}
 Owners == {"None", "Live", "Recovery"}
 TerminalPhases == {"Published", "Aborted"}
 
-Init == /\ phase = "None" /\ intentId = "None" /\ material = "None"
-        /\ sourcePublished = FALSE /\ childPublished = FALSE
-        /\ processUp = TRUE /\ owner = "None" /\ ownerEpoch = 0
-        /\ leaseExpired = TRUE /\ liveWriterActive = FALSE
-        /\ admitted \in BOOLEAN
-        /\ duplicateSeen = FALSE /\ conflictRejected = FALSE
-        /\ staleRejected = FALSE /\ recoveryClaimed = FALSE
-        /\ unreachableOrphan = FALSE
+\* Initial partitions are empty storage or a pre-existing unowned legacy WAL.
+\* L1/L2/L3 legacy material None/Partial/Complete must all recover by abort;
+\* loading a row is not a new command and can never obtain the Live owner.
+Init ==
+    /\ \/ /\ phase = "None" /\ intentId = "None" /\ material = "None"
+       \/ /\ phase = "Writing" /\ intentId \in IntentIds
+          /\ material \in {"None", "Partial", "Complete"}
+    /\ sourcePublished = FALSE /\ childPublished = FALSE
+    /\ processUp = TRUE /\ owner = "None" /\ ownerEpoch = 0
+    /\ leaseExpired = TRUE /\ liveWriterActive = FALSE
+    /\ admitted \in BOOLEAN
+    /\ duplicateSeen = FALSE /\ conflictRejected = FALSE
+    /\ staleRejected = FALSE /\ recoveryClaimed = FALSE
+    /\ unreachableOrphan = FALSE
+
+\* Witness selector reuses Init, rather than inventing a second legacy state.
+LegacyInit == Init /\ phase = "Writing"
+FreshInit == Init /\ phase = "None"
+NoRecoveryReached == ~recoveryClaimed
+NoAbortReached == phase # "Aborted"
+NoSuccessiveRecoveryReached == ownerEpoch < 3
+NoPublicationReached == ~sourcePublished /\ ~childPublished
 
 Begin(id) ==
     /\ processUp /\ phase = "None" /\ id \in IntentIds
@@ -160,8 +174,8 @@ CancelLiveWriter ==
 
 \* Abstract deadline passage. Before this action the periodic reconciler has no
 \* takeover transition, exactly matching deadline > injected-now in Rust.
-ExpireLiveLease ==
-    /\ phase = "Writing" /\ owner = "Live" /\ ~leaseExpired
+ExpireWriterLease ==
+    /\ phase = "Writing" /\ owner \in {"Live", "Recovery"} /\ ~leaseExpired
     /\ leaseExpired' = TRUE
     /\ UNCHANGED <<phase, intentId, material, sourcePublished,
                     childPublished, processUp, owner, ownerEpoch,
@@ -172,7 +186,7 @@ ExpireLiveLease ==
 ClaimExpiredWriting ==
     /\ processUp /\ phase = "Writing" /\ leaseExpired
     /\ ownerEpoch < MaxOwnerEpoch
-    /\ owner' = "Recovery" /\ ownerEpoch' = ownerEpoch + 1
+    /\ owner' = "Recovery" /\ ownerEpoch' = IF ownerEpoch = 0 THEN 2 ELSE ownerEpoch + 1
     /\ leaseExpired' = FALSE /\ liveWriterActive' = FALSE
     /\ recoveryClaimed' = TRUE
     /\ UNCHANGED <<phase, intentId, material, sourcePublished,
@@ -234,7 +248,7 @@ Next == (\E id \in IntentIds: Begin(id) \/ DuplicateBegin(id) \/ ConflictingBegi
         \/ PutPartialAny \/ PutCompleteAny \/ MarkReadyAny
         \/ AbortClaimedWritingAny \/ CommitAny \/ RejectAny
         \/ RemoveAbortedMaterial \/ CompleteAbortCleanup
-        \/ CancelLiveWriter \/ ExpireLiveLease \/ ClaimExpiredWriting
+        \/ CancelLiveWriter \/ ExpireWriterLease \/ ClaimExpiredWriting
         \/ StaleWriteAny \/ StaleCommitAny \/ Crash \/ Restart \/ Quiesce
 
 TypeOK == /\ phase \in {"None", "Writing", "Ready", "ReclaimingAbort",
@@ -257,8 +271,11 @@ AbortedCreationIsClean ==
 UnpublishedMaterialCleanupHasDurableFact ==
     (material # "None" /\ ~sourcePublished) =>
         phase \in {"Writing", "Ready", "ReclaimingAbort"}
-WritingAlwaysHasDurableOwner ==
-    phase = "Writing" => owner \in {"Live", "Recovery"} /\ ownerEpoch > 0
+WritingHasOwnedOrLegacyRecoveryFence ==
+    phase = "Writing" =>
+        \/ /\ owner \in {"Live", "Recovery"} /\ ownerEpoch > 0
+        \/ /\ owner = "None" /\ ownerEpoch = 0 /\ leaseExpired
+           /\ ~liveWriterActive /\ ~recoveryClaimed
 RecoveryClaimChangesTheFence == recoveryClaimed => ownerEpoch >= 2
 LiveLeaseIsNeverStolen == owner = "Recovery" => recoveryClaimed
 IntentIdentityNeverDisappears == phase # "None" => intentId \in IntentIds
@@ -277,7 +294,7 @@ CreationSafety ==
     /\ TypeOK /\ SourceAndChildPublishAtomically
     /\ PublishedPairHasCompleteMaterial /\ AbortedCreationIsClean
     /\ UnpublishedMaterialCleanupHasDurableFact
-    /\ WritingAlwaysHasDurableOwner /\ RecoveryClaimChangesTheFence
+    /\ WritingHasOwnedOrLegacyRecoveryFence /\ RecoveryClaimChangesTheFence
     /\ LiveLeaseIsNeverStolen /\ IntentIdentityNeverDisappears
     /\ ReadyBelongsToOriginalWriter /\ PublishedBelongsToOriginalEpoch
     /\ RecoveryClaimIsAbortOnly
@@ -288,7 +305,7 @@ Spec == Init /\ [][Next]_vars
 FairSpec ==
     /\ Spec
     /\ WF_vars(Restart)
-    /\ SF_vars(ExpireLiveLease)
+    /\ SF_vars(ExpireWriterLease)
     /\ SF_vars(ClaimExpiredWriting)
     /\ SF_vars(AbortClaimedWritingAny)
     /\ SF_vars(RemoveAbortedMaterial)

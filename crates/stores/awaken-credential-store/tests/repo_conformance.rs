@@ -746,6 +746,306 @@ async fn get_is_an_unscoped_by_id_primitive(repo: &dyn CredentialRepo) {
     assert_eq!(cross.workspace_id, "ws-owner");
 }
 
+/// Legacy wire inputs retain or omit attempt_id independently of the missing
+/// owner fields. Both valid epoch-zero envelopes must recover without gaining
+/// epoch-one publication authority; they remain forbidden as fresh commands.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+fn legacy_mutation_wires(
+    retain_attempt: bool,
+    phase: CredentialMaterialMutationPhase,
+) -> [(&'static str, serde_json::Value, &'static str); 2] {
+    let mut source = source("cred:legacy", "ws");
+    source.material_ref = Some(SecretRef("sec:legacy".into()));
+    let plain = CredentialMutationIntent::prepare(None, source.clone()).unwrap();
+    source.id = CredentialSourceId("cred:legacy:managed".into());
+    let child = ManagedVaultCredential {
+        id: "child:legacy".into(),
+        vault_id: "vault:legacy".into(),
+        workspace_id: "ws".into(),
+        source_id: source.id.clone(),
+        auth: ManagedCredentialAuth::StaticBearer {
+            mcp_server_url: "https://mcp.example.test".into(),
+        },
+        metadata: Default::default(),
+        display_name: None,
+        revision: 1,
+        lifecycle: ManagedCredentialLifecycle::Active,
+    };
+    let managed = PendingManagedCredentialMutation::create(source, child).unwrap();
+    let mut rows = [
+        (
+            "credential_creation_intent",
+            serde_json::to_value(plain).unwrap(),
+            "after",
+        ),
+        (
+            "credential_managed_credential_mutation",
+            serde_json::to_value(managed).unwrap(),
+            "after_source",
+        ),
+    ];
+    for (_, wire, source_field) in &mut rows {
+        let object = wire.as_object_mut().unwrap();
+        object.insert("format_version".into(), serde_json::json!(0));
+        object.insert("phase".into(), serde_json::to_value(phase).unwrap());
+        for field in [
+            "writer_token",
+            "writer_epoch",
+            "writer_lease_expires_at_unix_ms",
+        ] {
+            assert!(object.remove(field).is_some());
+        }
+        if !retain_attempt {
+            assert!(object.remove("attempt_id").is_some());
+            object.get_mut(*source_field).unwrap()["material_ref"] = serde_json::json!(format!(
+                "sec:{}",
+                object[*source_field]["id"].as_str().unwrap()
+            ));
+        }
+    }
+    rows
+}
+
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+async fn legacy_mutation_recovery_conforms(
+    repo: &dyn ManagedCredentialRepository,
+    retain_attempt: bool,
+) {
+    // L1 missing owner fields deserialize as zero; L2 absence/retention of the
+    // old attempt does not affect admission. Both => exact CAS to epoch two,
+    // no Ready/publication, stale-owner rejection, unchanged remaining fields,
+    // and abort cleanup. These are WAL witnesses with no external material IO.
+    macro_rules! check_legacy {
+        ($pending:ident, $begin:ident, $claim:ident, $ready:ident, $abort:ident, $complete:ident) => {{
+            let rows = repo.$pending().await.unwrap();
+            assert_eq!(rows.len(), 1);
+            let original = &rows[0];
+            original.validate().unwrap();
+            assert_eq!(original.material_fence.writer_epoch, 0);
+            assert_eq!(original.material_fence.writer_lease_expires_at_unix_ms, 0);
+            assert!(original.material_fence.writer_token.is_empty());
+            assert_eq!(
+                !original.material_fence.attempt_id().is_empty(),
+                retain_attempt
+            );
+            assert!(
+                repo.$begin(original.clone()).await.is_err(),
+                "legacy is not a fresh command"
+            );
+            if original.material_fence.phase == CredentialMaterialMutationPhase::Writing {
+                let claimed = repo.$claim(original, 0, 10).await.unwrap().unwrap();
+                assert_eq!(claimed.material_fence.writer_epoch, 2);
+                assert_eq!(claimed.material_fence.writer_lease_expires_at_unix_ms, 10);
+                let mut normalized = claimed.clone();
+                normalized.material_fence.writer_token =
+                    original.material_fence.writer_token.clone();
+                normalized.material_fence.writer_epoch = 0;
+                normalized.material_fence.writer_lease_expires_at_unix_ms = 0;
+                assert_eq!(&normalized, original);
+                assert!(
+                    repo.$ready(&claimed).await.is_err(),
+                    "legacy takeover is abort-only"
+                );
+                assert!(claimed.with_material_ready().is_err());
+                assert!(claimed.with_material_reclaiming().is_err());
+                assert!(repo.$claim(original, 0, 10).await.unwrap().is_none());
+                assert!(repo.$abort(original).await.is_err());
+                assert_eq!(repo.$pending().await.unwrap(), vec![claimed.clone()]);
+                let next = repo.$claim(&claimed, 10, 20).await.unwrap().unwrap();
+                assert_eq!(
+                    next.material_fence.writer_epoch, 3,
+                    "recovery lease can itself expire"
+                );
+                assert!(repo.$ready(&next).await.is_err());
+                assert!(repo.$claim(&claimed, 10, 20).await.unwrap().is_none());
+                let aborted = repo.$abort(&next).await.unwrap();
+                repo.$complete(&aborted).await.unwrap();
+            } else {
+                // L3 pre-existing Ready may abort; L4 an exact legacy abort WAL
+                // may complete. Re-encoding omitted defaults is not a CAS fence.
+                let aborted =
+                    if original.material_fence.phase == CredentialMaterialMutationPhase::Ready {
+                        repo.$abort(original).await.unwrap()
+                    } else {
+                        assert_eq!(
+                            original.material_fence.phase,
+                            CredentialMaterialMutationPhase::ReclaimingAbort
+                        );
+                        original.clone()
+                    };
+                repo.$complete(&aborted).await.unwrap();
+            }
+            assert!(repo.$pending().await.unwrap().is_empty());
+        }};
+    }
+    check_legacy!(
+        pending_mutations,
+        begin_mutation,
+        claim_expired_mutation,
+        mark_mutation_ready,
+        abort_mutation,
+        complete_mutation
+    );
+    check_legacy!(
+        pending_managed_mutations,
+        begin_managed_mutation,
+        claim_expired_managed_mutation,
+        mark_managed_mutation_ready,
+        abort_managed_mutation,
+        complete_managed_mutation
+    );
+}
+
+// E1 stored JSON explicitly spells or omits defaults (and SQLite changes whitespace), but
+// decodes to the exact before row => Source and Managed updates publish and
+// retire their WAL/outbox. E2 a genuinely changed before row remains a conflict,
+// covered by the shared stale-snapshot/collision tables in this same suite.
+// SQL wrappers rewrite only representation; these helpers own both assertions.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+async fn prepare_root_encoding_updates(
+    repo: &dyn ManagedCredentialRepository,
+) -> (CredentialMutationIntent, PendingManagedCredentialMutation) {
+    let plain = source("cred:encoding:plain", "ws");
+    repo.put(plain.clone()).await.unwrap();
+    let mut after_plain = plain.clone();
+    after_plain.version += 1;
+    let plain_update = CredentialMutationIntent::prepare(Some(plain), after_plain).unwrap();
+    let vault = ManagedVault {
+        id: "vault:encoding".into(),
+        workspace_id: "ws".into(),
+        display_name: "encoding".into(),
+        metadata: Default::default(),
+        archived_at: None,
+        deletion: None,
+        revision: 1,
+    };
+    repo.insert_vault("ws", vault.clone()).await.unwrap();
+    let managed_source = source("cred:encoding:managed", "ws");
+    let child = ManagedVaultCredential {
+        id: "child:encoding".into(),
+        vault_id: vault.id,
+        workspace_id: "ws".into(),
+        source_id: managed_source.id.clone(),
+        auth: ManagedCredentialAuth::StaticBearer {
+            mcp_server_url: "https://mcp.example.test".into(),
+        },
+        metadata: Default::default(),
+        display_name: None,
+        revision: 1,
+        lifecycle: ManagedCredentialLifecycle::Active,
+    };
+    let create =
+        PendingManagedCredentialMutation::create(managed_source.clone(), child.clone()).unwrap();
+    assert!(repo.begin_managed_mutation(create.clone()).await.unwrap());
+    let committed = repo.commit_managed_mutation(&create).await.unwrap();
+    repo.complete_managed_mutation(&committed).await.unwrap();
+    let mut after_child = child.clone();
+    after_child.revision += 1;
+    after_child.display_name = Some("updated encoding fixture".into());
+    let update = PendingManagedCredentialMutation::change(
+        "managed-update:encoding".into(),
+        ManagedCredentialOperation::Update,
+        managed_source.clone(),
+        managed_source,
+        child,
+        after_child,
+        false,
+    )
+    .unwrap();
+    (plain_update, update)
+}
+
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+fn root_encoding_wires(
+    plain: &CredentialMutationIntent,
+    managed: &PendingManagedCredentialMutation,
+) -> [(&'static str, serde_json::Value); 3] {
+    let mut rows = [
+        (
+            "credential_source",
+            serde_json::to_value(plain.before.as_ref().unwrap()).unwrap(),
+        ),
+        (
+            "credential_source",
+            serde_json::to_value(managed.before_source.as_ref().unwrap()).unwrap(),
+        ),
+        (
+            "credential_managed_vault_credential",
+            serde_json::to_value(managed.before_credential.as_ref().unwrap()).unwrap(),
+        ),
+    ];
+    for (table, wire) in &mut rows {
+        let object = wire.as_object_mut().unwrap();
+        if *table == "credential_source" {
+            assert!(
+                object
+                    .insert("descriptor".into(), serde_json::Value::Null)
+                    .is_none(),
+                "E1 explicit None differs from omitted None"
+            );
+        } else {
+            assert_eq!(
+                object.remove("metadata"),
+                Some(serde_json::json!({})),
+                "E1 omitted empty map differs from serialized empty map"
+            );
+        }
+    }
+    rows
+}
+
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+async fn root_encoding_updates_conform(
+    repo: &dyn ManagedCredentialRepository,
+    plain: CredentialMutationIntent,
+    managed: PendingManagedCredentialMutation,
+) {
+    assert_eq!(
+        repo.get(&plain.after.id).await.unwrap(),
+        *plain.before.as_ref().unwrap()
+    );
+    assert_eq!(
+        repo.get(&managed.after_source.id).await.unwrap(),
+        *managed.before_source.as_ref().unwrap()
+    );
+    assert_eq!(
+        repo.get_vault_credential("ws", &managed.after_credential.id)
+            .await
+            .unwrap()
+            .as_ref(),
+        managed.before_credential.as_ref()
+    );
+    assert!(repo.begin_mutation(plain.clone()).await.unwrap());
+    let committed = repo.apply_mutation(&plain).await.unwrap();
+    repo.complete_mutation(&committed).await.unwrap();
+    assert_eq!(
+        repo.get(&plain.after.id).await.unwrap(),
+        plain.after,
+        "E1 Source"
+    );
+    assert!(repo.begin_managed_mutation(managed.clone()).await.unwrap());
+    let committed = repo.commit_managed_mutation(&managed).await.unwrap();
+    repo.complete_managed_mutation(&committed).await.unwrap();
+    assert_eq!(
+        repo.get(&managed.after_source.id).await.unwrap(),
+        managed.after_source,
+        "E1 Managed source"
+    );
+    assert_eq!(
+        repo.get_vault_credential("ws", &managed.after_credential.id)
+            .await
+            .unwrap(),
+        Some(managed.after_credential),
+        "E1 Managed child"
+    );
+    for rollout in repo.pending_managed_rollouts().await.unwrap() {
+        repo.complete_managed_rollout(&rollout).await.unwrap();
+    }
+    assert!(repo.pending_mutations().await.unwrap().is_empty());
+    assert!(repo.pending_managed_mutations().await.unwrap().is_empty());
+    assert!(repo.pending_managed_rollouts().await.unwrap().is_empty());
+}
+
 /// Shared takeover table for Source/Managed x InMemory/SQLite/PostgreSQL.
 /// T1 absent WAL or live/non-Writing snapshot => no claim; T2 invalid successor
 /// lease => error without a WAL change; T3 same key but stale token/epoch/lease/payload
@@ -1335,6 +1635,54 @@ async fn sqlite_recovery_scans_reject_mismatched_durable_keys_before_secret_io()
     assert_eq!(retained, 2);
 }
 
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_legacy_mutation_recovery_conforms() {
+    // Run L1-L4/E1 over actual SQLite JSON decoding and transaction CAS. Raw fixture
+    // insertion represents pre-existing storage; no fresh-command bypass is added.
+    use awaken_credential_store::sqlite::SqliteCredentialRepo;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("legacy-writer.db");
+    let repo = SqliteCredentialRepo::open(path.to_str().unwrap()).unwrap();
+    let connection = rusqlite::Connection::open(path).unwrap();
+    for retain_attempt in [false, true] {
+        for phase in [
+            CredentialMaterialMutationPhase::Writing,
+            CredentialMaterialMutationPhase::Ready,
+            CredentialMaterialMutationPhase::ReclaimingAbort,
+        ] {
+            for (table, wire, source_field) in legacy_mutation_wires(retain_attempt, phase) {
+                connection
+                    .execute(
+                        &format!("INSERT INTO {table} (source_id, data) VALUES (?1, ?2)"),
+                        rusqlite::params![
+                            wire[source_field]["id"].as_str().unwrap(),
+                            serde_json::to_string(&wire).unwrap()
+                        ],
+                    )
+                    .unwrap();
+            }
+            legacy_mutation_recovery_conforms(&repo, retain_attempt).await;
+        }
+    }
+    let (plain, managed) = prepare_root_encoding_updates(&repo).await;
+    for (table, wire) in root_encoding_wires(&plain, &managed) {
+        assert_eq!(
+            connection
+                .execute(
+                    &format!("UPDATE {table} SET data = ?1 WHERE id = ?2"),
+                    rusqlite::params![
+                        serde_json::to_string_pretty(&wire).unwrap(),
+                        wire["id"].as_str().unwrap()
+                    ],
+                )
+                .unwrap(),
+            1
+        );
+    }
+    root_encoding_updates_conform(&repo, plain, managed).await;
+}
+
 /// Live Postgres conformance: the same suites as the other backends, each on a
 /// fresh schema (so the four independent suites never see each other's rows).
 /// Only the default development URL may skip; an explicit fixture must work.
@@ -1535,6 +1883,50 @@ mod postgres {
         )
         .await;
         get_is_an_unscoped_by_id_primitive(&repo("t_cred_xtenant").await.unwrap()).await;
+    }
+
+    #[tokio::test]
+    async fn postgres_legacy_mutation_recovery_conforms() {
+        // Same L1-L4/E1 table, including PostgreSQL jsonb decoding and locked CAS.
+        let Some(pool) = schema_pool("t_cred_legacy_writer").await else {
+            return;
+        };
+        let repo = PostgresCredentialRepo::with_pool(pool.clone())
+            .await
+            .unwrap();
+        for retain_attempt in [false, true] {
+            for phase in [
+                CredentialMaterialMutationPhase::Writing,
+                CredentialMaterialMutationPhase::Ready,
+                CredentialMaterialMutationPhase::ReclaimingAbort,
+            ] {
+                for (table, wire, source_field) in legacy_mutation_wires(retain_attempt, phase) {
+                    sqlx::query(&format!(
+                        "INSERT INTO {table} (source_id, data) VALUES ($1, $2)"
+                    ))
+                    .bind(wire[source_field]["id"].as_str().unwrap())
+                    .bind(sqlx::types::Json(&wire))
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                }
+                legacy_mutation_recovery_conforms(&repo, retain_attempt).await;
+            }
+        }
+        let (plain, managed) = prepare_root_encoding_updates(&repo).await;
+        for (table, wire) in root_encoding_wires(&plain, &managed) {
+            assert_eq!(
+                sqlx::query(&format!("UPDATE {table} SET data = $1 WHERE id = $2"))
+                    .bind(sqlx::types::Json(&wire))
+                    .bind(wire["id"].as_str().unwrap())
+                    .execute(&pool)
+                    .await
+                    .unwrap()
+                    .rows_affected(),
+                1
+            );
+        }
+        root_encoding_updates_conform(&repo, plain, managed).await;
     }
 
     /// Same durable-key rule as the SQLite cause/effect test, executed against

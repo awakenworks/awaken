@@ -139,7 +139,9 @@ impl CredentialMaterialMutationFence {
         }
         let mut claimed = self.clone();
         claimed.writer_token = new_writer_token();
-        claimed.writer_epoch = self.writer_epoch.checked_add(1).ok_or_else(|| {
+        // Epoch one is reserved for the original writer. A legacy zero epoch
+        // must skip it; recovery safety cannot depend on UUID non-collision.
+        claimed.writer_epoch = self.writer_epoch.max(1).checked_add(1).ok_or_else(|| {
             CredentialError::MutationConflict(
                 "credential material writer epoch is exhausted".into(),
             )
@@ -501,6 +503,35 @@ mod tests {
         assert!(published.reclaiming_abort().is_err());
         original.writer_epoch = u64::MAX;
         assert!(original.claim_after_expiry(10, 20).is_err());
+
+        // R4: a valid legacy epoch-zero fence may retain its attempt ID.
+        // Force a repeated (valid UUID) token rather than trusting random
+        // uniqueness: recovery must not regain the reserved epoch-one writer.
+        let legacy = CredentialMaterialMutationFence {
+            format_version: 0,
+            phase: CredentialMaterialMutationPhase::Writing,
+            attempt_id: "0000000000004000800000000000000a".into(),
+            ..Default::default()
+        };
+        legacy.validate(true, true).unwrap();
+        assert!(legacy.ready().is_err());
+        let claimed = legacy
+            .claim_after_expiry_with_token(0, 1, || legacy.attempt_id.clone())
+            .unwrap()
+            .unwrap();
+        assert!(
+            claimed.ready().is_err(),
+            "R4 legacy takeover cannot become the original writer"
+        );
+        assert_eq!(claimed.writer_epoch, 2);
+        assert_eq!(claimed.attempt_id, legacy.attempt_id);
+        assert_eq!(claimed.writer_token, legacy.attempt_id);
+        claimed.validate(true, true).unwrap();
+        assert!(claimed.reclaiming().is_err());
+        assert_eq!(
+            claimed.reclaiming_abort().unwrap().phase,
+            CredentialMaterialMutationPhase::ReclaimingAbort
+        );
     }
 }
 
@@ -602,9 +633,9 @@ mod phase_proofs {
         // replacement tokens. T1 non-Writing or live => None before any token
         // call; T2 expired Writing + invalid new lease => error without entropy;
         // T3 exhausted epoch => error; T4 otherwise exactly one successor.
-        // T4 preserves every field except token/epoch/deadline. For an existing
-        // positive epoch it is abort-only even if entropy repeats the original
-        // token. Epoch-zero legacy input is checked but is not assumed owned.
+        // T4 preserves every field except token/epoch/deadline. Zero and one
+        // both advance to two; higher epochs advance exactly once. Every
+        // successor is abort-only even if entropy repeats the attempt token.
         // This is the production transition; UUID entropy, arbitrary strings,
         // envelope validation and repository CAS remain separate boundaries.
         use CredentialMaterialMutationPhase::*;
@@ -644,13 +675,12 @@ mod phase_proofs {
             let mut claimed = result.unwrap().unwrap();
             assert_eq!(calls, 1);
             assert_eq!(claimed.phase, Writing);
-            assert_eq!(claimed.writer_epoch, original.writer_epoch + 1);
+            assert_eq!(claimed.writer_epoch, original.writer_epoch.max(1) + 1);
             assert_eq!(claimed.writer_token, token);
             assert_eq!(claimed.writer_lease_expires_at_unix_ms, deadline);
             assert!(claimed.reclaiming().is_err());
-            if original.writer_epoch > 0 {
-                assert!(claimed.ready().is_err());
-            }
+            assert!(claimed.writer_epoch >= 2);
+            assert!(claimed.ready().is_err());
             assert_eq!(claimed.reclaiming_abort().unwrap().phase, ReclaimingAbort);
             claimed.writer_epoch = original.writer_epoch;
             claimed.writer_token = original.writer_token.clone();

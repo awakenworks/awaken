@@ -224,6 +224,9 @@ second WAL or physical ref.
 Only the exact original writer may advance `Writing` to `Ready`, after every
 material put has returned. Recovery may repository-CAS claim an expired
 `Writing` fact, but the claimed epoch can only advance to `ReclaimingAbort`.
+Epoch 1 is reserved for the original writer. Recovery advances a legacy epoch 0
+directly to 2, and advances every positive epoch by one without wrapping; even a
+repeated writer token cannot make a recovery owner eligible for `Ready`.
 Recovery never inspects those bytes and promotes them: SecretStore has no
 conditional-put CAS against the writer epoch, so a late old writer could still
 overwrite that attempt ref. Only a durable `Ready` fact is eligible to publish.
@@ -241,8 +244,11 @@ expired `Writing`, and completes `Reclaiming`/`ReclaimingAbort` cleanup work.
 Both envelopes own abort and completion admission in the Credential repository
 domain's `cleanup` module. In-memory, SQLite and PostgreSQL read the complete
 durable intent and current Source/child under one lock or transaction, then
-consume that decision; adapters do not maintain parallel phase tables. A
-present WAL may retire only when its full identity and the phase's committed
+consume that decision; adapters do not maintain parallel phase tables. The
+locked decoded snapshot owns CAS admission. Re-serialized JSON is not a second
+fence: omitted defaults and explicit defaults represent the same domain row.
+SQL retains keyed ownership, insert conflicts and affected-row checks.
+A present WAL may retire only when its full identity and the phase's committed
 or unpublished truth match. Even abort replay must recheck unpublished truth.
 Source-only replay may carry its original request if the WAL is its exact
 derived abort; Managed recovery continues to require the durable abort envelope
