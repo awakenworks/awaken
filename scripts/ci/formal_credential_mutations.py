@@ -48,3 +48,68 @@ def check_mcp_credential_model_mutants(tlc_jar: Path) -> None:
         mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
     check_tlc_model_mutations(tlc_jar, "McpCredentialDelivery", source, config, mutations)
     print("MCP credential delivery: 6/6 mutants killed; 4 useful/history witnesses reachable")
+
+
+def check_credential_effect_model_mutants(tlc_jar: Path) -> None:
+    # C1 each of the twelve opaque coordinates independently mismatches; C2
+    # authority is withdrawn; C3 expiry equals now; C4 the process crashes.
+    # M1-M15: bypass each materialization condition => an invalid recorded
+    # effect. M16-M27: substitute one receipt coordinate => invalid publication.
+    # M28-M30: adoption advances revision/generation/epoch AFTER materialization;
+    # M31-M33: withdrawal/expiry/crash in that same wait => no publication.
+    # The green base exhausts all 2^12 initial mismatch combinations, all three
+    # independent one-step authority successors, and clocks 0..2. Mutants use
+    # at most one INITIAL mismatch to isolate the causal guard, but retain all
+    # subsequent races. Exact exit + named invariant is required for every kill.
+    source = (ROOT / "formal/tla/CredentialEffectBoundary.tla").read_text()
+    config = (ROOT / "formal/tla/CredentialEffectBoundary.cfg").read_text()
+    header = "SPECIFICATION Spec\nCONSTANT MaxMismatches = 1\nCHECK_DEADLOCK FALSE\n"
+    axes = ("workspace", "session", "source", "revision", "holder", "trustDomain",
+            "target", "usage", "envelope", "payload", "generation", "epoch")
+    mutations = []
+
+    def break_guard(start: str, end: str, anchor: str, broken: str, oracle: str) -> None:
+        begin = source.index(start)
+        block = source[begin:source.index(end, begin)]
+        if block.count(anchor) != 1:
+            raise SystemExit(f"Credential effect mutation anchor drifted: {oracle}")
+        mutations.append((source.replace(block, block.replace(anchor, broken)),
+                          header + f"INVARIANTS {oracle}\n", oracle))
+
+    authority_guard = r"\A axis \in Axes: requested[axis] = current[axis]"
+    receipt_guard = r"\A axis \in Axes: receipt[axis] = requested[axis]"
+    material_bounds = ("MaterializeExact ==", "RejectInexact ==")
+    publication_bounds = ("Publish(receipt) ==", "RejectReceipt(receipt) ==")
+    for axis in axes:
+        break_guard(*material_bounds, authority_guard,
+                    authority_guard.replace("Axes:", f'Axes \\ {{"{axis}"}}:'),
+                    "MaterializationRequiresExactClaim")
+    for anchor, broken in ((r"authorized /\ now < 2", "now < 2"),
+                           (r"authorized /\ now < 2", "authorized"),
+                           ('phase = "Prepared" /\\ processUp', 'phase = "Prepared"')):
+        break_guard(*material_bounds, anchor, broken, "MaterializationRequiresExactClaim")
+    for axis in axes:
+        break_guard(*publication_bounds, receipt_guard,
+                    receipt_guard.replace("Axes:", f'Axes \\ {{"{axis}"}}:'),
+                    "PublicationRequiresMaterialization")
+    for axis in ("revision", "generation", "epoch"):
+        break_guard(*publication_bounds, authority_guard,
+                    authority_guard.replace("Axes:", f'Axes \\ {{"{axis}"}}:'),
+                    "PublicationRequiresMaterialization")
+    for anchor, broken in ((r"authorized /\ now < 2", "now < 2"),
+                           (r"authorized /\ now < 2", "authorized"),
+                           ('phase = "Materialized" /\\ processUp', 'phase = "Materialized"')):
+        break_guard(*publication_bounds, anchor, broken, "PublicationRequiresMaterialization")
+    mutant_count = len(mutations)
+    # W1 ordinary success; W2/W3 explicit expired/revoked rejection; W4 success
+    # at a successor epoch; W5 stale known material rejected; W6 history retained
+    # after revocation. These prevent reject-all and retrospective history loss.
+    witnesses = ("NoPublicationReached", "NoExpiredRejectionReached", "NoRevokedRejectionReached",
+                 "NoSuccessorPublicationReached", "NoStaleMaterialRejectionReached",
+                 "NoRetainedRevokedMaterialReached")
+    for witness in witnesses:
+        mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
+    check_tlc_model_mutations(tlc_jar, "CredentialEffectBoundary", source, config, mutations,
+                              heap_mb=1536, timeout_seconds=180)
+    print(f"Credential effect boundary: {mutant_count}/{mutant_count} mutants killed; "
+          f"{len(witnesses)} positive/rejection/history witnesses reachable")

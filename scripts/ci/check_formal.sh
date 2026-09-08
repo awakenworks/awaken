@@ -927,6 +927,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/credential-effect-boundary" \
     -config formal/tla/CredentialEffectBoundary.cfg \
     formal/tla/CredentialEffectBoundary.tla
+  python3 scripts/ci/check_formal_mutations.py --credential-effect-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-realization-mutex" \
     -config formal/tla/SessionRealizationMutex.cfg \
