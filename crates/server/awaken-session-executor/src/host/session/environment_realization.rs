@@ -949,7 +949,7 @@ impl SharedHost {
         source_handle: Option<&awaken_provisioning_contract::SandboxHandle>,
         intent: awaken_sandbox_container::ContainerRealizationIntent,
     ) -> Result<crate::session_environment::SessionEnvironment, HostError> {
-        use awaken_sandbox_container::ContainerEffectFenceSource;
+        use awaken_provisioning_contract::CurrentExecutionAuthority;
 
         let spec = self.validate_session_environment_capabilities(provider, spec)?;
         // Capture before any preparation await. A same-byte replacement slot
@@ -978,7 +978,7 @@ impl SharedHost {
                 &spec,
                 effect_fence,
                 current_fence.as_ref().map(|source| {
-                    source as &dyn awaken_sandbox_container::ContainerEffectFenceSource
+                    source as &dyn awaken_provisioning_contract::CurrentExecutionAuthority
                 }),
                 source_handle,
                 intent,
@@ -996,12 +996,8 @@ impl SharedHost {
         &self,
         thread: &str,
         initial: &awaken_provisioning_contract::SandboxEffectFence,
-    ) -> Result<
-        impl awaken_sandbox_container::ContainerEffectFenceSource
-        + awaken_provisioning_contract::CurrentExecutionAuthority
-        + use<>,
-        HostError,
-    > {
+    ) -> Result<impl awaken_provisioning_contract::CurrentExecutionAuthority + use<>, HostError>
+    {
         self.session_slots.provider_effect_authority(
             thread,
             initial,

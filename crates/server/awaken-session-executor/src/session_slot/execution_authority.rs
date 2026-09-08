@@ -4,8 +4,7 @@
 use super::*;
 #[cfg(target_os = "linux")]
 use crate::session_environment::SessionEnvironment;
-use awaken_provisioning_contract::{CurrentExecutionAuthority, SandboxEffectFence, SandboxError};
-use awaken_sandbox_container::ContainerEffectFenceSource;
+use awaken_provisioning_contract::{CurrentExecutionAuthority, SandboxEffectFence};
 use awaken_session_contract::SessionRealizationLease;
 use std::{io, sync::Weak, time::Duration};
 
@@ -155,21 +154,6 @@ impl SessionExecutionAuthority {
     }
 }
 
-impl ContainerEffectFenceSource for SessionExecutionAuthority {
-    fn current_effect_fence(
-        &self,
-        asserted: &SandboxEffectFence,
-    ) -> Result<SandboxEffectFence, SandboxError> {
-        let mut current = None;
-        self.with_current_effect(asserted, &mut |fence, _| {
-            current = Some(fence.clone());
-            Ok(())
-        })
-        .map_err(|error| SandboxError::new(error.to_string()))?;
-        current.ok_or_else(|| SandboxError::new("Session authority omitted the effect"))
-    }
-}
-
 impl SessionRuntimeSlots {
     /// Capture one pre-Environment target through the existing authority
     /// implementation. The returned source and synchronous effect port share
@@ -179,8 +163,7 @@ impl SessionRuntimeSlots {
         session: &str,
         initial: &SandboxEffectFence,
         worker: Option<&Arc<dyn CurrentExecutionAuthority>>,
-    ) -> Result<impl CurrentExecutionAuthority + ContainerEffectFenceSource + use<>, crate::HostError>
-    {
+    ) -> Result<impl CurrentExecutionAuthority + use<>, crate::HostError> {
         initial
             .validate_identity()
             .map_err(|error| crate::HostError::internal(error.to_string()))?;

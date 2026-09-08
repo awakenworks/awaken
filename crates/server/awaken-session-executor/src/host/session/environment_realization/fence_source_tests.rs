@@ -1,7 +1,6 @@
 use super::*;
 use crate::session_slot::SessionRealizationAuthority;
 use awaken_provisioning_contract::{CurrentExecutionAuthority, SandboxEffectFence};
-use awaken_sandbox_container::ContainerEffectFenceSource;
 use awaken_session_contract::{SessionRealizationLease, SessionRealizationLeaseReceipt};
 use std::{io, sync::Mutex, time::Duration};
 
@@ -431,7 +430,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ProjectionProbe 
         &self,
         _: &awaken_provisioning_contract::SandboxSpec,
         fence: Option<&SandboxEffectFence>,
-        source: Option<&dyn ContainerEffectFenceSource>,
+        source: Option<&dyn CurrentExecutionAuthority>,
         _: awaken_sandbox_container::ContainerRealizationIntent,
     ) -> Result<
         Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
