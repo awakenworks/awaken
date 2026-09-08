@@ -1488,8 +1488,12 @@ def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
         (source.replace('IF aggregate = "terminal-only" THEN 1 ELSE',
                         'IF aggregate = "terminal-only" THEN sourceVersion ELSE', 1),
          opening_config, "OpeningIdentityStable"),
+        # O3 completed cold reconstruction returning no opening differs from
+        # not having read yet. The successful-read flag must reject omission.
+        (source.replace("projectedVersion' = OpeningChoice", "projectedVersion' = 0", 1),
+         opening_config, "OpeningIdentityStable"),
     ])
-    print("Cowork lifecycle mutation score: 20/20 killed (worker evidence 3, drain 4, ACP/composition/rollout 5, cleanup evidence 4, presentation/admission 2, opening identity 2); drain ACK witness reachable")
+    print("Cowork lifecycle mutation score: 21/21 killed (worker evidence 3, drain 4, ACP/composition/rollout 5, cleanup evidence 4, presentation/admission 2, opening identity 3); drain ACK witness reachable")
 
 
 def check_observation_rule_mutants(trace_dir: Path, manifest: dict) -> None:
