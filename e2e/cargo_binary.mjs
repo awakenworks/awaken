@@ -6,6 +6,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 
 export const AWAKEN_BIN_ENV = 'AWAKEN_E2E_AWAKEN_BIN';
 export const SCENARIO_HOST_BIN_ENV = 'AWAKEN_E2E_SCENARIO_HOST_BIN';
@@ -24,7 +26,9 @@ export function parseCargoExecutable(output, targetName, targetKind) {
     try {
       const message = JSON.parse(line);
       if (
-        message.executable
+        message.reason === 'compiler-artifact'
+        && typeof message.executable === 'string'
+        && message.executable.length > 0
         && message.target?.name === targetName
         && message.target?.kind?.includes(targetKind)
       ) {
@@ -196,4 +200,29 @@ export function cargoScenarioHostBundle({
     );
   }
   return { scenarioHost, handCompanion };
+}
+
+// Shell scenarios share the same target parser, build invocation and failure
+// contract as JS E2E. Only this process adapter translates shell arguments.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    const { values, positionals } = parseArgs({
+      allowPositionals: true,
+      options: {
+        features: { type: 'string', multiple: true },
+        'no-default-features': { type: 'boolean' },
+      },
+    });
+    if (positionals.length !== 2) throw new Error('expected package and binary names');
+    process.stdout.write(`${cargoExecutable({
+      cwd: process.cwd(),
+      packageName: positionals[0],
+      targetName: positionals[1],
+      features: values.features ?? [],
+      noDefaultFeatures: values['no-default-features'] ?? false,
+    })}\n`);
+  } catch (error) {
+    process.stderr.write(`${error.message}\n`);
+    process.exitCode = 1;
+  }
 }

@@ -1,5 +1,4 @@
 use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -31,79 +30,51 @@ fn main() {
         workspace.join("pnpm-workspace.yaml").display()
     );
 
-    build_console(&web);
-    generate_embedded_assets(&web.join("dist"));
+    println!("cargo:rerun-if-changed={}", web.join("public").display());
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    let dist = out_dir.join("console");
+    build_console(&web, &dist);
+    build_support::generate_embedded_assets(&dist, &out_dir);
 }
 
-fn build_console(web: &Path) {
-    for command in build_support::console_commands(cfg!(windows)) {
-        run(command.program, web, command.args);
+fn build_console(web: &Path, dist: &Path) {
+    let [install, build] = build_support::console_commands(cfg!(windows), dist);
+    run(&install, web);
+    let workspace = command(
+        &build_support::console_workspace_command(cfg!(windows)),
+        web,
+    )
+    .output()
+    .expect("query Console workspace dependencies");
+    assert!(
+        workspace.status.success(),
+        "pnpm workspace graph failed: {}",
+        String::from_utf8_lossy(&workspace.stderr)
+    );
+    for input in build_support::console_package_inputs(&workspace.stdout) {
+        println!("cargo:rerun-if-changed={}", input.display());
     }
+    run(&build, web);
 }
 
-fn run(program: &str, current_dir: &Path, args: &[&str]) {
-    // Cause graph: the E2E runner needs a TS loader in NODE_OPTIONS, while pnpm is a Node
-    // process too; inheriting that loader changes pnpm's optional pnpmfile resolution and can
-    // turn an absent `.pnpmfile.mjs` into a fatal error. Decision table: ambient loader present
-    // or absent -> the frontend build always receives a clean Node process; command success or
-    // failure -> preserve the existing status contract below.
-    let status = Command::new(program)
+fn command(spec: &build_support::ConsoleCommand, current_dir: &Path) -> Command {
+    // Ambient E2E TS loaders must not affect pnpm's package resolution.
+    let mut command = Command::new(spec.program);
+    command
         .env_remove("NODE_OPTIONS")
         .current_dir(current_dir)
-        .args(args)
+        .args(&spec.args);
+    command
+}
+
+fn run(spec: &build_support::ConsoleCommand, current_dir: &Path) {
+    let status = command(spec, current_dir)
         .status()
-        .unwrap_or_else(|error| panic!("start {program}: {error}"));
+        .unwrap_or_else(|error| panic!("start {}: {error}", spec.program));
     assert!(
         status.success(),
-        "{program} {} exited with {status}",
-        args.join(" ")
+        "{} {:?} exited with {status}",
+        spec.program,
+        spec.args
     );
-}
-
-fn generate_embedded_assets(dist: &Path) {
-    assert!(
-        dist.join("index.html").is_file(),
-        "frontend build did not produce {}",
-        dist.join("index.html").display()
-    );
-
-    let mut files = Vec::new();
-    collect_files(dist, dist, &mut files);
-    files.sort_by(|left, right| left.0.cmp(&right.0));
-
-    let mut generated = String::from(
-        "pub(crate) fn embedded_asset(path: &str) -> Option<&'static [u8]> {\n\
-         \x20   match path {\n",
-    );
-    for (relative, absolute) in files {
-        generated.push_str(&format!(
-            "        {:?} => Some(include_bytes!({:?})),\n",
-            relative,
-            absolute.to_string_lossy()
-        ));
-    }
-    generated.push_str("        _ => None,\n    }\n}\n");
-
-    let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
-    fs::write(out_dir.join("embedded_console.rs"), generated)
-        .expect("write embedded console asset table");
-}
-
-fn collect_files(root: &Path, dir: &Path, files: &mut Vec<(String, PathBuf)>) {
-    let entries = fs::read_dir(dir)
-        .unwrap_or_else(|error| panic!("read frontend distribution {}: {error}", dir.display()));
-    for entry in entries {
-        let entry = entry.expect("read frontend distribution entry");
-        let path = entry.path();
-        if path.is_dir() {
-            collect_files(root, &path, files);
-        } else if path.is_file() {
-            let relative = path
-                .strip_prefix(root)
-                .expect("frontend asset must be under dist")
-                .to_string_lossy()
-                .replace('\\', "/");
-            files.push((relative, path));
-        }
-    }
 }

@@ -15,14 +15,7 @@ STORE_DIR="$(mktemp -d)"
 export RUSTUP_TOOLCHAIN=1.96.0
 
 echo "== build the server binary (rustc 1.96) =="
-BIN=$(cargo build -q -p awaken-scenario-host --bin awaken-scenario-host --message-format=json 2>/dev/null \
-  | python3 -c "import sys,json
-for l in sys.stdin:
- try:
-  m=json.loads(l)
-  if m.get('executable') and m.get('target',{}).get('name')=='awaken-scenario-host': print(m['executable'])
- except Exception: pass" | tail -1)
-[ -n "$BIN" ] || { echo 'could not resolve server binary'; exit 1; }
+BIN=$(node "$REPO_ROOT/e2e/cargo_binary.mjs" awaken-scenario-host awaken-scenario-host)
 
 echo "== start the durable server (shared queue) on :$PORT =="
 SESSION_DEPLOYMENT_INGRESS=durable SESSION_DEPLOYMENT_STORAGE_DIR="$STORE_DIR" \

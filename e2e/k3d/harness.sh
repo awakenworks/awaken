@@ -419,27 +419,10 @@ k3d_import_images() {
   kubectl -n kube-system rollout status deploy/coredns --timeout=90s
 }
 
-# resolve_cargo_executable <package> <binary> [cargo arguments...]
+# resolve_cargo_executable <package> <binary> [feature arguments...]
 resolve_cargo_executable() {
-  local package="$1" binary="$2"
-  shift 2
-  local cargo_target_dir="${CARGO_TARGET_DIR:-target}"
   RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-1.96.0}" \
-    CARGO_TARGET_DIR="$cargo_target_dir" \
-    cargo build -q -p "$package" --bin "$binary" "$@"
-  RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-1.96.0}" \
-    CARGO_TARGET_DIR="$cargo_target_dir" \
-    cargo build -p "$package" --bin "$binary" "$@" --message-format=json 2>/dev/null \
-    | BINARY_TARGET="$binary" python3 -c 'import json, os, sys
-target = os.environ["BINARY_TARGET"]
-for line in sys.stdin:
-    try:
-        message = json.loads(line)
-    except Exception:
-        continue
-    if message.get("executable") and message.get("target", {}).get("name") == target:
-        print(message["executable"])' \
-    | tail -1
+    node "$(dirname "${BASH_SOURCE[0]}")/../cargo_binary.mjs" "$@"
 }
 
 k3d_harness_selftest() (

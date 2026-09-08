@@ -549,12 +549,29 @@ mod tests {
         registry.cleanup_owned_if_active(&second_lease, &second);
     }
 
+    #[test]
+    #[ignore = "isolated stale socket creator invoked by socket_binding_covers_long_paths_and_ambient_inode_states"]
+    fn stale_socket_creator() {
+        // N11 prerequisite: create the listener only in this isolated process.
+        // The parent test process never holds its fd, so concurrent process
+        // launches cannot inherit it between bind and Drop. Reaping this child
+        // proves its last listener closed before the parent tests stale recovery.
+        let socket =
+            std::path::PathBuf::from(std::env::var_os("AWAKEN_STALE_SOCKET_FIXTURE").unwrap());
+        let address = awaken_sandbox_fs::PinnedUnixSocketPath::capture(&socket).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(address.path()).unwrap();
+        drop(listener);
+    }
+
     #[tokio::test]
     async fn socket_binding_covers_long_paths_and_ambient_inode_states() {
         // N11: short/long parent x absent/stale/live/non-socket. Absent and
         // stale sockets admit one real listener; live and non-socket entries
         // fail closed and preserve the exact observed inode. This exercises
         // the production bind AND liveness-probe paths at both path lengths.
+        // Stale additionally requires the creator process to have exited and
+        // been reaped: dropping one parent fd cannot establish that condition
+        // while concurrent subprocess launches may inherit other references.
         for length in [1, 120] {
             for state in ["absent", "stale", "live", "file"] {
                 let base = tempfile::tempdir().unwrap();
@@ -564,7 +581,36 @@ mod tests {
                 let address = awaken_sandbox_fs::PinnedUnixSocketPath::capture(&socket).unwrap();
                 let foreign = match state {
                     "stale" => {
-                        drop(tokio::net::UnixListener::bind(address.path()).unwrap());
+                        let mut child =
+                            tokio::process::Command::new(std::env::current_exe().unwrap())
+                                .args([
+                                    "--exact",
+                                    "namespace::control::tests::stale_socket_creator",
+                                    "--ignored",
+                                    "--nocapture",
+                                ])
+                                .env("AWAKEN_STALE_SOCKET_FIXTURE", &socket)
+                                .kill_on_drop(true)
+                                .spawn()
+                                .unwrap();
+                        assert!(
+                            tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+                                .await
+                                .unwrap()
+                                .unwrap()
+                                .success(),
+                            "N11 stale creator reaped"
+                        );
+                        assert!(
+                            socket_identity(&socket).is_ok(),
+                            "N11 helper created a real socket"
+                        );
+                        assert_eq!(
+                            std::os::unix::net::UnixStream::connect(address.path())
+                                .expect_err("N11 no inherited listener survives creator exit")
+                                .kind(),
+                            std::io::ErrorKind::ConnectionRefused,
+                        );
                         None
                     }
                     "live" => Some(tokio::net::UnixListener::bind(address.path()).unwrap()),
