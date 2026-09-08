@@ -14,6 +14,7 @@ authority = "sandbox-container"
 
 [dependencies]
 awaken-provisioning-contract.workspace = true
+awaken-outbound-http = { workspace = true, optional = true }
 awaken-local-process.workspace = true
 awaken-resource-contract.workspace = true
 awaken-agent-channel.workspace = true
@@ -39,8 +40,6 @@ base64 = "0.22"
 # Real Kubernetes backend (kube-apiserver via the SDK, not kubectl). Optional.
 kube = { version = "1", default-features = false, features = ["client", "http-proxy", "rustls-tls", "ws"], optional = true }
 k8s-openapi = { version = "0.25", features = ["v1_30"], optional = true }
-# kube's rustls client needs a process-level CryptoProvider selected explicitly.
-rustls = { version = "0.23", default-features = false, features = ["ring"], optional = true }
 
 [features]
 # Real remote transport (TCP dial + reverse-dial pairing) producing an AgentChannel.
@@ -51,7 +50,7 @@ connection = ["dep:awaken-connection-plan", "tokio/net", "tokio/io-util", "tokio
 docker = ["dep:bollard", "dep:futures-util", "connection"]
 # Real Kubernetes ContainerRuntime (kube). Process-as-container Pod + native-GC.
 # Compile-verified; running needs a cluster.
-k8s = ["dep:kube", "dep:k8s-openapi", "dep:rustls", "connection"]
+k8s = ["dep:kube", "dep:k8s-openapi", "dep:awaken-outbound-http", "connection"]
 # Rootless Podman ContainerRuntime (daemonless CLI fork-exec). Honors the rootfs
 # plan (Image / IsolatedRoot). Compile-verified; running needs the `podman` binary.
 podman = ["connection", "tokio/process"]

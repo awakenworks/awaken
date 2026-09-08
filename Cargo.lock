@@ -1636,6 +1636,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "reqwest 0.12.28",
+ "rustls",
  "tokio",
 ]
 
@@ -2117,6 +2118,7 @@ dependencies = [
  "awaken-connection-plan",
  "awaken-local-process",
  "awaken-memory-store",
+ "awaken-outbound-http",
  "awaken-provisioning-contract",
  "awaken-resource-contract",
  "awaken-runtime-contract",
@@ -2130,7 +2132,6 @@ dependencies = [
  "http",
  "k8s-openapi",
  "kube",
- "rustls",
  "serde",
  "serde_json",
  "tar",
@@ -2772,6 +2773,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-dispatch-contract",
+ "awaken-outbound-http",
  "awaken-worker-contract",
  "axum",
  "base64 0.22.1",

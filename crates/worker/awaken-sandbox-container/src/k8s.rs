@@ -67,11 +67,11 @@ pub(crate) mod realization;
 mod restore;
 mod runtime_contract;
 mod sandbox_control;
+pub(crate) use awaken_outbound_http::install_rustls_crypto_provider;
 #[cfg(test)]
 use channel::accept_reverse_on;
 use client::K8sClients;
 pub use client::connect_control_client;
-pub(crate) use client::install_rustls_crypto_provider;
 use continuation::{rebuild_claim_admission, rebuild_continuation_expectation};
 use error::api_not_found;
 pub(crate) use error::backend;
@@ -557,9 +557,6 @@ impl K8sRuntime {
         realization_namespace: ContainerRealizationNamespace,
         agent_addr: SocketAddr,
     ) -> Result<Self, RuntimeError> {
-        // kube's rustls client needs a process-level CryptoProvider; install ring
-        // once (idempotent — a prior install by the host is fine).
-        install_rustls_crypto_provider();
         let clients = K8sClients::infer().await?;
         let namespace = namespace.into();
         let runtime = Self {
@@ -637,7 +634,6 @@ impl K8sRuntime {
     /// real apiserver (exercised by the gated `k8s_it` integration test).
     #[cfg(test)]
     fn for_test(agent_addr: SocketAddr) -> Self {
-        install_rustls_crypto_provider();
         Self {
             clients: K8sClients::for_test(),
             namespace: "default".into(),
