@@ -302,6 +302,18 @@ mod realization_context_tests {
 /// Object-safe live container environment owned by one Session.
 #[async_trait]
 pub trait ContainerEnvironment: pc::Sandbox + SandboxControlServicePublisher {
+    /// Persist/replay the exact upload within this provider's physical owner.
+    /// Does not capture bytes, upload objects, dispose, or commit Session state.
+    async fn checkpoint_upload(
+        &self,
+        _access: crate::ContainerCheckpointAccess<'_>,
+        _mutation: crate::ContainerCheckpointMutation<'_>,
+    ) -> Result<Option<pc::SandboxCheckpointUpload>, pc::SandboxError> {
+        Err(pc::SandboxError::new(
+            "container environment does not implement a fenced checkpoint participant",
+        ))
+    }
+
     /// Borrowed proof that the creating wrapper still owns its local participants.
     /// Never serialized in a SandboxHandle or reconstructed after process loss.
     fn retained_create_attempt(&self) -> Option<&ContainerCreateAttempt> {

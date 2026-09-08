@@ -815,3 +815,55 @@ mismatched plan/handle, or ambiguous substrate observation fails closed and
 keeps the existing cleanup retry pending. The Session aggregate, root CAS and
 terminal cleanup receipt remain the only durable journals; no provider database,
 queue, slot cache, marker or restore store is added.
+
+## 2026-09-08 amendment: one checkpoint-upload evidence value
+
+The existing filesystem provider's checkpoint participant carries no filesystem
+mechanism: its operation identity, request fingerprint, snapshot digest/size,
+and optional complete receipt describe one exact upload. That value and its
+pending/replay/completion comparisons belong to `awaken-provisioning-contract`
+as `SandboxCheckpointUpload`. Concrete providers persist it within their
+existing physical realization authority; it is not a separate journal or a
+Session lifecycle model. Local and Namespace keep their existing marker,
+exclusive lock, root identity, and write-ahead persistence unchanged. Existing
+marker JSON fields and legacy missing-operation decoding remain unchanged.
+
+The value only admits exact replay and rejects changed input or receipt before
+mutation. Provider ordering remains current-authority/physical-identity check,
+durable pending evidence, exact idempotent object upload, verified complete
+receipt persistence, then Session root acknowledgement. Storage concurrency,
+quiescence, current execution authority, terminal takeover and object deletion
+remain at their existing owners. In particular, decoding this value or adding
+an archive codec does not establish a conforming container checkpoint provider;
+the concrete provider must implement both fenced upload and terminal replay
+before it advertises the format.
+
+### Container physical upload participant
+
+`ContainerEnvironment::checkpoint_upload` projects the Sandbox's existing exact
+handle into `ContainerRuntime::checkpoint_upload`. Its borrowed
+`ContainerCheckpointAccess` separates the immutable Suspend fence/request
+fingerprint from current operation-bound execution authority. The mutation is
+only acquire, begin exact upload, or complete exact receipt; it grants no
+archive, object-store or Session effect by itself.
+
+Kubernetes persists this participant in the existing source Pod metadata, not
+in a ConfigMap, database, queue or Worker cache. Pod UID, resourceVersion,
+adoption/realization fingerprints and retained PVC UID must all match. The
+existing Pod effect-fence coordinates advance at the same resourceVersion CAS
+as the participant. Terminal acquisition is irreversible for that participant:
+ordinary Suspend replay cannot reacquire it, even within the same realization
+lease. Exact receipt comparison uses `SandboxCheckpointUpload`, not a second
+container receipt implementation. Every API response is followed by current
+authority admission; stale responses never permit the next effect or success.
+
+The codec remains a deployment adapter and the object store remains byte
+custody. Their caller acquires the participant, captures exact bytes, persists
+pending evidence, uploads, and persists completion before root acknowledgement.
+Terminal takeover uses the same record to recover the original upload and then
+delete it under its current grant. Source Pod absence, terminating/replaced
+PVC, malformed evidence, cleanup-gate acquisition, and CAS conflict fail closed
+without manufacturing a receipt or deleting a source. Source disappearance
+before a checkpoint receipt is durable is not proven recoverable by this port.
+Physical source disposal still requires the existing aggregate preparation and
+cleanup gate; this participant neither adds a finalizer nor authorizes disposal.

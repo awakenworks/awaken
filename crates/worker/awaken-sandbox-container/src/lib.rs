@@ -25,6 +25,8 @@ pub use awaken_sandbox_control::{
 use std::sync::Arc;
 
 mod cache_volume;
+mod checkpoint;
+pub use checkpoint::{ContainerCheckpointAccess, ContainerCheckpointMutation};
 mod control;
 use control::ContainerControlPublicationRegistry;
 mod cgroup;
@@ -1266,6 +1268,26 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
 
 #[async_trait]
 impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R> {
+    async fn checkpoint_upload(
+        &self,
+        access: ContainerCheckpointAccess<'_>,
+        mutation: ContainerCheckpointMutation<'_>,
+    ) -> Result<Option<pc::SandboxCheckpointUpload>, pc::SandboxError> {
+        access.admit()?;
+        let handle = pc::Sandbox::handle(self);
+        handle.container_physical_incarnation()?;
+        let mut expectation =
+            ContainerObservationExpectation::from_handle_for_effect(&handle, access.effect_fence)?;
+        expectation.retained_attempt = self.retained_attempt.as_ref();
+        let result = self
+            .runtime
+            .checkpoint_upload(expectation, access, mutation)
+            .await
+            .map_err(err)?;
+        access.admit()?;
+        Ok(result)
+    }
+
     fn retained_create_attempt(&self) -> Option<&ContainerCreateAttempt> {
         self.retained_attempt.as_ref()
     }

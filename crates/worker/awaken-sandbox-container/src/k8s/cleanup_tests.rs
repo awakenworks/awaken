@@ -1,4 +1,5 @@
-//! Real kube HTTP boundaries, with a deterministic API response-loss scheduler.
+//! Real kube HTTP boundaries, with one deterministic API response-loss scheduler
+//! shared by cleanup and checkpoint participant tests.
 use super::*;
 use pc::test_support::EffectAuthority;
 use serde_json::{Value, json};
@@ -39,12 +40,16 @@ impl ApiState {
             ("PUT", "pods") => {
                 let mut replacement: Pod = serde_json::from_value(body).unwrap();
                 let old = self.pod.as_ref().unwrap();
-                assert_eq!(replacement.metadata.uid, old.metadata.uid);
-                assert_eq!(
-                    replacement.metadata.resource_version,
-                    old.metadata.resource_version
-                );
-                let releasing = !continuation::pod_cleanup_gate_held(&replacement);
+                if replacement.metadata.uid != old.metadata.uid
+                    || replacement.metadata.resource_version != old.metadata.resource_version
+                {
+                    return (
+                        409,
+                        json!({"kind":"Status", "apiVersion":"v1", "status":"Failure", "reason":"Conflict", "message":"stale UID or resourceVersion", "code":409}),
+                    );
+                }
+                let releasing = continuation::pod_cleanup_gate_held(old)
+                    && !continuation::pod_cleanup_gate_held(&replacement);
                 if releasing && self.release_conflict {
                     self.release_conflict = false;
                     return (
@@ -221,6 +226,406 @@ async fn fixture(
         }
     });
     (runtime, state, reached, release, server)
+}
+
+#[derive(Clone)]
+struct CheckpointEvidence {
+    source: pc::SandboxEffectFence,
+    fingerprint: pc::SandboxRealizationFingerprint,
+    handle: pc::ContainerContinuationHandle,
+}
+
+impl CheckpointEvidence {
+    fn initialize(state: &Mutex<ApiState>) -> Self {
+        let source =
+            pc::SandboxEffectFence::new("suspend", "owner", "boot", 2, u64::MAX - 1).unwrap();
+        let fingerprint: pc::SandboxRealizationFingerprint =
+            serde_json::from_value(json!("checkpoint-fixture-realization")).unwrap();
+        let mut state = state.lock().unwrap();
+        let pod = state.pod.as_mut().unwrap();
+        let annotations = pod.metadata.annotations.as_mut().unwrap();
+        annotations.insert(SANDBOX_ADOPTION_ANNOTATION.into(), fingerprint.to_string());
+        annotations.insert(
+            SANDBOX_REALIZATION_ANNOTATION.into(),
+            fingerprint.to_string(),
+        );
+        stamp_effect_fence(
+            pod,
+            &pc::SandboxEffectFence::new("create", "owner", "boot", 1, u64::MAX - 1).unwrap(),
+        );
+        pod.status = Some(serde_json::from_value(json!({"phase":"Running", "containerStatuses":[{
+            "name":"agent", "ready":true, "restartCount":0, "image":"fixture", "imageID":"fixture", "state":{"running":{}}
+        }]})).unwrap());
+        let handle = continuation::handle_extra(pod).unwrap().unwrap();
+        Self {
+            source,
+            fingerprint,
+            handle,
+        }
+    }
+
+    async fn apply(
+        &self,
+        runtime: &K8sRuntime,
+        active: &pc::SandboxEffectFence,
+        authority: &EffectAuthority,
+        step: usize,
+    ) -> Result<Option<pc::SandboxCheckpointUpload>, RuntimeError> {
+        let pending =
+            pc::SandboxCheckpointUpload::pending("suspend".into(), "request", "digest", 4);
+        let reference = crate::checkpoint::tests::receipt();
+        let mutation = match step {
+            0 => crate::ContainerCheckpointMutation::Acquire,
+            1 => crate::ContainerCheckpointMutation::Begin(&pending),
+            2 => crate::ContainerCheckpointMutation::Complete(&reference),
+            _ => unreachable!(),
+        };
+        runtime
+            .checkpoint_upload(
+                ContainerObservationExpectation {
+                    purpose: ContainerObservationPurpose::Recovery,
+                    container_id: "awaken-cleanup",
+                    adoption_fingerprint: Some(&self.fingerprint),
+                    realization_fingerprint: Some(&self.fingerprint),
+                    runtime_handle: Some(&self.handle),
+                    effect_fence: Some(active),
+                    retained_attempt: None,
+                },
+                crate::ContainerCheckpointAccess {
+                    source_effect_fence: &self.source,
+                    effect_fence: active,
+                    request_fingerprint: "request",
+                    authority,
+                },
+                mutation,
+            )
+            .await
+    }
+}
+
+#[tokio::test]
+async fn checkpoint_http_replay_and_terminal_takeover_share_one_pod_record() {
+    // KH1 acquire/begin/complete -> three UID+RV writes to the SAME Pod;
+    // KH2 fresh runtime replays each exact mutation -> reads only, same receipt;
+    // KH3 terminal takeover at SAME epoch -> one fence+participant CAS;
+    // KH4 old Suspend (even with a locally live grant) -> no write or success.
+    // Neither path acquires a cleanup finalizer, writes PVC, creates resources,
+    // uploads bytes, deletes objects, or claims Session completion.
+    let (runtime, state, _, _, server) = fixture(0, false).await;
+    let evidence = CheckpointEvidence::initialize(&state);
+    let authority = EffectAuthority::new(&evidence.source);
+    for step in 0..3 {
+        evidence
+            .apply(&runtime, &evidence.source, &authority, step)
+            .await
+            .unwrap();
+    }
+    assert_eq!(state.lock().unwrap().writes, vec!["PUT pods"; 3]);
+    let mut restarted = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
+    restarted.clients.control = runtime.clients.control.clone();
+    drop(runtime);
+    let expected = crate::checkpoint::tests::receipt();
+    for step in 0..3 {
+        let replay = evidence
+            .apply(&restarted, &evidence.source, &authority, step)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(replay.reference(), Some(&expected), "KH2");
+    }
+    assert_eq!(
+        state.lock().unwrap().writes.len(),
+        3,
+        "KH2 no duplicate writes"
+    );
+    let terminal =
+        pc::SandboxEffectFence::new("terminal", "owner", "boot", 2, u64::MAX - 1).unwrap();
+    let terminal_authority = EffectAuthority::new(&terminal);
+    for step in 0..3 {
+        evidence
+            .apply(&restarted, &terminal, &terminal_authority, step)
+            .await
+            .unwrap();
+    }
+    assert_eq!(state.lock().unwrap().writes.len(), 4, "KH3");
+    for step in 0..3 {
+        assert!(
+            evidence
+                .apply(&restarted, &evidence.source, &authority, step)
+                .await
+                .is_err(),
+            "KH4"
+        );
+    }
+    {
+        let state = state.lock().unwrap();
+        assert_eq!(state.writes.len(), 4);
+        assert!(state.claim.is_some() && state.projected.len() == 4);
+        assert!(!continuation::pod_cleanup_gate_held(
+            state.pod.as_ref().unwrap()
+        ));
+    }
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+}
+
+#[tokio::test]
+async fn checkpoint_current_authority_is_reentered_after_each_http_response() {
+    // KA graph: acquire/begin/complete -> GET Pod -> GET PVC -> Pod CAS;
+    // C1 pause after each actual response; C2 renew/revoke/replace/expire/cancel.
+    // KA1 renewal preserves the admitted effect and completes; KA2 all other
+    // rows return no success and send no later request. A CAS already accepted
+    // before the pause remains durable. KA3 a new successor grant replays the
+    // original input over that prefix, never allocates a second participant.
+    for step in 0..3 {
+        for cut in 1..=3 {
+            for change in ['r', 'v', 'g', 'e', 'c'] {
+                let (runtime, state, reached, release, server) =
+                    fixture(step * 3 + cut, false).await;
+                let evidence = CheckpointEvidence::initialize(&state);
+                let authority = Arc::new(EffectAuthority::new(&evidence.source));
+                for seed in 0..step {
+                    evidence
+                        .apply(&runtime, &evidence.source, &authority, seed)
+                        .await
+                        .unwrap();
+                }
+                let runtime = Arc::new(runtime);
+                let (executing, proof, inputs) =
+                    (runtime.clone(), authority.clone(), evidence.clone());
+                let mut task = tokio::spawn(async move {
+                    inputs.apply(&executing, &inputs.source, &proof, step).await
+                });
+                tokio::time::timeout(Duration::from_secs(5), reached.notified())
+                    .await
+                    .expect("KA selected response reached");
+                let (calls, writes) = {
+                    let state = state.lock().unwrap();
+                    (state.calls.len(), state.writes.clone())
+                };
+                if change == 'c' {
+                    task.abort();
+                } else {
+                    let mut current = authority.current.lock().unwrap();
+                    match change {
+                        'r' => current.as_mut().unwrap().0.expires_at_unix_ms += 1,
+                        'v' => *current = None,
+                        'g' => current.as_mut().unwrap().0.epoch += 1,
+                        'e' => current.as_mut().unwrap().1 = Duration::ZERO,
+                        _ => unreachable!(),
+                    }
+                }
+                release.add_permits(1);
+                let result = tokio::time::timeout(Duration::from_secs(5), &mut task)
+                    .await
+                    .expect("KA bounded result");
+                if change == 'r' {
+                    result.unwrap().unwrap();
+                } else {
+                    if change == 'c' {
+                        assert!(result.unwrap_err().is_cancelled());
+                    } else {
+                        assert!(result.unwrap().is_err());
+                    }
+                    let state = state.lock().unwrap();
+                    assert_eq!(state.calls.len(), calls, "KA2/{step}/{cut}/{change}");
+                    assert_eq!(state.writes, writes, "KA2 retains committed prefix");
+                }
+                let mut successor = evidence.source.clone();
+                successor.epoch += 1;
+                let fresh = EffectAuthority::new(&successor);
+                evidence
+                    .apply(&runtime, &successor, &fresh, step)
+                    .await
+                    .unwrap();
+                {
+                    let state = state.lock().unwrap();
+                    assert!(state.pod.is_some() && state.claim.is_some());
+                    assert!(state.writes.iter().all(|write| write == "PUT pods"));
+                }
+                server.abort();
+                assert!(server.await.unwrap_err().is_cancelled());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn checkpoint_cas_cannot_overwrite_a_concurrent_pod_revision_or_incarnation() {
+    // KC1 read exact Pod then concurrent metadata change/replacement -> stale
+    // CAS rejects; KC2 no participant is published over either newer object.
+    // This uses the real kube request serializer and HTTP 409, not a pure mock
+    // result. The shared fixture checks BOTH UID and resourceVersion.
+    for replaced in [false, true] {
+        let (runtime, state, reached, release, server) = fixture(1, false).await;
+        let evidence = CheckpointEvidence::initialize(&state);
+        let task = tokio::spawn(async move {
+            evidence
+                .apply(
+                    &runtime,
+                    &evidence.source,
+                    &EffectAuthority::new(&evidence.source),
+                    0,
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), reached.notified())
+            .await
+            .unwrap();
+        let expected = {
+            let mut state = state.lock().unwrap();
+            let pod = state.pod.as_mut().unwrap();
+            if replaced {
+                pod.metadata.uid = Some("replacement".into());
+            } else {
+                pod.metadata.resource_version = Some("2".into());
+            }
+            pod.clone()
+        };
+        release.add_permits(1);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(state.lock().unwrap().pod.as_ref(), Some(&expected), "KC2");
+        assert!(state.lock().unwrap().writes.is_empty());
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
+}
+
+#[tokio::test]
+async fn checkpoint_identity_and_source_state_denials_have_zero_writes() {
+    // KI graph: current grant AND complete matching physical evidence AND
+    // ungated live source AND valid participant => admission. KH is the positive
+    // row; KI1 negates each independent prerequisite -> no write. KI2 denied
+    // current authority -> no HTTP at all. KI3 a vanished Pod/PVC is an error,
+    // never invented upload completion. Corrupt record bytes are not authority.
+    for row in [
+        "denied",
+        "legacy",
+        "pod-missing",
+        "pod-uid",
+        "pod-version",
+        "adoption",
+        "realization",
+        "fence-missing",
+        "fence-newer",
+        "pod-deleting",
+        "cleanup-gate",
+        "claim-missing",
+        "claim-uid",
+        "claim-deleting",
+        "corrupt",
+    ] {
+        let (runtime, state, _, _, server) = fixture(0, false).await;
+        let mut evidence = CheckpointEvidence::initialize(&state);
+        let authority = if row == "denied" {
+            EffectAuthority::denied()
+        } else {
+            EffectAuthority::new(&evidence.source)
+        };
+        {
+            let mut state = state.lock().unwrap();
+            let deleting = || serde_json::from_value(json!("2026-09-08T00:00:00Z")).unwrap();
+            match row {
+                "legacy" => {
+                    evidence.handle = pc::ContainerContinuationHandle::KubernetesContinuation {
+                        claim_uid: "claim-uid".into(),
+                    }
+                }
+                "pod-missing" => state.pod = None,
+                "pod-uid" => state.pod.as_mut().unwrap().metadata.uid = Some("foreign".into()),
+                "pod-version" => state.pod.as_mut().unwrap().metadata.resource_version = None,
+                "adoption" | "realization" => {
+                    state
+                        .pod
+                        .as_mut()
+                        .unwrap()
+                        .metadata
+                        .annotations
+                        .as_mut()
+                        .unwrap()
+                        .remove(if row == "adoption" {
+                            SANDBOX_ADOPTION_ANNOTATION
+                        } else {
+                            SANDBOX_REALIZATION_ANNOTATION
+                        });
+                }
+                "fence-missing" => {
+                    state
+                        .pod
+                        .as_mut()
+                        .unwrap()
+                        .metadata
+                        .annotations
+                        .as_mut()
+                        .unwrap()
+                        .remove(SANDBOX_EFFECT_ANNOTATION);
+                }
+                "fence-newer" => {
+                    let mut newer = evidence.source.clone();
+                    newer.epoch += 1;
+                    stamp_effect_fence(state.pod.as_mut().unwrap(), &newer);
+                }
+                "pod-deleting" => {
+                    state.pod.as_mut().unwrap().metadata.deletion_timestamp = Some(deleting())
+                }
+                "cleanup-gate" => {
+                    // Inconsistent gate evidence must also reject; the canonical
+                    // continuation validator owns both annotation/finalizer bits.
+                    state.pod.as_mut().unwrap().metadata.finalizers =
+                        Some(vec![continuation::CONTINUATION_CLEANUP_FINALIZER.into()]);
+                }
+                "claim-missing" => state.claim = None,
+                "claim-uid" => state.claim.as_mut().unwrap().metadata.uid = Some("foreign".into()),
+                "claim-deleting" => {
+                    state.claim.as_mut().unwrap().metadata.deletion_timestamp = Some(deleting())
+                }
+                "corrupt" => {
+                    state
+                        .pod
+                        .as_mut()
+                        .unwrap()
+                        .metadata
+                        .annotations
+                        .as_mut()
+                        .unwrap()
+                        .insert("awaken.dev/checkpoint-upload".into(), "{}".into());
+                }
+                "denied" => {}
+                _ => unreachable!(),
+            }
+        }
+        let before = {
+            let state = state.lock().unwrap();
+            (state.pod.clone(), state.claim.clone())
+        };
+        assert!(
+            evidence
+                .apply(&runtime, &evidence.source, &authority, 0)
+                .await
+                .is_err(),
+            "KI/{row}"
+        );
+        {
+            let state = state.lock().unwrap();
+            assert_eq!(
+                (state.pod.clone(), state.claim.clone()),
+                before,
+                "KI1/{row}"
+            );
+            assert!(state.writes.is_empty());
+            if row == "denied" {
+                assert!(state.calls.is_empty(), "KI2");
+            }
+        }
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
 }
 
 #[tokio::test]

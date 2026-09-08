@@ -2824,6 +2824,13 @@ type RuntimePathObservation = (
 
 #[derive(Default)]
 struct FakeState {
+    checkpoint_expected: Option<(
+        pc::SandboxHandle,
+        pc::SandboxEffectFence,
+        pc::SandboxEffectFence,
+    )>,
+    checkpoint_calls: usize,
+    checkpoint_response_gate: Option<Arc<tokio::sync::Semaphore>>,
     alive: HashMap<String, bool>,
     created_command: HashMap<String, Vec<String>>,
     created_env: HashMap<String, Vec<(String, String)>>,
@@ -2893,6 +2900,98 @@ struct FakeState {
 #[derive(Default)]
 struct FakeRuntime {
     st: Mutex<FakeState>,
+}
+
+#[tokio::test]
+async fn container_checkpoint_projection_preserves_exact_handle_and_current_authority() {
+    // CF1 valid current handle -> forward every physical/fence coordinate once;
+    // CF2 entry denial or legacy handle -> zero runtime calls; CF3 delayed
+    // successful runtime response + revoke/replace/expire -> no provider success;
+    // CF4 renewal of the same grant -> success. The fake never checks CF3 on
+    // behalf of the provider, so this covers real composition wiring.
+    use pc::Sandbox as _;
+    for change in [
+        "current", "legacy", "denied", "renew", "revoke", "replace", "expire",
+    ] {
+        let runtime = Arc::new(FakeRuntime::default());
+        let provider = ContainerProvider::new(runtime.clone(), "fixture");
+        let mut requested = spec("checkpoint-projection");
+        requested.mounts.clear();
+        requested.env.clear();
+        let create =
+            pc::SandboxEffectFence::new("create", "owner", "boot", 1, u64::MAX - 1).unwrap();
+        let mut sandbox = provider
+            .create_container_for_effect(
+                &requested,
+                Some(&create),
+                Some(&pc::test_support::EffectAuthority::new(&create)),
+                ContainerRealizationIntent::Create,
+            )
+            .await
+            .unwrap();
+        let source =
+            pc::SandboxEffectFence::new("suspend", "owner", "boot", 2, u64::MAX - 1).unwrap();
+        let active =
+            pc::SandboxEffectFence::new("terminal", "owner", "boot", 2, u64::MAX - 1).unwrap();
+        let authority = if change == "denied" {
+            pc::test_support::EffectAuthority::denied()
+        } else {
+            pc::test_support::EffectAuthority::new(&active)
+        };
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        {
+            let mut state = runtime.st.lock().unwrap();
+            state.checkpoint_expected = Some((sandbox.handle(), source.clone(), active.clone()));
+            state.checkpoint_response_gate = Some(gate.clone());
+        }
+        if change == "legacy" {
+            sandbox.adoption_fingerprint = None;
+            sandbox.realization_fingerprint = None;
+        }
+        let access = ContainerCheckpointAccess {
+            source_effect_fence: &source,
+            effect_fence: &active,
+            request_fingerprint: "request",
+            authority: &authority,
+        };
+        let mut pending = Box::pin(ContainerEnvironment::checkpoint_upload(
+            &sandbox,
+            access,
+            ContainerCheckpointMutation::Acquire,
+        ));
+        if matches!(change, "denied" | "legacy") {
+            assert!(pending.await.is_err(), "CF2");
+            assert_eq!(runtime.st.lock().unwrap().checkpoint_calls, 0);
+            continue;
+        }
+        std::future::poll_fn(|cx| {
+            assert!(
+                std::future::Future::poll(pending.as_mut(), cx).is_pending(),
+                "CF must reach runtime response wait"
+            );
+            std::task::Poll::Ready(())
+        })
+        .await;
+        assert_eq!(runtime.st.lock().unwrap().checkpoint_calls, 1);
+        {
+            let mut current = authority.current.lock().unwrap();
+            match change {
+                "renew" => current.as_mut().unwrap().0.expires_at_unix_ms += 1,
+                "revoke" => *current = None,
+                "replace" => current.as_mut().unwrap().0.epoch += 1,
+                "expire" => current.as_mut().unwrap().1 = std::time::Duration::ZERO,
+                "current" => {}
+                _ => unreachable!(),
+            }
+        }
+        gate.add_permits(1);
+        assert_eq!(
+            pending.await.is_ok(),
+            matches!(change, "current" | "renew"),
+            "CF3/CF4/{change}"
+        );
+        assert!(runtime.st.lock().unwrap().removals.is_empty());
+    }
 }
 
 struct FakeExecProcess {
@@ -3021,6 +3120,46 @@ impl FakeRuntime {
 
 #[async_trait]
 impl ContainerRuntime for FakeRuntime {
+    async fn checkpoint_upload(
+        &self,
+        expectation: ContainerObservationExpectation<'_>,
+        access: ContainerCheckpointAccess<'_>,
+        mutation: ContainerCheckpointMutation<'_>,
+    ) -> Result<Option<pc::SandboxCheckpointUpload>, RuntimeError> {
+        let gate = {
+            let mut state = self.st.lock().unwrap();
+            let (handle, source, active) = state
+                .checkpoint_expected
+                .as_ref()
+                .expect("checkpoint fixture configured");
+            let expected =
+                ContainerObservationExpectation::from_handle_for_effect(handle, active).unwrap();
+            assert_eq!(expectation.container_id, expected.container_id);
+            assert_eq!(
+                expectation.adoption_fingerprint,
+                expected.adoption_fingerprint
+            );
+            assert_eq!(
+                expectation.realization_fingerprint,
+                expected.realization_fingerprint
+            );
+            assert_eq!(expectation.runtime_handle, expected.runtime_handle);
+            assert_eq!(expectation.effect_fence, expected.effect_fence);
+            assert_eq!(access.source_effect_fence, source);
+            assert_eq!(access.effect_fence, active);
+            assert_eq!(access.request_fingerprint, "request");
+            assert!(matches!(mutation, ContainerCheckpointMutation::Acquire));
+            state.checkpoint_calls += 1;
+            state.checkpoint_response_gate.clone()
+        };
+        if let Some(gate) = gate {
+            let _permit = gate.acquire().await.unwrap();
+        }
+        // Deliberately accept the late response: the actual ContainerSandbox,
+        // not this fixture, must prove its own post-await authority check.
+        Ok(None)
+    }
+
     async fn probe_ready(&self) -> Result<(), RuntimeError> {
         Ok(())
     }
