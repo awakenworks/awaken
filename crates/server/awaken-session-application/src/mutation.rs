@@ -4,7 +4,7 @@ use super::*;
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionCreateResult,
     SessionMutation, SessionMutationPayload, SessionMutationResult, SessionRepositoryConflict,
-    SessionRepositoryError,
+    SessionRepositoryError, SessionRevision,
 };
 
 use crate::creation::{SessionCreationCompletion, validated_create_replay};
@@ -37,6 +37,27 @@ pub enum SessionMutationError {
     Unavailable(String),
 }
 
+/// Update only the existing root observation. The caller compiles idempotency
+/// before invoking this kernel, and only the repository CAS can persist it.
+fn observe_root_update(previous: &mut Option<u64>, now: u64) {
+    *previous = Some(now.max(previous.unwrap_or(0)));
+}
+
+/// Interpret the actual repository receipt without accepting a local candidate
+/// on replay. `None` requires loading the durable root through the existing port.
+fn applied_root_revision(
+    result: SessionMutationResult,
+) -> Result<Option<SessionRevision>, SessionMutationError> {
+    match result {
+        SessionMutationResult::Applied { new_revision } => Ok(Some(new_revision)),
+        SessionMutationResult::Replayed { .. } => Ok(None),
+        SessionMutationResult::Conflict { .. } => Err(SessionMutationError::Conflict),
+        SessionMutationResult::IdempotencyMismatch => {
+            Err(SessionMutationError::IdempotencyMismatch)
+        }
+    }
+}
+
 /// Shared replacement boundary for application commands and Runtime binding
 /// receipts. Idempotency is compiled before observation; the repository remains
 /// the sole CAS owner. Callers retain their domain-specific retry/error policy.
@@ -48,7 +69,7 @@ pub(crate) async fn commit_observed_snapshot(
     lifecycle_facts: Vec<ManagedLifecycleFact>,
     now: u64,
 ) -> Result<SessionMutationResult, SessionRepositoryError> {
-    session.updated_at_unix_ms = Some(now.max(session.updated_at_unix_ms.unwrap_or(0)));
+    observe_root_update(&mut session.updated_at_unix_ms, now);
     repository
         .commit_mutation(
             owner_scope,
@@ -208,7 +229,7 @@ impl SessionApplication {
         lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<(PersistedSession, bool), SessionMutationError> {
         let session_id = session.session_id.clone();
-        match commit_observed_snapshot(
+        let result = commit_observed_snapshot(
             self.sessions_repo.as_ref(),
             owner_scope,
             &mut session,
@@ -217,22 +238,18 @@ impl SessionApplication {
             self.now_unix_ms(),
         )
         .await
-        .map_err(repository_failure)?
-        {
-            SessionMutationResult::Applied { new_revision } => {
+        .map_err(repository_failure)?;
+        match applied_root_revision(result)? {
+            Some(new_revision) => {
                 session.revision = new_revision;
                 Ok((session, true))
             }
-            SessionMutationResult::Replayed { .. } => self
+            None => self
                 .sessions_repo
                 .get(&session_id)
                 .await
                 .map(|session| (session, false))
                 .map_err(repository_failure),
-            SessionMutationResult::Conflict { .. } => Err(SessionMutationError::Conflict),
-            SessionMutationResult::IdempotencyMismatch => {
-                Err(SessionMutationError::IdempotencyMismatch)
-            }
         }
     }
 
@@ -250,3 +267,6 @@ impl SessionApplication {
             .map_err(repository_failure)
     }
 }
+
+#[cfg(any(test, kani))]
+mod observation_proofs;

@@ -108,10 +108,34 @@ async fn mutation_time_receipts_reject_conflicts_and_recover_lost_ack() {
     // T3 same key/different payload => unchanged; T4 stale CAS => unchanged;
     // T7 commit then lost acknowledgement => retry observes original time.
     // All assertions compare complete roots, so time-only or partial writes fail.
-    let repo = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
+    mutation_time_receipt_table(Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().unwrap(),
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn postgres_mutation_time_receipts_reject_conflicts_and_recover_lost_ack() {
+    // The same T3/T4/T7 decision rules run through the production Postgres
+    // transaction adapter. Explicitly configured database failure is fatal;
+    // an unconfigured native run does not claim Postgres coverage.
+    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+        return;
+    };
+    let repo = awaken_session_store::PostgresManagedSessionRepository::connect(&url)
+        .await
+        .expect("configured time-assurance Postgres");
+    mutation_time_receipt_table(Arc::new(repo)).await;
+}
+
+async fn mutation_time_receipt_table(repo: Arc<dyn ManagedSessionRepository>) {
+    let mut create = command();
+    // Keep the real Postgres case repeatable without deleting shared database
+    // state: every test process owns a distinct Session identity.
+    create.session_id = format!("time-receipt-{}", std::process::id());
     let faulting = Arc::new(FaultingSessionRepository::new(repo.clone()));
     let app = timed_application(faulting.clone(), 100);
-    let original = app.create_session(command()).await.unwrap();
+    let original = app.create_session(create).await.unwrap();
     let app = timed_application(faulting.clone(), 200);
     let owner = app.owner(&original.session_id).await.unwrap();
     let mut desired = original.clone();

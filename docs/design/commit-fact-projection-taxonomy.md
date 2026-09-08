@@ -84,7 +84,10 @@ Wall time is display evidence attached to the existing durable owner, never a
 commit identity, sequence, or recovery trigger. Session application commands use
 the shared `awaken-agent-contract::clock::Clock` port; ingress reexports that port.
 Create compiles its idempotency receipt before observing root creation time.
-Root CAS persists update time, inbound processing persists its first observation,
+Root CAS persists update time. Its shared application kernel normalizes only the
+existing update field; the typed repository receipt accepts a candidate only on
+Applied, reloads durable truth on Replayed, and rejects Conflict/Mismatch.
+Inbound processing persists its first observation,
 and realization failure retains its own time so later cleanup cannot rewrite it.
 Resource binding times belong to each existing resolved input: manifest replacement
 preserves creation time, updates only changed bindings, and does not stamp a no-op.
