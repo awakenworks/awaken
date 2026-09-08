@@ -348,7 +348,7 @@ class MutationOracleTests(unittest.TestCase):
                                           [("mutant", "config", "ExactRule")], **budget)
                 self.assertEqual(runner.call_count, 2)
                 for call in runner.call_args_list:
-                    self.assertEqual(call.args[0][:4], ["java", heap, "-XX:+UseParallelGC", "-jar"])
+                    self.assertEqual(call.args[0][:5], ["java", f'-Djava.io.tmpdir={call.kwargs["cwd"]}', heap, "-XX:+UseParallelGC", "-jar"])
                     self.assertEqual(call.kwargs["timeout"], timeout)
             with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("java", timeout)):
                 with self.assertRaises(subprocess.TimeoutExpired):
@@ -458,17 +458,20 @@ class MutationOracleTests(unittest.TestCase):
         # TLC cause/effect table: baseline green x mutant exit x invariant text.
         # Only green+12+exact invariant passes. Infrastructure/parser failures,
         # unrelated invariants and surviving mutants must not count as kills.
+        # Isolation rule: each invocation extracts standard modules inside its
+        # own temporary owner; a peer exit cannot delete this JVM's parser input.
         green = subprocess.CompletedProcess([], 0, "Model checking completed. No error has been found.")
         for code, output, accepted in (
             (12, "Invariant ExactRule is violated", True),
             (0, "Invariant ExactRule is violated", False),
             (12, "Invariant OtherRule is violated", False),
             (1, "parse error", False),
+            (150, "NullPointerException: parsing failed", False),
             (-9, "Invariant ExactRule is violated", False),
         ):
             with self.subTest(code=code, output=output), patch("subprocess.run", side_effect=[
                 green, subprocess.CompletedProcess([], code, output),
-            ]):
+            ]) as runner:
                 if accepted:
                     check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", "config",
                                               [("mutant", "config", "ExactRule")])
@@ -476,6 +479,9 @@ class MutationOracleTests(unittest.TestCase):
                     with self.assertRaisesRegex(SystemExit, "not killed correctly"):
                         check_tlc_model_mutations(Path("tlc.jar"), "Fixture", "source", "config",
                                                   [("mutant", "config", "ExactRule")])
+                calls = runner.call_args_list
+                self.assertEqual(len({call.kwargs["cwd"] for call in calls}), 2)
+                for call in calls: self.assertIn(f'-Djava.io.tmpdir={call.kwargs["cwd"]}', call.args[0])
         with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 12,
                 "Invariant ExactRule is violated")) as runner:
             with self.assertRaisesRegex(SystemExit, "baseline failed"):
