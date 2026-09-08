@@ -124,9 +124,9 @@ Static ownership stays unchanged: Session root CAS owns the generation, the Host
 slot owns the process-local Environment, and the Provider owns physical resource
 identity. The added private retirement coordination extends that lifecycle; it
 does not introduce another lease, registry, resource store or recovery protocol.
-`SessionExecutionReplacement` composes the authority/binding model for two objects
-and callers: write-once capture, quiescence, cancellation retention and successor
-admission. The shared TLC mutation runner checks safety and positive reachability;
+`SessionExecutionReplacement` composes the authority/binding model with two callers
+and two/four-generation profiles: immutable captures, quiescence and cancellation.
+The shared TLC mutation runner checks safety and positive recovery reachability;
 unknown evidence has no eventual-completion guarantee or physical/Rust refinement.
 
 The adjacent SR1-SR5 Host tests exercise real scoped processes through complete
@@ -155,15 +155,17 @@ renewal, foreign binding, unknown observation and revocation.
 Terminal takeover reuses the same owner and two-phase aggregate authorization:
 an exact unacknowledged Candidate stays Unbound, never published or given a
 fabricated identity. Auxiliary reconstruction retains the original Arc/participants;
-only cold owners are installed. Unmaterialized roots skip Agent output harvest but
-reconcile exact mounted Memory before disposal.
+only cold owners are installed. Unmaterialized roots reconcile Memory without Agent harvest.
 U1-U3/HM0/HM1 cover concurrency, successor leases, Memory rejection and ack.
-Cold-reconstruction replay also checks the terminal operation ID and preserves
-recorded source evidence when an exact handle replaces handle-free identification.
-P8 crosses four marker/root phases with absent/exact/foreign handles and expected
-fences (36 rows); U1-U6 check both lost responses and rejected ownership/leases.
-The replacement/terminal models retain 12/7 mutants and 6/3 witnesses. A second
-replacement, physical truth, distributed faults and Rust refinement remain open.
+Cold reconstruction checks terminal operation identity and retains source evidence
+when an exact handle replaces handle-free identification. P8 exhausts four phases
+x three handle classes x three expected-fence classes (36 rows); U1-U6 cover lost responses and denied owners/leases.
+MC00/01/10/11 cross Resident/uncommitted A with two cancelled Adopt successors,
+before/after commit independently (eight Linux rows), then require executable D.
+Two/four-generation profiles have 12+3 mutants and 6+4 witnesses: no stale receipt
+publication or capture rebinding. Positive chain witnesses alone keep authority stable.
+The terminal model retains seven mutants/three witnesses, including post-removal
+cancellation. Physical observer truth, distributed faults and Rust refinement remain open.
 
 ## 2026-09-01 amendment: lease-only renewal
 

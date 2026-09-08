@@ -15,7 +15,8 @@ def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str
                               mutations: list[tuple[str, str, str]], *,
                               dependencies: tuple[str, ...] = (),
                               artifact_directory: Path | None = None,
-                              heap_mb: int = 512, timeout_seconds: int = 60) -> None:
+                              heap_mb: int = 512, timeout_seconds: int = 60,
+                              workers: int = 1) -> None:
     # One TLC invocation/oracle for every model mutation family. Validate both
     # the process result and semantic outcome; always establish the green base.
     cases = [(source, config, None), *mutations]
@@ -38,7 +39,7 @@ def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str
                 # reuse this invocation's owner for JVM temporaries as well.
                 result = subprocess.run(
                     ["java", f"-Djava.io.tmpdir={directory}", f"-Xmx{heap_mb}m", "-XX:+UseParallelGC", "-jar", str(tlc_jar.resolve()),
-                     "-metadir", str(directory / "states"), "-config", str(config_path), str(model)],
+                     "-workers", str(workers), "-metadir", str(directory / "states"), "-config", str(config_path), str(model)],
                     cwd=directory, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     timeout=timeout_seconds, check=False,
                 )
