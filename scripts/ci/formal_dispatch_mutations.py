@@ -1,0 +1,55 @@
+"""Dispatch composition mutation and reachability checks at the canonical CI entry."""
+
+from pathlib import Path
+
+from formal_model_mutation_runner import ROOT, check_tlc_model_mutations
+
+
+def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
+    # R1 remove the conflict execution gate -> exact safety violation. R2 the
+    # original model must REACH a settled conflict, guarding against a vacuous
+    # green configuration (e.g. no live Work lease can ever be acquired).
+    source = (ROOT / "formal/tla/SessionRunProtocol.tla").read_text(encoding="utf-8")
+    config = (ROOT / "formal/tla/SessionRunProtocolResolution.cfg").read_text(encoding="utf-8")
+    anchor = "    /\\ run \\notin ConflictedRuns\n"
+    if source.count(anchor) != 1:
+        raise SystemExit("Resolution conflict mutation anchor drifted; review the model")
+    witness = config.replace("INVARIANTS Safety ConflictedRunsNeverExecute", "INVARIANTS Safety NoConflictedRunHasSettled")
+    check_tlc_model_mutations(tlc_jar, "SessionRunProtocol", source, config, [
+        (source.replace(anchor, ""), config, "ConflictedRunsNeverExecute"),
+        (source, witness, "NoConflictedRunHasSettled"),
+    ], dependencies=("RunIngressKernel", "SessionActivityKernel", "WorkQueueKernel"))
+    print("Resolution conflict: execution mutant killed; terminal settlement reachability witnessed")
+    # Q1 timeout/drop must not clear a slot with unreturned external work.
+    # Q2 require reachable external execution, not a vacuous green model.
+    # The full CI configuration separately explores both Workers and 3 epochs;
+    # this mutation slice uses 1 epoch to isolate the return-ACK boundary.
+    physical_config = (ROOT / "formal/tla/SessionRunProtocol.cfg").read_text()
+    physical_config = physical_config.replace("MaxEpoch = 3", "MaxEpoch = 1")
+    physical_config = physical_config.replace("MaxHeartbeat = 1", "MaxHeartbeat = 0")
+    physical_config = physical_config.replace("MaxTime = 2", "MaxTime = 1")
+    return_guard = r"    /\ <<run, candidate, epoch>> \notin externalAttempts" + "\n"
+    if source.count(return_guard) != 1:
+        raise SystemExit("External return mutation anchor drifted; review the model")
+    check_tlc_model_mutations(tlc_jar, "SessionRunProtocol", source, physical_config, [
+        (source.replace(return_guard, ""), physical_config.replace("    Safety", "    ExternalAttemptRetainsExactSlot\n    Safety"),
+         "ExternalAttemptRetainsExactSlot"),
+        (source, physical_config.replace("    Safety", "    NoExternalExecution\n    Safety"), "NoExternalExecution"),
+    ], dependencies=("RunIngressKernel", "SessionActivityKernel", "WorkQueueKernel"))
+    print("Physical return: unsafe ACK mutant killed; external execution reachable")
+    # P1 cancel a physically occupied child, then claim its same-Thread peer.
+    # Removing the physical peer gate must permit overlap (not a parser error).
+    # P2 the unmodified model must reach that cancelled-peer claim window, so a
+    # redundant logical claim gate cannot make the exclusion proof vacuous.
+    cancellation = (ROOT / "formal/tla/SessionRunProtocolCancellation.cfg").read_text()
+    peer_guard = ("    /\\ \\A peer \\in Runs \\ {run}:\n"
+                  "         RunThread(peer) = RunThread(run) => peer \\notin executionStarted\n")
+    if source.count(peer_guard) != 1:
+        raise SystemExit("Thread physical exclusion mutation anchor drifted")
+    check_tlc_model_mutations(tlc_jar, "SessionRunProtocol", source, cancellation, [
+        (source.replace(peer_guard, ""), cancellation.replace("INVARIANTS Safety",
+            "INVARIANTS OnePhysicalAttemptPerThread Safety"), "OnePhysicalAttemptPerThread"),
+        (source, cancellation.replace("INVARIANTS Safety",
+            "INVARIANTS NoCancelledPeerClaim Safety"), "NoCancelledPeerClaim"),
+    ], dependencies=("RunIngressKernel", "SessionActivityKernel", "WorkQueueKernel"))
+    print("Thread exclusion: cancelled peer claim reachable; missing physical guard mutant killed")

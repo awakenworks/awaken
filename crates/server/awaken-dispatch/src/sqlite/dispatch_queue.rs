@@ -1368,18 +1368,15 @@ impl DispatchQueue for SqliteDispatchStore {
                 let _ = tx.rollback();
                 return Ok(SettleOutcome::Fenced);
             };
-            if !awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
+            let slot = awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
                 attempt_owner.is_some(), active_attempt.is_some(), false, false,
-            ).permits_settlement() {
-                let _ = tx.rollback();
-                return Ok(SettleOutcome::Fenced);
-            }
+            );
             let transition = crate::persisted_dispatch_transition(
                 &status,
                 persisted_epoch,
                 cancellation_requested != 0,
             )?
-            .settle(epoch, outcome == DispatchOutcome::Done);
+            .settle(epoch, outcome == DispatchOutcome::Done, slot);
             if matches!(
                 transition,
                 awaken_dispatch_contract::GuardedTransition::Fenced

@@ -27,6 +27,7 @@ from formal_memory_mutations import (
     check_memory_participant_model_mutants,
 )
 from formal_execution_replacement_mutations import check_execution_replacement_model_mutants
+from formal_dispatch_mutations import check_resolution_failure_model_mutant
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1290,40 +1291,6 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
                               # never truncate exploration to fit the old budget.
                               heap_mb=4096, timeout_seconds=600)
     print("Session execution binding: 47/47 mutants killed; 22 witnesses cover execution, provider projection, Memory, preparation, physical/restored disposal, cold reconstruction, live adoption, local creation and checkpoint upload/replay; fresh provider admission cannot be suppressed by a second clock")
-
-
-def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
-    # R1 remove the conflict execution gate -> exact safety violation. R2 the
-    # original model must REACH a settled conflict, guarding against a vacuous
-    # green configuration (e.g. no live Work lease can ever be acquired).
-    source = (ROOT / "formal/tla/SessionRunProtocol.tla").read_text(encoding="utf-8")
-    config = (ROOT / "formal/tla/SessionRunProtocolResolution.cfg").read_text(encoding="utf-8")
-    anchor = "    /\\ run \\notin ConflictedRuns\n"
-    if source.count(anchor) != 1:
-        raise SystemExit("Resolution conflict mutation anchor drifted; review the model")
-    witness = config.replace("INVARIANTS Safety ConflictedRunsNeverExecute", "INVARIANTS Safety NoConflictedRunHasSettled")
-    check_tlc_model_mutations(tlc_jar, "SessionRunProtocol", source, config, [
-        (source.replace(anchor, ""), config, "ConflictedRunsNeverExecute"),
-        (source, witness, "NoConflictedRunHasSettled"),
-    ], dependencies=("RunIngressKernel", "SessionActivityKernel", "WorkQueueKernel"))
-    print("Resolution conflict: execution mutant killed; terminal settlement reachability witnessed")
-    # Q1 timeout/drop must not clear a slot with unreturned external work.
-    # Q2 require reachable external execution, not a vacuous green model.
-    # The full CI configuration separately explores both Workers and 3 epochs;
-    # this mutation slice uses 1 epoch to isolate the return-ACK boundary.
-    physical_config = (ROOT / "formal/tla/SessionRunProtocol.cfg").read_text()
-    physical_config = physical_config.replace("MaxEpoch = 3", "MaxEpoch = 1")
-    physical_config = physical_config.replace("MaxHeartbeat = 1", "MaxHeartbeat = 0")
-    physical_config = physical_config.replace("MaxTime = 2", "MaxTime = 1")
-    return_guard = r"    /\ <<run, candidate, epoch>> \notin externalAttempts" + "\n"
-    if source.count(return_guard) != 1:
-        raise SystemExit("External return mutation anchor drifted; review the model")
-    check_tlc_model_mutations(tlc_jar, "SessionRunProtocol", source, physical_config, [
-        (source.replace(return_guard, ""), physical_config.replace("    Safety", "    ExternalAttemptRetainsExactSlot\n    Safety"),
-         "ExternalAttemptRetainsExactSlot"),
-        (source, physical_config.replace("    Safety", "    NoExternalExecution\n    Safety"), "NoExternalExecution"),
-    ], dependencies=("RunIngressKernel", "SessionActivityKernel", "WorkQueueKernel"))
-    print("Physical return: unsafe ACK mutant killed; external execution reachable")
 
 
 def check_config_cas_model_mutant(tlc_jar: Path) -> None:

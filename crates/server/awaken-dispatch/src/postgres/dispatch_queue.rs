@@ -10,6 +10,12 @@ impl PostgresDispatchStore {
         let p = NS;
         let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
         let mut tx = self.pool.begin().await.map_err(store_error)?;
+        // Match claim's Thread-before-row order. The unique physical index is
+        // the storage backstop; recheck peers under this transaction lock to
+        // return the domain Blocked outcome instead of an expected SQL error.
+        let Some(thread) = lock_dispatch_thread(&mut tx, &claim.run_id).await? else {
+            return Ok(AttemptAdmission::Fenced);
+        };
         let now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
         let current = sqlx::query(&format!(
             "SELECT status, lease_owner, lease_epoch, lease_until, \
@@ -48,8 +54,12 @@ impl PostgresDispatchStore {
             active_owner.as_deref() == Some(&claim.owner),
             active_epoch == Some(claim.epoch),
         );
+        let peer_occupied: bool = sqlx::query_scalar(&format!(
+            "SELECT EXISTS (SELECT 1 FROM {p}_dispatch WHERE thread_id = $1
+             AND run_id <> $2 AND (active_attempt_owner IS NOT NULL OR active_attempt_epoch IS NOT NULL))"
+        )).bind(&thread).bind(&claim.run_id.0).fetch_one(&mut *tx).await.map_err(store_error)?;
         let (transition, admission) =
-            crate::dispatch::decide_physical_attempt_admission(live, slot, handoff)?;
+            crate::dispatch::decide_physical_attempt_admission(live, slot, handoff, peer_occupied)?;
         if matches!(
             transition,
             PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Replace
@@ -1278,23 +1288,18 @@ impl DispatchQueue for PostgresDispatchStore {
         let attempt_owner: Option<String> = authority
             .try_get("active_attempt_owner")
             .map_err(store_error)?;
-        if !awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
+        let slot = awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
             attempt_owner.is_some(),
             active_attempt.is_some(),
             false,
             false,
-        )
-        .permits_settlement()
-        {
-            let _ = tx.rollback().await;
-            return Ok(SettleOutcome::Fenced);
-        }
+        );
         let transition = crate::persisted_dispatch_transition(
             &status,
             persisted_epoch,
             cancellation_requested != 0,
         )?;
-        let transition = transition.settle(epoch, outcome == DispatchOutcome::Done);
+        let transition = transition.settle(epoch, outcome == DispatchOutcome::Done, slot);
         if matches!(
             transition,
             awaken_dispatch_contract::GuardedTransition::Fenced

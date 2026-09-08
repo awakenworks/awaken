@@ -12,6 +12,7 @@ pub(crate) fn decide_physical_attempt_admission(
     current: bool,
     slot: awaken_dispatch_contract::PhysicalAttemptSlot,
     handoff: bool,
+    thread_peer_occupied: bool,
 ) -> Result<
     (
         awaken_dispatch_contract::PhysicalAttemptTransition,
@@ -23,9 +24,9 @@ pub(crate) fn decide_physical_attempt_admission(
         PhysicalAttemptTransition as T, begin_physical_attempt, handoff_physical_attempt,
     };
     let transition = if handoff {
-        handoff_physical_attempt(current, slot)
+        handoff_physical_attempt(current, slot, thread_peer_occupied)
     } else {
-        begin_physical_attempt(current, slot)
+        begin_physical_attempt(current, slot, thread_peer_occupied)
     };
     let outcome = match transition {
         T::Install => AttemptAdmission::Applied,
@@ -107,7 +108,19 @@ mod physical_attempt_tests {
                         }
                         (true, S::Corrupt, _) => None,
                     };
-                    let actual = decide_physical_attempt_admission(current, slot, handoff);
+                    // P1 peer absent => base table; P2 occupied peer cannot
+                    // grant Install/Replace/Stutter, even outside Running.
+                    let occupied = decide_physical_attempt_admission(current, slot, handoff, true);
+                    let peer_expected = match (current, slot) {
+                        (false, _) => Some((T::Fenced, AttemptAdmission::Fenced)),
+                        (true, S::Corrupt) => None,
+                        (true, _) => Some((T::Blocked, AttemptAdmission::Blocked)),
+                    };
+                    match peer_expected {
+                        Some(expected) => assert_eq!(occupied.unwrap(), expected, "P2"),
+                        None => assert!(matches!(occupied, Err(DispatchError::Rejected(_))), "P2"),
+                    }
+                    let actual = decide_physical_attempt_admission(current, slot, handoff, false);
                     match expected {
                         Some(expected) => {
                             let actual = actual.unwrap();

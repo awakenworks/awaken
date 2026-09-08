@@ -327,6 +327,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness commit_epoch_guard_admits_only_complete_exact_claim \
     --harness pre_start_no_effect_ack_requires_fresh_install_admission \
     --harness physical_attempt_slot_installs_and_clears_only_exact_authority \
+    --harness thread_physical_peer_vetoes_begin_and_handoff \
     --harness physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair
   run_kani awaken-dispatch --no-default-features \
     --harness recovery_snapshot_admission_requires_exact_claim_identity \
@@ -974,6 +975,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/session-run-resolution" \
     -config formal/tla/SessionRunProtocolResolution.cfg formal/tla/SessionRunProtocol.tla
   python3 scripts/ci/check_formal_mutations.py --resolution-failure-model-mutant "$tla_jar"
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-run-cancellation" \
+    -config formal/tla/SessionRunProtocolCancellation.cfg formal/tla/SessionRunProtocol.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -workers auto \
     -metadir "$tlc_state_root/session-thread-tool-composition" \
