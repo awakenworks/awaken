@@ -305,6 +305,8 @@ obligation when the development host is Linux.
 
 ## TLA+ specifications
 
+- Session projection and opening-identity bounds are documented in
+  [verification boundaries](VERIFICATION_BOUNDARIES.md#architecture-slices-implemented-at-this-checkpoint).
 - `RunIngressKernel.tla` is the single parameterized Dispatch transition
   authority. `RunIngress.tla` is its standalone exhaustive instance:
   reservation publication (relative TTL is converted by the store authority),
@@ -1069,12 +1071,8 @@ claims. SQLite/PostgreSQL queue mutations instead use database row transactions;
 their interleavings remain in `WorkQueue.tla` plus backend conformance and
 contention tests.
 
-Kani additionally exhausts the production-consumed Worker replacement/
-heartbeat table, Work owner/epoch/condition table, Session realization
-assignment table, and Dispatch physical-attempt slot reducer. These proofs own
-the decisions, not the lock implementations: Loom explores the instrumented
-in-memory critical sections, while database and Tokio behavior remains covered
-by transaction/concurrency tests and explicit assumptions.
+The [Kani catalog](#kani-production-kernel-proofs) owns pure decision proofs;
+Loom owns lock interleavings. Database and Tokio remain integration obligations.
 
 ## Honest boundary
 

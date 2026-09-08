@@ -770,6 +770,10 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -config formal/tla/SessionRuntimeProjection.cfg \
     formal/tla/SessionRuntimeProjection.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-runtime-projection-opening" \
+    -config formal/tla/SessionRuntimeProjectionOpening.cfg \
+    formal/tla/SessionRuntimeProjection.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-environment-projection" \
     -config formal/tla/SessionEnvironmentProjection.cfg \
     formal/tla/SessionEnvironmentProjection.tla

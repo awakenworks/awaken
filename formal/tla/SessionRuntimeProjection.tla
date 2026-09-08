@@ -201,4 +201,39 @@ Safety ==
     /\ ProjectionNeverInventsSourcePrefix
     /\ SuccessfulRefreshReachesObservedSourcePrefix
     /\ HistoricalProjectionPreservesCausalOrder
+\* Opening-identity submodel: one exact retained interval, with its admission
+\* fence normalized to cursor zero and up to MaxSourceVersion Running facts.
+\* The same selector is used before/after terminal observation and after cache
+\* loss. Runtime/Session source agreement and the selected Run/Thread boundary
+\* are assumptions here; Rust reducer and real restart tests check that binding.
+\* Existing variables are reused only by the separate OpeningInit/OpeningNext
+\* configuration, so this submodel does not multiply the UI admission state space.
+OpeningChoice == CHOOSE cursor \in 1..sourceVersion :
+                    \A other \in 1..sourceVersion : cursor <= other
+OpeningInit == Init
+OpeningAppend ==
+    /\ phase # "closed" /\ sourceVersion < MaxSourceVersion
+    /\ sourceVersion' = sourceVersion + 1
+    /\ UNCHANGED <<phase, pending, resolving, lastError,
+                    projectedVersion, refreshSucceeded, history, aggregate>>
+OpeningWarmRead ==
+    /\ sourceVersion > 0
+    /\ pending' = pending \cup {OpeningChoice}
+    /\ UNCHANGED <<phase, resolving, lastError, sourceVersion,
+                    projectedVersion, refreshSucceeded, history, aggregate>>
+OpeningClose ==
+    /\ sourceVersion > 0 /\ phase # "closed"
+    /\ phase' = "closed"
+    /\ UNCHANGED <<pending, resolving, lastError, sourceVersion,
+                    projectedVersion, refreshSucceeded, history, aggregate>>
+OpeningColdRead ==
+    /\ sourceVersion > 0
+    /\ projectedVersion' = OpeningChoice
+    /\ UNCHANGED <<phase, pending, resolving, lastError, sourceVersion,
+                    refreshSucceeded, history, aggregate>>
+OpeningNext == OpeningAppend \/ OpeningWarmRead \/ OpeningClose \/ OpeningColdRead
+OpeningIdentityStable ==
+    /\ pending \subseteq {1}
+    /\ projectedVersion \in {0, 1}
+    /\ (pending # {} /\ projectedVersion # 0 => projectedVersion \in pending)
 =============================================================================
