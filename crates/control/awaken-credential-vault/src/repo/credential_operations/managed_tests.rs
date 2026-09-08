@@ -1367,3 +1367,59 @@ async fn committed_managed_pair_returns_success_and_retries_failed_cleanup() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn candidate_readiness_preserves_unknown_after_a_missing_reference() {
+    // Causes: two new references, each present(0), missing(1), unavailable(2).
+    // R1 both present => publish candidate; R2 missing without any unavailable
+    // read => abort candidate; R3 any unavailable => retain WAL for retry, even
+    // after an earlier missing reference. R4 stop only at an unavailable read.
+    // The existing targeted-read fault fixture supplies observations; the
+    // independent 3x3 oracle covers the interaction and both encounter orders.
+    for primary in 0..3 {
+        for auxiliary in 0..3 {
+            let refs = [
+                crate::SecretRef("candidate-primary".into()),
+                crate::SecretRef("candidate-auxiliary".into()),
+            ];
+            let outcomes = [primary, auxiliary];
+            let store = PoisonGetStore {
+                inner: InMemorySecretStore::new(),
+                poison: std::sync::Mutex::new(
+                    outcomes
+                        .iter()
+                        .position(|v| *v == 2)
+                        .map(|index| refs[index].clone()),
+                ),
+                reads: AtomicUsize::new(0),
+                deletes: AtomicUsize::new(0),
+            };
+            for (reference, outcome) in refs.iter().zip(outcomes) {
+                if outcome == 0 {
+                    store
+                        .inner
+                        .put(reference, RedactedString::new("fixture"))
+                        .await
+                        .unwrap();
+                }
+            }
+            let mut after = super::super::publication_proofs::source();
+            after.material_ref = Some(refs[0].clone());
+            after
+                .auxiliary_material_refs
+                .insert("k".into(), refs[1].clone());
+            let result = cleanup::candidate_material_complete(None, &after, &store).await;
+            if primary == 2 || auxiliary == 2 {
+                assert!(matches!(result, Err(CredentialError::Storage(_))), "R3");
+            } else {
+                assert_eq!(result.unwrap(), primary == 0 && auxiliary == 0, "R1-R2");
+            }
+            assert_eq!(
+                store.reads.load(Ordering::SeqCst),
+                if primary == 2 { 1 } else { 2 },
+                "R4"
+            );
+            assert_eq!(store.deletes.load(Ordering::SeqCst), 0);
+        }
+    }
+}
