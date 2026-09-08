@@ -184,6 +184,71 @@ pub enum SettleOutcome {
     Fenced,
 }
 
+/// Authoritative observation returned by one exact-claim lease renewal.
+///
+/// Renewal is also the existing signal bridge from durable cancellation into
+/// an already-running physical attempt. Keeping that distinction typed avoids
+/// treating an explicit cancellation as an unexplained ownership loss while
+/// still fencing every unrelated owner or epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeaseRenewalOutcome {
+    /// The exact claim remains current and its lease was extended.
+    Current,
+    /// Durable cancellation revoked the mutation claim, but this exact claim
+    /// still owns the physical attempt that must cooperatively stop.
+    CancellationRequested,
+    /// The claim is neither current nor the cancelled physical participant.
+    Lost,
+}
+
+impl LeaseRenewalOutcome {
+    #[must_use]
+    pub const fn is_current(self) -> bool {
+        matches!(self, Self::Current)
+    }
+}
+
+/// Apply the one backend-neutral renewal decision to facts read atomically from
+/// a Dispatch row. Backends own locking and lease writes; this function owns the
+/// meaning of those facts.
+#[must_use]
+pub const fn decide_lease_renewal(
+    current_claim: bool,
+    cancelled_physical_attempt: bool,
+) -> LeaseRenewalOutcome {
+    if current_claim {
+        LeaseRenewalOutcome::Current
+    } else if cancelled_physical_attempt {
+        LeaseRenewalOutcome::CancellationRequested
+    } else {
+        LeaseRenewalOutcome::Lost
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn lease_renewal_observation_preserves_claim_and_attempt_fences() {
+    // Cause/effect decision table: C1=exact current mutation claim;
+    // C2=durably cancelled exact physical attempt. E1=renew current lease;
+    // E2=signal cooperative cancellation; E3=report ownership lost.
+    // R1=C1 -> E1 (including a cancellation worker claiming the intent);
+    // R2=!C1+C2 -> E2; R3=!C1+!C2 -> E3. This exhausts both causes and
+    // prevents cancellation for an unrelated owner/epoch.
+    let current_claim: bool = kani::any();
+    let cancelled_physical_attempt: bool = kani::any();
+    let outcome = decide_lease_renewal(current_claim, cancelled_physical_attempt);
+    assert_eq!(outcome == LeaseRenewalOutcome::Current, current_claim);
+    assert_eq!(
+        outcome == LeaseRenewalOutcome::CancellationRequested,
+        !current_claim && cancelled_physical_attempt
+    );
+    assert_eq!(
+        outcome == LeaseRenewalOutcome::Lost,
+        !current_claim && !cancelled_physical_attempt
+    );
+}
+
 /// Admission result for the physical executor slot carried by one Dispatch
 /// aggregate. A Run claim authorizes durable mutation, but an expired claim may
 /// still have a model/tool/Sandbox future physically unwinding. The successor
@@ -1753,7 +1818,7 @@ mod tests {
             _claim: &RunClaim,
             _lease_ms: u64,
             _now_ms: u64,
-        ) -> Result<bool, DispatchError> {
+        ) -> Result<LeaseRenewalOutcome, DispatchError> {
             Self::unsupported()
         }
         async fn settle(

@@ -22,15 +22,16 @@ use crate::dispatch::{
     AttemptAdmission, AttemptCredentialBinding, CasOutcome, ClaimCredentialOperation, Claimed,
     CommitEpochGuard, ContinuationAdmission, CredentialRealizationReceipt, DispatchCompletion,
     DispatchError, DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, ExactClaimMode,
-    Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim, RunIdentityDecision,
-    SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
-    SessionRunReservationResolution, SettleOutcome, StoredRunIdentity, SubmitOptions,
-    can_admit_claim_credentials, claim_credential_operation, claim_with_frozen,
-    classify_completed_session_run_reservation, classify_exact_claim_mode,
+    Inbox, Lease, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, RunClaim,
+    RunIdentityDecision, SessionChildAdmission, SessionRunReservationActivation,
+    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome,
+    StoredRunIdentity, SubmitOptions, can_admit_claim_credentials, claim_credential_operation,
+    claim_with_frozen, classify_completed_session_run_reservation, classify_exact_claim_mode,
     classify_live_session_run_reservation, classify_session_run_reservation_activation,
-    compile_claim_credential_bindings, decide_run_identity, ensure_session_child_capacity,
-    installed_worker_credential_capabilities, normalize_pending_millis, session_child_parent,
-    session_child_thread, validate_executable_dispatch_admission, validate_outbox_continuation,
+    compile_claim_credential_bindings, decide_lease_renewal, decide_run_identity,
+    ensure_session_child_capacity, installed_worker_credential_capabilities,
+    normalize_pending_millis, session_child_parent, session_child_thread,
+    validate_executable_dispatch_admission, validate_outbox_continuation,
     validate_session_resume_activity_transition, validate_session_resume_evidence,
     validate_session_resume_target, validate_session_run_replacement_candidates,
     validate_session_run_reservation_request, validate_session_run_reservation_resolution,
@@ -1508,24 +1509,30 @@ impl DispatchQueue for MemoryDispatchStore {
         claim: &RunClaim,
         lease_ms: u64,
         now_ms: u64,
-    ) -> Result<bool, DispatchError> {
+    ) -> Result<LeaseRenewalOutcome, DispatchError> {
         let mut state = lock(&self.state)?;
-        match state.rows.get_mut(&claim.run_id) {
-            Some(row)
-                if matches!(
-                    row.state,
-                    DispatchState::ReservationLeased | DispatchState::Leased
-                ) && row.lease.as_ref().is_some_and(|lease| {
-                    lease.owner == claim.owner && lease.epoch == claim.epoch
-                }) =>
-            {
-                if let Some(lease) = row.lease.as_mut() {
-                    lease.expires_ms = crate::clock::deadline_millis(now_ms, lease_ms);
-                }
-                Ok(true)
-            }
-            _ => Ok(false),
+        let Some(row) = state.rows.get_mut(&claim.run_id) else {
+            return Ok(LeaseRenewalOutcome::Lost);
+        };
+        let current_claim = matches!(
+            row.state,
+            DispatchState::ReservationLeased | DispatchState::Leased
+        ) && row
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease.owner == claim.owner && lease.epoch == claim.epoch);
+        let cancelled_physical_attempt = row.cancellation_requested
+            && row
+                .active_attempt
+                .as_ref()
+                .is_some_and(|active| active == claim);
+        let outcome = decide_lease_renewal(current_claim, cancelled_physical_attempt);
+        if outcome == LeaseRenewalOutcome::Current
+            && let Some(lease) = row.lease.as_mut()
+        {
+            lease.expires_ms = crate::clock::deadline_millis(now_ms, lease_ms);
         }
+        Ok(outcome)
     }
 
     async fn begin_attempt(

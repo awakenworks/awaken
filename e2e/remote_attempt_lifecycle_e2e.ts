@@ -80,6 +80,11 @@ async function startPeer(): Promise<{
   const sent: SeenMessage[] = [];
   const reads: string[] = [];
   const cancels: string[] = [];
+  const cancelledTasks = new Set<string>();
+  const cancellationContexts = new Map([
+    ['cancel-task', 'cancel-context'],
+    ['active-cancel-task', 'active-cancel-context'],
+  ]);
   let crashComplete = false;
   let signalCrashPoll!: () => void;
   const crashPoll = new Promise<void>((resolve) => {
@@ -165,6 +170,10 @@ async function startPeer(): Promise<{
     const cancel = url.match(/^\/v1\/a2a\/tasks\/([^/]+):cancel$/);
     if (request.method === 'POST' && cancel) {
       cancels.push(cancel[1]);
+      cancelledTasks.add(cancel[1]);
+      // Cancellation delivery is deliberately only a 204 acknowledgement. The
+      // peer's task projection below is the separate terminal authority the A2A
+      // adapter must observe before it may release the physical attempt.
       json(response, 204);
       return;
     }
@@ -172,6 +181,12 @@ async function startPeer(): Promise<{
     const get = url.match(/^\/v1\/a2a\/tasks\/([^/]+)$/);
     if (request.method === 'GET' && get) {
       reads.push(get[1]);
+      if (cancelledTasks.has(get[1])) {
+        const contextId = cancellationContexts.get(get[1]);
+        assert.ok(contextId, `cancelled fixture task has a bound context: ${get[1]}`);
+        json(response, 200, task(get[1], contextId, 'canceled'));
+        return;
+      }
       if (get[1] === 'crash-task' && !crashComplete) {
         signalCrashPoll();
         // Deliberately leave this response open. SIGKILL of the first coordinator
@@ -432,6 +447,19 @@ function dispatchDatabases(root: string): string[] {
   return found;
 }
 
+function dispatchDatabaseForThread(root: string, thread: string): string {
+  const matches = dispatchDatabases(root).filter((database) => {
+    const row = sqliteRows(
+      database,
+      'SELECT COUNT(*) AS count FROM runtime_dispatch WHERE thread_id = ?',
+      thread,
+    )[0] as { count?: number } | undefined;
+    return Number(row?.count) > 0;
+  });
+  assert.equal(matches.length, 1, `one dispatch database owns ${thread}: ${matches.join(', ')}`);
+  return matches[0];
+}
+
 function committedState(root: string, thread: string): string {
   const database = sqliteDatabaseForThread(root, thread, 'runtime_state_command');
   return sqliteRows(
@@ -440,7 +468,7 @@ function committedState(root: string, thread: string): string {
   ).map((row: { data: string }) => row.data).join('\n');
 }
 
-function rewriteLatestTaskReference(
+function rewriteLatestRemoteOperation(
   root: string,
   thread: string,
   rewrite: (command: any) => void,
@@ -456,7 +484,7 @@ function rewriteLatestTaskReference(
   )[0] as Record<string, unknown> | undefined;
   const encoded = row ? String(Object.values(row)[0]) : '';
   const separator = encoded.indexOf('\t');
-  assert.ok(separator > 0, `durable A2A task reference exists for ${thread}: ${encoded}`);
+  assert.ok(separator > 0, `durable A2A operation exists for ${thread}: ${encoded}`);
   const id = Number(encoded.slice(0, separator));
   const command = JSON.parse(encoded.slice(separator + 1));
   rewrite(command);
@@ -465,34 +493,26 @@ function rewriteLatestTaskReference(
     database,
     `UPDATE runtime_state_command SET data = '${data}' WHERE id = ${id}`,
   );
-  assert.equal(Number(changed.changes), 1, `rewrote exactly one A2A task reference for ${thread}`);
+  assert.equal(Number(changed.changes), 1, `rewrote exactly one A2A operation for ${thread}`);
 }
 
-async function expectResumeFailure(
+async function expectRemovedOperationToFail(
   client: Anthropic,
   thread: string,
   marker: string,
   toolUseId: string,
 ): Promise<void> {
-  const expected = new Map([
-    ['missing endpoint', 'missing field `endpoint`'],
-    ['missing task', 'missing field `task_id`'],
-    ['missing context', 'missing field `context_id`'],
-    ['endpoint mismatch', 'belongs to endpoint'],
-    ['missing reference', 'missing its durable remote task'],
-  ]).get(marker)!;
+  const expected = 'missing its durable remote task';
   const response = await within(client.beta.sessions.events.send(thread, {
     events: [toolResult(toolUseId, marker)],
     betas: BETAS,
   }), 5_000, `${marker} corrupt continuation admission`);
   const receipt = response.data?.[0];
   assert.ok(receipt && typeof receipt.id === 'string', `${marker} returns an exact tool-result receipt`);
-  // Corrupt-reference cause/effect decision table. C1 a required typed field is
-  // absent, C2 the endpoint differs, or C3 the reference was removed; C4 the
-  // exact SDK receipt is processed. E1=the corresponding typed Session error and
-  // idle edge follow only that receipt; E2=the dispatch settles; E3=no peer send.
-  // K1=these are fail-closed diagnostics, not fallback codecs/recovery paths.
-  // Decision D1=(C1||C2||C3)+C4=>E1+E2+E3.
+  // Removed-operation cause/effect rule: C1 the authoritative state cell says
+  // the operation is absent; C2 the exact SDK receipt is admitted. E1=commit the
+  // typed missing-operation error and idle edge after that receipt; E2=settle
+  // the dispatch; E3=no peer send. D1=C1+C2=>E1+E2+E3.
   await waitForSessionEventReceipt(
     client,
     thread,
@@ -515,7 +535,60 @@ async function expectResumeFailure(
   );
 }
 
-function taskReferenceCleared(root: string, thread: string): boolean {
+async function expectCorruptAcceptedOperationToRemainUnconfirmed(
+  client: Anthropic,
+  root: string,
+  thread: string,
+  marker: string,
+  toolUseId: string,
+): Promise<void> {
+  const prior = await sessionEvents(client, thread);
+  const response = await within(client.beta.sessions.events.send(thread, {
+    events: [toolResult(toolUseId, marker)],
+    betas: BETAS,
+  }), 5_000, `${marker} corrupt continuation admission`);
+  const receipt = response.data?.[0];
+  assert.ok(receipt && typeof receipt.id === 'string', `${marker} returns an exact tool-result receipt`);
+  // Corrupt-Accepted decision table: C1 an Accepted operation exists; C2 one
+  // required reference field is absent or conflicts with its Prepared endpoint;
+  // C3 the exact resume receipt is admitted. E1=no remote request; E2=retain the
+  // physical slot because the hidden participant cannot be disproved; E3=mark
+  // the admitted receipt processed without fabricating a terminal Session edge.
+  // D1=C1+C2+C3=>E1+E2+E3. Removing the entire state is a distinct rule owned
+  // by `expectRemovedOperationToFail`.
+  const database = dispatchDatabaseForThread(root, thread);
+  await waitForValue(
+    () => sqliteRows(
+      database,
+      `SELECT active_attempt_owner, active_attempt_epoch FROM runtime_dispatch
+       WHERE thread_id = '${thread.replaceAll("'", "''")}'`,
+    ),
+    (rows: Array<{ active_attempt_owner?: string; active_attempt_epoch?: number }>) =>
+      rows.some((row) => typeof row.active_attempt_owner === 'string'
+        && typeof row.active_attempt_epoch === 'number'),
+    `${marker} corrupt Accepted operation to retain its physical slot`,
+    { timeoutMs: 5_000, pollMs: 25 },
+  );
+  const observed = await sessionEvents(client, thread);
+  const receiptEvent = observed.find((event) => event.id === receipt.id);
+  assert.equal(
+    typeof receiptEvent?.processed_at,
+    'string',
+    `${marker} exact admitted receipt is processed`,
+  );
+  const priorIds = new Set(prior.map((event) => event.id));
+  const fabricated = observed
+    .filter((event) => !priorIds.has(event.id) && event.id !== receipt.id)
+    .filter((event) => new Set([
+      'agent.message',
+      'session.error',
+      'session.status_idle',
+      'session.status_terminated',
+    ]).has(event.type));
+  assert.deepEqual(fabricated, [], `${marker} commits no false terminal projection`);
+}
+
+function remoteOperationCleared(root: string, thread: string): boolean {
   const commands = committedState(root, thread)
     .trim()
     .split('\n')
@@ -677,7 +750,11 @@ async function main(): Promise<void> {
     await waitForMessage(inputThread, 'REMOTE-RESUME-DONE');
     const resumeMessage = peer.sent.find((message) => message.text === 'README.md');
     assert.equal(resumeMessage?.contextId, 'input-context', 'resume retained remote context');
-    assert.match(resumeMessage?.messageId ?? '', /^a2a-resume-/, 'resume used stable run/ticket identity');
+    assert.match(
+      resumeMessage?.messageId ?? '',
+      /^a2a-message-v2:[0-9a-f]+$/,
+      'resume used the canonical stable Run/ticket identity',
+    );
 
     // 3) An awaiting Session root Run is cancelled through its Session Event API.
     // The cancellation resolver reconstructs the remote executor without model,
@@ -751,11 +828,11 @@ async function main(): Promise<void> {
     server.kill('SIGKILL');
     await corruptionKilled;
     for (const { marker, thread } of corruptions) {
-      rewriteLatestTaskReference(storage, thread, (command) => {
-        if (marker === 'missing endpoint') delete command.action.Set.endpoint;
-        else if (marker === 'missing task') delete command.action.Set.task_id;
-        else if (marker === 'missing context') delete command.action.Set.context_id;
-        else if (marker === 'endpoint mismatch') command.action.Set.endpoint = 'http://127.0.0.1:1';
+      rewriteLatestRemoteOperation(storage, thread, (command) => {
+        if (marker === 'missing endpoint') delete command.action.Set.reference.endpoint;
+        else if (marker === 'missing task') delete command.action.Set.reference.task_id;
+        else if (marker === 'missing context') delete command.action.Set.reference.context_id;
+        else if (marker === 'endpoint mismatch') command.action.Set.reference.endpoint = 'http://127.0.0.1:1';
         else command.action = 'Remove';
       });
     }
@@ -768,7 +845,17 @@ async function main(): Promise<void> {
     // every corruption case and the test proves only fail-closed startup.
     await publishRemote(peer.endpoint);
     for (const { marker, thread, toolUseId } of corruptions) {
-      await expectResumeFailure(client, thread, marker, toolUseId);
+      if (marker === 'missing reference') {
+        await expectRemovedOperationToFail(client, thread, marker, toolUseId);
+      } else {
+        await expectCorruptAcceptedOperationToRemainUnconfirmed(
+          client,
+          storage,
+          thread,
+          marker,
+          toolUseId,
+        );
+      }
     }
     assert.ok(
       !peer.sent.some((message) => corruptions.some(({ marker }) => message.text === marker)),
@@ -777,7 +864,12 @@ async function main(): Promise<void> {
     // 4) Cancellation while a root remote attempt is actively polling uses the
     // same task driver as cold/awaiting cancellation and aborts the pinned task.
     const activeCancelThread = await createSession(client);
-    const activeRunAdmission = sendText(client, activeCancelThread, 'active remote cancel');
+    const activeSubmit = await submitManagedRun(
+      client,
+      activeCancelThread,
+      'active remote cancel',
+      'active remote cancellation',
+    );
     await waitForValue(
       () => [...peer.reads],
       (reads: string[]) => reads.includes('active-cancel-task'),
@@ -790,7 +882,6 @@ async function main(): Promise<void> {
     }), 30_000, 'active remote interrupt admission');
     const interruptReceipt = interrupted.data?.[0];
     assert.ok(interruptReceipt && typeof interruptReceipt.id === 'string', 'active interrupt returns one exact receipt');
-    await activeRunAdmission;
     await waitForRemoteCancel(peer.cancels, 'active-cancel-task');
     // Interrupt rule: C1=exact SDK interrupt receipt; C2=the peer receives cancel
     // for the pinned task. E1=C1 is processed and C2 occurs once. K1=peer state is
@@ -803,6 +894,12 @@ async function main(): Promise<void> {
       () => true,
       'active interrupt receipt to process after pinned peer cancellation',
       { timeoutMs: 30_000 },
+    );
+    await waitForDispatchGone(activeCancelThread, activeSubmit.runId);
+    assert.equal(
+      peer.cancels.filter((taskId) => taskId === 'active-cancel-task').length,
+      1,
+      'active cancellation delivers once and settles only after exact terminal GET',
     );
 
     // Cancellation observes an already-terminal task and remains idempotent at
@@ -845,7 +942,7 @@ async function main(): Promise<void> {
       );
       await waitForMessage(thread, marker);
       assert.ok(
-        taskReferenceCleared(storage, thread),
+        remoteOperationCleared(storage, thread),
         `${prompt} cleared its durable task reference`,
       );
     }
@@ -879,45 +976,59 @@ async function main(): Promise<void> {
     assert.equal(authMessage?.contextId, 'auth-context', 'auth resume retained remote context');
 
     // 7) Remote transport-failure cause/effect graph. C1 the initial
-    // message:send returns 503 before a task identity exists; C2 a committed
+    // message:send returns 503 after Prepared but before an Accepted task exists; C2 a committed
     // working task's exact tasks/get returns 503; C3 an awaiting task resumes on
     // its committed context but that message:send response is lost with 503.
     // Effects: E1 every admitted User Event receives the exact HTTP 200 receipt,
     // whose processed_at is nullable while asynchronous admission is in flight;
-    // E2 C1 commits the terminal a2a_error; E3 C2/C3 reach the exact remote
-    // task/context while the unanchored receipt remains excluded from committed
-    // history and the Session/Run remains Running;
+    // E2 C1 retains the Prepared operation because transport failure cannot prove
+    // the peer rejected it; E3 C2/C3 reach the exact remote task/context while
+    // the unanchored receipt remains excluded from committed history and the
+    // Session/Run remains Running;
     // E4 no rule fabricates an Agent success or terminal Session boundary.
-    // Constraint: ADR-0057 makes poll/cancel delivery failure and resume response
-    // loss retryable after remote identity exists; only the rejected initial send
-    // is terminal because there is no task to reattach.
+    // Constraint: the committed Prepared/Accepted operation state is the sole
+    // recovery authority. A 503 is never positive no-dispatch evidence.
     //
     // | Rule | Initial send | Task committed | Poll/resume 503 | Effects |
-    // | F1 | 503 | no | n/a | E1 + E2 + E4 |
+    // | F1 | 503 | Prepared only | n/a | E1 + E2 + E4 |
     // | F2 | 200 | yes | poll | E1 + E3 + E4 |
     // | F3 | 200 | yes, awaiting | resume | E1 + E3 + E4 |
     const errorThread = await createSession(client);
+    const errorPriorHistory = await sessionEvents(client, errorThread);
+    const errorSendStart = peer.sent.length;
     const errorReceipt = await sendText(client, errorThread, 'trigger remote send rejection');
-    await waitForSessionEventReceipt(
-      client,
-      errorThread,
-      errorReceipt.id,
-      BETAS,
-      ({ delta }: { delta: BetaManagedAgentsSessionEvent[] }) => delta.some(
-        (event) => event.type === 'session.error'
-          && event.error?.message.includes('503'),
-      ),
-      'F1 exact receipt to commit its terminal A2A send error',
-      { timeoutMs: 30_000 },
+    assert.equal(errorReceipt.processed_at, null, 'F1/E1 receipt remains unprocessed');
+    const preparedFailure = await waitForValue(
+      async () => ({
+        session: await within(
+          client.beta.sessions.retrieve(errorThread, { betas: BETAS }),
+          5_000,
+          'F1 official Session retrieve',
+        ),
+        events: await sessionEvents(client, errorThread),
+        sent: peer.sent.slice(errorSendStart),
+      }),
+      (observed: {
+        session: { status: string };
+        events: BetaManagedAgentsSessionEvent[];
+        sent: SeenMessage[];
+      }) => observed.session.status === 'running'
+        && observed.sent.some((message) => message.text === 'trigger remote send rejection'),
+      'F1 Prepared operation to reach the failing remote send',
+      { timeoutMs: 20_000, pollMs: 25 },
     );
-    const initialFailureMessages = await waitForMessage(
-      errorThread,
-      'remote agent error',
-    );
-    assert.ok(
-      JSON.stringify(initialFailureMessages).includes('503'),
-      `F1/E2 committed the explicit initial-send 503: ${JSON.stringify(initialFailureMessages)}`,
-    );
+    assertPendingReceiptHasNoRuntimeEffects({
+      history: preparedFailure.events,
+      priorHistory: errorPriorHistory,
+      receiptId: errorReceipt.id,
+      forbiddenEventTypes: new Set([
+        'agent.message',
+        'session.error',
+        'session.status_idle',
+        'session.status_terminated',
+      ]),
+      description: 'F1 unconfirmed Prepared remote send',
+    });
 
     // A process without the durable monitoring surface still uses the same
     // Session Event batch admission and remote-attempt authority.
@@ -1092,9 +1203,14 @@ async function main(): Promise<void> {
       retryableResumeSends.every(
         (message) =>
           message.contextId === 'resume-failure-context' &&
-          /^a2a-resume-/.test(message.messageId ?? ''),
+          /^a2a-message-v2:[0-9a-f]+$/.test(message.messageId ?? ''),
       ),
       `F3/E3 every retry retains the committed context and stable identity shape: ${JSON.stringify(retryableResumeSends)}`,
+    );
+    assert.equal(
+      new Set(retryableResumeSends.map((message) => message.messageId)).size,
+      1,
+      'F3/E3 every retry reuses the same canonical stable identity',
     );
     const committedResumeReceiptIndex = retryableResume.events.findIndex(
       (event) => event.id === resumeFailureReceipt.id && event.processed_at,

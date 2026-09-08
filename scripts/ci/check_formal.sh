@@ -330,6 +330,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness commit_epoch_completion_requires_observed_release \
     --harness commit_epoch_guard_admits_only_complete_exact_claim \
     --harness pre_start_no_effect_ack_requires_fresh_install_admission \
+    --harness lease_renewal_observation_preserves_claim_and_attempt_fences \
     --harness physical_attempt_slot_installs_and_clears_only_exact_authority \
     --harness retired_epoch_cannot_admit_another_execution \
     --harness thread_physical_peer_vetoes_begin_and_handoff \

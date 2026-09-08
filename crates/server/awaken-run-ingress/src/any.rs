@@ -26,9 +26,9 @@ use awaken_runtime_contract::resume::ResumeResult;
 use crate::dispatch::{
     CasOutcome, Claimed, CommitEpochGuard, ContinuationAdmission, CredentialRealizationReceipt,
     Dispatch, DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary,
-    Inbox, Outbox, PendingInput, PendingRecord, RunClaim, SessionChildAdmission,
-    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
-    SettleOutcome, SubmitOptions,
+    Inbox, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, RunClaim,
+    SessionChildAdmission, SessionRunReservationActivation, SessionRunReservationOutcome,
+    SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
 #[cfg(feature = "durable")]
 use crate::postgres::PostgresDispatchStore;
@@ -540,7 +540,7 @@ impl DispatchQueue for AnyDispatchStore {
         claim: &RunClaim,
         lease_ms: u64,
         now_ms: u64,
-    ) -> Result<bool, DispatchError> {
+    ) -> Result<LeaseRenewalOutcome, DispatchError> {
         delegate!(self, renew_lease(claim, lease_ms, now_ms))
     }
 

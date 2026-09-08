@@ -574,9 +574,14 @@ every local or remote durable executor call
   -> then settle/relinquish may remove or release the row
 ```
 
-If renewal reports lost ownership, no replacement guard is created. The same
-Clock makes the next ownership check fail closed, and claim/commit epoch fencing
-prevents stale settlement.
+If renewal reports `CancellationRequested`, the guard cancels Runtime's existing
+attempt token and stops; only the exact cancelled physical owner/epoch can receive
+that result. `Lost` handles every unrelated, stale, settled, or missing claim.
+No replacement guard is created for either outcome. The same Clock makes the next
+ownership check fail closed, and claim/commit epoch fencing prevents stale
+settlement. A worker that currently owns the separately claimed durable
+cancellation receives `Current`, so its control attempt is not cancelled by the
+intent it is responsible for completing.
 
 ## Consequences
 

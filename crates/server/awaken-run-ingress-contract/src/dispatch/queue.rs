@@ -278,16 +278,17 @@ pub trait DispatchQueue: Send + Sync {
 
     /// Extend the lease on one exact fenced claim, so a long run is not
     /// reclaimed by another node's recovery while it is still making progress.
-    /// Returns `true` if the lease was renewed (the run is still owned by
-    /// that owner *and epoch*); `false` if it was lost (stolen, settled, or
-    /// unknown) — the holder should then stop. This is the multi-node liveness
-    /// knob (ADR-0019/0024).
+    /// The same atomically-read Dispatch row distinguishes a current claim, the
+    /// exact physical attempt whose durable cancellation was requested, and an
+    /// unrelated/lost claim. Both non-current outcomes stop the holder; the typed
+    /// cancellation arm preserves the reason without adding another signal
+    /// authority. This is the multi-node liveness knob (ADR-0019/0024).
     async fn renew_lease(
         &self,
         claim: &RunClaim,
         lease_ms: u64,
         now_ms: u64,
-    ) -> Result<bool, DispatchError>;
+    ) -> Result<LeaseRenewalOutcome, DispatchError>;
 
     /// Acquire the physical executor slot for one exact, live claim.
     ///

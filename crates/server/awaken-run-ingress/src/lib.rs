@@ -86,9 +86,10 @@ pub use dispatch::{
     AttemptAdmission, AttemptCredentialBinding, CandidateFingerprint, CasOutcome, Claimed,
     CommitEpochGuard, ContinuationAdmission, CredentialRealizationReceipt, Dispatch,
     DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchSettlementError,
-    DispatchSettlementObserver, DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput,
-    PendingRecord, RunClaim, SessionChildAdmission, SessionRunReservationActivation,
-    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
+    DispatchSettlementObserver, DispatchState, DispatchSummary, Inbox, Lease, LeaseRenewalOutcome,
+    Outbox, PendingInput, PendingRecord, RunClaim, SessionChildAdmission,
+    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
+    SettleOutcome, SubmitOptions,
 };
 pub use dispatch_schema::dispatch_bundle;
 #[cfg(feature = "test-support")]

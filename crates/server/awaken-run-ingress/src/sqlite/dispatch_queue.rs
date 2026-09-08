@@ -1053,15 +1053,65 @@ impl DispatchQueue for SqliteDispatchStore {
         claim: &RunClaim,
         lease_ms: u64,
         now_ms: u64,
-    ) -> Result<bool, DispatchError> {
+    ) -> Result<LeaseRenewalOutcome, DispatchError> {
         let claim = claim.clone();
         self.with_conn(move |conn, p| {
             let claim_epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
-            let n = conn
-                .execute(
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(store_error)?;
+            let current: Option<(
+                String,
+                Option<String>,
+                i64,
+                i64,
+                Option<String>,
+                Option<i64>,
+            )> = tx
+                .query_row(
                     &format!(
-                        "UPDATE {p}_dispatch SET lease_until = ?1 \
-                         WHERE run_id = ?2 AND status IN ('running', 'reservation_running') \
+                        "SELECT status, lease_owner, lease_epoch, cancel_requested, \
+                         active_attempt_owner, active_attempt_epoch FROM {p}_dispatch \
+                         WHERE run_id = ?1"
+                    ),
+                    params![claim.run_id.0],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(store_error)?;
+            let Some((
+                status,
+                owner,
+                persisted_epoch,
+                cancellation_requested,
+                attempt_owner,
+                attempt_epoch,
+            )) = current
+            else {
+                tx.commit().map_err(store_error)?;
+                return Ok(LeaseRenewalOutcome::Lost);
+            };
+            let current_claim = matches!(status.as_str(), "running" | "reservation_running")
+                && owner.as_deref() == Some(&claim.owner)
+                && persisted_epoch == claim_epoch;
+            let cancelled_physical_attempt = cancellation_requested != 0
+                && attempt_owner.as_deref() == Some(&claim.owner)
+                && attempt_epoch == Some(claim_epoch);
+            let outcome = decide_lease_renewal(current_claim, cancelled_physical_attempt);
+            if outcome == LeaseRenewalOutcome::Current {
+                tx.execute(
+                    &format!(
+                        "UPDATE {p}_dispatch SET lease_until = ?1 WHERE run_id = ?2 \
+                         AND status IN ('running', 'reservation_running') \
                          AND lease_owner = ?3 AND lease_epoch = ?4"
                     ),
                     params![
@@ -1072,7 +1122,9 @@ impl DispatchQueue for SqliteDispatchStore {
                     ],
                 )
                 .map_err(store_error)?;
-            Ok(n > 0)
+            }
+            tx.commit().map_err(store_error)?;
+            Ok(outcome)
         })
         .await
     }

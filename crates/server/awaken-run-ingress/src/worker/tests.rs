@@ -5,7 +5,8 @@ use std::sync::Arc;
 use super::{
     ClaimedSnapshotAuthority, DispatchWorker, PendingInputAdmission,
     cancellation_uses_tool_interruption, classify_pending_input_admission,
-    combine_attempt_cancellation, recovered_attempt_disposition, settle_outcome,
+    combine_attempt_cancellation, recovered_attempt_disposition, select_physical_attempt_recovery,
+    settle_outcome,
 };
 use awaken_agent_contract::agent::awaiting::{
     AwaitTarget, PendingTool, RemoteInputReason, ResumeTicket, ToolAwaitReason,
@@ -25,9 +26,68 @@ use crate::RecoveryProjection;
 use crate::dispatch::{DispatchOutcome, PendingInput};
 use crate::{DispatchQueue, FencedStreamCheckpointStore, MemoryDispatchStore, RunClaim};
 use awaken_runtime_contract::activation::RunActivation;
+use awaken_runtime_contract::execution::AttemptRecoveryMode;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::{ExecutableAgentSnapshot, RuntimeRunContext};
 use tokio_util::sync::CancellationToken;
+
+#[test]
+fn fresh_durable_cancel_consults_the_executor_continuation_authority() {
+    // Cause/effect decision table: C1=claim is recovered; C2=claim carries a
+    // durable cancellation; C3=the executor recognizes an exact committed
+    // continuation. E1=consult the executor and use its decision; E2=require
+    // predecessor quiescence without consulting it.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // |---|---|---|---|---|
+    // | R1 | no | no | * | E2 |
+    // | R2 | yes | * | yes/no | E1 |
+    // | R3 | no | yes | yes/no | E1 |
+    //
+    // The A2A executor's own decision table covers C3 using absent, wrong-
+    // endpoint, and exact committed task references. This test owns the Worker
+    // gate that used to omit R3 merely because the cancellation claim was fresh.
+    use std::cell::Cell;
+
+    for (recovered, cancellation_requested, executor_decision, expected_consulted, expected) in [
+        (
+            false,
+            false,
+            AttemptRecoveryMode::ContinueDurableRemoteOperation,
+            false,
+            AttemptRecoveryMode::RequirePredecessorQuiescence,
+        ),
+        (
+            true,
+            false,
+            AttemptRecoveryMode::ContinueDurableRemoteOperation,
+            true,
+            AttemptRecoveryMode::ContinueDurableRemoteOperation,
+        ),
+        (
+            false,
+            true,
+            AttemptRecoveryMode::ContinueDurableRemoteOperation,
+            true,
+            AttemptRecoveryMode::ContinueDurableRemoteOperation,
+        ),
+        (
+            false,
+            true,
+            AttemptRecoveryMode::RequirePredecessorQuiescence,
+            true,
+            AttemptRecoveryMode::RequirePredecessorQuiescence,
+        ),
+    ] {
+        let consulted = Cell::new(false);
+        let outcome = select_physical_attempt_recovery(recovered, cancellation_requested, || {
+            consulted.set(true);
+            executor_decision
+        });
+        assert_eq!(consulted.get(), expected_consulted);
+        assert_eq!(outcome, expected);
+    }
+}
 
 #[tokio::test]
 async fn attempt_cancellation_combines_claim_and_host_without_a_second_authority() {
