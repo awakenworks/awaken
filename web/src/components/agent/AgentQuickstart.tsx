@@ -1,4 +1,4 @@
-import { Button, Card } from "@awaken/ui";
+import { InlineNotice, Button, Card } from "@awaken/ui";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import {
@@ -297,12 +297,11 @@ export default function AgentQuickstart({
               </div>
             ))}
           </div>
-          <div className="banner info" style={{ marginTop: 12 }}>
-            <span>ⓘ</span>
+          <InlineNotice tone="info" icon={<span>ⓘ</span>} style={{ marginTop: 12 }}>
             <span>{published
               ? app.t("This will publish the reviewed draft and create a new durable Session.", "将发布已审阅草稿并创建新的持久 Session。")
               : app.t("You will review the publication diff before the Agent becomes runnable.", "Agent 可运行前会先展示发布差异供你确认。")}</span>
-          </div>
+          </InlineNotice>
           <Button
             variant="primary"
             style={{ width: "100%", marginTop: 12, justifyContent: "center" }}

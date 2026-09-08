@@ -1,4 +1,4 @@
-import { Button } from "@awaken/ui";
+import { InlineNotice, Button } from "@awaken/ui";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router";
 import { DataGrid, type Column } from "../components/ui/DataGrid";
@@ -97,13 +97,12 @@ function McpProtocolCoverage() {
           </div>
         ))}
       </div>
-      <div className="banner info">
-        <span>ⓘ</span>
+      <InlineNotice tone="info" icon={<span>ⓘ</span>}>
         <span>{app.t(
           "This is Awaken's platform baseline, not a live claim about every configured server. Confirm negotiated capabilities and real behavior in a Session.",
           "这是 Awaken 平台基线，并非对每个已配置 Server 的实时声明；请在 Session 中确认协商能力和真实行为。",
         )}</span>
-      </div>
+      </InlineNotice>
     </details>
   );
 }
@@ -255,13 +254,12 @@ export default function McpOverviewSurface() {
           + {app.t("Configure in an Agent", "在 Agent 中配置")}
         </Button>
       </div>
-      <div className="banner info">
-        <span>ⓘ</span>
+      <InlineNotice tone="info" icon={<span>ⓘ</span>}>
         <span>{app.t(
           "Configured means the Agent draft references this server. Confirm the connection in a real Session before relying on its tools.",
           "“已配置”表示 Agent 草稿已引用该服务器。请在真实会话中确认连接后，再依赖其中的工具。",
         )}</span>
-      </div>
+      </InlineNotice>
       <McpProtocolCoverage />
       {agents.error instanceof Error && <div className="err">{agents.error.message}</div>}
       <DataGrid

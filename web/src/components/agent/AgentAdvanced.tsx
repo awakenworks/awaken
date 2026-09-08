@@ -1,4 +1,4 @@
-import { Button, Card } from "@awaken/ui";
+import { InlineNotice, Button, Card } from "@awaken/ui";
 import type {
   AgentConfig,
   CredentialSource,
@@ -148,13 +148,12 @@ export default function AgentAdvanced({
             {extensionPlugins.length > 0 ? (
               <div className="stack">{extensionPlugins.map(renderBehavior)}</div>
             ) : (
-              <div className="banner info">
-                <span>✓</span>
+              <InlineNotice tone="info" icon={<span>✓</span>}>
                 <span>{app.t(
                   "No additional runtime plugins are advertised by this host.",
                   "当前 Host 没有提供其他运行时 Plugin。",
                 )}</span>
-              </div>
+              </InlineNotice>
             )}
           </Card>
         </div>

@@ -1,4 +1,4 @@
-import { Skeleton, Button, Card } from "@awaken/ui";
+import { InlineNotice, Skeleton, Button, Card } from "@awaken/ui";
 
 // Workspace Models: Provider → ProtocolEndpoint → Offering, profiles and dry-run resolve.
 
@@ -163,22 +163,28 @@ function TestChat({ model }: { model: string }) {
   });
   if (start.error instanceof Error) {
     return (
-      <div className="banner gate">
-        <span>!</span>
+      <InlineNotice
+        tone="neutral"
+        icon={<span>!</span>}
+        actions={
+          <>
+            <Button
+              disabled={start.isPending}
+              onClick={() => {
+                start.reset();
+                start.mutate();
+              }}
+            >
+              {app.t("Retry", "重试")}
+            </Button>
+          </>
+        }
+      >
         <span style={{ flex: 1 }}>
           <strong>{app.t("Connection test could not start", "连接测试无法启动")}</strong>
           <small>{start.error.message}</small>
         </span>
-        <Button
-          disabled={start.isPending}
-          onClick={() => {
-            start.reset();
-            start.mutate();
-          }}
-        >
-          {app.t("Retry", "重试")}
-        </Button>
-      </div>
+      </InlineNotice>
     );
   }
   if (!sid) {

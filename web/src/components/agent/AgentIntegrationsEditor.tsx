@@ -1,4 +1,4 @@
-import { Button, Card, Switch } from "@awaken/ui";
+import { InlineNotice, Button, Card, Switch } from "@awaken/ui";
 // Managed-Agent integration fields that were previously reachable only through the
 // API: direct MCP servers, Skill references, metadata, and multi-agent topology.
 // Common shapes get compact controls; the full Agent JSON view remains the lossless
@@ -121,8 +121,7 @@ export default function AgentIntegrationsEditor({
             "每个服务器及其 ToolSet 策略构成一个集成；连接、默认权限、指定工具覆盖和 Prompt Skills 都在这里配置。",
           )}
         </p>
-        <div className="banner info">
-          <span>ⓘ</span>
+        <InlineNotice tone="info" icon={<span>ⓘ</span>}>
           <span>{app.t(
             "Only MCP runtime credentials are listed here; model keys and worker credentials are excluded. You can also choose a categorized Vault when starting a Session.",
             "这里只列出 MCP 运行时凭证，模型 Key 和 Worker 凭证不会混入。启动 Session 时也可以选择已分类的 Vault。",
@@ -136,7 +135,7 @@ export default function AgentIntegrationsEditor({
               {app.t("MCP connection and ToolSet guide ↗", "MCP 连接与 ToolSet 指南 ↗")}
             </a>
           </span>
-        </div>
+        </InlineNotice>
         {servers.map((server, index) => {
           const sandboxStdio = server.type === "sandbox_stdio";
           const toolset = config.tools.filter(isMcpToolset).find((tool) => tool.mcp_server_name === server.name);

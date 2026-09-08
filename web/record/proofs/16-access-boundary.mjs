@@ -30,7 +30,7 @@ export async function run({ page, goto, intro, say, clearCaption, checkpoint, ah
   await type(page.getByLabel(/Service principal|服务主体/), CLIENT_NAME);
   await page.getByLabel(/Role|角色/).selectOption("workspace_restricted_developer");
   await click(page.getByRole("button", { name: /Create key|创建 Key/, exact: true }));
-  const secretBanner = page.locator(".banner.warn").filter({ hasText: /shown ONCE|只显示一次/ });
+  const secretBanner = page.locator('.ui-inline-notice[data-tone="warning"]').filter({ hasText: /shown ONCE|只显示一次/ });
   const minted = (await secretBanner.locator("code").innerText()).trim();
   await checkpoint("the one-time token authorizes a protected workspace read", async () => {
     await expect(secretBanner).toBeVisible();
@@ -56,7 +56,7 @@ export async function run({ page, goto, intro, say, clearCaption, checkpoint, ah
   await type(page.getByLabel(/Service principal|服务主体/), SDK_CLIENT_NAME);
   await page.getByLabel(/Role|角色/).selectOption("workspace_admin");
   await click(page.getByRole("button", { name: /Create key|创建 Key/, exact: true }));
-  const sdkSecretBanner = page.locator(".banner.warn").filter({ hasText: /shown ONCE|只显示一次/ });
+  const sdkSecretBanner = page.locator('.ui-inline-notice[data-tone="warning"]').filter({ hasText: /shown ONCE|只显示一次/ });
   const sdkKey = (await sdkSecretBanner.locator("code").innerText()).trim();
   const sdk = new Anthropic({ apiKey: sdkKey, baseURL: BACKEND, maxRetries: 0 });
   const session = await sdk.beta.sessions.create({

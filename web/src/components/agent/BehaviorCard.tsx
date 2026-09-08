@@ -1,4 +1,4 @@
-import { Card, Switch } from "@awaken/ui";
+import { InlineNotice, Card, Switch } from "@awaken/ui";
 // One runtime behavior as a named card (agent-editor Behavior section): a title +
 // description + enable toggle, and — when enabled — its config as a friendly
 // schema-driven form (reusing `SchemaForm`) with an "Advanced (raw JSON)" escape hatch
@@ -125,13 +125,12 @@ export default function BehaviorCard({
         }} />
       </label>
       {availability && !availability.supported && (
-        <div className={enabled ? "banner warn" : "banner info"} style={{ marginTop: 10 }}>
-          <span>!</span>
+        <InlineNotice tone={enabled ? "warning" : "info"} icon={<span>!</span>} style={{ marginTop: 10 }}>
           <span>{availability.detail}{enabled && app.t(
             " Turn it off before publishing.",
             " 请在发布前关闭该能力。",
           )}</span>
-        </div>
+        </InlineNotice>
       )}
       {enabled && (
         <div style={{ marginTop: 10 }}>

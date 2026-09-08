@@ -44,7 +44,7 @@ vi.mock("../components/session/SessionFiles", () => ({ default: () => null }));
 vi.mock("../components/session/SessionIntegrations", () => ({ default: () => null }));
 vi.mock("../components/session/SessionThreads", () => ({ default: () => null }));
 
-import SessionDetailSurface, { managedMoneyLabel, outcomeTone, sessionConfigDestinations, sessionEnvironmentName, sessionMcpPolicies, sessionRuntime, sessionViewFromSearch, withoutQuickstartProvenance } from "./session-detail";
+import SessionDetailSurface, { managedMoneyLabel, outcomeTone, sessionConfigDestinations, sessionEnvironmentName, sessionMcpPolicies, sessionRuntime, sessionViewFromSearch, sessionViewSearch, withoutQuickstartProvenance } from "./session-detail";
 
 function session(model: string): Session {
   return {
@@ -111,6 +111,16 @@ function renderSessionDetailWithPresentation(
 }
 
 describe("sessionViewFromSearch", () => {
+  it("keeps exact event coordinates only when navigating to Trace", () => {
+    // N4 Trace retains event and unrelated query; N5 another view clears event;
+    // N6 Chat removes both presentation coordinates. The input never mutates.
+    const original = new URLSearchParams("view=trace&event=evt-1&from=quickstart");
+    expect(sessionViewSearch(original, "trace").toString()).toBe("view=trace&event=evt-1&from=quickstart");
+    expect(sessionViewSearch(original, "inputs").toString()).toBe("view=inputs&from=quickstart");
+    expect(sessionViewSearch(original, "chat").toString()).toBe("from=quickstart");
+    expect(original.toString()).toBe("view=trace&event=evt-1&from=quickstart");
+  });
+
   it("routes exact event links to Trace and rejects unknown view names", () => {
     // Decision table: an event always owns Trace; a known view is preserved;
     // an unknown or absent view returns the safe conversation default.

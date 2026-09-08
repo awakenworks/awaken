@@ -1,4 +1,4 @@
-import { CheckPicker, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
+import { InlineNotice, CheckPicker, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 
 // Workspace · Sessions: the scoped session list (GET /v1/sessions,
 // tenant-scoped via ws()). Human titles stay primary; technical ids remain
@@ -116,7 +116,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
             ))}
           </select>
           {!agents.isLoading && visibleAgents(agents.data?.data).filter((a) => a.published).length === 0 && (
-            <div className="banner warn"><span>→</span><span>{app.t("No published Agent is available. Create and publish an Agent before starting a Session.", "没有可用的已发布 Agent。请先创建并发布 Agent，再启动会话。")}</span></div>
+            <InlineNotice tone="warning" icon={<span>→</span>}><span>{app.t("No published Agent is available. Create and publish an Agent before starting a Session.", "没有可用的已发布 Agent。请先创建并发布 Agent，再启动会话。")}</span></InlineNotice>
           )}
         </div>
         <div className="ui-field">
@@ -141,10 +141,10 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
               </option>
             ))}
           </select>
-          {selectedEnvironmentHasPackages && <div className="banner info"><span>ⓘ</span><span>{app.t(
+          {selectedEnvironmentHasPackages && <InlineNotice tone="info" icon={<span>ⓘ</span>}><span>{app.t(
             "This Environment requires package installation. Use it only with a package-capable Environment provider.",
             "此 Environment 需要安装 Package；请仅在具备 Package 安装能力的 Environment Provider 上使用。",
-          )}</span></div>}
+          )}</span></InlineNotice>}
         </div>
         <TextField
           label={app.t("Session title · optional", "会话标题 · 可选")}

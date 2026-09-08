@@ -1,4 +1,4 @@
-import { Skeleton } from "@awaken/ui";
+import { InlineNotice, Skeleton } from "@awaken/ui";
 // Presentational wrapper over a GateState: renders a skeleton while loading, the
 // a user-facing capability state when absent, an error line on other failures,
 // and delegates to `children(data)` when the face is live. Surfaces stay declarative:
@@ -32,8 +32,7 @@ export default function Gate<T>({
       return <>{loading ?? <Skeleton height={60} />}</>;
     case "absent":
       return (
-        <div className="banner gate">
-          <span>◌</span>
+        <InlineNotice tone="neutral" icon={<span>◌</span>}>
           <span>
             {app.t(
               "This optional capability is not available in this deployment.",
@@ -42,7 +41,7 @@ export default function Gate<T>({
             {note ? <> {note}</> : null}
             {action ? <span className="row" style={{ marginTop: 10 }}>{action}</span> : null}
           </span>
-        </div>
+        </InlineNotice>
       );
     case "error":
       return <div className="err">{state.error.message}</div>;
