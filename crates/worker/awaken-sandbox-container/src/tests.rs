@@ -279,6 +279,7 @@ fn container_runtime_without_package_builder_rejects_before_launch() {
 #[derive(Default)]
 struct RecordingPackageProvisioner {
     calls: Mutex<Vec<(String, pc::PackageRequirements, pc::NetworkPolicy)>>,
+    response_gate: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 #[async_trait]
@@ -294,6 +295,9 @@ impl PackageImageProvisioner for RecordingPackageProvisioner {
             packages.clone(),
             network.clone(),
         ));
+        if let Some(gate) = &self.response_gate {
+            gate.acquire().await.unwrap().forget();
+        }
         Ok("registry.test/awaken-packages@sha256:prepared".into())
     }
 }
@@ -726,6 +730,7 @@ struct UncertainMemoryMounter {
     mount_calls: Arc<AtomicUsize>,
     recovery_calls: Arc<AtomicUsize>,
     recovery_failures_remaining: Arc<AtomicUsize>,
+    recovery_response_gate: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 #[async_trait]
@@ -757,6 +762,9 @@ impl pc::MemoryMounter for UncertainMemoryMounter {
         if remaining.is_ok() {
             Err(pc::SandboxError::new("mount recovery remains unavailable"))
         } else {
+            if let Some(gate) = &self.recovery_response_gate {
+                gate.acquire().await.unwrap().forget();
+            }
             Ok(())
         }
     }
@@ -795,6 +803,7 @@ async fn uncertain_memory_staging_blocks_remount_until_exact_recovery() {
         mount_calls: mount_calls.clone(),
         recovery_calls: recovery_calls.clone(),
         recovery_failures_remaining,
+        recovery_response_gate: None,
     }));
 
     assert!(provider.create(&sandbox_spec).await.is_err(), "U1/E1");
@@ -2556,6 +2565,8 @@ struct FakeState {
     fail_create: bool,
     may_have_committed_create: bool,
     expire_effect_fence_once: bool,
+    creation_response_gate: Option<(&'static str, Arc<tokio::sync::Semaphore>)>,
+    creation_boundaries: Vec<&'static str>,
     effect_fences: Vec<ContainerEffectFence>,
     attempted_binds: Vec<BindPlan>,
     refreshed_credential: Option<Vec<u8>>,
@@ -2637,6 +2648,21 @@ impl pc::ProcessHandle for FakeExecProcess {
 }
 
 impl FakeRuntime {
+    async fn creation_response(&self, boundary: &'static str) {
+        let gate = {
+            let mut state = self.st.lock().unwrap();
+            state.creation_boundaries.push(boundary);
+            state
+                .creation_response_gate
+                .as_ref()
+                .filter(|(selected, _)| *selected == boundary)
+                .map(|(_, gate)| gate.clone())
+        };
+        if let Some(gate) = gate {
+            gate.acquire().await.unwrap().forget();
+        }
+    }
+
     async fn restore_query_response(&self, query: &'static str, container_id: &str) {
         let gate = {
             let mut state = self.st.lock().unwrap();
@@ -2758,6 +2784,7 @@ impl ContainerRuntime for FakeRuntime {
         if let Some(gate) = gate {
             let _permit = gate.acquire().await.unwrap();
         }
+        self.creation_response("control").await;
         if self.st.lock().unwrap().control_binding_missing {
             return Ok(None);
         }
@@ -2829,8 +2856,14 @@ impl ContainerRuntime for FakeRuntime {
         &self,
         _context: &ContainerRealizationContext<'_>,
         _plan: &ContainerPlan,
-        _realization_fingerprint: Option<&pc::SandboxRealizationFingerprint>,
+        realization_fingerprint: Option<&pc::SandboxRealizationFingerprint>,
     ) -> Result<(), RuntimeError> {
+        self.creation_response(if realization_fingerprint.is_some() {
+            "resolved-preflight"
+        } else {
+            "initial-preflight"
+        })
+        .await;
         Ok(())
     }
 
@@ -2850,7 +2883,9 @@ impl ContainerRuntime for FakeRuntime {
         if expires {
             return Err(RuntimeError::EffectFenceExpired);
         }
-        self.create(context.scope, plan).await
+        let result = self.create(context.scope, plan).await;
+        self.creation_response("create").await;
+        result
     }
 
     async fn project_live_input(
@@ -3070,6 +3105,7 @@ impl ContainerRuntime for FakeRuntime {
         container_id: &str,
     ) -> Result<Option<pc::ContainerContinuationHandle>, RuntimeError> {
         self.restore_query_response("handle", container_id).await;
+        self.creation_response("handle").await;
         Ok(None)
     }
 
@@ -3371,6 +3407,298 @@ async fn expired_effect_fence_rejects_before_runtime_or_mount_materialization() 
     assert!(state.alive.is_empty(), "E2 create");
 }
 
+// Inject response loss of authority at an existing dependency, without
+// replacing its effect or ownership behavior with another fake implementation.
+struct PausedCreationInput<T> {
+    inner: T,
+    gate: Arc<tokio::sync::Semaphore>,
+}
+
+#[async_trait]
+impl<T: pc::BlobSource> pc::BlobSource for PausedCreationInput<T> {
+    async fn get(&self, id: &str) -> Option<Vec<u8>> {
+        let result = self.inner.get(id).await;
+        self.gate.acquire().await.unwrap().forget();
+        result
+    }
+}
+
+#[async_trait]
+impl<T: pc::MemoryMounter> pc::MemoryMounter for PausedCreationInput<T> {
+    async fn mount(
+        &self,
+        store: &str,
+        path: &std::path::Path,
+        access: pc::MountAccess,
+    ) -> pc::MemoryMountOutcome {
+        let result = self.inner.mount(store, path, access).await;
+        self.gate.acquire().await.unwrap().forget();
+        result
+    }
+
+    async fn recover_unknown_mount(
+        &self,
+        store: &str,
+        path: &std::path::Path,
+        access: pc::MountAccess,
+    ) -> Result<(), pc::SandboxError> {
+        self.inner.recover_unknown_mount(store, path, access).await
+    }
+}
+
+#[tokio::test]
+async fn container_creation_rechecks_current_authority_at_provider_wait_boundaries() {
+    // CA graph: entry -> scope preflight -> package -> resolved preflight ->
+    // retained recovery -> File response -> Memory response -> staging ->
+    // create response -> handle response -> control response -> publication.
+    // C1 boundary x C2 current proof {revoked, replaced, exhausted, renewed}
+    // x C3 neutral/ContainerEnvironment/warm-pool port (120 rows).
+    // A copied future fence is constant. Package/File/Memory responses exercise
+    // actual dependencies, including already-created local participant bytes.
+    // CA1 loss before create => Err, no physical creation; CA2 loss after create
+    // => Err, no NEXT provider call/publication/removal, exact staging retained
+    // as ambiguous. CA3 same-effect renewal => one successful physical owner.
+    // CA4 no proof at entry => zero runtime observations. CA5 an earlier
+    // unknown Memory mount has a failed compensation; recovery of that exact
+    // retained owner pauses. Loss on its response denies new staging/create;
+    // renewal allows a fresh mount only after the original recovery completed.
+    // Gates pause real
+    // futures; no sleeps or simulated scheduler. The backend create response
+    // gate follows the physical fake mutation, so rejection cannot undo it.
+    // This table proves provider call boundaries, not remote-command atomicity,
+    // crash recovery, cancellation during a pending backend call, or absence.
+    for port in ["neutral", "environment", "pool"] {
+        for boundary in [
+            "entry",
+            "initial-preflight",
+            "package",
+            "resolved-preflight",
+            "recovery",
+            "file",
+            "memory",
+            "create",
+            "handle",
+            "control",
+        ] {
+            for change in ["revoke", "replace", "exhaust", "renew"] {
+                let runtime = Arc::new(FakeRuntime::default());
+                let gate = Arc::new(tokio::sync::Semaphore::new(0));
+                {
+                    let mut state = runtime.st.lock().unwrap();
+                    state.control_enabled = true;
+                    if boundary != "entry" {
+                        state.creation_response_gate = Some((boundary, gate.clone()));
+                    }
+                }
+                let mut provider = ContainerProvider::new(runtime.clone(), "agent:test");
+                if boundary == "file" {
+                    provider = provider.with_blob_source(Arc::new(PausedCreationInput {
+                        inner: OneBlob("file-1", b"retained creation input".to_vec()),
+                        gate: gate.clone(),
+                    }));
+                } else {
+                    provider = provider.with_blob("file-1", b"retained creation input".to_vec());
+                }
+                let mut requested = spec("creation-current-authority");
+                requested.mounts.truncate(1);
+                requested.env.clear();
+                if boundary == "package" {
+                    provider =
+                        provider.with_package_provisioner(Arc::new(RecordingPackageProvisioner {
+                            response_gate: Some(gate.clone()),
+                            ..Default::default()
+                        }));
+                    requested
+                        .packages
+                        .managers
+                        .insert("pip".into(), vec!["fixture==1".into()]);
+                }
+                let torn_down = Arc::new(AtomicBool::new(false));
+                if ["memory", "recovery"].contains(&boundary) {
+                    provider.install_memory_mounter(Arc::new(PausedCreationInput {
+                        inner: FakeMemoryMounter {
+                            torn_down: torn_down.clone(),
+                            fail_teardown: false,
+                        },
+                        gate: gate.clone(),
+                    }));
+                    requested.mounts.push(pc::MountRequirement {
+                        mount_id: "memory".into(),
+                        source: pc::MountSource::MemoryStore {
+                            store_id: "store".into(),
+                            materialization_reference: None,
+                            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+                        },
+                        mount_path: "/mnt/memory".into(),
+                        access: pc::MountAccess::ReadWrite,
+                        lifetime: pc::MountLifetime::Session,
+                        required: true,
+                    });
+                }
+                let recovered_calls = Arc::new(AtomicUsize::new(0));
+                if boundary == "recovery" {
+                    provider.install_memory_mounter(Arc::new(UncertainMemoryMounter {
+                        mount_calls: Arc::new(AtomicUsize::new(0)),
+                        recovery_calls: recovered_calls.clone(),
+                        recovery_failures_remaining: Arc::new(AtomicUsize::new(1)),
+                        recovery_response_gate: Some(gate.clone()),
+                    }));
+                    assert!(
+                        provider.create_container(&requested).await.is_err(),
+                        "CA5 retain original unknown participant"
+                    );
+                    assert_eq!(recovered_calls.load(Ordering::SeqCst), 1);
+                    assert!(runtime.st.lock().unwrap().alive.is_empty());
+                    provider.install_memory_mounter(Arc::new(FakeMemoryMounter {
+                        torn_down: torn_down.clone(),
+                        fail_teardown: false,
+                    }));
+                }
+                let provider = Arc::new(provider);
+                let pool = WarmContainerPool::new(provider.clone(), 1);
+                requested
+                    .control_services
+                    .insert(SandboxControlServiceKind::RepositoryGitCredential);
+                let fence =
+                    pc::SandboxEffectFence::new("create", "worker", "boot", 3, u64::MAX - 1)
+                        .unwrap();
+                let authority = pc::test_support::EffectAuthority::new(&fence);
+                let change_authority = || {
+                    *authority.current.lock().unwrap() = match change {
+                        "revoke" => None,
+                        "replace" => Some((
+                            pc::SandboxEffectFence {
+                                epoch: 4,
+                                ..fence.clone()
+                            },
+                            std::time::Duration::from_secs(1),
+                        )),
+                        "exhaust" => Some((fence.clone(), std::time::Duration::ZERO)),
+                        "renew" => Some((
+                            pc::SandboxEffectFence {
+                                expires_at_unix_ms: u64::MAX,
+                                ..fence.clone()
+                            },
+                            std::time::Duration::from_secs(2),
+                        )),
+                        _ => unreachable!(),
+                    };
+                };
+                if boundary == "entry" {
+                    change_authority();
+                }
+                let mut pending = Box::pin(async {
+                    if port == "neutral" {
+                        pc::SandboxProvider::create_for_effect(
+                            provider.as_ref(),
+                            &requested,
+                            &fence,
+                            &authority,
+                        )
+                        .await
+                        .map(|_| ())
+                    } else {
+                        let port: &dyn ContainerEnvironmentProvider = if port == "pool" {
+                            &pool
+                        } else {
+                            provider.as_ref()
+                        };
+                        port.create_environment_for_effect(
+                            &requested,
+                            Some(&fence),
+                            Some(&authority),
+                            ContainerRealizationIntent::Create,
+                        )
+                        .await
+                        .map(|_| ())
+                    }
+                });
+                if boundary != "entry" {
+                    assert!(
+                        matches!(
+                            std::future::poll_fn(|cx| std::task::Poll::Ready(
+                                std::future::Future::poll(pending.as_mut(), cx)
+                            ))
+                            .await,
+                            std::task::Poll::Pending
+                        ),
+                        "{port}/{boundary}/{change}: actual Pending"
+                    );
+                    change_authority();
+                    gate.add_permits(1);
+                }
+                let result = pending.await;
+                if boundary == "recovery" {
+                    assert_eq!(
+                        recovered_calls.load(Ordering::SeqCst),
+                        2,
+                        "CA5 resume the exact retained recovery"
+                    );
+                }
+                assert_eq!(
+                    result.is_ok(),
+                    change == "renew",
+                    "{port}/{boundary}/{change}: {result:?}"
+                );
+                let after_create = ["create", "handle", "control"].contains(&boundary);
+                {
+                    let state = runtime.st.lock().unwrap();
+                    assert_eq!(
+                        state.alive.len(),
+                        usize::from(change == "renew" || after_create),
+                        "{port}/{boundary}/{change}"
+                    );
+                    assert!(state.removals.is_empty(), "CA2 never manufacture cleanup");
+                    if after_create && change != "renew" {
+                        let binds = state.created_binds.values().next().unwrap();
+                        assert_eq!(
+                            std::fs::read(&binds[0].source_ref).unwrap(),
+                            b"retained creation input",
+                            "CA2 preserve the exact physical input after response-time revocation"
+                        );
+                    }
+                    if change != "renew" {
+                        if boundary == "entry" {
+                            assert!(state.creation_boundaries.is_empty(), "CA4");
+                        } else {
+                            let last = match boundary {
+                                "package" => "initial-preflight",
+                                "file" | "memory" | "recovery" => "resolved-preflight",
+                                other => other,
+                            };
+                            assert_eq!(
+                                state.creation_boundaries.last(),
+                                Some(&last),
+                                "CA1/CA2 no next call"
+                            );
+                        }
+                        if boundary == "memory" {
+                            assert!(
+                                !torn_down.load(Ordering::SeqCst),
+                                "CA1 retain Memory responsibility"
+                            );
+                        }
+                    }
+                }
+                if change != "renew" && after_create {
+                    // Exercise the existing retained-owner gate through the public
+                    // creation path; a fresh call cannot overwrite unknown effects.
+                    let replay = provider.create_container(&requested).await;
+                    assert!(
+                        replay.err().unwrap().to_string().contains("ambiguous"),
+                        "CA2 retained owner blocks overwrite"
+                    );
+                    assert_eq!(
+                        runtime.st.lock().unwrap().alive.len(),
+                        1,
+                        "CA2 no extra physical object"
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn container_effect_retries_only_with_a_live_strict_same_effect_renewal() {
     /* Renewable provider-boundary cause/effect table. Causes: C1 the runtime
@@ -3384,8 +3712,9 @@ async fn container_effect_retries_only_with_a_live_strict_same_effect_renewal() 
      *
      * | Rule | expired boundary | refreshed proof | Effect |
      * | R1 | yes | live strict same effect | E1 + E3 |
-     * | R2 | yes | missing | E2 + E3 |
-     * | R3 | yes | foreign/equal/regressed | E2 + E3 |
+     * | R2 | any | missing | entry denial, zero runtime calls |
+     * | R3 | any | foreign/regressed | entry denial, zero runtime calls |
+     * | R3-equal | yes | equal | E2 + E3 after one runtime call |
      */
     let now = container_runtime_unix_now_ms().expect("test clock");
     let initial = pc::SandboxEffectFence::new(
@@ -3471,15 +3800,15 @@ async fn container_effect_retries_only_with_a_live_strict_same_effect_renewal() 
             Err(error) => error,
         };
         assert!(
-            error.to_string().contains("renewable")
+            error.to_string().contains("current Session authority")
                 || error.to_string().contains("strict successor")
                 || error.to_string().contains("permission denied"),
             "{rule}/E2: {error}"
         );
         assert_eq!(
             runtime.st.lock().unwrap().effect_fences.len(),
-            1,
-            "{rule}/E2"
+            usize::from(rule == "R3-equal"),
+            "{rule}/E2: missing/foreign proof rejects before the first call"
         );
         assert!(runtime.st.lock().unwrap().alive.is_empty(), "{rule}/E2");
     }
@@ -4373,7 +4702,7 @@ async fn restored_adoption_rechecks_original_authority_after_each_query_response
                     let mut pending = call(&authority);
                     std::future::poll_fn(|cx| {
                         assert!(
-                            pending.as_mut().poll(cx).is_pending(),
+                            std::future::Future::poll(pending.as_mut(), cx).is_pending(),
                             "{port}/{boundary}/{change}/{expiry}"
                         );
                         std::task::Poll::Ready(())
@@ -4543,7 +4872,7 @@ async fn terminal_restored_container_disposal_rechecks_current_authority_across_
                 let mut pending = call(&authority);
                 std::future::poll_fn(|cx| {
                     assert!(
-                        pending.as_mut().poll(cx).is_pending(),
+                        std::future::Future::poll(pending.as_mut(), cx).is_pending(),
                         "{port}/{present}/{boundary}/{change}"
                     );
                     std::task::Poll::Ready(())
