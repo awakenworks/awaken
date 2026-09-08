@@ -378,6 +378,26 @@ The pool and coordinator-only Host reuse its one reconciliation loop. It is not
 a new aggregate, recovery center or source of physical-stop evidence; the former
 `DispatchMaintenance` name has no parallel compatibility implementation.
 
+Standalone reconciliation directly consumes the configured `WakeSignal`.
+Within a Pool, only the existing wake coordinator consumes that external port
+and relays to a `LocalWakeSignal` for reconciliation; no extra listener or
+notification registry is introduced. A hint schedules a read of durable truth,
+not a claim, completion receipt or authorization. Duplicate hints coalesce and
+lost hints remain covered by the queue poll. The terminal-reconciliation timer
+is independently selectable, so a shorter configured interval is not silently
+delayed by the ordinary poll. `None` still disables only terminal observation.
+
+Service, Pool and standalone Reconciler shutdown cancel their existing local
+token and join their existing tasks. They do not publish a network hint merely
+to unblock a cancellation-aware wait. In-flight storage and observation work
+is still joined, not dropped on a newly introduced timeout. Only a best-effort
+notification after durable relay may be abandoned on cancellation; this does
+not manufacture a physical-stop fact. Virtual-time regressions cover all three
+topologies, blocked publication, duplicate/lost hints, optional deadlines and
+delayed observation.
+These scheduling checks are executable evidence; the existing Dispatch kernel
+and bounded SessionRunProtocol safety proofs retain their original scope.
+
 Physical exclusion is Thread-scoped even though the exact attempt belongs to a
 Run's Dispatch row. Cancellation may return a row to Pending while its old
 physical owner remains. Therefore Running-state uniqueness cannot enforce
