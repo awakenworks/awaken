@@ -4,6 +4,7 @@
 // survive. Authorization/IAM is deliberately absent from the resource backend.
 
 import assert from 'node:assert/strict';
+import { postgresQuery } from './postgres.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -238,7 +239,7 @@ function assertNoLocalResourceTruth(directory: string): void {
 }
 
 function psql(container: string, sql: string): string {
-  return docker('exec', container, 'psql', '-U', 'postgres', '-d', PROBE_DATABASE, '-At', '-c', sql);
+  return postgresQuery({container,database:PROBE_DATABASE},sql);
 }
 
 function sqlLiteral(value: string): string {

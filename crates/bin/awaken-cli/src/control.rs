@@ -290,6 +290,8 @@ async fn prepare_control_process_with_model_supply_and_installations(
     let platform_workspace = installations.platform_workspace_before_write()?;
     let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let hosted_byok_enabled = managed_services.provider_credential_execution.is_some();
+    let _ = managed_services
+        .install_credential_envelope(deployment.worker.credential_envelope_keys_file.as_deref())?;
     let background_services = std::mem::take(&mut managed_services.background_services);
     let stores = open_process_stores(ProcessStoreOpenOptions {
         control: deployment.control.clone(),
@@ -335,6 +337,7 @@ async fn prepare_control_process_with_model_supply_and_installations(
         identity.local_browser_auth,
         model_supply,
         ProcessStartup {
+            credential_material_resolver: None,
             service_lifecycle: service_lifecycle.clone(),
             deployment: None,
             content_capture_ceiling: deployment.runtime.content_capture.level,

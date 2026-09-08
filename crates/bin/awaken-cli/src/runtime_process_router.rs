@@ -152,7 +152,7 @@ pub(super) async fn prepare_runtime_routers(
                 format!("initial Cloud model catalog reconciliation failed: {error}")
             })?;
     }
-    let credential_materializer = (role == config::Role::AllInOne)
+    let mut credential_materializer = (role == config::Role::AllInOne)
         .then(|| {
             stores.control.as_ref().map(|control| {
                 awaken_credential_materializer::PinnedCredentialMaterializer::new(
@@ -162,6 +162,14 @@ pub(super) async fn prepare_runtime_routers(
             })
         })
         .flatten();
+    if let (Some(materializer), Some(resolver)) = (
+        credential_materializer.as_mut(),
+        process.credential_material_resolver,
+    ) {
+        *materializer = materializer
+            .clone()
+            .with_external_material_resolver(resolver);
+    }
     let credential_refresh_factory = (role == config::Role::AllInOne)
         .then(|| {
             stores.control.as_ref().map(|control| {

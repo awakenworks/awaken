@@ -181,27 +181,14 @@ impl ResolvedDeployment {
                 "worker_server_required: pass --server or configure worker_server".to_owned(),
             );
         }
-        worker_bootstrap::validate_credential_file_ownership(
-            role,
-            file.worker_request_credential_file.is_some(),
-            file.worker_trust_credentials_file.is_some(),
-        )?;
-        if let Some(policy) = &file.worker_kubernetes {
-            policy.validate(role, mode, file.worker_trust_credentials_file.is_some())?;
-        }
-        if file.worker_kubernetes_identity_directory.is_some()
-            && (role != Role::Worker || mode != OperatingMode::Server)
-        {
-            return Err(
-                "worker_kubernetes_identity_directory is owned by a server-mode Worker".into(),
-            );
-        }
+        worker_bootstrap::validate_file_ownership(role, mode, &file)?;
         let worker = WorkerBootstrap::resolve(
             awaken_worker::WorkerBootstrapInput {
                 worker_id: file.worker_id.clone(),
                 request_credential_file: file.worker_request_credential_file.clone(),
                 kubernetes_identity_directory: file.worker_kubernetes_identity_directory.clone(),
                 credential_material_root: file.worker_credential_material_root.clone(),
+                credential_envelope_keys_file: file.credential_envelope_keys_file.clone(),
                 credential_trust_domain: file.worker_credential_trust_domain.clone(),
                 admin_listen: file.worker_admin_listen.clone(),
                 drain_grace_secs: file.worker_drain_grace_secs,
