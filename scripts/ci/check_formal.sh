@@ -102,7 +102,7 @@ cargo test -p awaken-protocol-managed --features test-support --lib rollout
 # Credential cleanup depends on complete envelope/pair projections.
 # Exercise SQLite and the canonical in-memory fixture without
 # making this SQLite-only formal stage silently skip an optional PostgreSQL.
-cargo test -p awaken-credential-vault --lib repo::
+cargo test -p awaken-credential-vault --lib
 cargo test -p awaken-credential-store --features test-support,sqlite --test repo_conformance
 # The audit scalar proof assumes exact SQL tuple selection and record equality.
 # Keep the production projection and SQLite conformance/migration tests beside it;
@@ -273,7 +273,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness managed_vault_replacement_requires_exact_revision_successor \
     --harness managed_vault_delete_is_monotonic_identity_bound_and_absorbing \
     --harness managed_vault_delete_fence_allows_only_absorbing_child_delete \
-    --harness managed_credential_workspace_admission_requires_exact_parent_and_owner \
+    --harness managed_credential_insert_checks_actual_workspace_and_parent \
     --harness managed_credential_insert_requires_every_aggregate_invariant \
     --harness managed_credential_replacement_requires_both_fences_and_exact_successor \
     --harness deleted_managed_credential_is_absorbing \

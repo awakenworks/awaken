@@ -21,7 +21,7 @@ use awaken_credential_vault::catalog::{
     ManagedCredentialLifecycle, ManagedCredentialMutationError, ManagedVault,
     ManagedVaultCredential, ManagedVaultMutationError, ManagedVaultRepo,
     admit_managed_credential_insert, admit_managed_credential_replacement,
-    admit_managed_vault_replacement,
+    admit_managed_vault_replacement, managed_vault_workspace_admitted,
 };
 use awaken_credential_vault::repo::{
     CredentialMaterialMutationPhase, CredentialMutationIntent, CredentialRepo,
@@ -130,7 +130,7 @@ impl ManagedVaultRepo for PostgresCredentialRepo {
         workspace_id: &str,
         vault: ManagedVault,
     ) -> Result<(), CredentialError> {
-        if vault.workspace_id != workspace_id {
+        if !managed_vault_workspace_admitted(workspace_id, vault.workspace_id.as_str(), None) {
             return Err(CredentialError::InvalidSource(
                 "Managed Vault workspace does not match its authority".into(),
             ));
@@ -144,10 +144,11 @@ impl ManagedVaultRepo for PostgresCredentialRepo {
         .fetch_optional(&mut *tx)
         .await
         .map_err(storage)?;
-        if existing_owner
-            .as_deref()
-            .is_some_and(|owner| owner != workspace_id)
-        {
+        if !managed_vault_workspace_admitted(
+            workspace_id,
+            vault.workspace_id.as_str(),
+            existing_owner.as_deref(),
+        ) {
             return Err(CredentialError::InvalidSource(
                 "Managed Vault id belongs to another workspace".into(),
             ));
@@ -168,7 +169,7 @@ impl ManagedVaultRepo for PostgresCredentialRepo {
         workspace_id: &str,
         vault: ManagedVault,
     ) -> Result<ManagedVault, CredentialError> {
-        if vault.workspace_id != workspace_id {
+        if !managed_vault_workspace_admitted(workspace_id, vault.workspace_id.as_str(), None) {
             return Err(CredentialError::InvalidSource(
                 "Managed Vault workspace does not match its authority".into(),
             ));
@@ -193,7 +194,11 @@ impl ManagedVaultRepo for PostgresCredentialRepo {
         .await
         .map_err(storage)?;
         let owner: String = row.try_get("workspace_id").map_err(storage)?;
-        if owner != workspace_id {
+        if !managed_vault_workspace_admitted(
+            workspace_id,
+            vault.workspace_id.as_str(),
+            Some(owner.as_str()),
+        ) {
             return Err(CredentialError::InvalidSource(
                 "Managed Vault id belongs to another workspace".into(),
             ));

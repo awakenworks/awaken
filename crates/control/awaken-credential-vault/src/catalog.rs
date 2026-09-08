@@ -314,27 +314,13 @@ impl<'de> serde::Deserialize<'de> for ManagedVaultCredential {
 /// row and any durable row already carrying that id. Generic equality keeps the
 /// production String decision small enough to exhaust over a bounded identity
 /// domain in Kani without introducing a parallel proof-only implementation.
-#[cfg(any(kani, test, feature = "test-support"))]
-fn managed_vault_workspace_admitted<T: PartialEq + ?Sized>(
+#[must_use]
+pub fn managed_vault_workspace_admitted<T: PartialEq + ?Sized>(
     authority: &T,
     proposed_owner: &T,
     existing_owner: Option<&T>,
 ) -> bool {
     authority == proposed_owner
-        && existing_owner.is_none_or(|existing_owner| existing_owner == authority)
-}
-
-/// Admit a Managed credential write only when its row, parent Vault, and any
-/// existing child with the same id all carry the exact request Workspace.
-#[cfg(kani)]
-fn managed_credential_workspace_admitted<T: PartialEq + ?Sized>(
-    authority: &T,
-    proposed_owner: &T,
-    parent_owner: Option<&T>,
-    existing_owner: Option<&T>,
-) -> bool {
-    authority == proposed_owner
-        && parent_owner.is_some_and(|parent_owner| parent_owner == authority)
         && existing_owner.is_none_or(|existing_owner| existing_owner == authority)
 }
 
@@ -727,16 +713,23 @@ impl ManagedVaultRepo for crate::repo::InMemoryCredentialRepo {
         vault: ManagedVault,
     ) -> Result<ManagedVault, CredentialError> {
         let mut state = self.state.lock().expect("credential repo");
-        if vault.workspace_id != workspace_id {
+        if !managed_vault_workspace_admitted(workspace_id, vault.workspace_id.as_str(), None) {
             return Err(CredentialError::InvalidSource(
                 "Managed Vault workspace does not match its authority".into(),
             ));
         }
-        match state.vaults.get(&vault.id) {
-            Some(existing) if existing.workspace_id == workspace_id => Ok(existing.clone()),
-            Some(_) => Err(CredentialError::InvalidSource(
+        let existing = state.vaults.get(&vault.id);
+        if !managed_vault_workspace_admitted(
+            workspace_id,
+            vault.workspace_id.as_str(),
+            existing.map(|row| row.workspace_id.as_str()),
+        ) {
+            return Err(CredentialError::InvalidSource(
                 "Managed Vault id belongs to another workspace".into(),
-            )),
+            ));
+        }
+        match existing {
+            Some(existing) => Ok(existing.clone()),
             None => {
                 state.vaults.insert(vault.id.clone(), vault.clone());
                 Ok(vault)
@@ -905,6 +898,107 @@ mod tests {
     }
 }
 
+#[cfg(any(test, kani))]
+mod workspace_proofs {
+    use super::*;
+
+    fn fixture() -> (ManagedVault, ManagedVaultCredential) {
+        let vault = ManagedVault {
+            id: "v".into(),
+            workspace_id: "a".into(),
+            display_name: String::new(),
+            metadata: BTreeMap::new(),
+            archived_at: None,
+            deletion: None,
+            revision: 1,
+        };
+        let child = ManagedVaultCredential {
+            id: "c".into(),
+            vault_id: "v".into(),
+            workspace_id: "a".into(),
+            source_id: CredentialSourceId("s".into()),
+            auth: ManagedCredentialAuth::EnvironmentVariable {
+                secret_name: "K".into(),
+                networking: ManagedCredentialNetworking::Unrestricted,
+                injection_location: ManagedCredentialInjectionLocation::HeaderAndBody,
+            },
+            metadata: BTreeMap::new(),
+            display_name: None,
+            revision: 1,
+            lifecycle: ManagedCredentialLifecycle::Active,
+        };
+        (vault, child)
+    }
+
+    #[test]
+    fn workspace_proof_fixture_is_admitted_by_production() {
+        // Non-vacuity witness: exact owner/parent, active revision-one child,
+        // live Vault and empty catalog must reach the production success arm.
+        let (vault, child) = fixture();
+        admit_managed_credential_insert("a", Some(&vault), &[], &child).unwrap();
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn managed_credential_insert_checks_actual_workspace_and_parent() {
+        // Causes: independent proposed/parent Workspace and parent-id equality,
+        // parent presence, archive/deletion, child revision and lifecycle.
+        // W1 invalid child owner/revision/lifecycle => WorkspaceMismatch first.
+        // W2 valid child + absent/foreign/wrong-id/archived/deleting parent =>
+        // VaultUnavailable. W3 valid child + exact live parent => success.
+        // Constraints: identities a/b and v/x, fixed Environment auth, empty
+        // siblings (no limit/duplicate-key cause), full u64 child revision.
+        // Existing child-id CAS, arbitrary strings and URL parsing are outside
+        // this actual-function proof and have separate adapter/validation tests.
+        let (mut vault, mut child) = fixture();
+        let proposed_matches = kani::any::<bool>();
+        let parent_matches = kani::any::<bool>();
+        let id_matches = kani::any::<bool>();
+        let has_parent = kani::any::<bool>();
+        let archived = kani::any::<bool>();
+        let deletion = kani::any::<u8>() % 3;
+        let lifecycle = kani::any::<u8>() % 3;
+        child.workspace_id = if proposed_matches { "a" } else { "b" }.into();
+        vault.workspace_id = if parent_matches { "a" } else { "b" }.into();
+        vault.id = if id_matches { "v" } else { "x" }.into();
+        vault.archived_at = archived.then(|| "t".into());
+        vault.deletion = match deletion {
+            0 => None,
+            _ => Some(ManagedVaultDeletion {
+                operation_id: "d".into(),
+                requested_at: "t".into(),
+                phase: if deletion == 1 {
+                    ManagedVaultDeletionPhase::Requested
+                } else {
+                    ManagedVaultDeletionPhase::Completed
+                },
+            }),
+        };
+        child.revision = kani::any();
+        child.lifecycle = match lifecycle {
+            0 => ManagedCredentialLifecycle::Active,
+            1 => ManagedCredentialLifecycle::Archived { at: "t".into() },
+            _ => ManagedCredentialLifecycle::Deleted { at: "t".into() },
+        };
+        let result =
+            admit_managed_credential_insert("a", has_parent.then_some(&vault), &[], &child);
+        if !proposed_matches || child.revision != 1 || lifecycle != 0 {
+            assert!(matches!(
+                result,
+                Err(ManagedCredentialAdmissionError::WorkspaceMismatch)
+            ));
+        } else if !has_parent || !parent_matches || !id_matches || archived || deletion != 0 {
+            assert!(matches!(
+                result,
+                Err(ManagedCredentialAdmissionError::VaultUnavailable)
+            ));
+        } else {
+            assert!(result.is_ok());
+        }
+    }
+}
+
 #[cfg(kani)]
 mod verification {
     use super::*;
@@ -946,6 +1040,11 @@ mod verification {
 
     #[kani::proof]
     fn managed_vault_workspace_admission_is_exact_and_non_widening() {
+        // V1: proposed owner differs => deny regardless of durable owner.
+        // V2: exact proposed owner + absent/exact durable owner => admit.
+        // V3: exact proposed owner + foreign durable owner => deny.
+        // All u8 identities and both presence states; SQL/String and concurrency
+        // are cross-checked by the shared adapter table, not proved here.
         let authority = kani::any::<u8>();
         let proposed_owner = kani::any::<u8>();
         let existing_owner = kani::any::<u8>();
@@ -961,38 +1060,6 @@ mod verification {
         );
         if admitted {
             assert_eq!(proposed_owner, authority);
-            if let Some(existing_owner) = existing_owner {
-                assert_eq!(*existing_owner, authority);
-            }
-        }
-    }
-
-    #[kani::proof]
-    fn managed_credential_workspace_admission_requires_exact_parent_and_owner() {
-        let authority = kani::any::<u8>();
-        let proposed_owner = kani::any::<u8>();
-        let parent_owner = kani::any::<u8>();
-        let existing_owner = kani::any::<u8>();
-        let has_parent = kani::any::<bool>();
-        let has_existing = kani::any::<bool>();
-        let parent_owner = has_parent.then_some(&parent_owner);
-        let existing_owner = has_existing.then_some(&existing_owner);
-
-        let admitted = managed_credential_workspace_admitted(
-            &authority,
-            &proposed_owner,
-            parent_owner,
-            existing_owner,
-        );
-        assert_eq!(
-            admitted,
-            authority == proposed_owner
-                && parent_owner.is_some_and(|parent_owner| *parent_owner == authority)
-                && existing_owner.is_none_or(|existing_owner| *existing_owner == authority)
-        );
-        if admitted {
-            assert_eq!(proposed_owner, authority);
-            assert_eq!(parent_owner.copied(), Some(authority));
             if let Some(existing_owner) = existing_owner {
                 assert_eq!(*existing_owner, authority);
             }
