@@ -26,7 +26,9 @@ from formal_memory_mutations import (
     check_memory_invalidation_model_mutants,
     check_memory_participant_model_mutants,
 )
-from formal_execution_replacement_mutations import check_execution_replacement_model_mutants
+from formal_execution_replacement_mutations import (
+    check_execution_replacement_model_mutants, check_k8s_process_observation_model_mutants,
+)
 from formal_credential_mutations import (
     check_mcp_credential_model_mutants, check_credential_effect_model_mutants,
 )
@@ -532,6 +534,7 @@ def main() -> None:
         "realization-renewal-model-mutant": check_realization_renewal_model_mutant,
         "resolution-failure-model-mutant": check_resolution_failure_model_mutant,
         "terminal-scan-model-mutants": check_terminal_scan_model_mutants,
+        "k8s-process-observation-model-mutants": check_k8s_process_observation_model_mutants,
         "config-cas-model-mutant": check_config_cas_model_mutant,
         "background-completion-model-mutant": check_background_completion_model_mutant,
         "sandbox-control-model-mutants": check_sandbox_control_model_mutants,
