@@ -746,6 +746,74 @@ async fn get_is_an_unscoped_by_id_primitive(repo: &dyn CredentialRepo) {
     assert_eq!(cross.workspace_id, "ws-owner");
 }
 
+/// Cause/effect table V1-V3: proposed Workspace matches or differs from the
+/// request; the durable id is absent, same-owner, or foreign-owner; operation
+/// is insert or ensure. These 2x3x2 rules cover authority errors before effects,
+/// insert conflict on an owned id, ensure replay preserving durable metadata,
+/// and creation only when absent. Every rejection preserves both Workspaces.
+async fn managed_vault_workspace_authority_conforms(repo: &dyn ManagedCredentialRepository) {
+    for ensure in [false, true] {
+        for proposed_matches in [false, true] {
+            for existing_owner in [None, Some("a"), Some("b")] {
+                let id = format!("authority-{ensure}-{proposed_matches}-{existing_owner:?}");
+                let proposed = ManagedVault {
+                    id: id.clone(),
+                    workspace_id: if proposed_matches { "a" } else { "b" }.into(),
+                    display_name: "proposed".into(),
+                    metadata: Default::default(),
+                    archived_at: None,
+                    deletion: None,
+                    revision: 1,
+                };
+                let durable = existing_owner.map(|owner| ManagedVault {
+                    workspace_id: owner.into(),
+                    display_name: "durable".into(),
+                    revision: 7,
+                    ..proposed.clone()
+                });
+                if let Some(durable) = &durable {
+                    repo.insert_vault(&durable.workspace_id, durable.clone())
+                        .await
+                        .unwrap();
+                }
+                let result = if ensure {
+                    repo.ensure_vault("a", proposed.clone()).await
+                } else {
+                    repo.insert_vault("a", proposed.clone())
+                        .await
+                        .map(|()| proposed.clone())
+                };
+                if !proposed_matches || existing_owner == Some("b") {
+                    assert!(
+                        matches!(result, Err(CredentialError::InvalidSource(_))),
+                        "V1/V3"
+                    );
+                } else if !ensure && existing_owner.is_some() {
+                    assert!(
+                        matches!(result, Err(CredentialError::MutationConflict(_))),
+                        "V2 insert"
+                    );
+                } else {
+                    assert_eq!(
+                        result.unwrap(),
+                        durable.clone().unwrap_or_else(|| proposed.clone()),
+                        "V2 ensure/create"
+                    );
+                }
+                let expected = durable
+                    .or_else(|| (proposed_matches && existing_owner.is_none()).then_some(proposed));
+                for owner in ["a", "b"] {
+                    assert_eq!(
+                        repo.get_vault(owner, &id).await.unwrap(),
+                        expected.clone().filter(|row| row.workspace_id == owner),
+                        "no foreign projection or changed durable row"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Managed begin/phase cause-effect table shared by all three adapters. C1 the
 /// fresh fence is canonical or forged; C2 no WAL or one logically identical WAL
 /// already exists; C3 the caller is the durable physical owner. Effects: M1
@@ -762,6 +830,7 @@ async fn get_is_an_unscoped_by_id_primitive(repo: &dyn CredentialRepo) {
 async fn managed_material_mutation_begin_and_phases_conform(
     repo: &dyn ManagedCredentialRepository,
 ) {
+    managed_vault_workspace_authority_conforms(repo).await;
     let vault = ManagedVault {
         id: "vault-begin-owner".into(),
         workspace_id: "ws".into(),
