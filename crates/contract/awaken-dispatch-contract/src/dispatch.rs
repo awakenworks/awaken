@@ -202,13 +202,6 @@ pub enum LeaseRenewalOutcome {
     Lost,
 }
 
-impl LeaseRenewalOutcome {
-    #[must_use]
-    pub const fn is_current(self) -> bool {
-        matches!(self, Self::Current)
-    }
-}
-
 /// Apply the one backend-neutral renewal decision to facts read atomically from
 /// a Dispatch row. Backends own locking and lease writes; this function owns the
 /// meaning of those facts.
