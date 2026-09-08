@@ -597,15 +597,46 @@ impl SharedHost {
         Ok(environment)
     }
 
-    /// Resume only the publication edge of an exact hidden Candidate. A prior
-    /// persistence call may have failed definitively or committed while losing
-    /// its response; both retries reuse the same Arc, binding and effect kind,
-    /// and only the existing Store port can return the generated durable
-    /// identity. No provider create/adopt effect is repeated here.
-    pub(super) async fn retry_prepared_session_environment_publication_under_lifecycle(
+    /// Retry the one retained Candidate. Same-generation preparation retries
+    /// only publication with its original Arc and effect kind. Revoked Unbound
+    /// ownership instead delegates to ordinary authorized adoption, preserving
+    /// its physical target while replacing closed execution. In both cases only
+    /// the existing Store readback supplies durable publication identity.
+    pub(super) async fn retry_session_environment_candidate_under_lifecycle(
         &self,
         thread: &str,
     ) -> Result<Option<Arc<crate::session_environment::SessionEnvironment>>, HostError> {
+        let revoked_binding = self.session_slots.read(thread, |slot| match &slot.environment_owner {
+            crate::session_slot::SessionEnvironmentOwner::Retiring(retiring)
+                if retiring.cause == crate::session_slot::SessionEnvironmentRetirementCause::RealizationRevocation =>
+                match &retiring.owned {
+                    crate::session_slot::RetiringEnvironmentOwner::Unbound(candidate) => Some(candidate.binding.clone()),
+                    _ => None,
+                },
+            _ => None,
+        }).flatten();
+        if let Some(binding) = revoked_binding {
+            // A Candidate can own physical effects without a returned root
+            // receipt. Reuse ordinary authorized adoption, including for an
+            // Unmaterialized root; raw local binding is not durable authority.
+            let provider = self.projected_session_environment_provider(thread, None)?;
+            self.adopt_bound_session_environment_under_lifecycle(
+                thread,
+                &binding,
+                provider,
+                None,
+                SessionEnvironmentUnavailablePolicy::Reject,
+                None,
+            )
+            .await?;
+            return self
+                .session_environment(thread)
+                .await
+                .map(Some)
+                .ok_or_else(|| {
+                    HostError::internal("unacknowledged Candidate adoption published no owner")
+                });
+        }
         let candidate = self
             .session_slots
             .read(thread, |slot| {
@@ -1158,7 +1189,7 @@ impl SharedHost {
             .update(thread, |slot| slot.lifecycle.clone());
         let _lifecycle = lifecycle.lock().await;
         if let Some(environment) = self
-            .retry_prepared_session_environment_publication_under_lifecycle(thread)
+            .retry_session_environment_candidate_under_lifecycle(thread)
             .await?
         {
             return self

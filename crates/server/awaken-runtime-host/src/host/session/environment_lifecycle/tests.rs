@@ -2267,10 +2267,27 @@ async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
     // Fully cross C1-C4 for retirement and C1+C2 with each independent identity
     // conflict for projection. Same-generation receipt stutter is intentional;
     // without Store readback a projection alone cannot establish commitment.
+    // RP1 exact retired binding + revocation => confirm projection without
+    // changing Bound/Unbound phase; RP2 wrong binding/cleanup cause => reject.
+    // RA1 exact revocation + same physical rebound target => one new hidden
+    // Adopt Candidate, preserving only known identity; RA2 foreign target,
+    // stale retirement, wrong cause or replay => reject without owner change.
     let root = tempfile::tempdir().unwrap();
     let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
     let owned = environment(&provider, "candidate-evidence").await;
     let foreign = environment(&provider, "candidate-foreign").await;
+    let rebound = Arc::new(
+        provider
+            .rebind_retained(
+                &crate::provisioning::agent_run_sandbox_spec("candidate-evidence"),
+                &owned.handle(),
+                &owned,
+                None,
+                None,
+            )
+            .await
+            .unwrap(),
+    );
     for kind in [Create, Adopt] {
         for committed in [false, true] {
             let mut base = SessionEnvironmentOwner::Vacant;
@@ -2305,7 +2322,7 @@ async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
                     }
                     let retirement = retirement.unwrap();
                     assert!(Arc::ptr_eq(&retirement.owned.environment(), &owned));
-                    match retirement.owned {
+                    match &retirement.owned {
                         RetiringEnvironmentOwner::Bound(bound) => {
                             assert!(
                                 committed
@@ -2325,6 +2342,71 @@ async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
                             );
                             assert!(unbound.exact_matches(&candidate));
                         }
+                    }
+                    for exact_binding in [false, true] {
+                        let mut projected_owner = owner.clone();
+                        let result = projected_owner.install_projection(
+                            ProjectedEnvironmentOwner::AwaitingAdoption {
+                                identity: identity.clone(),
+                                binding: if exact_binding {
+                                    candidate.binding.clone()
+                                } else {
+                                    "foreign".into()
+                                },
+                            },
+                            true,
+                        );
+                        assert_eq!(
+                            result.is_ok(),
+                            exact_binding
+                                && cause
+                                    == SessionEnvironmentRetirementCause::RealizationRevocation,
+                            "RP1/RP2"
+                        );
+                        assert!(
+                            matches!(&projected_owner, SessionEnvironmentOwner::Retiring(current) if current.exact_matches(&retirement)),
+                            "RP no promotion"
+                        );
+                    }
+                    assert!(
+                        owner
+                            .prepare_retiring_realization_adoption(&retirement, foreign.clone())
+                            .is_err(),
+                        "RA2 wrong target"
+                    );
+                    assert!(
+                        matches!(&owner, SessionEnvironmentOwner::Retiring(current) if current.exact_matches(&retirement))
+                    );
+                    let mut stale = retirement.clone();
+                    stale.cause = SessionEnvironmentRetirementCause::RecoveryDiscard;
+                    assert!(
+                        owner
+                            .prepare_retiring_realization_adoption(&stale, rebound.clone())
+                            .is_err(),
+                        "RA2 stale owner"
+                    );
+                    let result =
+                        owner.prepare_retiring_realization_adoption(&retirement, rebound.clone());
+                    if cause == SessionEnvironmentRetirementCause::RealizationRevocation {
+                        result.expect("RA1");
+                        let fresh = owner.unpublished_candidate().unwrap();
+                        assert!(Arc::ptr_eq(&fresh.environment, &rebound));
+                        assert_eq!(fresh.binding, candidate.binding);
+                        assert_eq!(fresh.effect_kind(), Adopt);
+                        assert_eq!(fresh.durable_identity(), committed.then_some(&identity));
+                        let fresh = fresh.clone();
+                        assert!(
+                            owner
+                                .prepare_retiring_realization_adoption(&retirement, rebound.clone())
+                                .is_err(),
+                            "RA2 replay"
+                        );
+                        assert!(owner.unpublished_candidate().unwrap().exact_matches(&fresh));
+                    } else {
+                        assert!(result.is_err(), "RA2 wrong cause");
+                        assert!(
+                            matches!(&owner, SessionEnvironmentOwner::Retiring(current) if current.exact_matches(&retirement))
+                        );
                     }
                 }
             }
@@ -2366,6 +2448,49 @@ async fn candidate_revocation_and_projection_preserve_exact_commit_evidence() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn unacknowledged_candidate_adoption_requires_aggregate_authority() {
+    // UA1 exact retained V2 Candidate + no installed aggregate lease/sink =>
+    // reject before Provider observation/adoption and keep exact Retiring owner.
+    // A raw local handle is provenance for recovery, never authority by itself.
+    let root = tempfile::tempdir().unwrap();
+    let provider = crate::session_environment::SessionEnvironmentProvider::workdir(root.path());
+    let thread = "unacknowledged-no-authority";
+    let environment = environment(&provider, thread).await;
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub");
+    let candidate = host
+        .begin_session_environment_preparation(thread, environment.clone())
+        .unwrap();
+    let retirement = host
+        .retire_current_environment(
+            thread,
+            SessionEnvironmentRetirementCause::RealizationRevocation,
+            RetirementSelection::Exact(&environment),
+        )
+        .unwrap()
+        .unwrap();
+    let result = host
+        .adopt_bound_session_environment(thread, Some(&candidate.binding), &provider, None, false)
+        .await;
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("UA1 unowned adoption admitted"),
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("requires current aggregate adoption authority"),
+        "UA1: {error}"
+    );
+    host.session_slots
+        .read(thread, |slot| {
+            assert!(matches!(&slot.environment_owner,
+        SessionEnvironmentOwner::Retiring(current) if current.exact_matches(&retirement.owner)))
+        })
+        .unwrap();
+    assert!(host.session_environment(thread).await.is_none());
 }
 
 #[tokio::test]

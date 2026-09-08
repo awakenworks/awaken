@@ -425,7 +425,7 @@ mod tests {
         ignore = "requires Linux mount-namespace path fidelity"
     )]
     async fn claimed_ready_durable_revocation_adopts_a_fresh_hand_and_runtime() {
-        claimed_ready_durable_replacement(false, true, false, false).await;
+        claimed_ready_durable_replacement(false, true, false, InitialEnvironment::Resident).await;
     }
 
     #[cfg(target_os = "linux")]
@@ -436,7 +436,7 @@ mod tests {
         // + exact Ready durable binding => fresh executable B, same root/bytes;
         // A remains denied. A fresh Hand around A's closed execution binding is
         // insufficient. This reuses DH1's production projection/receipt path.
-        claimed_ready_durable_replacement(true, true, false, false).await;
+        claimed_ready_durable_replacement(true, true, false, InitialEnvironment::Resident).await;
     }
 
     #[cfg(target_os = "linux")]
@@ -447,7 +447,7 @@ mod tests {
         // => stop A before publishing executable B; preserve the exact physical
         // binding. This is the warm approval/resume path, distinct from SR1.
         // Both rules assert real process admission, not merely wrapper identity.
-        claimed_ready_durable_replacement(true, false, false, false).await;
+        claimed_ready_durable_replacement(true, false, false, InitialEnvironment::Resident).await;
     }
 
     #[cfg(target_os = "linux")]
@@ -458,7 +458,7 @@ mod tests {
         // exact local tree but retain A as Retiring, old lease and root bytes;
         // do not publish a Candidate/new proof. Restore exact observer evidence
         // under this fixture's exclusive ownership => retry reaches SR2's B.
-        claimed_ready_durable_replacement(true, false, true, false).await;
+        claimed_ready_durable_replacement(true, false, true, InitialEnvironment::Resident).await;
     }
 
     #[cfg(target_os = "linux")]
@@ -470,7 +470,13 @@ mod tests {
         // Candidate and adopt fresh execution over the same root. SC2: renewal
         // must retain its Arc and hidden phase; a foreign binding must neither
         // publish nor stop it. Reuse SR2's real execution and receipt oracles.
-        claimed_ready_durable_replacement(true, false, false, true).await;
+        claimed_ready_durable_replacement(
+            true,
+            false,
+            false,
+            InitialEnvironment::CommittedCandidate,
+        )
+        .await;
     }
 
     #[cfg(target_os = "linux")]
@@ -480,7 +486,13 @@ mod tests {
         // SC3: SC1 + unknown predecessor observation => retain exact Bound
         // Retiring owner, old authority, no Adopt receipt. Exact evidence on
         // retry => fresh executable successor, old Arc permanently denied.
-        claimed_ready_durable_replacement(true, false, true, true).await;
+        claimed_ready_durable_replacement(
+            true,
+            false,
+            true,
+            InitialEnvironment::CommittedCandidate,
+        )
+        .await;
     }
 
     #[cfg(target_os = "linux")]
@@ -490,16 +502,76 @@ mod tests {
         // SC4: committed hidden Candidate + explicit revocation before new
         // projection => Bound retirement, not Unbound cleanup; ordinary Ready
         // adoption must still preserve the root and create fresh execution.
-        claimed_ready_durable_replacement(true, true, false, true).await;
+        claimed_ready_durable_replacement(
+            true,
+            true,
+            false,
+            InitialEnvironment::CommittedCandidate,
+        )
+        .await;
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum InitialEnvironment {
+        Resident,
+        CommittedCandidate,
+        BeforeCommit,
+        LostResponse,
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "required real Linux helper supplied by the portability supervision gate"]
+    async fn trusted_host_scoped_session_candidate_cancelled_before_commit_recovers() {
+        // UC1: actual context Future is cancelled at the sink before root
+        // commit. UC2: after root commit, only its response is lost (next test).
+        // Cross direct epoch replacement, unknown observer then exact retry,
+        // and explicit revocation. All rows must retain the sole physical root,
+        // stop old execution, obtain a new authorized Adopt receipt, then
+        // publish executable successor. No Create retry or raw cache may invent
+        // commitment; same-generation renewal must preserve the hidden Arc.
+        for (revoke, unknown) in [(false, false), (false, true), (true, false)] {
+            claimed_ready_durable_replacement(
+                true,
+                revoke,
+                unknown,
+                InitialEnvironment::BeforeCommit,
+            )
+            .await;
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "required real Linux helper supplied by the portability supervision gate"]
+    async fn trusted_host_scoped_session_candidate_lost_commit_response_recovers() {
+        // UC2 crosses the same three UC1 schedules, but the sole Control root
+        // already contains Create. Adoption must preserve its binding and the
+        // old object must stay denied even though its initial receipt was lost.
+        for (revoke, unknown) in [(false, false), (false, true), (true, false)] {
+            claimed_ready_durable_replacement(
+                true,
+                revoke,
+                unknown,
+                InitialEnvironment::LostResponse,
+            )
+            .await;
+        }
     }
 
     async fn claimed_ready_durable_replacement(
         scoped: bool,
         revoke: bool,
         unknown: bool,
-        committed_candidate: bool,
+        initial: InitialEnvironment,
     ) {
         use awaken_session_contract::SessionProjectionSynchronizer as _;
+        let committed_candidate = initial != InitialEnvironment::Resident;
+        let acknowledged = matches!(
+            initial,
+            InitialEnvironment::Resident | InitialEnvironment::CommittedCandidate
+        );
+        let persisted_creates = usize::from(initial != InitialEnvironment::BeforeCommit);
 
         let thread = "claimed-ready-durable-hand-rebuild";
         let storage = tempfile::tempdir().expect("durable Hand storage");
@@ -563,7 +635,54 @@ mod tests {
         )
         .await
         .expect("DH1 install complete durable projection");
-        let cached_runtime = if committed_candidate {
+        let cached_runtime = if !acknowledged {
+            let sink = Arc::new(
+                crate::host::worker_resolver::test_support::BlockingBindingSink::around(
+                    binding_sink.clone(),
+                    initial == InitialEnvironment::LostResponse,
+                ),
+            );
+            awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+                &managed,
+                sink.clone(),
+            );
+            let creating = {
+                let host = host.clone();
+                let snapshot = snapshot.clone();
+                tokio::spawn(async move {
+                    host.ctx_for_snapshot(thread, Some("agent-a"), Some(snapshot))
+                        .await
+                })
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(5), sink.entered.notified())
+                .await
+                .expect("UC1/UC2 actual persistence boundary reached");
+            let candidate = host.prepared_session_environment(thread).unwrap();
+            assert!(
+                candidate.durable_identity().is_none(),
+                "UC no returned commit proof"
+            );
+            assert_eq!(
+                binding_sink.calls(),
+                persisted_creates,
+                "UC root commit prefix"
+            );
+            creating.abort();
+            match creating.await {
+                Err(error) => assert!(error.is_cancelled()),
+                Ok(_) => panic!("UC pending context unexpectedly finished"),
+            }
+            assert!(
+                host.prepared_session_environment(thread)
+                    .unwrap()
+                    .exact_matches(&candidate)
+            );
+            awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+                &managed,
+                binding_sink.clone(),
+            );
+            None
+        } else if committed_candidate {
             // Stop at the production sink-readback/local-publication boundary.
             // No synthetic generation or Resident -> Candidate demotion: use
             // the canonical authorization, fenced Provider and retention edges.
@@ -617,22 +736,35 @@ mod tests {
                     .expect("DH1/C1 build durable Runtime R1"),
             )
         };
-        let original = host
-            .session_slots
-            .read(thread, |slot| {
-                slot.environment_owner.execution_environment().cloned()
-            })
-            .flatten()
-            .expect("DH1/SC1 exact owned Environment A");
+        // This fixture also compiles for Namespace on non-Linux platforms.
+        // Query the existing portable publication phases, not Linux's scoped
+        // execution-authority view; renewal/conflict checks share this oracle.
+        let owned_environment = || {
+            host.session_slots
+                .read(thread, |slot| {
+                    slot.environment_owner.resident().or_else(|| {
+                        slot.environment_owner
+                            .unpublished_candidate()
+                            .map(|candidate| candidate.environment.clone())
+                    })
+                })
+                .flatten()
+                .expect("DH1/SC1 exact owned Environment A")
+        };
+        let original = owned_environment();
         let original_handle = original.handle();
         let original_hand = original.tool_executor();
         let projection = control.current_projection();
-        let binding = projection
-            .environment
-            .binding()
-            .expect("DH1/C1 Store-read durable binding")
-            .to_string();
-        assert_eq!(binding_sink.calls(), 1, "DH1/C1 one durable Create");
+        let binding = serde_json::to_string(&original_handle).unwrap();
+        let claimed_binding = projection.environment.binding();
+        if let Some(persisted) = claimed_binding {
+            assert_eq!(persisted, binding, "DH1/UC2 exact root binding");
+        }
+        assert_eq!(
+            binding_sink.calls(),
+            persisted_creates,
+            "DH1/UC root Create prefix"
+        );
         let root_sentinel = storage
             .path()
             .join("sandboxes")
@@ -654,23 +786,17 @@ mod tests {
             )
             .await
             .unwrap();
-            assert!(Arc::ptr_eq(
-                &original,
-                &host
-                    .session_slots
-                    .read(thread, |slot| slot
-                        .environment_owner
-                        .execution_environment()
-                        .cloned())
-                    .flatten()
-                    .unwrap()
-            ));
+            assert!(Arc::ptr_eq(&original, &owned_environment()));
             assert_eq!(
                 host.session_environment(thread).await.is_none(),
                 committed_candidate,
                 "SR4/SC2 renewal preserves publication phase"
             );
-            assert_eq!(binding_sink.calls(), 1, "SR4 no adoption receipt");
+            assert_eq!(
+                binding_sink.calls(),
+                persisted_creates,
+                "SR4 no adoption receipt"
+            );
             scoped_admission(&original)
                 .await
                 .expect("SR initial execution is admitted");
@@ -706,12 +832,16 @@ mod tests {
             .expect("DH1 lifecycle owner");
         if revoke {
             let _lifecycle = lifecycle.lock().await;
-            assert!(
-                host.retire_session_environment_for_revocation(thread)
-                    .await
-                    .expect("DH1/C2 revoke exact durable owner"),
-                "DH1/C2 owner enters Retiring"
-            );
+            // UC3: repeat after Live -> Closed. Closed provenance must retain
+            // the same Candidate; it is not permission to delete its root.
+            for _ in 0..2 {
+                assert!(
+                    host.retire_session_environment_for_revocation(thread)
+                        .await
+                        .expect("DH1/C2 revoke exact durable owner"),
+                    "DH1/C2 owner enters Retiring"
+                );
+            }
         }
         assert!(
             !revoke
@@ -745,8 +875,22 @@ mod tests {
             // authority. Validate the prospective owner before any tree stop;
             // final publication validation alone would reject too late.
             for foreign_generation in [false, true] {
+                // An unacknowledged Candidate knows its physical handle, not
+                // a Store-generated generation; do not fabricate that proof.
+                if foreign_generation && !acknowledged {
+                    continue;
+                }
                 let mut foreign = projection.clone();
                 foreign.revision.0 += 1;
+                if foreign.environment.binding().is_none() {
+                    foreign.environment =
+                        awaken_session_contract::SessionEnvironmentState::Resident {
+                            binding: binding.clone(),
+                            effect_id: None,
+                            generation: None,
+                            idle_since_unix_ms: None,
+                        };
+                }
                 if let awaken_session_contract::SessionEnvironmentState::Resident {
                     binding,
                     generation,
@@ -772,17 +916,7 @@ mod tests {
                     .await
                     .is_err()
                 );
-                assert!(Arc::ptr_eq(
-                    &original,
-                    &host
-                        .session_slots
-                        .read(thread, |slot| slot
-                            .environment_owner
-                            .execution_environment()
-                            .cloned())
-                        .flatten()
-                        .unwrap()
-                ));
+                assert!(Arc::ptr_eq(&original, &owned_environment()));
                 assert_eq!(
                     host.session_environment(thread).await.is_none(),
                     committed_candidate,
@@ -801,7 +935,7 @@ mod tests {
                 scoped_admission(&original)
                     .await
                     .expect("SR5 valid prior execution was not retired");
-                assert_eq!(binding_sink.calls(), 1);
+                assert_eq!(binding_sink.calls(), persisted_creates);
             }
         }
         if unknown {
@@ -823,7 +957,7 @@ mod tests {
                 Some(&claim),
                 Some(&snapshot),
                 true,
-                Some(&binding),
+                claimed_binding,
             )
             .synchronize_session_projection(
                 thread,
@@ -845,7 +979,11 @@ mod tests {
                     assert!(slot.runtime.is_none());
                 })
                 .unwrap();
-            assert_eq!(binding_sink.calls(), 1, "SR3 no Adopt receipt");
+            assert_eq!(
+                binding_sink.calls(),
+                persisted_creates,
+                "SR3 no Adopt receipt"
+            );
             assert_eq!(
                 std::fs::read(&root_sentinel).unwrap(),
                 b"same physical durable root"
@@ -858,7 +996,7 @@ mod tests {
             Some(&claim),
             Some(&snapshot),
             true,
-            Some(&binding),
+            claimed_binding,
         )
         .synchronize_session_projection(
             thread,
@@ -868,6 +1006,14 @@ mod tests {
         )
         .await
         .expect("DH1/E1 canonical claimed adoption");
+
+        if claimed_binding.is_none() {
+            // UC1 has no root binding or fabricated RunDispatch cache. The
+            // ordinary lazy Tool entry must recover the retained owner.
+            host.ensure_session_environment_for_tool(thread)
+                .await
+                .expect("UC1 ordinary lazy Environment recovery");
+        }
 
         let rebuilt = host
             .session_environment(thread)
@@ -905,7 +1051,11 @@ mod tests {
             std::fs::read(&root_sentinel).unwrap(),
             b"same physical durable root"
         );
-        assert_eq!(binding_sink.calls(), 2, "DH1/E1 one canonical Adopt");
+        assert_eq!(
+            binding_sink.calls(),
+            persisted_creates + 1,
+            "DH1/UC one canonical Adopt"
+        );
 
         let effective_model_ref = snapshot
             .resolved_spec

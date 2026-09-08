@@ -8,6 +8,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { snapshotExecutable } from './executable_snapshot.mjs';
 
 export const AWAKEN_BIN_ENV = 'AWAKEN_E2E_AWAKEN_BIN';
 export const SCENARIO_HOST_BIN_ENV = 'AWAKEN_E2E_SCENARIO_HOST_BIN';
@@ -109,6 +110,7 @@ export function cargoArguments({
  *   noDefaultFeatures?: boolean,
  *   environment?: NodeJS.ProcessEnv,
  *   prebuiltEnvironmentName?: string,
+ *   snapshotDestination?: string,
  * }} options
  * @returns {string}
  */
@@ -121,10 +123,12 @@ export function cargoExecutable({
   noDefaultFeatures = false,
   environment = process.env,
   prebuiltEnvironmentName,
+  snapshotDestination,
 }) {
   if (prebuiltEnvironmentName) {
     const prebuilt = requirePrebuiltExecutable(prebuiltEnvironmentName, environment);
-    if (prebuilt) return prebuilt;
+    if (prebuilt) return snapshotDestination
+      ? snapshotExecutable(prebuilt, snapshotDestination) : prebuilt;
   }
 
   const args = cargoArguments({
@@ -135,21 +139,42 @@ export function cargoExecutable({
     noDefaultFeatures,
   });
 
-  let output;
+  const buildEnvironment = checkoutLocalCargoEnvironment(cwd, environment);
+  let privateOutput;
   try {
-    output = execFileSync('cargo', args, {
+    if (snapshotDestination) {
+      // Cargo owns build-directory resolution (including config templates).
+      // Keep that cache and its Cargo lock, but give this invocation an
+      // exclusive final-output directory. A copy AFTER a shared-target build
+      // can otherwise see ENOENT or another feature set. No path inference,
+      // second lock, or retry of a possibly replaced artifact is safe here.
+      const metadata = JSON.parse(execFileSync('cargo', [
+        'metadata', '--no-deps', '--format-version=1',
+      ], { cwd, env: buildEnvironment, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024 }));
+      if (typeof metadata.build_directory !== 'string' || !path.isAbsolute(metadata.build_directory)) {
+        throw new Error('cargo metadata did not return an absolute build_directory');
+      }
+      buildEnvironment.CARGO_BUILD_BUILD_DIR = metadata.build_directory;
+      fs.mkdirSync(path.dirname(snapshotDestination), { recursive: true });
+      privateOutput = fs.mkdtempSync(path.join(path.dirname(snapshotDestination), '.cargo-output-'));
+      args.push('--target-dir', path.resolve(privateOutput));
+    }
+    const output = execFileSync('cargo', args, {
       cwd,
-      env: checkoutLocalCargoEnvironment(cwd, environment),
+      env: buildEnvironment,
       encoding: 'utf8',
       maxBuffer: 128 * 1024 * 1024,
     });
+    const executable = parseCargoExecutable(output, targetName, targetKind);
+    return snapshotDestination ? snapshotExecutable(executable, snapshotDestination) : executable;
   } catch (error) {
     throw new Error(
-      `cargo build failed for ${packageName}/${targetName}\n${renderedCargoDiagnostics(error)}`,
+      `cargo build failed for ${packageName}/${targetName}\n${renderedCargoDiagnostics(error) || error.message}`,
       { cause: error },
     );
+  } finally {
+    if (privateOutput) fs.rmSync(privateOutput, { recursive: true, force: true });
   }
-  return parseCargoExecutable(output, targetName, targetKind);
 }
 
 export function scenarioHandCompanionPath(scenarioHost) {
@@ -168,7 +193,10 @@ export function cargoScenarioHostBundle({
   cwd,
   environment = process.env,
   prebuiltEnvironmentName = SCENARIO_HOST_BIN_ENV,
+  snapshotDirectory,
 }) {
+  const suffix = process.platform === 'win32' ? '.exe' : '';
+  const destination = snapshotDirectory && path.join(snapshotDirectory, `awaken-scenario-host${suffix}`);
   const prebuilt = requirePrebuiltExecutable(prebuiltEnvironmentName, environment);
   if (prebuilt) {
     const handCompanion = scenarioHandCompanionPath(prebuilt);
@@ -177,7 +205,10 @@ export function cargoScenarioHostBundle({
         `${prebuiltEnvironmentName} requires sibling scenario companion: ${handCompanion}`,
       );
     }
-    return { scenarioHost: prebuilt, handCompanion };
+    return destination ? {
+      scenarioHost: snapshotExecutable(prebuilt, destination),
+      handCompanion: snapshotExecutable(handCompanion, scenarioHandCompanionPath(destination)),
+    } : { scenarioHost: prebuilt, handCompanion };
   }
 
   const handCompanion = cargoExecutable({
@@ -186,12 +217,14 @@ export function cargoScenarioHostBundle({
     targetName: 'awaken-sandbox',
     features: ['hand'],
     environment,
+    snapshotDestination: destination && scenarioHandCompanionPath(destination),
   });
   const scenarioHost = cargoExecutable({
     cwd,
     packageName: 'awaken-scenario-host',
     targetName: 'awaken-scenario-host',
     environment,
+    snapshotDestination: destination,
   });
   const expectedCompanion = scenarioHandCompanionPath(scenarioHost);
   if (path.resolve(handCompanion) !== path.resolve(expectedCompanion)) {

@@ -142,26 +142,26 @@ bytes and restart recovery. Codex/Claude deterministic peers do not establish
 real vendor credential compatibility. These rows also do not establish Windows,
 macOS, cross-machine failover or all pending-Candidate replacement schedules.
 
-Store-read committed Candidates use the same retirement selector and existing
-committed-Candidate transition: their exact hidden Arc and durable identity move
-directly to Bound `Retiring(RealizationRevocation)`, without prior publication.
-Complete-projection preflight reuses the durable-identity decision to reject a
-foreign generation before stopping processes. Same-generation receipt stutter
-and renewal preserve the hidden owner. Uncommitted cleanup stays Unbound;
-projected binding equality cannot establish its missing commit evidence.
+All scoped Candidates share retirement: Store-read identity permits Bound ownership;
+missing acknowledgement stays Unbound even across repeated Closed revocation.
+Neither case publishes the old Candidate or deletes its root on an absent response.
+Preflight rejects a foreign binding and any conflict with known durable identity;
+renewal preserves the hidden owner. Projection alone never promotes Unbound state.
+Current aggregate Adopt is legal for Unmaterialized or the same Resident binding.
+The existing lazy Candidate retry delegates to that adoption path when revoked:
+observe Ready, rebind retained resources, atomically enroll the fresh Candidate,
+persist Adopt, then publish its exact Store-read identity. No ownerless interval
+or Unowned recovery is admitted.
 
-SC1-SC4 extend the same real Linux projection fixture with a fenced Create,
-canonical sink readback and retained unpublished Candidate. They check renewal,
-foreign binding/generation preflight, live-tree stop, unknown-observer retention,
-exact retry, explicit revocation, old-object denial and successor execution over
-unchanged root bytes.
-The adjacent lifecycle table crosses Create/Adopt origin, commitment, exact
-selection and retirement cause. The replacement model starts with either
-Resident or committed Candidate and adds positive retirement enabledness: seven
-semantic mutants and three reachability witnesses. It assumes commitment, not
-response-loss commit discovery, a second replacement of the successor Candidate,
-or real sink/dispatch cancellation ordering. Those schedules still require
-end-to-end qualification rather than inference from this retained-owner fixture.
+SC1-SC4 and UC1-UC3 reuse the same real Linux fixture, root sink and blocking seam.
+Actual context cancellation before commit or after commit/before response crosses
+renewal, foreign binding, unknown-observer retry and repeated explicit revocation.
+Root bytes, execution and receipt counts are checked; lifecycle tables cross
+origins, commitment, exact selection and wrong causes.
+The same bounded model separates successor root commit, readback and publication:
+12 semantic mutants and six witnesses include lost responses and post-commit
+cancellation. Unmaterialized terminal takeover, a second successor replacement,
+real distributed CAS/dispatch faults, observer truth and Rust refinement remain open.
 
 ## 2026-09-01 amendment: lease-only renewal
 

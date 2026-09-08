@@ -454,7 +454,7 @@ impl SharedHost {
             let _lifecycle = lifecycle.lock().await;
             self.retry_unpublished_session_environment_cleanup(thread)
                 .await?;
-            self.retry_prepared_session_environment_publication_under_lifecycle(thread)
+            self.retry_session_environment_candidate_under_lifecycle(thread)
                 .await?;
             if let Some(ctx) = self
                 .session_slots

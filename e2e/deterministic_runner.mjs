@@ -24,7 +24,6 @@ import {
   requirePrebuiltExecutable,
   scenarioHandCompanionPath,
 } from './cargo_binary.mjs';
-import { snapshotExecutable } from './executable_snapshot.mjs';
 import { withoutAmbientProviderKeys } from './process_environment.mjs';
 
 export { withoutAmbientProviderKeys } from './process_environment.mjs';
@@ -277,26 +276,27 @@ export function preparedEnvironment(environment, explicitDirectory) {
     cwd: REPO_ROOT,
     packageName: 'awaken-cli',
     targetName: 'awaken',
+    environment: cleanEnvironment,
+    snapshotDestination: awakenDestination,
   });
-  const { scenarioHost, handCompanion } = cargoScenarioHostBundle({
+  const { scenarioHost } = cargoScenarioHostBundle({
     cwd: REPO_ROOT,
     environment: cleanEnvironment,
+    snapshotDirectory: directory,
   });
   const worker = cargoExecutable({
     cwd: REPO_ROOT,
     packageName: 'awaken-worker',
     targetName: 'awaken-worker',
+    environment: cleanEnvironment,
+    snapshotDestination: workerDestination,
   });
   const prepared = {
     ...cleanEnvironment,
-    [AWAKEN_BIN_ENV]: snapshotExecutable(awaken, awakenDestination),
-    [SCENARIO_HOST_BIN_ENV]: snapshotExecutable(
-      scenarioHost,
-      scenarioHostDestination,
-    ),
-    [WORKER_BIN_ENV]: snapshotExecutable(worker, workerDestination),
+    [AWAKEN_BIN_ENV]: awaken,
+    [SCENARIO_HOST_BIN_ENV]: scenarioHost,
+    [WORKER_BIN_ENV]: worker,
   };
-  snapshotExecutable(handCompanion, handCompanionDestination);
   fs.mkdirSync(directory, { recursive: true });
   const temporaryManifest = `${manifestPath}.${process.pid}.tmp`;
   fs.writeFileSync(
