@@ -367,9 +367,9 @@ pub struct SessionEventEntry {
     pub processed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub processed_at_unix_ms: Option<u64>,
-    /// Absent for not-yet-committed and legacy commands. Such entries remain durable
-    /// provenance but are not listable until the existing effect owner supplies
-    /// one immutable commit coordinate.
+    /// Absent until the existing effect owner supplies its immutable commit
+    /// coordinate. Public ordering is owned separately by the batch admission
+    /// fence, so this later observation cannot relocate an issued Event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projection_anchor: Option<SessionEventProjectionAnchor>,
 }
@@ -390,6 +390,12 @@ pub struct SessionEventBatch {
     /// vector position or a process-local clock.
     #[serde(default)]
     pub admitted_revision: crate::SessionRevision,
+    /// Immutable Runtime ordering fence observed before this batch's root CAS.
+    /// Every effect caused by the newly admitted command commits after this
+    /// fence, so public receipts can be ordered once at admission instead of
+    /// moving when their later processing anchor arrives. Closed receipts use
+    /// `None` because they contain no public Event.
+    pub admission_projection_anchor: Option<SessionEventProjectionAnchor>,
     /// Optional HTTP retry identity and its canonical request fingerprint. The
     /// pair is retained on this existing Session-root command; there is no
     /// protocol-side idempotency table or second Event store.
@@ -492,10 +498,19 @@ impl SessionEventBatch {
                     .request_fingerprint
                     .as_ref()
                     .is_none_or(|value| value.trim().is_empty())
+                || self.admission_projection_anchor.is_some()
                 || self.wake_activity_epoch.is_some()
                 || self.traceparent.is_some())
         {
             return Err(SessionEventBatchError::InvalidClosedAdmission);
+        }
+        if !self.admission_closed
+            && (self.events.is_empty()
+                || self.admitted_revision.0 == 0
+                || self.batch_id.is_empty()
+                || self.admission_projection_anchor.is_none())
+        {
+            return Err(SessionEventBatchError::InvalidAcceptedAdmission);
         }
         Ok(())
     }
@@ -513,6 +528,7 @@ impl SessionEventBatch {
             batch_id,
             events: Vec::new(),
             admitted_revision: revision,
+            admission_projection_anchor: None,
             idempotency_key: None,
             request_fingerprint: None,
             admission_closed: true,
@@ -538,6 +554,26 @@ impl SessionEventBatch {
         Ok(())
     }
 
+    /// Bind the one public-order coordinate before an accepted batch becomes
+    /// executable. Exact replay is inert; changing a persisted coordinate fails
+    /// closed rather than rewriting issued Event cursors.
+    pub fn anchor_admission_projection(
+        &mut self,
+        anchor: SessionEventProjectionAnchor,
+    ) -> Result<bool, SessionEventBatchError> {
+        if self.admission_closed {
+            return Err(SessionEventBatchError::ProgressMismatch);
+        }
+        match self.admission_projection_anchor {
+            Some(recorded) if recorded == anchor => Ok(false),
+            Some(_) => Err(SessionEventBatchError::ProgressMismatch),
+            None => {
+                self.admission_projection_anchor = Some(anchor);
+                Ok(true)
+            }
+        }
+    }
+
     #[must_use]
     pub fn is_complete(&self) -> bool {
         self.events.iter().all(|entry| entry.processed)
@@ -545,7 +581,7 @@ impl SessionEventBatch {
 
     /// Retain committed input visibility without completing the command. An
     /// anchor is immutable even while processing remains pending; a late reader
-    /// cannot relocate already published input or upgrade legacy completion.
+    /// cannot relocate already published input.
     pub fn anchor_committed_input(
         &mut self,
         operation_id: &str,
@@ -581,10 +617,10 @@ impl SessionEventBatch {
         )
     }
 
-    /// Resolve every still-pending accepted command after a legacy terminal
+    /// Resolve every still-pending accepted command after a terminal
     /// root won. No Runtime effect is executed: the terminal cleanup cursor is
     /// the first immutable visibility anchor when available, while `None`
-    /// deliberately preserves the isolated pre-anchor legacy prefix.
+    /// leaves the effect observation unknown without changing public order.
     pub fn resolve_terminally(
         &mut self,
         projection_anchor: Option<SessionEventProjectionAnchor>,
@@ -780,6 +816,7 @@ impl SessionEventBatch {
             batch_id,
             events,
             admitted_revision: crate::SessionRevision::default(),
+            admission_projection_anchor: None,
             idempotency_key: None,
             request_fingerprint: None,
             admission_closed: false,
@@ -856,6 +893,8 @@ pub enum SessionEventBatchError {
     InvalidIdempotencyCoordinate,
     #[error("closed Session Event admission must contain only its immutable retry coordinate")]
     InvalidClosedAdmission,
+    #[error("accepted Session Event admission must contain events, revision, and projection fence")]
+    InvalidAcceptedAdmission,
 }
 
 #[cfg(test)]
@@ -888,8 +927,14 @@ mod tests {
             serde_json::from_value::<SessionEventBatch>(encoded.clone()).unwrap(),
             closed
         );
-        let accepted =
+        let mut accepted =
             SessionEventBatch::compile("session", "accepted", vec![user("hello")]).unwrap();
+        accepted.admitted_revision = crate::SessionRevision(1);
+        accepted
+            .anchor_admission_projection(SessionEventProjectionAnchor {
+                source_commit_cursor: 0,
+            })
+            .unwrap();
         for (field, value) in [
             ("events", serde_json::to_value(&accepted.events).unwrap()),
             ("admitted_revision", serde_json::json!(0)),
@@ -1035,7 +1080,7 @@ mod tests {
         // observation/restart -> no-op; A3 changed anchor or unknown operation
         // -> atomic rejection; A4 same-anchor completion -> first timestamp;
         // A5 terminal cleanup -> retain the already published input coordinate;
-        // A6 processed legacy/no anchor -> reject late relocation. Cross A1-A3
+        // A6 processed/no effect anchor -> reject late relocation. Cross A1-A3
         // with pending/completed state; no row invents a completed Run.
         let anchor = SessionEventProjectionAnchor {
             source_commit_cursor: 7,
@@ -1069,12 +1114,64 @@ mod tests {
                 "A4-A5"
             );
         }
-        let mut legacy = SessionEventBatch::compile("s", "b", vec![user("one")]).unwrap();
-        let op = legacy.events[0].event.operation_id().to_owned();
-        legacy.resolve_terminally(None, 100);
-        let before = legacy.clone();
-        assert!(legacy.anchor_committed_input(&op, anchor).is_err(), "A6");
-        assert_eq!(legacy, before);
+        let mut unobserved = SessionEventBatch::compile("s", "b", vec![user("one")]).unwrap();
+        let op = unobserved.events[0].event.operation_id().to_owned();
+        unobserved.resolve_terminally(None, 100);
+        let before = unobserved.clone();
+        assert!(
+            unobserved.anchor_committed_input(&op, anchor).is_err(),
+            "A6"
+        );
+        assert_eq!(unobserved, before);
+    }
+
+    #[test]
+    fn admission_projection_anchor_is_required_and_immutable() {
+        // Cause/effect graph: C1 accepted versus closed receipt; C2 anchor is
+        // absent, exact replay, or different; C3 durable verification occurs.
+        // Effects: E1 first accepted anchor binds; E2 exact replay is inert;
+        // E3 relocation and closed anchoring fail; E4 only anchored accepted
+        // and unanchored closed rows pass the storage invariant. Rules:
+        // A1=accepted+absent=>E1; A2=accepted+exact=>E2;
+        // A3=accepted+different=>E3; A4=closed+any=>E3;
+        // A5=accepted+absent+C3=>E4(reject); A6=A1+C3=>E4(accept).
+        let anchor = SessionEventProjectionAnchor {
+            source_commit_cursor: 7,
+        };
+        let mut accepted = SessionEventBatch::compile("s", "b", vec![user("one")]).unwrap();
+        accepted.admitted_revision = crate::SessionRevision(1);
+        assert_eq!(
+            accepted.verify_admission(),
+            Err(SessionEventBatchError::InvalidAcceptedAdmission),
+            "A5/E4"
+        );
+        assert!(
+            accepted.anchor_admission_projection(anchor).unwrap(),
+            "A1/E1"
+        );
+        assert!(
+            !accepted.anchor_admission_projection(anchor).unwrap(),
+            "A2/E2"
+        );
+        assert!(
+            accepted
+                .anchor_admission_projection(SessionEventProjectionAnchor {
+                    source_commit_cursor: 8,
+                })
+                .is_err(),
+            "A3/E3"
+        );
+        assert_eq!(accepted.verify_admission(), Ok(()), "A6/E4");
+
+        let mut closed = SessionEventBatch::closed_admission(
+            "closed".into(),
+            crate::SessionRevision(1),
+            "key".into(),
+            "fingerprint".into(),
+        )
+        .unwrap();
+        assert!(closed.anchor_admission_projection(anchor).is_err(), "A4/E3");
+        assert_eq!(closed.verify_admission(), Ok(()), "A4/E4");
     }
 
     #[test]

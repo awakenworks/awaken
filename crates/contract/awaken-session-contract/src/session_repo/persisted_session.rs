@@ -191,6 +191,10 @@ impl PersistedSession {
                 .checked_add(1)
                 .ok_or(crate::SessionEventBatchError::ProgressMismatch)?,
         );
+        plan.batch
+            .anchor_admission_projection(crate::SessionEventProjectionAnchor {
+                source_commit_cursor: 0,
+            })?;
         plan.batch.wake_activity_epoch = Some(activity_epoch);
         self.event_batches.push(plan.batch);
         Ok(())

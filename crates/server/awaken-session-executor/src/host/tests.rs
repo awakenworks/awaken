@@ -1054,45 +1054,58 @@ impl awaken_provisioning_contract::MemoryMounter for TestMemoryMounter {
         store_id: &str,
         host_path: &std::path::Path,
         _access: awaken_provisioning_contract::MountAccess,
-    ) -> Result<
-        Box<dyn awaken_provisioning_contract::MemoryMount>,
-        awaken_provisioning_contract::SandboxError,
-    > {
-        std::fs::create_dir_all(host_path)
-            .map_err(|error| awaken_provisioning_contract::SandboxError::new(error.to_string()))?;
-        let mut heads = Vec::new();
-        for entry in
-            self.fs.list(store_id, "/").await.map_err(|error| {
+    ) -> awaken_provisioning_contract::MemoryMountOutcome {
+        let result: Result<
+            Box<dyn awaken_provisioning_contract::MemoryMount>,
+            awaken_provisioning_contract::SandboxError,
+        > = async {
+            std::fs::create_dir_all(host_path).map_err(|error| {
                 awaken_provisioning_contract::SandboxError::new(error.to_string())
-            })?
-        {
-            let Some(memory) =
-                self.fs
-                    .get_by_path(store_id, &entry.path)
-                    .await
-                    .map_err(|error| {
+            })?;
+            let mut heads = Vec::new();
+            for entry in self.fs.list(store_id, "/").await.map_err(|error| {
+                awaken_provisioning_contract::SandboxError::new(error.to_string())
+            })? {
+                let Some(memory) =
+                    self.fs
+                        .get_by_path(store_id, &entry.path)
+                        .await
+                        .map_err(|error| {
+                            awaken_provisioning_contract::SandboxError::new(error.to_string())
+                        })?
+                else {
+                    continue;
+                };
+                heads.push(awaken_provisioning_contract::MemoryMaterializationHead {
+                    path: memory.path.clone(),
+                    id: memory.id.clone(),
+                    content_sha256: memory.content_sha256.clone(),
+                });
+                let path = host_path.join(memory.path.trim_start_matches('/'));
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).map_err(|error| {
                         awaken_provisioning_contract::SandboxError::new(error.to_string())
-                    })?
-            else {
-                continue;
-            };
-            heads.push(awaken_provisioning_contract::MemoryMaterializationHead {
-                path: memory.path.clone(),
-                id: memory.id.clone(),
-                content_sha256: memory.content_sha256.clone(),
-            });
-            let path = host_path.join(memory.path.trim_start_matches('/'));
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(|error| {
+                    })?;
+                }
+                std::fs::write(path, memory.content.unwrap_or_default()).map_err(|error| {
                     awaken_provisioning_contract::SandboxError::new(error.to_string())
                 })?;
             }
-            std::fs::write(path, memory.content.unwrap_or_default()).map_err(|error| {
-                awaken_provisioning_contract::SandboxError::new(error.to_string())
-            })?;
+            heads.sort_by(|left, right| left.path.cmp(&right.path));
+            Ok(Box::new(TestMemoryMount { heads })
+                as Box<dyn awaken_provisioning_contract::MemoryMount>)
         }
-        heads.sort_by(|left, right| left.path.cmp(&right.path));
-        Ok(Box::new(TestMemoryMount { heads }))
+        .await;
+        awaken_provisioning_contract::MemoryMountOutcome::from_no_effect(result)
+    }
+
+    async fn recover_unknown_mount(
+        &self,
+        _: &str,
+        _: &std::path::Path,
+        _: awaken_provisioning_contract::MountAccess,
+    ) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        Ok(())
     }
 }
 
@@ -17985,10 +17998,19 @@ impl pc::MemoryMounter for RecordingTerminalMemoryMounter {
         _store_id: &str,
         _host_path: &std::path::Path,
         _access: pc::MountAccess,
-    ) -> Result<Box<dyn pc::MemoryMount>, pc::SandboxError> {
-        Err(pc::SandboxError::new(
+    ) -> pc::MemoryMountOutcome {
+        pc::MemoryMountOutcome::NoEffect(pc::SandboxError::new(
             "terminal reconciliation fixture must not materialize a new Run mount",
         ))
+    }
+
+    async fn recover_unknown_mount(
+        &self,
+        _: &str,
+        _: &std::path::Path,
+        _: pc::MountAccess,
+    ) -> Result<(), pc::SandboxError> {
+        Ok(())
     }
 
     async fn reconcile_recovered_copy(

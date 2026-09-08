@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use awaken_provisioning_contract::{
-    MemoryMount, MemoryMounter, MountAccess, Realization, SandboxError,
+    MemoryMount, MemoryMountOutcome, MemoryMounter, MountAccess, Realization, SandboxError,
 };
 use awaken_resource_contract::MemoryRepository;
 
@@ -167,53 +167,73 @@ impl MemoryMounter for MemoryStoreMounter {
         store_id: &str,
         host_path: &Path,
         access: MountAccess,
-    ) -> Result<Box<dyn MemoryMount>, SandboxError> {
-        // Every realization is a fresh projection. In particular, a deleted
-        // memory from the durable store must not reappear from stale copy bytes
-        // left by an evicted Session context. Never follow a replaced symlink.
-        clear_projection(host_path)?;
-        std::fs::create_dir_all(host_path).map_err(|error| {
-            sandbox_err(format!(
-                "create Memory projection `{}`: {error}",
-                host_path.display()
-            ))
-        })?;
-
-        #[cfg(all(feature = "fuse", target_os = "linux"))]
-        if self.prefer_fuse && copy::fuse_available() {
-            let handle = crate::fuse::spawn_mount_with_invalidations(
-                self.fs.clone(),
-                store_id.to_string(),
-                host_path.to_path_buf(),
-                self.bus.subscribe(),
-            )
-            .map_err(|error| {
+    ) -> MemoryMountOutcome {
+        let result: Result<Box<dyn MemoryMount>, SandboxError> = async {
+            // Every realization is a fresh projection. In particular, a deleted
+            // memory from the durable store must not reappear from stale copy bytes
+            // left by an evicted Session context. Never follow a replaced symlink.
+            clear_projection(host_path)?;
+            std::fs::create_dir_all(host_path).map_err(|error| {
                 sandbox_err(format!(
-                    "mount MemoryStore `{store_id}` at `{}`: {error}",
+                    "create Memory projection `{}`: {error}",
                     host_path.display()
                 ))
             })?;
-            return Ok(Box::new(FuseMount {
-                handle: Arc::new(std::sync::Mutex::new(handle)),
-            }));
-        }
 
-        // No FUSE (macOS / CI / unprivileged container): copy the store out now and
-        // harvest a writable mount back on teardown.
-        let root = awaken_sandbox_fs::ProjectionRoot::capture(host_path).map_err(sandbox_err)?;
-        let snapshot = copy::materialize(&*self.fs, store_id, host_path)
-            .await
-            .map_err(sandbox_err)?;
-        let materialization_heads = snapshot.materialization_heads();
-        Ok(Box::new(CopyMount {
-            root,
-            fs: self.fs.clone(),
-            store_id: store_id.to_string(),
-            host_path: host_path.to_path_buf(),
-            writable: access == MountAccess::ReadWrite,
-            materialization_heads,
-            snapshot: tokio::sync::Mutex::new(snapshot),
-        }))
+            #[cfg(all(feature = "fuse", target_os = "linux"))]
+            if self.prefer_fuse && copy::fuse_available() {
+                let handle = crate::fuse::spawn_mount_with_invalidations(
+                    self.fs.clone(),
+                    store_id.to_string(),
+                    host_path.to_path_buf(),
+                    self.bus.subscribe(),
+                )
+                .map_err(|error| {
+                    sandbox_err(format!(
+                        "mount MemoryStore `{store_id}` at `{}`: {error}",
+                        host_path.display()
+                    ))
+                })?;
+                return Ok(Box::new(FuseMount {
+                    handle: Arc::new(std::sync::Mutex::new(handle)),
+                }) as Box<dyn MemoryMount>);
+            }
+
+            // No FUSE (macOS / CI / unprivileged container): copy the store out now and
+            // harvest a writable mount back on teardown.
+            let root =
+                awaken_sandbox_fs::ProjectionRoot::capture(host_path).map_err(sandbox_err)?;
+            let snapshot = copy::materialize(&*self.fs, store_id, host_path)
+                .await
+                .map_err(sandbox_err)?;
+            let materialization_heads = snapshot.materialization_heads();
+            Ok(Box::new(CopyMount {
+                root,
+                fs: self.fs.clone(),
+                store_id: store_id.to_string(),
+                host_path: host_path.to_path_buf(),
+                writable: access == MountAccess::ReadWrite,
+                materialization_heads,
+                snapshot: tokio::sync::Mutex::new(snapshot),
+            }) as Box<dyn MemoryMount>)
+        }
+        .await;
+        match result {
+            Ok(mount) => MemoryMountOutcome::Mounted(mount),
+            // Every fallible step follows `clear_projection` or may itself have
+            // partially changed the stable host path. Retain recovery rather
+            // than asserting that an ordinary error proves absence of effect.
+            Err(error) => MemoryMountOutcome::RecoveryRequired(error),
+        }
+    }
+
+    async fn recover_unknown_mount(
+        &self,
+        _store_id: &str,
+        host_path: &Path,
+        _access: MountAccess,
+    ) -> Result<(), SandboxError> {
+        clear_projection(host_path)
     }
 
     async fn reconcile_recovered_copy(
@@ -323,6 +343,22 @@ mod tests {
     use super::*;
     use awaken_memory_store::VolatileMemoryRepository;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    trait MemoryMountOutcomeTestExt {
+        fn mounted(self) -> Box<dyn MemoryMount>;
+    }
+
+    impl MemoryMountOutcomeTestExt for MemoryMountOutcome {
+        fn mounted(self) -> Box<dyn MemoryMount> {
+            match self {
+                MemoryMountOutcome::Mounted(mount) => mount,
+                MemoryMountOutcome::NoEffect(error)
+                | MemoryMountOutcome::RecoveryRequired(error) => {
+                    panic!("expected mounted Memory participant: {error}")
+                }
+            }
+        }
+    }
 
     fn temp(tag: &str) -> PathBuf {
         let n = SystemTime::now()
@@ -535,11 +571,11 @@ mod tests {
         let ga = mounter
             .mount("alpha", &dir_a, MountAccess::ReadOnly)
             .await
-            .unwrap();
+            .mounted();
         let gb = mounter
             .mount("beta", &dir_b, MountAccess::ReadOnly)
             .await
-            .unwrap();
+            .mounted();
 
         // alpha's file materializes only under alpha's mount, never beta's (content
         // invisibility, not merely a different mountpoint).
@@ -594,7 +630,7 @@ mod tests {
         let guard = mounter
             .mount("s", &dir, MountAccess::ReadWrite)
             .await
-            .unwrap();
+            .mounted();
         assert_eq!(guard.realization(), Realization::Copy);
         // The store was materialized into the host dir (no FUSE).
         assert_eq!(std::fs::read_to_string(dir.join("note.md")).unwrap(), "v1");
@@ -629,7 +665,7 @@ mod tests {
         let guard = mounter
             .mount("s", &dir, MountAccess::ReadWrite)
             .await
-            .unwrap();
+            .mounted();
         assert_eq!(guard.realization(), Realization::Copy);
         assert_eq!(std::fs::read_to_string(dir.join("note.md")).unwrap(), "v1");
 
@@ -662,7 +698,7 @@ mod tests {
         let guard = mounter
             .mount("s", &dir, MountAccess::ReadOnly)
             .await
-            .unwrap();
+            .mounted();
         assert_eq!(
             std::fs::read_to_string(dir.join("live.md")).unwrap(),
             "truth"

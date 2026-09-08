@@ -285,16 +285,28 @@ mod memory_mount_release_tests {
             _store_id: &str,
             host_path: &std::path::Path,
             _access: pc::MountAccess,
-        ) -> Result<Box<dyn pc::MemoryMount>, pc::SandboxError> {
-            self.mount_calls.fetch_add(1, Ordering::SeqCst);
-            std::fs::create_dir_all(host_path)
-                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-            Ok(Box::new(CountedMount {
-                calls: self.teardown_calls.clone(),
-                drops: self.drops.clone(),
-                fail_first: true,
-                realization: pc::Realization::Fuse,
-            }))
+        ) -> pc::MemoryMountOutcome {
+            let result: Result<Box<dyn pc::MemoryMount>, pc::SandboxError> = (|| {
+                self.mount_calls.fetch_add(1, Ordering::SeqCst);
+                std::fs::create_dir_all(host_path)
+                    .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+                Ok(Box::new(CountedMount {
+                    calls: self.teardown_calls.clone(),
+                    drops: self.drops.clone(),
+                    fail_first: true,
+                    realization: pc::Realization::Fuse,
+                }) as Box<dyn pc::MemoryMount>)
+            })();
+            pc::MemoryMountOutcome::from_no_effect(result)
+        }
+
+        async fn recover_unknown_mount(
+            &self,
+            _: &str,
+            _: &std::path::Path,
+            _: pc::MountAccess,
+        ) -> Result<(), pc::SandboxError> {
+            Ok(())
         }
     }
 

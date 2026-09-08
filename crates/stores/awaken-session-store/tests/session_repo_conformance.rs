@@ -14,9 +14,9 @@ use awaken_deployment_contract::{
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, McpAttachmentDraft,
     McpAttachmentOrigin, McpTarget, PersistedSession, ScopedPersistedSession, SessionCreateResult,
-    SessionEnvironmentPhase, SessionExecutionState, SessionMutation, SessionMutationPayload,
-    SessionMutationResult, SessionRepositoryConflict, SessionRepositoryError, SessionRevision,
-    SessionTombstone,
+    SessionEnvironmentPhase, SessionEventProjectionAnchor, SessionExecutionState, SessionMutation,
+    SessionMutationPayload, SessionMutationResult, SessionRepositoryConflict,
+    SessionRepositoryError, SessionRevision, SessionTombstone,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 use serde_json::json;
@@ -1060,6 +1060,11 @@ async fn deleted_event_admission_decision_table<R: ManagedSessionRepository>(rep
                 };
                 let mut batch = SessionEventBatch::compile(&id, "batch", vec![input]).unwrap();
                 batch.admitted_revision = SessionRevision(1);
+                batch
+                    .anchor_admission_projection(SessionEventProjectionAnchor {
+                        source_commit_cursor: 0,
+                    })
+                    .unwrap();
                 batch.bind_idempotency("key", "fp").unwrap();
                 batch.resolve_terminally(None, 1);
                 batch
