@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { auditLoadResults } from './distributed_control_driver.ts';
+import { auditLoadResults, disposeFixtureSessions } from './distributed_control_driver.ts';
 
 const response = (marker: string) => ({ type: 'agent.message', content: [{ type: 'text', text: `ADR71-PROVIDER:${marker}` }] });
 
@@ -39,4 +39,29 @@ test('load audit rejects absent samples, invalid measurements and hidden history
   assert.ok(auditLoadResults([], [], [], 5000).errors.length);
   assert.ok(auditLoadResults([histories[0]], markers, times, 5000).errors.length);
   assert.ok(auditLoadResults([[...histories[0], response('other'), response('other')], histories[1]], markers, times, 5000).errors.length);
+});
+
+test('temporary batch cleanup joins every independent terminal request', async () => {
+  // Batch-cleanup decision table. C1 zero/one/many auxiliary Sessions; C2 every
+  // public disposal accepts or at least one rejects. Effects: E1 every supplied
+  // auxiliary id is attempted exactly once; E2 success only when all accepted;
+  // E3 one failure cannot short-circuit the independent cleanup requests. Rules:
+  // B1 C1=zero => E1+E2; B2 C1=many+C2=all => E1+E2; B3 C1=many+C2=reject =>
+  // E1+E3 and reject. The still-needed original Session is absent from the
+  // supplied auxiliary set and therefore cannot be disposed by this owner.
+  const calls: string[] = [];
+  await disposeFixtureSessions([], async (id) => { calls.push(id); });
+  await disposeFixtureSessions(['aux-a', 'aux-b'], async (id) => { calls.push(id); });
+  assert.deepEqual(calls, ['aux-a', 'aux-b'], 'B1/B2');
+
+  const rejectedCalls: string[] = [];
+  await assert.rejects(
+    disposeFixtureSessions(['aux-c', 'aux-d'], async (id) => {
+      rejectedCalls.push(id);
+      if (id === 'aux-c') throw new Error('disposal unavailable');
+    }),
+    /every temporary batch Session accepted terminal disposal/,
+    'B3',
+  );
+  assert.deepEqual(rejectedCalls, ['aux-c', 'aux-d'], 'B3/E3');
 });

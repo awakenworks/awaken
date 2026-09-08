@@ -391,7 +391,39 @@ node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AF
 kubectl -n "$NS" delete pod "$(kubectl -n "$NS" get pod -l app=coordinator -o jsonpath='{.items[0].metadata.name}')" --grace-period=0 --force >/dev/null 2>&1
 node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-COORDINATOR-LOSS
 wait_roles || { diagnostics; exit 1; }
-node "$DRIVER" batch "$API_URL" "$SESSION_ID" "$ENVIRONMENT_ID" ADR71-CHAOS 12
+BATCH_COUNT=12
+BATCH_OUTPUT=$(node "$DRIVER" batch "$API_URL" "$SESSION_ID" "$ENVIRONMENT_ID" ADR71-CHAOS "$BATCH_COUNT")
+printf '%s\n' "$BATCH_OUTPUT"
+BATCH_LINE=${BATCH_OUTPUT##*$'\n'}
+[[ "$BATCH_LINE" == "OK batch ADR71-CHAOS $BATCH_COUNT auxiliary="* ]] \
+  || { err "batch did not publish its temporary Session cleanup identities"; exit 1; }
+BATCH_AUXILIARY=${BATCH_LINE#* auxiliary=}
+IFS=',' read -r -a BATCH_AUXILIARY_IDS <<<"$BATCH_AUXILIARY"
+[ "${#BATCH_AUXILIARY_IDS[@]}" = "$((BATCH_COUNT - 1))" ] \
+  || { err "batch published ${#BATCH_AUXILIARY_IDS[@]} temporary Sessions, expected $((BATCH_COUNT - 1))"; exit 1; }
+# Fixture-capacity decision table: C1 Stage 7 has proved all twelve independent
+# Session effects; C2 stages 8/9 depend only on the original durable Session;
+# C3 public DELETE commits each auxiliary terminal intent; C4 its exact Pod and
+# retained PVC are both gone. E1 C1+C2 permits disposal of only the eleven
+# auxiliary Sessions; E2 C3+C4 releases their physical capacity before Stage 10;
+# E3 any missing identity, rejected delete, or residual object fails the fixture
+# rather than weakening the later 12-way cold-start bound. Snapshot the exact
+# backend identities before DELETE because that command correctly returns after
+# durable intent while the one lifecycle owner completes physical cleanup.
+BATCH_AUXILIARY_POD_TARGETS=()
+BATCH_AUXILIARY_CLAIM_TARGETS=()
+for auxiliary_session in "${BATCH_AUXILIARY_IDS[@]}"; do
+  auxiliary_pod=$(k3d_sandbox_pod_for_session "$NS" "$auxiliary_session")
+  auxiliary_claim=$(kubectl -n "$NS" get pod "$auxiliary_pod" \
+    -o jsonpath='{.spec.volumes[*].persistentVolumeClaim.claimName}')
+  [ -n "$auxiliary_claim" ] \
+    || { err "temporary Session $auxiliary_session has no retained claim"; exit 1; }
+  BATCH_AUXILIARY_POD_TARGETS+=("pod/$auxiliary_pod")
+  BATCH_AUXILIARY_CLAIM_TARGETS+=("pvc/$auxiliary_claim")
+done
+node "$DRIVER" dispose-batch "$API_URL" "$BATCH_AUXILIARY"
+kubectl -n "$NS" wait --for=delete "${BATCH_AUXILIARY_POD_TARGETS[@]}" --timeout=120s
+kubectl -n "$NS" wait --for=delete "${BATCH_AUXILIARY_CLAIM_TARGETS[@]}" --timeout=120s
 wait_roles || { diagnostics; exit 1; }
 kubectl -n "$NS" delete pod "$(kubectl -n "$NS" get pod -l app=provider -o jsonpath='{.items[0].metadata.name}')" --grace-period=0 --force >/dev/null 2>&1
 node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-PROVIDER-LOSS
