@@ -11,7 +11,7 @@ use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{Error, Result, verify_attempt_ownership};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
-use super::{TaskReference, validate_reattached_task};
+use super::{AcceptedRemoteOperation, TaskReference, validate_reattached_task};
 
 const MAX_TASK_POLLS: usize = 600;
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
@@ -113,9 +113,9 @@ pub(super) async fn poll_to_boundary(
 
 /// Commit only after the owned remote operation returned a validated boundary.
 pub(super) async fn finish_task(
-    endpoint: &str,
     activation: &RunActivation,
     context: &RuntimeRunContext,
+    accepted: AcceptedRemoteOperation,
     task: Task,
 ) -> Result<RunState> {
     let reply = super::task_reply(&task);
@@ -125,13 +125,13 @@ pub(super) async fn finish_task(
         .collect();
     match task.status.state {
         TaskState::InputRequired | TaskState::AuthRequired => {
-            let reference = TaskReference::from_task(endpoint, &task);
+            validate_reattached_task(&accepted.reference, &task)?;
             super::commit_boundary(
                 context,
                 activation,
                 RunDisposition::awaiting(super::awaiting_ticket(activation, &task)),
                 messages,
-                vec![super::task_reference_state(&reference)?],
+                vec![super::accepted_operation_state(&accepted)?],
             )
             .await?;
             Ok(RunState::Awaiting)
@@ -360,7 +360,7 @@ mod tests {
                     .contains("identity changed")
             );
             assert!(!latch.can_acknowledge_return());
-            let retained = crate::restored_task_reference(&context, &activation)
+            let retained = crate::restored_accepted_reference(&context, &activation)
                 .unwrap()
                 .unwrap();
             assert_eq!(retained.task_id, "task-a");
@@ -436,13 +436,16 @@ mod tests {
 
     #[tokio::test]
     async fn commit_failure_does_not_replace_remote_execution_evidence() {
-        // R1 working task + reference commit fails => error+veto (task may
+        // R1 working task + Accepted commit fails => error+veto (task may
         // continue, no GET/re-send). R2 terminal observed + final commit fails
         // => commit error WITHOUT inventing remote uncertainty; retry belongs
-        // to the existing commit owner, not execution. One send in either row.
+        // to the existing commit owner, not execution. Prepared is commit 1,
+        // Accepted is commit 2, and a terminal boundary is commit 3. One send
+        // in either row; failure of Prepared itself is pre-dispatch and covered
+        // by the missing-commit-coordinator test.
         for (state, failed_commit, can_ack) in [
-            (TaskState::Working, 1, false),
-            (TaskState::Completed, 2, true),
+            (TaskState::Working, 2, false),
+            (TaskState::Completed, 3, true),
         ] {
             let transport = Arc::new(ScriptedTransport::new(vec![response(
                 &serde_json::to_string(&task(state)).unwrap(),
@@ -458,6 +461,30 @@ mod tests {
             assert_eq!(latch.can_acknowledge_return(), can_ack);
             assert_eq!(transport.seen.lock().unwrap().len(), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn prepared_commit_failure_prevents_remote_dispatch() {
+        // Cause-effect graph: C1 the exact Prepared ThreadCommit is rejected;
+        // C2 no remote operation has been entered. Effects: E1 surface the
+        // commit error; E2 issue zero A2A requests; E3 preserve an ACK-safe
+        // attempt because no external participant can exist.
+        //
+        // | Rule | Prepared commit | Remote entry | Effects |
+        // |---|---|---|---|
+        // | R1 | rejected | no | E1+E2+E3 |
+        // | R2 | committed | yes | owned by send/acceptance tests |
+        let transport = Arc::new(ScriptedTransport::new(Vec::new()));
+        let context =
+            RuntimeRunContext::new().with_commit(Arc::new(FailCommit(AtomicUsize::new(0), 1)));
+        let latch = context.physical_quiescence.clone();
+        let error = scripted_executor(transport.clone())
+            .execute(activation("a2a:http://remote.invalid"), context)
+            .await
+            .expect_err("Prepared must commit before send");
+        assert!(matches!(error, Error::Commit(_)), "R1/E1");
+        assert!(transport.seen.lock().unwrap().is_empty(), "R1/E2");
+        assert!(latch.can_acknowledge_return(), "R1/E3");
     }
 
     #[tokio::test(start_paused = true)]
@@ -484,8 +511,8 @@ mod tests {
         assert!(!latch.can_acknowledge_return());
         assert_eq!(
             rec.0.lock().unwrap().len(),
-            1,
-            "reference only, no false terminal"
+            2,
+            "Prepared + Accepted only, no false terminal"
         );
         let seen = transport.seen.lock().unwrap();
         assert_eq!(seen.len(), MAX_TASK_POLLS + 1);
@@ -542,7 +569,7 @@ mod tests {
             "R2"
         );
         assert_eq!(
-            crate::restored_task_reference(&recovered, &activation)
+            crate::restored_accepted_reference(&recovered, &activation)
                 .unwrap()
                 .unwrap()
                 .task_id,
@@ -551,10 +578,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resumed_send_failure_preserves_the_previous_reference_and_vetoes_ack() {
-        // R1 an exact awaiting ticket resumes with a stable message identity,
-        // then its send response is lost => error+veto; retain the committed
-        // previous task/context, never repeat send inside this drive.
+    async fn resumed_send_failure_preserves_prepared_b_and_never_falls_back_to_task_a() {
+        // Causes: C1 exact awaiting task A; C2 Prepared B commits; C3 B's send
+        // response is lost; C4 recovery asks execute or cancel. Effects: E1 B
+        // stays Prepared with A as predecessor; E2 physical ACK is vetoed; E3
+        // recovery cannot hand off, resend B, GET A, or cancel A as B's proof.
+        //
+        // | Rule | A | Prepared B | B response | Recovery | Effects |
+        // |---|---|---|---|---|---|
+        // | R1 | accepted | yes | lost | none | E1+E2 |
+        // | R2 | accepted | yes | lost | execute/cancel | E1+E2+E3 |
+        // | R3 | accepted | yes | accepted task | poll exact B (siblings) |
         use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
         use awaken_runtime_contract::execution::RunAttemptExecutor;
         use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
@@ -578,7 +612,7 @@ mod tests {
         let command = ResumeCommand::from_ticket(&ticket, ResumeResult::Input("answer".into()), 0);
         let resumed = RuntimeRunContext::new()
             .with_commit(rec.clone())
-            .with_reader(rec);
+            .with_reader(rec.clone());
         assert!(
             scripted_executor(transport.clone())
                 .resume(activation.clone(), command, resumed.clone())
@@ -586,13 +620,34 @@ mod tests {
                 .is_err()
         );
         assert!(!resumed.physical_quiescence.can_acknowledge_return());
-        assert_eq!(
-            crate::restored_task_reference(&resumed, &activation)
-                .unwrap()
-                .unwrap()
-                .task_id,
-            "task-a"
-        );
+        let prepared = match crate::restored_remote_operation(&resumed, &activation)
+            .unwrap()
+            .unwrap()
+        {
+            crate::RemoteOperationState::Prepared(intent) => intent,
+            crate::RemoteOperationState::Accepted(_) => panic!("B is not accepted"),
+        };
+        assert_eq!(prepared.predecessor_task_id.as_deref(), Some("task-a"));
+        assert_eq!(prepared.context_id, "context-a");
         assert_eq!(transport.seen.lock().unwrap().len(), 2);
+
+        let executor = scripted_executor(transport.clone());
+        let recovered = RuntimeRunContext::new()
+            .with_commit(rec.clone())
+            .with_reader(rec);
+        assert_eq!(
+            executor.physical_attempt_recovery(&activation, &recovered),
+            awaken_runtime_contract::execution::AttemptRecoveryMode::RequirePredecessorQuiescence,
+            "R2/E3"
+        );
+        executor
+            .cancel(activation.clone(), recovered.clone())
+            .await
+            .expect_err("R2 cancellation cannot target A");
+        executor
+            .execute(activation, recovered)
+            .await
+            .expect_err("R2 execution cannot resend B");
+        assert_eq!(transport.seen.lock().unwrap().len(), 2, "R2/E3");
     }
 }

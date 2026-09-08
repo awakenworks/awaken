@@ -1,4 +1,4 @@
-//! Durable remote-task identity and endpoint binding for one A2A Run.
+//! Durable remote-operation identity and task binding for one A2A Run.
 
 use awaken_agent_contract::agent::state::{
     Action as StateAction, Command as StateCommand, MergePolicy, Scope, StateCell,
@@ -10,11 +10,14 @@ use awaken_runtime_contract::resolved::{Backend, ResolvedModelCandidate};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
 const A2A_TASK_STATE_KEY: &str = "__a2a_task";
+const A2A_REMOTE_OPERATION_SCHEMA: u8 = 2;
+const A2A_REMOTE_OPERATION_ID_DOMAIN: &str = "a2a-remote-operation-v1";
+const A2A_REMOTE_INPUT_ID_DOMAIN: &str = "a2a-remote-input-v1";
 
-/// The opaque remote identity committed immediately after `message:send`
-/// returns. It is Run-scoped state, so a replacement Worker can reattach
-/// without sending a second User message and cancellation can address the same
-/// remote task.
+/// The opaque task identity bound to a previously prepared operation after
+/// `message:send` returns. It is Run-scoped state, so a replacement Worker can
+/// reattach without sending a second User message and cancellation can address
+/// the same remote task.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TaskReference {
@@ -23,17 +26,70 @@ pub(super) struct TaskReference {
     pub(super) context_id: String,
 }
 
+/// The exact outbound operation committed before `message:send`.
+///
+/// A prepared operation deliberately does not claim that the peer accepted the
+/// request. After a crash there is no safe way to infer that fact from the
+/// predecessor task or from the stable message id alone.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RemoteOperationIntent {
+    pub(super) operation_id: String,
+    pub(super) endpoint: String,
+    pub(super) context_id: String,
+    pub(super) message_id: String,
+    pub(super) input_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) predecessor_task_id: Option<String>,
+}
+
+/// A prepared operation bound to the exact task returned by the peer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum TaskReferenceRoute {
+pub(super) struct AcceptedRemoteOperation {
+    pub(super) intent: RemoteOperationIntent,
+    pub(super) reference: TaskReference,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
+enum PersistedRemoteOperation {
+    Prepared {
+        version: u8,
+        intent: RemoteOperationIntent,
+    },
+    Accepted {
+        version: u8,
+        intent: RemoteOperationIntent,
+        reference: TaskReference,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum RemoteOperationState {
+    Prepared(RemoteOperationIntent),
+    Accepted(AcceptedRemoteOperation),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum RemoteOperationRoute {
     Fresh,
-    Reattach(TaskReference),
+    Prepared(RemoteOperationIntent),
+    Reattach(AcceptedRemoteOperation),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum TaskReferenceDecision {
+pub(super) enum RemoteOperationDecision {
     Fresh,
+    PreservePrepared,
     Reattach,
     RejectEndpointMismatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StoredRemoteOperationKind {
+    Absent,
+    Prepared,
+    Accepted,
 }
 
 #[must_use]
@@ -51,14 +107,17 @@ const fn task_reference_admitted(
         && continuation_context_matches
 }
 
-pub(super) fn task_reference_decision(
-    has_reference: bool,
+pub(super) const fn remote_operation_decision(
+    kind: StoredRemoteOperationKind,
     endpoint_matches: bool,
-) -> TaskReferenceDecision {
-    match (has_reference, endpoint_matches) {
-        (false, _) => TaskReferenceDecision::Fresh,
-        (true, true) => TaskReferenceDecision::Reattach,
-        (true, false) => TaskReferenceDecision::RejectEndpointMismatch,
+) -> RemoteOperationDecision {
+    match (kind, endpoint_matches) {
+        (StoredRemoteOperationKind::Absent, _) => RemoteOperationDecision::Fresh,
+        (StoredRemoteOperationKind::Prepared, true) => RemoteOperationDecision::PreservePrepared,
+        (StoredRemoteOperationKind::Accepted, true) => RemoteOperationDecision::Reattach,
+        (StoredRemoteOperationKind::Prepared | StoredRemoteOperationKind::Accepted, false) => {
+            RemoteOperationDecision::RejectEndpointMismatch
+        }
     }
 }
 
@@ -96,26 +155,129 @@ impl TaskReference {
     }
 }
 
-pub(super) fn continued_task_reference(
-    endpoint: &str,
-    previous: &TaskReference,
-    task: &Task,
-) -> Result<TaskReference> {
-    let reference = TaskReference::from_task(endpoint, task);
-    if task_reference_admitted(
-        !reference.endpoint.is_empty(),
-        !reference.task_id.is_empty(),
-        !reference.context_id.is_empty(),
-        true,
-        reference.context_id == previous.context_id,
-    ) {
-        return Ok(reference);
+impl RemoteOperationIntent {
+    fn validate(&self) -> Result<()> {
+        let missing = [
+            ("operation_id", self.operation_id.as_str()),
+            ("endpoint", self.endpoint.as_str()),
+            ("context_id", self.context_id.as_str()),
+            ("message_id", self.message_id.as_str()),
+            ("input_digest", self.input_digest.as_str()),
+        ]
+        .into_iter()
+        .find(|(_, value)| value.is_empty())
+        .map(|(name, _)| name);
+        if let Some(missing) = missing {
+            return Err(Error::Execution(format!(
+                "durable A2A operation is missing {missing}"
+            )));
+        }
+        if self
+            .predecessor_task_id
+            .as_ref()
+            .is_some_and(String::is_empty)
+        {
+            return Err(Error::Execution(
+                "durable A2A operation has an empty predecessor task".to_string(),
+            ));
+        }
+        let expected = remote_operation_id(
+            &self.endpoint,
+            &self.context_id,
+            self.predecessor_task_id.as_deref(),
+            &self.message_id,
+            &self.input_digest,
+        )?;
+        if self.operation_id != expected {
+            return Err(Error::Execution(
+                "durable A2A operation identity does not match its coordinates".to_string(),
+            ));
+        }
+        Ok(())
     }
-    reference.validate()?;
-    Err(Error::Execution(format!(
-        "A2A continuation changed context from {:?} to {:?}",
-        previous.context_id, reference.context_id
-    )))
+}
+
+impl AcceptedRemoteOperation {
+    fn validate(&self) -> Result<()> {
+        self.reference.validate()?;
+        let intent = &self.intent;
+        intent.validate()?;
+        if intent.endpoint != self.reference.endpoint {
+            return Err(Error::Execution(
+                "accepted A2A task is not bound to its prepared endpoint".to_string(),
+            ));
+        }
+        if intent.predecessor_task_id.is_some() && intent.context_id != self.reference.context_id {
+            return Err(Error::Execution(format!(
+                "A2A continuation changed context from {:?} to {:?}",
+                intent.context_id, self.reference.context_id
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn fingerprint(value: &impl serde::Serialize, what: &str) -> Result<String> {
+    awaken_runtime_contract::resolution::content_fingerprint(value)
+        .map_err(|error| Error::Execution(format!("failed to fingerprint A2A {what}: {error}")))
+}
+
+fn remote_operation_id(
+    endpoint: &str,
+    context_id: &str,
+    predecessor_task_id: Option<&str>,
+    message_id: &str,
+    input_digest: &str,
+) -> Result<String> {
+    fingerprint(
+        &(
+            A2A_REMOTE_OPERATION_ID_DOMAIN,
+            endpoint,
+            context_id,
+            predecessor_task_id,
+            message_id,
+            input_digest,
+        ),
+        "operation identity",
+    )
+}
+
+pub(super) fn prepare_remote_operation(
+    endpoint: &str,
+    context_id: &str,
+    predecessor_task_id: Option<&str>,
+    message_id: &str,
+    input: &str,
+) -> Result<RemoteOperationIntent> {
+    let input_digest = fingerprint(&(A2A_REMOTE_INPUT_ID_DOMAIN, input), "input")?;
+    let intent = RemoteOperationIntent {
+        operation_id: remote_operation_id(
+            endpoint,
+            context_id,
+            predecessor_task_id,
+            message_id,
+            &input_digest,
+        )?,
+        endpoint: endpoint.to_string(),
+        context_id: context_id.to_string(),
+        message_id: message_id.to_string(),
+        input_digest,
+        predecessor_task_id: predecessor_task_id.map(str::to_string),
+    };
+    intent.validate()?;
+    Ok(intent)
+}
+
+pub(super) fn accept_remote_operation(
+    intent: RemoteOperationIntent,
+    task: &Task,
+) -> Result<AcceptedRemoteOperation> {
+    let accepted = AcceptedRemoteOperation {
+        reference: TaskReference::from_task(&intent.endpoint, task),
+        intent,
+    };
+    accepted.validate()?;
+    Ok(accepted)
 }
 
 pub(super) fn validate_reattached_task(reference: &TaskReference, task: &Task) -> Result<()> {
@@ -140,32 +302,91 @@ pub(super) fn validate_reattached_task(reference: &TaskReference, task: &Task) -
     )))
 }
 
-fn task_reference_cell() -> StateCell<TaskReference> {
+fn remote_operation_cell() -> StateCell<PersistedRemoteOperation> {
     StateCell::new(Scope::Run, MergePolicy::Disjoint, A2A_TASK_STATE_KEY)
 }
 
-pub(super) fn task_reference_state(reference: &TaskReference) -> Result<StateCommand> {
-    task_reference_cell()
-        .write(reference)
+pub(super) fn prepared_operation_state(intent: &RemoteOperationIntent) -> Result<StateCommand> {
+    remote_operation_cell()
+        .write(&PersistedRemoteOperation::Prepared {
+            version: A2A_REMOTE_OPERATION_SCHEMA,
+            intent: intent.clone(),
+        })
         .map_err(|error| Error::Execution(error.to_string()))
 }
 
-pub(super) fn decode_task_reference(value: &serde_json::Value) -> Result<TaskReference> {
-    let reference = task_reference_cell()
+pub(super) fn accepted_operation_state(accepted: &AcceptedRemoteOperation) -> Result<StateCommand> {
+    accepted.validate()?;
+    remote_operation_cell()
+        .write(&PersistedRemoteOperation::Accepted {
+            version: A2A_REMOTE_OPERATION_SCHEMA,
+            intent: accepted.intent.clone(),
+            reference: accepted.reference.clone(),
+        })
+        .map_err(|error| Error::Execution(error.to_string()))
+}
+
+pub(super) fn decode_remote_operation(value: &serde_json::Value) -> Result<RemoteOperationState> {
+    let persisted = remote_operation_cell()
         .decode(value)
         .map_err(|error| Error::Execution(error.to_string()))?;
-    reference.validate()?;
-    Ok(reference)
+    let (version, state) = match persisted {
+        PersistedRemoteOperation::Prepared { version, intent } => {
+            intent.validate()?;
+            (version, RemoteOperationState::Prepared(intent))
+        }
+        PersistedRemoteOperation::Accepted {
+            version,
+            intent,
+            reference,
+        } => {
+            let accepted = AcceptedRemoteOperation { intent, reference };
+            accepted.validate()?;
+            (version, RemoteOperationState::Accepted(accepted))
+        }
+    };
+    if version != A2A_REMOTE_OPERATION_SCHEMA {
+        return Err(Error::Execution(format!(
+            "unsupported durable A2A operation schema {version}"
+        )));
+    }
+    Ok(state)
 }
 
-pub(super) fn clear_task_reference_state() -> StateCommand {
-    task_reference_cell().remove()
+pub(super) fn clear_remote_operation_state() -> StateCommand {
+    remote_operation_cell().remove()
 }
 
-pub(super) fn restored_task_reference(
+#[cfg(test)]
+pub(super) fn accepted_reference_state(reference: &TaskReference) -> Result<StateCommand> {
+    let intent = prepare_remote_operation(
+        &reference.endpoint,
+        &reference.context_id,
+        None,
+        &format!("test-message:{}", reference.task_id),
+        "test-input",
+    )?;
+    accepted_operation_state(&AcceptedRemoteOperation {
+        intent,
+        reference: reference.clone(),
+    })
+}
+
+#[cfg(test)]
+pub(super) fn restored_accepted_reference(
     context: &RuntimeRunContext,
     activation: &RunActivation,
 ) -> Result<Option<TaskReference>> {
+    Ok(match restored_remote_operation(context, activation)? {
+        Some(RemoteOperationState::Accepted(accepted)) => Some(accepted.reference),
+        Some(RemoteOperationState::Prepared(_)) | None => None,
+    })
+}
+
+pub(super) fn restored_remote_operation(
+    context: &RuntimeRunContext,
+    activation: &RunActivation,
+) -> Result<Option<RemoteOperationState>> {
     let Some(reader) = &context.reader else {
         return Ok(None);
     };
@@ -181,37 +402,51 @@ pub(super) fn restored_task_reference(
             continue;
         }
         return match command.action {
-            StateAction::Set(value) => decode_task_reference(&value).map(Some),
+            StateAction::Set(value) => decode_remote_operation(&value).map(Some),
             StateAction::Remove => Ok(None),
         };
     }
     Ok(None)
 }
 
-pub(super) fn restored_task_route(
+pub(super) fn restored_remote_operation_route(
     context: &RuntimeRunContext,
     activation: &RunActivation,
     endpoint: &str,
-) -> Result<TaskReferenceRoute> {
-    let reference = restored_task_reference(context, activation)?;
-    let decision = task_reference_decision(
-        reference.is_some(),
-        reference
-            .as_ref()
-            .is_some_and(|reference| reference.endpoint == endpoint),
-    );
-    match (decision, reference) {
-        (TaskReferenceDecision::Fresh, None) => Ok(TaskReferenceRoute::Fresh),
-        (TaskReferenceDecision::Reattach, Some(reference)) => {
-            Ok(TaskReferenceRoute::Reattach(reference))
+) -> Result<RemoteOperationRoute> {
+    let operation = restored_remote_operation(context, activation)?;
+    let (kind, persisted_endpoint) = match &operation {
+        None => (StoredRemoteOperationKind::Absent, None),
+        Some(RemoteOperationState::Prepared(intent)) => (
+            StoredRemoteOperationKind::Prepared,
+            Some(intent.endpoint.as_str()),
+        ),
+        Some(RemoteOperationState::Accepted(accepted)) => (
+            StoredRemoteOperationKind::Accepted,
+            Some(accepted.reference.endpoint.as_str()),
+        ),
+    };
+    let decision = remote_operation_decision(kind, persisted_endpoint == Some(endpoint));
+    match (decision, operation) {
+        (RemoteOperationDecision::Fresh, None) => Ok(RemoteOperationRoute::Fresh),
+        (
+            RemoteOperationDecision::PreservePrepared,
+            Some(RemoteOperationState::Prepared(intent)),
+        ) => Ok(RemoteOperationRoute::Prepared(intent)),
+        (RemoteOperationDecision::Reattach, Some(RemoteOperationState::Accepted(accepted))) => {
+            Ok(RemoteOperationRoute::Reattach(accepted))
         }
-        (TaskReferenceDecision::RejectEndpointMismatch, Some(reference)) => {
+        (RemoteOperationDecision::RejectEndpointMismatch, Some(operation)) => {
+            let persisted_endpoint = match operation {
+                RemoteOperationState::Prepared(intent) => intent.endpoint,
+                RemoteOperationState::Accepted(accepted) => accepted.reference.endpoint,
+            };
             Err(Error::Execution(format!(
-                "durable A2A task belongs to endpoint {:?}, not {:?}",
-                reference.endpoint, endpoint
+                "durable A2A operation belongs to endpoint {:?}, not {:?}",
+                persisted_endpoint, endpoint
             )))
         }
-        _ => unreachable!("the total task-reference decision preserves its input shape"),
+        _ => unreachable!("the total remote-operation decision preserves its input shape"),
     }
 }
 
@@ -244,40 +479,54 @@ mod kani_proofs {
     use super::*;
 
     #[kani::proof]
-    fn remote_task_reference_route_is_total_and_fail_closed() {
-        // Cause graph: C1 a committed reference is present; C2 its endpoint
+    fn remote_operation_route_is_total_and_fail_closed() {
+        // Cause graph: C1 state is absent/prepared/accepted; C2 its endpoint
         // matches the publication-frozen endpoint. Effects: E1 fresh send is
-        // admitted; E2 reattachment is admitted; E3 outbound use is rejected.
-        // Constraint: C2 has no authority when C1 is false.
+        // admitted; E2 a prepared operation is preserved without outbound IO;
+        // E3 an accepted task may reattach; E4 mismatch is rejected.
+        // Constraint: C2 has no authority when state is absent.
         //
         // | Rule | C1 | C2 | Effect |
         // |---|---|---|---|
-        // | R1 | no  | *   | E1 |
-        // | R2 | yes | yes | E2 |
-        // | R3 | yes | no  | E3 |
-        let has_reference: bool = kani::any();
+        // | R1 | absent | *   | E1 |
+        // | R2 | prepared | yes | E2 |
+        // | R3 | accepted | yes | E3 |
+        // | R4 | prepared/accepted | no | E4 |
+        let selector: u8 = kani::any();
+        let kind = match selector % 3 {
+            0 => StoredRemoteOperationKind::Absent,
+            1 => StoredRemoteOperationKind::Prepared,
+            _ => StoredRemoteOperationKind::Accepted,
+        };
         let endpoint_matches: bool = kani::any();
-        let decision = task_reference_decision(has_reference, endpoint_matches);
+        let decision = remote_operation_decision(kind, endpoint_matches);
 
-        assert_eq!(decision == TaskReferenceDecision::Fresh, !has_reference);
         assert_eq!(
-            decision == TaskReferenceDecision::Reattach,
-            has_reference && endpoint_matches
+            decision == RemoteOperationDecision::Fresh,
+            kind == StoredRemoteOperationKind::Absent
         );
         assert_eq!(
-            decision == TaskReferenceDecision::RejectEndpointMismatch,
-            has_reference && !endpoint_matches
+            decision == RemoteOperationDecision::PreservePrepared,
+            kind == StoredRemoteOperationKind::Prepared && endpoint_matches
+        );
+        assert_eq!(
+            decision == RemoteOperationDecision::Reattach,
+            kind == StoredRemoteOperationKind::Accepted && endpoint_matches
+        );
+        assert_eq!(
+            decision == RemoteOperationDecision::RejectEndpointMismatch,
+            kind != StoredRemoteOperationKind::Absent && !endpoint_matches
         );
     }
 
     #[kani::proof]
-    fn terminal_task_reference_command_is_exact_run_scoped_removal() {
+    fn terminal_remote_operation_command_is_exact_run_scoped_removal() {
         // Cause graph: C1 a Run reaches a committed terminal boundary.
         // Effect E1 the sole A2A task-reference key is removed in Run scope
         // under its declared Disjoint merge policy; no Set or second key is
         // admitted. There is one unconditional rule C1 -> E1, so a multi-row
         // decision table would add no information.
-        let command = clear_task_reference_state();
+        let command = clear_remote_operation_state();
 
         assert_eq!(command.scope, Scope::Run);
         assert_eq!(command.merge, MergePolicy::Disjoint);

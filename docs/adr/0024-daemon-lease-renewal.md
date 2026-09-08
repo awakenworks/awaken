@@ -246,18 +246,29 @@ a new committed working boundary moves it to history. ACP's fixed business
 outcome likewise does not imply successful process cleanup.
 
 One continuation case is stronger than terminal receipt: an A2A executor may
-recover a complete committed `TaskReference` whose endpoint matches the frozen
-publication. Its recovered `execute` path performs only `tasks/get`; it cannot
-repeat the initiating `message:send`. The leaf executor may therefore request
-`handoff_attempt`, which atomically replaces the predecessor slot with the exact
-current claim in the same Dispatch row. Missing, malformed, or endpoint-mismatched
-state, a fresh send, and A2A resume all retain ordinary blocking. This is neither
-lease-expiry cleanup nor a generic process-crash bypass.
+recover a versioned `Accepted` remote operation whose complete `TaskReference`
+matches the frozen endpoint. Its recovered `execute` path performs only
+`tasks/get`; it cannot repeat the initiating `message:send`. The leaf executor
+may therefore request `handoff_attempt`, which atomically replaces the
+predecessor slot with the exact current claim in the same Dispatch row.
+
+The same Run-scoped StateCell first commits `Prepared` with an operation id,
+endpoint, context, optional predecessor task, stable message id and input digest;
+only the validated send response replaces it with `Accepted` and the exact task.
+A crash before send and a crash after remote acceptance but before its local
+commit are deliberately indistinguishable: `Prepared` has no addressable task,
+cannot hand off, cannot resend, and cannot use its predecessor task as stop
+evidence. The coordinated binary and durable-state cutover admits only the
+versioned operation schema; flat, unknown-version, missing, malformed,
+endpoint-mismatched or `Prepared` state fails closed and retains the physical
+obligation. This is neither lease-expiry cleanup nor a generic process-crash
+bypass.
 
 ```text
-claim A -> begin A -> message:send -> commit exact TaskReference
+claim A -> begin A -> commit Prepared(A) -> message:send
+        -> commit Accepted(A, exact TaskReference)
 process A crashes while polling -> lease expires -> claim B
-executor B proves exact committed continuation
+executor B proves exact committed Accepted continuation
 handoff B replaces slot A -> tasks/get (never message:send) -> finish B
 ```
 
@@ -269,7 +280,7 @@ the existing Indeterminate path. Local "not started" is not evidence that an
 earlier caller or remote operation never started.
 
 The A2A executor also uses the Runtime's same attempt-local return observer.
-Send/resume failures, a failed reference commit before a remote boundary,
+Send/resume failures, a failed Accepted commit before a remote boundary,
 reattachment failures, exhausted polling, identity mismatch and an abandoned
 Future veto physical ACK. Even failed transport resolution must retain that veto
 when a remote task already exists; fresh pre-dispatch resolution does not invent
@@ -287,6 +298,13 @@ receipts. A failed/nonterminal observation retains the slot and the existing
 reference for recovery; it does not retry creation. The former Future-drop
 background cancellation is removed: drop propagates uncertainty, while the
 existing claimed cancellation/recovery owner remains responsible for progress.
+For an authenticated publication, dispatch compiles only the selected A2A
+candidate's secret-free `RemoteAgentAuthorization` binding at the current claim
+epoch. The same claim-bound materializer rechecks current ownership, holder,
+revision, usage, target, and source status before `tasks/get` or `tasks/cancel`.
+Missing or stale authority prevents the wire call; there is no anonymous fallback,
+and the failed authorization is not physical-stop evidence. Anonymous and non-A2A
+cancellation claims remain credential-free.
 No Session-wide stop, new receipt store, task schema or wire route is introduced.
 Task-state/identity/delivery decision tables, observer-drop and commit-failure
 tests cover this adapter; the existing Kani identity/route proofs remain narrow.

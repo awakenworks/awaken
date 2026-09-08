@@ -37,10 +37,21 @@ also signals the old live attempt so it stops wasting work. If that process has
 already crashed, no timeout is required. `Claimed::cancellation_requested` travels
 over the same local/remote dispatch boundary as the request and lease.
 
-The worker handles cancellation before model, credential, or sandbox materialization,
-commits `Cancelled` through `Runtime::cancel_run` and the claim's monotonic epoch
-fence, then settles `Done`. Settlement removes the dispatch and pending input only
-after terminal commit succeeds.
+The worker handles cancellation before model/provider execution, Session attachment,
+or sandbox materialization, commits `Cancelled` through `Runtime::cancel_run` and
+the claim's monotonic epoch fence, then settles `Done`. Settlement removes the
+dispatch and pending input only after terminal commit succeeds. The one exception is
+transport authority for an already-published authenticated A2A task: claim admission
+freezes only the selected remote publication's exact `RemoteAgentAuthorization`
+binding, and the existing pinned materializer may open it only for that claim's
+`tasks/get` / `tasks/cancel` operation. Provider fallbacks, advisors, Session MCP,
+and sandbox credentials are not part of a cancellation claim.
+
+An anonymous or non-remote cancellation keeps an empty binding set. A missing,
+revoked, expired, wrong-holder, wrong-purpose, or stale-revision/epoch binding fails
+before remote I/O; the worker never retries anonymously and never treats that failure
+as evidence that the remote task stopped. The durable intent and unconfirmed physical
+responsibility remain available for an authorized owner to recover.
 
 Cancellation eligibility deliberately bypasses the run's execution capability
 requirements and replaceable placement ranking. A cold host resolver builds a
@@ -75,9 +86,10 @@ after only an in-memory notification.
 - There is one execution/commit/settle path for queued, awaiting, and recovered
   running cancellation; no cancellation reconciliation outbox or second terminal
   writer is introduced.
-- Terminal control remains available when model credentials, providers, or sandbox
-  materialization are unavailable, and when no worker satisfies the run's pinned
-  execution capabilities.
+- Terminal control does not require model-provider, Session, or sandbox material.
+  Observing or stopping an authenticated A2A task does require a worker that can
+  realize its exact current remote-authorization binding; lack of that authority
+  retains the cancellation intent instead of weakening authentication.
 - SQLite, PostgreSQL, and the in-memory executable specification share the same
   cancellation-intent behavior and crash-window tests.
 

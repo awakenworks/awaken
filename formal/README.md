@@ -382,12 +382,15 @@ obligation when the development host is Linux.
   Session activity. Its two reachability configurations prove both the ordinary
   receipt-before-target path and crash recovery where the child settles before
   the parent commits its missing receipt.
-- `RemoteAttempt.tla` covers the A2A root-attempt boundary: stable replay message
-  identity across the external-send/local-commit crash window, durable task and
-  endpoint pinning, reattachment without resend after the reference commit,
-  input/resume continuity, fail-closed endpoint mismatch, cancellation of the
-  pinned task, and terminal reference retirement. Remote peer deduplication is
-  deliberately retained as an external idempotency assumption.
+- `RemoteAttempt.tla` covers the A2A root-attempt boundary: a durable Prepared
+  operation before external send, exact Accepted task/endpoint binding after the
+  response, no automatic resend or predecessor-task cancellation from either
+  side of the send/acceptance crash window, fail-closed unknown-version or flat
+  state, reattachment without resend from Accepted, input/resume continuity,
+  fail-closed endpoint mismatch, cancellation of only the accepted pinned task,
+  and terminal operation retirement. Stable peer message identity remains part
+  of the binding, but remote deduplication is deliberately retained as an
+  external idempotency assumption rather than recovery evidence.
 - `AuthzKernel.tla`, `LiveInbox.tla`, and `CheckpointRecovery.tla` cover total
   request classification, ordered editable process-local input (including
   atomic exact-permutation reorder, replace, remove, drain, close, and the

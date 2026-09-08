@@ -481,6 +481,11 @@ struct OwnershipCheckingAttemptExecutor {
     verified: AtomicUsize,
 }
 
+#[derive(Default)]
+struct CredentialCheckingCancelExecutor {
+    bindings: Mutex<Vec<awaken_runtime_contract::AttemptCredentialBinding>>,
+}
+
 struct ExpiringOwnershipAttemptExecutor {
     clock: Arc<ManualClock>,
     effects: AtomicUsize,
@@ -529,6 +534,52 @@ impl RunAttemptExecutor for OwnershipCheckingAttemptExecutor {
             .await
             .expect("fresh exact claim remains current");
         self.verified.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl RunExecutor for CredentialCheckingCancelExecutor {
+    async fn execute(
+        &self,
+        _activation: RunActivation,
+        _context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        Err(ExecutionError::Execution(
+            "credential cancellation fixture must not execute".into(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl RunAttemptExecutor for CredentialCheckingCancelExecutor {
+    async fn resume(
+        &self,
+        _activation: RunActivation,
+        _command: ResumeCommand,
+        _context: RuntimeRunContext,
+    ) -> ExecutionResult<RunState> {
+        Err(ExecutionError::Execution(
+            "credential cancellation fixture must not resume".into(),
+        ))
+    }
+
+    async fn cancel(
+        &self,
+        _activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> ExecutionResult<()> {
+        awaken_runtime_contract::execution::verify_attempt_ownership(context.ownership.as_deref())
+            .await?;
+        let realization = context.credential_realization.as_ref().ok_or_else(|| {
+            ExecutionError::Execution(
+                "authenticated cancellation has no exact credential realization".into(),
+            )
+        })?;
+        self.bindings
+            .lock()
+            .unwrap()
+            .extend_from_slice(realization.bindings());
         Ok(())
     }
 }
@@ -707,6 +758,75 @@ fn provider_candidate(
         },
     )
     .expect("coherent durable provider candidate")
+}
+
+fn remote_credential_activation(run_id: &str) -> RunActivation {
+    let holder = awaken_runtime_contract::PlaintextHolder::new(
+        awaken_runtime_contract::PlaintextBoundary::Worker,
+        awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+    );
+    let mut activation = activation(run_id);
+    activation.snapshot.resolved_spec.model_binding =
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::try_remote(
+            awaken_runtime_contract::ModelBinding::new(
+                "",
+                "",
+                "a2a:https://agent.example",
+            ),
+            "workspace-a",
+            Some(
+                awaken_runtime_contract::CredentialAccess::new(
+                    awaken_runtime_contract::CredentialRef {
+                        id: "remote-cancel-token".into(),
+                        revision: 7,
+                    },
+                    awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                    awaken_runtime_contract::CredentialUsage::HttpHeader {
+                        name: "authorization".into(),
+                        scheme: Some("Bearer".into()),
+                    },
+                    awaken_runtime_contract::CredentialExecutionPolicy::exact(
+                        holder.clone(),
+                        awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+                    ),
+                )
+                .with_target(awaken_runtime_contract::CredentialTarget::new(
+                    awaken_runtime_contract::credential::CredentialPurpose::RemoteAgentAuthorization,
+                    "https://agent.example",
+                )),
+            ),
+            "sha256:agent-card",
+        )
+        .expect("coherent authenticated remote cancellation candidate");
+    activation
+}
+
+fn remote_credential_capabilities() -> awaken_runtime_contract::CredentialRealizationCapabilities {
+    let holder = awaken_runtime_contract::PlaintextHolder::new(
+        awaken_runtime_contract::PlaintextBoundary::Worker,
+        awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+    );
+    awaken_runtime_contract::CredentialRealizationCapabilities {
+        holders: [holder].into_iter().collect(),
+        material_sources: [
+            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+        ]
+        .into_iter()
+        .collect(),
+        realization_kinds: [awaken_runtime_contract::CredentialRealizationKind::WorkerRelay]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    }
+}
+
+fn remote_credential_dispatch(run_id: &str) -> RunDispatch {
+    let mut request = RunDispatch::new(remote_credential_activation(run_id));
+    request.inference_plaintext_holder = Some(awaken_runtime_contract::PlaintextHolder::new(
+        awaken_runtime_contract::PlaintextBoundary::Worker,
+        awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+    ));
+    request
 }
 
 fn allow_command() -> ResumeCommand {
@@ -2049,7 +2169,7 @@ async fn committed_cancel_is_settled_without_duplicate_after_crash() {
 }
 
 #[tokio::test]
-async fn cancellation_does_not_materialize_the_model_or_credentials() {
+async fn cancellation_does_not_materialize_model_provider_credentials() {
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let materializations = Arc::new(AtomicUsize::new(0));
@@ -2087,6 +2207,100 @@ async fn cancellation_does_not_materialize_the_model_or_credentials() {
         .unwrap()
         .state,
         RunState::Ended(EndCause::Cancelled)
+    );
+}
+
+#[tokio::test]
+async fn authenticated_remote_cancellation_receives_only_its_current_claim_binding() {
+    // Cause-effect graph: C1 durable cancellation targets authenticated Remote
+    // A2A; C2 the claiming Worker has/omits exact WorkerRelay capability; C3
+    // the claim binding is current/empty/stale; C4 executor verifies current
+    // ownership. Effects: E1 persist exactly one secret-free transport binding
+    // and pass it to cancel; E2 commit Cancelled only after that cancel returns;
+    // E3 reject before executor entry and retain the durable intent. No provider
+    // materializer or model route is consulted.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | Effect |
+    // |---|---|---|---|---|---|
+    // | R1 | yes | exact | current | current | E1+E2 |
+    // | R2 | yes | missing | none | - | E3 |
+    // | R3 | yes | exact | empty/stale | - | E3 (contract verifier suite) |
+    // | R4 | yes | exact | current | lost | E3 (ownership suite) |
+    // Constraint: credential material remains behind the A2A resolver. This
+    // Worker test observes only the same claim-bound projection that resolver
+    // consumes; it cannot create an anonymous transport fallback.
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let executor = Arc::new(CredentialCheckingCancelExecutor::default());
+    let run = RunId("authenticated-remote-cancel".into());
+    let request = remote_credential_dispatch(&run.0);
+    store.enqueue(request.clone()).await.expect("enqueue R1");
+    store
+        .cancel(&run)
+        .await
+        .expect("cancel R1")
+        .expect("known R1");
+    let worker = DispatchWorker::new(
+        text_runtime(),
+        store.clone(),
+        commit.clone(),
+        "credential-cancel-worker",
+    )
+    .with_local_credential_capabilities(remote_credential_capabilities());
+    worker.install_attempt_executor(executor.clone());
+
+    let (_, state) = worker
+        .tick(harness::clock(0))
+        .await
+        .expect("R1 drive")
+        .expect("R1 applied");
+    assert_eq!(state, RunState::Ended(EndCause::Cancelled), "R1/E2");
+    {
+        let bindings = executor.bindings.lock().unwrap();
+        assert_eq!(bindings.len(), 1, "R1/E1");
+        assert_eq!(bindings[0].credential.id, "remote-cancel-token", "R1/E1");
+        assert_eq!(bindings[0].credential.revision, 7, "R1/E1");
+        assert_eq!(bindings[0].claim_epoch, 1, "R1/E1");
+        assert_eq!(
+            bindings[0].selected_realization_kind,
+            awaken_runtime_contract::CredentialRealizationKind::WorkerRelay,
+            "R1/E1"
+        );
+    }
+    assert_eq!(store.dispatch_count(), 0, "R1/E2");
+
+    let rejected_store = Arc::new(MemoryDispatchStore::new());
+    rejected_store
+        .enqueue(remote_credential_dispatch("missing-cancel-capability"))
+        .await
+        .expect("enqueue R2");
+    let rejected_run = RunId("missing-cancel-capability".into());
+    rejected_store
+        .cancel(&rejected_run)
+        .await
+        .expect("cancel R2")
+        .expect("known R2");
+    let error = rejected_store
+        .claim_run(
+            &rejected_run,
+            "credential-free-worker",
+            DEFAULT_LEASE_MS,
+            0,
+            &Default::default(),
+        )
+        .await
+        .expect_err("R2 cannot anonymously claim authenticated cancellation");
+    assert!(
+        error
+            .to_string()
+            .contains("credential claim admission failed"),
+        "R2/E3: {error}"
+    );
+    let retained = rejected_store.list_dispatches().await.expect("R2 retained");
+    assert_eq!(retained.len(), 1, "R2/E3");
+    assert_eq!(
+        retained[0].state,
+        awaken_dispatch::DispatchState::Pending
     );
 }
 

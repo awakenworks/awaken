@@ -30,6 +30,55 @@ pub enum DispatchCredentialAdmissionError {
     ClaimedBindingMismatch,
 }
 
+/// The one claim-scoped credential purpose selected by the dispatch aggregate.
+///
+/// Execution admits every candidate and Session attachment that may run under
+/// the claim. Cancellation is narrower: only an authenticated remote A2A
+/// transport can require material in order to observe or stop an already
+/// published remote task. Terminal repair performs no external operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimCredentialOperation {
+    Execute,
+    Cancel,
+    TerminalResolution,
+}
+
+/// Classify the claim action once for every persistence adapter.
+///
+/// Reservation repair is terminal control even if an old row also carries a
+/// cancellation bit, so it deliberately takes precedence over cancellation.
+#[must_use]
+pub const fn claim_credential_operation(
+    terminal_resolution: bool,
+    cancellation_requested: bool,
+) -> ClaimCredentialOperation {
+    if terminal_resolution {
+        ClaimCredentialOperation::TerminalResolution
+    } else if cancellation_requested {
+        ClaimCredentialOperation::Cancel
+    } else {
+        ClaimCredentialOperation::Execute
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn claim_credential_operation_is_total_and_terminal_dominates() {
+    let terminal_resolution: bool = kani::any();
+    let cancellation_requested: bool = kani::any();
+    let operation = claim_credential_operation(terminal_resolution, cancellation_requested);
+    if terminal_resolution {
+        assert!(matches!(
+            operation,
+            ClaimCredentialOperation::TerminalResolution
+        ));
+    } else if cancellation_requested {
+        assert!(matches!(operation, ClaimCredentialOperation::Cancel));
+    } else {
+        assert!(matches!(operation, ClaimCredentialOperation::Execute));
+    }
+}
+
 pub fn worker_credential_realization_capabilities(
     worker: &WorkerSnapshot,
 ) -> Result<CredentialRealizationCapabilities, AttemptCredentialBindingError> {
@@ -188,6 +237,65 @@ pub fn compile_attempt_credential_bindings(
     Ok(bindings)
 }
 
+/// Compile the exact secret-free credential authority needed by one claim.
+///
+/// This is the sole operation classifier used by every dispatch store. A
+/// cancellation intentionally excludes provider fallbacks, advisors, Session
+/// MCP attachments, and sandbox credentials: none of those can authenticate
+/// the A2A `tasks/get` / `tasks/cancel` calls owned by the selected remote
+/// executor. Anonymous and non-remote cancellations remain credential-free.
+pub fn compile_claim_credential_bindings(
+    request: &RunDispatch,
+    installed: &CredentialRealizationCapabilities,
+    claim_epoch: u64,
+    now_unix_ms: u64,
+    operation: ClaimCredentialOperation,
+) -> Result<Vec<AttemptCredentialBinding>, DispatchCredentialAdmissionError> {
+    match operation {
+        ClaimCredentialOperation::Execute => {
+            compile_attempt_credential_bindings(request, installed, claim_epoch, now_unix_ms)
+        }
+        ClaimCredentialOperation::Cancel => {
+            let candidate = &request.activation.snapshot.resolved_spec.model_binding;
+            if !matches!(
+                awaken_runtime_contract::resolved::Backend::from_ref(
+                    &candidate.binding().backend_ref
+                ),
+                awaken_runtime_contract::resolved::Backend::Remote(_)
+            ) {
+                return Ok(Vec::new());
+            }
+            awaken_runtime_contract::compile_candidate_credential_bindings(
+                &[candidate],
+                request.inference_plaintext_holder.as_ref(),
+                installed,
+                claim_epoch,
+                now_unix_ms,
+            )
+            .map_err(DispatchCredentialAdmissionError::Attempt)
+        }
+        ClaimCredentialOperation::TerminalResolution => Ok(Vec::new()),
+    }
+}
+
+/// Recompute the operation-specific claim decision and reject any widened,
+/// missing, reordered, or stale wire projection at the Worker boundary.
+pub fn verify_claim_credential_bindings(
+    request: &RunDispatch,
+    installed: &CredentialRealizationCapabilities,
+    claim_epoch: u64,
+    now_unix_ms: u64,
+    operation: ClaimCredentialOperation,
+    claimed: &[AttemptCredentialBinding],
+) -> Result<(), DispatchCredentialAdmissionError> {
+    let expected =
+        compile_claim_credential_bindings(request, installed, claim_epoch, now_unix_ms, operation)?;
+    if claimed != expected {
+        return Err(DispatchCredentialAdmissionError::ClaimedBindingMismatch);
+    }
+    Ok(())
+}
+
 /// Recompute the one canonical claim decision and require the persisted wire
 /// projection to match it exactly. This is the Worker-side trust-boundary check:
 /// it neither searches for a holder nor repairs a stale binding.
@@ -198,12 +306,14 @@ pub fn verify_attempt_credential_bindings(
     now_unix_ms: u64,
     claimed: &[AttemptCredentialBinding],
 ) -> Result<(), DispatchCredentialAdmissionError> {
-    let expected =
-        compile_attempt_credential_bindings(request, installed, claim_epoch, now_unix_ms)?;
-    if claimed != expected {
-        return Err(DispatchCredentialAdmissionError::ClaimedBindingMismatch);
-    }
-    Ok(())
+    verify_claim_credential_bindings(
+        request,
+        installed,
+        claim_epoch,
+        now_unix_ms,
+        ClaimCredentialOperation::Execute,
+        claimed,
+    )
 }
 
 /// Read-only eligibility check for a scheduler selecting among multiple rows.
@@ -217,5 +327,25 @@ pub fn can_admit_attempt_credentials(
     claim_epoch: u64,
     now_unix_ms: u64,
 ) -> bool {
-    compile_attempt_credential_bindings(request, installed, claim_epoch, now_unix_ms).is_ok()
+    can_admit_claim_credentials(
+        request,
+        installed,
+        claim_epoch,
+        now_unix_ms,
+        ClaimCredentialOperation::Execute,
+    )
+}
+
+/// Read-only eligibility for the same operation-specific compiler used by the
+/// exact claim transaction. It never substitutes anonymous transport authority.
+#[must_use]
+pub fn can_admit_claim_credentials(
+    request: &RunDispatch,
+    installed: &CredentialRealizationCapabilities,
+    claim_epoch: u64,
+    now_unix_ms: u64,
+    operation: ClaimCredentialOperation,
+) -> bool {
+    compile_claim_credential_bindings(request, installed, claim_epoch, now_unix_ms, operation)
+        .is_ok()
 }
