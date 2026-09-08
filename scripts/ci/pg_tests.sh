@@ -19,9 +19,37 @@ cd "$(dirname "$0")/../.."
 source scripts/ci/_cargo_target.sh
 awaken_configure_cargo_target "$PWD"
 source scripts/ci/_postgres_recovery_root.sh
+source scripts/ci/_deadline.sh
 
 require_docker=0
 RECOVERY_PARENT=$(postgres_recovery_parent) || exit 2
+PG_OPERATION_TIMEOUT_SECONDS="${AWAKEN_PG_OPERATION_TIMEOUT_SECONDS:-30}"
+PG_READY_TIMEOUT_SECONDS="${AWAKEN_PG_READY_TIMEOUT_SECONDS:-90}"
+PG_TEST_TIMEOUT_SECONDS="${AWAKEN_PG_TEST_TIMEOUT_SECONDS:-900}"
+PG_RECOVERY_TIMEOUT_SECONDS="${AWAKEN_PG_RECOVERY_TIMEOUT_SECONDS:-900}"
+
+positive_seconds() {
+  [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
+
+pg_run_with_deadline() {
+  local stage="$1" seconds="$2"
+  shift 2
+  positive_seconds "$seconds" || {
+    echo "invalid PostgreSQL deadline for $stage: $seconds" >&2
+    return 2
+  }
+  run_with_deadline "$seconds" "$@"
+  local result=$?
+  if [ "$result" -eq 124 ]; then
+    echo "PostgreSQL stage timed out: $stage (${seconds}s)" >&2
+  fi
+  return "$result"
+}
+
+pg_test() {
+  pg_run_with_deadline "test:${4:-command}" "$PG_TEST_TIMEOUT_SECONDS" "$@"
+}
 
 published_port() {
   local binding="$1"
@@ -46,6 +74,34 @@ self_test() {
   test "$(published_port '127.0.0.1:49152')" = "49152" || return 1
   ! published_port 'invalid-binding' >/dev/null || return 1
   ! published_port '127.0.0.1:0' >/dev/null || return 1
+  # Deadline cause/effect table: C6 positive stage budget + command return =>
+  # E6 preserve the exact return; C7 malformed/zero budget => E7 reject before
+  # command; C8 timeout status => E8 remain 124 and identify the stage. The
+  # shared deadline helper owns process-group termination, so this runner does
+  # not implement a second timer.
+  local deadline_calls=0 deadline_status=0
+  run_with_deadline() {
+    local _seconds="$1"
+    shift
+    deadline_calls=$((deadline_calls + 1))
+    "$@"
+  }
+  pg_run_with_deadline fixture 1 bash -c 'exit 0' || return 1
+  pg_run_with_deadline fixture 1 bash -c 'exit 23' || deadline_status=$?
+  [ "$deadline_status" -eq 23 ] || return 1
+  ! pg_run_with_deadline fixture 0 bash -c 'exit 0' || return 1
+  [ "$deadline_calls" -eq 2 ] || return 1
+  # Gate-completeness rules: P9 every Cargo suite enters pg_test and therefore
+  # has a per-command deadline; P10 the recovery drill has its independent
+  # stage deadline. A bare command is a false-green/hang path, not compatibility.
+  if grep -Eq '^cargo test ' "$0"; then
+    echo "Postgres gate contains an unbounded Cargo test" >&2
+    return 1
+  fi
+  grep -Fq 'pg_run_with_deadline recovery-drill "$PG_RECOVERY_TIMEOUT_SECONDS"' "$0" || {
+    echo "Postgres recovery drill has no stage deadline" >&2
+    return 1
+  }
   # Cleanup cause/effect rules: C4 only the exact mktemp-owned six-character
   # suffix is present => E4 cleanup may remove it. C5 empty, caller-owned, or
   # structurally broader paths => E5 cleanup refuses them. This keeps a failed
@@ -60,14 +116,14 @@ self_test() {
   # targets whose volatile fixtures are isolated behind `test-support` enable
   # that feature explicitly; Cargo refusing to start a target is a red gate,
   # never evidence that the Postgres behavior passed.
-  grep -Fxq 'cargo test -p awaken-dispatch --features test-support || status=1' "$0" || {
+  grep -Fxq 'pg_test cargo test -p awaken-dispatch --features test-support || record_failure "$?"' "$0" || {
     echo "Postgres gate must run the complete ingress suite with test-support" >&2
     return 1
   }
   # P8 the claim/commit guard lives in durable_postgres and its HTTP receipt
   # boundary in active_active_postgres. The removed RuntimeHost filter matched
   # zero tests; it is not a compatibility route or additional test coverage.
-  if grep -q '^cargo test -p awaken-session-executor' "$0"; then
+  if grep -Eq '^(pg_test )?cargo test -p awaken-session-executor' "$0"; then
     echo "Postgres gate retains the retired RuntimeHost test selector" >&2
     return 1
   fi
@@ -79,15 +135,15 @@ self_test() {
     echo "Postgres gate omits Session and Deployment repository conformance" >&2
     return 1
   }
-  grep -Fqx 'cargo test -p awaken-session-store --features test-support --lib postgres_ -- --test-threads=1 \' "$0" || {
+  grep -Fqx 'pg_test cargo test -p awaken-session-store --features test-support --lib postgres_ -- --test-threads=1 \' "$0" || {
     echo "Postgres gate omits Session history, read-only open, and repository parity" >&2
     return 1
   }
-  grep -Fqx 'cargo test -p awaken-cli --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy -- --test-threads=1 --exact || status=1' "$0" || {
+  grep -Fqx 'pg_test cargo test -p awaken-cli --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy -- --test-threads=1 --exact || record_failure "$?"' "$0" || {
     echo "Postgres gate omits exact CLI installation-binding continuity" >&2
     return 1
   }
-  grep -Fqx "cargo test -p awaken-coordinator application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact || status=1" "$0" || {
+  grep -Fqx 'pg_test cargo test -p awaken-coordinator application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact || record_failure "$?"' "$0" || {
     echo "Postgres gate omits fail-closed ApplicationAccess durability conformance" >&2
     return 1
   }
@@ -155,7 +211,16 @@ case "${1:-}" in
   *) echo "usage: scripts/ci/pg_tests.sh [--require-docker|--self-test]" >&2; exit 2 ;;
 esac
 
-if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+for deadline in "$PG_OPERATION_TIMEOUT_SECONDS" "$PG_READY_TIMEOUT_SECONDS" \
+  "$PG_TEST_TIMEOUT_SECONDS" "$PG_RECOVERY_TIMEOUT_SECONDS"; do
+  positive_seconds "$deadline" || {
+    echo "PostgreSQL deadlines must be positive integers" >&2
+    exit 2
+  }
+done
+
+if ! command -v docker >/dev/null 2>&1 \
+  || ! pg_run_with_deadline docker-info "$PG_OPERATION_TIMEOUT_SECONDS" docker info >/dev/null 2>&1; then
   if [ "$require_docker" -eq 1 ]; then
     echo "✗ Docker is required for Postgres-backed release tests" >&2
     exit 1
@@ -173,7 +238,8 @@ POSTGRES_CONTAINER_ENV=("POSTGRES_PASSWORD=$PASSWORD" "POSTGRES_DB=$DB") # awake
 RECOVERY_ROOT=""
 
 cleanup() {
-  docker rm -f "$NAME" "$OBJECT_NAME" >/dev/null 2>&1 || true
+  pg_run_with_deadline cleanup "$PG_OPERATION_TIMEOUT_SECONDS" \
+    docker rm -f "$NAME" "$OBJECT_NAME" >/dev/null 2>&1 || true
   if valid_recovery_root "$RECOVERY_ROOT"; then
     [ ! -d "$RECOVERY_ROOT" ] || rm -rf -- "$RECOVERY_ROOT"
   elif [ -n "$RECOVERY_ROOT" ]; then
@@ -200,7 +266,8 @@ else
   PUBLISH="127.0.0.1::5432"
   echo "-> starting ephemeral Postgres ($NAME) on a Docker-assigned free port"
 fi
-if ! docker run -d --name "$NAME" \
+if ! pg_run_with_deadline postgres-create "$PG_OPERATION_TIMEOUT_SECONDS" \
+  docker run -d --name "$NAME" \
   -e "${POSTGRES_CONTAINER_ENV[0]}" -e "${POSTGRES_CONTAINER_ENV[1]}" \
   -v "$RECOVERY_ROOT/base:/recovery-base" \
   -v "$RECOVERY_ROOT/wal:/wal-archive" \
@@ -215,7 +282,7 @@ if ! docker run -d --name "$NAME" \
 fi
 
 if [ -z "$REQUESTED_PORT" ]; then
-  if ! PORT="$(published_port "$(docker port "$NAME" 5432/tcp)")"; then
+  if ! PORT="$(published_port "$(pg_run_with_deadline postgres-port "$PG_OPERATION_TIMEOUT_SECONDS" docker port "$NAME" 5432/tcp)")"; then
     echo "✗ Docker did not publish a valid Postgres TCP port" >&2
     exit 1
   fi
@@ -224,12 +291,17 @@ fi
 
 # Wait until the server accepts connections (bounded; fail loud if it never does).
 ready=0
-for _ in $(seq 1 60); do
-  if docker exec "$NAME" pg_isready -U postgres -d "$DB" >/dev/null 2>&1; then ready=1; break; fi
+ready_deadline=$((SECONDS + PG_READY_TIMEOUT_SECONDS))
+while (( SECONDS < ready_deadline )); do
+  if pg_run_with_deadline postgres-ready "$PG_OPERATION_TIMEOUT_SECONDS" \
+    docker exec "$NAME" pg_isready -U postgres -d "$DB" >/dev/null 2>&1; then ready=1; break; fi
   sleep 1
 done
 if [ "$ready" -ne 1 ]; then
-  echo "✗ ephemeral Postgres never became ready"; docker logs "$NAME" | tail -20; exit 1
+  echo "✗ ephemeral Postgres never became ready"
+  pg_run_with_deadline postgres-logs "$PG_OPERATION_TIMEOUT_SECONDS" \
+    docker logs --tail 20 "$NAME" || true
+  exit 1
 fi
 
 export AWAKEN_TEST_DATABASE_URL="postgres://postgres:$PASSWORD@127.0.0.1:$PORT/$DB" # awaken-allow: secret
@@ -241,20 +313,23 @@ export FILE_STORE_ACCESS_KEY="awaken-file-store" # awaken-allow: secret (throwaw
 FILE_STORE_INITIAL_SECRET_KEY="awaken-file-store-initial" # awaken-allow: secret (throwaway fixture)
 export FILE_STORE_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow: secret
 # awaken-allow: secret (throwaway MinIO fixture, destroyed by the exit trap)
-if ! docker run -d --name "$OBJECT_NAME" \
+if ! pg_run_with_deadline object-create "$PG_OPERATION_TIMEOUT_SECONDS" \
+  docker run -d --name "$OBJECT_NAME" \
   -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
   -p 127.0.0.1::9000 "$MINIO_IMAGE" server /data --address :9000 >/dev/null; then
   echo "✗ Docker could not create the ephemeral object store" >&2
   exit 1
 fi
-if ! OBJECT_PORT="$(published_port "$(docker port "$OBJECT_NAME" 9000/tcp)")"; then
+if ! OBJECT_PORT="$(published_port "$(pg_run_with_deadline object-port "$PG_OPERATION_TIMEOUT_SECONDS" docker port "$OBJECT_NAME" 9000/tcp)")"; then
   echo "✗ Docker did not publish a valid object-store TCP port" >&2
   exit 1
 fi
 
 object_ready=0
-for _ in $(seq 1 60); do
-  if docker run --rm --network "container:$OBJECT_NAME" --entrypoint /bin/sh \
+object_ready_deadline=$((SECONDS + PG_READY_TIMEOUT_SECONDS))
+while (( SECONDS < object_ready_deadline )); do
+  if pg_run_with_deadline object-ready "$PG_OPERATION_TIMEOUT_SECONDS" \
+    docker run --rm --network "container:$OBJECT_NAME" --entrypoint /bin/sh \
     "$MC_IMAGE" -c \
     'mc alias set local http://127.0.0.1:9000 minioadmin minioadmin >/dev/null && mc ready local >/dev/null && mc mb --ignore-existing local/awaken-blobs >/dev/null'
   then
@@ -265,7 +340,8 @@ for _ in $(seq 1 60); do
 done
 if [ "$object_ready" -ne 1 ]; then
   echo "✗ ephemeral object store never became ready"
-  docker logs "$OBJECT_NAME" | tail -20
+  pg_run_with_deadline object-logs "$PG_OPERATION_TIMEOUT_SECONDS" \
+    docker logs --tail 20 "$OBJECT_NAME" || true
   exit 1
 fi
 export AWAKEN_TEST_S3_ENDPOINT="http://127.0.0.1:$OBJECT_PORT"
@@ -277,7 +353,8 @@ echo "-> AWAKEN_TEST_S3_ENDPOINT=$AWAKEN_TEST_S3_ENDPOINT"
 # prefixes exercised by conformance and rotation tests. The live Rust contract
 # includes a forbidden write outside those prefixes.
 # awaken-allow: secret (throwaway identity passed into its disposable container)
-if ! docker run --rm --network "container:$OBJECT_NAME" \
+if ! pg_run_with_deadline object-policy "$PG_OPERATION_TIMEOUT_SECONDS" \
+  docker run --rm --network "container:$OBJECT_NAME" \
   --volume "$PWD/scripts/ci/fixtures/minio-file-store-policy.json:/policy.json:ro" \
   --env FILE_STORE_ACCESS_KEY \
   --env FILE_STORE_SECRET_KEY \
@@ -296,75 +373,92 @@ fi
 # script exports one, so a connection failure is red. Single-threaded is unnecessary
 # where each test isolates itself in a fresh schema; the Session history matrix is
 # serialized explicitly while it creates and drops its canonical-prefix fixtures.
-status=0
+# Result-composition decision table: F1 all stages succeed => pass; F2 one
+# stage fails => retain that status; F3 later stages fail after F2 => keep the
+# first status while continuing the evidence sweep; F4 cleanup is best-effort
+# and cannot replace F2/F3. This preserves the causal failure instead of
+# reporting the last diagnostic or a generic successful teardown.
+first_failure=0
+record_failure() {
+  local failure="$1"
+  if [ "$first_failure" -eq 0 ]; then
+    first_failure="$failure"
+  fi
+}
 # P7 run the whole ingress contract in this fixture lifetime, including Worker
 # cancellation/checkpoint regressions; a hand-maintained target list can omit
 # new recovery suites and silently exercise them only without PostgreSQL.
-cargo test -p awaken-dispatch --features test-support || status=1
-cargo test -p awaken-dispatch-http --test active_active_postgres -- --test-threads=1 \
-  || status=1
-cargo test -p awaken-session-store --features test-support --test session_repo_conformance -- --test-threads=1 \
-  || status=1
-cargo test -p awaken-session-store --features test-support --lib postgres_ -- --test-threads=1 \
-  || status=1
-cargo test -p awaken-cli --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy -- --test-threads=1 --exact || status=1
-cargo test -p awaken-coordinator application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact || status=1
-cargo test -p awaken-config-store --test postgres || status=1
-cargo test -p awaken-admin-config-api --features postgres --test postgres_store || status=1
-cargo test -p awaken-store-postgres --test postgres_live || status=1
-cargo test -p awaken-model-catalog-store --features postgres,test-support --test repo_conformance || status=1
-cargo test -p awaken-credential-store --features postgres,test-support,sealed-aead --test repo_conformance || status=1
-cargo test -p awaken-data-subject-store --features postgres,test-support --test repo_conformance || status=1
-cargo test -p awaken-captured-content-store --features postgres,test-support --test repo_conformance || status=1
-cargo test -p awaken-env-store --features test-support --tests || status=1
-cargo test -p awaken-file-store --features postgres,sqlite,object-store || status=1
+pg_test cargo test -p awaken-dispatch --features test-support || record_failure "$?"
+pg_test cargo test -p awaken-dispatch-http --test active_active_postgres -- --test-threads=1 \
+  || record_failure "$?"
+pg_test cargo test -p awaken-session-store --features test-support --test session_repo_conformance -- --test-threads=1 \
+  || record_failure "$?"
+pg_test cargo test -p awaken-session-store --features test-support --lib postgres_ -- --test-threads=1 \
+  || record_failure "$?"
+pg_test cargo test -p awaken-cli --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy -- --test-threads=1 --exact || record_failure "$?"
+pg_test cargo test -p awaken-coordinator application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact || record_failure "$?"
+pg_test cargo test -p awaken-config-store --test postgres || record_failure "$?"
+pg_test cargo test -p awaken-admin-config-api --features postgres --test postgres_store || record_failure "$?"
+pg_test cargo test -p awaken-store-postgres --test postgres_live || record_failure "$?"
+pg_test cargo test -p awaken-model-catalog-store --features postgres,test-support --test repo_conformance || record_failure "$?"
+pg_test cargo test -p awaken-credential-store --features postgres,test-support,sealed-aead --test repo_conformance || record_failure "$?"
+pg_test cargo test -p awaken-data-subject-store --features postgres,test-support --test repo_conformance || record_failure "$?"
+pg_test cargo test -p awaken-captured-content-store --features postgres,test-support --test repo_conformance || record_failure "$?"
+pg_test cargo test -p awaken-env-store --features test-support --tests || record_failure "$?"
+pg_test cargo test -p awaken-file-store --features postgres,sqlite,object-store || record_failure "$?"
 
 # Credential-lifecycle state machine: seed -> revoke old credential -> issue
 # replacement -> read the same durable object. Both transitions are mandatory.
 export AWAKEN_TEST_S3_ROTATION_ID="rotation-$$"
-cargo test -p awaken-file-store --features object-store \
+pg_test cargo test -p awaken-file-store --features object-store \
   object::tests::minio_rotation_seed -- --exact \
-  || status=1
+  || record_failure "$?"
 FILE_STORE_ROTATED_SECRET_KEY="awaken-file-store-rotated" # awaken-allow: secret (throwaway fixture)
 export FILE_STORE_SECRET_KEY="$FILE_STORE_ROTATED_SECRET_KEY" # awaken-allow: secret
 # awaken-allow: secret (replacement passed into the same disposable container)
-if ! docker run --rm --network "container:$OBJECT_NAME" \
+rotation_status=0
+pg_run_with_deadline object-credential-rotation "$PG_OPERATION_TIMEOUT_SECONDS" \
+  docker run --rm --network "container:$OBJECT_NAME" \
   --env FILE_STORE_ACCESS_KEY \
   --env FILE_STORE_SECRET_KEY \
   --entrypoint /bin/sh "$MC_IMAGE" -c \
   'mc alias set local http://127.0.0.1:9000 minioadmin minioadmin >/dev/null &&
    mc admin user remove local "$FILE_STORE_ACCESS_KEY" >/dev/null &&
    mc admin user add local "$FILE_STORE_ACCESS_KEY" "$FILE_STORE_SECRET_KEY" >/dev/null &&
-   mc admin policy attach local awaken-file-store --user "$FILE_STORE_ACCESS_KEY" >/dev/null'
-then
+   mc admin policy attach local awaken-file-store --user "$FILE_STORE_ACCESS_KEY" >/dev/null' \
+  || rotation_status=$?
+if [ "$rotation_status" -ne 0 ]; then
   echo "✗ failed to rotate object-store fixture credential" >&2
-  status=1
+  record_failure "$rotation_status"
 fi
 export AWAKEN_TEST_S3_OLD_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow: secret
 export AWAKEN_TEST_S3_SECRET_KEY="$FILE_STORE_ROTATED_SECRET_KEY"
-cargo test -p awaken-file-store --features object-store \
+pg_test cargo test -p awaken-file-store --features object-store \
   object::tests::minio_rotated_credentials_revoke_old_secret_and_preserve_objects -- --exact \
-  || status=1
-cargo test -p awaken-memory-store --features postgres --test conformance || status=1
-cargo test -p awaken-skill-store --features postgres --test conformance || status=1
-cargo test -p awaken-resource-store --all-features || status=1
-cargo test -p awaken-resource-persistence || status=1
-cargo test -p awaken-store-schema --test apply || status=1
-cargo test -p awaken-store-sqlite --features test-support --test failure_atomicity || status=1
-cargo test -p awaken-sandbox-policy-store --features test-support || status=1
-cargo test -p awaken-executable-agent-catalog || status=1
-cargo test -p awaken-executable-environment-catalog || status=1
-cargo test -p awaken-environment-image-build \
+  || record_failure "$?"
+pg_test cargo test -p awaken-memory-store --features postgres --test conformance || record_failure "$?"
+pg_test cargo test -p awaken-skill-store --features postgres --test conformance || record_failure "$?"
+pg_test cargo test -p awaken-resource-store --all-features || record_failure "$?"
+pg_test cargo test -p awaken-resource-persistence || record_failure "$?"
+pg_test cargo test -p awaken-store-schema --test apply || record_failure "$?"
+pg_test cargo test -p awaken-store-sqlite --features test-support --test failure_atomicity || record_failure "$?"
+pg_test cargo test -p awaken-sandbox-policy-store --features test-support || record_failure "$?"
+pg_test cargo test -p awaken-executable-agent-catalog || record_failure "$?"
+pg_test cargo test -p awaken-executable-environment-catalog || record_failure "$?"
+pg_test cargo test -p awaken-environment-image-build \
   postgres::tests::concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority \
-  -- --exact --test-threads=1 || status=1
-cargo test -p awaken-work-store || status=1
+  -- --exact --test-threads=1 || record_failure "$?"
+pg_test cargo test -p awaken-work-store || record_failure "$?"
 
 # The same live PostgreSQL and object-store substrates finish with a physical
 # point-in-time restore. This is a recovery drill, not another repository or
 # an independent test graph.
-scripts/ci/postgres_recovery_drill.sh "$NAME" "$OBJECT_NAME" "$MC_IMAGE" || status=1
+pg_run_with_deadline recovery-drill "$PG_RECOVERY_TIMEOUT_SECONDS" \
+  scripts/ci/postgres_recovery_drill.sh "$NAME" "$OBJECT_NAME" "$MC_IMAGE" \
+  || record_failure "$?"
 
-if [ "$status" -ne 0 ]; then
-  echo "✗ Postgres-backed tests failed (see above)"; exit 1
+if [ "$first_failure" -ne 0 ]; then
+  echo "✗ Postgres-backed tests failed (first status $first_failure; see above)"
+  exit "$first_failure"
 fi
 echo "✓ durable backend tests passed against ephemeral PostgreSQL and object storage"
