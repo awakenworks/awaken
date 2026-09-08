@@ -1047,11 +1047,8 @@ Passing the offline validator is not a live runtime Verified identity.
 
 `scripts/ci/formal_profile.py` owns the shared requirement resolution and P0
 qualification used by feature coverage, formal coverage, and release packaging.
-Captured Runtime traces remain a separately reported evidence dimension; their
-rows retain abstract-model/theorem grades. `implementation_refined` is reserved
-for a future checked universal production-refinement integration and is rejected
-until that integration exists. A ledger's structural eligibility does not attest
-that proof tools ran or that deployed TCB fingerprints were authenticated.
+A ledger's structural eligibility does not attest that proof tools ran or that
+deployed TCB fingerprints were authenticated.
 
 Formal metadata mutation checks require an unmodified green fixture before each
 mutation, the named semantic rejection (not merely nonzero exit), and a green
