@@ -619,6 +619,22 @@ projection, insert-collision rollback and transaction composition remain outside
 the kernel proof. The complete event replay/ack obligation therefore keeps its
 abstract-model grade.
 
+Single-event rollout delivery additionally has a controlled-port executable
+oracle for the actual `reconcile_managed_credential_rollout` Future. Its 540 rows
+cross Pending plus every closed target error, immediate completion or one wait,
+cancellation during that wait, all four operations and revisions 0/1/u64::MAX.
+IDs and payload-bearing errors use fixed one-byte strings. A stateless monitor
+rejects every repository method synchronously when called, before a returned
+Future could be polled; it contains no persistence algorithm. Thus this checks
+that neither completion nor cancellation on these non-converged schedules can
+call the acknowledgement port. The existing InMemory rollout test separately
+checks durable outbox retention, error redaction and eventual exact ACK. Four
+production mutations are rejected by the executable oracle; the existing
+TLC all-target adoption invariant rejects first-target-only convergence.
+The whole obligation retains its abstract-model grade. These executable rows
+are not a completed Kani proof of the Future, Session busy selection, arbitrary
+strings/subscribers, SQL/crash durability or general executor liveness.
+
 The Source and Managed creation envelopes share `CredentialMaterialMutationFence`.
 Its material-input projection is also shared by both fresh-command and durable
 validation paths, replacing four copies of reference-set/attempt-suffix logic.

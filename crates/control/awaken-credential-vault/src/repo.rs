@@ -1258,3 +1258,6 @@ mod inventory;
 
 pub use credential_operations::*;
 pub use inventory::*;
+
+#[cfg(test)]
+mod rollout_delivery_tests;
