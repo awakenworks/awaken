@@ -482,6 +482,69 @@ async function main() {
     { timeoutMs: 1_000, pollMs: 1, listParams: { limit: 1 } },
   );
   assert.deepEqual(listRequests, [{ limit: 1 }], 'W6 beta stays absent and limit is forwarded');
+
+  // Receipt-read failure table: C1 the non-idempotent send already returned its
+  // exact receipt; C2 the next idempotent history read may fail transiently;
+  // C3 the caller explicitly classifies that failure; C4 a permanent failure is
+  // not classified. Effects: E1 C1+C2+C3 retries list without replaying send;
+  // E2 C1+C4 surfaces the original error immediately. Rules W7 and W8 keep the
+  // retry authority with the failover scenario rather than changing the shared
+  // waiter's fail-closed default.
+  let transientReads = 0;
+  const transient = Object.assign(new Error('projection sources changed'), { status: 503 });
+  const transientClient = {
+    beta: {
+      sessions: {
+        events: {
+          list: async function* list() {
+            transientReads += 1;
+            if (transientReads === 1) throw transient;
+            yield* snapshots.at(-1);
+          },
+        },
+      },
+    },
+  };
+  const afterTransient = await waitForSessionEventReceipt(
+    transientClient,
+    'session',
+    'receipt',
+    undefined,
+    ({ delta }) => delta.some((event) => event.id === 'new-idle'),
+    'W7 retry classified history read only',
+    { timeoutMs: 1_000, pollMs: 1, retryReadError: (error) => error?.status === 503 },
+  );
+  assert.equal(transientReads, 2, 'W7 retries exactly the failed idempotent list');
+  assert.equal(afterTransient.receiptEvent.id, 'receipt', 'W7 retains the exact receipt scope');
+
+  let permanentReads = 0;
+  const permanent = Object.assign(new Error('invalid request'), { status: 400 });
+  const permanentClient = {
+    beta: {
+      sessions: {
+        events: {
+          list: async function* list() {
+            permanentReads += 1;
+            throw permanent;
+          },
+        },
+      },
+    },
+  };
+  await assert.rejects(
+    waitForSessionEventReceipt(
+      permanentClient,
+      'session',
+      'receipt',
+      undefined,
+      () => true,
+      'W8 permanent history error',
+      { timeoutMs: 1_000, pollMs: 1, retryReadError: (error) => error?.status === 503 },
+    ),
+    (error) => error === permanent,
+  );
+  assert.equal(permanentReads, 1, 'W8 preserves fail-closed default for unclassified errors');
+
   await assert.rejects(
     waitForSessionEventReceipt(fakeClient, 'session', '', [], () => true, 'W5'),
     /exact Managed Event receipt id/u,
