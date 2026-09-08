@@ -182,16 +182,21 @@ async fn run_loop<S: Dispatch + 'static>(
         if shutdown.is_cancelled() {
             break;
         }
-        if let Some(ttl) = config.dead_letter_ttl {
+        if worker.store().owns_local_maintenance()
+            && let Some(ttl) = config.dead_letter_ttl
+        {
             let cutoff = now.saturating_sub(ttl.as_millis() as u64);
             if let Err(error) = worker.store().purge_dead_letters_before(cutoff).await {
                 tracing::warn!(%error, "dispatch dead-letter purge failed; retrying");
             }
         }
-        if let Err(error) = worker.store().relay().await {
+        if worker.store().owns_local_maintenance()
+            && let Err(error) = worker.store().relay().await
+        {
             tracing::warn!(%error, "dispatch relay failed; retrying");
         }
-        if let Some(interval) = config.terminal_reconciliation_interval
+        if worker.store().owns_local_maintenance()
+            && let Some(interval) = config.terminal_reconciliation_interval
             && tokio::time::Instant::now() >= next_terminal_reconciliation
         {
             if let Err(error) = worker
@@ -235,7 +240,8 @@ async fn run_loop<S: Dispatch + 'static>(
             _ = shutdown.cancelled() => break,
             _ = wake.wait() => {}
             _ = tokio::time::sleep_until(next_terminal_reconciliation),
-                if config.terminal_reconciliation_interval.is_some() => {}
+                if worker.store().owns_local_maintenance()
+                    && config.terminal_reconciliation_interval.is_some() => {}
             _ = tokio::time::sleep(config.poll_interval) => {}
         }
     }

@@ -6,6 +6,7 @@ from formal_model_mutation_runner import ROOT, check_tlc_model_mutations
 
 
 def check_terminal_scan_model_mutants(tlc_jar: Path) -> None:
+    check_maintenance_scheduling(tlc_jar)
     # Causes: failing prefix fills a page, healthy suffix is beyond that page,
     # periodic work is fair, and at most one restart forgets the cursor.
     # R1 normal => bounded page + suffix progress. R2 remove cursor advance =>
@@ -32,6 +33,40 @@ def check_terminal_scan_model_mutants(tlc_jar: Path) -> None:
     ):
         check_tlc_model_mutations(tlc_jar, "TerminalReconciliationScan", source, boundary, [])
     print("Terminal scan: bounded fair progress checked; cursor mutant killed; suffix/wrap witnessed")
+
+
+def check_maintenance_scheduling(tlc_jar: Path) -> None:
+    # M1 ownership x execution x timer: all eight scheduler partitions must pass.
+    # M2 remove work fence => remote mutation; M3 remove only timer fence =>
+    # past-deadline spin; M4 drop execution => temporal failure unless cancelled.
+    # Witnesses ensure both useful owner maintenance and remote execution exist.
+    source = (ROOT / "formal/tla/DispatchMaintenanceScheduling.tla").read_text()
+    config = (ROOT / "formal/tla/DispatchMaintenanceScheduling.cfg").read_text()
+    name = "DispatchMaintenanceScheduling"
+    changes = [
+        ("maintained \\/ OwnsMaintenance", "TRUE", "RemoteNeverMaintains"),
+        ("TimerReady == OwnsMaintenance /\\ TimerEnabled", "TimerReady == TimerEnabled", "RemoteNeverSpins"),
+        ("drained \\/ (RunsExecution /\\ (hint \\/ poll))", "drained", "temporal:ExecutionProgress"),
+    ]
+    mutations = []
+    for anchor, replacement, violation in changes:
+        if source.count(anchor) != 1:
+            raise SystemExit(f"Maintenance scheduling mutation anchor drifted: {anchor}")
+        mutant_config = config.replace("PROPERTIES ShutdownCompletes ExecutionProgress",
+            "PROPERTIES ExecutionProgress") if violation.startswith("temporal:") else config.replace(
+                "INVARIANTS Safety", f"INVARIANTS {violation} Safety")
+        mutations.append((source.replace(anchor, replacement), mutant_config, violation))
+    mutations.append((source, config.replace("INVARIANTS Safety", "INVARIANTS Safety NoRemoteDrainWitness"), "NoRemoteDrainWitness"))
+    check_tlc_model_mutations(tlc_jar, name, source, config, mutations)
+    for owns in (False, True):
+        for execution in (False, True):
+            for timer in (False, True):
+                row = config.replace("OwnsMaintenance = FALSE", f"OwnsMaintenance = {str(owns).upper()}")
+                row = row.replace("RunsExecution = TRUE", f"RunsExecution = {str(execution).upper()}")
+                row = row.replace("TimerEnabled = TRUE", f"TimerEnabled = {str(timer).upper()}")
+                witnesses = [] if not owns else [(source, row.replace("INVARIANTS Safety", "INVARIANTS Safety NoOwnerMaintenanceWitness"), "NoOwnerMaintenanceWitness")]
+                check_tlc_model_mutations(tlc_jar, name, source, row, witnesses)
+    print("Maintenance scheduling: 8 partitions checked; 3 mutants killed; owner/remote progress witnessed")
 
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:

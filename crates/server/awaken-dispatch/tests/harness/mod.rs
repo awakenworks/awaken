@@ -767,6 +767,8 @@ pub enum FinishFault {
 #[cfg(feature = "test-support")]
 pub struct FlakyDispatchStore {
     inner: Arc<awaken_dispatch::MemoryDispatchStore>,
+    local_maintenance: bool,
+    maintenance_calls: [AtomicUsize; 2],
     fail_claims: AtomicUsize,
     claim_attempts: AtomicUsize,
     renewal_attempts: AtomicUsize,
@@ -785,6 +787,8 @@ impl FlakyDispatchStore {
     pub fn new(fail_claims: usize) -> Self {
         Self {
             inner: Arc::new(awaken_dispatch::MemoryDispatchStore::new()),
+            local_maintenance: true,
+            maintenance_calls: [AtomicUsize::new(0), AtomicUsize::new(0)],
             fail_claims: AtomicUsize::new(fail_claims),
             claim_attempts: AtomicUsize::new(0),
             renewal_attempts: AtomicUsize::new(0),
@@ -801,6 +805,17 @@ impl FlakyDispatchStore {
     pub fn with_finish_fault(mut self, fault: FinishFault) -> Self {
         self.finish_fault = std::sync::Mutex::new(Some(fault));
         self
+    }
+
+    pub fn with_local_maintenance(mut self, owns: bool) -> Self {
+        self.local_maintenance = owns;
+        self
+    }
+
+    pub fn maintenance_calls(&self) -> [usize; 2] {
+        self.maintenance_calls
+            .each_ref()
+            .map(|calls| calls.load(Ordering::SeqCst))
     }
 
     pub fn finish_claims(&self) -> Vec<awaken_dispatch::RunClaim> {
@@ -852,6 +867,10 @@ impl FlakyDispatchStore {
 #[async_trait::async_trait]
 #[cfg(feature = "test-support")]
 impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
+    fn owns_local_maintenance(&self) -> bool {
+        self.local_maintenance
+    }
+
     async fn lock_commit_epoch(
         &self,
         claim: &awaken_dispatch::RunClaim,
@@ -1063,6 +1082,7 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
         &self,
         cutoff_ms: u64,
     ) -> Result<usize, awaken_dispatch::DispatchError> {
+        self.maintenance_calls[0].fetch_add(1, Ordering::SeqCst);
         self.inner.purge_dead_letters_before(cutoff_ms).await
     }
     async fn superseded(&self) -> Result<Vec<RunId>, awaken_dispatch::DispatchError> {
@@ -1133,6 +1153,7 @@ impl awaken_dispatch::Outbox for FlakyDispatchStore {
         self.inner.stage(input).await
     }
     async fn relay(&self) -> Result<usize, awaken_dispatch::DispatchError> {
+        self.maintenance_calls[1].fetch_add(1, Ordering::SeqCst);
         self.inner.relay().await
     }
 }

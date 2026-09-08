@@ -559,9 +559,16 @@ bytes. Each receipt has a new marker, so an old artifact cannot satisfy recovery
 The same live Session IDs continue after normal process replacement and SIGKILL;
 before writing again they must read back their previous Memory and Repository
 edits. This crash point is between turns, not while an ACP tool is executing.
-The live
-`host-login` profile in `e2e/codex_acp_live_e2e.mjs` reuses that mission and oracle;
-it requires an available real login and explicit live opt-in. The local Git fixture
+The live `host-login` profile in `e2e/codex_acp_live_e2e.mjs` reuses that mission
+and oracle; it requires an available real login and explicit live opt-in. One
+pure selector (`e2e/acp_live_profile.mjs`) enables Linux scoped execution for
+both live and fixture TrustedHost profiles. Its decision-table tests cross all
+eight supported profile/runtime combinations with Linux, macOS and Windows;
+the same selected flag drives deployment, Hand build features and the
+process-produced PID-namespace oracle. This is test deployment selection, not
+a second production capability detector. Non-Linux rows do not claim Linux
+supervision, and Namespace/Container keep their own existing boundaries.
+The local Git fixture
 uses the existing `test-support` local Git transport aperture; the production
 Repository transport remains HTTPS-only and does not inherit host Git identity.
 Agent-owned Git commands are a separate trusted-process identity boundary. Fixture success

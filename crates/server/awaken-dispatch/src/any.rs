@@ -278,6 +278,10 @@ macro_rules! delegate {
 
 #[async_trait]
 impl DispatchQueue for AnyDispatchStore {
+    fn owns_local_maintenance(&self) -> bool {
+        self.inner.owns_local_maintenance()
+    }
+
     async fn reserve_session_run(
         &self,
         request: RunDispatch,

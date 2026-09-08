@@ -1,6 +1,14 @@
 /// Durable run-dispatch queue: activation opportunity, claim, lease, recovery.
 #[async_trait]
 pub trait DispatchQueue: Send + Sync {
+    /// Whether this adapter owns process-local queue maintenance (outbox relay,
+    /// quarantine GC and global terminal scans). Database-less transports do
+    /// not: the upstream Coordinator owns those operations. This is immutable
+    /// adapter topology, not a grant to execute or mutate a claimed Run.
+    fn owns_local_maintenance(&self) -> bool {
+        true
+    }
+
     /// Persist one complete self-affine Session Run intent without making it
     /// claimable. The store applies this TTL using its own clock, granting an
     /// exclusive window to commit the Session activity and activate this row.
