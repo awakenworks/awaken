@@ -325,15 +325,54 @@ remain opaque Worker references even when a delivery adapter is installed.
 Issuer or custody failures abort publication; returned envelopes must match the
 exact source, target/use binding and recipient before entering a candidate.
 Control-only and AllInOne composition forward their existing Managed delivery
-configuration to the Catalog publisher. Native and Claude ACP use their existing
-ProviderAdapter and environment-variable usages, respectively.
+configuration to the Catalog publisher. Native uses `ProviderAdapter`; ACP
+retains its declared ProviderAdapter or explicit environment-variable usage.
+The self-hosted composition selects Worker for Native/A2A and Workload for ACP
+before issuance through the one `ProviderCredentialHolders` configuration.
+Selection never converts a sealed Worker envelope into a Workload envelope.
+Hosted compositions can retain one explicitly selected holder for all backends,
+or supply the exact Provider/ACP pair through the same configuration method.
 
-This closes a missing composition seam, not automatic self-hosted transport.
-The default self-hosted binary still has no recipient-envelope issuer: its
-embedded Worker can resolve a local Vault reference, whereas an isolated Worker
-requires an installed delivery adapter and matching material resolver/projection.
-Do not describe ordinary Provider authoring as a complete isolated-Worker journey
-until that deployment adapter and the real client journey have been qualified.
+Self-hosted deployments can install `RecipientKeyEnvelope` through the existing
+`credential_envelope_keys_file` bootstrap setting. Control and AllInOne install
+it into the same `CredentialMaterialDelivery::RecipientEnvelope` port; standalone
+Worker uses the matching `CredentialMaterialResolver` without opening an authority
+store. AllInOne shares one adapter instance between publication and execution.
+Omitting the setting preserves the existing local Vault / externally projected
+Worker-file paths. Configuring both file projection and recipient-key transport,
+or configuring both a product-injected delivery and this transport, is an error.
+Coordinator rejects the key setting: it transports only the published ciphertext.
+
+The protected JSON key file has `ttl_seconds` (1 through 2592000) and `keys`, each
+with a unique `id`, exact `holder` and a distinct 32-byte `key_base64`. On Unix its
+mode must exclude group/other access (for example 0600). It is transport bootstrap
+material, distinct from the Control seal key and from Provider secrets. Operators
+project only the authorized recipient keys into each execution installation.
+The self-hosted Native and ACP holders remain `awaken.worker` / Worker and
+`awaken.workload.acp` / Workload. Pool replacements may share the same explicitly
+trusted recipient; Worker incarnation is still fenced by the dispatch claim. With a remote-only
+AllInOne coordinator, `run_local_pool = false` is evaluated before embedded Worker
+preparation: no local ACP discovery, registration, or supervisor starts. The
+existing shared-runtime/shared-resource PostgreSQL requirements still apply.
+
+A fresh ChaCha20-Poly1305 nonce seals each scalar Provider/process credential.
+The existing opaque envelope ref transports the ciphertext. AEAD authenticates
+the full credential revision, material source, target, usage, policy, selected
+holder, Workspace/target-use binding, key identity and expiry. The existing public
+fingerprint remains the contract check; it is not assumed to be a cryptographic
+hash. Files are reread before issuance and use, so withdrawal/corruption never
+falls back to a cached key, another holder, or a local Vault. Adding a recipient
+requires restarting the Worker to publish its new capabilities. Expired published
+envelopes require republication; this transport creates no renewal scheduler.
+
+This first self-hosted transport qualifies scalar `ProviderAdapter` and
+`EnvironmentVariable` usages. OAuth refresh bundles, structured Resource/MCP
+materials and Cloud KMS remain with their existing adapters; they cannot silently
+degrade to scalar Provider material. Transport-key withdrawal is separate from
+credential revocation, whose authority remains Credential rollout and the attempt
+fence. Unit tests and the issuance Kani kernel do not prove instant revocation
+across a partition or a complete isolated-Worker journey; physical/client results
+must be recorded against the actual tested deployment.
 
 The realization mechanism is an execution result, not another published policy.
 A secret-free receipt may record the selected holder and actual mechanism, such
@@ -554,13 +593,13 @@ credential admission and materialization. The Gateway opens the same canonical
 store adapters; a copied Vault, local fallback, or raw-secret RPC is not an
 equivalent realization.
 
-`CredentialEnvelope` currently records recipient, expiry, and payload
-fingerprint constraints for an installed resolver such as CSI. Awaken does not
-currently implement a cryptographic envelope issuer, recipient public-key
-registry, ciphertext store, replay nonce, or KMS unwrap contract. A deployment
-that cannot install the canonical materializer in the Gateway therefore fails
-closed; it must not claim recipient-bound network delivery from envelope
-metadata alone.
+`CredentialEnvelope` records recipient, expiry, and payload fingerprint
+constraints for an installed resolver such as CSI. The self-hosted recipient-key
+transport described above now seals scalar Provider/process credentials; it does
+not implement this Gateway's structured `HttpEffect` delivery, a recipient
+public-key registry, a ciphertext store, or a KMS unwrap contract. A deployment
+that cannot install the canonical materializer in the Gateway therefore still
+fails closed; envelope metadata alone does not establish network delivery.
 
 ### Amendment: deployment-owned Cloud Native profile (2026-08-14)
 

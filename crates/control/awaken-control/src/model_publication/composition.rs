@@ -34,6 +34,52 @@ impl CatalogSource {
     }
 }
 
+/// Deployment-selected direct Provider recipients. Backend selection chooses
+/// one complete holder; an allowed policy set never invents a trust domain.
+#[derive(Clone)]
+pub struct ProviderCredentialHolders {
+    pub(super) provider: awaken_runtime_contract::PlaintextHolder,
+    acp: awaken_runtime_contract::PlaintextHolder,
+}
+
+impl From<awaken_runtime_contract::PlaintextHolder> for ProviderCredentialHolders {
+    fn from(holder: awaken_runtime_contract::PlaintextHolder) -> Self {
+        Self {
+            provider: holder.clone(),
+            acp: holder,
+        }
+    }
+}
+
+impl
+    From<(
+        awaken_runtime_contract::PlaintextHolder,
+        awaken_runtime_contract::PlaintextHolder,
+    )> for ProviderCredentialHolders
+{
+    fn from(
+        (provider, acp): (
+            awaken_runtime_contract::PlaintextHolder,
+            awaken_runtime_contract::PlaintextHolder,
+        ),
+    ) -> Self {
+        Self { provider, acp }
+    }
+}
+
+impl ProviderCredentialHolders {
+    pub(super) fn for_backend(&self, backend: &str) -> &awaken_runtime_contract::PlaintextHolder {
+        if matches!(
+            awaken_runtime_contract::resolved::Backend::from_ref(backend),
+            awaken_runtime_contract::resolved::Backend::Acp(_)
+        ) {
+            &self.acp
+        } else {
+            &self.provider
+        }
+    }
+}
+
 impl CatalogModelPublicationResolver {
     /// Resolve against a frozen catalog snapshot. This is useful for deterministic
     /// tests; production composition should use [`Self::from_repo`].
@@ -49,7 +95,7 @@ impl CatalogModelPublicationResolver {
             brokered_publication: None,
             direct_credential_policy:
                 awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
-            direct_holder: None,
+            direct_holders: None,
             credential_material_delivery: None,
             workers: None,
             a2a_cards: Arc::new(super::HttpA2aCardDiscovery),
@@ -74,7 +120,7 @@ impl CatalogModelPublicationResolver {
             brokered_publication: None,
             direct_credential_policy:
                 awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
-            direct_holder: None,
+            direct_holders: None,
             credential_material_delivery: None,
             workers: None,
             a2a_cards: Arc::new(super::HttpA2aCardDiscovery),
@@ -157,17 +203,18 @@ impl CatalogModelPublicationResolver {
     }
 
     /// Select the already-authoritative Credential policy and exact plaintext
-    /// holder used for direct Provider publications in a hosted composition.
+    /// recipients. One holder explicitly applies to every backend; a pair gives
+    /// the Provider adapter and ACP Workload recipients respectively.
     /// The resolver still validates source, usage, binding and holder
     /// admission through the ordinary Vault compiler.
     #[must_use]
     pub fn with_direct_provider_credential_execution(
         mut self,
         policy: awaken_runtime_contract::CredentialExecutionPolicy,
-        holder: awaken_runtime_contract::PlaintextHolder,
+        holders: impl Into<ProviderCredentialHolders>,
     ) -> Self {
         self.direct_credential_policy = policy;
-        self.direct_holder = Some(holder);
+        self.direct_holders = Some(holders.into());
         self
     }
 }

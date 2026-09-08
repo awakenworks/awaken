@@ -134,7 +134,7 @@ impl CatalogModelPublicationResolver {
                 &(&binding.backend_ref, &security.fingerprint),
                 &usage,
             );
-            let selected_holder = self.direct_holder.as_ref().ok_or_else(|| {
+            let selected_holder = self.direct_holders.as_ref().map(|holders| &holders.provider).ok_or_else(|| {
                 unavailable(
                     "authenticated A2A publication requires an exact deployment-selected plaintext holder"
                         .into(),

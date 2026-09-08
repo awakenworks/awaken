@@ -14,6 +14,7 @@ mod inference;
 #[cfg(feature = "authority")]
 mod oauth_refresh;
 mod platform_relay;
+pub mod recipient_envelope;
 mod refresh;
 mod secret_broker;
 

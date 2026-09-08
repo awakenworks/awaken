@@ -51,6 +51,8 @@ pub(super) struct ProcessStartup {
     pub(super) control_service: Option<super::ControlServices>,
     pub(super) additional_lifecycle_delivery:
         Option<Arc<dyn awaken_session_contract::LifecycleFactDelivery>>,
+    pub(super) credential_material_resolver:
+        Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>,
     pub(super) managed_services: super::ManagedServiceAdapters,
 }
 

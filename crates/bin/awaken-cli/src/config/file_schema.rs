@@ -27,6 +27,7 @@ pub(super) struct FileConfig {
     pub(super) worker_kubernetes: Option<super::KubernetesWorkerTransport>,
     pub(super) worker_kubernetes_identity_directory: Option<PathBuf>,
     pub(super) worker_credential_material_root: Option<PathBuf>,
+    pub(super) credential_envelope_keys_file: Option<PathBuf>,
     pub(super) worker_credential_trust_domain: Option<String>,
     pub(super) worker_admin_listen: Option<String>,
     pub(super) worker_drain_grace_secs: Option<u64>,

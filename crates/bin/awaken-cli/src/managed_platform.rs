@@ -48,6 +48,31 @@ pub struct ManagedServiceAdapters {
 }
 
 impl ManagedServiceAdapters {
+    /// Install the configured self-hosted transport at the same composition
+    /// boundary as a product-supplied issuer. Ambiguous double installation is
+    /// an error; neither delivery mechanism silently replaces the other.
+    pub(crate) fn install_credential_envelope(
+        &mut self,
+        path: Option<&std::path::Path>,
+    ) -> Result<Option<Arc<dyn awaken_runtime_contract::CredentialMaterialResolver>>, String> {
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        if self.credential_material_delivery.is_some() {
+            return Err("credential envelope transport is configured twice".into());
+        }
+        let adapter =
+            awaken_credential_materializer::recipient_envelope::RecipientKeyEnvelope::open(path)
+                .map_err(|error| format!("credential envelope configuration: {error}"))?;
+        let adapter = Arc::new(adapter);
+        self.credential_material_delivery = Some(
+            awaken_credential_contract::CredentialMaterialDelivery::RecipientEnvelope(
+                adapter.clone(),
+            ),
+        );
+        Ok(Some(adapter))
+    }
+
     #[must_use]
     pub fn with_entitlement_provider(
         mut self,
@@ -266,6 +291,53 @@ mod tests {
         conjunctive_managed_credential_adoption_progress,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// C1 configured self-hosted key file; C2 injected product delivery. Rules:
+    /// !C1 leaves C2 unchanged; C1+!C2 installs one shared issuer/resolver;
+    /// C1+C2 rejects before opening the file. Missing/malformed files must not
+    /// silently retain an unsealed Provider publication path.
+    #[test]
+    fn credential_envelope_composition_rejects_competing_delivery() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("keys.json");
+        let mut adapters = ManagedServiceAdapters::default();
+        assert!(
+            adapters
+                .install_credential_envelope(None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(adapters.install_credential_envelope(Some(&path)).is_err());
+        std::fs::write(&path, serde_json::to_vec(&serde_json::json!({
+            "ttl_seconds":3600,"keys":[{"id":"worker", "holder":{"boundary":"worker","trust_domain":"awaken.worker"},
+            "key_base64":"MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE="}]
+        })).unwrap()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        assert!(
+            adapters
+                .install_credential_envelope(Some(&path))
+                .unwrap()
+                .is_some()
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            adapters
+                .install_credential_envelope(None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            adapters
+                .install_credential_envelope(Some(&path))
+                .err()
+                .unwrap()
+                .contains("configured twice")
+        );
+    }
 
     const FAILED_POSTGRES_URL: &str = "postgres://127.0.0.1:1/awaken-managed-background-startup";
 

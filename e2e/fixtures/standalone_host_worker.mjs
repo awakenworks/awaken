@@ -3,8 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { cargoExecutable } from '../cargo_binary.mjs';
+import { cargoExecutable, WORKER_BIN_ENV, requirePrebuiltExecutable } from '../cargo_binary.mjs';
 import { availablePort, hardKillServer, stopServer, waitForValue } from '../harness.mjs';
+import { withoutControlAuthority } from '../process_environment.mjs';
 import { sqliteRows } from '../sqlite.mjs';
 import { installHostResourceFixture } from './trusted_host_resources.mjs';
 import { createTlsIdentityFixture } from './tls_identity_fixture.mjs';
@@ -17,7 +18,8 @@ import { workdirWorkerManifestFixture } from './worker_manifest_fixture.mjs';
 // No scenario router, synthetic dispatch, source-row write or second resource
 // implementation is involved. The publisher here is an explicit trusted test
 // operator, NOT evidence of automatic authenticated projection delivery.
-export async function prepareStandaloneHostWorker({ root, temp, productDirectory, runtime, scopedHost }) {
+export async function prepareStandaloneHostWorker({ root, temp, productDirectory, runtime, scopedHost,
+  providerCredentials, registryPath, readRegistry }) {
   const workerId = `resource-${runtime}-worker`;
   const workerData = path.join(temp, 'standalone worker');
   const internalPort = await availablePort(0);
@@ -38,6 +40,18 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
   fs.writeFileSync(workerFile, JSON.stringify(workerSigning), { mode: 0o600 });
   fs.writeFileSync(trustFile, JSON.stringify([embeddedSigning, workerSigning]), { mode: 0o600 });
   const bindingFile = path.join(temp, 'local-bindings.json');
+  const envelopeFile = path.join(temp, 'recipient-keys.json');
+  if (providerCredentials) {
+    // D1 normal Provider authoring crosses the real Vault issuer. Only transport
+    // keys are fixture-projected; Provider material is NEVER written here.
+    // D2 independent Native and ACP holders receive distinct random keys.
+    const keys = [
+      ['worker', 'awaken.worker'],
+      ['workload', 'awaken.workload.acp'],
+    ].map(([boundary, trust_domain]) => ({id:boundary,holder:{boundary,trust_domain},
+      key_base64:randomBytes(32).toString('base64')}));
+    fs.writeFileSync(envelopeFile, JSON.stringify({ttl_seconds:3600,keys}), {mode:0o600});
+  }
   const workerConfig = path.join(temp, 'standalone-worker.toml');
   fs.writeFileSync(workerConfig, [
     `data_dir = ${JSON.stringify(workerData)}`,
@@ -45,19 +59,30 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
     `worker_id = ${JSON.stringify(workerId)}`,
     `worker_request_credential_file = ${JSON.stringify(workerFile)}`,
     `worker_server_ca_certificate_file = ${JSON.stringify(identity.caCertificate)}`,
-    `worker_local_credential_bindings_file = ${JSON.stringify(bindingFile)}`,
+    ...(providerCredentials
+      ? [`credential_envelope_keys_file = ${JSON.stringify(envelopeFile)}`]
+      : [`worker_local_credential_bindings_file = ${JSON.stringify(bindingFile)}`]),
     `worker_admin_listen = "127.0.0.1:${adminPort}"`,
     'worker_credential_probe_interval_secs = 1',
     // Keep the production 30s evidence window: a 5s lease is shorter than
     // the Coordinator-owned heartbeat publication budget and is now rejected
     // during startup rather than creating intermittent eligibility gaps.
     'worker_credential_observation_ttl_secs = 30',
-    'sandbox_tier = "local"', 'sandbox_trusted_host_enabled = true',
+    `sandbox_tier = ${JSON.stringify(providerCredentials?.sandboxTier ?? 'local')}`,
+    ...(providerCredentials ? (providerCredentials.image ? [`container_image = ${JSON.stringify(providerCredentials.image)}`] : [])
+      : ['sandbox_trusted_host_enabled = true']),
     `sandbox_trusted_host_scoped_execution = ${scopedHost}`,
-    `acp_clis = ${JSON.stringify([runtime])}`,
+    `acp_clis = ${JSON.stringify(runtime === "native" ? [] : [runtime])}`,
   ].join('\n'));
-  const environment = await installHostResourceFixture(root, path.join(temp, 'worker fixture'), workerData, runtime);
-  const binary = cargoExecutable({
+  const environment = providerCredentials
+    ? {...providerCredentials.environment, HOME:workerData, AWAKEN_DATA_DIR:workerData}
+    : await installHostResourceFixture(root, path.join(temp, 'worker fixture'), workerData, runtime);
+  fs.mkdirSync(workerData,{recursive:true});
+  if (providerCredentials?.wrapperCache) fs.cpSync(providerCredentials.wrapperCache,
+    path.join(workerData,'acp-wrappers','claude'),{recursive:true,verbatimSymlinks:true});
+  // Provider journey requires the caller's frozen bundle. This path must never
+  // override Cargo target/build directories or silently rebuild another revision.
+  const binary = providerCredentials ? requirePrebuiltExecutable(WORKER_BIN_ENV) : cargoExecutable({
     cwd: root, packageName: 'awaken-worker', targetName: 'awaken-worker',
     // Linux Repository I/O is in the already-qualified companion. Unscoped
     // platforms need the same existing local-Git aperture in the runtime host.
@@ -65,16 +90,17 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
     snapshotDestination: path.join(productDirectory,
       process.platform === 'win32' ? 'awaken-worker.exe' : 'awaken-worker'),
   });
+  assert.ok(binary, "standalone Provider journey requires AWAKEN_E2E_WORKER_BIN");
   let worker;
   let proxy;
   let output = '';
   let reference;
   let generation = 0;
-  const registry = path.join(temp, 'data', 'worker-registry.db');
-  const rows = () => sqliteRows(registry,
+  const registry = registryPath ?? path.join(temp, 'data', 'worker-registry.db');
+  const rows = readRegistry ?? (() => sqliteRows(registry,
     `SELECT worker_id, incarnation_id, generation, state, expires_at_ms,
       manifest_json, credential_observations_json, observation_sequence
-     FROM worker_registry_worker`);
+     FROM worker_registry_worker`));
   const current = () => rows().find((row) => row.worker_id === workerId);
   const publish = (value) => {
     // One atomic replacement in the protected fixture directory. Never expose
@@ -89,7 +115,7 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
       && item.state === 'available' && item.observed_at_ms <= Date.now()
       && item.valid_until_ms > Date.now());
   const exactAvailable = (row) => row && row.state === 'ready' && row.expires_at_ms > Date.now()
-    && hasExactCredential(row);
+    && (providerCredentials || hasExactCredential(row));
   const assertCustody = () => {
     for (const forbidden of ['credential.db', 'files.db', 'memory_fs.db', 'resources.db',
       'sessions.db', 'worker-registry.db', 'control-seal.key']) {
@@ -100,35 +126,59 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
   };
   const launch = async () => {
     worker = spawn(binary, ['--config', workerConfig, '--server', `https://127.0.0.1:${tlsPort}`], {
-      cwd: root, env: { ...environment, AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: '1' },
-      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: root, env: { ...withoutControlAuthority(environment), AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: providerCredentials ? '0' : '1' },
+      // Physical signal acceptance must run the production signal owner. The
+      // legacy portable resource fixture retains its existing stdin EOF mode.
+      stdio: [providerCredentials ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
-    worker.stdout.on('data', (chunk) => { output += chunk.toString(); });
-    worker.stderr.on('data', (chunk) => { output += chunk.toString(); });
+    const capture = (chunk) => {
+      output += chunk.toString();
+      fs.appendFileSync(path.join(temp, 'standalone-worker.log'), chunk, {mode:0o600});
+    };
+    worker.stdout.on('data', capture);
+    worker.stderr.on('data', capture);
     const row = await waitForValue(async () => {
       assert.ok(worker.exitCode === null && worker.signalCode === null,
         `production Worker exited during registration: ${output}`);
       return current();
     }, (value) => value?.generation > generation && exactAvailable(value),
-    'W1 fresh exact standalone Worker incarnation and login', { timeoutMs: 60_000 });
+    'W1 fresh exact standalone Worker incarnation and material capability', { timeoutMs: 120_000 });
     generation = row.generation;
     const eligible = rows().filter((value) => value.state === 'ready' && value.expires_at_ms > Date.now()
-      && JSON.parse(value.manifest_json).capabilities.includes(`acp:${runtime}`));
+      && JSON.parse(value.manifest_json).capabilities.includes(runtime === 'native' ? 'native-runtime' : `acp:${runtime}`));
     assert.deepEqual(eligible.map((value) => value.worker_id), [workerId],
       'W1 no embedded ACP Worker can satisfy the resource mission');
     assertCustody();
   };
+  const controlFields = {
+    internal_bind:`127.0.0.1:${internalPort}`, worker_id:embeddedSigning.worker_id,
+    worker_request_credential_file:embeddedFile, worker_trust_credentials_file:trustFile,
+    ...(providerCredentials ? {run_local_pool:false,credential_envelope_keys_file:envelopeFile} : {}),
+  };
   return {
     physicalRoot: workerData,
-    controlConfig: [
-      `internal_bind = "127.0.0.1:${internalPort}"`,
-      `worker_id = ${JSON.stringify(embeddedSigning.worker_id)}`,
-      `worker_request_credential_file = ${JSON.stringify(embeddedFile)}`,
-      `worker_trust_credentials_file = ${JSON.stringify(trustFile)}`,
-    ],
+    controlFields,
+    controlConfig: Object.entries(controlFields).map(([key,value]) => `${key} = ${JSON.stringify(value)}`),
+    get process() { return worker; },
+    current,
+    async replace(signal) {
+      assert.ok(['SIGKILL','SIGTERM'].includes(signal));
+      if (signal === 'SIGKILL') await hardKillServer(worker, 'standalone Cowork Worker');
+      else {
+        const {once} = await import('node:events');
+        const exited = once(worker,'exit',{signal:AbortSignal.timeout(90_000)});
+        assert.ok(worker.kill(signal)); await exited;
+        assert.equal(worker.signalCode,null); assert.equal(worker.exitCode,0);
+      }
+      const stopped = {exit_code:worker.exitCode,signal:worker.signalCode};
+      await launch();
+      return stopped;
+    },
     async start(source) {
-      reference = { id: source.id, revision: source.revision };
-      publish([binding()]);
+      if (!providerCredentials) {
+        reference = { id: source.id, revision: source.revision };
+        publish([binding()]);
+      }
       // W0: valid registration bytes + bare claimed identity => HTTP 401 from
       // the production signed authenticator; TLS alone is not authorization.
       const denied = await fetch(`http://127.0.0.1:${internalPort}/v1/worker/register`, {
