@@ -317,6 +317,24 @@ envelope to at most one explicitly installed resolver. A failed delegate never
 falls back to the local Vault. Worker assembly reuses this same materializer for
 Native inference, ACP process secrets, MCP, and Repository realization.
 
+The Vault's `publish_exact_credential_access` is the common authorized material
+handoff for Managed Resources and ordinary Provider publications. It first runs
+the pure exact-source compiler, then optionally opens that same source once and
+uses the selected `CredentialMaterialDelivery` alternative. WorkerLocal sources
+remain opaque Worker references even when a delivery adapter is installed.
+Issuer or custody failures abort publication; returned envelopes must match the
+exact source, target/use binding and recipient before entering a candidate.
+Control-only and AllInOne composition forward their existing Managed delivery
+configuration to the Catalog publisher. Native and Claude ACP use their existing
+ProviderAdapter and environment-variable usages, respectively.
+
+This closes a missing composition seam, not automatic self-hosted transport.
+The default self-hosted binary still has no recipient-envelope issuer: its
+embedded Worker can resolve a local Vault reference, whereas an isolated Worker
+requires an installed delivery adapter and matching material resolver/projection.
+Do not describe ordinary Provider authoring as a complete isolated-Worker journey
+until that deployment adapter and the real client journey have been qualified.
+
 The realization mechanism is an execution result, not another published policy.
 A secret-free receipt may record the selected holder and actual mechanism, such
 as process secret, secret file, Worker relay, or platform lease. It cannot select

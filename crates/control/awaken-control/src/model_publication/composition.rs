@@ -49,6 +49,7 @@ impl CatalogModelPublicationResolver {
             direct_credential_policy:
                 awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
             direct_holder: None,
+            credential_material_delivery: None,
             workers: None,
             a2a_cards: Arc::new(super::HttpA2aCardDiscovery),
             executor_capabilities,
@@ -72,6 +73,7 @@ impl CatalogModelPublicationResolver {
             direct_credential_policy:
                 awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
             direct_holder: None,
+            credential_material_delivery: None,
             workers: None,
             a2a_cards: Arc::new(super::HttpA2aCardDiscovery),
             executor_capabilities,
@@ -80,6 +82,18 @@ impl CatalogModelPublicationResolver {
                 std::collections::HashMap::new(),
             )),
         }
+    }
+
+    /// Reuse the product's sole credential delivery adapter for direct Provider
+    /// publications. None retains local exact-reference materialization.
+    #[must_use]
+    pub fn with_credential_material_delivery(
+        mut self,
+        secrets: Arc<dyn awaken_credential_vault::SecretStore>,
+        delivery: Option<awaken_credential_contract::CredentialMaterialDelivery>,
+    ) -> Self {
+        self.credential_material_delivery = delivery.map(|delivery| (secrets, delivery));
+        self
     }
 
     /// Install the authored Profile read port for explicit Profile choices.

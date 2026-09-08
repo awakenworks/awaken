@@ -28,7 +28,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnServer, stopServer, waitForPort } from './harness.mjs';
-import { cargoExecutable } from './cargo_binary.mjs';
+import { credentialReferenceWorkerFixture } from './fixtures/credential_reference_worker_fixture.mjs';
 // @ts-ignore -- shared JavaScript fixture intentionally serves TS scenarios.
 import { withoutAmbientProviderKeys } from './process_environment.mjs';
 import {
@@ -52,15 +52,6 @@ const GRANT = 'grant-ts-provider-23';
 const GRANT_REVISION = 1;
 const THREAD = 'secretless-gateway-worker';
 const REVALIDATION_THREAD = 'secretless-gateway-worker-revalidation';
-
-function buildGatewayWorker(): string {
-  return cargoExecutable({
-    cwd: ROOT,
-    packageName: 'awaken-cli',
-    targetName: 'credential_reference_worker',
-    targetKind: 'example',
-  });
-}
 
 async function post(pathname: string, body: unknown, worker?: string): Promise<any> {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
@@ -102,7 +93,7 @@ async function registerReadyWorker(workerId: string): Promise<any> {
   return identity;
 }
 
-async function waitForGatewayReply(timeoutMs = 30_000): Promise<any[]> {
+async function waitForGatewayReply(worker: ChildProcessWithoutNullStreams, timeoutMs = 30_000): Promise<any[]> {
   const deadline = Date.now() + timeoutMs;
   let observed: any[] = [];
   while (Date.now() <= deadline) {
@@ -113,6 +104,11 @@ async function waitForGatewayReply(timeoutMs = 30_000): Promise<any[]> {
         return observed;
       }
     }
+    // L1 committed reply wins even if the process has since stopped; L2 no
+    // reply + exited/signalled Worker fails immediately, preserving stderr in
+    // the caller's diagnostic instead of misreporting a model timeout.
+    assert.ok(worker.exitCode === null && worker.signalCode === null,
+      `gateway worker stopped before committing: exit=${worker.exitCode}, signal=${worker.signalCode}`);
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`gateway worker never committed its grant-routed reply: ${JSON.stringify(observed)}`);
@@ -279,11 +275,11 @@ async function main(): Promise<void> {
       // make the test's unsafe local execution choice explicit.
       AWAKEN_TEST_SANDBOX_TIER: 'local',
     });
-    worker = spawn(buildGatewayWorker(), [], { cwd: ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    worker = spawn(credentialReferenceWorkerFixture({ root: ROOT }), [], { cwd: ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] });
     worker.stdout.on('data', (chunk) => (workerOutput += chunk.toString()));
     worker.stderr.on('data', (chunk) => (workerOutput += chunk.toString()));
 
-    const messages = await waitForGatewayReply().catch((error) => {
+    const messages = await waitForGatewayReply(worker).catch((error) => {
       return fetch(`${BASE}/v1/durable/threads/${THREAD}/dispatches`)
         .then(async (response) => {
           const dispatches = await response.text();

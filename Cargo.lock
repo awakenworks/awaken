@@ -252,11 +252,9 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-acp-contract",
- "awaken-agent-channel",
  "awaken-credential-vault",
  "awaken-run-executor-acp",
  "awaken-runtime-contract",
- "serde_json",
  "tempfile",
  "tokio",
 ]
@@ -1999,6 +1997,7 @@ dependencies = [
  "awaken-protocol-acp",
  "awaken-provisioning-contract",
  "awaken-runtime-contract",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

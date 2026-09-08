@@ -21,7 +21,9 @@ pub mod oauth;
 pub mod repo;
 
 pub use availability::{AvailabilityLedger, AvailabilityState};
-pub use credential_access::{ExactCredentialAccessRequest, compile_exact_credential_access};
+pub use credential_access::{
+    ExactCredentialAccessRequest, compile_exact_credential_access, publish_exact_credential_access,
+};
 #[cfg(feature = "oauth-command")]
 pub use oauth::{CommandTokenSource, TokenSource};
 

@@ -1,0 +1,182 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { cargoExecutable } from '../cargo_binary.mjs';
+import { availablePort, hardKillServer, stopServer, waitForValue } from '../harness.mjs';
+import { sqliteRows } from '../sqlite.mjs';
+import { installHostResourceFixture } from './trusted_host_resources.mjs';
+import { createTlsIdentityFixture } from './tls_identity_fixture.mjs';
+import { startTlsProxy, stopTlsProxy } from './tls_proxy_fixture.mjs';
+import { workdirWorkerManifestFixture } from './worker_manifest_fixture.mjs';
+
+// This fixture owns only the split-process deployment of the EXISTING resource
+// oracle. Control creates the WorkerLocal source through normal startup, then
+// runs with acp_clis=[]; the production Worker artifact is the only ACP claimer.
+// No scenario router, synthetic dispatch, source-row write or second resource
+// implementation is involved. The publisher here is an explicit trusted test
+// operator, NOT evidence of automatic authenticated projection delivery.
+export async function prepareStandaloneHostWorker({ root, temp, productDirectory, runtime, scopedHost }) {
+  const workerId = `resource-${runtime}-worker`;
+  const workerData = path.join(temp, 'standalone worker');
+  const internalPort = await availablePort(0);
+  const tlsPort = await availablePort(0);
+  const adminPort = await availablePort(0);
+  const identity = createTlsIdentityFixture(path.join(temp, 'tls'), {
+    caCommonName: 'Awaken standalone resource fixture', serverCommonName: '127.0.0.1',
+    subjectAltNames: ['IP:127.0.0.1'],
+  });
+  const signing = (id) => ({ worker_id: id, key_id: `${id}-key`,
+    credential_id: `${id}-request`, secret_base64: randomBytes(32).toString('base64') });
+  const embeddedSigning = signing('embedded-resource-worker');
+  const workerSigning = signing(workerId);
+  const embeddedFile = path.join(temp, 'embedded-signer.json');
+  const workerFile = path.join(temp, 'worker-signer.json');
+  const trustFile = path.join(temp, 'worker-trust.json');
+  fs.writeFileSync(embeddedFile, JSON.stringify(embeddedSigning), { mode: 0o600 });
+  fs.writeFileSync(workerFile, JSON.stringify(workerSigning), { mode: 0o600 });
+  fs.writeFileSync(trustFile, JSON.stringify([embeddedSigning, workerSigning]), { mode: 0o600 });
+  const bindingFile = path.join(temp, 'local-bindings.json');
+  const workerConfig = path.join(temp, 'standalone-worker.toml');
+  fs.writeFileSync(workerConfig, [
+    `data_dir = ${JSON.stringify(workerData)}`,
+    `sandbox_dir = ${JSON.stringify(path.join(workerData, 'sandboxes'))}`,
+    `worker_id = ${JSON.stringify(workerId)}`,
+    `worker_request_credential_file = ${JSON.stringify(workerFile)}`,
+    `worker_server_ca_certificate_file = ${JSON.stringify(identity.caCertificate)}`,
+    `worker_local_credential_bindings_file = ${JSON.stringify(bindingFile)}`,
+    `worker_admin_listen = "127.0.0.1:${adminPort}"`,
+    'worker_credential_probe_interval_secs = 1',
+    // Keep the production 30s evidence window: a 5s lease is shorter than
+    // the Coordinator-owned heartbeat publication budget and is now rejected
+    // during startup rather than creating intermittent eligibility gaps.
+    'worker_credential_observation_ttl_secs = 30',
+    'sandbox_tier = "local"', 'sandbox_trusted_host_enabled = true',
+    `sandbox_trusted_host_scoped_execution = ${scopedHost}`,
+    `acp_clis = ${JSON.stringify([runtime])}`,
+  ].join('\n'));
+  const environment = await installHostResourceFixture(root, path.join(temp, 'worker fixture'), workerData, runtime);
+  const binary = cargoExecutable({
+    cwd: root, packageName: 'awaken-worker', targetName: 'awaken-worker',
+    // Linux Repository I/O is in the already-qualified companion. Unscoped
+    // platforms need the same existing local-Git aperture in the runtime host.
+    ...(scopedHost ? {} : { features: ['awaken-session-executor/test-support'] }),
+    snapshotDestination: path.join(productDirectory,
+      process.platform === 'win32' ? 'awaken-worker.exe' : 'awaken-worker'),
+  });
+  let worker;
+  let proxy;
+  let output = '';
+  let reference;
+  let generation = 0;
+  const registry = path.join(temp, 'data', 'worker-registry.db');
+  const rows = () => sqliteRows(registry,
+    `SELECT worker_id, incarnation_id, generation, state, expires_at_ms,
+      manifest_json, credential_observations_json, observation_sequence
+     FROM worker_registry_worker`);
+  const current = () => rows().find((row) => row.worker_id === workerId);
+  const publish = (value) => {
+    // One atomic replacement in the protected fixture directory. Never expose
+    // a partially written JSON file to the Worker's asynchronous probe.
+    const next = bindingFile + '.next';
+    fs.writeFileSync(next, JSON.stringify(value), { mode: 0o600 });
+    fs.renameSync(next, bindingFile);
+  };
+  const binding = (enabled = true) => ({ credential: reference, cli_id: runtime, enabled });
+  const hasExactCredential = (row) => JSON.parse(row.credential_observations_json).some((item) =>
+      item.credential.id === reference.id && item.credential.revision === reference.revision
+      && item.state === 'available' && item.observed_at_ms <= Date.now()
+      && item.valid_until_ms > Date.now());
+  const exactAvailable = (row) => row && row.state === 'ready' && row.expires_at_ms > Date.now()
+    && hasExactCredential(row);
+  const assertCustody = () => {
+    for (const forbidden of ['credential.db', 'files.db', 'memory_fs.db', 'resources.db',
+      'sessions.db', 'worker-registry.db', 'control-seal.key']) {
+      assert.equal(fs.existsSync(path.join(workerData, forbidden)), false,
+        `standalone Worker must not create ${forbidden}`);
+    }
+    assert.ok(!output.includes(workerSigning.secret_base64), 'request signer is not logged');
+  };
+  const launch = async () => {
+    worker = spawn(binary, ['--config', workerConfig, '--server', `https://127.0.0.1:${tlsPort}`], {
+      cwd: root, env: { ...environment, AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: '1' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    worker.stdout.on('data', (chunk) => { output += chunk.toString(); });
+    worker.stderr.on('data', (chunk) => { output += chunk.toString(); });
+    const row = await waitForValue(async () => {
+      assert.ok(worker.exitCode === null && worker.signalCode === null,
+        `production Worker exited during registration: ${output}`);
+      return current();
+    }, (value) => value?.generation > generation && exactAvailable(value),
+    'W1 fresh exact standalone Worker incarnation and login', { timeoutMs: 60_000 });
+    generation = row.generation;
+    const eligible = rows().filter((value) => value.state === 'ready' && value.expires_at_ms > Date.now()
+      && JSON.parse(value.manifest_json).capabilities.includes(`acp:${runtime}`));
+    assert.deepEqual(eligible.map((value) => value.worker_id), [workerId],
+      'W1 no embedded ACP Worker can satisfy the resource mission');
+    assertCustody();
+  };
+  return {
+    physicalRoot: workerData,
+    controlConfig: [
+      `internal_bind = "127.0.0.1:${internalPort}"`,
+      `worker_id = ${JSON.stringify(embeddedSigning.worker_id)}`,
+      `worker_request_credential_file = ${JSON.stringify(embeddedFile)}`,
+      `worker_trust_credentials_file = ${JSON.stringify(trustFile)}`,
+    ],
+    async start(source) {
+      reference = { id: source.id, revision: source.revision };
+      publish([binding()]);
+      // W0: valid registration bytes + bare claimed identity => HTTP 401 from
+      // the production signed authenticator; TLS alone is not authorization.
+      const denied = await fetch(`http://127.0.0.1:${internalPort}/v1/worker/register`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-awaken-worker-id': workerId },
+        body: JSON.stringify({ registration: { worker_id: workerId, incarnation_id: 'unsigned',
+          manifest: workdirWorkerManifestFixture({ buildDigest: 'unsigned', capabilities: [] }) } }),
+      });
+      assert.equal(denied.status, 401, 'W0 a bare Worker identity cannot register');
+      proxy = await startTlsProxy(tlsPort, internalPort, identity.serverCertificate, identity.serverKey);
+      await launch();
+    },
+    async verifyRevocation() {
+      // Cause/effect rules: W2 same live process + disabled/absent projection
+      // => a NEW observation sequence contains no usable exact reference;
+      // W3 restoration => same generation becomes available again. Control's
+      // source remains active and unchanged, so no other login can mask denial.
+      // Race during probe/cancellation belongs to AcpProjectedBindingUse and
+      // its Rust decision tables, not to timing guesses in this process E2E.
+      for (const remove of [false, true]) {
+        const before = current();
+        if (remove) fs.unlinkSync(bindingFile);
+        else publish([binding(false)]);
+        await waitForValue(async () => current(), (row) =>
+          row.generation === generation && row.state === 'ready' && row.expires_at_ms > Date.now()
+          && row.observation_sequence > before.observation_sequence && !hasExactCredential(row),
+        'W2 standalone revocation heartbeat', { timeoutMs: 30_000 });
+        publish([binding()]);
+        await waitForValue(async () => current(), (row) =>
+          row.generation === generation && exactAvailable(row),
+        'W3 same-process restored projection', { timeoutMs: 30_000 });
+      }
+      assertCustody();
+    },
+    async restart({ crash = false } = {}) {
+      // W4 dirty live Sessions + only Worker replacement => a strictly newer
+      // registered generation recovers the SAME resource edits. Control stays
+      // alive; the shared resource oracle rejects recloning/cleanup resurrection.
+      if (crash) await hardKillServer(worker, 'standalone resource Worker');
+      else {
+        await stopServer(worker);
+        assert.equal(worker.exitCode, 0, `W4 stdin EOF drained the Worker: ${output}`);
+      }
+      await launch();
+    },
+    assertCustody,
+    async cleanup() {
+      if (worker) await stopServer(worker);
+      if (proxy) await stopTlsProxy(proxy);
+    },
+  };
+}

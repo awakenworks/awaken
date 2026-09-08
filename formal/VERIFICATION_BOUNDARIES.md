@@ -250,6 +250,46 @@ type checking are valuable executable evidence, but are not formal proofs.
   OS-thread races. This is bounded model linkage, not Rust/Mutex refinement;
   remote binding delivery, revision rotation and asynchronous login-probe
   freshness remain separate obligations. No second credential store is added.
+  The Worker-owned implementation now resides in
+  `awaken-run-executor-acp::host`; Coordinator registration translates its
+  Control rows into the same exact binding DTO.
+- `AcpProjectedBindingUse.tla` checks two consumers under one async gate with
+  at most two external file replacements (active, rotated revision, different
+  CLI, disabled, absent, invalid). Four mutants check post-probe comparison,
+  exact CLI identity, serialization and cancellation release; three witnesses
+  require successful use, revoked denial and a peer succeeding after cancel.
+  Executable tables exercise Codex/Claude, all login states, actual bounded
+  file reads/replacements and a paused login probe, both heartbeat and exact
+  use ports, and standalone Worker configuration/assembly. This proves neither
+  automatic authenticated projection delivery nor rollback/ABA detection,
+  OS IO correctness, the final check-to-launch interval, arbitrary live cloud
+  failures or Rust refinement. AllInOne source lifecycle refresh remains a
+  separate integration obligation; these bounds must not be reported as full
+  cloud/local or Windows/macOS production qualification.
+  The shared resource E2E additionally selects a shipped standalone Worker
+  process, signed HTTP-over-TLS transport, exact registry observations,
+  projected disable/delete/restore, and Worker-only graceful/abrupt replacement.
+  Its unchanged File/Memory/Repository oracle checks bytes, physical roots,
+  conflict retention and terminal tombstones. This is executable integration
+  evidence, not an extension of the model's state space or proof grade. Local
+  probe intervals and Coordinator heartbeat publication have separate clocks.
+  The Worker now rejects a negotiated budget unless evidence TTL strictly exceeds
+  probe interval + renewal interval + request timeout, at initial admission and
+  each subsequent lease receipt. `observation_publication_budget_is_strict_and_overflow_safe`
+  verifies the actual pure Rust kernel over all Duration seconds/nanoseconds,
+  using an independent u128 sum oracle. This is scalar arithmetic proof, not an
+  availability theorem for delayed/failed probes, network delivery or scheduling.
+  Lifecycle integration verifies initial withdrawal and later absorbing drain.
+  The production kernel module can be verified directly with standalone Kani;
+  cargo-kani 0.67 currently fails artifact discovery with a separate global Cargo
+  build-dir. No build-directory override is needed for the standalone proof.
+- Ordinary Provider and Managed Resource publication share Vault's exact material
+  handoff. Native/Claude decision tables cover recipient-envelope success and
+  issuer failure, substituted fingerprint/recipient, expiry and empty identity;
+  inactive or missing sources cannot reach issuance. This is executable
+  integration coverage, not a new cryptographic proof or proof of automatic
+  self-hosted Control-to-Worker delivery. Existing envelope contracts retain
+  authority over authenticated binding and recipient admission.
 - Circuit admission and completion now consume one owner-local Rust reducer.
   Both Closed requests and HalfOpen probes carry phase/epoch fences. Late
   completions stutter, zero probe capacity rejects even the first probe, and

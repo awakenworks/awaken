@@ -121,6 +121,76 @@ claim-fenced File, Memory, Skill, and Repository-verification clients; advertise
 capabilities derive from those installed adapters and fail closed when required
 adapters are absent.
 
+### Local host ACP on a split Worker
+
+A workstation Worker can opt into its installed Codex/Claude default account
+without sending login material to Control. Add these fields to its Worker file:
+
+```toml
+data_dir = "/var/lib/awaken/local-worker"
+sandbox_tier = "namespace"
+sandbox_trusted_host_enabled = true
+acp_clis = ["codex", "claude"]
+worker_local_credential_bindings_file = "/run/awaken/local-bindings.json"
+```
+
+Use platform-native absolute paths on Windows/macOS. The binding file contains
+only a JSON array of exact existing Control credential references:
+
+```json
+[
+  {"credential":{"id":"<existing WorkerLocal source id>","revision":1},"cli_id":"codex","enabled":true}
+]
+```
+
+The trusted external publisher derives this data through
+`awaken_acp_application::project_local_credential_sources`; it must replace
+the entire file atomically and protect its directory from workloads. The Worker
+only consumes this projection. It neither creates Control intent nor opens a
+Control database or CLI authentication file. This is an external projection
+integration, **not an automatic Control-to-Worker delivery service**. The default
+account is the only supported subject; another subject fails explicitly.
+
+Startup uses the shared host discovery, pinned wrapper acquisition and protocol
+probe, storing probe/wrapper directories under `data_dir`. It fails if none of
+the explicitly selected host CLIs is routable. Without a binding file, the host
+can publish protocol evidence for Provider-owned ACP but cannot advertise
+WorkerLocal login authority. Container tiers reject host binding projections.
+No ACP selection leaves the existing Native Worker path unchanged.
+
+Every login refresh and exact execution-time check reloads the complete
+projection, probes through the CLI, and reads it again. Missing files/empty
+arrays revoke bindings; malformed, oversized, unreadable or unexpected entries
+fail closed. A changed requested binding during the probe denies use; changed
+batch metadata denies heartbeat refresh. The existing Worker cache still owns
+observation expiry: failed refreshes do not extend old deadlines. A successful
+check is not instant revocation protection during the final check-to-launch
+interval, nor protection from a trusted publisher replaying older content.
+
+The portable gate runs `CODEX_ACP_PROFILE=worker-host-fixture` through the
+existing `e2e/codex_acp_live_e2e.mjs` resource mission for Codex and Claude. It
+first lets normal startup create the source, then removes ACP from the embedded
+Worker and launches the production `awaken-worker` artifact with a separate
+installation directory, explicit private CA and signed request credential.
+An unsigned registration must fail; the exact standalone registry row must
+publish and revoke its projected reference without restarting. The same File,
+Memory and Repository mission checks default/nested cwd, rendered resource
+variables, independent bytes and Git patch application, concurrent Memory
+conflicts, graceful/abrupt Worker replacement while Control stays alive, and
+physical cleanup plus durable tombstones. The physical marker must reside in
+the standalone Worker's root, excluding embedded execution as a passing oracle.
+
+This is a same-host fixture qualification, not real vendor login, HTTPS Git
+credential, cross-host cloud failure or automatic projection delivery proof.
+The fixture retains the default 30-second observation TTL. The Worker validates
+one timing contract: positive probe interval and, after each Coordinator lease
+receipt, `observation TTL > probe interval + heartbeat interval + request budget`.
+An incompatible initial receipt withdraws registration before claims; a later
+incompatible lease drains and terminates that incarnation. Raise the authored
+observation TTL to cover the negotiated budget; the Worker never extends old
+evidence to hide configuration errors. Slow probes, scheduling stalls and
+transport retries can still exhaust evidence and correctly fail closed.
+
 ## Split service boundaries
 
 Split Control and Coordinator processes each bind a second private HTTP surface.
@@ -146,7 +216,8 @@ executable_agent_registration_token_file = "/var/run/secrets/awaken/agent-regist
 ```
 
 Split roles fail startup when `internal_bind` is absent, malformed, or equal to
-`bind`; AllInOne and Worker reject it. Token values are loaded from files and
+`bind`; AllInOne may select it for external Workers, while Worker rejects it.
+Token values are loaded from files and
 never appear in `awaken config`. `awaken database migrate` also prepares the
 Coordinator-owned executable Agent command log when `runtime_database_url` is
 configured.

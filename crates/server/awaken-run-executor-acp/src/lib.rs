@@ -12,9 +12,13 @@
 //! only on foundation (contracts) + provisioning (channel) + the ACP protocol
 //! crate. It never resolves config or names a secret — the host opens the channel
 //! (local sandbox launch or remote dial) via an injected [`AgentChannelSource`]
-//! and hands this executor an already-launched agent.
+//! and hands this executor an already-launched agent. The separate [`host`]
+//! module supplies composition-time host discovery and liveness adapters using
+//! the same catalog; it has no Control registration or repository dependency.
 
 use std::sync::Arc;
+
+pub mod host;
 
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;

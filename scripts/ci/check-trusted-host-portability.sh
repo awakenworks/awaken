@@ -60,6 +60,7 @@ cargo test -p awaken-agent-config --lib \
   backend_owned_selection_cannot_encode_an_inexact_backend_or_model
 cargo test -p awaken-run-executor-acp --lib
 cargo test -p awaken-acp-application --lib
+cargo test -p awaken-worker --lib bootstrap::
 cargo test -p awaken-worker-contract --lib
 cargo test -p awaken-cli --lib acp_local_credentials
 # Publication lifecycle uses the same portable task/slot kernel. Include both
@@ -108,8 +109,12 @@ cargo test -p awaken-protocol-managed --test memory_store_api_http
 # each runtime must perform File/Memory/Repository I/O through the production
 # API -> Worker -> cwd -> prompt path. No "runtime missing" success skip.
 for runtime in codex claude; do
-  CODEX_ACP_PROFILE=host-fixture AWAKEN_ACP_RUNTIME="$runtime" \
-    node e2e/codex_acp_live_e2e.mjs
+  # Both topologies share one mission. The split row additionally requires
+  # signed transport, exact-reference revocation and ONLY Worker replacement.
+  for profile in host-fixture worker-host-fixture; do
+    CODEX_ACP_PROFILE="$profile" AWAKEN_ACP_RUNTIME="$runtime" \
+      node e2e/codex_acp_live_e2e.mjs
+  done
 done
 CODEX_ACP_PROFILE=native-host-fixture AWAKEN_ACP_RUNTIME=native \
   node e2e/codex_acp_live_e2e.mjs

@@ -481,6 +481,48 @@ fn worker_builder_rejects_scoped_execution_without_platform_or_host_consent() {
 }
 
 #[test]
+fn manifest_build_and_placement_share_current_protocol_admission() {
+    use awaken_worker_contract::{
+        CURRENT_CONTRACT_VERSION, CURRENT_RUNTIME_PROTOCOL_VERSION, VersionRange, WorkerManifest,
+    };
+    // Causes C1 explicit runtime range contains the current whole-claim floor;
+    // C2 dispatch range contains the envelope version. R1 C1+C2 => build;
+    // R2 !C1 or !C2 => reject before registration. Cross both envelope cases
+    // with omitted, old stage-scoped, exact current, broad, future and inverted
+    // declarations. In particular v4-only is sufficient: requiring v1 is a
+    // second, contradictory policy rather than backward compatibility.
+    for range in [
+        VersionRange::ANY,
+        VersionRange { min: 1, max: 3 },
+        VersionRange::exact(CURRENT_RUNTIME_PROTOCOL_VERSION),
+        VersionRange {
+            min: 1,
+            max: CURRENT_RUNTIME_PROTOCOL_VERSION,
+        },
+        VersionRange::exact(CURRENT_RUNTIME_PROTOCOL_VERSION + 1),
+        VersionRange {
+            min: CURRENT_RUNTIME_PROTOCOL_VERSION,
+            max: 3,
+        },
+    ] {
+        for envelope in [CURRENT_CONTRACT_VERSION, CURRENT_CONTRACT_VERSION + 1] {
+            let manifest = WorkerManifest {
+                build_digest: "protocol-fixture".into(),
+                dispatch_contract: VersionRange::exact(envelope),
+                runtime_protocol: range,
+                ..Default::default()
+            };
+            assert_eq!(
+                validate_worker_manifest(&manifest, &deployment()).is_ok(),
+                envelope == CURRENT_CONTRACT_VERSION
+                    && manifest.supports_current_runtime_protocol(),
+                "{range:?}/envelope={envelope}"
+            );
+        }
+    }
+}
+
+#[test]
 fn explicit_manifest_cannot_overstate_session_environment_recovery() {
     // Cause/effect decision table: C1=the installed default deployment uses
     // AttachedExec/NonRecoverable; C2=an explicit manifest claims
@@ -489,6 +531,9 @@ fn explicit_manifest_cannot_overstate_session_environment_recovery() {
     // bypass the typed topology used by the actual SessionEnvironment.
     let mut manifest = awaken_worker_contract::WorkerManifest {
         build_digest: "test-worker".into(),
+        runtime_protocol: awaken_worker_contract::VersionRange::exact(
+            awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+        ),
         ..Default::default()
     };
     manifest.sandbox_tool_recovery =
@@ -512,6 +557,9 @@ fn explicit_manifest_cannot_promote_a_kernel_probe_to_installed_supervision() {
         for trusted in [false, true] {
             let mut manifest = awaken_worker_contract::WorkerManifest {
                 build_digest: "supervision-fixture".into(),
+                runtime_protocol: awaken_worker_contract::VersionRange::exact(
+                    awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+                ),
                 ..Default::default()
             };
             manifest.sandbox.process_tree_supervision = primary;
@@ -532,6 +580,9 @@ fn explicit_manifest_cannot_promote_a_kernel_probe_to_installed_supervision() {
     configured.sandbox.trusted_host_enabled = true;
     let mut manifest = awaken_worker_contract::WorkerManifest {
         build_digest: "profile-fixture".into(),
+        runtime_protocol: awaken_worker_contract::VersionRange::exact(
+            awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION,
+        ),
         trusted_host_sandbox: configured.trusted_host_support(),
         sandbox_backends: [awaken_worker_contract::TRUSTED_HOST_SANDBOX_BACKEND.into()].into(),
         ..Default::default()

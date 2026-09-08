@@ -116,6 +116,7 @@ pub(crate) struct WorkerSupervisor {
         Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>>,
     pub(crate) observations: Arc<WorkerObservationCache>,
     pub(crate) observation_ttl: std::time::Duration,
+    pub(crate) probe_interval: std::time::Duration,
     pub(crate) warm_environments: Arc<
         RwLock<
             BTreeMap<
@@ -378,6 +379,17 @@ async fn renew_registry_authority(lifecycle: &WorkerSupervisor, mut sequence: u6
                     .expect("WorkerControlClient validates applied heartbeat TTL");
                 let previous_ttl = timing.lease_ttl().as_millis() as u64;
                 let timing = AuthorityLeaseTiming::from_ttl_ms(receipt_ttl);
+                if let Err(error) = crate::credential_liveness::validate_observation_timing(
+                    lifecycle.probe_interval,
+                    lifecycle.observation_ttl,
+                    Some(timing),
+                ) {
+                    awaken_observability::record_worker_authority_loss(
+                        "observation_timing_incompatible",
+                    );
+                    tracing::error!(%error, "Worker observation publication budget lost; draining locally");
+                    break;
+                }
                 // The Coordinator applied the renewal at an unknown instant
                 // between request start and response receipt. Request start is
                 // the conservative local lower bound; response latency must
@@ -891,6 +903,7 @@ mod tests {
                 session_environment_provider: Some(provider.clone()),
                 observations: Arc::new(WorkerObservationCache::default()),
                 observation_ttl: Duration::from_secs(6),
+                probe_interval: Duration::from_secs(1),
                 warm_environments: Default::default(),
             });
             let task = spawn_heartbeat(
