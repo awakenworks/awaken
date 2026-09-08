@@ -254,8 +254,11 @@ async fn lifecycle_feed_observes_peer_commits_and_backfills_exclusively() {
     // | S1 | T | T | F | E1,E2,E3,E5 |
     // | S2 | T | T | T | E1,E2,E3,E4,E5 |
     // Constraint/Invariant: the SQLite commit log, not the reader's in-memory
-    // projection, owns peer lifecycle truth. Decision rule: S1 and S2 cover
-    // unpaged and paged reads, including exclusive backfill and Resumed folding.
+    // projection, owns peer lifecycle truth. Store open completes the mandatory
+    // v10 migration first, so this query consumes only canonical RunStateChanged;
+    // historical spelling normalization belongs exclusively to that migration.
+    // Decision rule: S1 and S2 cover unpaged and paged reads, including exclusive
+    // backfill and Resumed folding after canonicalization.
     let dir = std::env::temp_dir().join(format!(
         "awaken_store_sqlite_lifecycle_{}",
         std::process::id()

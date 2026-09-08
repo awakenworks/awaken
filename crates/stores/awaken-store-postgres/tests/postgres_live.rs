@@ -1047,8 +1047,12 @@ async fn peer_lifecycle_feed_reads_authoritative_postgres_without_projection_ref
     // | P3 | T | T | T | T | E1,E2,E3,E4 |
     // | P4 | T | T | T | last | E5 |
     // Constraint/Invariant: PostgreSQL committed rows, not a process-local
-    // projection, own lifecycle feed truth. Decision rule: P1-P4 cover pre-write
-    // staleness, authoritative paging, replay, and exclusive last-cursor behavior.
+    // projection, own lifecycle feed truth. Coordinator construction completes
+    // the mandatory v10 migration first, so this query consumes only canonical
+    // RunStateChanged; historical spelling normalization belongs exclusively to
+    // that migration. Decision rule: P1-P4 cover pre-write staleness,
+    // authoritative paging, replay, and exclusive last-cursor behavior after
+    // canonicalization.
     let Some(pool) = schema_pool("t_active_active_lifecycle").await else {
         return;
     };
