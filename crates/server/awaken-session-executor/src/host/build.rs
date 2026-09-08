@@ -489,7 +489,7 @@ impl SharedHost {
             memory_mounter: std::sync::RwLock::new(None),
             gate_override: None,
             dispatch_pool: std::sync::OnceLock::new(),
-            dispatch_maintenance: std::sync::OnceLock::new(),
+            dispatch_reconciler: std::sync::OnceLock::new(),
             dispatch_store_override: None,
             authority: {
                 #[cfg(any(test, feature = "test-support"))]

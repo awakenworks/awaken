@@ -371,6 +371,34 @@ candidate under an infinite stream of other work.
 The slot is not another lease or state machine. Claim, attempt admission,
 settlement, retry exhaustion, and dead-lettering mutate the same Dispatch row in
 one backend transaction. `ThreadCommit` remains the sole execution-result truth.
+
+The canonical background handle is `DispatchReconciler`: it reconciles already
+committed terminals, relays staged input and expires aged manual quarantines.
+The pool and coordinator-only Host reuse its one reconciliation loop. It is not
+a new aggregate, recovery center or source of physical-stop evidence; the former
+`DispatchMaintenance` name has no parallel compatibility implementation.
+
+Physical exclusion is Thread-scoped even though the exact attempt belongs to a
+Run's Dispatch row. Cancellation may return a row to Pending while its old
+physical owner remains. Therefore Running-state uniqueness cannot enforce
+physical exclusion. Begin and continuation handoff require a same-transaction
+peer-occupancy snapshot regardless of status, in the canonical physical
+transition kernel. Memory holds its aggregate mutex; SQLite holds an Immediate
+transaction; PostgreSQL takes the existing Thread advisory lock before the row
+lock, matching claim lock order. Converged migration V0003 adds one partial
+unique index on Thread for nonempty physical owners. Existing paired-column
+checks remain; historical migration streams are unchanged. Conflicting old
+rows fail migration without discarding either owner's evidence.
+
+Settlement requires claim state, epoch and physical-slot shape together in
+`DispatchTransition::settle`; adapters no longer repeat a separate settlement
+policy. Pre-settlement effect guards remain because those effects happen before
+the final database transaction. Empty permits settlement; occupied or corrupt
+does not. Old exact completion can clear only its original row/owner/epoch.
+The conformance cancellation/peer matrix, direct PostgreSQL constraint race,
+schema upgrade conflict tests and production-kernel Kani harnesses cover these
+boundaries. They do not certify external provider termination.
+
 Direct, non-durable ingress uses Runtime's one process-local Thread gate and
 holds it across the complete executor Future. An unconfirmed direct return keeps
 only a blocking marker in that same registry: queued and later acquisitions fail

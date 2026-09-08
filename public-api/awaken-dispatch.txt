@@ -226,12 +226,6 @@ impl awaken_dispatch::ClaimedCommitService
 pub async fn awaken_dispatch::ClaimedCommitService::apply_claimed(&self, awaken_dispatch_contract::worker_transport::ClaimedCommitRequest) -> core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_dispatch::ApplicationError>
 pub fn awaken_dispatch::ClaimedCommitService::new(alloc::sync::Arc<dyn awaken_dispatch_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::OperationCoordinator>) -> Self
 pub fn awaken_dispatch::ClaimedCommitService::with_coordinator_resolver(alloc::sync::Arc<dyn awaken_dispatch_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_dispatch::ClaimedOperationCoordinatorResolver>) -> Self
-pub struct awaken_dispatch::DispatchMaintenance
-impl awaken_dispatch::DispatchMaintenance
-pub async fn awaken_dispatch::DispatchMaintenance::shutdown(self)
-pub fn awaken_dispatch::DispatchMaintenance::spawn<S: awaken_dispatch_contract::dispatch::Dispatch + 'static>(alloc::sync::Arc<S>, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>, alloc::sync::Arc<dyn awaken_dispatch::WakeSignal>, awaken_dispatch::DispatchServiceConfig, alloc::sync::Arc<dyn awaken_dispatch::WorkerResolver<S>>, core::option::Option<alloc::sync::Arc<dyn awaken_dispatch::CompletionSink>>) -> Self
-impl core::ops::drop::Drop for awaken_dispatch::DispatchMaintenance
-pub fn awaken_dispatch::DispatchMaintenance::drop(&mut self)
 pub struct awaken_dispatch::DispatchPool<S>
 impl<S: awaken_dispatch_contract::dispatch::Dispatch + 'static> awaken_dispatch::DispatchPool<S>
 pub async fn awaken_dispatch::DispatchPool<S>::begin_drain(&self)
@@ -252,6 +246,12 @@ pub fn awaken_dispatch::DispatchPool<S>::spawn_with_wake_and_completion(alloc::s
 pub async fn awaken_dispatch::DispatchPool<S>::submit(&self, awaken_runtime_contract::activation::RunActivation) -> core::result::Result<(), awaken_dispatch::Error>
 pub async fn awaken_dispatch::DispatchPool<S>::submit_dispatch(&self, awaken_dispatch_contract::run_dispatch::RunDispatch) -> core::result::Result<(), awaken_dispatch::Error>
 pub async fn awaken_dispatch::DispatchPool<S>::suspend_admission(&self)
+pub struct awaken_dispatch::DispatchReconciler
+impl awaken_dispatch::DispatchReconciler
+pub async fn awaken_dispatch::DispatchReconciler::shutdown(self)
+pub fn awaken_dispatch::DispatchReconciler::spawn<S: awaken_dispatch_contract::dispatch::Dispatch + 'static>(alloc::sync::Arc<S>, alloc::sync::Arc<dyn awaken_agent_contract::clock::Clock>, alloc::sync::Arc<dyn awaken_dispatch::WakeSignal>, awaken_dispatch::DispatchServiceConfig, alloc::sync::Arc<dyn awaken_dispatch::WorkerResolver<S>>, core::option::Option<alloc::sync::Arc<dyn awaken_dispatch::CompletionSink>>) -> Self
+impl core::ops::drop::Drop for awaken_dispatch::DispatchReconciler
+pub fn awaken_dispatch::DispatchReconciler::drop(&mut self)
 pub struct awaken_dispatch::DispatchService<S>
 impl<S: awaken_dispatch_contract::dispatch::Dispatch + 'static> awaken_dispatch::DispatchService<S>
 pub async fn awaken_dispatch::DispatchService<S>::deliver(&self, awaken_dispatch_contract::dispatch::PendingInput) -> core::result::Result<(), awaken_dispatch::Error>

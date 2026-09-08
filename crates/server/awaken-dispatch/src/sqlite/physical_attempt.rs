@@ -65,7 +65,14 @@ impl SqliteDispatchStore {
                 active_epoch == Some(claim.epoch),
             );
             let (transition, admission) =
-                crate::dispatch::decide_physical_attempt_admission(live, slot, handoff)?;
+                crate::dispatch::decide_physical_attempt_admission(live, slot, handoff,
+                    tx.query_row(&format!(
+                        "SELECT EXISTS (SELECT 1 FROM {p}_dispatch peer JOIN {p}_dispatch target
+                         ON peer.thread_id = target.thread_id WHERE target.run_id = ?1
+                         AND peer.run_id <> target.run_id
+                         AND (peer.active_attempt_owner IS NOT NULL OR peer.active_attempt_epoch IS NOT NULL))"
+                    ), params![claim.run_id.0], |row| row.get::<_, bool>(0)).map_err(store_error)?
+                )?;
             if matches!(
                 transition,
                 PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Replace

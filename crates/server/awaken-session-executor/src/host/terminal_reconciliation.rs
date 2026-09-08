@@ -133,7 +133,7 @@ impl SharedHost {
         if !self.deployment.durable
             || self.runs_local_dispatch_pool()
             || self.upstream.is_some()
-            || self.dispatch_maintenance.get().is_some()
+            || self.dispatch_reconciler.get().is_some()
         {
             return false;
         }
@@ -149,7 +149,7 @@ impl SharedHost {
             .as_ref()
             .and_then(|authority| authority.dispatch_wake())
             .unwrap_or_else(|| Arc::new(awaken_dispatch::LocalWakeSignal::new()));
-        let maintenance = awaken_dispatch::DispatchMaintenance::spawn(
+        let reconciler = awaken_dispatch::DispatchReconciler::spawn(
             store,
             Arc::new(awaken_dispatch::SystemClock),
             wake,
@@ -157,7 +157,7 @@ impl SharedHost {
             resolver,
             Some(self.completion.clone()),
         );
-        self.dispatch_maintenance.set(maintenance).is_ok()
+        self.dispatch_reconciler.set(reconciler).is_ok()
     }
 }
 

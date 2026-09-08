@@ -2399,6 +2399,102 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
         SettleOutcome::Applied,
         "A10 current continuation releases its exact slot"
     );
+    store
+        .settle(&claim_e.run_id, claim_e.epoch, DispatchOutcome::Done, &[])
+        .await
+        .expect("A10 finish fixture");
+
+    // P1 cancellation revokes A's mutation lease but retains its physical
+    // occupancy; P2 a DIFFERENT Run B on the same Thread can obtain a claim
+    // after that status change; P3 B requests begin or handoff. E1 neither
+    // enters while A is occupied; E2 a different Thread remains executable;
+    // E3 A's exact ACK permits B; E4 A's delayed duplicate cannot clear B.
+    // This is distinct from A4: that rule only replaces the SAME Run.
+    let now = replacement_now;
+    for (id, thread) in [
+        ("peer-a", "peer-thread"),
+        ("peer-b", "peer-thread"),
+        ("peer-other", "independent-thread"),
+    ] {
+        store
+            .enqueue(RunDispatch::new(activation_on(id, thread)))
+            .await
+            .unwrap();
+    }
+    let a = store
+        .claim_run(
+            &RunId("peer-a".into()),
+            "peer-owner-a",
+            LEASE_MS,
+            now,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let a = RunClaim::from(&a.lease);
+    assert_eq!(
+        store.begin_attempt(&a, now).await.unwrap(),
+        AttemptAdmission::Applied
+    );
+    store.cancel(&a.run_id).await.unwrap();
+    let b = store
+        .claim_run(
+            &RunId("peer-b".into()),
+            "peer-owner-b",
+            LEASE_MS,
+            now,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let b = RunClaim::from(&b.lease);
+    assert_eq!(
+        store.begin_attempt(&b, now).await.unwrap(),
+        AttemptAdmission::Blocked,
+        "P1/P2"
+    );
+    assert_eq!(
+        store.handoff_attempt(&b, now).await.unwrap(),
+        AttemptAdmission::Blocked,
+        "P3"
+    );
+    let other = store
+        .claim_run(
+            &RunId("peer-other".into()),
+            "peer-owner-other",
+            LEASE_MS,
+            now,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let other = RunClaim::from(&other.lease);
+    assert_eq!(
+        store.begin_attempt(&other, now).await.unwrap(),
+        AttemptAdmission::Applied,
+        "E2"
+    );
+    store.finish_attempt(&a).await.unwrap();
+    assert_eq!(
+        store.begin_attempt(&b, now).await.unwrap(),
+        AttemptAdmission::Applied,
+        "E3"
+    );
+    assert_eq!(
+        store.finish_attempt(&a).await.unwrap(),
+        SettleOutcome::Applied,
+        "E4 empty A retry"
+    );
+    assert_eq!(
+        store.begin_attempt(&b, now).await.unwrap(),
+        AttemptAdmission::AlreadyApplied,
+        "E4 old Run A acknowledgement cannot clear Run B"
+    );
+    store.finish_attempt(&b).await.unwrap();
+    store.finish_attempt(&other).await.unwrap();
 }
 
 /// Shared spec for time-windowed dead-letter GC (ADR-0023): GC removes only

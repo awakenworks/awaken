@@ -20,8 +20,8 @@ use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch::{
-    Clock, CompletionSink, DEFAULT_LEASE_MS, DispatchError, DispatchMaintenance, DispatchPool,
-    DispatchQueue, DispatchServiceConfig, DispatchSettlementError, DispatchSettlementObserver,
+    Clock, CompletionSink, DEFAULT_LEASE_MS, DispatchError, DispatchPool, DispatchQueue,
+    DispatchReconciler, DispatchServiceConfig, DispatchSettlementError, DispatchSettlementObserver,
     DispatchWorker, Error, Inbox, LocalWakeSignal, ManualClock, MemoryDispatchStore, PendingInput,
     RunClaim, RunDispatch, SessionChildAdmission, SystemClock, WakeSignal, WorkerResolver,
 };
@@ -2967,7 +2967,7 @@ async fn coordinator_maintenance_preserves_exhaustion_until_a_drainer_returns() 
     );
     let ordinary_calls = Arc::new(AtomicUsize::new(0));
     let terminal_calls = Arc::new(AtomicUsize::new(0));
-    let maintenance = DispatchMaintenance::spawn(
+    let maintenance = DispatchReconciler::spawn(
         store.clone(),
         Arc::new(ManualClock::new(4)),
         Arc::new(BlackholeWake),

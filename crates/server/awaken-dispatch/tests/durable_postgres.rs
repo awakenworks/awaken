@@ -104,6 +104,70 @@ async fn legacy_completion_without_dispatch_identity_fails_closed() {
     assert!(store.list_dispatches().await.unwrap().is_empty(), "L1/E2");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn postgres_physical_thread_constraint_survives_bypassed_admission() {
+    // Cause/effect table: C1 two Pending Runs share a Thread; C2 independent
+    // connections bypass application admission and concurrently write physical
+    // owners. R1 => exactly one write succeeds, one SQLSTATE 23505, one owner.
+    // R2 another Thread => succeeds independently. R3 exact predecessor clears
+    // => the formerly excluded Run may occupy the Thread. R4 half a pair =>
+    // rejected, preserving the existing pair constraint. Database constraints
+    // are the final backstop, not the source of ordinary Blocked responses.
+    let Some(pool) = harness::schema_pool("t_pg_physical_thread_constraint").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .unwrap();
+    for (run, thread) in [("pa", "pt"), ("pb", "pt"), ("pc", "other-pt")] {
+        store
+            .enqueue_with(
+                RunDispatch::new(activation_on(run, thread)),
+                SubmitOptions {
+                    supersede: false,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let mut a = pool.acquire().await.unwrap();
+    let mut b = pool.acquire().await.unwrap();
+    let write = "UPDATE runtime_dispatch SET active_attempt_owner = run_id, active_attempt_epoch = 1 WHERE run_id = $1";
+    let (ra, rb) = tokio::join!(
+        sqlx::query(write).bind("pa").execute(&mut *a),
+        sqlx::query(write).bind("pb").execute(&mut *b),
+    );
+    assert_eq!(usize::from(ra.is_ok()) + usize::from(rb.is_ok()), 1, "R1");
+    let (winner, loser, error) = match (ra, rb) {
+        (Ok(_), Err(error)) => ("pa", "pb", error),
+        (Err(error), Ok(_)) => ("pb", "pa", error),
+        _ => panic!("R1 exactly one physical owner must win"),
+    };
+    assert_eq!(
+        error.as_database_error().unwrap().code().as_deref(),
+        Some("23505"),
+        "R1"
+    );
+    drop(a);
+    drop(b);
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runtime_dispatch WHERE thread_id = 'pt' AND active_attempt_owner IS NOT NULL")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(count, 1, "R1");
+    sqlx::query(write).bind("pc").execute(&pool).await.unwrap();
+    sqlx::query("UPDATE runtime_dispatch SET active_attempt_owner = NULL, active_attempt_epoch = NULL WHERE run_id = $1")
+        .bind(winner).execute(&pool).await.unwrap();
+    sqlx::query(write).bind(loser).execute(&pool).await.unwrap();
+    assert!(
+        sqlx::query("UPDATE runtime_dispatch SET active_attempt_epoch = NULL WHERE run_id = $1")
+            .bind(loser)
+            .execute(&pool)
+            .await
+            .is_err(),
+        "R4"
+    );
+}
+
 #[tokio::test]
 async fn postgres_stream_checkpoint_survives_restart_overwrites_and_deletes() {
     let Some(pool) = harness::schema_pool("t_pg_stream_checkpoint").await else {

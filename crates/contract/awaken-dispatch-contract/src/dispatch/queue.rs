@@ -336,9 +336,10 @@ pub trait DispatchQueue: Send + Sync {
     /// The complete claim fences the rollback, so a stale Worker cannot release
     /// a replacement owner's Run. An exact physical attempt owned by this claim
     /// still fences rollback, but a predecessor's independently persisted slot
-    /// does not: the mutation claim returns to `pending` while that stale slot is
-    /// preserved and continues to block executor entry. Pending input and attempt
-    /// count are preserved.
+    /// does not: the row remains leased with an expired deadline so the next
+    /// claimant recovers it rather than treating it as fresh Pending work. The
+    /// stale slot, pending input and attempt count are preserved; same-Thread
+    /// successors remain excluded until the old execution responsibility ends.
     async fn relinquish_claim(&self, _claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
         Err(DispatchError::Rejected(
             "dispatch backend does not support claim relinquish".to_string(),
