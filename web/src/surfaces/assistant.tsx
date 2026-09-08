@@ -1,4 +1,4 @@
-import { Skeleton, Button, Card, ChatComposer } from "@awaken/ui";
+import { InlineNotice, Skeleton, Button, Card, ChatComposer } from "@awaken/ui";
 
 // Admin Assistant: an in-console copilot that authors agents in plain English. It is a
 // chat against the built-in `__admin_assistant` agent (same <Transcript> engine as the
@@ -142,20 +142,25 @@ function NoModel({ wsId }: { wsId: string }) {
   const app = useApp();
   const nav = useNavigate();
   return (
-    <div className="banner gate assistant-prerequisite">
-      <span>ⓘ</span>
+    <InlineNotice
+      tone="neutral"
+      className="assistant-prerequisite"
+      icon={<span>ⓘ</span>}
+      actions={
+        <>
+          <Button variant="ghost" onClick={() => nav(`/w/${wsId}/models`)}>
+            {app.t("Go to Models & providers →", "前往模型与供应商 →")}
+          </Button>
+        </>
+      }
+    >
       <span className="assistant-prerequisite-copy">
         {app.t(
           "The Assistant needs a model. Connect a model provider and credential first.",
           "助手需要模型才能运行。请先连接模型供应商与凭证。",
         )}
       </span>
-      <div className="assistant-prerequisite-actions">
-        <Button variant="ghost" onClick={() => nav(`/w/${wsId}/models`)}>
-          {app.t("Go to Models & providers →", "前往模型与供应商 →")}
-        </Button>
-      </div>
-    </div>
+    </InlineNotice>
   );
 }
 
@@ -327,8 +332,24 @@ export function AssistantPanel({
   if (gate.status === "absent") return (
     <>
       {guide}
-      <div className="banner gate assistant-prerequisite">
-        <span>{ensureAssistant.isPending ? "◔" : "◌"}</span>
+      <InlineNotice
+        tone="neutral"
+        className="assistant-prerequisite"
+        icon={<span>{ensureAssistant.isPending ? "◔" : "◌"}</span>}
+        actions={
+          <>
+            <Button
+              variant="ghost"
+              disabled={ensureAssistant.isPending}
+              onClick={() => {
+                ensureAttempted.current = true;
+                ensureAssistant.mutate();
+              }}
+            >{app.t("Retry", "重试")}</Button>
+            <Button variant="ghost" onClick={() => window.location.assign(`/w/${wsId}/models`)}>{app.t("Open Models", "打开模型")}</Button>
+          </>
+        }
+      >
         <span className="assistant-prerequisite-copy">
           {app.t(
             ensureAssistant.isPending
@@ -341,18 +362,7 @@ export function AssistantPanel({
           {ensureAssistant.error instanceof Error && <small className="err">{ensureAssistant.error.message}</small>}
           {ensureProblem?.requestId && <small className="mut">Correlation ID: {ensureProblem.requestId}</small>}
         </span>
-        <div className="assistant-prerequisite-actions">
-          <Button
-            variant="ghost"
-            disabled={ensureAssistant.isPending}
-            onClick={() => {
-              ensureAttempted.current = true;
-              ensureAssistant.mutate();
-            }}
-          >{app.t("Retry", "重试")}</Button>
-          <Button variant="ghost" onClick={() => window.location.assign(`/w/${wsId}/models`)}>{app.t("Open Models", "打开模型")}</Button>
-        </div>
-      </div>
+      </InlineNotice>
     </>
   );
   if (gate.status === "error") return <>{guide}<div className="err">{gate.error.message}</div></>;
@@ -363,15 +373,21 @@ export function AssistantPanel({
       {!sid ? (
           <>
             {start.error instanceof Error && (
-              <div className="banner err">
+              <InlineNotice
+                tone="danger"
+                actions={
+                  <>
+                    <Button variant="ghost" disabled={start.isPending} onClick={() => {
+                      started.current = true;
+                      start.mutate();
+                    }}>
+                      {start.isPending ? app.t("Retrying…", "正在重试…") : app.t("Try again", "重试")}
+                    </Button>
+                  </>
+                }
+              >
                 <span>{start.error.message}</span>
-                <Button variant="ghost" disabled={start.isPending} onClick={() => {
-                  started.current = true;
-                  start.mutate();
-                }}>
-                  {start.isPending ? app.t("Retrying…", "正在重试…") : app.t("Try again", "重试")}
-                </Button>
-              </div>
+              </InlineNotice>
             )}
             <ChatComposer
               className="transcript-composer assistant-starter-composer"

@@ -3,6 +3,9 @@ import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { SecretField } from "@awaken/ui";
 import { MARKETING_STORIES, PRODUCT_PROOFS, TARGET_MARKETING_STORIES } from "./catalog.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -558,7 +561,9 @@ test("the controlled-action story binds real source, approval, and artifact caus
   assert.match(source, /agent\.tool_result/);
   assert.match(source, /\/v1\/files\/\$\{artifact\.id\}\/content/);
   assert.match(source, /expect\(text\)\.toContain\(sourceSha256\)/);
-  assert.match(source, /locator\("\.session-detail-layout \.segmented"\)\.getByRole\("button", \{ name: \/Artifacts\|产物\//);
+  // Navigation changes the Session URL: recordings must target the shared
+  // navigation landmark and its artifact link, preserving the download proof.
+  assert.ok(source.includes('getByRole("navigation", { name: /Session views|会话视图/ }).getByRole("link", { name: /Artifacts|产物/'));
 });
 
 test("the restart story owns a release all-in-one and resumes one committed Session", () => {
@@ -601,7 +606,9 @@ test("the restart story owns a release all-in-one and resumes one committed Sess
   assert.match(source, /agent\.tool_result/);
   assert.match(source, /user\.tool_confirmation/);
   assert.match(source, /\/v1\/files\/\$\{artifact\.id\}\/content/);
-  assert.match(source, /locator\("\.session-detail-layout \.segmented"\)\.getByRole\("button", \{ name: \/Artifacts\|产物\//);
+  // Navigation changes the Session URL: recordings must target the shared
+  // navigation landmark and its artifact link, preserving the download proof.
+  assert.ok(source.includes('getByRole("navigation", { name: /Session views|会话视图/ }).getByRole("link", { name: /Artifacts|产物/'));
 });
 
 test("the recording batch fails before its first frame when clean-install prerequisites are missing", () => {
@@ -735,10 +742,21 @@ test("frontend protocol proof uses a narrow Session-bound application token", ()
 });
 
 test("shared write-only secrets preserve an accessible label/control contract", () => {
+  // S1 product adapter delegates label/intent to the installed shared field;
+  // S2 a new secret renders a password input linked to its visible label.
+  // Mode transitions belong to @awaken/ui's SecretField interaction tests.
   const source = readFileSync(resolve(here, "../src/components/ui/SecretField.tsx"), "utf8");
-  assert.match(source, /<label htmlFor=\{inputId\}>\{label\}<\/label>/);
-  assert.match(source, /id=\{inputId\}/);
-  assert.match(source, /type="password"/);
+  assert.match(source, /SecretField as SharedSecretField.*from "@awaken\/ui"/);
+  assert.match(source, /<SharedSecretField \{\.\.\.props\} labels=/);
+  const html = renderToStaticMarkup(createElement(SecretField, {
+    label: "API key", hasStored: false, onChange() {},
+    labels: { keep: "Keep", replace: "Replace", clear: "Clear", placeholder: "Enter key", kept: "Unchanged", cleared: "Removed" },
+  }));
+  const label = html.match(/<label[^>]*for="([^"]+)"[^>]*>API key<\/label>/);
+  assert.ok(label, "the shared field exposes a visible associated label");
+  const input = html.match(/<input[^>]+>/)?.[0];
+  assert.ok(input?.includes(`id="${label[1]}"`));
+  assert.match(input, /type="password"/);
 });
 
 test("recording copy and fixtures follow current Agent and Environment contracts", () => {

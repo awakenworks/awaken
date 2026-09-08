@@ -143,7 +143,7 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ru
       return current.status;
     }, { timeout: 30_000 }).toBe("idle");
   });
-  await click(page.getByRole("button", { name: "Trace", exact: true }));
+  await click(page.getByRole("navigation", { name: /Session views|会话视图/ }).getByRole("link", { name: "Trace", exact: true }));
   await say("Trace shows exactly where the recalled rule came from.", 2000);
   await clearCaption();
   await wait(400);

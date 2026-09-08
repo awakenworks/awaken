@@ -1,4 +1,4 @@
-import { Card } from "@awaken/ui";
+import { InlineNotice, Card } from "@awaken/ui";
 import { useNavigate, useParams } from "react-router";
 import { useApp } from "../lib/app-state";
 
@@ -25,12 +25,11 @@ export default function SettingsSurface() {
   );
   return (
     <>
-      <div className="banner info">
-        <span>⚑</span>
+      <InlineNotice tone="info" icon={<span>⚑</span>}>
         <span>
           {app.t("Changes made from the linked pages apply only to", "通过下方页面进行的配置只作用于")} <strong>{app.workspaceName}</strong>
         </span>
-      </div>
+      </InlineNotice>
       <div className="settings-grid">
         <Card>
           <h2>{app.t("Configuration", "配置")}</h2>

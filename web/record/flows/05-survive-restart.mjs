@@ -165,7 +165,7 @@ export async function run({ page, goto, intro, beat, say, clearCaption, checkpoi
   });
   await beat("The recovered run finishes once and keeps the original marker intact.", answer, 3200);
 
-  await click(page.locator(".session-detail-layout .segmented").getByRole("button", { name: /Artifacts|产物/, exact: true }));
+  await click(page.getByRole("navigation", { name: /Session views|会话视图/ }).getByRole("link", { name: /Artifacts|产物/, exact: true }));
   const artifactRow = page.getByText(new RegExp(ARTIFACT_NAME.replace(".", "\\.")));
   await checkpoint("the post-restart artifact remains attached to the original Session", async () => {
     await expect(artifactRow).toBeVisible({ timeout: 15_000 });

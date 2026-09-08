@@ -1,4 +1,4 @@
-import { Button, Card } from "@awaken/ui";
+import { InlineNotice, Button, Card } from "@awaken/ui";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { SecretField, SelectField, TextField } from "../components/ui";
@@ -442,8 +442,7 @@ export default function ProviderConnectionPanel({
           </div>
         </details>
         {connect.data && (
-          <div className="banner info" style={{ marginTop: 12 }}>
-            <span>✓</span>
+          <InlineNotice tone="info" icon={<span>✓</span>} style={{ marginTop: 12 }}>
             <span>
               {app.t(
                 "Credential verified and models imported",
@@ -451,7 +450,7 @@ export default function ProviderConnectionPanel({
               )}{" "}
               · {connect.data.sync.discovered} {app.t("models", "个模型")}
             </span>
-          </div>
+          </InlineNotice>
         )}
         {connect.error instanceof Error && (
           <div className="err">{connect.error.message}</div>

@@ -1,4 +1,4 @@
-import { Button as SharedButton, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
+import { InlineNotice, Button as SharedButton, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 
 // Workspace · Skills: one immutable, versioned bundle catalog. Local directory,
 // ZIP import, and browser edits all publish through the same multipart Skills API;
@@ -333,12 +333,11 @@ function SkillEditorModal({ skill, onClose, onPublished }: { skill: Skill; onClo
       footer={<><span className="mut" style={{ marginRight: "auto" }}>{base ? `v${base.version} · ${diff.count} ${app.t("changes", "项变更")}` : app.t("Loading…", "加载中…")}</span><Button onClick={onClose}>{app.t("Cancel", "取消")}</Button><Button variant="primary" disabled={!base || diff.count === 0 || publish.isPending} onClick={() => publish.mutate()}>{app.t("Publish new version", "发布新版本")}</Button></>}
     >
       {loadingError && <div className="err">{loadingError}</div>}
-      {base && <div className={needsSandbox ? "banner warn" : "banner info"}>
-        <span>{needsSandbox ? "▣" : "◇"}</span>
+      {base && <InlineNotice tone={needsSandbox ? "warning" : "info"} icon={<span>{needsSandbox ? "▣" : "◇"}</span>}>
         <span>{needsSandbox
           ? app.t("Sandbox required: this version declares filesystem access or includes supporting files.", "需要 Sandbox：当前版本声明了文件系统访问，或包含支持文件。")
           : app.t("Instruction-only: this version runs without creating a Sandbox.", "纯指令：当前版本无需创建 Sandbox 即可运行。")}</span>
-      </div>}
+      </InlineNotice>}
       <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 30%) 1fr", gap: 12, minHeight: 460 }}>
         <Card style={{ padding: 8, overflow: "auto" }}>
           <div className="row" style={{ gap: 6, marginBottom: 8 }}>

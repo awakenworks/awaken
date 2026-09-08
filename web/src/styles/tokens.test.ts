@@ -35,6 +35,9 @@ describe("theme browser integration", () => {
     // Cloud-projected URLs, while @awaken/ui owns menu DOM and keyboard/focus
     // behavior. A local `.suite-menu` recipe would reintroduce a second owner.
     expect(chrome).toMatch(/import \{[^}]*SuiteSwitcher[^}]*\} from "@awaken\/ui"/s);
+    // N7 copy changes to Workforce while the deployed sibling intent stays flow.
+    expect(chrome).toContain('id: "flow", label: "Awaken Workforce"');
+    expect(chrome).toContain('suiteProductEntryUrl(hubUrl, "flow")');
     expect(chrome).toContain("/usage-billing");
     expect(chrome).toContain("/settings");
     expect(chrome).toContain("/logout");

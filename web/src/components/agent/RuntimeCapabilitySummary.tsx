@@ -1,4 +1,4 @@
-import { Button } from "@awaken/ui";
+import { InlineNotice, Button } from "@awaken/ui";
 import type { AgentConfig, RuntimeCap } from "../../lib/api/types";
 import { isAcpModelSelection } from "../../lib/agent-model-selection";
 import {
@@ -146,14 +146,12 @@ export default function RuntimeCapabilitySummary({
       </div>
       </details>
       {acp && runtime?.local?.remediation && (
-        <div className="banner warn">
-          <span>!</span>
+        <InlineNotice tone="warning" icon={<span>!</span>}>
           <span>{runtime.local.remediation}</span>
-        </div>
+        </InlineNotice>
       )}
       {acp && !bridgeReady && (
-        <div className="banner warn" role="alert">
-          <span>!</span>
+        <InlineNotice tone="warning" icon={<span>!</span>} role="alert">
           <span>{app.t(
             negotiated
               ? "This Harness did not negotiate a compatible MCP transport. Awaken read, write, Memory, Skill, and host Web tools will not be available. Choose another ready Runtime or repair the Harness before publishing."
@@ -162,7 +160,7 @@ export default function RuntimeCapabilitySummary({
               ? "该 Harness 未协商到兼容的 MCP 传输；Awaken read、write、Memory、Skill 和 Host Web 工具将不可用。请改用已就绪的 Runtime，或先修复 Harness 再发布。"
               : "工具传输尚未验证。发布使用 Awaken 工具的 Agent 前，请先刷新 Harness 能力探测。",
           )}</span>
-        </div>
+        </InlineNotice>
       )}
       {acp && (
         <div className="runtime-capability-actions">

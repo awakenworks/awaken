@@ -1,4 +1,4 @@
-import { Button, Card } from "@awaken/ui";
+import { InlineNotice, Button, Card } from "@awaken/ui";
 // Workspace · Overview: readiness and recent runtime activity for the active scope.
 // session list (GET /v1/sessions via ws()). Observation only — the console
 // operates the platform; end users interact through the SDK.
@@ -59,10 +59,16 @@ export default function WorkspaceOverviewSurface() {
       </nav>
       <ReadinessPanel />
       {managedRuntime && sessions.error instanceof Error && (
-        <div className="banner err">
+        <InlineNotice
+          tone="danger"
+          actions={
+            <>
+              <Button variant="ghost" onClick={() => void sessions.refetch()}>{app.t("Try again", "重试")}</Button>
+            </>
+          }
+        >
           <span>{sessions.error.message}</span>
-          <Button variant="ghost" onClick={() => void sessions.refetch()}>{app.t("Try again", "重试")}</Button>
-        </div>
+        </InlineNotice>
       )}
       {managedRuntime && <><div className="kpis">
         <button className="kpi" onClick={() => nav(`/w/${wsId}/sessions`)}>

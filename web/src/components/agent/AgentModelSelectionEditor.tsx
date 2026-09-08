@@ -1,4 +1,4 @@
-import { Button as SharedButton } from "@awaken/ui";
+import { InlineNotice, Button as SharedButton } from "@awaken/ui";
 import type { AgentConfig, ModelSelection, RuntimeCap } from "../../lib/api/types";
 import {
   acpModelChoices,
@@ -190,8 +190,7 @@ export default function AgentModelSelectionEditor({
           ))}
         </select>
       ) : (
-        <div className="banner gate">
-          <span>◌</span>
+        <InlineNotice tone="neutral" icon={<span>◌</span>}>
           <span>{app.t(
             runtimeId === "awaken"
               ? "No runnable model is available. Open Models, connect a provider, and verify a real response before continuing."
@@ -200,7 +199,7 @@ export default function AgentModelSelectionEditor({
               ? "没有可运行模型。请打开“模型”，连接供应商并验证一次真实响应后继续。"
               : "该 ACP Harness 尚未就绪。请完成安装和登录，再刷新能力探测。",
           )}</span>
-        </div>
+        </InlineNotice>
       )}
       </div>
       {selected && runtime?.local?.negotiated && (
@@ -288,8 +287,7 @@ export default function AgentModelSelectionEditor({
               : app.t("The Harness starts at the Session workspace root.", "Harness 将从 Session 工作区根目录启动。")}
           </span>
           {workingDirectoryIssue && (
-            <div id={workingDirectoryErrorId} className="banner warn" role="alert">
-              <span>!</span>
+            <InlineNotice id={workingDirectoryErrorId} tone="warning" icon={<span>!</span>} role="alert">
               <span>{workingDirectoryIssue === "too_long"
                 ? app.t("Keep the working directory at 512 characters or fewer.", "工作目录不能超过 512 个字符。")
                 : workingDirectoryIssue === "absolute"
@@ -301,7 +299,7 @@ export default function AgentModelSelectionEditor({
                       : workingDirectoryIssue === "empty_segment"
                         ? app.t("Remove repeated or trailing slashes.", "请移除重复或末尾的斜杠。")
                         : app.t("Colons are not allowed in a portable Session working directory.", "可移植的 Session 工作目录中不允许使用冒号。")}</span>
-            </div>
+            </InlineNotice>
           )}
         </div>
       )}

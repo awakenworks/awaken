@@ -1,4 +1,4 @@
-import { Button } from "@awaken/ui";
+import { InlineNotice, Button } from "@awaken/ui";
 import { Pill } from "../components/ui";
 import type { ConfigCapabilitiesView } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
@@ -89,16 +89,19 @@ export function CloudModelNotice({
           : null;
   if (!message) return null;
   return (
-    <div className="banner info" style={{ margin: "0 16px 12px" }}>
-      <span>ⓘ</span>
-      <span>{message}</span>
-      {state === "sign_in_required" && onSignIn && (
+    <InlineNotice
+      tone="info"
+      icon={<span>ⓘ</span>}
+      actions={state === "sign_in_required" && onSignIn ? (
         <Button disabled={loginPending} onClick={onSignIn}>
           {loginPending
             ? app.t("Waiting for sign-in…", "等待登录…")
             : app.t("Sign in to Awaken Cloud", "登录 Awaken Cloud")}
         </Button>
-      )}
-    </div>
+      ) : null}
+      style={{ margin: "0 16px 12px" }}
+    >
+      <span>{message}</span>
+    </InlineNotice>
   );
 }

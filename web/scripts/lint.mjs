@@ -2,6 +2,7 @@
 // Console lint: (1) single-egress fetch — only lib/api/client.ts may call
 // fetch/EventSource-with-headers; (2) surface files stay under the size cap.
 
+import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,6 +46,10 @@ function walk(dir) {
       console.error(`no-raw-secret-input: ${rel} hosts a raw password input — use <SecretField>`);
       failed = true;
     }
+    if (legacyNotice.test(text)) {
+      console.error(`shared-notice-owner: ${rel} must use InlineNotice`);
+      failed = true;
+    }
     const lines = text.split("\n").length;
     if (lines > MAX_LINES) {
       console.error(`file-size: ${rel} is ${lines} lines (> ${MAX_LINES}) — split the surface`);
@@ -53,6 +58,24 @@ function walk(dir) {
   }
 }
 
+// Cause/effect table: L1 static/conditional legacy class or CSS recipe -> reject;
+// L2 shared notice or contextual issue-banner spacing -> accept. The product
+// owns placement and copy; it must not restore the deleted generic recipe.
+const legacyNotice = /(?:className\s*=\s*(?:["']|\{)[^>\n]*?(?<![\w-])banner(?:[ "'`}]|$)|\.banner(?:[\s.{:]|$))/;
+for (const [fixture, rejected] of [
+  ['<div className="banner info">', true],
+  ['<div className={warn ? "banner warn" : "banner info"}>', true],
+  ['.banner.warn { color: red; }', true],
+  ['<InlineNotice tone="warning" />', false],
+  ['.issue-banner { margin-top: 10px; }', false],
+  ['<InlineNotice className="issue-banner" tone="warning">', false],
+]) assert.equal(legacyNotice.test(fixture), rejected);
+for (const name of readdirSync(join(ROOT, "styles"))) {
+  if (name.endsWith(".css") && legacyNotice.test(readFileSync(join(ROOT, "styles", name), "utf8"))) {
+    console.error(`shared-notice-owner: styles/${name} restores a local banner recipe`);
+    failed = true;
+  }
+}
 walk(ROOT);
 if (failed) process.exit(1);
 console.log("OK - console lint passed.");

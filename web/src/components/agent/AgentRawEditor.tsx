@@ -1,3 +1,4 @@
+import { InlineNotice } from "@awaken/ui";
 // Lossless escape hatch modelled after Oversight's workflow JSON view: every field
 // round-trips through the same Agent object instead of being hidden behind a partial
 // form. Friendly sections remain the default; valid JSON updates the draft live.
@@ -20,10 +21,9 @@ export default function AgentRawEditor({
   const [error, setError] = useState("");
   return (
     <div className="agent-raw-editor">
-      <div className="banner info">
-        <span>{"{}"}</span>
+      <InlineNotice tone="info" icon={<span>{"{}"}</span>}>
         <span>{app.t("Lossless Agent object view. Valid edits update the same current draft used by Try, Save draft, Validate, and Publish.", "无损 Agent 对象视图。有效修改会更新试运行、保存草稿、校验与发布共同使用的当前草稿。")}</span>
-      </div>
+      </InlineNotice>
       <textarea
         aria-label={app.t("Agent JSON", "Agent JSON")}
         className="ui-input mono"

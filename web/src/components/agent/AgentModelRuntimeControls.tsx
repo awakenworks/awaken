@@ -1,4 +1,4 @@
-import { Button, Card } from "@awaken/ui";
+import { InlineNotice, Button, Card } from "@awaken/ui";
 // Provider-neutral inference and fallback routing controls. These values are
 // authored with the Agent and frozen into its published revision; they are not
 // provider credentials and never belong on the model-connection page.
@@ -45,13 +45,12 @@ export default function AgentModelRuntimeControls({
           : "配置推理强度、速度、处理地域和精确备用路由；这些设置会随 Agent 发布版本一起审阅并冻结。",
       )}</p>
       {acp ? (
-        <div className="banner info">
-          <span>ⓘ</span>
+        <InlineNotice tone="info" icon={<span>ⓘ</span>}>
           <span>{app.t(
             "Reasoning, model, and Harness-specific options are shown under the selected ACP runtime above. Native inference settings remain in the draft but are not presented as active ACP controls.",
             "推理、模型及 Harness 专属选项显示在上方所选 ACP Runtime 下；草稿中的 Native 推理设置会保留，但不会被显示为生效的 ACP 配置。",
           )}</span>
-        </div>
+        </InlineNotice>
       ) : <div className="grid-3">
         <label className="ui-field">
           <span>{app.t("Reasoning effort", "推理强度")}</span>

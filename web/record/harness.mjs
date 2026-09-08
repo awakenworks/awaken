@@ -483,7 +483,7 @@ async function runtimeCheckpoint(name, assertion) {
   const startedActive = activeNow();
   const startedWall = Date.now();
   const result = await checkpoint(name, async () => {
-    const terminalFailure = page.locator(".banner.warn").filter({
+    const terminalFailure = page.locator('.ui-inline-notice[data-tone="warning"]').filter({
       hasText: /Run failed|运行失败|retries_exhausted/,
     }).first();
     await Promise.race([

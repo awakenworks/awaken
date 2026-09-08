@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
 import type { CredentialSource, ProviderDriverDescriptor } from "../lib/api/types";
-import { cloudModelUiState, modelCatalogPresentation } from "./model-cloud-capability";
+import { CloudModelNotice, cloudModelUiState, modelCatalogPresentation } from "./model-cloud-capability";
 import { fmtTokens, modelTestAgentConfig, modelTestAgentId } from "./models";
 import {
   providerConnectionBaseUrl,
@@ -10,6 +12,27 @@ import {
   providerModelCountLabel,
 } from "./provider-connection-panel";
 import { visibleAgents } from "../lib/visible-agents";
+
+vi.mock("../lib/app-state", () => ({ useApp: () => ({ t: (en: string) => en }) }));
+
+it("renders a notice action only when the product can start Cloud sign-in", () => {
+  // N1 loading/ready -> no notice; N2 local/managed -> copy without an action
+  // region; N3 sign-in-required + callback -> one action; N4 pending -> disabled.
+  // Cross state x callback presence x pending: a false predicate must supply
+  // null to the shared slot, rather than an empty fragment reserving layout.
+  for (const state of ["loading", "local", "managed", "ready", "sign_in_required"] as const) {
+    for (const available of [false, true]) for (const loginPending of [false, true]) {
+      const html = renderToStaticMarkup(createElement(CloudModelNotice, {
+        state, loginPending, onSignIn: available ? () => {} : undefined,
+      }));
+      const hasNotice = state !== "loading" && state !== "ready";
+      const hasAction = state === "sign_in_required" && available;
+      expect(html.includes('data-tone="info"')).toBe(hasNotice);
+      expect(html.includes("ui-inline-notice__actions")).toBe(hasAction);
+      expect(html.includes('disabled=""')).toBe(hasAction && loginPending);
+    }
+  }
+});
 
 // UI cause/effect rules kept beside the executable tests:
 // T1: C1 descriptor has a preferred endpoint -> E1 form uses its protocol and URL;

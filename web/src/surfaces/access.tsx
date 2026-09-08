@@ -1,4 +1,4 @@
-import { Button, Card } from "@awaken/ui";
+import { InlineNotice, Button, Card } from "@awaken/ui";
 // Workspace · Access: embedded-IAM token management. The mint response is the
 // ONLY time the cleartext is visible — surfaced once with a copy affordance.
 
@@ -108,25 +108,30 @@ export default function AccessSurface() {
   return (
     <>
       {minted && (
-        <div className="banner warn">
-          <span>🔑</span>
+        <InlineNotice
+          tone="warning"
+          icon={<span>🔑</span>}
+          actions={
+            <>
+              <CopyButton value={minted.secret} label={app.t("Copy", "复制")} copiedLabel={app.t("Copied", "已复制")} />
+              <Link className="protocol-help-link" to={protocolHelpPath(wsId, "managed")}>
+                {app.t("Open SDK setup →", "打开 SDK 配置 →")}
+              </Link>
+              <Button variant="ghost" onClick={() => setMinted(null)}>
+                ✕
+              </Button>
+            </>
+          }
+        >
           <span style={{ flex: 1 }}>
             {app.t("Cleartext shown ONCE — copy it now: ", "明文只显示一次——立即复制:")}
             <code>{minted.secret}</code>
           </span>
-          <CopyButton value={minted.secret} label={app.t("Copy", "复制")} copiedLabel={app.t("Copied", "已复制")} />
-          <Link className="protocol-help-link" to={protocolHelpPath(wsId, "managed")}>
-            {app.t("Open SDK setup →", "打开 SDK 配置 →")}
-          </Link>
-          <Button variant="ghost" onClick={() => setMinted(null)}>
-            ✕
-          </Button>
-        </div>
+        </InlineNotice>
       )}
-      <div className="banner info">
-        <span>🔐</span>
+      <InlineNotice tone="info" icon={<span>🔐</span>}>
         <span>{app.t("Create long-lived, workspace-scoped service API keys here for trusted backends. Browser/mobile clients must use short-lived application access tokens from API & protocols.", "在这里为可信后端创建长期、限定 Workspace 的 Service API Key；浏览器和移动端必须使用“API 与协议”中的短期 Application Access Token。")}</span>
-      </div>
+      </InlineNotice>
       <Card>
         <h2>{app.t("Connect a trusted backend", "连接可信后端")}</h2>
         <ol className="protocol-endpoints">

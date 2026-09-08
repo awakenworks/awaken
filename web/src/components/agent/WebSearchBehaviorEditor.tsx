@@ -1,4 +1,4 @@
-import { Button as SharedButton } from "@awaken/ui";
+import { InlineNotice, Button as SharedButton } from "@awaken/ui";
 import type { CredentialSource } from "../../lib/api/types";
 import { SchemaForm, SelectField, type JsonSchema } from "../ui";
 import { useApp } from "../../lib/app-state";
@@ -96,13 +96,12 @@ export default function WebSearchBehaviorEditor({
         </span>
       </div>
       {selected.requiresCredential && eligible.length === 0 && (
-        <div className="banner warn" role="alert">
-          <span>!</span>
+        <InlineNotice tone="warning" icon={<span>!</span>} role="alert">
           <span>{app.t(
             `No active credential is available for ${selected.label}. Add and verify one in Models & providers before publishing.`,
             `${selected.label} 没有可用的有效凭证。请先在“模型与供应商”中添加并验证凭证，再发布 Agent。`,
           )}</span>
-        </div>
+        </InlineNotice>
       )}
       {selected.requiresCredential && (
         <SelectField

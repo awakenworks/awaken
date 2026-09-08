@@ -1,4 +1,4 @@
-import { Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
+import { InlineNotice, Button, Card, TabNav, TabNavItem } from "@awaken/ui";
 // Session detail: header actions (rename/archive/interrupt) + an
 // agent/properties aside around the shared TranscriptView. This surface owns
 // exactly one live SessionLog; header, chat, approvals, and trace consume it.
@@ -128,6 +128,15 @@ export function sessionViewFromSearch(view: string | null, event: string | null)
   return SESSION_VIEWS.includes(view as SessionView) ? view as SessionView : "chat";
 }
 
+/** Build a destination from the same URL-owned view projection. Navigation
+ * pushes history so Back restores the exact prior view and selected event. */
+export function sessionViewSearch(searchParams: URLSearchParams, next: SessionView): URLSearchParams {
+  const params = new URLSearchParams(searchParams);
+  if (next === "chat") params.delete("view"); else params.set("view", next);
+  if (next !== "trace") params.delete("event");
+  return params;
+}
+
 /** Remove only presentational Quickstart provenance; Session view and exact
  * event coordinates remain owned by the existing URL projection. */
 export function withoutQuickstartProvenance(searchParams: URLSearchParams): URLSearchParams {
@@ -149,12 +158,6 @@ export default function SessionDetailSurface() {
   const eventsKey = ["session-events", wsId, sid];
   const selectedEventId = searchParams.get("event")?.trim() || undefined;
   const view = sessionViewFromSearch(searchParams.get("view"), selectedEventId ?? null);
-  const setView = (next: SessionView) => {
-    const params = new URLSearchParams(searchParams);
-    if (next === "chat") params.delete("view"); else params.set("view", next);
-    if (next !== "trace") params.delete("event");
-    setSearchParams(params, { replace: true });
-  };
   const [controlResult, setControlResult] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -303,10 +306,23 @@ export default function SessionDetailSurface() {
         </Modal>
       )}
 
-      {controlResult && <div className="banner info">{controlResult}</div>}
+      {controlResult && <InlineNotice tone="info">{controlResult}</InlineNotice>}
       {fromQuickstart && (
-        <div className="banner info">
-          <span>✓</span>
+        <InlineNotice
+          tone="info"
+          icon={<span>✓</span>}
+          actions={
+            <>
+              <Button
+                variant="ghost"
+                aria-label={app.t("Dismiss Quickstart guidance", "关闭 Quickstart 引导")}
+                onClick={() => setSearchParams(withoutQuickstartProvenance(searchParams), { replace: true })}
+              >
+                ✕
+              </Button>
+            </>
+          }
+        >
           <span style={{ flex: 1, minWidth: 0 }}>
             {app.t(
               "The Agent is published and its first task was submitted to this durable Session. Review the live result below, then connect the same Agent from your trusted backend with the Managed Agents SDK.",
@@ -322,41 +338,36 @@ export default function SessionDetailSurface() {
               {app.t("Open Managed Agents SDK setup →", "打开 Managed Agents SDK 配置 →")}
             </Link>
           </span>
-          <Button
-            variant="ghost"
-            aria-label={app.t("Dismiss Quickstart guidance", "关闭 Quickstart 引导")}
-            onClick={() => setSearchParams(withoutQuickstartProvenance(searchParams), { replace: true })}
-          >
-            ✕
-          </Button>
-        </div>
+        </InlineNotice>
       )}
-      {sessionLog.sendError && <div className="banner err">{sessionLog.sendError.message}</div>}
+      {sessionLog.sendError && <InlineNotice tone="danger">{sessionLog.sendError.message}</InlineNotice>}
       {view !== "chat" && sessionLog.projectionError && (
-        <div className="banner err">
+        <InlineNotice tone="danger">
           {app.t(
             "Committed Session history is inconsistent; input is disabled until the projection is reloaded.",
             "已提交的会话历史不一致；重新加载投影前将禁用输入。",
           )}
-        </div>
+        </InlineNotice>
       )}
 
       <div className="session-detail-layout" style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
         <div className="session-detail-main" style={{ flex: 1.8, minWidth: 0 }}>
           {session.error instanceof Error && <div className="err">{session.error.message}</div>}
-          <Segmented
-            className="segmented"
-            options={[
+          <TabNav label={app.t("Session views", "会话视图")} style={{ maxWidth: "100%", overflowX: "auto" }}>
+            {([
               { value: "chat", label: app.t("Chat", "对话") },
               { value: "collaboration", label: app.t("Child runs", "子运行") },
               { value: "inputs", label: app.t("Inputs", "输入") },
               { value: "artifacts", label: app.t("Artifacts", "产物") },
               { value: "integrations", label: app.t("Integrations", "集成") },
               { value: "trace", label: app.t("Trace", "追踪") },
-            ]}
-            value={view}
-            onChange={setView}
-          />
+            ] as const).map((tab) => (
+              <TabNavItem key={tab.value} current={view === tab.value}
+                render={<Link to={`?${sessionViewSearch(searchParams, tab.value)}`} />}>
+                {tab.label}
+              </TabNavItem>
+            ))}
+          </TabNav>
           {view === "chat" && <TranscriptView key={sid} sessionLog={sessionLog} />}
           {view === "collaboration" && <SessionThreads base={base} workspaceId={wsId} />}
           {view === "inputs" && <SessionFiles base={base} sid={sid} view="inputs" />}

@@ -1,4 +1,4 @@
-import { Button, Card } from "@awaken/ui";
+import { InlineNotice, Button, Card } from "@awaken/ui";
 // Workspace · Deployments: schedule an Agent to run on a cron
 // (Managed Agents `/v1/deployments`). Each firing creates a session from the
 // deployment's initial_events, running the agent in its environment.
@@ -211,8 +211,7 @@ export default function DeploymentsSurface() {
       </div>
       {deployments.error instanceof Error && <div className="err">{deployments.error.message}</div>}
       {lastRun && (
-        <div className="banner info">
-          <span>✓</span>
+        <InlineNotice tone="info" icon={<span>✓</span>}>
           <span>
             {app.t("Deployment run created.", "部署运行已创建。")}
             {lastRun.session_id ? <>
@@ -221,7 +220,7 @@ export default function DeploymentsSurface() {
             <TechnicalId value={[lastRun.id, lastRun.session_id].filter(Boolean).join(" · ")} />
             {lastRun.error ? <span className="err"> · {lastRun.error.message ?? lastRun.error.type}</span> : null}
           </span>
-        </div>
+        </InlineNotice>
       )}
       <Card className="responsive-table-card" style={{ padding: 0 }}>
         <table className="ui-data-grid__table">

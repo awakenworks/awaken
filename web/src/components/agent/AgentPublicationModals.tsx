@@ -1,4 +1,4 @@
-import { Button, Card } from "@awaken/ui";
+import { InlineNotice, Button, Card } from "@awaken/ui";
 import type { AgentConfig, AgentToolsetMemberCap, InputBinding, PluginCap, RuntimeCap } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
 import { Modal } from "../ui";
@@ -66,13 +66,12 @@ export default function AgentPublicationModals({
             </>
           }
         >
-          <div className="banner info">
-            <span>ⓘ</span>
+          <InlineNotice tone="info" icon={<span>ⓘ</span>}>
             <span>{app.t(
               "Awaken will check your draft, publish this reviewed version, create a Session, and send the first task. Later edits will not change this Session.",
               "Awaken 将检查草稿、发布当前审阅版本、创建 Session 并发送首次任务。后续编辑不会改变本次 Session。",
             )}</span>
-          </div>
+          </InlineNotice>
           <PublicationSnapshotSummary
             sourceRevision={config.generation}
             resourceRevision={resourceRevision}
@@ -109,13 +108,12 @@ export default function AgentPublicationModals({
             </>
           }
         >
-          <div className="banner ok">
-            <span>✓</span>
+          <InlineNotice tone="success" icon={<span>✓</span>}>
             <span>{app.t(
               "The draft passed all checks. Review the changes below before making this version available for new Sessions.",
               "草稿已通过全部检查。请在下方审阅改动，再将此版本用于新的 Session。",
             )}</span>
-          </div>
+          </InlineNotice>
           <PublicationSnapshotSummary
             sourceRevision={config.generation}
             resourceRevision={resourceRevision}

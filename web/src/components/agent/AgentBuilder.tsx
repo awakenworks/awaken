@@ -1,4 +1,4 @@
-import { CheckPicker, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
+import { InlineNotice, CheckPicker, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 
 import type {
   AgentConfig,
@@ -350,33 +350,46 @@ export default function AgentBuilder({
               empty={app.t("No tools advertised.", "没有可用工具。")}
             />
             {incompatibleTools.length > 0 && (
-              <div className="banner gate" role="alert">
-                <span>!</span>
+              <InlineNotice
+                tone="neutral"
+                icon={<span>!</span>}
+                actions={onRefreshRuntimes
+                  ? <Button variant="ghost" onClick={onRefreshRuntimes}>{app.t("Refresh status", "刷新状态")}</Button>
+                  : null}
+                role="alert"
+              >
                 <span>{app.t(
                   `Publishing is blocked until these tools have a verified execution path: ${incompatibleTools.join(", ")}. Refresh Runtime status, repair the ACP bridge, switch Runtime, or remove them.`,
                   `以下工具尚无已验证的执行路径，当前不能发布：${incompatibleTools.join("、")}。请刷新 Runtime 状态、修复 ACP 工具桥、切换 Runtime，或移除这些工具。`,
                 )}</span>
-                {onRefreshRuntimes && <Button variant="ghost" onClick={onRefreshRuntimes}>{app.t("Refresh status", "刷新状态")}</Button>}
-              </div>
+              </InlineNotice>
             )}
             {providerApprovalConflicts.map((toolId) => {
               const plugin = plugins.find((candidate) => candidate.id === toolId);
               const hosted = webSearchProviderOptions(plugin?.config_schema as JsonSchema | undefined)
                 .find((provider) => provider.realization === "host_executed");
               return (
-                <div className="banner gate" role="alert" key={toolId}>
-                  <span>!</span>
+                <InlineNotice
+                  tone="neutral"
+                  icon={<span>!</span>}
+                  actions={
+                    <>
+                      {hosted && <Button variant="ghost" onClick={() => onPatch({
+                        plugin_config: { ...config.plugin_config, [toolId]: { provider_id: hosted.id, options: {}, fallbacks: [] } },
+                      })}>{app.t("Keep HITL", "保留 HITL")}</Button>}
+                      <Button variant="ghost" onClick={() => onPatch({
+                        tools: withAgentToolPermission(config.tools, toolId, { type: "always_allow" }),
+                      })}>{app.t("Allow provider execution", "允许供应商执行")}</Button>
+                    </>
+                  }
+                  role="alert"
+                  key={toolId}
+                >
                   <span>{app.t(
                     `${toolId} runs inside the model provider, so Awaken cannot pause each call. Choose Awaken-hosted execution to keep approval, or explicitly allow provider execution.`,
                     `${toolId} 在模型供应商内部执行，Awaken 无法暂停每次调用。请选择 Awaken 托管执行以保留审批，或明确允许供应商执行。`,
                   )}</span>
-                  {hosted && <Button variant="ghost" onClick={() => onPatch({
-                    plugin_config: { ...config.plugin_config, [toolId]: { provider_id: hosted.id, options: {}, fallbacks: [] } },
-                  })}>{app.t("Keep HITL", "保留 HITL")}</Button>}
-                  <Button variant="ghost" onClick={() => onPatch({
-                    tools: withAgentToolPermission(config.tools, toolId, { type: "always_allow" }),
-                  })}>{app.t("Allow provider execution", "允许供应商执行")}</Button>
-                </div>
+                </InlineNotice>
               );
             })}
             {selectedToolIds.length > 0 && (
@@ -446,13 +459,12 @@ export default function AgentBuilder({
               }}
             />
             {acp && (
-              <div className="banner info" style={{ marginTop: 8 }}>
-                <span>ⓘ</span>
+              <InlineNotice tone="info" icon={<span>ⓘ</span>} style={{ marginTop: 8 }}>
                 <span>{app.t(
                   "The selected ACP Harness cannot start new background tool executions. Existing selections remain visible so you can remove them before publishing.",
                   "所选 ACP Harness 不能启动新的后台工具执行；已有选择仍保持可见，以便在发布前移除。",
                 )}</span>
-              </div>
+              </InlineNotice>
             )}
             </div>
           </details>
@@ -483,11 +495,17 @@ export default function AgentBuilder({
       {section === "knowledge" && (
         <>
           {resourcesError ? (
-            <div className="banner warn">
-              <span>⚠</span>
+            <InlineNotice
+              tone="warning"
+              icon={<span>⚠</span>}
+              actions={
+                <>
+                  <Button variant="ghost" onClick={onRetryResources}>{app.t("Retry", "重试")}</Button>
+                </>
+              }
+            >
               <span>{resourcesError.message}</span>
-              <Button variant="ghost" onClick={onRetryResources}>{app.t("Retry", "重试")}</Button>
-            </div>
+            </InlineNotice>
           ) : (
             <Card>
               <ResourcesTab

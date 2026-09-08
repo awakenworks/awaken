@@ -44,7 +44,7 @@ export default function TopChrome() {
           placement="bottom-start"
           products={[
             { id: "awaken", label: "Awaken Agents", description: app.workspaceName, icon: <AwakenMark />, isCurrent: true },
-            { id: "flow", label: "Awaken Flow", description: app.t("Plan work and coordinate outcomes", "规划工作并协同成果"), href: suiteProductEntryUrl(hubUrl, "flow"), icon: <svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 4h6v6H5zM13 4h6v6h-6zM5 12h6v8H5zM13 12h6v8h-6z" /></svg> },
+            { id: "flow", label: "Awaken Workforce", description: app.t("Plan work and coordinate outcomes", "规划工作并协同成果"), href: suiteProductEntryUrl(hubUrl, "flow"), icon: <svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 4h6v6H5zM13 4h6v6h-6zM5 12h6v8H5zM13 12h6v8h-6z" /></svg> },
           ]}
           trigger={<button className="brand-anchor brand-anchor--switcher" type="button">
             <AwakenMark />

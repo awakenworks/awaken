@@ -1,4 +1,4 @@
-import { Button, Card, ChatComposer, ChatMarkdown, ChatMessage, ChatMessageList, ChatThinking, ToolCallCard, type ToolCallTone } from "@awaken/ui";
+import { InlineNotice, Button, Card, ChatComposer, ChatMarkdown, ChatMessage, ChatMessageList, ChatThinking, ToolCallCard, type ToolCallTone } from "@awaken/ui";
 // In-editor Live Preview over the official Vercel AI SDK and AG-UI clients. The
 // console's management credential only mints one short-lived, Session-bound
 // application token; neither browser transport receives a service credential.
@@ -296,15 +296,14 @@ function ProtocolPreview({
         </Link>
       </div>
       {stale && (
-        <div className="banner warn" style={{ marginBottom: 8 }}>
-          <span>⚠</span>
+        <InlineNotice tone="warning" icon={<span>⚠</span>} style={{ marginBottom: 8 }}>
           <span>
             {app.t(
               "The draft changed after this preview started. Start a new preview to test the latest edits.",
               "当前草稿在预览开始后有新改动，请新建预览以测试最新内容。",
             )}
           </span>
-        </div>
+        </InlineNotice>
       )}
       <div className="agent-preview-conversation" hidden={protocol !== "ai-sdk"}>
       <ChatMessageList
@@ -381,14 +380,13 @@ function ProtocolPreview({
         hint={app.t("Enter to send · Shift+Enter for a new line", "Enter 发送 · Shift+Enter 换行")}
       />
       {error && (
-        <div className="banner err" role="alert">
-          <span>✕</span>
+        <InlineNotice tone="danger" icon={<span>✕</span>} role="alert">
           <span>
             <strong>{app.t("Preview failed", "预览失败")}</strong><br />
             {error.message}<br />
             <span className="mut">{app.t("Your message is kept in the composer so you can retry.", "消息已保留在输入框中，可以直接重试。")}</span>
           </span>
-        </div>
+        </InlineNotice>
       )}
       </div>
       <AgUiConversation

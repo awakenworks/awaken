@@ -1,4 +1,4 @@
-import { Button } from "@awaken/ui";
+import { InlineNotice, Button } from "@awaken/ui";
 import type { AgentConfig, Capabilities, RuntimeCap, ValidationIssue } from "../../lib/api/types";
 import { effectiveAgentToolPermission, selectedAgentToolIds } from "../../lib/agent-toolsets";
 import { labelForPath } from "../../lib/config-diff";
@@ -168,14 +168,14 @@ export function AgentValidationIssues({
   const app = useApp();
   if (issues.length === 0) return null;
   return (
-    <div className="banner warn issue-banner">
+    <InlineNotice tone="warning" className="issue-banner">
       {issues.map((issue, index) => (
         <div className="row" key={`${issue.path}-${index}`} style={{ justifyContent: "space-between" }}>
           <span><strong>{labelForPath(issue.path) || app.t("Config", "配置")}</strong>{" — "}{issue.message}</span>
           <Button variant="ghost" onClick={() => onOpen(issue.path)}>{app.t("Open field →", "打开对应字段 →")}</Button>
         </div>
       ))}
-    </div>
+    </InlineNotice>
   );
 }
 
@@ -183,8 +183,18 @@ export function AttachedAgentContext({ parentId, onBack }: { parentId: string; o
   const app = useApp();
   if (!parentId) return null;
   return (
-    <div className="banner info attached-agent-context">
-      <span>↳</span>
+    <InlineNotice
+      tone="info"
+      className="attached-agent-context"
+      icon={<span>↳</span>}
+      actions={
+        <>
+          <Button variant="ghost" style={{ marginLeft: "auto" }} onClick={onBack}>
+            {app.t("Back to primary Agent", "返回主 Agent")}
+          </Button>
+        </>
+      }
+    >
       <span>
         <strong>{app.t(`Specialist for ${parentId}`, `${parentId} 的专属辅助 Agent`)}</strong><br />
         {app.t(
@@ -192,9 +202,6 @@ export function AttachedAgentContext({ parentId, onBack }: { parentId: string; o
           "此 Agent 归属于上方主 Agent。请先发布它，随后系统会更新主 Agent 清单供你审阅。",
         )}
       </span>
-      <Button variant="ghost" style={{ marginLeft: "auto" }} onClick={onBack}>
-        {app.t("Back to primary Agent", "返回主 Agent")}
-      </Button>
-    </div>
+    </InlineNotice>
   );
 }

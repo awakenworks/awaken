@@ -196,7 +196,7 @@ export async function run({ page, goto, intro, beat, say, clearCaption, checkpoi
   });
   await beat("This approval executes the proposed write once and records the result in the Session.", answer, 3400);
 
-  await click(page.locator(".session-detail-layout .segmented").getByRole("button", { name: /Artifacts|产物/, exact: true }));
+  await click(page.getByRole("navigation", { name: /Session views|会话视图/ }).getByRole("link", { name: /Artifacts|产物/, exact: true }));
   const artifactRow = page.getByText(new RegExp(ARTIFACT_NAME.replace(".", "\\.")));
   await checkpoint("the approved review is downloadable and tied to the real checkout", async () => {
     await expect(artifactRow).toBeVisible({ timeout: 15_000 });
