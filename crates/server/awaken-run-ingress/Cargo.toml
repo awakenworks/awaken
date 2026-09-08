@@ -76,6 +76,18 @@ required-features = ["test-support"]
 name = "dispatch_conformance"
 required-features = ["test-support"]
 
+# Compile-surface cause/effect table for the bounded-query and reconciliation
+# targets: C1 both import the private MemoryDispatchStore/open_in_memory fixture;
+# C2 test-support is absent/present. R1 C1+C2(absent) skips both targets without
+# widening the default product API; R2 C1+C2(present) compiles and executes both.
+[[test]]
+name = "dispatch_queries"
+required-features = ["test-support"]
+
+[[test]]
+name = "reconciliation_scan"
+required-features = ["test-support"]
+
 [[test]]
 name = "durable_memory"
 required-features = ["test-support"]
