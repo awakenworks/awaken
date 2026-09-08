@@ -50,9 +50,7 @@ pub(crate) fn acp_mcp_client_injection_capabilities(
     cli: &str,
     http_transport: bool,
 ) -> Option<awaken_runtime_contract::CredentialRealizationCapabilities> {
-    use awaken_runtime_contract::{
-        CredentialRealizationCapabilities, CredentialRealizationKind, PlaintextBoundary,
-    };
+    use awaken_runtime_contract::{CredentialRealizationKind, PlaintextBoundary};
 
     let adapter = awaken_run_executor_acp::acp_cli(cli)?;
     let delivery = awaken_credential_contract::select_mcp_credential_delivery(
@@ -62,29 +60,23 @@ pub(crate) fn acp_mcp_client_injection_capabilities(
     if !adapter.admits_mcp_client_credential(delivery, http_transport) {
         return None;
     }
-    let (material_sources, recipient_bound_envelopes) = materializer.material_source_capabilities();
     let holder =
         awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp().mcp_holder;
-    Some(CredentialRealizationCapabilities {
-        holders: [holder].into_iter().collect(),
-        material_sources,
-        realization_kinds: [CredentialRealizationKind::ProcessProtocolField]
+    let mut capabilities = materializer
+        .realization_capabilities(holder, CredentialRealizationKind::ProcessProtocolField);
+    if capabilities.is_empty() {
+        return None;
+    }
+    capabilities.extension_consumers.insert(
+        format!(
+            "{}acp:{cli}",
+            awaken_runtime_contract::credential::ACP_CREDENTIAL_CONSUMER_PREFIX
+        ),
+        [ACP_MCP_CLIENT_INJECTION_MATERIAL_TYPE.to_string()]
             .into_iter()
             .collect(),
-        recipient_bound_envelopes,
-        extension_consumers: [(
-            format!(
-                "{}acp:{cli}",
-                awaken_runtime_contract::credential::ACP_CREDENTIAL_CONSUMER_PREFIX
-            ),
-            [ACP_MCP_CLIENT_INJECTION_MATERIAL_TYPE.to_string()]
-                .into_iter()
-                .collect(),
-        )]
-        .into_iter()
-        .collect(),
-        alternatives: Vec::new(),
-    })
+    );
+    Some(capabilities)
 }
 
 impl SharedHost {
@@ -162,7 +154,6 @@ impl SharedHost {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
     use std::sync::Arc;
 
     use awaken_runtime_contract::{
@@ -177,8 +168,34 @@ mod tests {
 
     #[async_trait::async_trait]
     impl CredentialMaterialResolver for ControlReferenceResolver {
-        fn supported_material_sources(&self) -> BTreeSet<CredentialMaterialSource> {
-            BTreeSet::from([CredentialMaterialSource::ControlPlaneReference])
+        fn material_capabilities(
+            &self,
+        ) -> std::collections::BTreeSet<awaken_runtime_contract::CredentialMaterialCapability>
+        {
+            let mut profiles = std::collections::BTreeSet::new();
+            for holder in [
+                awaken_runtime_contract::PlaintextHolder::new(
+                    awaken_runtime_contract::PlaintextBoundary::Worker,
+                    "awaken.worker",
+                ),
+                awaken_runtime_contract::PlaintextHolder::new(
+                    awaken_runtime_contract::PlaintextBoundary::Workload,
+                    "awaken.workload.acp",
+                ),
+            ] {
+                for source in
+                    [awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference]
+                {
+                    for envelope in [false] {
+                        profiles.insert(awaken_runtime_contract::CredentialMaterialCapability {
+                            holder: holder.clone(),
+                            source,
+                            envelope,
+                        });
+                    }
+                }
+            }
+            profiles
         }
 
         async fn resolve_exact(

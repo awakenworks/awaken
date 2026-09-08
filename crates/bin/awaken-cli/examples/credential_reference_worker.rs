@@ -61,6 +61,7 @@ impl InferenceExecutorMaterializer for ReferenceMaterializer {
                 awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
             ]),
             recipient_bound_envelopes: false,
+            envelope_required: false,
             extension_consumers: Default::default(),
             alternatives: Vec::new(),
         }
@@ -94,10 +95,31 @@ impl InferenceExecutorMaterializer for ReferenceMaterializer {
 
 #[async_trait]
 impl awaken_runtime_contract::CredentialMaterialResolver for ReferenceMaterializer {
-    fn supported_material_sources(
+    fn material_capabilities(
         &self,
-    ) -> BTreeSet<awaken_runtime_contract::CredentialMaterialSource> {
-        BTreeSet::from([awaken_runtime_contract::CredentialMaterialSource::WorkerReference])
+    ) -> std::collections::BTreeSet<awaken_runtime_contract::CredentialMaterialCapability> {
+        let mut profiles = std::collections::BTreeSet::new();
+        for holder in [
+            awaken_runtime_contract::PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Worker,
+                "awaken.worker",
+            ),
+            awaken_runtime_contract::PlaintextHolder::new(
+                awaken_runtime_contract::PlaintextBoundary::Workload,
+                "awaken.workload.acp",
+            ),
+        ] {
+            for source in [awaken_runtime_contract::CredentialMaterialSource::WorkerReference] {
+                for envelope in [false] {
+                    profiles.insert(awaken_runtime_contract::CredentialMaterialCapability {
+                        holder: holder.clone(),
+                        source,
+                        envelope,
+                    });
+                }
+            }
+        }
+        profiles
     }
 
     async fn resolve_exact(

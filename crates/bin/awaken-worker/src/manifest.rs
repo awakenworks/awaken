@@ -170,7 +170,10 @@ pub(crate) struct StandardManifestInputs<'a> {
 #[derive(Clone)]
 pub(crate) struct CredentialMaterializerSupport {
     pub(crate) provider_adapter: awaken_runtime_contract::CredentialRealizationCapabilities,
-    pub(crate) process_secret: awaken_runtime_contract::CredentialRealizationCapabilities,
+    pub(crate) acp: std::collections::BTreeMap<
+        String,
+        awaken_runtime_contract::CredentialRealizationCapabilities,
+    >,
     pub(crate) worker_relay: awaken_runtime_contract::CredentialRealizationCapabilities,
 }
 
@@ -180,7 +183,15 @@ impl From<&awaken_credential_materializer::PinnedCredentialMaterializer>
     fn from(materializer: &awaken_credential_materializer::PinnedCredentialMaterializer) -> Self {
         Self {
             provider_adapter: materializer.provider_adapter_capabilities(),
-            process_secret: materializer.process_secret_capabilities(),
+            acp: awaken_run_executor_acp::known_acp_clis()
+                .iter()
+                .map(|cli| {
+                    (
+                        cli.id.to_string(),
+                        materializer.acp_model_capabilities(*cli),
+                    )
+                })
+                .collect(),
             worker_relay: materializer.worker_relay_capabilities(),
         }
     }
@@ -219,7 +230,7 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
     if inputs
         .credential_materializer
         .as_ref()
-        .is_some_and(|materializer| !materializer.provider_adapter.material_sources.is_empty())
+        .is_some_and(|materializer| !materializer.provider_adapter.is_empty())
     {
         capabilities.insert(PROVIDER_CREDENTIAL_SOURCE_CAPABILITY.to_string());
     }
@@ -238,29 +249,9 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
         &inputs.deployment.acp,
     ) {
         for cli_id in acp.cli_ids() {
-            let Some(cli) = awaken_run_executor_acp::acp_cli(cli_id) else {
-                continue;
-            };
-            let (kind, material_type) = match cli.managed_credential_delivery {
-                awaken_run_executor_acp::ManagedCredentialDelivery::ProcessSecret => (
-                    awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment,
-                    awaken_runtime_contract::credential::PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE,
-                ),
-                awaken_run_executor_acp::ManagedCredentialDelivery::Artifact(_) => (
-                    awaken_runtime_contract::CredentialRealizationKind::PrivateSecretFile,
-                    awaken_runtime_contract::credential::PRIVATE_SECRET_FILE_MATERIAL_TYPE,
-                ),
-            };
-            let mut backend_profile = materializer.process_secret.clone();
-            backend_profile.realization_kinds = [kind].into_iter().collect();
-            backend_profile.extension_consumers.insert(
-                format!(
-                    "{}acp:{cli_id}",
-                    awaken_runtime_contract::credential::ACP_CREDENTIAL_CONSUMER_PREFIX
-                ),
-                [material_type.to_string()].into_iter().collect(),
-            );
-            credential_profiles.push(backend_profile);
+            if let Some(profile) = materializer.acp.get(cli_id) {
+                credential_profiles.push(profile.clone());
+            }
         }
     }
     if let (Some(materializer), Some(acp)) =
@@ -278,16 +269,10 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
     {
         credential_profiles.push(materializer.worker_relay.clone());
     }
-    let mut credential_realization =
+    let credential_realization =
         awaken_runtime_contract::CredentialRealizationCapabilities::alternatives(
             credential_profiles,
         );
-    if credential_realization.alternatives.len() == 1 {
-        credential_realization = credential_realization
-            .alternatives
-            .pop()
-            .expect("one credential profile exists");
-    }
     if let Some(capability) = credential_realization
         .manifest_capability()
         .expect("credential realization capability serializes")

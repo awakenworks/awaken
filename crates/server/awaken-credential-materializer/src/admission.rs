@@ -4,8 +4,8 @@
 //! centralizes its immutable target and capability checks.
 
 use awaken_runtime_contract::{
-    CredentialAccess, CredentialAdmissionError, CredentialMaterialSource,
-    CredentialRealizationCapabilities, CredentialRealizationKind, PlaintextHolder,
+    CredentialAccess, CredentialAdmissionError, CredentialRealizationCapabilities,
+    CredentialRealizationKind, PlaintextHolder,
 };
 
 #[derive(Clone, Copy)]
@@ -29,21 +29,8 @@ pub(super) fn admit_exact_adapter(
     access: &CredentialAccess,
     selected_holder: &PlaintextHolder,
     realization: CredentialRealizationKind,
-    material_sources: std::collections::BTreeSet<CredentialMaterialSource>,
-    recipient_bound_envelopes: bool,
+    capabilities: &CredentialRealizationCapabilities,
 ) -> Result<(), CredentialAdmissionError> {
-    access.admit(
-        selected_holder,
-        realization,
-        &CredentialRealizationCapabilities {
-            holders: [selected_holder.clone()].into_iter().collect(),
-            material_sources,
-            realization_kinds: [realization].into_iter().collect(),
-            recipient_bound_envelopes,
-            extension_consumers: Default::default(),
-            alternatives: Vec::new(),
-        },
-        unix_time_ms(),
-    )?;
+    access.admit(selected_holder, realization, capabilities, unix_time_ms())?;
     Ok(())
 }

@@ -5,6 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use super::{CredentialMaterialSource, PlaintextBoundary, PlaintextHolder};
+mod profile_admission;
+use profile_admission::credential_profile_supports;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -157,6 +159,9 @@ pub struct CredentialRealizationCapabilities {
     pub realization_kinds: BTreeSet<CredentialRealizationKind>,
     #[serde(default)]
     pub recipient_bound_envelopes: bool,
+    /// This profile cannot consume a reference without a recipient-bound envelope.
+    #[serde(default)]
+    pub envelope_required: bool,
     /// Installed external consumers and the namespaced material types each one
     /// accepts. This is execution evidence, not an extension preference.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -174,7 +179,7 @@ pub struct CredentialRealizationCapabilities {
 /// WorkerManifest capability namespace for one canonical credential realization
 /// evidence payload. The Worker contract remains credential-domain agnostic; the
 /// publishing and consuming contexts own this codec.
-pub const CREDENTIAL_REALIZATION_CAPABILITY_PREFIX: &str = "credential-realization.awaken.dev/v1:";
+pub const CREDENTIAL_REALIZATION_CAPABILITY_PREFIX: &str = "credential-realization.awaken.dev/v2:";
 /// Namespaced extension-consumer key for the exact ACP backend that consumes a
 /// credential realization profile. This keeps independently installed ACP
 /// adapters correlated with their last-mile mechanism after Worker profiles
@@ -190,18 +195,7 @@ impl CredentialRealizationCapabilities {
     /// must still perform its own exact route and binding validation before it
     /// opens material.
     pub fn merge(&mut self, other: &Self) {
-        self.holders.extend(other.holders.iter().cloned());
-        self.material_sources
-            .extend(other.material_sources.iter().copied());
-        self.realization_kinds
-            .extend(other.realization_kinds.iter().copied());
-        self.recipient_bound_envelopes |= other.recipient_bound_envelopes;
-        for (consumer, material_types) in &other.extension_consumers {
-            self.extension_consumers
-                .entry(consumer.clone())
-                .or_default()
-                .extend(material_types.iter().cloned());
-        }
+        *self = Self::alternatives([std::mem::take(self), other.clone()]);
     }
 
     /// Whether this adapter/provider advertises no credential realization at all.
@@ -211,6 +205,7 @@ impl CredentialRealizationCapabilities {
             && self.material_sources.is_empty()
             && self.realization_kinds.is_empty()
             && !self.recipient_bound_envelopes
+            && !self.envelope_required
             && self.extension_consumers.is_empty()
             && self.alternatives.iter().all(Self::is_empty)
     }
@@ -228,6 +223,9 @@ impl CredentialRealizationCapabilities {
                 alternatives.push(profile);
             }
         }
+        if alternatives.len() == 1 {
+            return alternatives.pop().expect("one installed profile");
+        }
         Self {
             alternatives,
             ..Self::default()
@@ -241,14 +239,17 @@ impl CredentialRealizationCapabilities {
         realization: CredentialRealizationKind,
         envelope: bool,
     ) -> bool {
-        (self.holders.contains(holder)
-            && self.material_sources.contains(&source)
-            && self.realization_kinds.contains(&realization)
-            && (!envelope || self.recipient_bound_envelopes))
-            || self
-                .alternatives
-                .iter()
-                .any(|profile| profile.supports(holder, source, realization, envelope))
+        credential_profile_supports(
+            self.holders.contains(holder),
+            self.material_sources.contains(&source),
+            self.realization_kinds.contains(&realization),
+            envelope,
+            self.recipient_bound_envelopes,
+            self.envelope_required,
+        ) || self
+            .alternatives
+            .iter()
+            .any(|profile| profile.supports(holder, source, realization, envelope))
     }
 
     pub(super) fn supports_extension(&self, consumer_id: &str, material_type: &str) -> bool {
@@ -309,6 +310,15 @@ impl CredentialRealizationCapabilities {
     /// Decode the unique credential realization capability from an otherwise
     /// domain-neutral Worker capability set. Multiple declarations fail closed.
     pub fn from_manifest_capabilities(capabilities: &BTreeSet<String>) -> Result<Self, String> {
+        if capabilities.iter().any(|capability| {
+            capability.starts_with("credential-realization.awaken.dev/")
+                && !capability.starts_with(CREDENTIAL_REALIZATION_CAPABILITY_PREFIX)
+        }) {
+            return Err(
+                "unsupported credential realization capability version; refresh Worker evidence"
+                    .into(),
+            );
+        }
         let mut encoded = capabilities.iter().filter_map(|capability| {
             capability.strip_prefix(CREDENTIAL_REALIZATION_CAPABILITY_PREFIX)
         });

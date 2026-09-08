@@ -118,15 +118,28 @@ fn hex_component(value: &str) -> String {
 
 #[async_trait::async_trait]
 impl CredentialMaterialResolver for WorkerCredentialFileResolver {
-    fn supported_material_sources(&self) -> BTreeSet<CredentialMaterialSource> {
-        BTreeSet::from([
-            CredentialMaterialSource::ControlPlaneReference,
-            CredentialMaterialSource::WorkerReference,
-        ])
-    }
-
-    fn supports_recipient_bound_envelopes(&self) -> bool {
-        true
+    fn material_capabilities(
+        &self,
+    ) -> BTreeSet<awaken_runtime_contract::CredentialMaterialCapability> {
+        [
+            (
+                awaken_runtime_contract::CredentialMaterialSource::WorkerReference,
+                false,
+            ),
+            (
+                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                true,
+            ),
+        ]
+        .into_iter()
+        .map(
+            |(source, envelope)| awaken_runtime_contract::CredentialMaterialCapability {
+                holder: self.holder.clone(),
+                source,
+                envelope,
+            },
+        )
+        .collect()
     }
 
     async fn resolve_exact(
@@ -250,6 +263,117 @@ mod tests {
             target_use_fingerprint: "sha256:target-a".into(),
         };
         (resolver, access, holder, binding)
+    }
+
+    #[tokio::test]
+    async fn advertised_admission_matches_the_concrete_file_resolver() {
+        // Preconditions: valid target, policy, revision/binding, populated
+        // material, and (when present) unexpired envelope with exact marker.
+        // Cross 2 resolver domains x 2 sources x 2 envelope modes x 3 holders
+        // = 24 rows. R1 exact Worker + unsealed Worker reference => accept;
+        // R2 exact Worker + sealed Control reference => accept; R3 all other
+        // tuples => reject. Thus neither missing bytes nor another failed
+        // precondition can hide an overbroad or underreported capability.
+        // Both the decoded production declaration and the actual file resolver
+        // must match R1/R2/R3. Comparing only the two results would let a blanket
+        // rejection incorrectly pass the positive rows.
+        use awaken_runtime_contract::{
+            CredentialRealizationCapabilities, CredentialRealizationKind,
+        };
+        use std::sync::Arc;
+        let mut mismatches = Vec::new();
+        for domain in ["awaken.worker", "custom.worker"] {
+            for source in [
+                CredentialMaterialSource::ControlPlaneReference,
+                CredentialMaterialSource::WorkerReference,
+            ] {
+                for envelope in [false, true] {
+                    let root = temp_root("capability-relation");
+                    let resolver = Arc::new(WorkerCredentialFileResolver::new(&root, domain));
+                    for holder in [
+                        resolver.holder().clone(),
+                        PlaintextHolder::new(PlaintextBoundary::Worker, "other.worker"),
+                        PlaintextHolder::new(PlaintextBoundary::Workload, "awaken.workload.acp"),
+                    ] {
+                        let mut access = CredentialAccess::new(
+                            CredentialRef {
+                                id: "source-a".into(),
+                                revision: 1,
+                            },
+                            source,
+                            CredentialUsage::ProviderAdapter,
+                            CredentialExecutionPolicy::exact(
+                                holder.clone(),
+                                ModelExposurePolicy::Forbidden,
+                            ),
+                        )
+                        .with_target(awaken_runtime_contract::credential::CredentialTarget::new(
+                            awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                            "provider-a",
+                        ));
+                        if envelope {
+                            access = access.with_envelope(CredentialEnvelope::SealedForWorker {
+                                envelope_ref: SealedCredentialEnvelopeRef {
+                                    id: "envelope-a".into(),
+                                    payload_fingerprint: "payload-a".into(),
+                                },
+                                recipient: resolver.holder().trust_domain.clone(),
+                                expires_at_unix_ms: u64::MAX,
+                            });
+                        }
+                        let binding = CredentialMaterialBinding::for_target(
+                            "workspace-a",
+                            &"provider-a",
+                            &access.usage,
+                        );
+                        let request = CredentialMaterialRequest {
+                            access: &access,
+                            selected_holder: &holder,
+                            binding: &binding,
+                        };
+                        let directory = resolver.material_directory(request);
+                        write(&directory, "secret", b"fixture-material").await;
+                        if envelope {
+                            write(&directory, "payload_fingerprint", b"payload-a").await;
+                        }
+                        let pinned = awaken_credential_materializer::PinnedCredentialMaterializer::external_only(resolver.clone());
+                        let (profile, kind) = if holder.boundary == PlaintextBoundary::Workload {
+                            (
+                                pinned.process_secret_capabilities(),
+                                CredentialRealizationKind::ProcessSecretEnvironment,
+                            )
+                        } else {
+                            (
+                                pinned.provider_adapter_capabilities(),
+                                CredentialRealizationKind::WorkerProviderAdapter,
+                            )
+                        };
+                        let wire = profile.manifest_capability().unwrap().into_iter().collect();
+                        let decoded =
+                            CredentialRealizationCapabilities::from_manifest_capabilities(&wire)
+                                .unwrap();
+                        let admission = access.admit(&holder, kind, &decoded, 100).is_ok();
+                        let resolution = resolver.resolve_exact(request).await.is_ok();
+                        let expected = holder == *resolver.holder()
+                            && matches!(
+                                (source, envelope),
+                                (CredentialMaterialSource::WorkerReference, false)
+                                    | (CredentialMaterialSource::ControlPlaneReference, true)
+                            );
+                        if (admission, resolution) != (expected, expected) {
+                            mismatches.push((
+                                domain, source, envelope, holder, admission, resolution, expected,
+                            ));
+                        }
+                    }
+                    tokio::fs::remove_dir_all(root).await.unwrap();
+                }
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "declaration/realization mismatch: {mismatches:?}"
+        );
     }
 
     async fn write(directory: &Path, name: &str, value: &[u8]) {
