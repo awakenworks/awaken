@@ -42,6 +42,7 @@ impl ContainerEnvironmentProvider for RecordingProvider {
     fn sandbox_capabilities(&self) -> pc::SandboxCapabilities {
         pc::SandboxCapabilities {
             isolation: pc::IsolationClass::Container,
+            process_tree_supervision: false,
             tool_transparent: true,
             path_fidelity: true,
             enforced_readonly: true,
