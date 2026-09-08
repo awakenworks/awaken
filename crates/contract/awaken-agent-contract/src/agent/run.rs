@@ -13,7 +13,8 @@ pub struct Id(pub String);
 /// is *derived* from this value the moment a consumer needs it, never stored
 /// beside it. There is no consumer of such a projection yet, so none is
 /// materialized; that keeps this enum the sole authority and makes a run record
-/// unable to drift from its own classification.
+/// unable to drift from its own classification. Its wire tags are exact: a
+/// reader accepts `Awaiting`, never the retired pre-1.0 `Waiting` spelling.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RunState {
     /// The run is executing. Committed at step boundaries so completed steps
@@ -23,7 +24,6 @@ pub enum RunState {
     /// orphan a host terminalizes (cancel/stop) or redelivers.
     Running,
     /// The run awaits external input under a resume ticket.
-    #[serde(alias = "Waiting")]
     Awaiting,
     /// The run ended through one mechanism.
     Ended(EndCause),
@@ -207,10 +207,26 @@ mod tests {
     }
 
     #[test]
-    fn legacy_waiting_state_deserializes_as_awaiting_but_never_serializes_back() {
-        let state: RunState = serde_json::from_str("\"Waiting\"").unwrap();
-        assert_eq!(state, RunState::Awaiting);
-        assert_eq!(serde_json::to_string(&state).unwrap(), "\"Awaiting\"");
+    fn awaiting_is_the_only_accepted_wire_tag() {
+        // Cause/effect graph:
+        // C1 the current `Awaiting` tag is decoded; C2 the retired pre-1.0
+        // `Waiting` tag is decoded. E1 current state round-trips without a
+        // spelling change; E2 the retired spelling is rejected before it can
+        // enter durable Run truth. Constraint: there is one RunState decoder
+        // and no compatibility decoder or data migration on this boundary.
+        // Decision table: R1=C1 -> E1; R2=C2 -> E2.
+        let current: RunState = serde_json::from_str("\"Awaiting\"").expect("R1/current tag");
+        assert_eq!(current, RunState::Awaiting, "R1/E1");
+        assert_eq!(
+            serde_json::to_string(&current).expect("R1/serialize"),
+            "\"Awaiting\"",
+            "R1/E1"
+        );
+
+        assert!(
+            serde_json::from_str::<RunState>("\"Waiting\"").is_err(),
+            "R2/E2: retired tag must fail closed"
+        );
     }
 }
 
