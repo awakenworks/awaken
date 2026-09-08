@@ -5,15 +5,17 @@ from formal_model_mutation_runner import ROOT, check_tlc_model_mutations
 
 
 def check_k8s_process_observation_model_mutants(tlc_jar: Path) -> None:
-    # KPT: UID replacement, phase-only failure, omitted participant, absent
-    # historical binding and authentication/read TOCTOU must fail closed. Real
-    # exit and fresh replacement binding witnesses exclude blanket denial.
+    # KPT: UID replacement, deleted history, phase-only failure, omitted
+    # participant, absent binding and authentication/read TOCTOU fail closed.
+    # Real exit, replacement binding and replacement exit exclude blanket denial.
     # The same provider model owns both observations; no Dispatch is copied.
     source = (ROOT / "formal/tla/K8sProcessObservation.tla").read_text()
     config = (ROOT / "formal/tla/K8sProcessObservation.cfg").read_text()
     mutations = []
     for anchor, broken in [
         ("g = current", "TRUE"),
+        ("/\\ current \\in present\n                           /\\ CompleteExit(current)",
+         "/\\ TRUE\n                           /\\ CompleteExit(current)"),
         ("/\\ CompleteExit(current)", "/\\ (CompleteExit(current) \\/ current \\in failed)"),
         ("/\\ CompleteExit(current)", "/\\ (Domain(current) \\intersect exited # {})"),
         ("/\\ <<g, g>> \\in bound", "/\\ g \\in Generations"),
@@ -22,10 +24,10 @@ def check_k8s_process_observation_model_mutants(tlc_jar: Path) -> None:
         if source.count(anchor) != 1:
             raise SystemExit("Kubernetes process observation mutation anchor drifted")
         mutations.append((source.replace(anchor, broken), config, "Safety"))
-    mutations.append((source, config.replace("INVARIANT Safety", "INVARIANT NoObservedExit"), "NoObservedExit"))
-    mutations.append((source, config.replace("INVARIANT Safety", "INVARIANT NoReplacementBinding"), "NoReplacementBinding"))
+    for witness in ("NoObservedExit", "NoReplacementBinding", "NoReplacementExit"):
+        mutations.append((source, config.replace("INVARIANT Safety", f"INVARIANT {witness}"), witness))
     check_tlc_model_mutations(tlc_jar, "K8sProcessObservation", source, config, mutations)
-    print("Kubernetes process observation: 5 unsafe-evidence mutants killed; real-exit and fresh-replacement witnesses reached")
+    print("Kubernetes process observation: 6 unsafe-evidence mutants killed; real-exit, replacement-binding and replacement-exit witnesses reached")
 
 
 def check_execution_replacement_model_mutants(tlc_jar: Path) -> None:
