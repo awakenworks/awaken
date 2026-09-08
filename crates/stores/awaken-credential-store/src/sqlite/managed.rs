@@ -476,9 +476,9 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
             };
             let durable: PendingManagedCredentialMutation =
                 serde_json::from_str(&current).map_err(storage)?;
-            if durable != pending
-                || durable.material_fence.phase != CredentialMaterialMutationPhase::Writing
-            {
+            // Successful claim already requires Writing; full snapshot equality
+            // also fences phase changes before this locked write.
+            if durable != pending {
                 tx.commit().map_err(storage)?;
                 return Ok(None);
             }

@@ -838,11 +838,9 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
                 .map_err(storage)
         })
         .transpose()?;
-        if durable.as_ref() != Some(pending)
-            || durable.as_ref().is_some_and(|value| {
-                value.material_fence.phase != CredentialMaterialMutationPhase::Writing
-            })
-        {
+        // Successful claim already requires Writing; full snapshot equality
+        // also fences phase changes before this locked write.
+        if durable.as_ref() != Some(pending) {
             tx.commit().await.map_err(storage)?;
             return Ok(None);
         }
@@ -1489,11 +1487,9 @@ impl CredentialRepo for PostgresCredentialRepo {
             Ok(intent)
         })
         .transpose()?;
-        if durable.as_ref() != Some(intent)
-            || durable.as_ref().is_some_and(|durable| {
-                durable.material_fence.phase != CredentialMaterialMutationPhase::Writing
-            })
-        {
+        // Successful claim already requires Writing; full snapshot equality
+        // also fences phase changes before this locked write.
+        if durable.as_ref() != Some(intent) {
             tx.commit().await.map_err(storage)?;
             return Ok(None);
         }

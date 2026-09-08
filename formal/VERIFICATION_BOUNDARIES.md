@@ -457,6 +457,15 @@ methods, preservation of all non-phase fields, and recovery dispatch at the
 exact expiry boundary. Epochs and clocks use the full `u64` domain; identities
 use independent empty/a/b strings with unwind 4. The concrete takeover test
 checks successor abort-only behavior, invalid deadlines and epoch exhaustion.
+The same production claim transition now takes a lazy token factory behind its
+unchanged UUID wrapper. A bounded Kani proof checks exact eligibility/error
+precedence, nonwrapping epochs, field preservation and abort-only positive-epoch
+successors even when tokens repeat, using empty or two valid 32-byte UUID tokens
+with unwind 36. Legacy epoch zero is included without an
+owned-writer assumption. Six adapter phase rechecks are redundant after claim
+success plus complete locked snapshot equality and have been removed. The shared
+Source/Managed conformance table exercises all three backends, races two claimants,
+rejects stale token/epoch/deadline/payload snapshots, and checks two successive takeovers.
 These checks do not prove UUID generation, arbitrary-length strings, the
 enclosing repository CAS, external material IO or the complete recovery protocol;
 the existing takeover obligation retains its abstract-model grade.
