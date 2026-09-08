@@ -262,7 +262,14 @@ async function sendAndWaitForAgentMarker(
     BETAS,
     ({ delta }: { delta: any[] }) => hasCompletedProviderMarker(delta, marker),
     `Event ${marker} receipt to reach its exact Provider marker and later idle`,
-    { timeoutMs, pollMs: 500 },
+    {
+      timeoutMs,
+      pollMs: 500,
+      // Failover receipt observation is idempotent. A replacement replica may
+      // correctly reject one mixed committed-prefix read with 503; retry that
+      // read under the same exact receipt, never the Event send above.
+      retryReadError: (error: unknown) => retryableReadStatus(error) !== null,
+    },
   );
   const observedAt = performance.now();
   return { ...observation, elapsed: observedAt - started, admissionMs: acceptedAt - started, observationMs: observedAt - acceptedAt };

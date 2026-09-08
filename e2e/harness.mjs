@@ -458,17 +458,25 @@ export const RED_PNG_DATA_URI = `data:image/png;base64,${RED_PNG_B64}`;
 // coordinates observation and never drives the product state machine.
 // Decision table: predicate true => return the observed value; predicate false
 // before deadline => retry; predicate false at deadline => fail with the last
-// value; read failure => surface it immediately instead of masking corruption.
+// value; unclassified read failure => surface it immediately instead of masking
+// corruption; caller-classified transient read failure => retry the observation
+// only, never the product command that produced the state being observed.
 export async function waitForValue(
   read,
   predicate,
   description,
-  { timeoutMs = 20_000, pollMs = 100 } = {},
+  { timeoutMs = 20_000, pollMs = 100, retryReadError } = {},
 ) {
   const deadline = performance.now() + timeoutMs;
   let value;
   do {
-    value = await read();
+    try {
+      value = await read();
+    } catch (error) {
+      if (retryReadError?.(error) !== true || performance.now() >= deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+      continue;
+    }
     if (await predicate(value)) return value;
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   } while (performance.now() < deadline);
@@ -491,7 +499,9 @@ export async function waitForValue(
 // bounded coordination to waitForValue; it owns no terminal predicate and never
 // drives the Session/Run lifecycle. Decision rules: W1 !C1=>reject; W2 C1&&!C2
 // =>retry; W3 C1+C2&&!C3=>retry; W4 C1+C2+C3=>E1+E2; W5 deadline=>surface the
-// last observation through waitForValue; W6 C4=>E3.
+// last observation through waitForValue; W6 C4=>E3; W7 a caller-classified
+// transient history-read failure retries only list; W8 any other read failure
+// surfaces immediately.
 export async function waitForSessionEventReceipt(
   client,
   sessionId,
