@@ -34,6 +34,8 @@ from formal_execution_replacement_mutations import (
 )
 from formal_credential_mutations import (
     check_mcp_credential_model_mutants, check_credential_effect_model_mutants,
+    check_acp_binding_model_mutants,
+    check_acp_observation_model_mutants,
 )
 from formal_dispatch_mutations import check_resolution_failure_model_mutant, check_terminal_scan_model_mutants
 
@@ -335,6 +337,8 @@ class MutationOracleTests(unittest.TestCase):
             "cowork-lifecycle-model-mutants", "local-process-model-mutant",
             "local-recovery-model-mutants", "checkpoint-recovery-model-mutants",
             "mcp-credential-model-mutants", "credential-effect-model-mutants",
+            "acp-binding-model-mutants",
+            "acp-observation-model-mutants",
         )
         for flag in flags:
             handler = "check_" + flag.replace("-", "_")
@@ -556,6 +560,8 @@ def main() -> None:
         "checkpoint-recovery-model-mutants": check_checkpoint_recovery_model_mutants,
         "mcp-credential-model-mutants": check_mcp_credential_model_mutants,
         "credential-effect-model-mutants": check_credential_effect_model_mutants,
+        "acp-binding-model-mutants": check_acp_binding_model_mutants,
+        "acp-observation-model-mutants": check_acp_observation_model_mutants,
     }
     model_selection = parser.add_mutually_exclusive_group()
     for name in model_checks:

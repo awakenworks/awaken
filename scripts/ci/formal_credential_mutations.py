@@ -5,6 +5,65 @@ from pathlib import Path
 from formal_model_mutation_runner import ROOT, check_tlc_model_mutations
 
 
+def check_acp_binding_model_mutants(tlc_jar: Path) -> None:
+    # B1 rejected batch publishes its exclusive prefix => rejected-action failure;
+    # B2 check outside the publication lock => two stale checks accept conflicting
+    # shared revisions; B3 accepted batch omits a key => incomplete publication.
+    # Independent positive witnesses require a compatible union, a genuine
+    # conflicting race, and an accepted status update. Parser/tool failure is not
+    # evidence: the existing runner requires the exact exit and named property.
+    source = (ROOT / "formal/tla/AcpLocalBindingBatch.tla").read_text()
+    config = (ROOT / "formal/tla/AcpLocalBindingBatch.cfg").read_text()
+    header = "SPECIFICATION Spec\nCHECK_DEADLOCK FALSE\n"
+    mutations = []
+    for anchor, replacement, property_name in (
+        ("ELSE bindings\n", "ELSE [bindings EXCEPT ![Own(i)] = Requested(i, Own(i))]\n",
+         "action:RejectedBatchHasNoEffect"),
+        (r'/\ phase[i] = "idle" /\ mutex = 0', r'/\ phase[i] = "idle"',
+         "AcceptedBatchComplete"),
+        ("IF k \\in BatchKeys(i) THEN Requested(i, k)", "IF k = Own(i) THEN Requested(i, k)",
+         "AcceptedBatchComplete"),
+    ):
+        if source.count(anchor) != 1:
+            raise SystemExit(f"ACP binding mutation anchor drifted: {property_name}")
+        action = property_name.startswith("action:")
+        selected = property_name.removeprefix("action:")
+        keyword = "PROPERTIES" if action else "INVARIANTS"
+        mutations.append((source.replace(anchor, replacement),
+                          header + f"{keyword} {selected}\n", property_name))
+    for witness in ("NoCompatibleUnion", "NoConflictingRace", "NoStatusUpdate"):
+        mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
+    check_tlc_model_mutations(tlc_jar, "AcpLocalBindingBatch", source, config, mutations)
+    print("ACP binding batches: 3/3 mutants killed; 3/3 positive witnesses reachable")
+
+
+def check_acp_observation_model_mutants(tlc_jar: Path) -> None:
+    # C1 preserve a previous refresh's probe; C2 repeat one host probe for each
+    # Workspace; C3 let credential cardinality decide protocol cardinality;
+    # C4 lend one active source's login to a disabled reference. All must fail
+    # the named independent invariant, not parsing/timeout. Four witnesses guard
+    # against inert projections, mandatory-login coupling and unreachable refresh.
+    source = (ROOT / "formal/tla/AcpObservationRefresh.tla").read_text()
+    config = (ROOT / "formal/tla/AcpObservationRefresh.cfg").read_text()
+    header = "SPECIFICATION Spec\n"
+    mutations = []
+    for anchor, replacement, invariant in (
+        ("cacheGeneration' = 0", "cacheGeneration' = cacheGeneration", "CapabilityUsesThisRefresh"),
+        ("probes' = 1", "probes' = Cardinality(batchEnabled)", "OneHostProbePerRefresh"),
+        ("rows' = IF selected THEN 1 ELSE 0", "rows' = IF selected THEN Cardinality(batchEnabled) ELSE 0",
+         "OneCapabilityRowPerSelectedBackend"),
+        ("THEN batchEnabled ELSE {}", "THEN References ELSE {}", "CredentialProjectionNeverWidens"),
+    ):
+        if source.count(anchor) != 1:
+            raise SystemExit(f"ACP observation mutation anchor drifted: {invariant}")
+        mutations.append((source.replace(anchor, replacement), header + f"INVARIANTS {invariant}\n", invariant))
+    for witness in ("NoSharedActiveProjection", "NoProtocolWithoutBindings", "NoUnselectedBackend",
+                    "NoSecondRefreshMissingCli"):
+        mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
+    check_tlc_model_mutations(tlc_jar, "AcpObservationRefresh", source, config, mutations)
+    print("ACP observation refresh: 4/4 mutants killed; 4/4 positive witnesses reachable")
+
+
 def check_mcp_credential_model_mutants(tlc_jar: Path) -> None:
     # Cause/effect table (the model owns the relation, not this runner):
     # M1 wrong requested generation, M2 wrong source revision, M3 call after
