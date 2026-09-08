@@ -8,8 +8,6 @@
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_dispatch_contract::RunDispatch;
-use awaken_dispatch_contract::SessionRunReplacement;
 use awaken_dispatch_contract::dispatch::{
     AttemptAdmission, CasOutcome, ContinuationAdmission, CredentialRealizationReceipt, Dispatch,
     DispatchError, DispatchOutcome, DispatchQueue, DispatchState, PendingInput, RunClaim,
@@ -24,6 +22,7 @@ use awaken_dispatch_contract::{
     WorkerCredentialObservation, WorkerCredentialRevision, WorkerIdentity, WorkerManifest,
     WorkerSnapshot, WorkerState,
 };
+use awaken_dispatch_contract::{RunDispatch, SessionRunReplacement, SessionRuntimeEnvelope};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::resume::ResumeResult;
