@@ -5,6 +5,50 @@
 
 mod harness;
 
+#[tokio::test]
+async fn sqlite_ack_retirement_survives_reopen_and_sql_bypass_is_rejected() {
+    // R8 ACK commit then process/store loss => the same claim cannot reenter.
+    // R9 bypassing admission SQL => CHECK rejects retired or future watermarks.
+    // No fixture-supplied terminal truth or in-process registry survives reopen.
+    use awaken_dispatch::{AttemptAdmission as A, SettleOutcome as S};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("retirement.db");
+    let path = path.to_str().unwrap();
+    let store = SqliteDispatchStore::open(path).unwrap();
+    store
+        .enqueue(RunDispatch::new(harness::activation("retired")))
+        .await
+        .unwrap();
+    let a = store
+        .claim("a", 1000, 0, &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    let a = RunClaim::from(&a.lease);
+    assert_eq!(store.begin_attempt(&a, 0).await.unwrap(), A::Applied);
+    assert_eq!(store.finish_attempt(&a).await.unwrap(), S::Applied);
+    drop(store);
+    let reopened = SqliteDispatchStore::open(path).unwrap();
+    assert_eq!(
+        reopened.begin_attempt(&a, 0).await.unwrap(),
+        A::Fenced,
+        "R8"
+    );
+    assert_eq!(
+        reopened.finish_attempt(&a).await.unwrap(),
+        S::Applied,
+        "lost ACK response"
+    );
+    let connection = rusqlite::Connection::open(path).unwrap();
+    for invalid in [
+        "UPDATE runtime_dispatch SET active_attempt_owner = 'a', active_attempt_epoch = retired_attempt_epoch",
+        "UPDATE runtime_dispatch SET retired_attempt_epoch = lease_epoch + 1",
+        "UPDATE runtime_dispatch SET retired_attempt_epoch = -1",
+    ] {
+        assert!(connection.execute(invalid, []).is_err(), "R9 {invalid}");
+    }
+}
+
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 

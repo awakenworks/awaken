@@ -329,6 +329,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness commit_epoch_guard_admits_only_complete_exact_claim \
     --harness pre_start_no_effect_ack_requires_fresh_install_admission \
     --harness physical_attempt_slot_installs_and_clears_only_exact_authority \
+    --harness retired_epoch_cannot_admit_another_execution \
     --harness thread_physical_peer_vetoes_begin_and_handoff \
     --harness physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair
   run_kani awaken-dispatch --no-default-features \
@@ -982,6 +983,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -workers auto \
     -metadir "$tlc_state_root/session-run-protocol" \
     -config formal/tla/SessionRunProtocol.cfg formal/tla/SessionRunProtocol.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-run-retirement" \
+    -config formal/tla/SessionRunProtocolRetirement.cfg formal/tla/SessionRunProtocol.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-run-resolution" \
     -config formal/tla/SessionRunProtocolResolution.cfg formal/tla/SessionRunProtocol.tla

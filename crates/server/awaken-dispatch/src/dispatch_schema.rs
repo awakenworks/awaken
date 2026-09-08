@@ -333,6 +333,11 @@ pub(crate) fn converged_dispatch_bundle() -> Result<MigrationBundle, MigrationEr
                 "V0003__one_physical_attempt_per_thread.sql",
                 include_str!("migrations/V0003__one_physical_attempt_per_thread.sql"),
             )?,
+            portable_migration(
+                4,
+                "V0004__retired_attempt_epoch.sql",
+                include_str!("migrations/V0004__retired_attempt_epoch.sql"),
+            )?,
         ],
     )
 }
@@ -517,7 +522,7 @@ mod tests {
                 .iter()
                 .map(|migration| migration.version)
                 .collect::<Vec<_>>(),
-            [1, 2, 3],
+            [1, 2, 3, 4],
             "S1/E1"
         );
         for (table, column) in [
@@ -587,6 +592,39 @@ mod tests {
         // prefix -> only its suffix; D3 duplicate/gap -> bundle rejection.
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
         assert_eq!(versions, (1..=27).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn retired_epoch_upgrade_preserves_occupied_history_and_retires_ambiguous_empty_slots() {
+        use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
+        // M1 compact/expanded history + empty leased row => retire its epoch,
+        // never infer stop. M2 occupied predecessor => preserve its exact pair
+        // and allow its later ACK. M3 reopen => no repeat migration or reset.
+        for history in [
+            dispatch_bundle().unwrap(),
+            expanded_dispatch_bundle().unwrap(),
+        ] {
+            let conn = rusqlite::Connection::open_in_memory().unwrap();
+            let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
+            runner.run_bundle(&conn, &history).unwrap();
+            let full = converged_dispatch_bundle().unwrap();
+            let previous =
+                MigrationBundle::new(CONVERGED_BUNDLE_ID, full.migrations()[..3].to_vec()).unwrap();
+            runner.run_bundle(&conn, &previous).unwrap();
+            conn.execute_batch("INSERT INTO runtime_dispatch (run_id, thread_id, request, status, lease_epoch, lease_owner, lease_until) VALUES ('empty', 't1', '{}', 'running', 3, 'a', 100), ('occupied', 't2', '{}', 'running', 3, 'b', 100); UPDATE runtime_dispatch SET active_attempt_owner = 'old', active_attempt_epoch = 2 WHERE run_id = 'occupied';").unwrap();
+            runner.run_bundle(&conn, &full).unwrap();
+            let empty: i64 = conn
+                .query_row(
+                    "SELECT retired_attempt_epoch FROM runtime_dispatch WHERE run_id = 'empty'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(empty, 3, "M1");
+            let occupied: (i64, String, i64) = conn.query_row("SELECT retired_attempt_epoch, active_attempt_owner, active_attempt_epoch FROM runtime_dispatch WHERE run_id = 'occupied'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+            assert_eq!(occupied, (0, "old".into(), 2), "M2");
+            assert!(runner.run_bundle(&conn, &full).unwrap().is_empty(), "M3");
+        }
     }
 
     #[test]

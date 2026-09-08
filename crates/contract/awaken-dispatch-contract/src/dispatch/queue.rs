@@ -292,6 +292,9 @@ pub trait DispatchQueue: Send + Sync {
     /// Acquire the physical executor slot for one exact, live claim.
     ///
     /// The slot is part of the existing Dispatch aggregate, not a second lease.
+    /// A successfully acknowledged epoch cannot be admitted again. Consecutive
+    /// in-process ScheduledActions belong inside the original physical attempt;
+    /// another execution after ACK requires a newly claimed epoch.
     /// Reclaim may advance the durable claim epoch while the predecessor is
     /// still unwinding, but a successor receives [`AttemptAdmission::Blocked`]
     /// until [`finish_attempt`](Self::finish_attempt) records that predecessor's

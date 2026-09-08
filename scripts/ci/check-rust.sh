@@ -125,6 +125,12 @@ step "run-ingress-neutral-unit" "keep memory and domain tests independent from o
 
 case "$mode" in
   --quick)
+    # Causal regression: the physical Attempt owns chained ScheduledActions;
+    # embedding its concrete Future in Worker cancellation exceeded rustc's
+    # layout-query depth even though ingress tests compiled. This all-targets
+    # workspace check must include the production Worker composition. Boxing at
+    # the owned boundary fixes layout without detaching execution or increasing
+    # recursion limits; an ingress-only replacement would lose this coverage.
     step "check" "fix the compile errors shown above" \
       cargo check --workspace --all-targets "${locked[@]}"
     ;;

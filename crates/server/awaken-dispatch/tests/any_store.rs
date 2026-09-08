@@ -29,6 +29,21 @@ fn any_in_memory() -> AnyDispatchStore {
     AnyDispatchStore::open_sqlite_in_memory().expect("open in-memory sqlite backend")
 }
 
+#[tokio::test]
+async fn returned_attempt_cannot_restart_under_the_same_claim() {
+    // Causal graph: admitted A -> observed return/ACK -> empty slot -> delayed
+    // duplicate begin(A). Reusing A would let a repeated ACK(A) clear a second
+    // physical execution. R1 exact live admission retry before ACK is idempotent;
+    // R2 same claim after ACK is fenced; R3 repeated ACK stays idempotent.
+    // This is a prerequisite for accepting independently delayed stop evidence.
+    for store in [
+        AnyDispatchStore::from_dispatch(Arc::new(MemoryDispatchStore::new())),
+        any_in_memory(),
+    ] {
+        harness::attempt_retirement::assert_retirement(&store, 0).await;
+    }
+}
+
 #[test]
 fn non_postgres_wrapper_does_not_fabricate_a_checkpoint_authority() {
     // Cause/effect decision table: R1 Postgres -> paired durable checkpoint (covered

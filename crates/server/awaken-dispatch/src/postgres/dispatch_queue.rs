@@ -19,7 +19,7 @@ impl PostgresDispatchStore {
         let now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
         let current = sqlx::query(&format!(
             "SELECT status, lease_owner, lease_epoch, lease_until, \
-             active_attempt_owner, active_attempt_epoch \
+             active_attempt_owner, active_attempt_epoch, retired_attempt_epoch \
              FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
         ))
         .bind(&claim.run_id.0)
@@ -44,7 +44,14 @@ impl PostgresDispatchStore {
         let active_epoch = active_epoch
             .map(|value| durable_u64("dispatch attempt epoch", value))
             .transpose()?;
-        let live = status == "running"
+        let retired_epoch = durable_u64(
+            "retired attempt epoch",
+            current
+                .try_get("retired_attempt_epoch")
+                .map_err(store_error)?,
+        )?;
+        let live = awaken_dispatch_contract::attempt_epoch_is_open(claim.epoch, retired_epoch)
+            && status == "running"
             && owner.as_deref() == Some(&claim.owner)
             && persisted_epoch == claim.epoch
             && lease_until.is_some_and(|until| until >= crate::clock::db_millis(now_ms));
@@ -1149,7 +1156,7 @@ impl DispatchQueue for PostgresDispatchStore {
         if transition == PhysicalAttemptTransition::Clear {
             sqlx::query(&format!(
                 "UPDATE {p}_dispatch SET active_attempt_owner = NULL, \
-                     active_attempt_epoch = NULL WHERE run_id = $1 \
+                     active_attempt_epoch = NULL, retired_attempt_epoch = $3 WHERE run_id = $1 \
                      AND active_attempt_owner = $2 AND active_attempt_epoch = $3"
             ))
             .bind(&claim.run_id.0)

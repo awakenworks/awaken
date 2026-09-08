@@ -51,8 +51,9 @@ pub use dispatch::{
 };
 pub use dispatch_transition::{
     CancelTransition, DispatchTransition, DispatchTransitionError, GuardedTransition,
-    PhysicalAttemptSlot, PhysicalAttemptTransition, RelinquishTransition, begin_physical_attempt,
-    finish_physical_attempt, handoff_physical_attempt, retry_exhaustion_eligible,
+    PhysicalAttemptSlot, PhysicalAttemptTransition, RelinquishTransition, attempt_epoch_is_open,
+    begin_physical_attempt, finish_physical_attempt, handoff_physical_attempt,
+    retry_exhaustion_eligible,
 };
 pub use operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,

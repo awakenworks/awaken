@@ -8,6 +8,8 @@
 
 #![allow(dead_code)]
 
+pub mod attempt_retirement;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
@@ -820,6 +822,10 @@ impl FlakyDispatchStore {
 
     pub fn finish_claims(&self) -> Vec<awaken_dispatch::RunClaim> {
         self.finish_claims.lock().unwrap().clone()
+    }
+
+    pub fn dispatch_count(&self) -> usize {
+        self.inner.dispatch_count()
     }
 
     pub fn with_retry_exhaustion_failures(self, failures: usize) -> Self {
