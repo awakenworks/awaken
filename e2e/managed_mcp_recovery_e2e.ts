@@ -2,14 +2,15 @@
 //
 // Cause-effect graph:
 //   C1 durable generation Active + owner lost -> new lease/claim -> E1 restage and republish exact generation
-//   C2 exact idempotency receipt persisted -> retry after restart -> E2 replay without new effect
+//   C2 exact idempotency receipt persisted + later root facts committed -> retry after restart
+//      -> E2 replay without new effect and return one coherent current body/current root ETag
 //   C3 durable generation Removed + restart -> E3 never republish
 //
 // Decision table:
 // | Rule | durable state | trigger | Effect |
 // | R0 | idle baseline, no transcript | restart/retrieve | reconstruct idle Session |
 // | R1 | Active B | SIGKILL + restart | same Session calls only B |
-// | R2 | Active B + update receipt | replay key after restart | same ETag, no MCP I/O/event |
+// | R2 | Active B + update receipt + later root revision | replay key after restart | current body + current root ETag, no MCP I/O/event |
 // | R3 | Removed B | SIGKILL + restart | empty projection, no B resurrection |
 
 import assert from 'node:assert/strict';
@@ -113,9 +114,25 @@ async function main(): Promise<void> {
     assert.equal(fixtureA.calls.filter((call: any) => call.method === 'tools/call').length, 0);
     pass('R1 restart reacquires ownership and calls only exact active B');
 
+    // R2: the idempotency receipt proves that the original update command was
+    // already applied, but its historical committed revision is not a wire
+    // representation version. The two completed Runs above are the later-root
+    // cause; replay must therefore pair the current body with the current root
+    // ETag while performing no second MCP effect.
+    const currentBeforeReplay = await retrieveSessionWithEtag(client, session.id, BETAS);
+    assert.notEqual(
+      currentBeforeReplay.etag,
+      replaceEtag,
+      'R2 setup advances the root beyond the historical update receipt',
+    );
     const beforeReplayIo = fixtureB.calls.length;
     const replay = await update(client, session.id, [serverB], 'persisted-swap-b');
-    assert.equal(responseEtag(replay.response), replaceEtag, 'R2 returns the committed revision');
+    assert.equal(
+      responseEtag(replay.response),
+      currentBeforeReplay.etag,
+      'R2 returns the current coherent representation revision',
+    );
+    assert.deepEqual(replay.data, currentBeforeReplay.session, 'R2 returns the current body');
     assert.equal(fixtureB.calls.length, beforeReplayIo, 'R2 performs no realization I/O');
     pass('R2 idempotency receipt survives restart and replays without effect');
 
