@@ -1222,7 +1222,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 tx.execute(
                     &format!(
                         "UPDATE {p}_dispatch SET active_attempt_owner = NULL, \
-                             active_attempt_epoch = NULL WHERE run_id = ?1 \
+                             active_attempt_epoch = NULL, retired_attempt_epoch = ?3 WHERE run_id = ?1 \
                              AND active_attempt_owner = ?2 AND active_attempt_epoch = ?3"
                     ),
                     params![claim.run_id.0, claim.owner, epoch],

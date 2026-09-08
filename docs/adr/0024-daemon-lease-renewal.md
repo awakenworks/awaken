@@ -178,6 +178,21 @@ the same claim without rerunning the executor. This also covers a committed ACK
 whose response was lost: the existing empty-slot transition is idempotent, while
 a different successor slot remains fenced. Permanent rejection still fails.
 Process death before a successful ACK remains an explicit recovery boundary.
+An acknowledged execution epoch is now retired in the same Dispatch row and
+the same transaction that clears its physical slot. Admission and durable
+handoff reject an epoch at or below that watermark, even if its mutation lease
+is still current. This closes the `begin(A) -> finish(A) -> delayed begin(A)`
+ABA window: a repeated old ACK cannot clear a resurrected execution using the
+same identity. A new claim may execute only with a higher epoch; no new lease,
+receipt store or recovery authority is introduced. Migration conservatively
+retires historical empty-slot epochs because they cannot distinguish an unused
+claim from a lost ACK response. Historical occupied slots remain unchanged.
+ScheduledAction stages are deliberately driven inside the original physical
+attempt, sharing its Thread lock, cancellation carrier and uncertainty latch.
+Only the whole drive returns an ACK; there is no release/reacquire between
+stages under the same claim. An uncertain stage cannot launch the next stage.
+Retirement is not evidence of process or remote termination. This prerequisite
+does not wire the provider observation below into Native recovery.
 The Kubernetes adapter now offers a narrower independent local observation:
 `bind_pod_process` freezes the complete ordinary-container set before effects,
 and `observe_pod_process_termination` requires the same Pod UID, node, container

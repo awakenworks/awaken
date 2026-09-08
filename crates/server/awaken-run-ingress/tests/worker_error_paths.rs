@@ -25,6 +25,54 @@ use harness::{FailingCommit, activation, schedule_n_runtime, text_runtime};
 
 const LEASE: u64 = 1_000;
 
+struct UncertainScheduledExecutor(Arc<awaken_runtime::Runtime>);
+
+#[async_trait::async_trait]
+impl RunExecutor for UncertainScheduledExecutor {
+    async fn execute(
+        &self,
+        activation: awaken_runtime_contract::RunActivation,
+        context: RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<RunState> {
+        let state = self.0.execute(activation, context.clone()).await?;
+        context.physical_quiescence.mark_uncertain();
+        Ok(state)
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_runtime_contract::execution::RunAttemptExecutor for UncertainScheduledExecutor {
+    async fn resume(
+        &self,
+        _activation: awaken_runtime_contract::RunActivation,
+        _command: awaken_runtime_contract::resume::ResumeCommand,
+        _context: RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<RunState> {
+        panic!("this fresh-admission test never resumes externally");
+    }
+}
+
+#[tokio::test]
+async fn uncertain_scheduled_stage_neither_launches_its_successor_nor_acknowledges() {
+    // C1 a real committed ScheduledAction; C2 the initial executor returns but
+    // reports an unconfirmed participant. R1 C1+C2 => no scheduled tool entry,
+    // no ACK, and no settlement. This kills resetting the uncertainty latch or
+    // retaining the old outer schedule loop after moving the physical boundary.
+    let (runtime, ran) = schedule_n_runtime(1);
+    let store = Arc::new(harness::FlakyDispatchStore::new(0));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = DispatchWorker::new(runtime.clone(), store.clone(), commit, "uncertain");
+    worker.install_attempt_executor(Arc::new(UncertainScheduledExecutor(runtime)));
+    store
+        .enqueue(RunDispatch::new(activation("uncertain-schedule")))
+        .await
+        .unwrap();
+    let _outcome = worker.tick(harness::clock(0)).await;
+    assert_eq!(ran.load(Ordering::SeqCst), 0, "no next-stage effect");
+    assert!(store.finish_claims().is_empty(), "no ACK");
+    assert_eq!(store.dispatch_count(), 1, "no settlement");
+}
+
 #[tokio::test]
 async fn failed_retry_exhaustion_commit_is_reclaimable_after_its_exact_lease() {
     // Cause/effect decision table: T1 exhausted+expired and commit fails => keep
@@ -237,33 +285,50 @@ async fn a_chain_of_scheduled_actions_is_performed_to_completion_in_one_drive() 
     // drive_claimed: the worker's `while state == Awaiting` loop keeps performing the
     // next committed action in-process until the run ends, never settling Awaiting
     // between hops.
-    let (runtime, ran) = schedule_n_runtime(2);
-    let store = Arc::new(MemoryDispatchStore::new());
-    let commit = Arc::new(MemoryCommitCoordinator::new());
+    // R1 normal completion -> one ACK for the whole chain; R2 ACK response
+    // lost -> retry that ACK only, never any scheduled effect.
+    for lost_response in [false, true] {
+        let (runtime, ran) = schedule_n_runtime(2);
+        let store = harness::FlakyDispatchStore::new(0);
+        let store = Arc::new(if lost_response {
+            store.with_finish_fault(harness::FinishFault::LostResponse)
+        } else {
+            store
+        });
+        let commit = Arc::new(MemoryCommitCoordinator::new());
 
-    store
-        .enqueue(RunDispatch::new(activation("run-1")))
-        .await
-        .unwrap();
-    let worker = DispatchWorker::new(runtime, store.clone(), commit, "solo").with_lease_ms(LEASE);
+        store
+            .enqueue(RunDispatch::new(activation("run-1")))
+            .await
+            .unwrap();
+        let worker =
+            DispatchWorker::new(runtime, store.clone(), commit, "solo").with_lease_ms(LEASE);
 
-    let processed = worker.tick(harness::clock(0)).await.unwrap();
-    assert_eq!(
-        processed,
-        Some((
-            RunId("run-1".to_string()),
-            RunState::Ended(EndCause::NaturalEnd)
-        )),
-        "the chain drove to a natural end in one drive"
-    );
-    assert_eq!(
-        ran.load(Ordering::SeqCst),
-        2,
-        "both scheduled actions were performed in the one drive"
-    );
-    assert_eq!(
-        store.dispatch_count(),
-        0,
-        "the run settled Done after the whole chain, not Awaiting mid-chain"
-    );
+        let processed = worker.tick(harness::clock(0)).await.unwrap();
+        assert_eq!(
+            processed,
+            Some((
+                RunId("run-1".to_string()),
+                RunState::Ended(EndCause::NaturalEnd)
+            )),
+            "the chain drove to a natural end in one drive"
+        );
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            2,
+            "both scheduled actions were performed in the one drive"
+        );
+        assert_eq!(
+            store.dispatch_count(),
+            0,
+            "the run settled Done after the whole chain, not Awaiting mid-chain"
+        );
+        let acknowledgements = store.finish_claims();
+        assert_eq!(acknowledgements.len(), if lost_response { 2 } else { 1 });
+        assert!(
+            acknowledgements
+                .iter()
+                .all(|claim| claim == &acknowledgements[0])
+        );
+    }
 }

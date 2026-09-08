@@ -1114,7 +1114,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         if let Some(executor) = &model_executor {
             execution_context = execution_context.with_model_executor(executor.clone());
         }
-        let mut state = match self.reader.resume_ticket(&run_id) {
+        let state = match self.reader.resume_ticket(&run_id) {
             // A committed ScheduledAction (ADR-0020): the system performs the
             // deferred action, not waits for external input. This also covers a
             // crash recovery of a scheduled await (no pending input is expected).
@@ -1327,49 +1327,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 }
             },
         };
-
-        // Drive any further scheduled actions to completion in-process: a run that
-        // ends a step by committing a ScheduledAction is performed immediately,
-        // until it ends or awaits on a wait that needs external input.
-        while state == RunState::Awaiting {
-            match self.reader.resume_ticket(&run_id) {
-                Some(ticket) if ticket.reason() == AwaitReason::ScheduledAction => {
-                    state = match self
-                        .run_physical_attempt(
-                            PhysicalAttemptRequest {
-                                claimed: &claimed,
-                                claimed_snapshot: &claimed_snapshot,
-                                context: &execution_context,
-                                live_input: awaken_runtime_contract::execution::LiveInput::None,
-                                recovery_mode: AttemptRecoveryMode::RequirePredecessorQuiescence,
-                                clock: clock.clone(),
-                            },
-                            |attempt_context| {
-                                self.perform_scheduled(&claim, now_ms, attempt_context)
-                            },
-                        )
-                        .await?
-                    {
-                        PhysicalAttemptOutcome::Returned(Ok(state)) => state,
-                        PhysicalAttemptOutcome::PredecessorUnconfirmed => {
-                            return self
-                                .end_claimed_before_execution(
-                                    &claimed,
-                                    awaken_agent_contract::agent::run::EndCause::Indeterminate,
-                                    clock.clone(),
-                                )
-                                .await;
-                        }
-                        PhysicalAttemptOutcome::Returned(Err(err)) => {
-                            return self
-                                .settle_if_terminal_or_raise(&claimed, &all_pending, err, &clock)
-                                .await;
-                        }
-                    };
-                }
-                _ => break,
-            }
-        }
 
         let outcome = settle_outcome(&state)?;
         if matches!(&state, RunState::Ended(_)) {

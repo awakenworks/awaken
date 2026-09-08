@@ -260,6 +260,7 @@ StartExecution(run, candidate, epoch) ==
     /\ DState(run) = "Leased"
     /\ DOwner(run) = candidate
     /\ DEpoch(run) = epoch
+    /\ epoch > executionEpoch[run]
     /\ CurrentRealization(candidate)
     /\ \A peer \in Runs \ {run}:
          RunThread(peer) = RunThread(run) => peer \notin executionStarted
@@ -279,7 +280,9 @@ FinishExecution(run, candidate, epoch) ==
     /\ executionEpoch[run] = epoch
     /\ executionStarted' = executionStarted \ {run}
     /\ executionOwner' = [executionOwner EXCEPT ![run] = NoWorker]
-    /\ executionEpoch' = [executionEpoch EXCEPT ![run] = 0]
+    \* Retain the high watermark after ACK, exactly as retired_attempt_epoch
+    \* does when the persisted active slot becomes empty. No new claim authority.
+    /\ UNCHANGED executionEpoch
     /\ UNCHANGED <<externalAttempts, dispatchVars, activityVars, workVars, realizedOwner,
                    realizedWorkEpoch, releasedWorkEpoch,
                    committedDisposition, committedOwner, committedEpoch,
@@ -412,6 +415,19 @@ ResolutionFairness ==
          WF_vars(SettleDone(run, worker, epoch))
 
 Spec == Init /\ [][Next]_vars /\ ResolutionFairness
+
+\* A delayed begin cannot resurrect the identity named by an earlier ACK.
+ExecutionIdentityNeverReused == [] [
+    \A run \in Runs:
+        (run \notin executionStarted /\ run \in executionStarted') =>
+            executionEpoch'[run] > executionEpoch[run]
+]_vars
+ExecutionEpochNeverRegresses == [] [
+    \A run \in Runs: executionEpoch'[run] >= executionEpoch[run]
+]_vars
+RetirementScope == DState(ChildRunA) = "Reserved" /\ DState(ChildRunB) = "Reserved"
+NoRetiredExecutionReached == \A run \in Runs:
+    run \notin executionStarted => executionEpoch[run] = 0
 
 \* Cancellation changes only the canonical Dispatch kernel, never the
 \* physical slot or external invocation. The cancellation slice deliberately

@@ -5,6 +5,7 @@
 //! attempt slot on the one canonical drive path.
 
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use super::{ClaimedSnapshotAuthority, DispatchWorker};
@@ -13,14 +14,16 @@ use crate::clock::Clock;
 use crate::dispatch::{
     AttemptAdmission, Claimed, Dispatch, DispatchError, RunClaim, SettleOutcome,
 };
+use awaken_agent_contract::agent::awaiting::AwaitReason;
+use awaken_agent_contract::agent::run::RunState;
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
 use awaken_runtime_contract::execution::{AttemptRecoveryMode, LiveInput};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
 /// An unconfirmed predecessor is a domain outcome for a cancellation request,
 /// not a successful cancel or a fabricated physical-return acknowledgement.
-pub(super) enum PhysicalAttemptOutcome<T, E> {
-    Returned(Result<T, E>),
+pub(super) enum PhysicalAttemptOutcome {
+    Returned(Result<RunState, Error>),
     PredecessorUnconfirmed,
 }
 
@@ -45,14 +48,16 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// timeout is not a cleanup deadline. An authoritative
     /// provider terminal receipt may prove a remote model request stopped;
     /// process/Pod termination proves only process-bound tool/Sandbox work.
-    pub(super) async fn run_physical_attempt<T, E, F, Fut>(
+    pub(super) async fn run_physical_attempt<E, F, Fut>(
         &self,
         request: PhysicalAttemptRequest<'_>,
         operation: F,
-    ) -> Result<PhysicalAttemptOutcome<T, E>, Error>
+    ) -> Result<PhysicalAttemptOutcome, Error>
     where
-        F: FnOnce(RuntimeRunContext) -> Fut,
-        Fut: Future<Output = Result<T, E>>,
+        F: FnOnce(RuntimeRunContext) -> Fut + Send,
+        Fut: Future<Output = Result<RunState, E>> + Send,
+        E: Send,
+        Error: From<E>,
     {
         let PhysicalAttemptRequest {
             claimed,
@@ -164,8 +169,37 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             attempt_context,
             live_input,
         );
-        let operation = operation(attempt.context().clone());
-        tokio::pin!(operation);
+        // Erase the owned drive's layout at this existing execution boundary.
+        // Otherwise embedding the scheduled loop in the concrete Future pushes
+        // the production Worker's cancellation composition over rustc's layout
+        // query depth. Ownership/cancellation are unchanged: no spawned task,
+        // detached cleanup, or increased recursion limit hides the problem.
+        let mut operation: Pin<Box<dyn Future<Output = Result<RunState, Error>> + Send + '_>> =
+            Box::pin(async {
+                let context = attempt.context().clone();
+                let mut state = operation(context.clone()).await.map_err(Error::from)?;
+                // A committed ScheduledAction is a continuation of this claimed
+                // execution, not a second physical identity. Keep its Thread lock,
+                // cancellation carrier and uncertainty latch through every stage;
+                // ACK exactly once after the complete local drive returns.
+                // Never enter another stage after an unknown effect or cancellation.
+                while state == RunState::Awaiting
+                    && !claimed.cancellation_requested
+                    && !cancellation.is_cancelled()
+                    && quiescence.can_acknowledge_return()
+                {
+                    let Some(ticket) = self.reader.resume_ticket(&claim.run_id) else {
+                        break;
+                    };
+                    if ticket.reason() != AwaitReason::ScheduledAction {
+                        break;
+                    }
+                    state = self
+                        .perform_scheduled(&claim, clock.now_ms(), context.clone())
+                        .await?;
+                }
+                Ok(state)
+            });
         let result = tokio::select! {
             result = &mut operation => result,
             _ = cancellation.cancelled() => {

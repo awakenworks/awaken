@@ -69,7 +69,31 @@ def check_maintenance_scheduling(tlc_jar: Path) -> None:
     print("Maintenance scheduling: 8 partitions checked; 3 mutants killed; owner/remote progress witnessed")
 
 
+def check_retired_attempt_model_mutants(tlc_jar: Path) -> None:
+    # ABA decision table: removing monotonic admission or forgetting the ACK
+    # watermark must violate the existing composition's temporal identity rule.
+    # A reachable retired identity rejects the vacuous always-block alternative.
+    source = (ROOT / "formal/tla/SessionRunProtocol.tla").read_text()
+    config = (ROOT / "formal/tla/SessionRunProtocolRetirement.cfg").read_text()
+    mutations = []
+    for anchor, broken, oracle in [
+        ("    /\\ epoch > executionEpoch[run]\n", "", "action:ExecutionIdentityNeverReused"),
+        ("    /\\ UNCHANGED executionEpoch\n",
+         "    /\\ executionEpoch' = [executionEpoch EXCEPT ![run] = 0]\n",
+         "action:ExecutionEpochNeverRegresses"),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit("attempt retirement mutation anchor drifted")
+        mutations.append((source.replace(anchor, broken), config, oracle))
+    mutations.append((source, config.replace("INVARIANT Safety", "INVARIANT NoRetiredExecutionReached"),
+                      "NoRetiredExecutionReached"))
+    check_tlc_model_mutations(tlc_jar, "SessionRunProtocol", source, config, mutations,
+                             dependencies=("RunIngressKernel", "SessionActivityKernel", "WorkQueueKernel"))
+    print("Attempt retirement: 2 ABA mutants killed; retired execution reachable")
+
+
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
+    check_retired_attempt_model_mutants(tlc_jar)
     # R1 remove the conflict execution gate -> exact safety violation. R2 the
     # original model must REACH a settled conflict, guarding against a vacuous
     # green configuration (e.g. no live Work lease can ever be acquired).

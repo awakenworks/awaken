@@ -105,6 +105,42 @@ pub enum RelinquishTransition {
     Corrupt,
 }
 
+/// An acknowledged or conservatively retired epoch is never a fresh execution
+/// identity, even while its lease
+/// remains current. Compare instead of incrementing to avoid wraparound.
+#[must_use]
+pub const fn attempt_epoch_is_open(epoch: u64, retired_epoch: u64) -> bool {
+    epoch > retired_epoch
+}
+
+#[test]
+fn retired_attempts_never_reenter_even_at_integer_boundaries() {
+    // Causes: C1 fresh/equal/older epoch; C2 live/stale lease; C3 ordinary/
+    // continuation admission. R1 C1=fresh preserves ordinary reducer semantics;
+    // R2 C1=equal/older or stale lease => Fenced for either admission route.
+    // MC/DC plus zero/MAX boundaries: no subtraction/addition can wrap.
+    for epoch in [0, 1, 2, u64::MAX - 1, u64::MAX] {
+        for retired in [0, 1, 2, u64::MAX - 1, u64::MAX] {
+            for live in [false, true] {
+                let current = live && attempt_epoch_is_open(epoch, retired);
+                let expected = if live && epoch > retired {
+                    PhysicalAttemptTransition::Install
+                } else {
+                    PhysicalAttemptTransition::Fenced
+                };
+                assert_eq!(
+                    begin_physical_attempt(current, PhysicalAttemptSlot::Empty, false),
+                    expected
+                );
+                assert_eq!(
+                    handoff_physical_attempt(current, PhysicalAttemptSlot::Empty, false),
+                    expected
+                );
+            }
+        }
+    }
+}
+
 /// Decide whether the current durable claim may enter the physical executor.
 /// The caller supplies `claim_is_current` from the same locked snapshot that
 /// supplied `slot` and `thread_peer_occupied`. Thread exclusion is mandatory,
@@ -818,6 +854,29 @@ mod proofs {
             2 => PhysicalAttemptSlot::OtherClaim,
             _ => PhysicalAttemptSlot::Corrupt,
         }
+    }
+
+    #[kani::proof]
+    fn retired_epoch_cannot_admit_another_execution() {
+        // R2 quantifies the full u64 range and both admission routes; no bounded
+        // enumeration or trusted external provider is used in this decision.
+        let epoch: u64 = kani::any();
+        let retired: u64 = kani::any();
+        let live: bool = kani::any();
+        let slot = arbitrary_physical_slot();
+        let peer: bool = kani::any();
+        let current = live && attempt_epoch_is_open(epoch, retired);
+        if epoch <= retired {
+            assert_eq!(
+                begin_physical_attempt(current, slot, peer),
+                PhysicalAttemptTransition::Fenced
+            );
+            assert_eq!(
+                handoff_physical_attempt(current, slot, peer),
+                PhysicalAttemptTransition::Fenced
+            );
+        }
+        assert_eq!(current, live && epoch > retired);
     }
 
     #[kani::proof]
