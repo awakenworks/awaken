@@ -756,6 +756,9 @@ async fn get_is_an_unscoped_by_id_primitive(repo: &dyn CredentialRepo) {
 /// from the exact durable Reclaiming envelope is rejected and cannot drive
 /// cleanup. Rules M1 !C1=>E1; M2 C1+no WAL=>E2; M3 C1+same logical WAL=>E3;
 /// M4 C3=>E4; M5 !exact-envelope=>conflict and durable WAL retained.
+/// M6 independent source/child identity collisions: neither present admits;
+/// source-only, child-only or both present reject before creating a WAL. Reuse
+/// the published IDs with fresh opposite IDs, without fabricating torn storage.
 async fn managed_material_mutation_begin_and_phases_conform(
     repo: &dyn ManagedCredentialRepository,
 ) {
@@ -903,6 +906,38 @@ async fn managed_material_mutation_begin_and_phases_conform(
     repo.complete_managed_mutation(&update_reclaiming)
         .await
         .unwrap();
+
+    for source_exists in [false, true] {
+        for child_exists in [false, true] {
+            let mut source = owner.after_source.clone();
+            let mut child = owner.after_credential.clone();
+            if !source_exists {
+                source.id = CredentialSourceId("cred:managed-begin-fresh".into());
+            }
+            if !child_exists {
+                child.id = "child-begin-fresh".into();
+            }
+            child.source_id = source.id.clone();
+            let candidate = PendingManagedCredentialMutation::create(source, child).unwrap();
+            let result = repo.begin_managed_mutation(candidate.clone()).await;
+            if source_exists || child_exists {
+                assert!(
+                    matches!(result, Err(CredentialError::MutationConflict(_))),
+                    "M6"
+                );
+            } else {
+                assert!(result.unwrap(), "M6");
+                // This begin-only case wrote no SecretStore material. Retire
+                // its exact abort envelope before inspecting the next case.
+                let aborted = repo.abort_managed_mutation(&candidate).await.unwrap();
+                repo.complete_managed_mutation(&aborted).await.unwrap();
+            }
+            assert!(
+                repo.pending_managed_mutations().await.unwrap().is_empty(),
+                "M6"
+            );
+        }
+    }
 }
 
 /// Run every suite, each on a fresh repo from `make`.

@@ -98,13 +98,11 @@ cargo test -p awaken-protocol-acp --features real-acp --lib
 cargo test -p awaken-sandbox-container --features k8s --lib remote_completion_requires_explicit_process_exit_evidence
 cargo test -p awaken-worker --lib lifecycle::tests
 cargo test -p awaken-protocol-managed --features test-support --lib rollout
-cargo test -p awaken-credential-vault --lib managed_update_atomically
 
 # Credential cleanup depends on complete envelope/pair projections.
 # Exercise SQLite and the canonical in-memory fixture without
 # making this SQLite-only formal stage silently skip an optional PostgreSQL.
-cargo test -p awaken-credential-vault --lib repo::cleanup
-cargo test -p awaken-credential-vault --lib repo::material_mutation::tests
+cargo test -p awaken-credential-vault --lib repo::
 cargo test -p awaken-credential-store --features test-support,sqlite --test repo_conformance
 # The audit scalar proof assumes exact SQL tuple selection and record equality.
 # Keep the production projection and SQLite conformance/migration tests beside it;
@@ -284,7 +282,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness managed_mutation_operation_shape_is_closed_and_delete_is_absorbing \
     --harness credential_material_attempt_requires_owner_and_exact_physical_namespace \
     --harness credential_inventory_never_orphans_committed_pending_or_foreign_material \
-    --harness managed_rollout_never_precedes_exact_pair_publication \
+    --harness managed_rollout_projection_preserves_committed_identity \
     --harness managed_rollout_ack_requires_converged_progress
   run_kani awaken-tool-relay \
     --harness hand_channel_only_exact_decoded_reply_restores_readiness \

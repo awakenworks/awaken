@@ -428,6 +428,17 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Credential effect and MCP delivery evidence
 
+Managed begin/commit and cleanup use the same typed `is_unpublished_at`
+comparison under each adapter's existing transaction. Its creation-presence
+Kani harness covers all four present/absent pairs; shared adapter rule M6
+checks independent source and child ID collisions. A unit witness checks that
+the fixed Create fixture passes production command validation. The rollout Kani harness
+calls the actual event constructor with distinct fixed one-character IDs,
+all operations and full-width signed/unsigned revisions (unwind 4). Neither
+proves command-validation composition or SQL/outbox atomicity. The former
+proof-only boolean predicates were removed; both complete transaction
+obligations retain abstract-model grades until production composition closes.
+
 The Source and Managed creation envelopes share `CredentialMaterialMutationFence`.
 Production Kani harnesses check its actual String-bearing Ready/publication/abort
 methods, preservation of all non-phase fields, and recovery dispatch at the

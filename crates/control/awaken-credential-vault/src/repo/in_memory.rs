@@ -315,9 +315,7 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
         }
         let current_source = state.rows.get(&pending.after_source.id.0);
         let current_child = state.vault_credentials.get(&pending.after_credential.id);
-        if current_source != pending.before_source.as_ref()
-            || current_child != pending.before_credential.as_ref()
-        {
+        if !pending.is_unpublished_at(current_source, current_child) {
             return Err(CredentialError::MutationConflict(
                 "Managed credential changed before its mutation was prepared".into(),
             ));
@@ -368,9 +366,7 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
 
         let current_source = state.rows.get(&pending.after_source.id.0);
         let current_child = state.vault_credentials.get(&pending.after_credential.id);
-        if current_source != pending.before_source.as_ref()
-            || current_child != pending.before_credential.as_ref()
-        {
+        if !pending.is_unpublished_at(current_source, current_child) {
             return Err(ManagedCredentialMutationError::RevisionConflict);
         }
 
