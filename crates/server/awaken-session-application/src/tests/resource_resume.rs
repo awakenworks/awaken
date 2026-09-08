@@ -115,10 +115,19 @@ async fn retained_claim_selects_active_resources_without_consuming_pending_gener
                     "R1/R2"
                 );
                 assert_eq!(
-                    app.begin_session_realization(begin)
-                        .await
-                        .unwrap()
-                        .projection,
+                    // Ordinary observation replays the assigned generation.
+                    // A second explicit reassignment is a new claim-authorized
+                    // assignment, not an observation of the previous lease.
+                    app.begin_session_realization(BeginSessionRealization {
+                        target: SessionRealizationTarget {
+                            reassign_existing_lease: false,
+                            ..begin.target.clone()
+                        },
+                        ..begin
+                    })
+                    .await
+                    .unwrap()
+                    .projection,
                     directive.projection,
                     "exact Begin replay"
                 );

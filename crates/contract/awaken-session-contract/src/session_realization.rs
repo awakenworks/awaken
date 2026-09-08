@@ -336,6 +336,8 @@ pub struct SessionRealizationTarget {
     /// ordinary application callers leave it false and therefore cannot steal
     /// a live Session projection. Lease extension is a separate exact-fence
     /// command and can never be smuggled through this assignment value.
+    /// An explicit reassignment also advances the same owner's epoch: normal
+    /// Work retirement may already have closed it in the same process.
     #[serde(default)]
     pub reassign_existing_lease: bool,
 }
@@ -364,8 +366,7 @@ pub const fn session_realization_assignment(
     if current_is_live && !same_owner && !reassign_existing_lease {
         return SessionRealizationAssignment::StaleOwnership;
     }
-    let needs_assignment =
-        !current_is_live || !same_runtime_incarnation || (reassign_existing_lease && !same_owner);
+    let needs_assignment = !current_is_live || !same_runtime_incarnation || reassign_existing_lease;
     if !needs_assignment {
         return SessionRealizationAssignment::Reuse;
     }
@@ -411,6 +412,18 @@ fn session_realization_assignment_never_shares_a_live_foreign_owner_or_reuses_an
         assert!(current_is_live);
         assert!(same_owner);
         assert!(same_runtime_incarnation);
+        assert!(!reassign);
+    }
+    // A claim-authenticated continuation cannot inherit a locally retired
+    // generation even when both logical owner and process incarnation match.
+    // This checks every u64 epoch, including exhaustion, in the production
+    // assignment kernel; it does not model HTTP ordering or physical cleanup.
+    if reassign {
+        assert!(matches!(
+            decision,
+            SessionRealizationAssignment::Assign { .. }
+                | SessionRealizationAssignment::EpochExhausted
+        ));
     }
     // Once a failed nonterminal assignment is expired in the Session root,
     // even the same Host incarnation must advance its locally closed epoch.
@@ -436,7 +449,7 @@ mod realization_assignment_tests {
     fn assignment_follows_the_owner_incarnation_epoch_decision_table() {
         // Cause/effect graph: C1 a current fence exists and is live; C2 owner
         // matches; C3 Runtime incarnation matches; C4 authenticated topology
-        // explicitly permits cross-owner reassignment; C5 epoch can advance.
+        // explicitly requests reassignment; C5 epoch can advance.
         // Effects: E1 reuse only the exact live owner/incarnation; E2 reject a
         // live foreign owner; E3 every new assignment mints exactly successor
         // epoch (or 1 from absence); E4 exhaustion fails closed.
@@ -449,6 +462,11 @@ mod realization_assignment_tests {
         // | R4 | yes | same | other | no | E3 successor |
         // | R5 | yes | other | any | yes | E3 successor |
         // | R6 | assignment | any | any | any | E4 exhausted |
+        // | R7 | yes | same | same | yes | E3 successor |
+        // R7 models an approval continuation after normal Work retirement in
+        // the SAME Worker process. Its local predecessor epoch may already be
+        // closed, so authenticated reassignment cannot reuse that epoch. This
+        // differs from R1 ordinary application replay without a claim grant.
         assert_eq!(
             session_realization_assignment(Some(7), true, true, true, false),
             SessionRealizationAssignment::Reuse,
@@ -479,6 +497,17 @@ mod realization_assignment_tests {
             SessionRealizationAssignment::EpochExhausted,
             "R6/E4"
         );
+        for epoch in [0, 7, u64::MAX - 1, u64::MAX] {
+            assert_eq!(
+                session_realization_assignment(Some(epoch), true, true, true, true),
+                epoch
+                    .checked_add(1)
+                    .map_or(SessionRealizationAssignment::EpochExhausted, |epoch| {
+                        SessionRealizationAssignment::Assign { epoch }
+                    },),
+                "R7/E3; R6/E4 at exhaustion"
+            );
+        }
     }
 }
 
