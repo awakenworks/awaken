@@ -62,6 +62,10 @@ fn echo_worker_builder(
     deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
     awaken_worker::WorkerNodeBuilder::new(upstream)
         .with_deployment_config(deployment)
+        // Local is an explicit TrustedHost profile. Its Native capability must
+        // have the same Hand factory as the production standalone Worker;
+        // manifest construction alone does not exercise runtime preparation.
+        .with_hand_executor_factory(awaken_worker::relay_hand_executor_factory())
         .with_inference_materializer(materializer)
         // Reuse the production anonymous A2A adapter. The standard Worker
         // manifest derives `a2a-runtime` from this installed implementation, so
@@ -92,6 +96,10 @@ mod tests {
         // |---|---|---|---|---|---|---|
         // | W1 canonical scenario Worker | yes | yes | yes | yes | yes | yes |
         // | W2 A2A adapter absent (covered by awaken-worker) | any | any | no | as installed | as installed | no |
+        // W3 Local/TrustedHost + installed canonical Hand factory => startup
+        // may enter the remote claim loop. The physical recovery E2E executes
+        // this builder and rejects register-then-exit before any Awaiting commit;
+        // this manifest-only test cannot establish that runtime postcondition.
         struct HostMaterializer;
         impl InferenceExecutorMaterializer for HostMaterializer {
             fn supported_access_schemes(&self) -> &'static [&'static str] {
