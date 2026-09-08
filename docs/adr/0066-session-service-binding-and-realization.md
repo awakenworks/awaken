@@ -150,18 +150,20 @@ observe Ready, rebind retained resources, atomically enroll the fresh Candidate,
 persist Adopt, then publish its exact Store-read identity. No ownerless interval
 or Unowned recovery is admitted.
 
-SC1-SC4 and UC1-UC3 cancel real Linux context Futures before root commit or its
-response, crossing renewal, foreign binding, unknown observation and revocation.
+SC1-SC4/UC1-UC3 cancel Linux context Futures before root commit/response, crossing
+renewal, foreign binding, unknown observation and revocation.
 Terminal takeover reuses the same owner and two-phase aggregate authorization:
 an exact unacknowledged Candidate stays Unbound, never published or given a
-fabricated commit identity. Provider auxiliary reconstruction retains the original
-Arc and its participants; only a genuinely cold owner is installed. Unmaterialized
-roots skip Agent output harvest but reconcile exact mounted Memory before disposal.
-U1-U3/HM0/HM1 test concurrent replay, successor leases, Memory rejection and ack.
-The replacement model has 12 mutants and six witnesses; the owner terminal model
-has seven mutants and three witnesses across two callers, one replacement and
-cancellation, including after removal. A second successor replacement, physical
-observer truth, real distributed faults and universal Rust refinement remain open.
+fabricated identity. Auxiliary reconstruction retains the original Arc/participants;
+only cold owners are installed. Unmaterialized roots skip Agent output harvest but
+reconcile exact mounted Memory before disposal.
+U1-U3/HM0/HM1 cover concurrency, successor leases, Memory rejection and ack.
+Cold-reconstruction replay also checks the terminal operation ID and preserves
+recorded source evidence when an exact handle replaces handle-free identification.
+P8 crosses four marker/root phases with absent/exact/foreign handles and expected
+fences (36 rows); U1-U6 check both lost responses and rejected ownership/leases.
+The replacement/terminal models retain 12/7 mutants and 6/3 witnesses. A second
+replacement, physical truth, distributed faults and Rust refinement remain open.
 
 ## 2026-09-01 amendment: lease-only renewal
 

@@ -320,6 +320,13 @@ pub(super) fn validate_terminal_source(
             ) {
                 (None, None) => true,
                 (Some(recorded), Some(expected)) => recorded.same_effect_identity(expected),
+                // A formerly handle-free terminal reconstruction now carries
+                // the exact source handle. Its fingerprint/incarnation and
+                // source fence were checked above; the immutable recorded
+                // expectation remains authoritative and is never erased.
+                (Some(recorded), None) => {
+                    handle.is_some_and(|source| recorded.same_effect_identity(source.effect_fence))
+                }
                 _ => false,
             };
             if !expected_matches {

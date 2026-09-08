@@ -405,9 +405,16 @@ impl SharedHost {
                 ));
             }
             (SessionEnvironmentOwner::Retiring(retirement), None) => {
+                // Bound continuation takeover may inherit provider predecessor A
+                // while its terminal owner is T. Unbound reconstruction has no
+                // such durable continuation and must name its exact terminal
+                // Preparation or this cold Disposal; a foreign cause is not proof.
                 if !matches!(
-                    retirement.cause,
-                    SessionEnvironmentRetirementCause::Terminal { .. }
+                    &retirement.cause,
+                    SessionEnvironmentRetirementCause::Terminal { effect_id }
+                        if matches!(retirement.owned, RetiringEnvironmentOwner::Bound(_))
+                            || effect_id == &authorization.prepared_effect_fence().operation_id
+                            || effect_id == &authorization.effect_fence().operation_id
                 ) {
                     return Err(HostError::unavailable_classified(
                         "session_terminal_environment_preparation_changed",

@@ -591,6 +591,46 @@ fn terminal_receipt_preflight_distinguishes_incomplete_replay_and_closed() {
 
     let mut renewed_guard = begin(&root, &fingerprint, &renewed, None, None).unwrap();
     let evidence = renewed_guard.complete(&empty_receipt()).unwrap();
+    // P8 cause/effect table: phase={Ready,Removing,root-removed,Removed}
+    // x handle={absent,exact,foreign incarnation} x expected={absent,exact,
+    // foreign operation}. A matching handle can replace a formerly handle-free
+    // source proof without erasing its recorded expected fence. Only exact
+    // handle+absent/exact expected, or absent handle+exact expected may pass.
+    // All 36 observations preserve the complete typed marker without mutation.
+    let check_handle_upgrade = |phase: &str, current: &pc::SandboxEffectFence| {
+        let before = read_marker(&root).unwrap().unwrap();
+        for handle_kind in ["absent", "exact", "foreign"] {
+            for expected_kind in ["absent", "exact", "foreign"] {
+                let exact = source(&fingerprint, &evidence);
+                let foreign = RebuildSource {
+                    physical_incarnation: "foreign-incarnation",
+                    ..source(&fingerprint, &evidence)
+                };
+                let handle = match handle_kind {
+                    "exact" => Some(&exact),
+                    "foreign" => Some(&foreign),
+                    _ => None,
+                };
+                let wrong_expected = fence("foreign-operation", 7);
+                let expected = match expected_kind {
+                    "exact" => Some(&expected),
+                    "foreign" => Some(&wrong_expected),
+                    _ => None,
+                };
+                let admitted = (handle_kind == "exact" && expected_kind != "foreign")
+                    || (handle_kind == "absent" && expected_kind == "exact");
+                let result =
+                    observe_terminal_receipt(&root, &fingerprint, handle, expected, current);
+                assert_eq!(
+                    result.is_ok(),
+                    admitted,
+                    "P8 {phase}/{handle_kind}/{expected_kind}: {result:?}"
+                );
+                assert_eq!(read_marker(&root).unwrap().unwrap(), before, "P8 read-only");
+            }
+        }
+    };
+    check_handle_upgrade("Ready", &terminal);
     assert_eq!(
         observe_terminal_receipt(&root, &fingerprint, None, Some(&expected), &terminal,).unwrap(),
         TerminalReceiptObservation::Receipt(empty_receipt()),
@@ -659,6 +699,7 @@ fn terminal_receipt_preflight_distinguishes_incomplete_replay_and_closed() {
     .unwrap()
     .expect("P2 Removing participant");
     drop(removal);
+    check_handle_upgrade("Removing", &terminal);
     assert_eq!(
         observe_terminal_receipt(&root, &fingerprint, None, Some(&expected), &terminal,).unwrap(),
         TerminalReceiptObservation::Receipt(empty_receipt()),
@@ -685,6 +726,7 @@ fn terminal_receipt_preflight_distinguishes_incomplete_replay_and_closed() {
     removal.authorize_disposal(&authorization).unwrap();
     removal.remove_root().unwrap();
     drop(removal);
+    check_handle_upgrade("root-removed", authorization.effect_fence());
     assert_eq!(
         observe_terminal_receipt(
             &root,
@@ -714,6 +756,7 @@ fn terminal_receipt_preflight_distinguishes_incomplete_replay_and_closed() {
     );
     replay.finish().unwrap();
     drop(replay);
+    check_handle_upgrade("Removed", authorization.effect_fence());
     assert_eq!(
         observe_terminal_receipt(
             &root,

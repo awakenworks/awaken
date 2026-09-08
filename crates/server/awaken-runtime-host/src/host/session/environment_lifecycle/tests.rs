@@ -3003,6 +3003,263 @@ async fn terminal_background_fence_preserves_resident_and_retiring_outputs_for_r
 }
 
 #[tokio::test]
+async fn terminal_unmaterialized_reconstruction_replays_until_durable_disposal_ack() {
+    use crate::host::worker_resolver::test_support::{
+        eager_environment, empty_frozen_projection_for_snapshot, test_activation,
+    };
+    // Causes: C1 Unmaterialized aggregate with a provider-proved Ready root but
+    // no published binding; C2 Preparation response loss; C3 durable Preparation
+    // admission; C4 Disposal response loss; C5 durable Disposal acknowledgement.
+    // Effects: U1 C1 reconstructs one hidden Unbound terminal owner, without
+    // Artifact harvest or physical deletion; U2 C2 reuses the exact Arc/handle;
+    // U3 C3 authorizes deletion without inventing a durable Environment binding;
+    // U4 C4 retries with that same retained owner; U5 only C5 removes the slot.
+    // The real Local provider owns marker identity and byte deletion. The real
+    // aggregate owns both receipt gates; an empty dispatch queue is no proof.
+    let thread = "terminal-unmaterialized-replay";
+    let root = tempfile::tempdir().unwrap();
+    let host = SharedHost::new(Arc::new(crate::no_model::NoModelConfiguredExecutor), "stub")
+        .with_store_dir(root.path());
+    let activation = test_activation(thread, "terminal-unmaterialized");
+    let projection = empty_frozen_projection_for_snapshot(
+        "workspace",
+        eager_environment(),
+        &activation.snapshot,
+    );
+    assert!(matches!(
+        projection.environment,
+        awaken_session_contract::SessionEnvironmentState::Unmaterialized
+    ));
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: "terminal-worker".into(),
+        runtime_incarnation: "terminal-worker:boot".into(),
+        epoch: 1,
+        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms() + 60_000,
+    };
+    host.install_test_terminal_cleanup_projection(
+        &awaken_session_contract::SessionTerminalCleanupAssignment {
+            session_id: thread.into(),
+            projection: projection.clone(),
+            authority: crate::session_slot::test_lease_receipt(lease.clone()),
+        },
+    )
+    .await
+    .unwrap();
+    let intent = awaken_session_contract::SessionEnvironmentEffectIntent::new(
+        thread,
+        awaken_session_contract::SessionEnvironmentEffectKind::Create,
+        Some(lease.clone()),
+    )
+    .for_environment(projection.baseline.environment.config_fingerprint.0.clone());
+    let fence = lease.sandbox_effect_fence(intent.effect_id()).unwrap();
+    let spec = host.sandbox_spec(thread);
+    let physical = host
+        .provider
+        .create_sandbox_for_effect(
+            &spec,
+            &fence,
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence),
+        )
+        .await
+        .unwrap();
+    // The creation response is not published to the Host or Session root.
+    drop(physical);
+    let output = root
+        .path()
+        .join("sandboxes")
+        .join(thread)
+        .join(spec.outputs_path.trim_start_matches('/'))
+        .join("unpublished.txt");
+    std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+    std::fs::write(&output, b"unpublished source must not become an Artifact").unwrap();
+    let mut aggregate = awaken_session_contract::PersistedSession::frozen_with_budget(
+        thread,
+        projection.baseline.clone(),
+        awaken_session_contract::SessionResourceState::from_active(projection.resources.clone()),
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        Default::default(),
+    );
+    aggregate.realization = Some(lease.clone());
+    assert!(aggregate.ensure_terminal_cleanup_fence());
+    aggregate
+        .freeze_terminal_cleanup_targets(std::iter::empty(), 0, 0)
+        .unwrap();
+    let effect = awaken_session_contract::SessionTerminalCleanupEffect::new(
+        aggregate
+            .terminal_cleanup
+            .command_for(thread, thread)
+            .unwrap(),
+        lease.clone(),
+    );
+    let authorization =
+        awaken_session_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+            effect.clone(),
+            projection.workspace_id.clone(),
+            aggregate
+                .authorize_terminal_cleanup_effect(&effect)
+                .unwrap(),
+        )
+        .unwrap();
+    let first = host
+        .prepare_terminal_cleanup_effect(effect.clone(), authorization.clone())
+        .await
+        .expect("U1 provider-proved reconstruction");
+    assert!(
+        first.artifact_receipts.is_empty(),
+        "U1 no unpublished output harvest"
+    );
+    assert!(output.exists(), "U1 Preparation cannot delete");
+    let retained = host
+        .session_slots
+        .read(thread, |slot| slot.environment_owner.clone())
+        .unwrap();
+    let SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+        owned: RetiringEnvironmentOwner::Unbound(ref candidate),
+        ..
+    }) = retained
+    else {
+        panic!("U1 exactly one Unbound terminal owner")
+    };
+    assert!(
+        candidate.durable_identity().is_none(),
+        "U1 no fabricated receipt"
+    );
+    assert!(
+        host.session_environment(thread).await.is_none(),
+        "U1 hidden"
+    );
+    // U6 crosses foreign terminal operation and stale lease with both phases.
+    // Each must preserve the physical bytes; the exact valid retry still works.
+    let mut rejected_owners = vec![SessionEnvironmentOwner::Retiring(
+        RetiringSessionEnvironment {
+            owned: RetiringEnvironmentOwner::Unbound(candidate.clone()),
+            cause: SessionEnvironmentRetirementCause::Terminal {
+                effect_id: "foreign-preparation".into(),
+            },
+        },
+    )];
+    for wrong in &rejected_owners {
+        host.session_slots
+            .update(thread, |slot| slot.environment_owner = wrong.clone());
+        host.prepare_terminal_cleanup_effect(effect.clone(), authorization.clone())
+            .await
+            .expect_err("U6 wrong ownership cannot prepare");
+        assert!(
+            output.exists(),
+            "U6 rejected Preparation keeps physical bytes"
+        );
+    }
+    host.session_slots
+        .update(thread, |slot| slot.environment_owner = retained.clone());
+    let mut stale = effect.clone();
+    stale.lease.epoch += 1;
+    let stale_authorization =
+        awaken_session_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
+            stale.clone(),
+            projection.workspace_id.clone(),
+            None,
+        )
+        .unwrap();
+    host.prepare_terminal_cleanup_effect(stale, stale_authorization)
+        .await
+        .expect_err("U6 foreign realization cannot prepare");
+    assert!(output.exists(), "U6 stale Preparation keeps physical bytes");
+    let preparation = host
+        .prepare_terminal_cleanup_effect(effect.clone(), authorization)
+        .await
+        .expect("U2 identical Preparation after response loss");
+    assert_eq!(first, preparation, "U2 stable receipt");
+    let same_owner = || {
+        host.session_slots
+            .read(thread, |slot| match &slot.environment_owner {
+                SessionEnvironmentOwner::Retiring(RetiringSessionEnvironment {
+                    owned: RetiringEnvironmentOwner::Unbound(current),
+                    ..
+                }) => {
+                    Arc::ptr_eq(&current.environment, &candidate.environment)
+                        && current.binding == candidate.binding
+                        && current.durable_identity().is_none()
+                }
+                _ => false,
+            })
+            .unwrap_or(false)
+    };
+    assert!(same_owner(), "U2 exact original owner");
+    aggregate
+        .record_terminal_cleanup_preparation(
+            &projection.workspace_id,
+            &lease,
+            preparation,
+            Some(
+                awaken_session_contract::SessionCleanupRepositoryPreparation::new(
+                    thread,
+                    &projection.workspace_id,
+                    &aggregate.resources,
+                )
+                .unwrap(),
+            ),
+        )
+        .unwrap();
+    host.acknowledge_terminal_cleanup_preparation(&effect).await;
+    let awaken_session_contract::SessionTerminalCleanupAction::Dispose { command } =
+        aggregate.terminal_cleanup_work_action().unwrap().unwrap()
+    else {
+        panic!("U3 aggregate must authorize Disposal")
+    };
+    let disposal =
+        awaken_session_contract::SessionTerminalCleanupDisposalEffect::new(command, lease.clone());
+    // A Disposal can reconstruct under its own exact operation only when the
+    // provider has supplied it. A retained unrelated terminal owner is not that
+    // predecessor; neither a valid receipt nor its fingerprint relabels it.
+    for wrong in rejected_owners.drain(..) {
+        host.session_slots
+            .update(thread, |slot| slot.environment_owner = wrong);
+        host.dispose_terminal_cleanup_effect(disposal.clone())
+            .await
+            .expect_err("U6 wrong ownership cannot dispose");
+        assert!(output.exists(), "U6 rejected Disposal keeps physical bytes");
+    }
+    host.session_slots
+        .update(thread, |slot| slot.environment_owner = retained.clone());
+    let mut stale_disposal = disposal.clone();
+    stale_disposal.lease.epoch += 1;
+    host.dispose_terminal_cleanup_effect(stale_disposal)
+        .await
+        .expect_err("U6 foreign realization cannot dispose");
+    assert!(same_owner(), "U6 denied effects retain original owner");
+    assert!(output.exists(), "U6 stale Disposal keeps physical bytes");
+    let first_disposal = host
+        .dispose_terminal_cleanup_effect(disposal.clone())
+        .await
+        .expect("U3 exact aggregate-authorized Unbound disposal");
+    assert!(!output.exists(), "U3 real physical bytes removed");
+    assert!(same_owner(), "U3 retain until durable acknowledgement");
+    let receipt = host
+        .dispose_terminal_cleanup_effect(disposal.clone())
+        .await
+        .expect("U4 replay physical Disposal after response loss");
+    assert_eq!(first_disposal, receipt, "U4 stable disposal receipt");
+    assert!(same_owner(), "U4 retained exact owner");
+    aggregate
+        .record_terminal_cleanup_disposal(
+            &projection.workspace_id,
+            &lease,
+            receipt,
+            "unmaterialized replay",
+        )
+        .unwrap();
+    host.acknowledge_terminal_cleanup_disposal(&disposal).await;
+    assert!(
+        !host.session_slots.contains(thread),
+        "U5 only durable ack releases slot"
+    );
+}
+
+#[tokio::test]
 async fn cold_checkpoint_disposal_cannot_seed_an_owner_without_preparation() {
     // Cause/effect rule: C1 a durable source tuple is exact; C2 the local owner
     // is Vacant because no aggregate-approved Preparation retained it; C3 a
