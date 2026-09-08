@@ -72,7 +72,12 @@ async fn scoped_repository_reuses_clone_publication_and_exact_resource_paths() {
     });
     let provider = LocalProvider::trusted_host(base.path());
     let sandbox = provider
-        .create_sandbox_for_effect(&specification, &fence("create"), None)
+        .create_sandbox_for_effect(
+            &specification,
+            &fence("create"),
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("create")),
+        )
         .await
         .unwrap();
     sandbox
@@ -165,7 +170,12 @@ async fn repository_reply_does_not_complete_before_tree_exit() {
     });
     let sandbox = Arc::new(
         provider
-            .create_sandbox_for_effect(&specification, &fence("create"), None)
+            .create_sandbox_for_effect(
+                &specification,
+                &fence("create"),
+                None,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("create")),
+            )
             .await
             .unwrap(),
     );
@@ -240,7 +250,12 @@ async fn repository_response_failures_are_bounded_and_operation_specific() {
         let helper = helper_fixture(base.path(), body);
         let provider = LocalProvider::trusted_host(base.path());
         let sandbox = provider
-            .create_sandbox_for_effect(&spec(), &fence("create"), None)
+            .create_sandbox_for_effect(
+                &spec(),
+                &fence("create"),
+                None,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("create")),
+            )
             .await
             .unwrap();
         sandbox
@@ -292,7 +307,12 @@ async fn repository_credentials_cross_only_the_private_command_environment() {
         );
         let provider = LocalProvider::trusted_host(base.path());
         let sandbox = provider
-            .create_sandbox_for_effect(&spec(), &fence("create"), None)
+            .create_sandbox_for_effect(
+                &spec(),
+                &fence("create"),
+                None,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("create")),
+            )
             .await
             .unwrap();
         sandbox
@@ -362,7 +382,12 @@ async fn repository_publication_accepts_only_exact_typed_evidence() {
         );
         let provider = LocalProvider::trusted_host(base.path());
         let sandbox = provider
-            .create_sandbox_for_effect(&spec(), &fence("create"), None)
+            .create_sandbox_for_effect(
+                &spec(),
+                &fence("create"),
+                None,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence("create")),
+            )
             .await
             .unwrap();
         sandbox

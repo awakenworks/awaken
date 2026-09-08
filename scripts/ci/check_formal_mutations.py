@@ -1234,7 +1234,8 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
     for phase, selector in (("disposal", "physicalDisposal"),
                             ("reconstruction", "coldReconstruction"),
                             ("restore-disposal", "restoredDisposal"),
-                            ("checkpoint", "checkpointUpload"), ("adoption", "liveAdoption")):
+                            ("checkpoint", "checkpointUpload"), ("adoption", "liveAdoption"),
+                            ("creation", "localCreation")):
         for anchor, broken in [
             ('/\\ providerWait # 1\n', '/\\ (' + selector + ' \\/ providerWait # 1)\n'),
             ('/\\ effects < 2 /\\ CurrentBinding', '/\\ effects < 2 /\\ ((' + selector + ' /\\ providerWait = 2) \\/ CurrentBinding)'),
@@ -1244,14 +1245,14 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
                 raise SystemExit(f"{phase} mutation anchor drifted: {anchor}")
             invariant = "OnlyCurrentBindingCommits"
             mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
-    # CT1-CT4: fix a redundant Provider clock in its rejecting class, separately
-    # for preparation, disposal, reconstruction and checkpoint. The positive
+    # CT1-CT6: fix a redundant Provider clock in its rejecting class, separately
+    # for each ordinary phase (restored disposal shares disposal). The positive
     # oracle expands current-authority coordinates independently of the mutant;
     # a safety-only check could otherwise pass by denying every fresh effect.
     anchor = 'CheckEffect == /\\ ~effectHeld /\\ effects < 2 /\\ CurrentBinding'
     if source.count(anchor) != 1:
         raise SystemExit("Provider clock over-denial mutation anchor drifted")
-    for phase in ("preparation", "disposal", "reconstruction", "checkpoint", "adoption"):
+    for phase in ("preparation", "disposal", "reconstruction", "checkpoint", "adoption", "creation"):
         broken = anchor + '\n  /\\ ~(providerSource /\\ providerPhase = "' + phase + '")'
         invariant = "FreshProviderEffectRemainsEnabled"
         mutations.append((source.replace(anchor, broken), header + "INVARIANTS " + invariant, invariant))
@@ -1266,15 +1267,16 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
                     "NoColdReconstructionReached", "NoColdReconstructionReplayReached",
                     "NoRestoredDisposalReached", "NoRestoredDisposalReplayReached",
                     "NoCheckpointUploadReached", "NoCheckpointReplayReached",
-                    "NoLiveAdoptionReached", "NoLiveAdoptionReplayReached"):
+                    "NoLiveAdoptionReached", "NoLiveAdoptionReplayReached",
+                    "NoLocalCreationReached", "NoLocalCreationReplayReached"):
         mutations.append((source, header + "INVARIANTS " + witness, witness))
     check_tlc_model_mutations(tlc_jar, "SessionExecutionBinding", source, config, mutations,
                               dependencies=("SessionRealizationAuthority", "WorkerExecutionAuthority"),
-                              # Six phase classes retain the same complete
+                              # Seven phase classes retain the same complete
                               # two-effect state space; raise tool resources,
                               # never truncate exploration to fit the old budget.
                               heap_mb=4096, timeout_seconds=600)
-    print("Session execution binding: 43/43 mutants killed; 20 witnesses cover execution, provider projection, Memory, preparation, physical/restored disposal, cold reconstruction, live adoption and checkpoint upload/replay; fresh provider admission cannot be suppressed by a second clock")
+    print("Session execution binding: 47/47 mutants killed; 22 witnesses cover execution, provider projection, Memory, preparation, physical/restored disposal, cold reconstruction, live adoption, local creation and checkpoint upload/replay; fresh provider admission cannot be suppressed by a second clock")
 
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:

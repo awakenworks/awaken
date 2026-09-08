@@ -37,6 +37,7 @@ async fn physical_disposal_rechecks_current_authority_after_every_retained_wait(
                     &workdir_spec("physical-authority", false),
                     &create,
                     None,
+                    &awaken_provisioning_contract::test_support::EffectAuthority::new(&create),
                 )
                 .await
                 .unwrap();
@@ -193,7 +194,12 @@ async fn terminal_preparation_requires_current_authority_before_creating_or_reus
             let create =
                 pc::SandboxEffectFence::new("create", "owner", "boot", 1, u64::MAX).unwrap();
             let sandbox = provider
-                .create_sandbox_for_effect(&workdir_spec("prepare-authority", false), &create, None)
+                .create_sandbox_for_effect(
+                    &workdir_spec("prepare-authority", false),
+                    &create,
+                    None,
+                    &awaken_provisioning_contract::test_support::EffectAuthority::new(&create),
+                )
                 .await
                 .unwrap();
             let secret = sandbox.workspace_path().join("synthetic-secret");
@@ -244,7 +250,12 @@ async fn terminal_disposal_teardown_error_retains_every_participant_until_exact_
     let provider = LocalProvider::new(tmp.path());
     let fence = pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, u64::MAX).unwrap();
     let mut sandbox = provider
-        .create_sandbox_for_effect(&workdir_spec("teardown-retry", false), &fence, None)
+        .create_sandbox_for_effect(
+            &workdir_spec("teardown-retry", false),
+            &fence,
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&fence),
+        )
         .await
         .unwrap();
     let secret = sandbox.workspace_path().join("synthetic-secret");
@@ -346,7 +357,16 @@ async fn terminal_cleanup_uses_current_proof_not_provider_wall_time() {
                     let mut sandbox = if phase == "absent" {
                         None
                     } else {
-                        let sandbox = provider.create_for_effect(&spec, &create).await.unwrap();
+                        let sandbox = provider
+                            .create_for_effect(
+                                &spec,
+                                &create,
+                                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                                    &create,
+                                ),
+                            )
+                            .await
+                            .unwrap();
                         std::fs::write(&secret, b"unchanged-by-denial").unwrap();
                         Some(sandbox)
                     };
@@ -451,7 +471,12 @@ async fn terminal_disposal_cancellation_retains_the_original_participant_and_ser
     let terminal =
         pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, u64::MAX).unwrap();
     let sandbox = provider
-        .create_sandbox_for_effect(&spec, &create, None)
+        .create_sandbox_for_effect(
+            &spec,
+            &create,
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&create),
+        )
         .await
         .unwrap();
     sandbox
@@ -542,7 +567,12 @@ async fn disposal_requires_authorization_before_quiescence_and_retains_cancelled
         pc::SandboxEffectFence::new("terminal", "owner", "runtime", 1, u64::MAX).unwrap();
     let foreign = pc::SandboxEffectFence::new("foreign", "owner", "runtime", 1, u64::MAX).unwrap();
     let sandbox = provider
-        .create_sandbox_for_effect(&spec, &create, None)
+        .create_sandbox_for_effect(
+            &spec,
+            &create,
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&create),
+        )
         .await
         .unwrap();
     sandbox

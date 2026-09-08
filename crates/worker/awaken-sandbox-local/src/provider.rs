@@ -326,42 +326,43 @@ impl LocalProvider {
         spec: &pc::SandboxSpec,
         effect_fence: &pc::SandboxEffectFence,
         source_handle: Option<&pc::SandboxHandle>,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<LocalSandbox, pc::SandboxError> {
         if let Some(handle) = source_handle {
             handle.local_payload()?;
         }
-        self.create_sandbox_inner(spec, Some(effect_fence), source_handle)
+        self.create_sandbox_inner(spec, Some((effect_fence, authority)), source_handle)
             .await
     }
 
     async fn create_sandbox_inner(
         &self,
         spec: &pc::SandboxSpec,
-        effect_fence: Option<&pc::SandboxEffectFence>,
+        effect: Option<(&pc::SandboxEffectFence, &dyn pc::CurrentExecutionAuthority)>,
         source_handle: Option<&pc::SandboxHandle>,
     ) -> Result<LocalSandbox, pc::SandboxError> {
         // Fail closed against our capabilities (isolation, ro, egress secrets, …).
         self.prepare(spec)?;
 
         #[cfg(target_os = "linux")]
-        if self.execution_deployment.is_some() && effect_fence.is_none() {
+        if self.execution_deployment.is_some() && effect.is_none() {
             return Err(err("execution deployment requires fenced creation"));
         }
 
         let mut sandbox = self.build(&spec.scope, &spec.outputs_path);
         let realization_fingerprint = pc::SandboxRealizationFingerprint::from_spec(spec);
-        let mut realization_guard = match effect_fence {
-            Some(effect_fence) => crate::realization_marker::ProviderCreationGuard::Current(
-                Box::new(crate::realization_marker::begin(
+        let mut realization_guard = match effect {
+            Some((effect_fence, authority)) => {
+                crate::realization_marker::ProviderCreationGuard::current(
                     sandbox.root.root(),
                     &realization_fingerprint,
                     effect_fence,
                     source_handle
                         .map(crate::realization_marker::rebuild_source)
                         .transpose()?,
-                    None,
-                )?),
-            ),
+                    authority,
+                )?
+            }
             None if source_handle.is_none() => {
                 crate::realization_marker::ProviderCreationGuard::Legacy(
                     crate::realization_marker::begin_legacy(sandbox.root.root())?,
@@ -432,11 +433,13 @@ impl LocalProvider {
         crate::memory_mount::prepare_memory_before_root(&sandbox.memory_mounts, &realization_guard)
             .await?;
         if realization_guard.is_incomplete() {
-            crate::shred_secret_paths_at(
-                &sandbox.root,
-                realization_guard.root_identity()?,
-                &sandbox.secret_paths,
-            )?;
+            realization_guard.with_authority(|| {
+                crate::shred_secret_paths_at(
+                    &sandbox.root,
+                    realization_guard.root_identity()?,
+                    &sandbox.secret_paths,
+                )
+            })?;
         }
         realization_guard.prepare_root()?;
         let root_identity = realization_guard
@@ -445,22 +448,22 @@ impl LocalProvider {
         let realization = async {
             // Outputs directory (sandbox-absolute → rejailed host path).
             let host_outputs = sandbox.root.resolve(&spec.outputs_path).map_err(err)?;
-            realization_guard.validate_before_mutation()?;
-            awaken_sandbox_fs::create_relative_directory_all(
-                sandbox.root.root(),
-                root_identity,
-                std::path::Path::new(spec.outputs_path.trim_start_matches('/')),
-            )
-            .map_err(|error| {
-                err(format!(
-                    "create sandbox outputs `{}`: {error}",
-                    host_outputs.display()
-                ))
+            realization_guard.with_mutation(|| {
+                awaken_sandbox_fs::create_relative_directory_all(
+                    sandbox.root.root(),
+                    root_identity,
+                    std::path::Path::new(spec.outputs_path.trim_start_matches('/')),
+                )
+                .map_err(|error| {
+                    err(format!(
+                        "create sandbox outputs `{}`: {error}",
+                        host_outputs.display()
+                    ))
+                })
             })?;
 
-            // Creating starts from an exact-owned empty root; Ready reconciles
-            // only immutable spec-owned destinations in place. No unknown path
-            // is removed in the response-loss replay.
+            // Only incomplete creation reaches materialization. Ready returned
+            // above by projecting its receipt without rewriting Agent bytes.
             for req in &spec.mounts {
                 let (mount, materialization) = self
                     .realize_mount(
@@ -490,79 +493,39 @@ impl LocalProvider {
         let receipt = match realization {
             Ok(receipt) => receipt,
             Err(cause) => {
-                let teardown = crate::release_memory_mounts(&sandbox.memory_mounts, || {
-                    realization_guard.validate_before_mutation()
-                })
-                .await;
-                let shredding = if realization_guard.is_incomplete() {
-                    crate::shred_secret_paths_at(
-                        &sandbox.root,
-                        realization_guard.root_identity()?,
-                        &sandbox.secret_paths,
-                    )
-                } else {
-                    Ok(())
-                };
-                if teardown.is_err() || shredding.is_err() {
-                    return Err(err(format!(
-                        "sandbox realization failed: {cause}; memory teardown: {}; secret shredding: {}; exact root evidence was retained",
-                        teardown
-                            .as_ref()
-                            .err()
-                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
-                        shredding
-                            .as_ref()
-                            .err()
-                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
-                    )));
-                }
-                if let Err(cleanup) = realization_guard.abort_creation() {
-                    return Err(err(format!(
-                        "sandbox realization failed: {cause}; exact-owned cleanup failed: {cleanup}"
-                    )));
-                }
-                return Err(cause);
+                return Err(crate::compensate_creation_failure(
+                    realization_guard,
+                    &mut *sandbox.memory_mounts.lock().await,
+                    &sandbox.root,
+                    &sandbox.secret_paths,
+                    "sandbox realization",
+                    cause,
+                )
+                .await);
             }
         };
         sandbox.realization = match realization_guard.complete(&receipt) {
             Ok(realization) => realization,
             Err(cause) => {
-                let teardown = crate::release_memory_mounts(&sandbox.memory_mounts, || {
-                    realization_guard.validate_before_mutation()
-                })
-                .await;
-                let shredding = if realization_guard.is_incomplete() {
-                    crate::shred_secret_paths_at(
-                        &sandbox.root,
-                        realization_guard.root_identity()?,
-                        &sandbox.secret_paths,
-                    )
-                } else {
-                    Ok(())
-                };
-                if teardown.is_err() || shredding.is_err() {
-                    return Err(err(format!(
-                        "sandbox Ready publication failed: {cause}; memory teardown: {}; secret shredding: {}; exact root evidence was retained",
-                        teardown
-                            .as_ref()
-                            .err()
-                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
-                        shredding
-                            .as_ref()
-                            .err()
-                            .map_or_else(|| "ok".to_owned(), ToString::to_string),
-                    )));
-                }
-                if let Err(cleanup) = realization_guard.abort_creation() {
-                    return Err(err(format!(
-                        "sandbox Ready publication failed: {cause}; exact-owned cleanup failed: {cleanup}"
-                    )));
-                }
-                return Err(cause);
+                return Err(crate::compensate_creation_failure(
+                    realization_guard,
+                    &mut *sandbox.memory_mounts.lock().await,
+                    &sandbox.root,
+                    &sandbox.secret_paths,
+                    "sandbox Ready publication",
+                    cause,
+                )
+                .await);
             }
         };
-        sandbox.memory_mounts.lock().await.confirm_all();
+        let mut memory_state = sandbox.memory_mounts.lock().await;
+        realization_guard.with_authority(|| {
+            memory_state.confirm_all();
+            Ok(())
+        })?;
+        drop(memory_state);
         self.select_execution_boundary(&sandbox)?;
+        realization_guard.with_authority(|| Ok(()))?;
         Ok(sandbox)
     }
 
@@ -858,7 +821,7 @@ impl LocalProvider {
         root_identity: awaken_sandbox_fs::DirectoryIdentity,
         req: &pc::MountRequirement,
         retained_mounts: &tokio::sync::Mutex<crate::MemoryMountState>,
-        mutation_guard: &crate::realization_marker::ProviderCreationGuard,
+        mutation_guard: &crate::realization_marker::ProviderCreationGuard<'_>,
     ) -> Result<(pc::RealizedMount, Option<pc::MemoryMaterializationEvidence>), pc::SandboxError>
     {
         let host = root.resolve(&req.mount_path).map_err(err)?;
@@ -891,6 +854,7 @@ impl LocalProvider {
                 "the Workdir provider cannot write back a brokered writable Secret mount",
             ));
         }
+        mutation_guard.validate_before_mutation()?;
         let bytes = resolve_source(
             &req.source,
             &self.blobs,
@@ -904,15 +868,16 @@ impl LocalProvider {
                 let relative = host
                     .strip_prefix(root.root())
                     .map_err(|_| err("mount path escaped its exact sandbox root"))?;
-                mutation_guard.validate_before_mutation()?;
-                awaken_sandbox_fs::write_relative_file_atomic(
-                    root.root(),
-                    root_identity,
-                    relative,
-                    &bytes,
-                    0o600,
-                )
-                .map_err(err)?;
+                mutation_guard.with_mutation(|| {
+                    awaken_sandbox_fs::write_relative_file_atomic(
+                        root.root(),
+                        root_identity,
+                        relative,
+                        &bytes,
+                        0o600,
+                    )
+                    .map_err(err)
+                })?;
                 pc::RealizedMount {
                     mount_id: req.mount_id.clone(),
                     mount_path: req.mount_path.clone(),
@@ -932,15 +897,16 @@ impl LocalProvider {
                 let relative = host
                     .strip_prefix(root.root())
                     .map_err(|_| err("mount path escaped its exact sandbox root"))?;
-                mutation_guard.validate_before_mutation()?;
-                awaken_sandbox_fs::write_relative_file_atomic(
-                    root.root(),
-                    root_identity,
-                    relative,
-                    b"",
-                    0o600,
-                )
-                .map_err(err)?;
+                mutation_guard.with_mutation(|| {
+                    awaken_sandbox_fs::write_relative_file_atomic(
+                        root.root(),
+                        root_identity,
+                        relative,
+                        b"",
+                        0o600,
+                    )
+                    .map_err(err)
+                })?;
                 pc::RealizedMount {
                     mount_id: req.mount_id.clone(),
                     mount_path: req.mount_path.clone(),
@@ -1021,9 +987,10 @@ impl pc::SandboxProvider for LocalProvider {
         &self,
         spec: &pc::SandboxSpec,
         effect_fence: &pc::SandboxEffectFence,
+        authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
         Ok(Box::new(
-            self.create_sandbox_for_effect(spec, effect_fence, None)
+            self.create_sandbox_for_effect(spec, effect_fence, None, authority)
                 .await?,
         ))
     }

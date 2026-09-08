@@ -436,6 +436,36 @@ current-authority port described below; terminal checkpoint cleanup is wired
 below. No new store, timer, lease, registry or state machine is
 introduced by this cold reconstruction change.
 
+Local/Namespace creation and Ready-publication failures share the crate's
+`compensate_creation_failure` orchestration instead of four copies. The existing
+creation guard, Memory owner and exact-root Secret leaf retain their respective
+responsibilities. Under the original root guard and Memory borrow, release
+Memory, shred only incomplete-creation credentials, and abort the exact attempt
+only when both steps succeed. A failure retains evidence; a completed Ready root
+is never rolled back. Adjacent cause/effect tables cover both public providers,
+current/legacy admission, independent teardown/Secret/abort failures, exact
+Recreating source-marker restoration, Ready protection and actual teardown
+cancellation followed by exact current-marker retry. Foreign private-stage
+conflicts are retained rather than reported as successful cleanup. Legacy
+failure still rejects an occupied root rather than inventing durable recovery.
+Local/Namespace fenced creation now borrows the Host's original
+`CurrentExecutionAuthority` through the neutral creation port. The existing
+`ProviderCreationGuard` combines that proof with the same physical marker;
+no new lease, registry or persisted state is added. Synchronous directory/File/
+Secret mutations and Ready publication run inside the current guard. Memory
+and resource responses re-enter it before subsequent effects or confirmation.
+The raw marker validates identity and phase, not Worker UTC. Compensation also
+rechecks the marker before shredding, so stale proof cannot authorize cleanup.
+The adjacent 120-row creation/replay/adoption Memory table covers actual Pending,
+revoke/replacement/exhaustion/renewal/cancellation, both provider tiers and both
+past/future Control timestamps. Ready replay preserves Agent bytes but still
+requires current proof. A further 60-row File/Secret response table includes
+optional absent files and checks that neither bytes nor empty placeholders are
+written after lost authority. This is executable port/filesystem ownership evidence,
+not real FUSE, Worker-death, credential or cross-platform runtime qualification.
+Container's neutral port forwards current authority into its existing adapter;
+its creation clock/remote-commit qualifications remain open.
+
 ### Terminal Provider clock ownership
 
 Current Worker/Session proof is the sole liveness authority for terminal
@@ -657,12 +687,13 @@ post-response admissions makes this table fail on the next-query or success
 assertion. These are deterministic adapter-boundary tests, not real daemon
 fault schedules or an implementation-refinement proof.
 
-The existing `SessionExecutionBinding` selector adds adoption/replay without
-changing its two-effect/slot/generation bounds: three phase-specific stale-effect
-mutants, one over-denial mutant and two reachability witnesses bring the totals
-to 43 mutants and 20 witnesses. It does not prove Rust refinement, remote renewal
+The existing `SessionExecutionBinding` selector includes adoption and creation/
+replay without changing its two-effect/slot/generation bounds. Each adds three
+phase-specific stale-effect mutants, one over-denial mutant and two reachability
+witnesses, bringing the totals to 47 mutants and 22 witnesses.
+It does not prove Rust refinement, remote renewal
 atomicity, real restored-backend response schedules, kernel FUSE ownership on
-Worker death, creation clocks, backend-specific observation clocks or real
+Worker death, Container creation clocks, backend-specific observation clocks or real
 cloud/platform/credential qualification.
 
 Adjacent Local tests cross Ready/Removing, slot/put/delete response waits and

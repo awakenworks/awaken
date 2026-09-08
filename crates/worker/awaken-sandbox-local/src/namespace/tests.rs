@@ -128,7 +128,12 @@ async fn ready_create_replay_projects_namespace_receipt_without_remounting() {
     );
     let effect = pc::SandboxEffectFence::new("create", "owner", "runtime", 1, u64::MAX).unwrap();
     let first = provider
-        .create_sandbox_for_effect(&spec, &effect, None)
+        .create_sandbox_for_effect(
+            &spec,
+            &effect,
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&effect),
+        )
         .await
         .expect("N1");
     let first_handle = pc::Sandbox::handle(&first);
@@ -139,7 +144,12 @@ async fn ready_create_replay_projects_namespace_receipt_without_remounting() {
     .unwrap();
 
     let replay = provider
-        .create_sandbox_for_effect(&spec, &effect, None)
+        .create_sandbox_for_effect(
+            &spec,
+            &effect,
+            None,
+            &awaken_provisioning_contract::test_support::EffectAuthority::new(&effect),
+        )
         .await
         .expect("N2");
     assert_eq!(pc::Sandbox::handle(&replay), first_handle, "N2 receipt");
@@ -154,6 +164,10 @@ async fn ready_create_replay_projects_namespace_receipt_without_remounting() {
                 &spec,
                 &pc::SandboxEffectFence::new("drifted", "owner", "runtime", 1, u64::MAX,).unwrap(),
                 None,
+                &awaken_provisioning_contract::test_support::EffectAuthority::new(
+                    &pc::SandboxEffectFence::new("drifted", "owner", "runtime", 1, u64::MAX,)
+                        .unwrap()
+                )
             )
             .await
             .is_err(),

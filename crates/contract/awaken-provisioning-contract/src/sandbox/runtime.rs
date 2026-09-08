@@ -1284,12 +1284,16 @@ pub trait SandboxProvider: Send + Sync {
     async fn create(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError>;
 
     /// Realize one Sandbox only after validating the aggregate-owned physical
-    /// effect fence. Durable Session creation/rebuild must use this edge; the
+    /// effect fence against the original captured current authority. Re-enter
+    /// that authority after asynchronous preparation and before publishing its
+    /// result; a durable fence or cached receipt alone is not a live grant.
+    /// Durable Session creation/rebuild must use this edge; the
     /// legacy method remains available only to explicitly unfenced callers.
     async fn create_for_effect(
         &self,
         _spec: &SandboxSpec,
         _effect_fence: &SandboxEffectFence,
+        _authority: &dyn crate::CurrentExecutionAuthority,
     ) -> Result<Box<dyn Sandbox>, SandboxError> {
         Err(SandboxError::new(
             "sandbox provider does not implement fenced creation",
