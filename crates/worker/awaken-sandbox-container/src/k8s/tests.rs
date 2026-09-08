@@ -490,7 +490,7 @@ async fn kube_client_accepts_an_http_proxy_from_deployment_environment() {
     // A host-level HTTP(S)_PROXY is consumed by kube::Config discovery. K8s
     // workers must keep accepting that standard deployment posture instead of
     // panicking while the Session runtime is being composed.
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    install_rustls_crypto_provider();
     let mut config = kube::Config::new("https://127.0.0.1:1/".parse().unwrap());
     config.proxy_url = Some("http://127.0.0.1:18082/".parse().unwrap());
     Client::try_from(config).expect("the k8s client is compiled with HTTP proxy support");

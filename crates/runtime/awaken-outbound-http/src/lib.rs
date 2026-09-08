@@ -11,6 +11,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
+/// Select the one process-wide provider before constructing a rustls-backed
+/// HTTP client. Full workspace feature unification may compile more than one
+/// provider, so transport adapters must not rely on implicit selection.
+pub fn install_rustls_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 /// Why a server-side callback URL was rejected at admission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UrlRejected {
@@ -145,6 +152,7 @@ impl GuardedHttpSender {
     }
 
     fn build(timeout: Duration, guard: bool) -> Self {
+        install_rustls_crypto_provider();
         Self {
             client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
@@ -167,6 +175,7 @@ impl GuardedHttpSender {
             .to_string();
         let port = parsed.port_or_known_default().unwrap_or(443);
         let addresses = resolve_global(&host, port).await?;
+        install_rustls_crypto_provider();
         reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(self.timeout)
@@ -225,6 +234,21 @@ impl HttpSender for GuardedHttpSender {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rustls_provider_selection_is_process_wide_and_idempotent() {
+        // Cause/effect decision table: C1 a full feature graph compiles both
+        // rustls providers and none is selected => the shared transport authority
+        // installs ring before client construction; C2 the shared authority has
+        // already run or a concurrent caller wins => reuse the one process choice.
+        // R1 C1 => a provider is present; R2 C2 => the exact process choice is
+        // retained and no parallel selector or registry is created.
+        install_rustls_crypto_provider();
+        let first = rustls::crypto::CryptoProvider::get_default().expect("R1");
+        install_rustls_crypto_provider();
+        let repeated = rustls::crypto::CryptoProvider::get_default().expect("R2");
+        assert!(std::sync::Arc::ptr_eq(first, repeated), "R2");
+    }
 
     #[test]
     fn admission_covers_scheme_authority_and_private_host_partition() {

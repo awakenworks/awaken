@@ -206,6 +206,10 @@ existing request authenticator and authorizer ports. It is not a new Worker
 registry, execution lease, or recovery controller. Standalone and embedded CLI
 credential assembly now lower through `WorkerBootstrap::upstream`; transport
 parsing and the finite remote-security selector remain transport-owned.
+The existing shared outbound-HTTP adapter owns one process-level rustls
+provider selection used before constructing Worker upstream, callback, and
+Kubernetes clients; feature unification cannot create a competing implicit
+selector.
 
 Static boundary: a canonical `k8s:namespace:pod-name:pod-uid` Worker ID is only a
 lookup coordinate. TokenReview against one configured API-server client,

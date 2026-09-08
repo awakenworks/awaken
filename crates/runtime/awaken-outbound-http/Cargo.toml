@@ -12,6 +12,7 @@ authority = "outbound-http"
 [dependencies]
 async-trait.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tokio = { workspace = true, features = ["net"] }
 
 [features]

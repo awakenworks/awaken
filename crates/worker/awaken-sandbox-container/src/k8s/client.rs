@@ -4,14 +4,7 @@ use kube::Client;
 
 use crate::RuntimeError;
 
-use super::backend;
-
-/// Select the process-wide provider before any kube client is built. Workspace
-/// feature unification can compile both rustls providers, so relying on rustls'
-/// implicit selection is not deterministic.
-pub(crate) fn install_rustls_crypto_provider() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-}
+use super::{backend, install_rustls_crypto_provider};
 
 /// One authenticated control client for read-only infrastructure adapters. It
 /// creates no Sandbox resources or NetworkPolicies and retains finite deadlines.
@@ -32,6 +25,7 @@ impl K8sClients {
     }
 
     fn from_config(config: kube::Config) -> Result<Self, RuntimeError> {
+        install_rustls_crypto_provider();
         let control = Client::try_from(config.clone()).map_err(backend)?;
         let streaming = Client::try_from(streaming_config(config)).map_err(backend)?;
         Ok(Self { control, streaming })
