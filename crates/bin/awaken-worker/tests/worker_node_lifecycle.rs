@@ -780,8 +780,11 @@ async fn incompatible_control_registration_withdraws_before_runtime_startup() {
     // P1 missing/null/old/future/non-integer/out-of-range => preserve C1 for
     // one bounded withdrawal, return protocol error, no factories/probes/Ready/
     // claims. P2 current integer => normal startup (the lifecycle test above).
+    // P3 includes a v3 Control: it cannot select whole-claim v4 execution.
     // C2 is never defaulted to current. Real HTTP exercises tolerant metadata
     // decoding and the single post-registration exit, not just a predicate.
+    let current = awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION.to_string();
+    let future = (awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION + 1).to_string();
     for zero_ttl in [false, true] {
         for declaration in [
             None,
@@ -789,7 +792,8 @@ async fn incompatible_control_registration_withdraws_before_runtime_startup() {
             Some("0"),
             Some("1"),
             Some("2"),
-            Some("4"),
+            Some("3"),
+            Some(future.as_str()),
             Some("-1"),
             Some("3.5"),
             Some("\"3\""),
@@ -797,9 +801,9 @@ async fn incompatible_control_registration_withdraws_before_runtime_startup() {
             Some("{}"),
             Some("[]"),
             Some("true"),
-            Some("3"),
+            Some(current.as_str()),
         ] {
-            if !zero_ttl && declaration == Some("3") {
+            if !zero_ttl && declaration == Some(current.as_str()) {
                 continue; // P2 current+positive is the normal lifecycle journey.
             }
             let upstream = if zero_ttl {
@@ -1444,4 +1448,75 @@ async fn drain_closes_local_admission_before_control_acknowledges() {
         })
         .await
         .expect("Worker lifecycle completes");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn incompatible_observation_publication_budget_withdraws_or_drains() {
+    // C1 authored P=10ms,T=400ms pass local validation; C2 the Coordinator
+    // negotiates 600ms lease (H=200,R=100, sum=310) or 900ms (sum=460).
+    // C3 negotiation changes at initial receipt or after claims have started.
+    // E1 600ms admits ordinary work; E2 initial 900ms withdraws once without
+    // claims; E3 later 900ms drains and terminates the incarnation once. No
+    // implicit TTL widening, retry-to-rejoin, or second observation publisher.
+    // Rules: B1 initial incompatible => E2; B2 compatible -> incompatible =>
+    // E1 then E3. Pure table owns strict equality/overflow/zero boundaries.
+    for initial_incompatible in [true, false] {
+        let upstream = FakeWorkerUpstream::start_with_short_registry_lease();
+        if initial_incompatible {
+            upstream.set_lease_ttl_ms(900);
+        }
+        let worker = lifecycle_worker(WorkerUpstream::new(upstream.url()))
+            .with_manifest(manifest())
+            .with_deployment_config(local_coordinator_deployment())
+            .with_credential_observation_window(
+                Duration::from_millis(10),
+                Duration::from_millis(400),
+            )
+            .build()
+            .unwrap();
+        let task = tokio::spawn(worker.run_until(std::future::pending()));
+        if !initial_incompatible {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while !upstream
+                    .requests()
+                    .iter()
+                    .any(|path| path.contains("/dispatch/claim"))
+                {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("B2 compatible budget admits claims");
+            upstream.set_lease_ttl_ms(900);
+        }
+        let result = tokio::time::timeout(Duration::from_secs(4), task)
+            .await
+            .expect("bounded termination")
+            .unwrap();
+        if initial_incompatible {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("heartbeat interval"),
+                "B1 diagnostic"
+            );
+        }
+        let paths = upstream.requests();
+        assert_eq!(
+            paths
+                .iter()
+                .filter(|p| p.as_str() == "/v1/worker/deregister")
+                .count(),
+            1
+        );
+        assert_eq!(
+            paths.iter().any(|p| p.contains("/dispatch/claim")),
+            !initial_incompatible
+        );
+        assert_eq!(
+            paths.iter().any(|p| p == "/v1/worker/drain"),
+            !initial_incompatible
+        );
+    }
 }

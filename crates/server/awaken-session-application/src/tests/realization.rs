@@ -3503,7 +3503,21 @@ async fn cold_terminal_cleanup_claim_requires_current_compatible_worker_before_r
         "W3/E2"
     );
 
-    for (min, max) in [(0, u32::MAX), (0, 3), (1, 1), (1, 2), (3, 2), (4, 4)] {
+    // W4 also includes v3 stage-scoped workers: the whole-claim protocol floor
+    // applies equally to ordinary Run admission and terminal cleanup placement.
+    for (min, max) in [
+        (0, u32::MAX),
+        (0, 3),
+        (1, 1),
+        (1, 2),
+        (3, 2),
+        (1, 3),
+        (3, 3),
+        (
+            awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION + 1,
+            awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION + 1,
+        ),
+    ] {
         let mut manifest = terminal_cleanup_manifest();
         manifest.runtime_protocol.min = min;
         manifest.runtime_protocol.max = max;

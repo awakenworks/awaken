@@ -9,8 +9,7 @@ use std::sync::Arc;
 pub use awaken_acp_application::AcpLocalCredentialResolver;
 use awaken_acp_application::{
     AcpCapabilityNegotiator, AcpDiscovery, AcpHostDiscovery, AcpHostObservation,
-    AcpWrapperInstaller, HostAcpCapabilityNegotiator, LocalAcpPreparation, NpmWrapperInstaller,
-    prepare_host_acp_with,
+    AcpWrapperInstaller, LocalAcpPreparation, prepare_host_acp_with,
 };
 use awaken_run_executor_acp::acp_cli;
 use awaken_runtime_contract::CredentialObservationState;
@@ -111,12 +110,8 @@ async fn prepare_local_acp_with_workspace(
         // outside its Environment.
         return Ok(None);
     }
-    let discovery: Arc<dyn AcpDiscovery> =
-        Arc::new(AcpHostDiscovery::local(std::time::Duration::from_secs(3)));
-    let installer: Arc<dyn AcpWrapperInstaller> = Arc::new(NpmWrapperInstaller);
-    let negotiator: Arc<dyn AcpCapabilityNegotiator> = Arc::new(HostAcpCapabilityNegotiator::new(
-        std::time::Duration::from_secs(10),
-        Arc::new(awaken_protocol_acp::ProtocolAcpCapabilityHandshake),
+    let adapters = awaken_acp_application::HostAcpAdapters::production(Arc::new(
+        awaken_protocol_acp::ProtocolAcpCapabilityHandshake,
     ));
     let stores =
         awaken_control::open_inference_materialization_stores(&deployment.control, seal_key).await;
@@ -124,7 +119,12 @@ async fn prepare_local_acp_with_workspace(
         "local ACP preparation requires the admitted platform Workspace coordinate".to_owned()
     })?;
     prepare_local_acp_with(
-        deployment, discovery, installer, negotiator, stores, workspace,
+        deployment,
+        adapters.discovery,
+        adapters.installer,
+        adapters.negotiator,
+        stores,
+        workspace,
     )
     .await
 }
@@ -226,7 +226,7 @@ async fn prepare_local_acp_with(
     .await?;
     let routable_cli_ids = prepared.routable_cli_ids();
     let routable_launch_argv = prepared.routable_launch_argv();
-    deployment.apply_local_acp_observations(prepared.observations, routable_cli_ids)?;
+    deployment.apply_local_acp_observations(prepared.host.observations, routable_cli_ids)?;
     let Some(profile) = deployment.runtime.acp.as_mut() else {
         return Ok(None);
     };
@@ -237,7 +237,7 @@ async fn prepare_local_acp_with(
     deployment.runtime.disable_local_pool = true;
     deployment.run_local_pool = false;
     Ok(Some(PreparedLocalAcp {
-        resolver: prepared.resolver,
+        resolver: prepared.host.resolver,
         stores,
     }))
 }
@@ -630,7 +630,16 @@ mod tests {
         let claude = source(&repo, "claude", "default").await;
         let gemini = source(&repo, "gemini", "default").await;
         let opencode = source(&repo, "opencode", "default").await;
-        let mut disabled = source(&repo, "codex", "disabled").await;
+        // The built-in host adapter supports one default account per CLI.
+        // A second Workspace is another reference, not a fictional account.
+        let mut disabled = ensure_worker_local(
+            &repo,
+            "disabled-ws",
+            WorkerLocalBinding::new("acp:codex", "default"),
+            None,
+        )
+        .await
+        .unwrap();
         disabled.status = CredentialStatus::Disabled;
 
         let discovery = Arc::new(FixedDiscovery {
@@ -662,7 +671,7 @@ mod tests {
             ]),
             calls: Mutex::new(Vec::new()),
         });
-        let resolver = AcpLocalCredentialResolver::from_sources(
+        let resolver = awaken_acp_application::resolver_from_sources(
             discovery.clone(),
             [codex, claude, gemini, opencode, disabled],
         )
@@ -716,7 +725,7 @@ mod tests {
             calls: Mutex::new(Vec::new()),
         });
         let resolver =
-            AcpLocalCredentialResolver::from_sources(discovery.clone(), [codex]).unwrap();
+            awaken_acp_application::resolver_from_sources(discovery.clone(), [codex]).unwrap();
 
         assert!(
             resolver
@@ -746,7 +755,9 @@ mod tests {
             observations: BTreeMap::new(),
             calls: Mutex::new(Vec::new()),
         });
-        assert!(AcpLocalCredentialResolver::from_sources(discovery.clone(), [missing]).is_err());
+        assert!(
+            awaken_acp_application::resolver_from_sources(discovery.clone(), [missing]).is_err()
+        );
 
         let unrelated = ensure_worker_local(
             &repo,
@@ -756,7 +767,8 @@ mod tests {
         )
         .await
         .unwrap();
-        let resolver = AcpLocalCredentialResolver::from_sources(discovery, [unrelated]).unwrap();
+        let resolver =
+            awaken_acp_application::resolver_from_sources(discovery, [unrelated]).unwrap();
         assert!(resolver.credential_observations().await.unwrap().is_empty());
     }
 
@@ -782,7 +794,7 @@ mod tests {
             calls: Mutex::new(Vec::new()),
         });
         let resolver =
-            Arc::new(AcpLocalCredentialResolver::from_sources(discovery, [source]).unwrap());
+            Arc::new(awaken_acp_application::resolver_from_sources(discovery, [source]).unwrap());
         assert_eq!(
             resolver
                 .credential_observations()
@@ -1069,12 +1081,12 @@ mod tests {
         .unwrap();
 
         let cli = acp_cli("codex").unwrap();
-        let first = NpmWrapperInstaller
+        let first = awaken_acp_application::NpmWrapperInstaller
             .resolved_argv(cli, directory.path())
             .await
             .expect("R1")
             .expect("R1 wrapper argv");
-        let restarted = NpmWrapperInstaller
+        let restarted = awaken_acp_application::NpmWrapperInstaller
             .resolved_argv(cli, directory.path())
             .await
             .expect("R2")

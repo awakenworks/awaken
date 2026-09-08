@@ -36,10 +36,12 @@ pub const TRUSTED_HOST_SANDBOX_BACKEND: &str = "trusted-host";
 
 pub const CURRENT_CONTRACT_VERSION: u32 = 1;
 
-/// Current registered Worker execution protocol. V3 requires request-relative
-/// Session lease receipts; v1/v2 peers cannot safely execute this contract.
+/// Current registered Worker execution protocol. V4 retires one complete claim
+/// execution after its final ACK and uses typed renewal outcomes. V3 introduced
+/// request-relative Session leases, but still ACKed individual scheduled stages.
+/// A v3 peer cannot execute safely against whole-claim retirement semantics.
 /// Manifest/dispatch envelope versions remain independent and unchanged.
-pub const CURRENT_RUNTIME_PROTOCOL_VERSION: u32 = 3;
+pub const CURRENT_RUNTIME_PROTOCOL_VERSION: u32 = 4;
 
 /// Inclusive protocol-version range supported by a worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -5,6 +5,30 @@ from pathlib import Path
 from formal_model_mutation_runner import ROOT, check_tlc_model_mutations
 
 
+
+def check_acp_projection_model_mutants(tlc_jar: Path) -> None:
+    # P1 omit the post-probe equality; P2 accept another CLI at the same revision;
+    # P3 omit the consumer gate; P4 cancel without releasing it. Each must fail
+    # its exact named invariant. Reachability witnesses require successful use,
+    # a real revoke-during-probe denial and a succeeding peer after cancellation.
+    source = (ROOT / "formal/tla/AcpProjectedBindingUse.tla").read_text()
+    config = (ROOT / "formal/tla/AcpProjectedBindingUse.cfg").read_text()
+    header = "SPECIFICATION Spec\nCHECK_DEADLOCK FALSE\n"
+    mutations = []
+    for anchor, replacement, invariant in (
+        (r'before[i] = "active" /\ file = before[i]', r'before[i] = "active"', "ExactPostProbeEvidence"),
+        (r'file = before[i] THEN', r'file \in {"active", "otherCli"} THEN', "ExactPostProbeEvidence"),
+        (r'phase[i] = "idle" /\ gate = 0', r'phase[i] = "idle"', "OneConsumer"),
+        (r'![i] = "cancelled"] /\ gate' + "' = 0", r'![i] = "cancelled"] /\ gate' + "' = gate", "CancelledReleasesGate"),
+    ):
+        if source.count(anchor) != 1:
+            raise SystemExit(f"ACP projection mutation anchor drifted: {invariant}")
+        mutations.append((source.replace(anchor, replacement), header + f"INVARIANTS {invariant}\n", invariant))
+    for witness in ("NoUsefulGrant", "NoRevokedDenial", "NoConsumerAfterCancellation"):
+        mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
+    check_tlc_model_mutations(tlc_jar, "AcpProjectedBindingUse", source, config, mutations)
+    print("ACP projected bindings: 4/4 mutants killed; 3/3 positive witnesses reachable")
+
 def check_acp_binding_model_mutants(tlc_jar: Path) -> None:
     # B1 rejected batch publishes its exclusive prefix => rejected-action failure;
     # B2 check outside the publication lock => two stale checks accept conflicting

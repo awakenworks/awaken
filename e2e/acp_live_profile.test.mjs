@@ -8,13 +8,17 @@ test('one profile selects the same Linux boundary for live and fixture resource 
   // scoped deployment AND process-produced namespace oracle. R2 Namespace or
   // Container => their existing isolation, no TrustedHost scope. R3 non-Linux
   // => unchanged native contract, never claim Linux supervision. Exhaust all
-  // 8 valid profile/runtime rows on 3 platforms (24 cases). This selects test
+  // 10 valid profile/runtime rows on 3 platforms (30 cases). R6 only the
+  // worker-host-fixture selects the production standalone Worker; all other
+  // rows retain their existing topology. This selects test
   // configuration only; actual OS and vendor qualification requires the E2E.
   const rows = [
     ['host-login', 'codex', false, false, true],
     ['host-login', 'claude', false, false, true],
     ['host-fixture', 'codex', false, false, true],
     ['host-fixture', 'claude', false, false, true],
+    ['worker-host-fixture', 'codex', false, false, true],
+    ['worker-host-fixture', 'claude', false, false, true],
     ['native-fixture', 'native', true, false, false],
     ['native-host-fixture', 'native', true, true, true],
     ['container', 'codex', false, false, false],
@@ -24,7 +28,8 @@ test('one profile selects the same Linux boundary for live and fixture resource 
     for (const [profile, runtime, native, nativeHost, linuxScope] of rows) {
       const selected = resolveAcpLiveProfile({ profile, runtime, platform, live: '1' });
       assert.deepEqual(selected, { profile, runtime, native, nativeHost,
-        scopedHost: platform === 'linux' && linuxScope }, `${platform}/${profile}/${runtime}`);
+        scopedHost: platform === 'linux' && linuxScope,
+        standaloneWorker: profile === 'worker-host-fixture' }, `${platform}/${profile}/${runtime}`);
       assert.ok(Object.isFrozen(selected));
     }
   }
@@ -43,11 +48,13 @@ test('live opt-in and runtime compatibility fail before deployment side effects'
       else assert.throws(select, /CODEX_ACP_LIVE=1/u);
     }
     for (const [profile, runtime] of [
-      ['host-fixture', 'codex'], ['native-fixture', 'native'], ['native-host-fixture', 'native'],
+      ['host-fixture', 'codex'], ['worker-host-fixture', 'codex'],
+      ['worker-host-fixture', 'claude'], ['native-fixture', 'native'], ['native-host-fixture', 'native'],
     ]) assert.equal(resolveAcpLiveProfile({ profile, runtime, live, platform: 'linux' }).runtime, runtime);
   }
   for (const [profile, runtime] of [
     ['host-login', 'native'], ['container', 'native'], ['host-fixture', 'native'],
+    ['worker-host-fixture', 'native'], ['worker-host-fixture', 'unknown'],
     ['native-fixture', 'codex'], ['native-host-fixture', 'claude'], ['host-login', 'unknown'],
   ]) assert.throws(() => resolveAcpLiveProfile({ profile, runtime, live: '1', platform: 'linux' }),
     /exact runtime/u);

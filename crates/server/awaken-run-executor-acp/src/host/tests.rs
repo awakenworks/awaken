@@ -1,0 +1,179 @@
+use super::*;
+#[test]
+fn wrapper_cache_requires_the_exact_pinned_package_manifest() {
+    let directory = tempfile::tempdir().unwrap();
+    let manifest = directory.path().join("package.json");
+    std::fs::write(
+        &manifest,
+        r#"{"dependencies":{"@agentclientprotocol/claude-agent-acp":"0.69.0"}}"#,
+    )
+    .unwrap();
+    assert!(installed_wrapper_matches(
+        directory.path(),
+        "@agentclientprotocol/claude-agent-acp@0.69.0"
+    ));
+    assert!(
+        !installed_wrapper_matches(
+            directory.path(),
+            "@agentclientprotocol/claude-agent-acp@0.64.2"
+        ),
+        "a catalog downgrade or upgrade cannot reuse different bytes"
+    );
+
+    std::fs::write(&manifest, b"not-json").unwrap();
+    assert!(
+        !installed_wrapper_matches(
+            directory.path(),
+            "@agentclientprotocol/claude-agent-acp@0.69.0"
+        ),
+        "a corrupt manifest fails closed"
+    );
+    std::fs::remove_file(&manifest).unwrap();
+    assert!(
+        !installed_wrapper_matches(
+            directory.path(),
+            "@agentclientprotocol/claude-agent-acp@0.69.0"
+        ),
+        "a legacy unversioned cache must be reacquired once"
+    );
+    assert!(!installed_wrapper_matches(directory.path(), "unversioned"));
+}
+
+struct AvailableDiscovery;
+
+fn observation(
+    id: &str,
+    detection: AcpDetectionState,
+    credential: Option<CredentialObservationState>,
+    capability: Option<AcpCapabilityState>,
+) -> AcpHostObservation {
+    AcpHostObservation {
+        cli_id: id.into(),
+        display_name: id.into(),
+        detection,
+        version: None,
+        credential_state: credential,
+        reason_code: None,
+        capability_state: capability,
+        capability_fingerprint: None,
+        capability_reason_code: None,
+    }
+}
+
+#[async_trait]
+impl AcpDiscovery for AvailableDiscovery {
+    async fn discover(&self, cli: &AcpCli) -> AcpHostObservation {
+        AcpHostObservation {
+            cli_id: cli.id.into(),
+            display_name: cli.display_name.into(),
+            detection: AcpDetectionState::Detected,
+            version: Some("test".into()),
+            credential_state: Some(CredentialObservationState::Available),
+            reason_code: None,
+            capability_state: None,
+            capability_fingerprint: None,
+            capability_reason_code: None,
+        }
+    }
+}
+
+#[test]
+fn worker_route_admission_follows_the_capability_decision_table() {
+    // Causes: catalog selection, executable detection, current login, and
+    // successful protocol negotiation. Acquisition argv is diagnostic
+    // evidence until the same route decision admits its CLI. Effects:
+    // R1 unselected -> no route; R2 missing -> no route;
+    // R3 detected + not logged in -> route for live revalidation;
+    // R4 available + negotiation failed -> no route and no launch argv;
+    // R5 available + verified -> route and its launch argv.
+    let selected = ["codex".to_string()].into_iter().collect();
+    assert!(
+        routable_cli_ids(
+            &[observation(
+                "claude",
+                AcpDetectionState::Detected,
+                None,
+                None
+            )],
+            &selected
+        )
+        .is_empty(),
+        "R1"
+    );
+    assert!(
+        routable_cli_ids(
+            &[observation("codex", AcpDetectionState::Missing, None, None)],
+            &selected
+        )
+        .is_empty(),
+        "R2"
+    );
+    assert_eq!(
+        routable_cli_ids(
+            &[observation(
+                "codex",
+                AcpDetectionState::Detected,
+                Some(CredentialObservationState::LoginRequired),
+                Some(AcpCapabilityState::Unavailable),
+            )],
+            &selected,
+        ),
+        ["codex"],
+        "R3"
+    );
+    assert!(
+        routable_cli_ids(
+            &[observation(
+                "codex",
+                AcpDetectionState::Detected,
+                Some(CredentialObservationState::Available),
+                Some(AcpCapabilityState::ProbeFailed),
+            )],
+            &selected,
+        )
+        .is_empty(),
+        "R4"
+    );
+    assert_eq!(
+        routable_cli_ids(
+            &[observation(
+                "codex",
+                AcpDetectionState::Detected,
+                Some(CredentialObservationState::Available),
+                Some(AcpCapabilityState::Verified),
+            )],
+            &selected,
+        ),
+        ["codex"],
+        "R5"
+    );
+
+    let discovery: Arc<dyn AcpDiscovery> = Arc::new(AvailableDiscovery);
+    let resolver =
+        Arc::new(AcpLocalCredentialResolver::from_bindings(discovery, []).expect("empty resolver"));
+    for (rule, capability, expected) in [
+        ("R4", AcpCapabilityState::ProbeFailed, BTreeMap::new()),
+        (
+            "R5",
+            AcpCapabilityState::Verified,
+            BTreeMap::from([("codex".to_string(), vec!["/wrapper/codex".to_string()])]),
+        ),
+    ] {
+        let prepared = PreparedHostAcpCapabilities {
+            observations: vec![observation(
+                "codex",
+                AcpDetectionState::Detected,
+                Some(CredentialObservationState::Available),
+                Some(capability),
+            )],
+            launch_argv: BTreeMap::from([(
+                "codex".to_string(),
+                vec!["/wrapper/codex".to_string()],
+            )]),
+            effective_profiles: BTreeMap::new(),
+            resolver: resolver.clone(),
+            selected_cli_ids: ["codex".to_string()].into_iter().collect(),
+        };
+        assert_eq!(prepared.routable_launch_argv(), expected, "{rule}");
+    }
+}

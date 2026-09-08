@@ -326,12 +326,13 @@ assignments flatten the same envelope. New clients reject missing, zero or
 malformed horizons rather than inventing a fallback.
 
 Registered execution reuses the existing Worker runtime protocol range and
-compatibility kernel, with current protocol v3. Manifest/dispatch envelope
+compatibility kernel. Current protocol v4 includes ADR-0024's whole-claim rules;
+v3 introduced the relative leases above. Manifest/dispatch envelope
 versions remain v1. Registration rejects omitted/zero-based, old or otherwise
 incompatible ranges before mutation; claim authority, heartbeat renewal and
 application-owned terminal recovery reject pre-upgrade incompatible records.
-The standard Worker advertises 1..3, retaining support for explicitly pinned
-v1/v2 queued requirements without rewriting durable work. Legacy version-zero
+The standard Worker advertises 1..4, retaining support for explicitly pinned
+v1/v2/v3 queued requirements without rewriting durable work. Legacy version-zero
 requirements do not become explicit registered authority; the existing local
 eligibility path remains unchanged.
 

@@ -24,7 +24,7 @@ import {
   waitForPort,
   waitForValue,
 } from './harness.mjs';
-import { cargoExecutable } from './cargo_binary.mjs';
+import { credentialReferenceWorkerFixture } from './fixtures/credential_reference_worker_fixture.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 import { ensureCanonicalSandboxImage } from './fixtures/sandbox_image.mjs';
 import {
@@ -97,16 +97,6 @@ async function postgres(): Promise<{ container?: string; url: string }> {
     await sleep(250);
   }
   throw new Error('timed out waiting for disposable Postgres');
-}
-
-function buildWorker(): string {
-  return cargoExecutable({
-    cwd: ROOT,
-    packageName: 'awaken-cli',
-    targetName: 'credential_reference_worker',
-    targetKind: 'example',
-    features: ['container-docker'],
-  });
 }
 
 async function post(pathname: string, body: unknown, worker?: string): Promise<any> {
@@ -674,7 +664,7 @@ async function main(): Promise<void> {
       AWAKEN_WORKER_ADMIN_LISTEN: `127.0.0.1:${WORKER_ADMIN_PORT}`,
       AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: '1',
     });
-    worker = spawn(buildWorker(), [], { cwd: ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    worker = spawn(credentialReferenceWorkerFixture({ root: ROOT, features: ['container-docker'] }), [], { cwd: ROOT, env, stdio: ['pipe', 'pipe', 'pipe'] });
     worker.stdout.on('data', (chunk) => (workerOutput += chunk.toString()));
     worker.stderr.on('data', (chunk) => (workerOutput += chunk.toString()));
 

@@ -38,9 +38,8 @@ use crate::control::vault_acl::{
 };
 use awaken_agent_contract::RedactedString;
 use awaken_credential_contract::{
-    CredentialCustodyPublication, CredentialDescriptor, CredentialEnvelopeIssuance,
-    CredentialMaterialDescriptor, CredentialPurpose, CredentialSourceId, CredentialTarget,
-    CredentialTargetContract, CredentialUsage, OPAQUE_SECRET_MATERIAL_TYPE,
+    CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialSourceId,
+    CredentialTarget, CredentialTargetContract, CredentialUsage, OPAQUE_SECRET_MATERIAL_TYPE,
 };
 use awaken_credential_vault::catalog::{
     ManagedCredentialAdmissionError, ManagedCredentialAuth as AuthRecord,
@@ -628,57 +627,14 @@ impl VaultState {
         awaken_credential_vault::CredentialError,
     > {
         let source = self.repository.get(source_id).await?;
-        let selected_holder = request.selected_holder;
-        let binding = request.binding;
-        let mut access =
-            awaken_credential_vault::compile_exact_credential_access(&source, request)?;
-        match &self.material_delivery {
-            Some(awaken_credential_contract::CredentialMaterialDelivery::ExternalCustody(
-                custodian,
-            )) if custodian.handles(selected_holder, &access.usage) => {
-                let material =
-                    awaken_credential_vault::materialize(&source, self.secrets.as_ref()).await?;
-                if let Some(descriptor) = &source.descriptor {
-                    awaken_credential_vault::validate_described_material(descriptor, &material)?;
-                }
-                custodian
-                    .publish(CredentialCustodyPublication {
-                        access: access.clone(),
-                        selected_holder: selected_holder.clone(),
-                        binding: binding.clone(),
-                        material,
-                    })
-                    .await
-                    .map_err(awaken_credential_vault::CredentialError::InvalidSource)?;
-            }
-            Some(awaken_credential_contract::CredentialMaterialDelivery::RecipientEnvelope(
-                issuer,
-            )) if selected_holder.boundary
-                != awaken_credential_contract::PlaintextBoundary::Platform =>
-            {
-                let material =
-                    awaken_credential_vault::materialize(&source, self.secrets.as_ref()).await?;
-                if let Some(descriptor) = &source.descriptor {
-                    awaken_credential_vault::validate_described_material(descriptor, &material)?;
-                }
-                let envelope = issuer
-                    .issue(CredentialEnvelopeIssuance {
-                        access: access.clone(),
-                        selected_holder: selected_holder.clone(),
-                        binding: binding.clone(),
-                        material,
-                    })
-                    .await
-                    .map_err(awaken_credential_vault::CredentialError::InvalidSource)?;
-                envelope
-                    .validate_issuance(&access, selected_holder, binding)
-                    .map_err(|error| {
-                        awaken_credential_vault::CredentialError::InvalidSource(error.to_string())
-                    })?;
-                access = access.with_envelope(envelope);
-            }
-            _ => {}
-        }
+        let access = awaken_credential_vault::publish_exact_credential_access(
+            &source,
+            request,
+            self.material_delivery
+                .as_ref()
+                .map(|delivery| (self.secrets.as_ref(), delivery)),
+        )
+        .await?;
         Ok((source, access))
     }
 

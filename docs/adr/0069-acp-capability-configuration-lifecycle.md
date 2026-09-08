@@ -722,6 +722,15 @@ The lifecycle has four consistency boundaries:
    Immediately before spawn, the Worker repeats all mutable checks and compares
    the live handshake with the frozen demand.
 
+Worker timing validation is owned by `credential_liveness`: both file configuration
+and builder calls use it, and startup plus each changed registry lease validate
+`TTL > probe interval + renewal interval + request timeout`. The renewal and
+request terms come from the existing Coordinator-owned `AuthorityLeaseTiming`.
+Initial incompatibility uses registration withdrawal before claim admission;
+later incompatibility uses the ordinary absorbing drain/exit. The scalar budget
+does not promise continuous availability through slow probes or failed transport,
+and neither configuration validation nor heartbeats renew cached deadlines.
+
 Refresh is event-driven on process startup, explicit user refresh, adapter
 version/wrapper change, login remediation completion and observed liveness
 change, with a bounded periodic retry for transient failures. Concurrent
@@ -898,7 +907,7 @@ Implemented consolidation evidence:
 - `awaken-acp-application` owns discovery, acquisition, WorkerLocal registration
   and liveness composition;
 - host process probing and observation classification live only in
-  `awaken-acp-application`; Runtime Host no longer converts or imports discovery
+  `awaken-run-executor-acp::host`; Runtime Host no longer converts or imports discovery
   observations;
 - `awaken-protocol-acp::negotiate_capabilities` reuses the production
   initialize/session-new state machine, sends no prompt and returns full neutral
@@ -922,6 +931,19 @@ Implemented consolidation evidence:
   unselected installed CLIs are excluded and a Provider-owned route does not
   disappear merely because no host-login binding is active. Each credential
   refresh invalidates the previous host-probe cache before capability refresh;
+- standalone host Workers reuse `awaken-run-executor-acp::host` for discovery,
+  acquisition, protocol preparation and the single liveness resolver. The
+  Coordinator `awaken-acp-application` owns only credential registration and
+  source-to-binding translation; its registration result wraps that host result
+  without copying its state. CLI and Coordinator share one production adapter
+  assembly. Worker bootstrap never depends on the Control registration service;
+- an explicitly configured local binding file carries exact references, CLI IDs
+  and enabled intent only. Its read-only adapter atomically replaces the one
+  resolver map, serializes probe/reload consumers, and rechecks the projection
+  after asynchronous probes. Deleted, malformed and changed projections cannot
+  create fresh successful use evidence. The external publisher and observation
+  cache expiry remain separate boundaries; this adds no credential store,
+  automatic remote projection service or universal immediate revocation claim;
 - successful AllInOne heartbeats feed one observation-fingerprint gate; split
   Control reads the same Coordinator authority through its authenticated private
   service boundary and polls that gate every five seconds; changes invoke the

@@ -840,7 +840,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let router = dispatch_transport_router_with_service(Arc::new(service)).merge(
         worker_environment_warmup_router_with_clock(
             Arc::new(StaticEnvironmentWarmups(vec![warmup])),
-            directory,
+            directory.clone(),
             authenticator,
             clock.clone(),
         ),
@@ -1002,12 +1002,12 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         7,
         Default::default(),
     );
-    let mut dispatch = standard_worker_dispatch(activation());
-    dispatch.session_resources = Some(
+    let mut request = standard_worker_dispatch(activation());
+    request.session_resources = Some(
         awaken_dispatch::SessionResourceEnvelope::from_manifest(&carried_resources).unwrap(),
     );
     queue
-        .enqueue(dispatch)
+        .enqueue(request)
         .await
         .expect("signed dispatch enqueue");
     let claimed = queue
@@ -1076,6 +1076,32 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         mismatched_queue.finish_attempt(&claim).await.is_err(),
         "P3 mismatched signed-body incarnation cannot clear the slot"
     );
+    // Upgrade table U1: an already-occupied claim belongs to a persisted v3
+    // incarnation. New begin/handoff requests are rejected without touching its
+    // slot; U2 its authenticated exact ACK still retires that slot; U3 an ACK
+    // retry is idempotent. Seed historical manifest state only in this fixture
+    // (production cannot mutate an incarnation's immutable manifest).
+    let before_upgrade = directory.0.lock().unwrap().clone();
+    {
+        let mut record = directory.0.lock().unwrap();
+        let snapshot = &mut record.as_mut().unwrap().snapshot;
+        snapshot.manifest.runtime_protocol.max = 3;
+        snapshot.capability_fingerprint = snapshot.manifest.fingerprint().unwrap();
+    }
+    let occupied_before = dispatch.list_dispatches().await.unwrap();
+    assert!(
+        queue.begin_attempt(&claim, 10_000).await.is_err(),
+        "U1 begin"
+    );
+    assert!(
+        queue.handoff_attempt(&claim, 10_000).await.is_err(),
+        "U1 handoff"
+    );
+    assert_eq!(
+        dispatch.list_dispatches().await.unwrap(),
+        occupied_before,
+        "U1 no mutation"
+    );
     assert_eq!(
         queue.finish_attempt(&claim).await.expect("P4 exact ACK"),
         SettleOutcome::Applied,
@@ -1087,6 +1113,18 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         queue.finish_attempt(&claim).await.expect("P5 ACK retry"),
         SettleOutcome::Applied,
         "P5 transport preserves the store's idempotent empty-slot ACK"
+    );
+    // U4: neither an old peer nor a current replacement may re-admit the same
+    // acknowledged identity; protocol rejection and epoch retirement compose.
+    assert!(
+        queue.begin_attempt(&claim, 10_000).await.is_err(),
+        "U4 old peer"
+    );
+    *directory.0.lock().unwrap() = before_upgrade;
+    assert_eq!(
+        queue.begin_attempt(&claim, 10_000).await.unwrap(),
+        AttemptAdmission::Fenced,
+        "U4 retired epoch"
     );
 
     // Cause graph: signed exact incarnation -> live registry lease -> identity
@@ -2502,9 +2540,23 @@ async fn protocol_admission_precedes_registration_and_heartbeat_mutation() {
         (1, 1, false),
         (1, 2, false),
         (3, 2, false),
-        (4, 4, false),
-        (1, 3, true),
-        (3, 3, true),
+        (1, 3, false),
+        (3, 3, false),
+        (
+            awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION + 1,
+            awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION + 1,
+            false,
+        ),
+        (
+            1,
+            awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION,
+            true,
+        ),
+        (
+            awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION,
+            awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION,
+            true,
+        ),
     ] {
         *directory.0.lock().unwrap() = None;
         let mut manifest = WorkerManifest::default();
@@ -2704,6 +2756,18 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
     };
     let rules = [
         (
+            "physical-begin",
+            "/v1/worker/dispatch/attempt/begin",
+            serde_json::json!({ "identity": &identity,
+                "claim": { "run_id": "old-run", "owner": identity.lease_owner(), "epoch": 1 } }),
+        ),
+        (
+            "physical-handoff",
+            "/v1/worker/dispatch/attempt/handoff",
+            serde_json::json!({ "identity": &identity,
+                "claim": { "run_id": "old-run", "owner": identity.lease_owner(), "epoch": 1 } }),
+        ),
+        (
             "ordinary-claim",
             "/v1/worker/dispatch/claim",
             serde_json::json!({ "identity": &identity }),
@@ -2782,7 +2846,19 @@ async fn incompatible_registration_rejected_before_execution_and_terminal_edges(
             }),
         ),
     ];
-    for (min, max) in [(0, u32::MAX), (0, 3), (1, 1), (1, 2), (3, 2), (4, 4)] {
+    for (min, max) in [
+        (0, u32::MAX),
+        (0, 3),
+        (1, 1),
+        (1, 2),
+        (3, 2),
+        (1, 3),
+        (3, 3),
+        (
+            awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION + 1,
+            awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION + 1,
+        ),
+    ] {
         {
             let mut current = directory.0.lock().unwrap();
             let snapshot = &mut current.as_mut().unwrap().snapshot;
