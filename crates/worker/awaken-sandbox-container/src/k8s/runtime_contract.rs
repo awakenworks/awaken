@@ -161,7 +161,7 @@ impl ContainerRuntime for K8sRuntime {
         self.create_for_effect(&context, plan, &fingerprint).await
     }
 
-    async fn create_for_effect(
+    async fn prepare_for_effect(
         &self,
         context: &ContainerRealizationContext<'_>,
         plan: &ContainerPlan,
@@ -173,7 +173,6 @@ impl ContainerRuntime for K8sRuntime {
                 "Kubernetes Memory projection requires a durable Environment effect fence",
             ));
         }
-        let runtime_id = self.realization_runtime_id(context.scope)?;
         let mut decision = self
             .create_decision(context, plan, Some(realization_fingerprint))
             .await?;
@@ -181,30 +180,10 @@ impl ContainerRuntime for K8sRuntime {
             let before = decision.clone();
             let outcome = match decision {
                 ExistingRealizationDecision::Create => {
-                    creation::create(self, context, plan, realization_fingerprint).await
+                    creation::prepare(self, context, plan, realization_fingerprint).await
                 }
                 ExistingRealizationDecision::ConvergeCreating(observed)
-                | ExistingRealizationDecision::ReuseReady(observed) => {
-                    let recovery_attempt = ContainerCreateAttempt(
-                        observed.attempt_id.clone().ok_or_else(|| {
-                            backend(
-                                "Kubernetes Sandbox realization has no projected-content attempt fence",
-                            )
-                        })?,
-                    );
-                    let recovery_context = context.with_attempt(&recovery_attempt);
-                    creation::converge(
-                        self,
-                        &runtime_id,
-                        &observed.locator,
-                        &observed.incarnation.identity,
-                        &recovery_context,
-                        plan,
-                        realization_fingerprint,
-                    )
-                    .await
-                    .map(|()| observed.locator)
-                }
+                | ExistingRealizationDecision::ReuseReady(observed) => Ok(observed.locator),
                 ExistingRealizationDecision::ReplaceExact(observed) => self
                     .replace_exact_realization(&observed)
                     .await
@@ -235,7 +214,74 @@ impl ContainerRuntime for K8sRuntime {
                 .await
                 .map_err(RuntimeError::after_mutation)?;
         }
-        Err(backend("Kubernetes exact realization did not converge").after_mutation())
+        Err(backend("Kubernetes exact reservation did not converge").after_mutation())
+    }
+
+    async fn activate_for_effect(
+        &self,
+        context: &ContainerRealizationContext<'_>,
+        plan: &ContainerPlan,
+        realization_fingerprint: &pc::SandboxRealizationFingerprint,
+        prepared_locator: &str,
+    ) -> Result<String, RuntimeError> {
+        self.admit_plan(plan).await?;
+        let runtime_id = self.realization_runtime_id(context.scope)?;
+        if context.effect_fence.is_none() {
+            let pod = self.pods().get(prepared_locator).await.map_err(backend)?;
+            let pod_uid = pod
+                .metadata
+                .uid
+                .as_deref()
+                .ok_or_else(|| backend("prepared Kubernetes Pod has no UID"))?;
+            creation::converge(
+                self,
+                &runtime_id,
+                prepared_locator,
+                pod_uid,
+                context,
+                plan,
+                realization_fingerprint,
+            )
+            .await?;
+            return Ok(prepared_locator.to_owned());
+        }
+        let decision = self
+            .create_decision(context, plan, Some(realization_fingerprint))
+            .await?;
+        let observed = match decision {
+            ExistingRealizationDecision::ConvergeCreating(observed)
+            | ExistingRealizationDecision::ReuseReady(observed)
+                if observed.locator == prepared_locator =>
+            {
+                observed
+            }
+            ExistingRealizationDecision::Create => {
+                return Err(backend(
+                    "Kubernetes prepared realization disappeared before activation",
+                ));
+            }
+            _ => {
+                return Err(backend(
+                    "Kubernetes activation resolved a different or inadmissible realization",
+                ));
+            }
+        };
+        let recovery_attempt =
+            ContainerCreateAttempt(observed.attempt_id.clone().ok_or_else(|| {
+                backend("Kubernetes Sandbox realization has no projected-content attempt fence")
+            })?);
+        let recovery_context = context.with_attempt(&recovery_attempt);
+        creation::converge(
+            self,
+            &runtime_id,
+            &observed.locator,
+            &observed.incarnation.identity,
+            &recovery_context,
+            plan,
+            realization_fingerprint,
+        )
+        .await
+        .map(|()| observed.locator)
     }
 
     async fn recover_restore_target(

@@ -4,6 +4,7 @@
 //! seams and the original cause/effect decision tables.
 
 use std::ffi::OsString;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use awaken_provisioning_contract::ProcessHandle;
@@ -761,7 +762,8 @@ async fn legacy_create_only_creates_an_absent_scope() {
     // shared kernel and never run `rm`.
     let (rt, fake) = runtime_with(7777, |args| match args.first().map(String::as_str) {
         Some("ps") => ok("[]"),
-        Some("run") => ok("container-1"),
+        Some("create") => ok("container-1"),
+        Some("start") => ok("container-1"),
         other => panic!("unexpected Podman command: {other:?}"),
     });
     let expected = runtime_container_name(rt.realization_namespace.as_str(), "s1").unwrap();
@@ -774,13 +776,13 @@ async fn legacy_create_only_creates_an_absent_scope() {
             .all(|call| call.first().map(String::as_str) != Some("rm")),
         "R2"
     );
-    let run = calls
+    let create = calls
         .iter()
-        .find(|call| call.first().map(String::as_str) == Some("run"))
+        .find(|call| call.first().map(String::as_str) == Some("create"))
         .unwrap();
-    let name_at = run.iter().position(|a| a == &expected).unwrap();
+    let name_at = create.iter().position(|a| a == &expected).unwrap();
     assert!(
-        run[name_at + 1..]
+        create[name_at + 1..]
             .windows(2)
             .any(|pair| pair == ["-p", "127.0.0.1::7777"]),
         "R1"
@@ -788,9 +790,110 @@ async fn legacy_create_only_creates_an_absent_scope() {
 }
 
 #[tokio::test]
+async fn fenced_prepare_reserves_then_exact_activation_starts_once() {
+    // Cause/effect decision table: C1 scope is absent/prepared/ready; C2 the
+    // observed locator is exact/foreign; C3 activation is absent/present.
+    // R1 absent prepare issues exactly one `create` and zero `start`; R2 exact
+    // prepared activation issues one `start` and returns only after the same
+    // locator is Ready; R3 create response, repeated observation and Ready
+    // replay never issue a second create/start. Foreign-locator rejection is
+    // owned by the shared existing-realization decision table.
+    let running = Arc::new(AtomicBool::new(false));
+    let created = Arc::new(AtomicBool::new(false));
+    let running_response = running.clone();
+    let created_response = created.clone();
+    let spec = pc::SandboxSpec {
+        process_tree_supervision: false,
+        scope: "phased".into(),
+        isolation: pc::IsolationClass::Container,
+        environment: None,
+        command: Vec::new(),
+        deny_tool_egress: false,
+        mounts: Vec::new(),
+        env: Vec::new(),
+        packages: Default::default(),
+        network: pc::NetworkPolicy::None,
+        outputs_path: pc::WorkspaceLayout::OUTPUTS_ROOT.into(),
+        requests: Default::default(),
+        limits: Default::default(),
+        filesystem_continuity: pc::FilesystemContinuity::Retained,
+        control_services: Default::default(),
+        lease_ttl_secs: None,
+    };
+    let fingerprint = pc::SandboxRealizationFingerprint::from_spec(&spec);
+    let fence = pc::SandboxEffectFence::new("effect", "owner", "runtime", 1, u64::MAX).unwrap();
+    let attempt = ContainerCreateAttempt("attempt".into());
+    let intent = ContainerRealizationIntent::Create;
+    let context = ContainerRealizationContext::new(
+        &spec.scope,
+        &fingerprint,
+        Some(&fence),
+        &intent,
+        &attempt,
+    );
+    let fingerprint_label = fingerprint.to_string();
+    let (runtime, calls) = runtime_with(7777, move |args| match args[0].as_str() {
+        "ps" if !created_response.load(Ordering::SeqCst) => ok("[]"),
+        "ps" => {
+            let state = if running_response.load(Ordering::SeqCst) {
+                "running"
+            } else {
+                "created"
+            };
+            ok(&format!(
+                r#"[{{"Id":"container-1","State":"{state}","Labels":{{"{MANAGED_SANDBOX_LABEL}":"1","{SANDBOX_ADOPTION_LABEL}":"{fingerprint_label}","{SANDBOX_REALIZATION_LABEL}":"{fingerprint_label}","{SANDBOX_ATTEMPT_LABEL}":"attempt","{SANDBOX_EFFECT_LABEL}":"effect","{SANDBOX_EFFECT_OWNER_LABEL}":"owner","{SANDBOX_EFFECT_RUNTIME_LABEL}":"runtime","{SANDBOX_EFFECT_EPOCH_LABEL}":"1","{SANDBOX_EFFECT_EXPIRY_LABEL}":"{}"}}}}]"#,
+                u64::MAX
+            ))
+        }
+        "create" => {
+            created_response.store(true, Ordering::SeqCst);
+            ok("container-1")
+        }
+        "inspect" => ok("[]"),
+        "start" => {
+            running_response.store(true, Ordering::SeqCst);
+            ok("container-1")
+        }
+        command => panic!("unexpected Podman command: {command}"),
+    });
+    let prepared = runtime
+        .prepare_for_effect(&context, &plan(), &fingerprint)
+        .await
+        .unwrap();
+    assert_eq!(prepared, "container-1", "R1");
+    assert_eq!(
+        calls
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|args| args[0] == "start")
+            .count(),
+        0,
+        "R1"
+    );
+    let active = runtime
+        .activate_for_effect(&context, &plan(), &fingerprint, &prepared)
+        .await
+        .unwrap();
+    assert_eq!(active, prepared, "R2");
+    let recorded = calls.calls.lock().unwrap();
+    assert_eq!(
+        recorded.iter().filter(|args| args[0] == "create").count(),
+        1,
+        "R3"
+    );
+    assert_eq!(
+        recorded.iter().filter(|args| args[0] == "start").count(),
+        1,
+        "R2/R3"
+    );
+}
+
+#[tokio::test]
 async fn create_response_loss_is_typed_as_may_have_committed() {
     /* Mutation-outcome cause/effect table. C1 the stable scope is absent;
-     * C2 `podman run` returns a failure after the adapter crosses the
+     * C2 `podman create` returns a failure after the adapter crosses the
      * mutation boundary; C3 the same authoritative re-observation still
      * sees no exact object. C1+C2+C3 => E1 MayHaveCommitted, never the
      * ordinary Backend rejection that authorizes participant teardown.
@@ -799,7 +902,7 @@ async fn create_response_loss_is_typed_as_may_have_committed() {
      * their corresponding create/start/remove effect edges. */
     let (runtime, _) = runtime_with(7777, |args| match args.first().map(String::as_str) {
         Some("ps") => ok("[]"),
-        Some("run") => err("injected response loss"),
+        Some("create") => err("injected response loss"),
         other => panic!("unexpected Podman command: {other:?}"),
     });
 

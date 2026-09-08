@@ -7,7 +7,7 @@ use crate::k8s_package_realization::{
     PACKAGE_REALIZATION_CONTRACT_ANNOTATION, RESOLVED_IMAGE_ANNOTATION, SANDBOX_SCOPE_ANNOTATION,
 };
 
-pub(super) async fn create(
+pub(super) async fn prepare(
     runtime: &K8sRuntime,
     context: &ContainerRealizationContext<'_>,
     plan: &ContainerPlan,
@@ -82,21 +82,11 @@ pub(super) async fn create(
             .await
             .map_err(backend)?;
     }
-    let pod_uid = created
+    let _pod_uid = created
         .metadata
         .uid
         .as_deref()
         .ok_or_else(|| backend("created pod has no UID"))?;
-    converge(
-        runtime,
-        &runtime_id,
-        &name,
-        pod_uid,
-        context,
-        plan,
-        realization_fingerprint,
-    )
-    .await?;
     Ok(name)
 }
 
