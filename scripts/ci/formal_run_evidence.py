@@ -96,13 +96,58 @@ def begin_record(repository: Path, strict: bool, now: int) -> dict:
     }
 
 
-def finish_record(record: dict, repository: Path, missing_tools: bool, now: int) -> dict:
+def finish_record(
+    record: dict,
+    repository: Path,
+    missing_tools: bool,
+    now: int,
+    exit_code: int = 0,
+    failure_kind: str | None = None,
+    failure_stage: str | None = None,
+    failure_subject: str | None = None,
+    deadline_seconds: int | None = None,
+) -> dict:
     if record.get("status") != "running" or record.get("schema_version") != 1:
         raise ValueError("formal evidence must finish one running invocation")
-    if record.get("strict") is not True or missing_tools:
-        raise ValueError("only a complete strict formal run can produce success evidence")
     if type(now) is not int or now < record["started_at_unix"]:
         raise ValueError("formal evidence completion precedes its start")
+    if type(exit_code) is not int or exit_code < 0:
+        raise ValueError("formal evidence has an invalid exit code")
+    if exit_code != 0:
+        if failure_kind not in {"execution-failed", "resource-bound"}:
+            raise ValueError("failed formal evidence has no valid failure kind")
+        if not isinstance(failure_stage, str) or not failure_stage:
+            raise ValueError("failed formal evidence has no failure stage")
+        outcome = {
+            "kind": failure_kind,
+            "exit_code": exit_code,
+            "stage": failure_stage,
+        }
+        if failure_subject is not None:
+            if not isinstance(failure_subject, str) or not failure_subject:
+                raise ValueError("failed formal evidence has an invalid failure subject")
+            outcome["subject"] = failure_subject
+        if failure_kind == "resource-bound":
+            if exit_code != 124 or failure_subject is None:
+                raise ValueError("resource-bound evidence requires an exact timed-out subject")
+            if type(deadline_seconds) is not int or deadline_seconds <= 0:
+                raise ValueError("resource-bound evidence requires a positive deadline")
+            outcome["deadline_seconds"] = deadline_seconds
+        elif deadline_seconds is not None:
+            raise ValueError("only resource-bound evidence may record a deadline")
+        return dict(
+            record,
+            status="not-passed",
+            finished_at_unix=now,
+            source_unchanged=record["source"] == source_snapshot(repository),
+            outcome=outcome,
+        )
+    if any(value is not None for value in (
+        failure_kind, failure_stage, failure_subject, deadline_seconds,
+    )):
+        raise ValueError("successful formal evidence cannot contain a failure outcome")
+    if record.get("strict") is not True or missing_tools:
+        raise ValueError("only a complete strict formal run can produce success evidence")
     if record["source"] != source_snapshot(repository):
         raise ValueError("formal evidence source changed during execution")
     if record["proof_toolchain"] != proof_toolchain(repository):
@@ -203,6 +248,10 @@ def main() -> None:
     parser.add_argument("--parent", type=Path, default=Path("target/test-timings"))
     parser.add_argument("--kind", choices=("formal", "session-observations"), default="formal")
     parser.add_argument("--exit-code", type=int, default=0)
+    parser.add_argument("--failure-kind", choices=("execution-failed", "resource-bound"))
+    parser.add_argument("--failure-stage")
+    parser.add_argument("--failure-subject")
+    parser.add_argument("--deadline-seconds", type=int)
     parser.add_argument("--strict", choices=("0", "1"), default="0")
     parser.add_argument("--missing-tools", choices=("0", "1"), default="0")
     args = parser.parse_args()
@@ -223,7 +272,11 @@ def main() -> None:
     if args.action == "begin":
         record = begin_record(ROOT, args.strict == "1", now)
     else:
-        record = finish_record(json.loads(args.record.read_text()), ROOT, args.missing_tools == "1", now)
+        record = finish_record(
+            json.loads(args.record.read_text()), ROOT, args.missing_tools == "1", now,
+            args.exit_code, args.failure_kind, args.failure_stage,
+            args.failure_subject, args.deadline_seconds,
+        )
     write_record(args.record, record)
 
 

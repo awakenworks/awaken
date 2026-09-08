@@ -10,6 +10,7 @@ use crate::egress::EgressRealizationIdentity;
 use crate::podman_plan::RootfsPlan;
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
 use crate::provider_contract::ContainerEffectFence;
+use crate::provider_contract::{PreparedContainer, PreparedContainerDisposition};
 use crate::resident_hand::ResidentHandConfig;
 
 /// Stable label every managed Sandbox container/pod carries. The wire value is
@@ -1729,13 +1730,20 @@ pub trait ContainerRuntime: Send + Sync {
         context: &crate::ContainerRealizationContext<'_>,
         plan: &ContainerPlan,
         _realization_fingerprint: &pc::SandboxRealizationFingerprint,
-    ) -> Result<String, RuntimeError> {
+    ) -> Result<PreparedContainer, RuntimeError> {
+        if !plan.memory_mounts.is_empty() {
+            return Err(RuntimeError::Backend(
+                "container runtime must implement a non-runnable reservation for Memory".into(),
+            ));
+        }
         if context.effect_fence.is_some() {
             return Err(RuntimeError::Backend(
                 "container runtime does not implement fenced realization effects".into(),
             ));
         }
-        self.create(context.scope, plan).await
+        self.create(context.scope, plan)
+            .await
+            .map(|locator| PreparedContainer::fresh(locator, context.attempt.as_str().to_owned()))
     }
 
     /// Activate the exact object returned by [`Self::prepare_for_effect`].
@@ -1770,8 +1778,14 @@ pub trait ContainerRuntime: Send + Sync {
         let prepared = self
             .prepare_for_effect(context, plan, realization_fingerprint)
             .await?;
-        self.activate_for_effect(context, plan, realization_fingerprint, &prepared)
-            .await
+        match prepared.disposition {
+            PreparedContainerDisposition::FreshReservation
+            | PreparedContainerDisposition::RecoveringReservation => {
+                self.activate_for_effect(context, plan, realization_fingerprint, &prepared.locator)
+                    .await
+            }
+            PreparedContainerDisposition::AlreadyActive => Ok(prepared.locator),
+        }
     }
 
     async fn recover_restore_target(

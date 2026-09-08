@@ -8,6 +8,7 @@ readonly z3_version="Z3 version 4.8.9 - 64 bit"
 cd "$(dirname "$0")/../.."
 source scripts/ci/_cargo_target.sh
 awaken_configure_cargo_target "$PWD"
+source scripts/ci/_deadline.sh
 
 # Prefer the repository-pinned source build when bootstrapped. The published
 # Kani 0.67 bundle embeds Rust 1.93 and cannot compile the workspace's Rust 1.96
@@ -37,18 +38,64 @@ python3 scripts/ci/formal_run_evidence.py begin \
 missing=0
 formal_tmp_root="$(mktemp -d)"
 formal_artifact_dir="$(python3 scripts/ci/formal_run_evidence.py artifacts-begin --kind formal)"
+formal_failure_kind=""
+formal_failure_stage=""
+formal_failure_subject=""
+formal_failure_deadline_seconds=""
+kani_batch_timeout_seconds="${AWAKEN_KANI_BATCH_TIMEOUT_SECONDS:-1800}"
 finish_formal_artifacts() {
-  result=$?
+  first_result=$?
+  result=$first_result
+  artifact_result=0
   trap - EXIT
-  python3 scripts/ci/formal_run_evidence.py artifacts-finish --directory "$formal_artifact_dir" --exit-code "$result" || result=1
-  if [ "$result" -eq 0 ] && [ "$require_tools" -eq 1 ]; then
-    python3 scripts/ci/formal_run_evidence.py finish \
-      --record "$formal_run_record" --missing-tools "$missing" || result=1
+  python3 scripts/ci/formal_run_evidence.py artifacts-finish \
+    --directory "$formal_artifact_dir" --exit-code "$first_result" || artifact_result=$?
+  # A successful body cannot publish Passed when its diagnostics did not seal.
+  # When the body already failed, its first cause remains authoritative.
+  if [ "$first_result" -eq 0 ] && [ "$artifact_result" -ne 0 ]; then
+    result=$artifact_result
+    formal_failure_kind="execution-failed"
+    formal_failure_stage="artifact-finalization"
+    formal_failure_subject="formal"
+    formal_failure_deadline_seconds=""
   fi
-  rm -rf "$formal_tmp_root"
+  if [ "$result" -ne 0 ]; then
+    finish_args=(
+      finish --record "$formal_run_record" --missing-tools "$missing"
+      --exit-code "$result"
+      --failure-kind "${formal_failure_kind:-execution-failed}"
+      --failure-stage "${formal_failure_stage:-formal-gate}"
+    )
+    if [ -n "$formal_failure_subject" ]; then
+      finish_args+=(--failure-subject "$formal_failure_subject")
+    fi
+    if [ -n "$formal_failure_deadline_seconds" ]; then
+      finish_args+=(--deadline-seconds "$formal_failure_deadline_seconds")
+    fi
+    # Not-passed is diagnostic and can never qualify a release. A receipt-write
+    # failure must not hide or replace the first gate failure.
+    python3 scripts/ci/formal_run_evidence.py "${finish_args[@]}" || \
+      echo "failed to finalize non-passing formal receipt" >&2
+  elif [ "$result" -eq 0 ] && [ "$require_tools" -eq 1 ]; then
+    python3 scripts/ci/formal_run_evidence.py finish \
+      --record "$formal_run_record" --missing-tools "$missing" || result=$?
+  fi
+  if ! rm -rf "$formal_tmp_root"; then
+    echo "failed to clean formal temporary directory: $formal_tmp_root" >&2
+  fi
   exit "$result"
 }
 trap finish_formal_artifacts EXIT
+# Parse the one package-batch budget after the Running receipt and EXIT owner
+# exist, but before any verification command. Invalid configuration therefore
+# cannot leave stale green evidence or consume compilation/proof resources.
+if ! [[ "$kani_batch_timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+  formal_failure_kind="execution-failed"
+  formal_failure_stage="cargo-kani-configuration"
+  formal_failure_subject="AWAKEN_KANI_BATCH_TIMEOUT_SECONDS"
+  echo "invalid cargo-kani batch deadline: $kani_batch_timeout_seconds" >&2
+  exit 2
+fi
 rust_trace_dir="$formal_artifact_dir/rust-traces"
 rendered_trace_dir="$formal_artifact_dir/rendered-traces"
 observation_trace_dir="$formal_artifact_dir/session-observations/raw"
@@ -139,13 +186,32 @@ if command -v cargo-kani >/dev/null 2>&1; then
   # CI may raise AWAKEN_KANI_JOBS only after proving its toolchain/cache layout
   # does not share those output paths.
   kani_jobs="${AWAKEN_KANI_JOBS:-1}"
+  # Each package batch is one CBMC resource boundary. An explicit environment
+  # override wins; otherwise strict and diagnostic runs both use the same finite
+  # 30-minute budget. The shared deadline helper owns descendant termination.
   run_kani() {
-    local package="$1"; shift
+    local package="$1" result
+    shift
     # C1 Cargo has an independent build-dir (user/CI configuration); E1 Kani's
     # driver still reads target/kani/debug artifacts. Keep compiler and driver
     # in that one authored tree; otherwise valid compilation ends in ENOENT.
-    CARGO_BUILD_BUILD_DIR="${CARGO_TARGET_DIR%/}/kani" \
-      cargo kani -p "$package" --output-format terse -j "$kani_jobs" "$@"
+    if CARGO_BUILD_BUILD_DIR="${CARGO_TARGET_DIR%/}/kani" \
+      run_with_deadline "$kani_batch_timeout_seconds" \
+        cargo kani -p "$package" --output-format terse -j "$kani_jobs" "$@"; then
+      return 0
+    else
+      result=$?
+    fi
+    formal_failure_kind="execution-failed"
+    formal_failure_stage="cargo-kani"
+    formal_failure_subject="$package"
+    formal_failure_deadline_seconds=""
+    if [ "$result" -eq 124 ]; then
+      formal_failure_kind="resource-bound"
+      formal_failure_deadline_seconds="$kani_batch_timeout_seconds"
+      echo "cargo-kani batch timed out: $package (${kani_batch_timeout_seconds}s)" >&2
+    fi
+    return "$result"
   }
   run_kani awaken-agent-contract \
     --harness ended_is_absorbing_for_every_next_state \

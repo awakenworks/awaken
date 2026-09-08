@@ -13,11 +13,25 @@ import unittest
 from formal_run_evidence import ROOT, begin_record, finish_record, validate_record, write_record, begin_artifacts, finish_artifacts, verify_artifacts
 
 
+def nested_shell_function(source: str, name: str) -> str:
+    marker = f"  {name}() {{\n"
+    body = source.split(marker, 1)[1].split("\n  }", 1)[0]
+    return f"{name}() {{\n{body}\n}}"
+
+
+def formal_gate_initialization(root: Path) -> str:
+    source = (root / "scripts/ci/check_formal.sh").read_text()
+    return source.split("\npython3 scripts/ci/check_feature_coverage.py", 1)[0]
+
+
 def prepare_source_fixture(root: Path, extra_sources: dict[str, str] | None = None) -> None:
     """Shared synthetic Git/receipt fixture; it never attests a real proof run."""
     root.mkdir()
     for relative in ("scripts/ci/formal_run_evidence.py", "scripts/ci/check_formal.sh",
-                     "scripts/ci/bootstrap_kani.sh", "scripts/ci/_cargo_target.sh", "scripts/ci/_provider_environment.sh", "scripts/ci/check-reliability.sh", "rust-toolchain.toml"):
+                     "scripts/ci/bootstrap_kani.sh", "scripts/ci/_cargo_target.sh",
+                     "scripts/ci/_deadline.sh", "scripts/ci/deadline.py",
+                     "scripts/ci/_provider_environment.sh", "scripts/ci/check-reliability.sh",
+                     "rust-toolchain.toml"):
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, target)
@@ -42,17 +56,16 @@ class EvidenceTests(unittest.TestCase):
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.root, stderr=subprocess.STDOUT)
 
-    def test_kani_build_dir_matches_the_driver_target_directory(self):
+    def test_kani_batch_uses_the_canonical_deadline_and_driver_target_directory(self):
         # Cause/effect graph: C1 an explicit Cargo target directory and C2 a
-        # user-level build.build-dir are both active. E1 run_kani must override
-        # only the Kani subprocess build directory to <target>/kani, because
-        # that is the location the existing Kani driver reads after compiling;
-        # E2 the package, job count, and harness arguments remain unchanged.
-        # Decision table: R1 C1+C2 -> E1+E2. Omitting C2 is not a separate rule:
-        # the same exact path is valid and keeps one invocation owner.
+        # user-level build.build-dir are active; C3 the configured batch deadline
+        # is 37 seconds. E1 run_kani overrides only the Kani subprocess build
+        # directory to <target>/kani; E2 package/jobs/harnesses remain exact; E3
+        # the one shared deadline owner encloses Cargo. Constraints: the runner
+        # must not grow a second timer or a per-harness rebuild path. Decision
+        # rule R1: C1+C2+C3 -> E1+E2+E3.
         source = (self.root / "scripts/ci/check_formal.sh").read_text()
-        body = source.split("  run_kani() {\n", 1)[1].split("\n  }", 1)[0]
-        function = "run_kani() {\n" + body + "\n}"
+        function = nested_shell_function(source, "run_kani")
         bindir = Path(self.temporary.name) / "kani-bin"
         bindir.mkdir()
         cargo = bindir / "cargo"
@@ -61,17 +74,22 @@ class EvidenceTests(unittest.TestCase):
         )
         cargo.chmod(0o755)
         calls = bindir / "calls"
+        deadline_call = bindir / "deadline-call"
         target = Path(self.temporary.name) / "cargo-target"
         script = (
             "set -euo pipefail\n"
             f"CARGO_TARGET_DIR={shlex.quote(str(target))}\n"
             "kani_jobs=1\n"
+            "kani_batch_timeout_seconds=37\n"
+            "formal_failure_kind= formal_failure_stage= formal_failure_subject= "
+            "formal_failure_deadline_seconds=\n"
+            "run_with_deadline() { printf '%s\\n' \"$1\" > \"$DEADLINE_CALL\"; shift; \"$@\"; }\n"
             + function
             + "\nrun_kani awaken-dispatch --no-default-features --harness exact_claim\n"
         )
         result = subprocess.run(
             ["/bin/bash", "-c", script],
-            env=dict(os.environ, PATH=str(bindir), CALLS=str(calls)),
+            env=dict(os.environ, PATH=str(bindir), CALLS=str(calls), DEADLINE_CALL=str(deadline_call)),
             capture_output=True,
             text=True,
             timeout=10,
@@ -84,6 +102,39 @@ class EvidenceTests(unittest.TestCase):
             "kani -p awaken-dispatch --output-format terse -j 1 "
             "--no-default-features --harness exact_claim",
         )
+        self.assertEqual(deadline_call.read_text(), "37\n")
+
+    def test_kani_batch_outcomes_preserve_the_exact_first_failure(self):
+        # Causes: C1 wrapper success, C2 ordinary Cargo failure, C3 deadline
+        # status 124. Effects: E1 no failure metadata; E2 exact 23 plus
+        # execution-failed; E3 exact 124 plus resource-bound/package/deadline.
+        # Constraints: 124 is the shared deadline contract and no later receipt
+        # step may replace it. Decision rules: R1=C1->E1, R2=C2->E2, R3=C3->E3.
+        source = (self.root / "scripts/ci/check_formal.sh").read_text()
+        function = nested_shell_function(source, "run_kani")
+        for wrapped_status, expected in (
+            (0, (0, "", "", "", "")),
+            (23, (23, "execution-failed", "cargo-kani", "awaken-provider", "")),
+            (124, (124, "resource-bound", "cargo-kani", "awaken-provider", "37")),
+        ):
+            with self.subTest(wrapped_status=wrapped_status):
+                script = (
+                    "set -uo pipefail\nCARGO_TARGET_DIR=/build/fixture\nkani_jobs=1\n"
+                    "kani_batch_timeout_seconds=37\n"
+                    "formal_failure_kind= formal_failure_stage= formal_failure_subject= "
+                    "formal_failure_deadline_seconds=\n"
+                    f"run_with_deadline() {{ return {wrapped_status}; }}\n"
+                    + function
+                    + "\nrun_kani awaken-provider --harness exact\n"
+                    "status=$?\nprintf '%s\\n' \"$status\" \"$formal_failure_kind\" "
+                    "\"$formal_failure_stage\" \"$formal_failure_subject\" "
+                    "\"$formal_failure_deadline_seconds\"\n"
+                )
+                result = subprocess.run(["/bin/bash", "-c", script], capture_output=True,
+                                        text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(tuple([int(result.stdout.splitlines()[0]),
+                                        *result.stdout.splitlines()[1:]]), expected)
 
     def test_pinned_solver_selection_and_strict_missing_tool_policy(self):
         # Z1 installed exact version + proof success => invoke the exact harness.
@@ -189,6 +240,42 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "source changed"):
             finish_record(record, self.root, False, 110)
 
+    def test_nonpassing_receipt_classifies_resource_bounds_without_promotion(self):
+        # Causes: C1 ordinary execution exits 23; C2 a named Kani package reaches
+        # the canonical 124 deadline; C3 resource-bound metadata is incomplete or
+        # attached to another exit code. Effects: E1/E2 become Not-passed with the
+        # exact first exit and classification; neither validates for release; E3
+        # is rejected. Constraints: only a strict unchanged exit-0 invocation may
+        # become Passed. Decision rules: R1=C1->N1, R2=C2->N2, R3=C3->reject.
+        ordinary = finish_record(
+            begin_record(self.root, True, 100), self.root, False, 110,
+            23, "execution-failed", "formal-gate",
+        )
+        self.assertEqual(ordinary["status"], "not-passed")
+        self.assertEqual(ordinary["outcome"], {
+            "kind": "execution-failed", "exit_code": 23, "stage": "formal-gate",
+        })
+        timed_out = finish_record(
+            begin_record(self.root, True, 100), self.root, False, 110,
+            124, "resource-bound", "cargo-kani", "awaken-provider-genai", 37,
+        )
+        self.assertEqual(timed_out["status"], "not-passed")
+        self.assertEqual(timed_out["outcome"], {
+            "kind": "resource-bound", "exit_code": 124, "stage": "cargo-kani",
+            "subject": "awaken-provider-genai", "deadline_seconds": 37,
+        })
+        for record in (ordinary, timed_out):
+            with self.assertRaisesRegex(ValueError, "not a completed strict run"):
+                validate_record(record, self.root, 110)
+        for exit_code, subject, deadline in ((23, "package", 37), (124, None, 37),
+                                             (124, "package", 0)):
+            with self.subTest(exit_code=exit_code, subject=subject, deadline=deadline), \
+                    self.assertRaises(ValueError):
+                finish_record(
+                    begin_record(self.root, True, 100), self.root, False, 110,
+                    exit_code, "resource-bound", "cargo-kani", subject, deadline,
+                )
+
     def test_every_release_identity_axis_is_binding(self):
         # V2-V4: take a valid completed receipt, change one axis at a time.
         # Every mutation rejects independently; the positive row prevents a
@@ -221,10 +308,11 @@ class EvidenceTests(unittest.TestCase):
             validate_record(json.loads(path.read_text()), self.root, 120)
         self.assertEqual([p.name for p in path.parent.iterdir()], [path.name])
 
-    def test_actual_gate_failure_leaves_running_not_stale_success(self):
+    def test_actual_gate_failure_replaces_stale_success_with_not_passed(self):
         # C1 a completed previous run; C2 the actual check_formal.sh starts;
-        # C3 its first checker fails with 23. R=C1+C2+C3 => nonzero body and
-        # Running receipt, with no Cargo/proof call and no stale green reuse.
+        # C3 its first checker fails with 23. Effects: exact 23 exits and is
+        # finalized as Not-passed/execution-failed; no Cargo/proof call and no
+        # stale green reuse. Decision rule R1=C1+C2+C3->E1+E2.
         path = self.root / "target/test-timings/formal-run.json"
         write_record(path, finish_record(begin_record(self.root, True, 100), self.root, False, 110))
         bindir = Path(self.temporary.name) / "bin"
@@ -239,19 +327,140 @@ class EvidenceTests(unittest.TestCase):
         result = subprocess.run(["bash", "scripts/ci/check_formal.sh", "--require-tools"],
                                 cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 23, result.stderr)
-        self.assertEqual(json.loads(path.read_text())["status"], "running")
+        record = json.loads(path.read_text())
+        self.assertEqual(record["status"], "not-passed")
+        self.assertEqual(record["outcome"], {
+            "kind": "execution-failed", "exit_code": 23, "stage": "formal-gate",
+        })
         bundles = list((self.root / "target/test-timings").glob("formal-*/evidence.json"))
         self.assertEqual(len(bundles), 1)
         failure = verify_artifacts(bundles[0].parent, self.root)
         self.assertEqual((failure["status"], failure["exit_code"]), ("failed", 23))
 
+    def test_invalid_kani_deadline_fails_before_the_first_gate_command(self):
+        # Cause C1: the explicit Kani batch deadline is zero. Effects: E1 the
+        # initialized receipt becomes Not-passed/execution-failed with exact exit
+        # 2; E2 the first checker is not invoked; E3 the diagnostic bundle seals
+        # as failed. Constraints: validation occurs only after receipt/trap setup
+        # and before every real gate command. Decision rule R1=C1->E1+E2+E3.
+        bindir = Path(self.temporary.name) / "invalid-config-bin"
+        bindir.mkdir()
+        checker_started = bindir / "checker-started"
+        shim = bindir / "python3"
+        shim.write_text(
+            "#!/bin/sh\ncase \"$1\" in\n"
+            "  scripts/ci/formal_run_evidence.py) exec "
+            + shlex.quote(sys.executable) + " \"$@\" ;;\n"
+            "  *) touch \"$CHECKER_STARTED\"; exit 0 ;;\n"
+            "esac\n"
+        )
+        shim.chmod(0o755)
+        path = self.root / "target/test-timings/formal-run.json"
+        result = subprocess.run(
+            ["bash", "scripts/ci/check_formal.sh", "--require-tools"],
+            cwd=self.root,
+            env=dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ["PATH"],
+                     AWAKEN_FORMAL_RUN_EVIDENCE=str(path),
+                     AWAKEN_KANI_BATCH_TIMEOUT_SECONDS="0",
+                     CHECKER_STARTED=str(checker_started)),
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertFalse(checker_started.exists())
+        record = json.loads(path.read_text())
+        self.assertEqual(record["status"], "not-passed")
+        self.assertEqual(record["outcome"], {
+            "kind": "execution-failed", "exit_code": 2,
+            "stage": "cargo-kani-configuration",
+            "subject": "AWAKEN_KANI_BATCH_TIMEOUT_SECONDS",
+        })
+        bundles = list((self.root / "target/test-timings").glob("formal-*/evidence.json"))
+        self.assertEqual(len(bundles), 1)
+        self.assertEqual(verify_artifacts(bundles[0].parent, self.root)["exit_code"], 2)
+
+    def test_actual_timeout_trap_preserves_resource_bound_if_artifact_sealing_fails(self):
+        # Causes: C1 the Kani boundary records package/deadline then returns 124;
+        # C2 artifact sealing independently fails. Effects: E1 process exit remains
+        # the first 124; E2 the sole formal receipt remains Not-passed and names
+        # the resource boundary; E3 no Passed publication occurs. Constraints:
+        # diagnostic artifact completeness cannot rewrite proof execution truth.
+        # Decision rule R1=C1+C2->E1+E2+E3.
+        initialization = formal_gate_initialization(self.root)
+        bindir = Path(self.temporary.name) / "timeout-bin"
+        bindir.mkdir()
+        shim = bindir / "python3"
+        shim.write_text(
+            '#!/bin/sh\nif [ "$2" = artifacts-finish ]; then exit 37; fi\nexec '
+            + shlex.quote(sys.executable) + ' "$@"\n'
+        )
+        shim.chmod(0o755)
+        path = self.root / "target/test-timings/formal-run.json"
+        body = initialization + (
+            "\nformal_failure_kind=resource-bound\n"
+            "formal_failure_stage=cargo-kani\n"
+            "formal_failure_subject=awaken-provider-genai\n"
+            "formal_failure_deadline_seconds=37\nexit 124\n"
+        )
+        result = subprocess.run(
+            ["bash", "-c", body, "scripts/ci/check_formal.sh", "--require-tools"],
+            cwd=self.root,
+            env=dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ["PATH"],
+                     AWAKEN_FORMAL_RUN_EVIDENCE=str(path)),
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 124, result.stderr)
+        record = json.loads(path.read_text())
+        self.assertEqual(record["status"], "not-passed")
+        self.assertEqual(record["outcome"], {
+            "kind": "resource-bound", "exit_code": 124, "stage": "cargo-kani",
+            "subject": "awaken-provider-genai", "deadline_seconds": 37,
+        })
+
+    def test_cleanup_failure_never_replaces_the_body_failure(self):
+        # Causes: C1 body exits 23 or C2 a named Kani boundary exits 124; C3 the
+        # temporary-directory cleanup returns 41 afterward. Effects: E1 exact
+        # first status survives; E2 its Not-passed outcome survives; E3 cleanup
+        # failure is diagnostic only. Constraints: cleanup cannot promote or
+        # rewrite verification evidence. Rules R1=C1+C3->23, R2=C2+C3->124.
+        initialization = formal_gate_initialization(self.root)
+        bindir = Path(self.temporary.name) / "cleanup-bin"
+        bindir.mkdir()
+        cleanup = bindir / "rm"
+        cleanup.write_text('#!/bin/sh\necho cleanup-failure >&2\nexit 41\n')
+        cleanup.chmod(0o755)
+        for body_status in (23, 124):
+            with self.subTest(body_status=body_status):
+                path = self.root / f"target/test-timings/formal-run-{body_status}.json"
+                metadata = ""
+                if body_status == 124:
+                    metadata = (
+                        "formal_failure_kind=resource-bound\n"
+                        "formal_failure_stage=cargo-kani\n"
+                        "formal_failure_subject=awaken-provider-genai\n"
+                        "formal_failure_deadline_seconds=37\n"
+                    )
+                result = subprocess.run(
+                    ["bash", "-c", initialization + "\n" + metadata
+                     + f"exit {body_status}\n",
+                     "scripts/ci/check_formal.sh", "--require-tools"],
+                    cwd=self.root,
+                    env=dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ["PATH"],
+                             AWAKEN_FORMAL_RUN_EVIDENCE=str(path)),
+                    capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(result.returncode, body_status, result.stderr)
+                self.assertIn("failed to clean formal temporary directory", result.stderr)
+                record = json.loads(path.read_text())
+                self.assertEqual(record["status"], "not-passed")
+                self.assertEqual(record["outcome"]["exit_code"], body_status)
+
     def test_actual_completion_trap_seals_before_publishing_success(self):
-        # A8 body succeeds + sealing succeeds -> Passed; A9 body succeeds +
-        # sealing fails -> nonzero and Running. Execute the real script's
-        # initialization/EXIT trap, replacing only the expensive proof body.
-        # This tests publication ordering, not a successful formal proof run.
-        source = (self.root / "scripts/ci/check_formal.sh").read_text()
-        initialization, _ = source.split("\npython3 scripts/ci/check_feature_coverage.py", 1)
+        # Causes: C1 body and artifact sealing succeed; C2 body succeeds but
+        # artifact sealing exits 37. Effects: E1 strict Passed; E2 exact 37 plus
+        # Not-passed/artifact-finalization. Constraints: diagnostic failure can
+        # never leave or publish success. Rules R1=C1->E1, R2=C2->E2. Execute the
+        # real initialization/EXIT trap while replacing only the proof body.
+        initialization = formal_gate_initialization(self.root)
         bindir = Path(self.temporary.name) / "completion-bin"
         bindir.mkdir()
         shim = bindir / "python3"
@@ -266,8 +475,14 @@ class EvidenceTests(unittest.TestCase):
                 result = subprocess.run(["bash", "-c", initialization + "\nexit 0\n",
                                          "scripts/ci/check_formal.sh", "--require-tools"],
                                         cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
-                self.assertEqual(result.returncode, 1 if fail_seal else 0, result.stderr)
-                self.assertEqual(json.loads(path.read_text())["status"], "running" if fail_seal else "passed")
+                self.assertEqual(result.returncode, 37 if fail_seal else 0, result.stderr)
+                record = json.loads(path.read_text())
+                self.assertEqual(record["status"], "not-passed" if fail_seal else "passed")
+                if fail_seal:
+                    self.assertEqual(record["outcome"], {
+                        "kind": "execution-failed", "exit_code": 37,
+                        "stage": "artifact-finalization", "subject": "formal",
+                    })
 
     def test_actual_native_failure_retains_partial_trace_and_log(self):
         # A7 the actual native composition runs, first Cargo writes partial

@@ -686,7 +686,7 @@ mod tests {
             context: &crate::ContainerRealizationContext<'_>,
             plan: &crate::ContainerPlan,
             _realization_fingerprint: &pc::SandboxRealizationFingerprint,
-        ) -> Result<String, crate::RuntimeError> {
+        ) -> Result<crate::PreparedContainer, crate::RuntimeError> {
             self.realization_phases
                 .lock()
                 .unwrap()
@@ -700,7 +700,19 @@ mod tests {
             if context.effect_fence.is_some() {
                 self.fenced_creates.fetch_add(1, Ordering::SeqCst);
             }
-            self.create(context.scope, plan).await
+            self.create(context.scope, plan).await.map(|locator| {
+                crate::PreparedContainer::fresh(locator, context.attempt.as_str().to_owned())
+            })
+        }
+
+        async fn activate_for_effect(
+            &self,
+            _context: &crate::ContainerRealizationContext<'_>,
+            _plan: &crate::ContainerPlan,
+            _realization_fingerprint: &pc::SandboxRealizationFingerprint,
+            prepared_locator: &str,
+        ) -> Result<String, crate::RuntimeError> {
+            Ok(prepared_locator.to_owned())
         }
 
         async fn open_channel(

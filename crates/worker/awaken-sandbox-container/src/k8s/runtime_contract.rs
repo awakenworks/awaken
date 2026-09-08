@@ -5,6 +5,7 @@
 //! port projection and its attached-agent transport sequence.
 
 use super::*;
+use crate::PreparedContainer;
 
 pub(super) fn deletion_incarnation(
     runtime_handle: Option<&pc::ContainerContinuationHandle>,
@@ -166,7 +167,7 @@ impl ContainerRuntime for K8sRuntime {
         context: &ContainerRealizationContext<'_>,
         plan: &ContainerPlan,
         realization_fingerprint: &pc::SandboxRealizationFingerprint,
-    ) -> Result<String, RuntimeError> {
+    ) -> Result<PreparedContainer, RuntimeError> {
         self.admit_plan(plan).await?;
         if !plan.memory_mounts.is_empty() && context.effect_fence.is_none() {
             return Err(backend(
@@ -180,14 +181,32 @@ impl ContainerRuntime for K8sRuntime {
             let before = decision.clone();
             let outcome = match decision {
                 ExistingRealizationDecision::Create => {
-                    creation::prepare(self, context, plan, realization_fingerprint).await
+                    creation::prepare(self, context, plan, realization_fingerprint)
+                        .await
+                        .map(|locator| {
+                            PreparedContainer::fresh(locator, context.attempt.as_str().to_owned())
+                        })
                 }
-                ExistingRealizationDecision::ConvergeCreating(observed)
-                | ExistingRealizationDecision::ReuseReady(observed) => Ok(observed.locator),
-                ExistingRealizationDecision::ReplaceExact(observed) => self
-                    .replace_exact_realization(&observed)
-                    .await
-                    .map(|()| String::new()),
+                ExistingRealizationDecision::ConvergeCreating(observed) => {
+                    let attempt_id = observed.attempt_id.ok_or_else(|| {
+                        backend("Kubernetes prepared realization has no Memory attempt identity")
+                    })?;
+                    Ok(PreparedContainer::recovering(observed.locator, attempt_id))
+                }
+                ExistingRealizationDecision::ReuseReady(observed) => {
+                    let attempt_id = observed.attempt_id.ok_or_else(|| {
+                        backend("Kubernetes active realization has no Memory attempt identity")
+                    })?;
+                    Ok(PreparedContainer::already_active(
+                        observed.locator,
+                        attempt_id,
+                    ))
+                }
+                ExistingRealizationDecision::ReplaceExact(observed) => {
+                    self.replace_exact_realization(&observed).await.map(|()| {
+                        PreparedContainer::fresh(String::new(), context.attempt.as_str().to_owned())
+                    })
+                }
                 ExistingRealizationDecision::ValidateExisting(_) => {
                     return Err(backend(
                         "Kubernetes create reached a fingerprint-deferred decision",
@@ -195,7 +214,7 @@ impl ContainerRuntime for K8sRuntime {
                 }
             };
             match outcome {
-                Ok(name) if !name.is_empty() => return Ok(name),
+                Ok(prepared) if !prepared.locator.is_empty() => return Ok(prepared),
                 Ok(_) => {}
                 Err(error) => {
                     let after = self

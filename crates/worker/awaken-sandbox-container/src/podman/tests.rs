@@ -796,8 +796,10 @@ async fn fenced_prepare_reserves_then_exact_activation_starts_once() {
     // R1 absent prepare issues exactly one `create` and zero `start`; R2 exact
     // prepared activation issues one `start` and returns only after the same
     // locator is Ready; R3 create response, repeated observation and Ready
-    // replay never issue a second create/start. Foreign-locator rejection is
-    // owned by the shared existing-realization decision table.
+    // replay never issue a second create/start; R4 the compatibility composer
+    // consumes the same phases and returns that active locator without a second
+    // activation. Foreign-locator rejection is owned by the shared existing-
+    // realization decision table.
     let running = Arc::new(AtomicBool::new(false));
     let created = Arc::new(AtomicBool::new(false));
     let running_response = running.clone();
@@ -860,7 +862,12 @@ async fn fenced_prepare_reserves_then_exact_activation_starts_once() {
         .prepare_for_effect(&context, &plan(), &fingerprint)
         .await
         .unwrap();
-    assert_eq!(prepared, "container-1", "R1");
+    assert_eq!(prepared.locator, "container-1", "R1");
+    assert_eq!(
+        prepared.disposition,
+        crate::PreparedContainerDisposition::FreshReservation,
+        "R1"
+    );
     assert_eq!(
         calls
             .calls
@@ -873,20 +880,41 @@ async fn fenced_prepare_reserves_then_exact_activation_starts_once() {
         "R1"
     );
     let active = runtime
-        .activate_for_effect(&context, &plan(), &fingerprint, &prepared)
+        .activate_for_effect(&context, &plan(), &fingerprint, &prepared.locator)
         .await
         .unwrap();
-    assert_eq!(active, prepared, "R2");
+    assert_eq!(active, prepared.locator, "R2");
+    {
+        let recorded = calls.calls.lock().unwrap();
+        assert_eq!(
+            recorded.iter().filter(|args| args[0] == "create").count(),
+            1,
+            "R3"
+        );
+        assert_eq!(
+            recorded.iter().filter(|args| args[0] == "start").count(),
+            1,
+            "R2/R3"
+        );
+    }
+    assert_eq!(
+        runtime
+            .create_for_effect(&context, &plan(), &fingerprint)
+            .await
+            .unwrap(),
+        prepared.locator,
+        "R4"
+    );
     let recorded = calls.calls.lock().unwrap();
     assert_eq!(
         recorded.iter().filter(|args| args[0] == "create").count(),
         1,
-        "R3"
+        "R4"
     );
     assert_eq!(
         recorded.iter().filter(|args| args[0] == "start").count(),
         1,
-        "R2/R3"
+        "R4"
     );
 }
 
