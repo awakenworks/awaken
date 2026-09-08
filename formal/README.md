@@ -543,6 +543,8 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   response or times out and is eventually released. Its explicit finite
   completion bound is only for TLC; the concurrency invariants are independent
   of the chosen bound.
+  Credential effect and MCP delivery scope is maintained in the
+  [verification boundaries](VERIFICATION_BOUNDARIES.md#credential-effect-and-mcp-delivery-evidence).
   `AcpBoundary` additionally checks two independent waiters, cancellation of an
   observer, TERM/KILL requests, lease cleanup timeout, actual process exit and
   ACK. Only observed exit permits ACK; eventual ACK assumes fair acknowledgement
@@ -1071,18 +1073,6 @@ remain outside the state-machine proof. They require idempotency contracts,
 adapter integration tests, fault injection, real-runtime isolation tests,
 k6/soak tests, and operational reconciliation; a larger finite TLC bound alone
 cannot prove them.
-
-`McpCredentialDelivery` proves the local post-adoption boundary: once a
-revocation transition removes the accepting attachment generation, no later MCP
-call can use that revision, and a replacement generation must rebuild the ACP
-process before it is accepted. The Runtime implementation additionally closes
-new local transport admission, cancels and waits for every busy generation call,
-quiesces the active Session Run, and reaps the generation-owned process before
-acknowledging `Removed`; executable concurrency tests cover that implementation
-boundary. The model still does not prove prompt provider-side revocation,
-network delivery, or reversal of a third-party side effect already accepted
-before cancellation. Those remain external operational boundaries rather than
-overclaimed formal theorems.
 
 `ObservationReconcile` proves the in-process fence and mutex protocol assuming
 the Worker directory accepts heartbeats in strictly increasing sequence order
