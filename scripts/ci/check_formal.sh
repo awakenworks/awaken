@@ -325,6 +325,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness dispatch_maintenance_transitions_are_closed_and_exact \
     --harness commit_epoch_completion_requires_observed_release \
     --harness commit_epoch_guard_admits_only_complete_exact_claim \
+    --harness pre_start_no_effect_ack_requires_fresh_install_admission \
     --harness physical_attempt_slot_installs_and_clears_only_exact_authority \
     --harness physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair
   run_kani awaken-dispatch --no-default-features \
