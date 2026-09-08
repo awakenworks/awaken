@@ -172,6 +172,7 @@ pub struct RelinquishRequest {
 /// claim is required because a stale predecessor may acknowledge only its own
 /// execution epoch after the durable lease has advanced.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AttemptExecutionRequest {
     pub claim: RunClaim,
     #[serde(default)]

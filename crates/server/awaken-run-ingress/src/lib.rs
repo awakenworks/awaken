@@ -51,7 +51,7 @@ pub use any::AnyDispatchStore;
 pub use application::{
     ApplicationError, ApplicationErrorKind, ClaimedCommitService,
     ClaimedOperationCoordinatorResolver, DurableDispatchStatus, DurableRunOperations,
-    DurableSupersedeResult,
+    DurableSupersedeResult, WorkerExecutionBindingSource,
 };
 pub use awaken_run_ingress_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,

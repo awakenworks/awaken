@@ -231,10 +231,28 @@ orphan binding without an occupied owner/epoch pair.
 The value is a coordinate, not a receipt or proof of provider provenance. Trusted
 in-process composition may supply it to `DispatchWorker` before admission;
 the HTTP client rejects supplied coordinates instead of silently discarding them
-or accepting Worker JSON as provider authority. The existing wire schema is
-unchanged. Provider-backed Coordinator binding and independent stop-result
-consumption are not wired yet; the current restartable Worker Pod profile is
-not admitted by the Kubernetes adapter. Therefore the new persisted coordinate
+or accepting Worker JSON as provider authority. The two physical-admission HTTP
+verbs now share one authenticated handler sequence. An optional Coordinator-owned
+`WorkerExecutionBindingSource` supplies the coordinate for the verified registered
+incarnation; the request carries no binding or stop evidence and rejects unknown
+fields. Configured lookup failure/timeout cannot fall back to None. Lookup holds
+no Dispatch lock, is bounded to one server lease budget, and is followed by a
+fresh Registry check and a fresh dispatch clock sample before the ordinary
+transaction. Same-claim response-loss retries still use the existing immutable
+binding rule. The exact predecessor ACK does not depend on this lookup service.
+The source is threaded through the existing Coordinator composition, without a
+new cache, state store or recovery queue. The CLI deliberately leaves it absent:
+an authenticated Kubernetes Worker-to-Pod identity adapter has not been selected.
+The current restartable Worker Pod profile is not admitted by the Kubernetes
+adapter, and independent stop-result consumption remains unwired. The signed
+HTTP R1-R13 decision table covers source failures, identity/epoch changes during
+lookup, no-lock renewal progress and strict request parsing. Exact-claim preflight
+also rejects invented/stale Runs before provider lookup; it does not replace the
+final atomic admission check. Enabling or disabling the source cannot rewrite an
+existing slot's binding; configuration rollout cannot backfill historical proof.
+These are executable
+transport tests, not provider-provenance or full crash-recovery proofs.
+Therefore the new persisted coordinate
 alone cannot authorize crash recovery or clear a slot. B1-B22 test comments own
 the binding lifecycle, transaction-race, reopen, corruption and transport
 decision table, including the Native tool-entry boundary and historical upgrade.

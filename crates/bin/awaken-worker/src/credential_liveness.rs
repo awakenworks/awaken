@@ -28,21 +28,21 @@ pub(crate) fn validate_observation_timing(
     if probe_interval.is_zero() || observation_ttl <= probe_interval {
         return Err("credential observation TTL must exceed the non-zero probe interval".into());
     }
-    if let Some(timing) = publication {
-        if !observation_budget_fits(
+    if let Some(timing) = publication
+        && !observation_budget_fits(
             probe_interval,
             observation_ttl,
             timing.renew_interval(),
             timing.request_timeout(),
-        ) {
-            return Err(format!(
-                "credential observation TTL {:?} must exceed probe interval {:?} + heartbeat interval {:?} + request budget {:?}",
-                observation_ttl,
-                probe_interval,
-                timing.renew_interval(),
-                timing.request_timeout(),
-            ));
-        }
+        )
+    {
+        return Err(format!(
+            "credential observation TTL {:?} must exceed probe interval {:?} + heartbeat interval {:?} + request budget {:?}",
+            observation_ttl,
+            probe_interval,
+            timing.renew_interval(),
+            timing.request_timeout(),
+        ));
     }
     Ok(())
 }

@@ -1,6 +1,9 @@
 //! The production request identity is wired through lifecycle and dispatch
 //! clients over a real socket, including the post-registration incarnation bind.
 
+#[path = "signed_worker_transport_http/attempt_binding.rs"]
+mod attempt_binding;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 

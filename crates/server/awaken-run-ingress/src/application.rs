@@ -9,6 +9,19 @@ use awaken_agent_contract::thread::commit::operation::{CommitReceipt, commit_pay
 use crate::commit_fence::validate_commit_dispatch_binding;
 use crate::{ClaimedCommitRequest, DispatchQueue, RunDispatch};
 
+/// Trusted Coordinator composition resolves an exact running execution domain
+/// before physical admission. Worker request JSON is never an implementation.
+/// Implementations must verify provider provenance and the full incarnation;
+/// returning a coordinate is not a stop receipt or permission to clear a slot.
+/// Lookup is read-only and retryable: it must not launch or stop execution.
+#[async_trait::async_trait]
+pub trait WorkerExecutionBindingSource: Send + Sync {
+    async fn binding_for(
+        &self,
+        worker: &crate::WorkerIdentity,
+    ) -> Result<crate::AttemptExecutionBinding, ApplicationError>;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplicationErrorKind {
     InvalidRequest,
