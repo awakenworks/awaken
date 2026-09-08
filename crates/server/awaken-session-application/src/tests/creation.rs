@@ -1465,9 +1465,14 @@ async fn session_application_admits_new_and_existing_protocol_threads() {
     // Cause/effect graph: C1 durable thread absent/present; C2 workspace matches
     // the durable owner; C3 Agent is available. Effects: E1 absent creates one
     // frozen Session; E2 present reuses and realizes that same aggregate; E3 an
-    // owner mismatch fails before Runtime execution. Decision table: A1 absent+
-    // C3 => E1; A2 present+C2 => E2; A3 present+!C2 => E3. This is the concrete
-    // application gate shared by AI SDK, AG-UI, and A2A.
+    // owner mismatch fails before Runtime execution; C4 the canonical full
+    // workspace feature graph expands the profiled creation future. Effects:
+    // E1 absent creates one frozen Session; E2 present reuses and realizes that
+    // same aggregate; E3 owner mismatch fails before Runtime execution; E4 the
+    // profiled creation boundary completes on the default Tokio worker stack.
+    // Decision table: A1 absent+C3+C4 => E1+E4; A2 present+C2 => E2; A3
+    // present+!C2 => E3. The canonical full Rust gate owns C4; this test is the
+    // concrete application gate shared by AI SDK, AG-UI, and A2A.
     let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("test repository"),

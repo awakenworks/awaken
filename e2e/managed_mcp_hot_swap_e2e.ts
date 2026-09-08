@@ -3,7 +3,8 @@
 //
 // Cause-effect graph:
 //   C1 desired set differs -> durable generation transition -> E1 exact active set
-//   C2 Idempotency-Key seen with same hash -> E2 replay, no effect/event
+//   C2 Idempotency-Key seen with same hash after later root facts -> E2 replay,
+//      current body/current root ETag, no effect/event
 //   C3 Idempotency-Key seen with another hash -> E3 conflict, no effect
 //   C4 If-Match differs from root revision -> E4 conflict, no effect
 //   C5 desired set empty -> E5 drain/remove, empty projection
@@ -15,7 +16,7 @@
 // Decision table:
 // | Rule | desired | key       | If-Match | Effect |
 // | H1   | replace | new       | absent   | switch A -> B and call only B |
-// | H2   | same    | H1 replay | absent   | same ETag, no event/I/O |
+// | H2   | same    | H1 replay | absent   | current body + current root ETag, no event/I/O |
 // | H3   | remove  | H1 reused | absent   | 409, B remains active |
 // | H4   | remove  | new       | stale    | 409, B remains active |
 // | H5   | empty   | new       | current  | drain B, project empty |
@@ -132,9 +133,23 @@ async function main(): Promise<void> {
       assert.equal(fixtureA.calls.filter((call: any) => call.method === 'tools/call').length, 1);
       pass('H1 replace switches the exact active generation from A to B');
 
+      // H2: the intervening completed Run advances the Session root after H1.
+      // The durable command receipt still suppresses the duplicate effect, but
+      // its historical revision cannot version the current response body.
+      const currentBeforeReplay = await retrieveSessionWithEtag(client, sessionId, BETAS);
+      assert.notEqual(
+        currentBeforeReplay.etag,
+        replacedEtag,
+        'H2 setup advances the root beyond the historical update receipt',
+      );
       const beforeReplayIo = fixtureB.calls.length;
       const replay = await update(client, sessionId, [serverB], { 'Idempotency-Key': 'swap-to-b' });
-      assert.equal(responseEtag(replay.response), replacedEtag, 'H2 replays the committed revision');
+      assert.equal(
+        responseEtag(replay.response),
+        currentBeforeReplay.etag,
+        'H2 returns the current coherent representation revision',
+      );
+      assert.deepEqual(replay.data, currentBeforeReplay.session, 'H2 returns the current body');
       assert.equal(fixtureB.calls.length, beforeReplayIo, 'H2 performs no MCP I/O');
       const afterReplayEvents = (await events(client, sessionId)).filter(
         (event) => event.type === 'session.updated',
