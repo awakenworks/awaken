@@ -114,8 +114,13 @@ pub(crate) fn retained_host_staging_path(
     path: std::path::PathBuf,
 ) -> Result<StagingGuard, RuntimeError> {
     validate_host_staging_path(&path)?;
-    let metadata = std::fs::symlink_metadata(&path)
-        .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+    let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            RuntimeError::Backend("retained host staging path is missing".into())
+        } else {
+            RuntimeError::Backend(error.to_string())
+        }
+    })?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(RuntimeError::Backend(
             "restored host-bind staging locator is not a physical directory".into(),

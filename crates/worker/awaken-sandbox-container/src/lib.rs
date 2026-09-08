@@ -52,6 +52,7 @@ pub use egress::{
 };
 pub use live_inputs::{LIVE_INPUTS_ROOT, live_input_relative_path};
 pub use packages::package_containerfile;
+#[cfg(any(test, feature = "podman"))]
 pub(crate) use podman_plan::podman_create_argv;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 use podman_plan::{image_of, rootfs_of};
@@ -59,7 +60,8 @@ pub use provider_contract::{
     ContainerCreateAttempt, ContainerEffectFence, ContainerEnvironment,
     ContainerEnvironmentAdoption, ContainerEnvironmentProvider, ContainerObservationExpectation,
     ContainerObservationPurpose, ContainerRealizationContext, ContainerRealizationIntent,
-    ContainerRealizationNamespace, EnvironmentFile,
+    ContainerRealizationNamespace, EnvironmentFile, PreparedContainer,
+    PreparedContainerDisposition,
 };
 pub use resident_hand::ResidentHandConfig;
 #[cfg(any(test, feature = "docker", feature = "podman"))]
@@ -94,7 +96,9 @@ use runtime::{
     container_realization_fingerprint, container_runtime_unix_now_ms,
 };
 pub use secret::SecretBytes;
-use staged_mounts::{StagedMemoryMount, StagedMounts};
+use staged_mounts::{
+    StagedMemoryMount, StagedMounts, materialize_memory_binds, reserve_memory_binds,
+};
 pub use writable::{
     checkpoint_writable_roots, checkpoint_writable_roots_from_output_path,
     validate_checkpoint_writable_roots, writable_dirs,
@@ -566,159 +570,6 @@ fn secret_writeback_projection(mount: &pc::MountRequirement) -> Option<SecretWri
     })
 }
 
-async fn reject_unaccepted_memory_mount(
-    staged: &mut StagedMounts,
-    handle: Box<dyn pc::MemoryMount>,
-    cause: pc::SandboxError,
-) -> pc::SandboxError {
-    match handle.teardown().await {
-        Ok(()) => cause,
-        Err(cleanup_error) => {
-            // `MemoryMount::teardown` is retryable by contract. Keep its exact
-            // participant in the provider-owned staging ledger for later retry.
-            staged.retain_mounted_memory(handle);
-            pc::SandboxError::new(format!(
-                "{cause}; Memory participant cleanup failed: {cleanup_error}"
-            ))
-        }
-    }
-}
-
-async fn stage_memory_binds(
-    spec: &pc::SandboxSpec,
-    plan: &mut ContainerPlan,
-    staged: &mut StagedMounts,
-    mounter: Option<Arc<dyn pc::MemoryMounter>>,
-    native_runtime_volume: bool,
-) -> Result<(), pc::SandboxError> {
-    let memory = memory_projections(spec);
-    if memory.is_empty() {
-        return Ok(());
-    }
-    let mounter = mounter
-        .ok_or_else(|| pc::SandboxError::new("container MemoryStore mount has no MemoryMounter"))?;
-    let root = staging_dir(&mut staged.guard, &spec.scope)?;
-    for projection in memory {
-        let host_path = root.join(format!("memory-{}", stage_name(&projection.mount_path)));
-        let store_reference = projection.store_reference.clone();
-        let access = projection.access;
-        let handle = match mounter.mount(&store_reference, &host_path, access).await {
-            pc::MemoryMountOutcome::Mounted(handle) => handle,
-            pc::MemoryMountOutcome::NoEffect(error) => return Err(error),
-            pc::MemoryMountOutcome::RecoveryRequired(error) => {
-                staged.retain_unknown_memory(
-                    Arc::clone(&mounter),
-                    store_reference,
-                    host_path,
-                    access,
-                );
-                return Err(error);
-            }
-        };
-        let realization = handle.realization();
-        let materialization = match realization {
-            pc::Realization::Copy => {
-                let Some(heads) = handle.materialization_heads() else {
-                    return Err(reject_unaccepted_memory_mount(
-                        staged,
-                        handle,
-                        pc::SandboxError::new(
-                            "copy-backed Memory mount omitted its original durable heads",
-                        ),
-                    )
-                    .await);
-                };
-                let evidence = pc::MemoryMaterializationEvidence::new(
-                    projection.store_id.clone(),
-                    projection.mount_path.clone(),
-                    heads,
-                );
-                match evidence {
-                    Ok(evidence) => Some(evidence),
-                    Err(error) => {
-                        return Err(reject_unaccepted_memory_mount(staged, handle, error).await);
-                    }
-                }
-            }
-            pc::Realization::Fuse => None,
-            _ => {
-                return Err(reject_unaccepted_memory_mount(
-                    staged,
-                    handle,
-                    pc::SandboxError::new("MemoryStore mount returned an unsupported realization"),
-                )
-                .await);
-            }
-        };
-        if projection.write_consistency == pc::MemoryWriteConsistency::WriteThroughRequired
-            && realization != pc::Realization::Fuse
-        {
-            return Err(reject_unaccepted_memory_mount(
-                staged,
-                handle,
-                pc::SandboxError::new("MemoryStore mount requires write-through FUSE realization"),
-            )
-            .await);
-        }
-        if native_runtime_volume && realization != pc::Realization::Copy {
-            return Err(reject_unaccepted_memory_mount(
-                staged,
-                handle,
-                pc::SandboxError::new(
-                    "remote container Memory volume requires a copy-capable MemoryMounter",
-                ),
-            )
-            .await);
-        }
-        #[cfg(unix)]
-        if let Err(error) = make_memory_tree_accessible(&host_path, projection.access) {
-            return Err(reject_unaccepted_memory_mount(staged, handle, error).await);
-        }
-        if native_runtime_volume {
-            let snapshot_tar = match memory_snapshot_tar(&host_path) {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    return Err(reject_unaccepted_memory_mount(staged, handle, error).await);
-                }
-            };
-            let planned = plan
-                .memory_mounts
-                .iter_mut()
-                .find(|planned| planned.mount_path == projection.mount_path)
-                .ok_or_else(|| pc::SandboxError::new("Memory mount disappeared from plan"));
-            let planned = match planned {
-                Ok(planned) => planned,
-                Err(error) => {
-                    return Err(reject_unaccepted_memory_mount(staged, handle, error).await);
-                }
-            };
-            planned.snapshot_tar = snapshot_tar;
-            planned.access = projection.access;
-        } else {
-            plan.binds.push(BindPlan {
-                source_ref: host_path.to_string_lossy().into_owned(),
-                mount_path: projection.mount_path.clone(),
-                read_only: projection.access == pc::MountAccess::ReadOnly,
-                content: None,
-                content_bytes: None,
-                secret_content: None,
-                secret_writeback: false,
-                credential_file_path: None,
-            });
-        }
-        staged.memory.push(StagedMemoryMount {
-            handle,
-            host_path,
-            mount_path: projection.mount_path,
-            access: projection.access,
-            materialization,
-            native_runtime_volume,
-            writeback_prepared: false,
-        });
-    }
-    Ok(())
-}
-
 const MAX_MEMORY_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_MEMORY_SNAPSHOT_FILES: usize = 10_000;
 
@@ -872,18 +723,10 @@ pub(crate) fn staging_dir(
     let mut created = None;
     for attempt in 0..16 {
         let candidate = std::env::temp_dir().join(format!("{prefix}-{attempt}"));
-        #[cfg(unix)]
-        let mut builder = std::fs::DirBuilder::new();
-        #[cfg(not(unix))]
-        let builder = std::fs::DirBuilder::new();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        match builder.create(&candidate) {
-            Ok(()) => {
+        match create_staging_guard(candidate.clone()) {
+            Ok(created_guard) => {
                 created = Some(candidate);
+                *guard = Some(created_guard);
                 break;
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -897,10 +740,56 @@ pub(crate) fn staging_dir(
             "could not allocate a unique staging directory".into(),
         ))
     })?;
-    let path = d.clone();
-    *guard = Some(StagingGuard {
-        path: d,
+    Ok(d)
+}
+
+fn create_staging_guard(path: std::path::PathBuf) -> std::io::Result<StagingGuard> {
+    #[cfg(unix)]
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(not(unix))]
+    let builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&path)?;
+    Ok(StagingGuard {
+        path,
         remove_on_drop: true,
+    })
+}
+
+/// Resolve the staging owner selected by the backend reservation. Fresh
+/// reservations allocate through the same staging primitive as ordinary byte
+/// mounts; recovered reservations must reopen the existing retained namespace.
+pub(crate) fn staging_dir_for_backend_attempt(
+    guard: &mut Option<StagingGuard>,
+    scope: &str,
+    authority_attempt_id: &str,
+    disposition: PreparedContainerDisposition,
+) -> Result<std::path::PathBuf, pc::SandboxError> {
+    let path = std::env::temp_dir().join(format!(
+        "awaken-acp-stage-{}-memory-{}",
+        stage_name(scope),
+        stage_name(authority_attempt_id)
+    ));
+    if let Some(existing) = guard.as_ref() {
+        return if existing.path() == path {
+            Ok(path)
+        } else {
+            Err(pc::SandboxError::new(
+                "container Memory staging belongs to a different backend attempt",
+            ))
+        };
+    }
+    *guard = Some(match disposition {
+        PreparedContainerDisposition::FreshReservation => create_staging_guard(path.clone())
+            .map_err(|error| err(RuntimeError::Backend(format!("stage dir: {error}"))))?,
+        PreparedContainerDisposition::RecoveringReservation
+        | PreparedContainerDisposition::AlreadyActive => {
+            restore_target::retained_host_staging_path(path.clone()).map_err(err)?
+        }
     });
     Ok(path)
 }
@@ -1659,7 +1548,7 @@ impl ContainerCleanupState {
     ) -> Result<(), pc::SandboxError> {
         let mut memory = self.memory.lock().await;
         admit(&mut || Ok(()))?;
-        if let Some(mounts) = memory.as_ref() {
+        if let Some(mounts) = memory.as_mut() {
             for mount in mounts {
                 admit(&mut || Ok(()))?;
                 mount.handle.teardown().await?;

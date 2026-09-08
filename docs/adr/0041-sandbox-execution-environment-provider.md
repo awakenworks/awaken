@@ -1032,10 +1032,56 @@ start or Kubernetes convergence and returns success only for that locator.
 The existing stable-scope discovery, immutable labels/annotations, Pod UID,
 PVC binding, and `existing_realization_decision` remain the physical authority.
 Only the existing runtime port and the three adapters are modified; the Podman
-reservation argv is projected from the same plan renderer. No reservation
-store, lease, WAL, recovery service, or second realization state machine is
-added. The direct composition preserves effect-free runtime callers but is not
-a crash boundary. Provider ordering is still `Memory -> combined create` at
-this amendment point, so this split alone does not claim cross-process Memory
+reservation argv is projected from the same plan renderer. The backend object
+remains the reservation record; the later Memory amendment adds one recovery
+receipt under its retained staging lifecycle rather than a second realization
+state machine or recovery service.
+The direct composition preserves effect-free runtime callers but is not a crash
+boundary. Provider ordering is still `Memory -> combined create` at this
+amendment point, so this split alone does not claim cross-process Memory
 responsibility. That requires the provider to call the two phases explicitly
 and recover the backend-owned staging locator before mounting.
+
+### Memory publication amendment (2026-09-08)
+
+The provider now completes that ordering through the same physical authority:
+
+1. Docker/Podman reserve an exact stopped container; Kubernetes reserves its
+   UID-fenced Pod. Existing backend labels and annotations remain authoritative.
+2. The provider resolves the reservation's staging root, recovers an unfinished
+   attempt when necessary, and materializes a copy through the one injected
+   `MemoryMounter`.
+3. Secret-free original-head evidence is atomically recorded as a
+   pre-activation recovery receipt inside that exact backend-bound staging
+   lifecycle. This is new persisted recovery data, but not another physical
+   realization authority: the stopped container or UID-fenced Pod still decides
+   whether the receipt may be consumed. Only then may the runtime start the
+   container or release the Pod projection gate.
+4. If activation succeeds but its response is lost, a later Worker observes the
+   same active object and reads that receipt without remounting the live copy.
+   A prepared object instead compensates the exact old path before remounting.
+
+The existing `MemoryMountOutcome`, backend reservation state, retained staging
+guard and materialization evidence remain the only lifecycle owners. No
+provider-neutral shadow lifecycle is added beside the actual Local
+pending/confirmed owner and Container backend state. Process-local Memory
+handles remain transient participants in the existing `StagedMounts` lifecycle
+until activation publishes them to `ContainerSandbox`.
+Staging path allocation and reopening stay in the existing `StagingGuard`,
+`staging_dir` and restoration-target authority; materialization ordering uses
+`MemoryMaterializationEvidence::canonicalize_all`.
+
+Production realization already holds the Session root realization lock across
+one directive. Across Workers, the root-owned realization lease and exact
+Worker/Session effect fence admit only the current owner; Docker/Podman stable
+names and Kubernetes scope labels/UIDs additionally serialize the physical
+create conflict. The provider adds no process mutex. Direct unfenced adapter
+calls are deliberately outside this cross-process exclusion guarantee.
+
+Container providers accept only restart-recoverable copy materialization.
+`WriteThroughRequired` is rejected before backend or Memory effects because a
+live FUSE participant cannot currently be transferred after Worker death. This
+is an explicit capability boundary, not a write-through-to-copy fallback. The
+recovery guarantee covers Worker process loss while the backend-bound staging
+directory remains available; host loss and cross-node staging recovery remain
+outside this contract and fail closed.

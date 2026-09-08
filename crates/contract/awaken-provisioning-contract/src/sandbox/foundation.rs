@@ -279,7 +279,7 @@ impl MemoryMaterializationEvidence {
         Ok(())
     }
 
-    pub(super) fn canonicalize_all(evidence: &mut [Self]) -> Result<(), SandboxError> {
+    pub fn canonicalize_all(evidence: &mut [Self]) -> Result<(), SandboxError> {
         for item in evidence.iter() {
             item.validate()?;
         }

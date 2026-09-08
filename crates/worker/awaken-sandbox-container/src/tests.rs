@@ -731,6 +731,10 @@ struct UncertainMemoryMounter {
     recovery_calls: Arc<AtomicUsize>,
     recovery_failures_remaining: Arc<AtomicUsize>,
     recovery_response_gate: Option<Arc<tokio::sync::Semaphore>>,
+    mount_paths: Arc<Mutex<Vec<std::path::PathBuf>>>,
+    recovery_paths: Arc<Mutex<Vec<std::path::PathBuf>>>,
+    mount_after_recovery: Option<Arc<AtomicBool>>,
+    torn_down: Arc<AtomicBool>,
 }
 
 #[async_trait]
@@ -738,10 +742,26 @@ impl pc::MemoryMounter for UncertainMemoryMounter {
     async fn mount(
         &self,
         _store_id: &str,
-        _host_path: &std::path::Path,
+        host_path: &std::path::Path,
         _access: pc::MountAccess,
     ) -> pc::MemoryMountOutcome {
         self.mount_calls.fetch_add(1, Ordering::SeqCst);
+        self.mount_paths.lock().unwrap().push(host_path.to_owned());
+        if self
+            .mount_after_recovery
+            .as_ref()
+            .is_some_and(|ready| ready.load(Ordering::SeqCst))
+        {
+            std::fs::create_dir_all(host_path).unwrap();
+            std::fs::write(host_path.join("seed.txt"), b"seed").unwrap();
+            return pc::MemoryMountOutcome::Mounted(Box::new(FakeMemoryMount {
+                torn_down: self.torn_down.clone(),
+                fail_teardown: false,
+                teardown_calls: Arc::new(AtomicUsize::new(0)),
+                response_gate: None,
+                realization: pc::Realization::Copy,
+            }));
+        }
         pc::MemoryMountOutcome::RecoveryRequired(pc::SandboxError::new(
             "mount response was lost after a possible effect",
         ))
@@ -750,10 +770,14 @@ impl pc::MemoryMounter for UncertainMemoryMounter {
     async fn recover_unknown_mount(
         &self,
         _store_id: &str,
-        _host_path: &std::path::Path,
+        host_path: &std::path::Path,
         _access: pc::MountAccess,
     ) -> Result<(), pc::SandboxError> {
         self.recovery_calls.fetch_add(1, Ordering::SeqCst);
+        self.recovery_paths
+            .lock()
+            .unwrap()
+            .push(host_path.to_owned());
         let remaining = self.recovery_failures_remaining.fetch_update(
             Ordering::SeqCst,
             Ordering::SeqCst,
@@ -764,6 +788,9 @@ impl pc::MemoryMounter for UncertainMemoryMounter {
         } else {
             if let Some(gate) = &self.recovery_response_gate {
                 gate.acquire().await.unwrap().forget();
+            }
+            if let Some(ready) = &self.mount_after_recovery {
+                ready.store(true, Ordering::SeqCst);
             }
             Ok(())
         }
@@ -779,9 +806,15 @@ async fn uncertain_memory_staging_blocks_remount_until_exact_recovery() {
     // only then permits a fresh mount; E4 the fresh unknown is compensated by
     // its own identity. Rules U1=C1+C2(fail)=>E1;
     // U2=U1+C3+C2(fail)=>E2; U3=U2+C3+C2(success)=>E3+E4.
-    // No backend container exists in these rules, so recovery is cleanup-safe;
-    // ambiguous backend creation is retained in the separate non-retryable set.
-    let runtime = Arc::new(FakeRuntime::default());
+    // The backend reservation, not a process-local ledger, supplies the exact
+    // attempt identity and path for every retry.
+    let runtime = Arc::new(FakeRuntime {
+        st: Mutex::new(FakeState {
+            recover_prepared_reservations: true,
+            host_live_input_bind: true,
+            ..Default::default()
+        }),
+    });
     let mut sandbox_spec = spec("uncertain-memory-stage");
     sandbox_spec.mounts.push(pc::MountRequirement {
         mount_id: "memory".into(),
@@ -799,11 +832,17 @@ async fn uncertain_memory_staging_blocks_remount_until_exact_recovery() {
     let mount_calls = Arc::new(AtomicUsize::new(0));
     let recovery_calls = Arc::new(AtomicUsize::new(0));
     let recovery_failures_remaining = Arc::new(AtomicUsize::new(2));
+    let mount_paths = Arc::new(Mutex::new(Vec::new()));
+    let recovery_paths = Arc::new(Mutex::new(Vec::new()));
     provider.install_memory_mounter(Arc::new(UncertainMemoryMounter {
         mount_calls: mount_calls.clone(),
         recovery_calls: recovery_calls.clone(),
         recovery_failures_remaining,
         recovery_response_gate: None,
+        mount_paths: mount_paths.clone(),
+        recovery_paths: recovery_paths.clone(),
+        mount_after_recovery: None,
+        torn_down: Arc::new(AtomicBool::new(false)),
     }));
 
     assert!(provider.create(&sandbox_spec).await.is_err(), "U1/E1");
@@ -817,6 +856,193 @@ async fn uncertain_memory_staging_blocks_remount_until_exact_recovery() {
     assert!(provider.create(&sandbox_spec).await.is_err(), "U3/E3+E4");
     assert_eq!(mount_calls.load(Ordering::SeqCst), 2, "U3/E3");
     assert_eq!(recovery_calls.load(Ordering::SeqCst), 4, "U3/E4");
+    let original_path = mount_paths.lock().unwrap()[0].clone();
+    assert!(
+        mount_paths
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|path| path == &original_path),
+        "U1-U3 use the backend-bound root after process-local root replacement"
+    );
+    assert!(
+        recovery_paths
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|path| path == &original_path),
+        "U1-U3 recover only the exact backend-bound participant"
+    );
+}
+
+#[tokio::test]
+async fn activation_response_loss_recovers_copy_from_the_backend_bound_root() {
+    /* Container Memory decision table CM1. Causes: C1 the exact backend
+     * reservation is fresh/recovered/active; C2 Copy mount succeeds; C3
+     * activation response arrives/is lost; C4 the Worker process-local Provider
+     * is replaced. Effects: R1 fresh+C2 reserves before mount and activates
+     * after the recovery-receipt commit; R2 fresh+C2+C3(loss) publishes no Sandbox and
+     * retains the backend-bound root; R3 R2+C4+active reads the exact receipt,
+     * performs no remount/compensation, and returns the same locator/evidence.
+     * A recovering-but-not-active reservation instead invokes exact
+     * `recover_unknown_mount` before a new mount (U1-U3). */
+    let scope = "activation-loss-copy";
+    let runtime = Arc::new(FakeRuntime {
+        st: Mutex::new(FakeState {
+            recover_prepared_reservations: true,
+            host_live_input_bind: true,
+            lose_activation_response_once: true,
+            ..Default::default()
+        }),
+    });
+    let mut sandbox_spec = spec(scope);
+    sandbox_spec.mounts.push(pc::MountRequirement {
+        mount_id: "memory".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "durable-copy".into(),
+            materialization_reference: Some("claim-copy".into()),
+            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+        },
+        mount_path: "/workspace/memory".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    });
+    let mount_calls = Arc::new(AtomicUsize::new(0));
+    let recovery_calls = Arc::new(AtomicUsize::new(0));
+    let mounter = Arc::new(OrderedCopyMounter {
+        runtime: runtime.clone(),
+        scope: scope.into(),
+        mount_calls: mount_calls.clone(),
+        recovery_calls: recovery_calls.clone(),
+    });
+    let first = provider(runtime.clone());
+    first.install_memory_mounter(mounter.clone());
+    let error = match first.create_container(&sandbox_spec).await {
+        Ok(_) => panic!("R2 response loss cannot publish a Sandbox"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("may have committed"), "R2");
+    assert_eq!(mount_calls.load(Ordering::SeqCst), 1, "R1/R2");
+    assert_eq!(runtime.st.lock().unwrap().activation_calls, 1, "R1/R2");
+    drop(first);
+
+    let recovered_root = runtime
+        .st
+        .lock()
+        .unwrap()
+        .recovered_staging
+        .clone()
+        .unwrap();
+    assert!(
+        recovered_root
+            .join(crate::staged_mounts::MEMORY_PRE_ACTIVATION_RECEIPT)
+            .is_file(),
+        "R2 pre-activation recovery receipt"
+    );
+    let second = provider(runtime.clone());
+    second.install_memory_mounter(mounter);
+    let sandbox = second.create_container(&sandbox_spec).await.expect("R3");
+    assert_eq!(sandbox.container_id, format!("cid-{scope}"), "R3 locator");
+    assert_eq!(mount_calls.load(Ordering::SeqCst), 1, "R3 no remount");
+    assert_eq!(
+        recovery_calls.load(Ordering::SeqCst),
+        0,
+        "R3 no compensation"
+    );
+    assert_eq!(
+        pc::Sandbox::handle(&sandbox)
+            .memory_materializations()
+            .unwrap()
+            .unwrap()
+            .len(),
+        1,
+        "R3 durable heads"
+    );
+}
+
+#[tokio::test]
+async fn container_write_through_memory_is_rejected_before_physical_reservation() {
+    /* Container consistency table CW1. C1 Memory requests ProviderDefault or
+     * WriteThroughRequired; C2 no crash-recoverable FUSE participant-transfer
+     * contract exists. ProviderDefault may select Copy; C1(write-through)+C2
+     * rejects before preflight, prepare, mount, or staging. */
+    let runtime = Arc::new(FakeRuntime::default());
+    let mut sandbox_spec = spec("write-through-rejected");
+    sandbox_spec.mounts.push(pc::MountRequirement {
+        mount_id: "memory".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "write-through".into(),
+            materialization_reference: None,
+            write_consistency: pc::MemoryWriteConsistency::WriteThroughRequired,
+        },
+        mount_path: "/workspace/memory".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    });
+    let provider = provider(runtime.clone());
+    let torn_down = Arc::new(AtomicBool::new(false));
+    provider.install_memory_mounter(Arc::new(FakeMemoryMounter {
+        torn_down: torn_down.clone(),
+        fail_teardown: false,
+    }));
+    assert!(provider.create_container(&sandbox_spec).await.is_err());
+    assert!(runtime.st.lock().unwrap().attempted_binds.is_empty());
+    assert!(!torn_down.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn recovered_native_reservation_without_its_exact_memory_root_fails_closed() {
+    /* Container root-identity table CR1. C1 the backend reports a prepared
+     * reservation; C2 the authority-derived Memory root exists/does not exist;
+     * C3 a process-local Provider has no participant. C1+C2(missing)+C3 must
+     * reject before mount or activation. Creating a new directory would erase
+     * the distinction between lost responsibility and a fresh attempt. */
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let scope = format!("missing-native-memory-root-{}-{nonce}", std::process::id());
+    let attempt = format!("missing-attempt-{}-{nonce}", std::process::id());
+    let runtime = Arc::new(FakeRuntime {
+        st: Mutex::new(FakeState {
+            recover_prepared_reservations: true,
+            native_memory: true,
+            prepared_attempts: HashMap::from([(scope.clone(), attempt)]),
+            ..Default::default()
+        }),
+    });
+    let mut sandbox_spec = spec(&scope);
+    sandbox_spec.mounts.push(pc::MountRequirement {
+        mount_id: "memory".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "missing-root-store".into(),
+            materialization_reference: None,
+            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+        },
+        mount_path: "/workspace/memory".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    });
+    let provider = provider(runtime.clone());
+    let torn_down = Arc::new(AtomicBool::new(false));
+    provider.install_memory_mounter(Arc::new(FakeMemoryMounter {
+        torn_down: torn_down.clone(),
+        fail_teardown: false,
+    }));
+    let error = match provider.create_container(&sandbox_spec).await {
+        Ok(_) => panic!("missing root cannot become a fresh Memory attempt"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("retained host staging path is missing")
+    );
+    assert_eq!(runtime.st.lock().unwrap().activation_calls, 0);
+    assert!(!torn_down.load(Ordering::SeqCst));
 }
 
 fn one_file_archive(path: &str, bytes: &[u8]) -> Vec<u8> {
@@ -2540,6 +2766,52 @@ impl pc::MemoryMount for FakeMemoryMount {
     }
 }
 
+struct OrderedCopyMounter {
+    runtime: Arc<FakeRuntime>,
+    scope: String,
+    mount_calls: Arc<AtomicUsize>,
+    recovery_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl pc::MemoryMounter for OrderedCopyMounter {
+    async fn mount(
+        &self,
+        _store_id: &str,
+        host_path: &std::path::Path,
+        _access: pc::MountAccess,
+    ) -> pc::MemoryMountOutcome {
+        let state = self.runtime.st.lock().unwrap();
+        assert_eq!(
+            state.alive.get(&format!("cid-{}", self.scope)),
+            Some(&true),
+            "physical reservation precedes Memory"
+        );
+        assert_eq!(state.activation_calls, 0, "Memory precedes activation");
+        drop(state);
+        self.mount_calls.fetch_add(1, Ordering::SeqCst);
+        std::fs::create_dir_all(host_path).unwrap();
+        std::fs::write(host_path.join("seed.txt"), b"seed").unwrap();
+        pc::MemoryMountOutcome::Mounted(Box::new(FakeMemoryMount {
+            torn_down: Arc::new(AtomicBool::new(false)),
+            fail_teardown: false,
+            teardown_calls: Arc::new(AtomicUsize::new(0)),
+            response_gate: None,
+            realization: pc::Realization::Copy,
+        }))
+    }
+
+    async fn recover_unknown_mount(
+        &self,
+        _store_id: &str,
+        _host_path: &std::path::Path,
+        _access: pc::MountAccess,
+    ) -> Result<(), pc::SandboxError> {
+        self.recovery_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
 // ── Fake runtime + provider lifecycle ───────────────────────────────────────────
 
 type RuntimePathObservation = (
@@ -2567,6 +2839,11 @@ struct FakeState {
     expire_effect_fence_once: bool,
     creation_response_gate: Option<(&'static str, Arc<tokio::sync::Semaphore>)>,
     creation_boundaries: Vec<&'static str>,
+    recover_prepared_reservations: bool,
+    prepared_attempts: HashMap<String, String>,
+    active_reservations: std::collections::HashSet<String>,
+    activation_calls: usize,
+    lose_activation_response_once: bool,
     effect_fences: Vec<ContainerEffectFence>,
     attempted_binds: Vec<BindPlan>,
     refreshed_credential: Option<Vec<u8>>,
@@ -2872,7 +3149,7 @@ impl ContainerRuntime for FakeRuntime {
         context: &ContainerRealizationContext<'_>,
         plan: &ContainerPlan,
         _realization_fingerprint: &pc::SandboxRealizationFingerprint,
-    ) -> Result<String, RuntimeError> {
+    ) -> Result<PreparedContainer, RuntimeError> {
         if let Some(fence) = context.effect_fence {
             self.st.lock().unwrap().effect_fences.push(fence.clone());
         }
@@ -2883,9 +3160,73 @@ impl ContainerRuntime for FakeRuntime {
         if expires {
             return Err(RuntimeError::EffectFenceExpired);
         }
-        let result = self.create(context.scope, plan).await;
+        let recovered = {
+            let state = self.st.lock().unwrap();
+            if state.recover_prepared_reservations {
+                state
+                    .prepared_attempts
+                    .get(context.scope)
+                    .map(|attempt_id| {
+                        (
+                            attempt_id.clone(),
+                            state.active_reservations.contains(context.scope),
+                        )
+                    })
+            } else {
+                None
+            }
+        };
+        let result = if let Some((attempt_id, active)) = recovered {
+            Ok(if active {
+                PreparedContainer::already_active(format!("cid-{}", context.scope), attempt_id)
+            } else {
+                PreparedContainer::recovering(format!("cid-{}", context.scope), attempt_id)
+            })
+        } else {
+            match self.create(context.scope, plan).await {
+                Ok(locator) => {
+                    self.st.lock().unwrap().prepared_attempts.insert(
+                        context.scope.to_owned(),
+                        context.attempt.as_str().to_owned(),
+                    );
+                    Ok(PreparedContainer::fresh(
+                        locator,
+                        context.attempt.as_str().to_owned(),
+                    ))
+                }
+                Err(error) => Err(error),
+            }
+        };
         self.creation_response("create").await;
         result
+    }
+
+    async fn activate_for_effect(
+        &self,
+        context: &ContainerRealizationContext<'_>,
+        plan: &ContainerPlan,
+        _realization_fingerprint: &pc::SandboxRealizationFingerprint,
+        prepared_locator: &str,
+    ) -> Result<String, RuntimeError> {
+        {
+            let mut state = self.st.lock().unwrap();
+            state
+                .created_binds
+                .insert(prepared_locator.to_owned(), plan.binds.clone());
+            state
+                .created_memory_mounts
+                .insert(prepared_locator.to_owned(), plan.memory_mounts.clone());
+            state.activation_calls += 1;
+            state.active_reservations.insert(context.scope.to_owned());
+        }
+        self.creation_response("activation").await;
+        let mut state = self.st.lock().unwrap();
+        if std::mem::take(&mut state.lose_activation_response_once) {
+            return Err(RuntimeError::MayHaveCommitted(
+                "injected activation response loss".into(),
+            ));
+        }
+        Ok(prepared_locator.to_owned())
     }
 
     async fn project_live_input(
@@ -2946,6 +3287,14 @@ impl ContainerRuntime for FakeRuntime {
         }
         let mut st = self.st.lock().unwrap();
         st.attempted_binds = plan.binds.clone();
+        if st.recover_prepared_reservations {
+            st.recovered_staging = plan
+                .binds
+                .iter()
+                .find(|bind| bind.mount_path == LIVE_INPUTS_ROOT)
+                .and_then(|bind| std::path::Path::new(&bind.source_ref).parent())
+                .map(std::path::Path::to_path_buf);
+        }
         if st.may_have_committed_create {
             return Err(RuntimeError::MayHaveCommitted(
                 "injected create response loss".into(),
@@ -3449,19 +3798,21 @@ impl<T: pc::MemoryMounter> pc::MemoryMounter for PausedCreationInput<T> {
 #[tokio::test]
 async fn container_creation_rechecks_current_authority_at_provider_wait_boundaries() {
     // CA graph: entry -> scope preflight -> package -> resolved preflight ->
-    // retained recovery -> File response -> Memory response -> staging ->
-    // create response -> handle response -> control response -> publication.
+    // File response -> backend prepare response -> Memory/recovery response ->
+    // activation -> handle response -> control response -> publication.
     // C1 boundary x C2 current proof {revoked, replaced, exhausted, renewed}
-    // x C3 neutral/ContainerEnvironment/warm-pool port (120 rows).
+    // x C3 neutral/ContainerEnvironment/warm-pool port (144 rows).
     // A copied future fence is constant. Package/File/Memory responses exercise
     // actual dependencies, including already-created local participant bytes.
-    // CA1 loss before create => Err, no physical creation; CA2 loss after create
-    // => Err, no NEXT provider call/publication/removal, exact staging retained
-    // as ambiguous. CA3 same-effect renewal => one successful physical owner.
+    // CA1 loss before prepare => Err, no physical creation; CA2 loss at/after
+    // prepare => Err, no NEXT effect/publication/removal, exact backend-bound
+    // staging retained; revoked authority cannot authorize compensation. CA3
+    // same-effect renewal => one successful physical owner.
     // CA4 no proof at entry => zero runtime observations. CA5 an earlier
-    // unknown Memory mount has a failed compensation; recovery of that exact
-    // retained owner pauses. Loss on its response denies new staging/create;
-    // renewal allows a fresh mount only after the original recovery completed.
+    // unknown Memory mount has a failed compensation behind a prepared backend;
+    // recovery of that exact backend-bound path pauses. Loss on its response
+    // denies a new mount/activation; renewal allows a fresh mount only after the
+    // original recovery completed.
     // Gates pause real
     // futures; no sleeps or simulated scheduler. The backend create response
     // gate follows the physical fake mutation, so rejection cannot undo it.
@@ -3477,16 +3828,26 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
             "file",
             "memory",
             "create",
+            "staging",
+            "activation",
             "handle",
             "control",
         ] {
             for change in ["revoke", "replace", "exhaust", "renew"] {
-                let runtime = Arc::new(FakeRuntime::default());
+                let runtime = Arc::new(FakeRuntime {
+                    st: Mutex::new(FakeState {
+                        recover_prepared_reservations: true,
+                        host_live_input_bind: true,
+                        ..Default::default()
+                    }),
+                });
                 let gate = Arc::new(tokio::sync::Semaphore::new(0));
                 {
                     let mut state = runtime.st.lock().unwrap();
                     state.control_enabled = true;
-                    if boundary != "entry" {
+                    if boundary == "staging" {
+                        state.staging_response_gate = Some(gate.clone());
+                    } else if boundary != "entry" {
                         state.creation_response_gate = Some((boundary, gate.clone()));
                     }
                 }
@@ -3537,22 +3898,23 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
                 }
                 let recovered_calls = Arc::new(AtomicUsize::new(0));
                 if boundary == "recovery" {
+                    let mount_after_recovery = Arc::new(AtomicBool::new(false));
                     provider.install_memory_mounter(Arc::new(UncertainMemoryMounter {
                         mount_calls: Arc::new(AtomicUsize::new(0)),
                         recovery_calls: recovered_calls.clone(),
                         recovery_failures_remaining: Arc::new(AtomicUsize::new(1)),
                         recovery_response_gate: Some(gate.clone()),
+                        mount_paths: Arc::new(Mutex::new(Vec::new())),
+                        recovery_paths: Arc::new(Mutex::new(Vec::new())),
+                        mount_after_recovery: Some(mount_after_recovery),
+                        torn_down: torn_down.clone(),
                     }));
                     assert!(
                         provider.create_container(&requested).await.is_err(),
                         "CA5 retain original unknown participant"
                     );
                     assert_eq!(recovered_calls.load(Ordering::SeqCst), 1);
-                    assert!(runtime.st.lock().unwrap().alive.is_empty());
-                    provider.install_memory_mounter(Arc::new(FakeMemoryMounter {
-                        torn_down: torn_down.clone(),
-                        fail_teardown: false,
-                    }));
+                    assert_eq!(runtime.st.lock().unwrap().alive.len(), 1);
                 }
                 let provider = Arc::new(provider);
                 let pool = WarmContainerPool::new(provider.clone(), 1);
@@ -3640,16 +4002,25 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
                     change == "renew",
                     "{port}/{boundary}/{change}: {result:?}"
                 );
-                let after_create = ["create", "handle", "control"].contains(&boundary);
+                let after_prepare = [
+                    "memory",
+                    "recovery",
+                    "create",
+                    "staging",
+                    "activation",
+                    "handle",
+                    "control",
+                ]
+                .contains(&boundary);
                 {
                     let state = runtime.st.lock().unwrap();
                     assert_eq!(
                         state.alive.len(),
-                        usize::from(change == "renew" || after_create),
+                        usize::from(change == "renew" || after_prepare),
                         "{port}/{boundary}/{change}"
                     );
                     assert!(state.removals.is_empty(), "CA2 never manufacture cleanup");
-                    if after_create && change != "renew" {
+                    if after_prepare && change != "renew" {
                         let binds = state.created_binds.values().next().unwrap();
                         assert_eq!(
                             std::fs::read(&binds[0].source_ref).unwrap(),
@@ -3663,7 +4034,8 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
                         } else {
                             let last = match boundary {
                                 "package" => "initial-preflight",
-                                "file" | "memory" | "recovery" => "resolved-preflight",
+                                "file" => "resolved-preflight",
+                                "memory" | "recovery" | "staging" => "create",
                                 other => other,
                             };
                             assert_eq!(
@@ -3675,18 +4047,20 @@ async fn container_creation_rechecks_current_authority_at_provider_wait_boundari
                         if boundary == "memory" {
                             assert!(
                                 !torn_down.load(Ordering::SeqCst),
-                                "CA1 retain Memory responsibility"
+                                "CA2 revoked authority cannot authorize compensation"
                             );
                         }
                     }
                 }
-                if change != "renew" && after_create {
-                    // Exercise the existing retained-owner gate through the public
-                    // creation path; a fresh call cannot overwrite unknown effects.
+                if change != "renew" && after_prepare {
+                    // The backend reservation/active object, not a process-local
+                    // ledger, is the next call's sole recovery root.
+                    runtime.st.lock().unwrap().staging_response_gate = None;
+                    gate.add_permits(1);
                     let replay = provider.create_container(&requested).await;
                     assert!(
-                        replay.err().unwrap().to_string().contains("ambiguous"),
-                        "CA2 retained owner blocks overwrite"
+                        replay.is_ok(),
+                        "CA2 exact backend recovery remains available"
                     );
                     assert_eq!(
                         runtime.st.lock().unwrap().alive.len(),
@@ -5532,22 +5906,13 @@ async fn successful_host_staging_follows_the_physical_container_lifetime() {
 
 #[tokio::test]
 async fn create_failure_compensates_only_when_the_runtime_proves_no_backend_effect() {
-    /* Create-outcome cause/effect table.
-     * Causes: C1 the runtime result is a definite pre/zero-effect Backend error
-     * or MayHaveCommitted after crossing a mutation boundary; C2 host staging
-     * and a Memory mount have already been materialized. Effects: D1+C2 => E1
-     * every Memory handle is torn down and the staging guard is removed;
-     * M1+C2 => E2 neither participant is torn down because an exact physical
-     * object may still reference it, and the stronger error propagates. If a
-     * definite runtime rejection is followed by a Memory teardown failure,
-     * E4 retains the remaining process-local participants and reports both
-     * errors instead of dropping the only retryable cleanup handle. The
-     * E3: the same Provider retains ambiguous participants and blocks a later
-     * realization before any second staging or replacement. The shared runtime
-     * decision table's CurrentAttemptOnly/prior-attempt row extends that closure
-     * to a later process.
-     * This closes safety only; it deliberately makes no cross-process liveness
-     * or automatic-reclamation claim for host-bind participants. */
+    /* Reservation-first cause/effect table CR1. Causes: C1 physical prepare
+     * proves no backend effect or loses its response; C2 the plan reserved an
+     * exact host Memory path; C3 Memory materialization has not begun. Effects:
+     * R1 C1(definite)+C2+C3 removes staging with zero Memory teardown; R2
+     * C1(unknown)+C2+C3 retains the backend-bound root, propagates the typed
+     * error, and still performs zero Memory mount/teardown. The old
+     * Memory-before-create/process-ledger path is deliberately absent. */
     fn memory_spec(scope: &str) -> pc::SandboxSpec {
         let mut requested = spec(scope);
         requested.mounts.push(pc::MountRequirement {
@@ -5584,16 +5949,20 @@ async fn create_failure_compensates_only_when_the_runtime_proves_no_backend_effe
             .is_err(),
         "D1 runtime rejection propagates"
     );
-    assert!(
-        definite_teardown.load(Ordering::SeqCst),
-        "E1 Memory teardown"
-    );
-    let definite_source = definite_runtime.st.lock().unwrap().attempted_binds[0]
+    assert!(!definite_teardown.load(Ordering::SeqCst), "R1 zero mount");
+    let definite_source = definite_runtime
+        .st
+        .lock()
+        .unwrap()
+        .attempted_binds
+        .iter()
+        .find(|bind| bind.mount_path == "/workspace/.mnt/notes")
+        .unwrap()
         .source_ref
         .clone();
     assert!(
         !std::path::Path::new(&definite_source).exists(),
-        "E1 definite rejection drops host staging"
+        "R1 definite rejection drops host staging"
     );
 
     let ambiguous_runtime = Arc::new(FakeRuntime {
@@ -5618,27 +5987,21 @@ async fn create_failure_compensates_only_when_the_runtime_proves_no_backend_effe
     assert!(error.to_string().contains("may have committed"), "E2");
     assert!(
         !ambiguous_teardown.load(Ordering::SeqCst),
-        "E2 a possibly referenced Memory mount is retained"
+        "R2 zero Memory mount"
     );
-    let ambiguous_source = ambiguous_runtime.st.lock().unwrap().attempted_binds[0]
+    let ambiguous_source = ambiguous_runtime
+        .st
+        .lock()
+        .unwrap()
+        .attempted_binds
+        .iter()
+        .find(|bind| bind.mount_path == "/workspace/.mnt/notes")
+        .unwrap()
         .source_ref
         .clone();
     assert!(
-        std::path::Path::new(&ambiguous_source).exists(),
-        "E2 a possibly referenced host stage is retained"
-    );
-    let attempted_before_retry = ambiguous_runtime.st.lock().unwrap().attempted_binds.len();
-    assert!(
-        ambiguous_provider
-            .create_container(&memory_spec("ambiguous-create-retry"))
-            .await
-            .is_err(),
-        "E3 an ambiguous transfer blocks the Provider"
-    );
-    assert_eq!(
-        ambiguous_runtime.st.lock().unwrap().attempted_binds.len(),
-        attempted_before_retry,
-        "E3 no second participant is staged"
+        !std::path::Path::new(&ambiguous_source).exists(),
+        "R2 Memory materialization did not start"
     );
     // The test owns no backend object, so it may clean only its injected stage
     // after observing the retention boundary. Production has no such proof and
@@ -5646,46 +6009,8 @@ async fn create_failure_compensates_only_when_the_runtime_proves_no_backend_effe
     let retained_root = std::path::Path::new(&ambiguous_source)
         .parent()
         .expect("staged file parent");
+    assert!(retained_root.exists(), "R2 backend-bound root retained");
     std::fs::remove_dir_all(retained_root).expect("test-only retained stage cleanup");
-
-    let cleanup_runtime = Arc::new(FakeRuntime {
-        st: Mutex::new(FakeState {
-            fail_create: true,
-            ..Default::default()
-        }),
-    });
-    let cleanup_attempted = Arc::new(AtomicBool::new(false));
-    let cleanup_provider = provider(cleanup_runtime.clone());
-    cleanup_provider.install_memory_mounter(Arc::new(FakeMemoryMounter {
-        torn_down: cleanup_attempted.clone(),
-        fail_teardown: true,
-    }));
-    let cleanup_error = match cleanup_provider
-        .create_container(&memory_spec("failed-create-cleanup"))
-        .await
-    {
-        Ok(_) => panic!("E4 failed cleanup cannot publish a Sandbox"),
-        Err(error) => error,
-    };
-    assert!(
-        cleanup_attempted.load(Ordering::SeqCst),
-        "E4 cleanup attempted"
-    );
-    assert!(
-        cleanup_error.to_string().contains("cleanup failed"),
-        "E4 combined error"
-    );
-    let cleanup_source = cleanup_runtime.st.lock().unwrap().attempted_binds[0]
-        .source_ref
-        .clone();
-    assert!(
-        std::path::Path::new(&cleanup_source).exists(),
-        "E4 failed cleanup cannot drop the participant stage"
-    );
-    let cleanup_root = std::path::Path::new(&cleanup_source)
-        .parent()
-        .expect("cleanup stage parent");
-    std::fs::remove_dir_all(cleanup_root).expect("test-only failed-cleanup stage removal");
 }
 
 #[test]
