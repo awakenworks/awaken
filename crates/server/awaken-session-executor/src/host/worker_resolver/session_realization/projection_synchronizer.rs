@@ -565,6 +565,42 @@ mod tests {
         unknown: bool,
         initial: InitialEnvironment,
     ) {
+        claimed_ready_durable_replacement_chain(scoped, revoke, unknown, initial, &[]).await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "required real Linux helper supplied by the portability supervision gate"]
+    async fn trusted_host_scoped_session_successive_adopt_cancellations_recover() {
+        // MC cause/effect graph: C1 A is Resident or an uncommitted Create;
+        // C2 B's Adopt commits before cancellation; C3 C's Adopt commits before
+        // cancellation. D is an uncancelled current successor. All 2x2x2 rules
+        // are feasible: MC00/01/10/11 for each initial provenance. Actual
+        // Pending Futures are dropped at the delegated sink, not simulated by
+        // changing owner phases. E1 retain one exact physical root and bytes;
+        // E2 every retired execution Arc is denied; E3 B/C remain unpublished;
+        // E4 only committed prefixes plus D write receipts; E5 D's fresh
+        // Runtime consumes only D. Same immutable Sandbox generation is not
+        // proof that this Adopt committed. The fixture root is in-memory;
+        // this is Host/real-process evidence, not distributed database CAS.
+        for initial in [
+            InitialEnvironment::Resident,
+            InitialEnvironment::BeforeCommit,
+        ] {
+            for schedule in [[false, false], [false, true], [true, false], [true, true]] {
+                claimed_ready_durable_replacement_chain(true, false, false, initial, &schedule)
+                    .await;
+            }
+        }
+    }
+
+    async fn claimed_ready_durable_replacement_chain(
+        scoped: bool,
+        revoke: bool,
+        unknown: bool,
+        initial: InitialEnvironment,
+        successor_cancellations: &[bool],
+    ) {
         use awaken_session_contract::SessionProjectionSynchronizer as _;
         let committed_candidate = initial != InitialEnvironment::Resident;
         let acknowledged = matches!(
@@ -990,29 +1026,136 @@ mod tests {
             );
             std::fs::write(&marker, original_marker).unwrap();
         }
-        WorkerProjectionSynchronizer::for_directive(
-            host.as_ref(),
-            &directive,
-            Some(&claim),
-            Some(&snapshot),
-            true,
-            claimed_binding,
-        )
-        .synchronize_session_projection(
-            thread,
-            &projection,
-            &crate::session_slot::test_observed_lease(lease.clone()),
-            true,
-        )
-        .await
-        .expect("DH1/E1 canonical claimed adoption");
-
-        if claimed_binding.is_none() {
-            // UC1 has no root binding or fabricated RunDispatch cache. The
-            // ordinary lazy Tool entry must recover the retained owner.
-            host.ensure_session_environment_for_tool(thread)
-                .await
-                .expect("UC1 ordinary lazy Environment recovery");
+        let mut retired = vec![original.clone()];
+        for round in 0..=successor_cancellations.len() {
+            let projection = control.current_projection();
+            let claim = awaken_dispatch::RunClaim {
+                epoch: 2 + round as u64,
+                ..claim.clone()
+            };
+            let lease = awaken_session_contract::SessionRealizationLease {
+                epoch: claim.epoch,
+                runtime_incarnation: format!("worker-a/boot-{}", claim.epoch),
+                ..lease.clone()
+            };
+            let directive = awaken_session_contract::SessionRealizationDirective {
+                projection: projection.clone(),
+                authority: crate::session_slot::test_lease_receipt(lease.clone()),
+                action: awaken_session_contract::SessionRealizationAction::Complete,
+            };
+            let cancelled_sink = successor_cancellations.get(round).map(|commit| {
+                Arc::new(
+                    crate::host::worker_resolver::test_support::BlockingBindingSink::around(
+                        binding_sink.clone(),
+                        *commit,
+                    ),
+                )
+            });
+            if let Some(sink) = &cancelled_sink {
+                awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+                    &managed,
+                    sink.clone(),
+                );
+            }
+            {
+                let recovering = async {
+                    WorkerProjectionSynchronizer::for_directive(
+                        host.as_ref(),
+                        &directive,
+                        Some(&claim),
+                        Some(&snapshot),
+                        true,
+                        projection.environment.binding(),
+                    )
+                    .synchronize_session_projection(
+                        thread,
+                        &projection,
+                        &crate::session_slot::test_observed_lease(lease.clone()),
+                        true,
+                    )
+                    .await
+                    .expect("DH1/MC canonical claimed adoption");
+                    if projection.environment.binding().is_none() {
+                        // UC1 has no invented dispatch binding: ordinary lazy
+                        // Tool entry recovers the retained physical owner.
+                        host.ensure_session_environment_for_tool(thread)
+                            .await
+                            .expect("UC1/MC ordinary lazy Environment recovery");
+                    }
+                };
+                tokio::pin!(recovering);
+                if let Some(sink) = &cancelled_sink {
+                    tokio::select! {
+                        _ = &mut recovering => panic!("MC expected pending Adopt"),
+                        result = tokio::time::timeout(
+                            std::time::Duration::from_secs(5), sink.entered.notified(),
+                        ) => result.expect("MC actual Adopt persistence boundary"),
+                    }
+                    assert_eq!(sink.calls(), 1, "MC one pending Adopt attempt");
+                } else {
+                    recovering.await;
+                }
+                // Drop the borrowed future here, releasing the actual locks.
+            }
+            let after = control.current_projection();
+            if successor_cancellations.get(round) == Some(&false) {
+                assert_eq!(
+                    after.environment, projection.environment,
+                    "MC no root commit"
+                );
+            } else {
+                assert_ne!(
+                    after.environment.effect_id(),
+                    projection.environment.effect_id(),
+                    "MC each committed Adopt has its own receipt, including final recovery"
+                );
+                assert_eq!(after.environment.binding(), Some(binding.as_str()));
+                if let Some(generation) = projection.environment.generation() {
+                    assert_eq!(
+                        after.environment.generation(),
+                        Some(generation),
+                        "MC Adopt never rotates the physical Sandbox generation"
+                    );
+                }
+            }
+            if let Some(sink) = cancelled_sink {
+                let candidate = host
+                    .prepared_session_environment(thread)
+                    .expect("MC cancelled successor retains Candidate");
+                assert!(
+                    host.session_environment(thread).await.is_none(),
+                    "MC hidden owner"
+                );
+                assert_eq!(candidate.environment.handle(), original_handle);
+                for old in &retired {
+                    assert!(!Arc::ptr_eq(old, &candidate.environment));
+                    assert!(
+                        scoped_admission(old).await.is_err(),
+                        "MC retired Arc stays denied"
+                    );
+                }
+                scoped_admission(&candidate.environment)
+                    .await
+                    .expect("MC current Candidate execution remains valid before replacement");
+                assert_eq!(
+                    binding_sink.calls(),
+                    persisted_creates
+                        + successor_cancellations[..=round]
+                            .iter()
+                            .filter(|commit| **commit)
+                            .count()
+                );
+                assert_eq!(
+                    std::fs::read(&root_sentinel).unwrap(),
+                    b"same physical durable root"
+                );
+                retired.push(candidate.environment);
+                awaken_session_contract::SessionRuntime::install_environment_binding_sink(
+                    &managed,
+                    binding_sink.clone(),
+                );
+                drop(sink);
+            }
         }
 
         let rebuilt = host
@@ -1032,10 +1175,12 @@ mod tests {
                     .is_some(),
                 "SR predecessor tree stops before successor execution"
             );
-            assert!(
-                scoped_admission(&original).await.is_err(),
-                "SR old execution stays denied"
-            );
+            for old in &retired {
+                assert!(
+                    scoped_admission(old).await.is_err(),
+                    "SR/MC old execution stays denied"
+                );
+            }
             scoped_admission(&rebuilt)
                 .await
                 .expect("SR fresh execution must be admitted");
@@ -1053,8 +1198,13 @@ mod tests {
         );
         assert_eq!(
             binding_sink.calls(),
-            persisted_creates + 1,
-            "DH1/UC one canonical Adopt"
+            persisted_creates
+                + successor_cancellations
+                    .iter()
+                    .filter(|commit| **commit)
+                    .count()
+                + 1,
+            "DH1/UC/MC committed prefixes plus final canonical Adopt"
         );
 
         let effective_model_ref = snapshot
