@@ -17,7 +17,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { spawnServer, stopServer, hardKillServer, waitForPort } from './harness.mjs';
 import { closeHttpServer } from './http_server.mjs';
 // @ts-ignore -- shared JavaScript fixture intentionally serves TS scenarios.
-import { withoutAmbientProviderKeys } from './process_environment.mjs';
+import { withoutControlAuthority } from './process_environment.mjs';
 
 const CONTROL_PORT = Number(process.env.E2E_PORT ?? 38834);
 const CONTROL = `http://127.0.0.1:${CONTROL_PORT}`;
@@ -331,7 +331,7 @@ function spawnCredentialIsolatedWorker(
   workerId: string,
   upstream: string,
 ): ReturnType<typeof spawnServer>['server'] {
-  const inheritedEnvironment = withoutAmbientProviderKeys(process.env);
+  const inheritedEnvironment = withoutControlAuthority(process.env);
   return spawnServer('echo', 0, {
     SESSION_DEPLOYMENT_INGRESS: 'durable',
     AWAKEN_UPSTREAM_URL: upstream,

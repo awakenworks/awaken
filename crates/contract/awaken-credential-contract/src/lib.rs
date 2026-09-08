@@ -1062,9 +1062,26 @@ mod tests {
         };
         let alternatives =
             CredentialRealizationCapabilities::alternatives([sealed.clone(), unsealed.clone()]);
-        let mut merged = sealed;
+        // R3 repeated evidence through either adapter port, nested composition,
+        // or merge => one identical profile. Deduplication changes neither exact
+        // tuple admission nor the public serialized evidence. Distinct recipients
+        // and sealed/unsealed modes remain independent (the R1/R2 matrix below).
+        let repeated = CredentialRealizationCapabilities::alternatives([
+            sealed.clone(),
+            alternatives.clone(),
+            unsealed.clone(),
+            Default::default(),
+        ]);
+        assert_eq!(
+            repeated, alternatives,
+            "R3 canonical duplicate-free evidence"
+        );
+        let mut merged = sealed.clone();
         merged.merge(&unsealed);
-        for profiles in [alternatives, merged] {
+        merged.merge(&sealed);
+        merged.merge(&merged.clone());
+        assert_eq!(merged, alternatives, "R3 idempotent merge");
+        for profiles in [alternatives, merged, repeated] {
             let wire = profiles
                 .manifest_capability()
                 .unwrap()

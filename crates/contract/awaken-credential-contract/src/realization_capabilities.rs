@@ -211,16 +211,19 @@ impl CredentialRealizationCapabilities {
     }
 
     /// Compose independent adapter evidence without creating a Cartesian-product
-    /// capability. Nested compositions are flattened and empty profiles discarded.
+    /// capability. Nested compositions are flattened; empty and identical profiles
+    /// are discarded without merging fields from independent adapters.
     #[must_use]
     pub fn alternatives(
         profiles: impl IntoIterator<Item = CredentialRealizationCapabilities>,
     ) -> Self {
         let mut alternatives = Vec::new();
         for mut profile in profiles {
-            alternatives.append(&mut profile.alternatives);
-            if !profile.is_empty() {
-                alternatives.push(profile);
+            let nested = std::mem::take(&mut profile.alternatives);
+            for candidate in nested.into_iter().chain(std::iter::once(profile)) {
+                if !candidate.is_empty() && !alternatives.contains(&candidate) {
+                    alternatives.push(candidate);
+                }
             }
         }
         if alternatives.len() == 1 {

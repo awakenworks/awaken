@@ -1063,15 +1063,14 @@ fn resolve_model_services(
             publication_resolver: Arc::new(
                 direct_resolver()
                     .with_brokered_access(cloud_models_enabled)
-                    // The canonical self-hosted deployment selects the Worker as
-                    // the exact direct Provider plaintext holder. Publication must
-                    // freeze that existing deployment fact instead of leaving the
-                    // resolver unconfigured and rejecting every Provider credential.
+                    // Freeze the same exact backend-specific recipients used by
+                    // Session execution: Native/A2A at Worker, ACP at Workload.
+                    // A Native envelope cannot be reused for an ACP candidate.
                     .with_direct_provider_credential_execution(
                         awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
-                        awaken_runtime_contract::PlaintextHolder::new(
-                            awaken_runtime_contract::PlaintextBoundary::Worker,
-                            awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+                        (
+                            awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native().inference_holder,
+                            awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp().inference_holder,
                         ),
                     ),
             ),

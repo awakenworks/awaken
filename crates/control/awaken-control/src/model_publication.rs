@@ -42,6 +42,7 @@ use a2a_remote::HttpA2aCardDiscovery;
 use acp_configuration::validate_acp_session_configuration;
 use acp_publication::wall_clock_ms;
 use composition::CatalogSource;
+pub use composition::ProviderCredentialHolders;
 use credential_publication::PublicationCredentialLookup;
 use offering_resolution::{offering_for, offering_for_target};
 
@@ -56,7 +57,7 @@ pub struct CatalogModelPublicationResolver {
     brokered_access_enabled: bool,
     brokered_publication: Option<Arc<dyn ModelPublicationResolver>>,
     direct_credential_policy: CredentialExecutionPolicy,
-    direct_holder: Option<awaken_runtime_contract::PlaintextHolder>,
+    direct_holders: Option<ProviderCredentialHolders>,
     credential_material_delivery: Option<(
         Arc<dyn awaken_credential_vault::SecretStore>,
         awaken_credential_contract::CredentialMaterialDelivery,
@@ -515,7 +516,14 @@ mod tests {
             awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
         );
         CatalogModelPublicationResolver::new(catalog, credentials)
-            .with_direct_provider_credential_execution(policy, holder)
+            .with_direct_provider_credential_execution(
+                policy,
+                (
+                    holder,
+                    awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp()
+                        .inference_holder,
+                ),
+            )
     }
 
     async fn resolver_for_catalog(catalog: ProviderCatalog) -> CatalogModelPublicationResolver {

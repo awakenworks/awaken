@@ -31,7 +31,7 @@ pub struct PreparedLocalWorker {
     admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
 }
 
-/// Prepare the one embedded Worker for every AllInOne deployment. Host ACP
+/// Prepare the embedded Worker selected by an AllInOne deployment. Host ACP
 /// discovery enriches its manifest when applicable; Native and A2A execution use
 /// the same WorkerNode when no local ACP CLI exists.
 pub async fn prepare_local_worker(

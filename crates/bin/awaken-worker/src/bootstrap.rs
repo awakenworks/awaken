@@ -12,6 +12,7 @@ pub struct WorkerBootstrap {
     pub request_credential_file: Option<PathBuf>,
     pub kubernetes_identity_directory: Option<PathBuf>,
     pub credential_material_root: PathBuf,
+    pub credential_envelope_keys_file: Option<PathBuf>,
     pub credential_trust_domain: String,
     pub admin_listen: Option<String>,
     pub drain_grace_secs: u64,
@@ -31,6 +32,7 @@ pub struct WorkerBootstrapInput {
     pub request_credential_file: Option<PathBuf>,
     pub kubernetes_identity_directory: Option<PathBuf>,
     pub credential_material_root: Option<PathBuf>,
+    pub credential_envelope_keys_file: Option<PathBuf>,
     pub credential_trust_domain: Option<String>,
     pub admin_listen: Option<String>,
     pub drain_grace_secs: Option<u64>,
@@ -156,10 +158,23 @@ impl WorkerBootstrap {
         } else {
             input.worker_id
         };
+        if input.credential_envelope_keys_file.is_some()
+            && (input.credential_material_root.is_some() || input.credential_trust_domain.is_some())
+        {
+            return Err("credential envelope keys and file projection settings select competing material resolvers".into());
+        }
+        if input
+            .credential_envelope_keys_file
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            return Err("credential_envelope_keys_file must not be empty".into());
+        }
         let worker = Self {
             worker_id: worker_id.unwrap_or_else(|| "awaken-worker".into()),
             request_credential_file: input.request_credential_file,
             kubernetes_identity_directory: input.kubernetes_identity_directory,
+            credential_envelope_keys_file: input.credential_envelope_keys_file,
             credential_material_root: input
                 .credential_material_root
                 .unwrap_or_else(|| data_dir.join("worker-credentials")),
@@ -207,6 +222,7 @@ struct WorkerFileConfig {
     worker_request_credential_file: Option<PathBuf>,
     worker_kubernetes_identity_directory: Option<PathBuf>,
     worker_credential_material_root: Option<PathBuf>,
+    credential_envelope_keys_file: Option<PathBuf>,
     worker_credential_trust_domain: Option<String>,
     worker_local_credential_bindings_file: Option<PathBuf>,
     worker_admin_listen: Option<String>,
@@ -263,6 +279,7 @@ impl WorkerDaemonConfig {
                 request_credential_file: file.worker_request_credential_file,
                 kubernetes_identity_directory: file.worker_kubernetes_identity_directory,
                 credential_material_root: file.worker_credential_material_root,
+                credential_envelope_keys_file: file.credential_envelope_keys_file,
                 credential_trust_domain: file.worker_credential_trust_domain,
                 admin_listen: file.worker_admin_listen,
                 drain_grace_secs: file.worker_drain_grace_secs,
@@ -343,10 +360,21 @@ impl WorkerDaemonConfig {
         &self,
         adapters: awaken_run_executor_acp::host::HostAcpAdapters,
     ) -> Result<crate::WorkerNode, String> {
-        let resolver = Arc::new(crate::WorkerCredentialFileResolver::new(
-            &self.worker.credential_material_root,
-            &self.worker.credential_trust_domain,
-        ));
+        let resolver: Arc<dyn awaken_runtime_contract::CredentialMaterialResolver> = match &self
+            .worker
+            .credential_envelope_keys_file
+        {
+            Some(path) => Arc::new(
+                awaken_credential_materializer::recipient_envelope::RecipientKeyEnvelope::open(
+                    path,
+                )
+                .map_err(|error| format!("Worker credential envelope configuration: {error}"))?,
+            ),
+            None => Arc::new(crate::WorkerCredentialFileResolver::new(
+                &self.worker.credential_material_root,
+                &self.worker.credential_trust_domain,
+            )),
+        };
         let credentials =
             awaken_credential_materializer::PinnedCredentialMaterializer::external_only(resolver);
         let certificate = self
@@ -463,6 +491,41 @@ impl WorkerDaemonConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Decision table: C1 envelope path, C2 explicit projected root, C3 explicit
+    /// projected holder. !C1 keeps the original file resolver; C1+!C2+!C3 selects
+    /// the envelope resolver; C1+(C2|C3) rejects competing ownership before IO.
+    /// Empty envelope paths reject even when no other source is authored.
+    #[test]
+    fn material_resolver_configuration_has_one_owner() {
+        for envelope in [false, true] {
+            for root in [false, true] {
+                for holder in [false, true] {
+                    let result = WorkerBootstrap::resolve(
+                        WorkerBootstrapInput {
+                            credential_envelope_keys_file: envelope
+                                .then(|| PathBuf::from("keys.json")),
+                            credential_material_root: root.then(|| PathBuf::from("projection")),
+                            credential_trust_domain: holder.then(|| "worker-a".into()),
+                            ..Default::default()
+                        },
+                        Path::new("worker"),
+                    );
+                    assert_eq!(result.is_ok(), !envelope || !(root || holder));
+                }
+            }
+        }
+        assert!(
+            WorkerBootstrap::resolve(
+                WorkerBootstrapInput {
+                    credential_envelope_keys_file: Some(PathBuf::new()),
+                    ..Default::default()
+                },
+                Path::new("worker")
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn pod_bootstrap_freezes_projected_identity_and_never_falls_back_to_signing() {

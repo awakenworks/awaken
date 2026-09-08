@@ -227,7 +227,7 @@ impl CatalogModelPublicationResolver {
                     &(&provider_ref, &endpoint),
                     &usage,
                 );
-                let selected_holder = self.direct_holder.as_ref().ok_or_else(|| {
+                let selected_holder = self.direct_holders.as_ref().map(|holders| holders.for_backend(&binding.backend_ref)).ok_or_else(|| {
                         unavailable(
                             "direct provider credential publication requires an exact deployment-selected plaintext holder"
                                 .into(),
@@ -379,11 +379,13 @@ mod tests {
                 &request.binding,
             );
             let recipient = request.selected_holder.trust_domain.clone();
+            let workload = request.selected_holder.boundary
+                == awaken_credential_contract::PlaintextBoundary::Workload;
             self.calls.lock().unwrap().push(request);
             if self.fault == 1 {
                 return Err("injected delivery unavailable".into());
             }
-            Ok(CredentialEnvelope::SealedForWorker {
+            let envelope = CredentialEnvelope::SealedForWorker {
                 envelope_ref: SealedCredentialEnvelopeRef {
                     id: if self.fault == 5 {
                         ""
@@ -403,13 +405,26 @@ mod tests {
                     recipient
                 },
                 expires_at_unix_ms: if self.fault == 4 { 0 } else { u64::MAX },
+            };
+            Ok(match envelope {
+                CredentialEnvelope::SealedForWorker {
+                    envelope_ref,
+                    recipient,
+                    expires_at_unix_ms,
+                } if workload => CredentialEnvelope::SealedForWorkload {
+                    envelope_ref,
+                    recipient,
+                    expires_at_unix_ms,
+                },
+                envelope => envelope,
             })
         }
     }
 
     #[tokio::test]
     async fn native_and_claude_provider_publications_deliver_exact_material_or_fail_closed() {
-        // Causes: C1 Native/Claude select their canonical distinct usage; C2
+        // Causes: C1 Native/Claude select their canonical distinct usage AND
+        // exact Worker/Workload holder; using Native envelope for ACP must fail; C2
         // installed issuer returns exact/failure/payload drift/recipient drift/
         // expiry/empty identity; C3 source active/disabled; C4 material present/
         // absent. Effects: D1 exact delivery -> one envelope and one secret read
@@ -507,6 +522,20 @@ mod tests {
                         "D1 regression: formerly bare reference"
                     );
                     let issued = &calls[0];
+                    let holder = if backend == "genai" {
+                        awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
+                            .inference_holder
+                    } else {
+                        awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp()
+                            .inference_holder
+                    };
+                    assert_eq!(issued.selected_holder, holder, "D1 backend recipient");
+                    access
+                        .envelope
+                        .as_ref()
+                        .unwrap()
+                        .validate_for_holder(&holder, super::super::wall_clock_ms())
+                        .unwrap();
                     assert_eq!(issued.access.credential.id, source.id.0);
                     assert_eq!(issued.access.credential.revision, source.version as u64);
                     assert_eq!(issued.material.expose_secret(), "publication-test-secret");

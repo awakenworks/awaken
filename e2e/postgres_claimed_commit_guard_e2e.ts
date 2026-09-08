@@ -6,10 +6,10 @@
 // cannot duplicate committed history and the old epoch cannot settle.
 
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import fs, { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { postgresQuery } from './postgres.mjs';
 import { postgresDatabaseName, spawnServer, stopServer, waitForPort } from './harness.mjs';
 import {
   claimedCommitRequestFixture,
@@ -33,25 +33,7 @@ const OWNER_B = 'pg-worker-b';
 const identities = new Map<string, unknown>();
 
 function sql(statement: string): string {
-  const command = POSTGRES_CONTAINER ? 'docker' : 'psql';
-  const args = POSTGRES_CONTAINER
-    ? [
-        'exec',
-        POSTGRES_CONTAINER,
-        'psql',
-        '-U',
-        'postgres',
-        '-d',
-        PROBE_DATABASE,
-        '-X',
-        '-v',
-        'ON_ERROR_STOP=1',
-        '-At',
-        '-c',
-        statement,
-      ]
-    : [DATABASE_URL!, '-X', '-v', 'ON_ERROR_STOP=1', '-At', '-c', statement];
-  return execFileSync(command, args, { encoding: 'utf8' }).trim();
+  return postgresQuery({container:POSTGRES_CONTAINER,database:PROBE_DATABASE,url:DATABASE_URL},statement);
 }
 
 function quoted(value: string): string {

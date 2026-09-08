@@ -149,22 +149,13 @@ async fn run_service_with_adapters(
         .map_err(|error| format!("Awaken Cloud login task failed: {error}"))??;
     }
     let seal_key = role_seal_key(&deployment)?;
-    let local_worker = if awaken_service_lifecycle::startup_requires(
-        role.startup_role(),
-        awaken_service_lifecycle::StartupComponent::LocalWorker,
-    ) {
-        let workspace = installations.platform_workspace_before_write()?;
-        Some(
-            crate::acp_local_credentials::prepare_local_worker_with_workspace(
-                &mut deployment,
-                seal_key.as_ref().expect("AllInOne owns Control seal key"),
-                workspace,
-            )
-            .await?,
-        )
-    } else {
-        None
-    };
+    let local_worker = prepare_configured_local_worker(
+        &mut deployment,
+        role,
+        seal_key.as_ref(),
+        installations.platform_workspace_before_write()?,
+    )
+    .await?;
     if role != ServiceRole::Control
         && let Some(error) = deployment.runtime.durable_needs_persistence_error(false)
     {
@@ -183,6 +174,32 @@ async fn run_service_with_adapters(
     .await;
     awaken_observability::shutdown();
     result
+}
+
+// Read the authored setting before preparation disables the Coordinator's
+// anonymous claim pool. A disabled embedded Worker must not discover ACPs,
+// open materialization stores, register, or later be restarted by the supervisor.
+async fn prepare_configured_local_worker(
+    deployment: &mut ResolvedDeployment,
+    role: ServiceRole,
+    seal_key: Option<&[u8; 32]>,
+    workspace: Option<String>,
+) -> Result<Option<crate::PreparedLocalWorker>, String> {
+    if !deployment.run_local_pool
+        || !awaken_service_lifecycle::startup_requires(
+            role.startup_role(),
+            awaken_service_lifecycle::StartupComponent::LocalWorker,
+        )
+    {
+        return Ok(None);
+    }
+    crate::acp_local_credentials::prepare_local_worker_with_workspace(
+        deployment,
+        seal_key.expect("AllInOne owns Control seal key"),
+        workspace,
+    )
+    .await
+    .map(Some)
 }
 
 /// Serve a caller-configured Control process through Awaken's canonical public,
@@ -1034,6 +1051,42 @@ mod tests {
         })
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn disabled_or_split_worker_startup_has_no_local_effects() {
+        // Cause/effect rules: W1 AllInOne + disabled => no preparation;
+        // W2 Control/Coordinator + either flag => no preparation (role wins).
+        // Effects: no data files, ACP observations, configuration mutation, or
+        // Worker returned to the registration/restart lifecycle. No seal key or
+        // Workspace is supplied: reaching preparation would fail. W3 enabled
+        // AllInOne is exercised by the existing embedded Worker integration;
+        // standalone E2E verifies W1 through the real registry and execution.
+        for role in [
+            ServiceRole::AllInOne,
+            ServiceRole::Control,
+            ServiceRole::Coordinator,
+        ] {
+            for enabled in [false, true] {
+                if role == ServiceRole::AllInOne && enabled {
+                    continue;
+                }
+                let root = tempfile::tempdir().unwrap();
+                let mut deployment = crate::config::local_test_deployment(root.path().into());
+                deployment.run_local_pool = enabled;
+                let original_pool = deployment.runtime.disable_local_pool;
+                assert!(
+                    prepare_configured_local_worker(&mut deployment, role, None, None)
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+                assert_eq!(deployment.run_local_pool, enabled);
+                assert_eq!(deployment.runtime.disable_local_pool, original_pool);
+                assert!(deployment.local_acp_observations.is_empty());
+                assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+            }
+        }
     }
 
     #[tokio::test]
