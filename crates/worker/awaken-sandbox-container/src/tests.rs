@@ -2475,6 +2475,8 @@ struct FakeState {
     control_binding_response_gate: Option<Arc<tokio::sync::Semaphore>>,
     recovered_staging_calls: usize,
     inspections: usize,
+    restore_query_gate: Option<(&'static str, Arc<tokio::sync::Semaphore>)>,
+    restore_queries: Vec<(&'static str, String)>,
     restore_targets: HashMap<String, pc::SandboxRestorationEvidence>,
     restore_plan_fingerprints: HashMap<String, String>,
     restore_creates: usize,
@@ -2523,6 +2525,20 @@ impl pc::ProcessHandle for FakeExecProcess {
 }
 
 impl FakeRuntime {
+    async fn restore_query_response(&self, query: &'static str, container_id: &str) {
+        let gate = {
+            let mut state = self.st.lock().unwrap();
+            state.restore_queries.push((query, container_id.to_owned()));
+            state
+                .restore_query_gate
+                .as_ref()
+                .and_then(|(boundary, gate)| (*boundary == query).then(|| gate.clone()))
+        };
+        if let Some(gate) = gate {
+            gate.acquire().await.unwrap().forget();
+        }
+    }
+
     fn with_artifact(self, id: &str, path: &str, bytes: &[u8]) -> Self {
         {
             let mut st = self.st.lock().unwrap();
@@ -2909,26 +2925,40 @@ impl ContainerRuntime for FakeRuntime {
         &self,
         container_id: &str,
     ) -> Result<Option<pc::SandboxRestorationEvidence>, RuntimeError> {
-        let state = self.st.lock().unwrap();
-        if state.alive.get(container_id) != Some(&true) {
-            return Err(RuntimeError::Backend(
-                "fake restored target is not alive".into(),
-            ));
-        }
-        Ok(state.restore_targets.get(container_id).cloned())
+        let evidence = {
+            let state = self.st.lock().unwrap();
+            if state.alive.get(container_id) != Some(&true) {
+                return Err(RuntimeError::Backend(
+                    "fake restored target is not alive".into(),
+                ));
+            }
+            state.restore_targets.get(container_id).cloned()
+        };
+        self.restore_query_response("evidence", container_id).await;
+        Ok(evidence)
     }
 
     async fn restoration_plan_fingerprint(
         &self,
         container_id: &str,
     ) -> Result<Option<String>, RuntimeError> {
-        Ok(self
+        let fingerprint = self
             .st
             .lock()
             .unwrap()
             .restore_plan_fingerprints
             .get(container_id)
-            .cloned())
+            .cloned();
+        self.restore_query_response("plan", container_id).await;
+        Ok(fingerprint)
+    }
+
+    async fn handle_extra(
+        &self,
+        container_id: &str,
+    ) -> Result<Option<pc::ContainerContinuationHandle>, RuntimeError> {
+        self.restore_query_response("handle", container_id).await;
+        Ok(None)
     }
 
     async fn dispose_restore_target(
@@ -3113,13 +3143,17 @@ impl ContainerRuntime for FakeRuntime {
         Ok(Box::new(ours))
     }
     async fn inspect(&self, container_id: &str) -> Result<ContainerState, RuntimeError> {
-        let mut state = self.st.lock().unwrap();
-        state.inspections += 1;
-        match state.alive.get(container_id) {
-            Some(true) => Ok(ContainerState::Running),
-            Some(false) => Ok(ContainerState::Gone),
-            None => Err(RuntimeError::NotFound(container_id.into())),
-        }
+        let result = {
+            let mut state = self.st.lock().unwrap();
+            state.inspections += 1;
+            match state.alive.get(container_id) {
+                Some(true) => Ok(ContainerState::Running),
+                Some(false) => Ok(ContainerState::Gone),
+                None => Err(RuntimeError::NotFound(container_id.into())),
+            }
+        };
+        self.restore_query_response("inspect", container_id).await;
+        result
     }
     async fn wait(&self, container_id: &str) -> Result<pc::ExitStatus, RuntimeError> {
         self.st
@@ -4129,6 +4163,184 @@ async fn adoption_configuration_is_revalidated_before_runtime_observation() {
         1,
         "A6 disposal replay has no extra effect"
     );
+}
+
+#[tokio::test]
+async fn restored_adoption_rechecks_original_authority_after_each_query_response() {
+    use pc::test_support::EffectAuthority;
+    use std::time::Duration;
+
+    // Cause/effect graph: exact frozen restore request + original current proof
+    // -> inspect -> evidence -> plan -> continuation handle -> publish handle.
+    // Every async arrow can suspend; authority loss after any response must cut
+    // off the NEXT query or publication, without disposing/recreating the target.
+    // Decision table: C1 either public provider port; C2 each of four response
+    // cuts; C3 unchanged/renewed/revoked/replaced/exhausted/cancelled authority;
+    // C4 past/future Control expiry (not a Worker clock oracle).
+    // R1 denied entry => zero I/O. R2 unchanged/renewed => exact handle success.
+    // R3 revoked/replaced/exhausted => error and exact query prefix only.
+    // R4 cancellation => same prefix, no invented cleanup; an explicitly
+    // restored fixture authority can retry the SAME request/target. R5 every
+    // row preserves physical evidence and performs no create/remove,
+    // process start, lease renewal or control-channel activation during adoption.
+    // Full 2x4x6x2 Pending schedules. The cold provider has no Blob/Secret source;
+    // resource creation/recovery stays with the existing restore-target owner.
+    // SessionExecutionBinding's adoption wait/re-entry invariant is reused, not
+    // a second lifecycle model. Its bounded two-effect proof is NOT a proof of
+    // this four-query Rust refinement, real daemon behavior or remote atomicity.
+    const QUERIES: [&str; 4] = ["inspect", "evidence", "plan", "handle"];
+    for port in ["sandbox", "container"] {
+        for expiry in [100, u64::MAX - 1] {
+            for (cut, boundary) in QUERIES.into_iter().enumerate() {
+                for change in [
+                    "unchanged",
+                    "renew",
+                    "revoke",
+                    "replace",
+                    "expire",
+                    "cancel",
+                ] {
+                    let runtime = Arc::new(FakeRuntime::default());
+                    let spec = spec("restored-adoption-current");
+                    let request = restore_request(&spec);
+                    let creator = provider(runtime.clone());
+                    let created = creator
+                        .acquire_restore_environment(&spec, &request)
+                        .await
+                        .unwrap();
+                    let handle = created.target().handle();
+                    let id = handle.container_payload().unwrap().container_id.clone();
+                    drop(created);
+                    drop(creator);
+                    let provider = base_provider(runtime.clone());
+                    let fence =
+                        pc::SandboxEffectFence::new("restore-adopt", "owner", "boot", 8, expiry)
+                            .unwrap();
+                    let authority = EffectAuthority::new(&fence);
+                    let call = |authority| -> std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<
+                                    Output = Result<pc::SandboxHandle, pc::SandboxError>,
+                                > + Send
+                                + '_,
+                        >,
+                    > {
+                        let (provider, spec, handle, fence) = (&provider, &spec, &handle, &fence);
+                        Box::pin(async move {
+                            if port == "sandbox" {
+                                pc::SandboxProvider::adopt_for_effect(
+                                    provider, spec, handle, fence, authority,
+                                )
+                                .await
+                                .map(|sandbox| sandbox.handle())
+                            } else {
+                                provider
+                                    .adopt_environment_for_effect(
+                                        ContainerEnvironmentAdoption::new(spec, handle),
+                                        Some(fence),
+                                        Some(authority),
+                                    )
+                                    .await
+                                    .map(|environment| environment.handle())
+                            }
+                        })
+                    };
+                    let original = {
+                        let mut state = runtime.st.lock().unwrap();
+                        state.restore_queries.clear();
+                        (
+                            state.restore_targets.clone(),
+                            state.restore_plan_fingerprints.clone(),
+                        )
+                    };
+                    let denied = EffectAuthority::denied();
+                    assert!(call(&denied).await.is_err(), "R1 {port}");
+                    assert!(runtime.st.lock().unwrap().restore_queries.is_empty(), "R1");
+                    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+                    runtime.st.lock().unwrap().restore_query_gate = Some((boundary, gate.clone()));
+                    let mut pending = call(&authority);
+                    std::future::poll_fn(|cx| {
+                        assert!(
+                            pending.as_mut().poll(cx).is_pending(),
+                            "{port}/{boundary}/{change}/{expiry}"
+                        );
+                        std::task::Poll::Ready(())
+                    })
+                    .await;
+                    {
+                        let mut current = authority.current.lock().unwrap();
+                        match change {
+                            "revoke" => *current = None,
+                            "replace" => current.as_mut().unwrap().0.epoch += 1,
+                            "expire" => current.as_mut().unwrap().1 = Duration::ZERO,
+                            "renew" => current.as_mut().unwrap().0.expires_at_unix_ms += 1,
+                            _ => {}
+                        }
+                    }
+                    let successful = matches!(change, "unchanged" | "renew");
+                    if change == "cancel" {
+                        drop(pending);
+                    } else {
+                        gate.add_permits(1);
+                        let result = pending.await;
+                        assert_eq!(
+                            result.is_ok(),
+                            successful,
+                            "R2/R3 {port}/{boundary}/{change}/{expiry}"
+                        );
+                        if let Ok(observed) = result {
+                            assert_eq!(observed, handle, "R2 exact handle");
+                        }
+                    }
+                    {
+                        let mut state = runtime.st.lock().unwrap();
+                        let expected = &QUERIES[..if successful { 4 } else { cut + 1 }];
+                        assert_eq!(
+                            state.restore_queries,
+                            expected
+                                .iter()
+                                .map(|query| (*query, id.clone()))
+                                .collect::<Vec<_>>(),
+                            "R3/R4 exact prefix {port}/{boundary}/{change}"
+                        );
+                        state.restore_query_gate = None;
+                        state.restore_queries.clear();
+                    }
+                    *authority.current.lock().unwrap() =
+                        Some((fence.clone(), Duration::from_secs(1)));
+                    assert_eq!(call(&authority).await.unwrap(), handle, "R4 exact retry");
+                    let state = runtime.st.lock().unwrap();
+                    assert_eq!(
+                        state.restore_queries,
+                        QUERIES
+                            .iter()
+                            .map(|query| (*query, id.clone()))
+                            .collect::<Vec<_>>(),
+                        "R4"
+                    );
+                    assert_eq!(state.restore_targets, original.0, "R5 evidence retained");
+                    assert_eq!(
+                        state.restore_plan_fingerprints, original.1,
+                        "R5 plan retained"
+                    );
+                    assert_eq!(state.alive.get(&id), Some(&true), "R5 target retained");
+                    assert_eq!(state.restore_creates, 1, "R5 no recreation");
+                    assert_eq!(state.created_command.len(), 1, "R5 no ordinary create");
+                    assert_eq!(state.alive.len(), 1, "R5 no replacement target");
+                    assert_eq!(state.observations, 0, "R5 no ordinary adoption fallback");
+                    assert_eq!(state.restore_disposals, 0, "R5 no restore cleanup");
+                    assert!(state.removals.is_empty(), "R5 no ordinary cleanup");
+                    assert!(state.spawned.is_empty(), "R5 no process start");
+                    assert!(
+                        state.control_binding_calls.is_empty(),
+                        "R5 no control activation"
+                    );
+                    assert_eq!(state.lease_touches, 0, "R5 no lease renewal");
+                    assert_eq!(state.control_channel_opens, 0, "R5 no control channel");
+                }
+            }
+        }
+    }
 }
 
 #[tokio::test]
