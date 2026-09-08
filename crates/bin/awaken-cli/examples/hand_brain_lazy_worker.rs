@@ -118,7 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // providers fail closed without it; local providers accept the same factory
         // without creating a second execution path.
         .with_hand_executor_factory(awaken_worker::relay_hand_executor_factory())
-        .with_registered_memory_mounter_factory(awaken_cli::registered_memory_mounter_factory())
+        .with_remote_session_resource_support()
         .with_standard_manifest(Default::default())
         .without_admin_surface()
         .prepare_session_environment_from_deployment()

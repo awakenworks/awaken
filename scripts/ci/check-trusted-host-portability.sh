@@ -32,7 +32,11 @@ fi
 cargo test -p awaken-session-executor --lib resource_prompt_tests
 cargo test -p awaken-session-executor --lib trusted_host_repository_projection_preserves_the_exact_tier
 cargo test -p awaken-session-executor --lib trusted_host_live_resource_admission_keeps_readonly_advisory
-cargo test -p awaken-session-executor --lib local_and_namespace_restart_replay_exact_memory_participants_before_late_mounts
+# Memory replay decision tables cover absent/exact/different installed pins,
+# lost acknowledgements and concurrent callers as well as Provider restart.
+# Select this existing group once: prompt and terminal rows have their own
+# owners immediately above/below and must not run a second time here.
+cargo test -p awaken-session-executor --lib memory -- --skip resource_prompt_tests --skip terminal_
 # Terminal cause/effect tables include hot/cold Memory, cancelled recovery,
 # same-generation renewal and Control/Worker clock disagreement. Select the
 # existing terminal group once; it includes the former single Memory row and

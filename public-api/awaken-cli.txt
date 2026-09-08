@@ -253,7 +253,6 @@ pub async fn awaken_cli::prepare_local_acp(&mut awaken_cli::config::ResolvedDepl
 pub async fn awaken_cli::prepare_local_worker(&mut awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<awaken_cli::PreparedLocalWorker, alloc::string::String>
 pub fn awaken_cli::process_admin_router(alloc::sync::Arc<awaken_cli::DrainController>) -> axum::routing::Router
 pub fn awaken_cli::register_active_streams_gauge(alloc::sync::Arc<awaken_cli::DrainController>) -> alloc::vec::Vec<opentelemetry::metrics::instruments::gauge::ObservableGauge<u64>>
-pub fn awaken_cli::registered_memory_mounter_factory() -> awaken_worker::RegisteredMemoryMounterFactory
 pub async fn awaken_cli::run_all_in_one_with_services(awaken_cli::console::ServiceArgs, awaken_cli::ManagedServiceAdapters, awaken_cli::CoordinatorServiceAdapters) -> core::result::Result<(), alloc::string::String>
 pub async fn awaken_cli::run_service(awaken_cli::console::ServiceArgs, awaken_cli::ServiceRole) -> core::result::Result<(), alloc::string::String>
 pub async fn awaken_cli::run_service_binary(awaken_cli::ServiceRole) -> std::process::ExitCode
