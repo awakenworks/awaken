@@ -1474,7 +1474,15 @@ def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
                         'CanSend == phase', 1),
          config, "ActiveAggregateNeverAdmits"),
     ])
-    print("Cowork lifecycle mutation score: 18/18 killed (worker evidence 3, drain 4, ACP/composition/rollout 5, cleanup evidence 4, presentation/admission 2); drain ACK witness reachable")
+    # O1 later Running checkpoints followed by a close must not change the
+    # opening already observed by a warm client. The cold max-at-terminal
+    # mutant recreates the lost approval cursor from the real restart matrix.
+    opening_config = (ROOT / "formal/tla/SessionRuntimeProjectionOpening.cfg").read_text()
+    check_tlc_model_mutations(tlc_jar, "SessionRuntimeProjection", source, opening_config, [
+        (source.replace("cursor <= other", "IF phase = \"closed\" THEN cursor >= other ELSE cursor <= other", 1),
+         opening_config, "OpeningIdentityStable"),
+    ])
+    print("Cowork lifecycle mutation score: 19/19 killed (worker evidence 3, drain 4, ACP/composition/rollout 5, cleanup evidence 4, presentation/admission 2, opening identity 1); drain ACK witness reachable")
 
 
 def check_observation_rule_mutants(trace_dir: Path, manifest: dict) -> None:

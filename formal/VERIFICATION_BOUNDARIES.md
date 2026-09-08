@@ -370,6 +370,15 @@ type checking are valuable executable evidence, but are not formal proofs.
   roll the visible projection backwards. They do not prove database snapshot
   isolation, cold reconstruction of pre-anchor legacy history, browser delivery,
   or lifecycle-supervisor fairness.
+  `SessionRuntimeProjection.tla` also checks opening identity with the bounded
+  `SessionRuntimeProjectionOpening.cfg`: one exact interval, up to three
+  Running commits, arbitrary live reads, terminal observation and cold rebuild.
+  Both projections must retain the first admitted opening; choosing the latest
+  Running after terminal is rejected by the Cowork lifecycle semantic mutant.
+  The existing Rust recovery test exercises 12 source/terminal combinations,
+  three observation cuts, warm/cold equality and bidirectional pagination.
+  This is abstract model checking, not Rust refinement: Run/Thread selection,
+  legacy admission anchors and actual process failure are executable-test scope.
 - Internal Agent messaging has no message store or Dispatch-owned waiting
   state. `AgentMessageProtocol.tla` composes the canonical
   `SessionActivityKernel` and `RunIngressKernel`, adding only committed source

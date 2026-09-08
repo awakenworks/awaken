@@ -11258,129 +11258,219 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
     // R3 later terminal => append a distinct close and retain every issued id.
     // This reproduces Cowork's Worker restart between two Write approvals;
     // checking only the final reply missed duplicate ids/cyclic next_page.
-    let runtime = LifecycleRuntime::default();
-    let state = ManagedState::new(runtime.clone());
-    let session = state
-        .create_session(
-            serde_json::from_value(serde_json::json!({
-                "agent":"coder", "environment_id":"env_local"
-            }))
-            .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
-    let run = RunId("worker-recovered-approval".into());
-    let first = state.application.begin_activity(&session.id).await.unwrap();
-    runtime.lifecycle.lock().unwrap().extend([
-        lifecycle(
-            1,
-            &session.id,
-            &run,
-            RunLifecycleEventKind::Running,
-            RunState::Running,
-        ),
-        lifecycle(
-            2,
-            &session.id,
-            &run,
-            RunLifecycleEventKind::Awaiting,
-            RunState::Awaiting,
-        ),
-    ]);
-    state
-        .application
-        .settle_activity_observed(
-            &session.id,
-            first.activity_epoch,
-            Some(awaken_session_contract::SessionRuntimeIntervalObservation {
-                activity_epoch: first.activity_epoch,
-                thread_id: ThreadId(session.id.clone()),
-                run_id: run.clone(),
-                lifecycle_cursor: lifecycle_cursor(2),
-                source_commit_cursor: 2,
-            }),
-        )
-        .await
-        .unwrap();
-    state.refresh_committed_events(&session.id).await.unwrap();
-    let second = state.application.begin_activity(&session.id).await.unwrap();
-    state.refresh_committed_events(&session.id).await.unwrap();
-    runtime.lifecycle.lock().unwrap().push(lifecycle(
-        3,
-        &session.id,
-        &run,
-        RunLifecycleEventKind::Resumed,
-        RunState::Running,
-    ));
-    for terminal in [false, true] {
-        if terminal {
-            runtime.lifecycle.lock().unwrap().push(lifecycle(
-                4,
-                &session.id,
-                &run,
+    // R4 table: extra Running commits 0/1/3 x terminal Awaiting/Completed/
+    // Cancelled/Failed x observation live/terminal-before-settle/closed x warm/
+    // cold. Exact opening and every issued payload survive every combination;
+    // each paging direction/limit must enumerate the same immutable identities.
+    for extra_running in [0, 1, 3] {
+        for (terminal_kind, terminal_state) in [
+            (RunLifecycleEventKind::Awaiting, RunState::Awaiting),
+            (
                 RunLifecycleEventKind::Completed,
                 RunState::Ended(EndCause::NaturalEnd),
-            ));
+            ),
+            (
+                RunLifecycleEventKind::Cancelled,
+                RunState::Ended(EndCause::Cancelled),
+            ),
+            (
+                RunLifecycleEventKind::Failed,
+                RunState::Ended(EndCause::Indeterminate),
+            ),
+        ] {
+            let runtime = LifecycleRuntime::default();
+            let state = ManagedState::new(runtime.clone());
+            let session = state
+                .create_session(
+                    serde_json::from_value(serde_json::json!({
+                        "agent":"coder", "environment_id":"env_local"
+                    }))
+                    .unwrap(),
+                    None,
+                )
+                .await
+                .unwrap();
+            let run = RunId("worker-recovered-approval".into());
+            let first = state.application.begin_activity(&session.id).await.unwrap();
+            runtime.lifecycle.lock().unwrap().extend([
+                lifecycle(
+                    1,
+                    &session.id,
+                    &run,
+                    RunLifecycleEventKind::Running,
+                    RunState::Running,
+                ),
+                lifecycle(
+                    2,
+                    &session.id,
+                    &run,
+                    RunLifecycleEventKind::Awaiting,
+                    RunState::Awaiting,
+                ),
+            ]);
             state
                 .application
                 .settle_activity_observed(
                     &session.id,
-                    second.activity_epoch,
+                    first.activity_epoch,
                     Some(awaken_session_contract::SessionRuntimeIntervalObservation {
-                        activity_epoch: second.activity_epoch,
+                        activity_epoch: first.activity_epoch,
                         thread_id: ThreadId(session.id.clone()),
                         run_id: run.clone(),
-                        lifecycle_cursor: lifecycle_cursor(4),
-                        source_commit_cursor: 4,
+                        lifecycle_cursor: lifecycle_cursor(2),
+                        source_commit_cursor: 2,
                     }),
                 )
                 .await
                 .unwrap();
-        }
-        state.refresh_committed_events(&session.id).await.unwrap();
-        let baseline = state
-            .list_events(&session.id, None, Some(1000), false)
-            .unwrap()
-            .data;
-        for _ in 0..60 {
             state.refresh_committed_events(&session.id).await.unwrap();
-        }
-        let actual = state
-            .list_events(&session.id, None, Some(1000), false)
-            .unwrap()
-            .data;
-        assert_eq!(
-            actual
-                .iter()
-                .map(|e| &e.id)
-                .collect::<std::collections::HashSet<_>>()
-                .len(),
-            actual.len(),
-            "R2/R3 unique event identities"
-        );
-        assert_eq!(
-            serde_json::to_value(&actual).unwrap(),
-            serde_json::to_value(&baseline).unwrap(),
-            "R2/R3 repeated projection is stable"
-        );
-        for descending in [false, true] {
-            for limit in [1, 2, 50] {
-                let mut cursor = None;
-                let mut seen = std::collections::HashSet::new();
-                loop {
-                    let page = state
-                        .list_events(&session.id, cursor.as_deref(), Some(limit), descending)
+            let second = state.application.begin_activity(&session.id).await.unwrap();
+            state.refresh_committed_events(&session.id).await.unwrap();
+            runtime.lifecycle.lock().unwrap().push(lifecycle(
+                3,
+                &session.id,
+                &run,
+                RunLifecycleEventKind::Resumed,
+                RunState::Running,
+            ));
+            // R4 the resumed Run can commit another Running transition before the
+            // Session closes its interval. Every prefix issued before that observation
+            // must survive terminal reduction and cold reconstruction byte-for-byte.
+            state.refresh_committed_events(&session.id).await.unwrap();
+            let issued = state
+                .list_events(&session.id, None, Some(1000), false)
+                .unwrap()
+                .data;
+            let opening_id = managed_multiagent_event_id(
+                &session.id,
+                &session.id,
+                "aggregate-status-running",
+                ManagedMultiagentEventProvenance::Lifecycle {
+                    cursor: lifecycle_cursor(3).0,
+                },
+            );
+            assert!(
+                issued.iter().any(|event| event.id == opening_id),
+                "R4 opening must actually be issued"
+            );
+            assert!(
+                state
+                    .application
+                    .session(&session.id)
+                    .await
+                    .unwrap()
+                    .running_interval
+                    .is_some()
+            );
+
+            for offset in 0..extra_running {
+                runtime.lifecycle.lock().unwrap().push(lifecycle(
+                    4 + offset,
+                    &session.id,
+                    &run,
+                    RunLifecycleEventKind::Running,
+                    RunState::Running,
+                ));
+            }
+            let terminal_cursor = 4 + extra_running;
+            for terminal in 0..3 {
+                if terminal == 1 {
+                    runtime.lifecycle.lock().unwrap().push(lifecycle(
+                        terminal_cursor,
+                        &session.id,
+                        &run,
+                        terminal_kind,
+                        terminal_state.clone(),
+                    ));
+                }
+                if terminal == 2 {
+                    state
+                        .application
+                        .settle_activity_observed(
+                            &session.id,
+                            second.activity_epoch,
+                            Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                                activity_epoch: second.activity_epoch,
+                                thread_id: ThreadId(session.id.clone()),
+                                run_id: run.clone(),
+                                lifecycle_cursor: lifecycle_cursor(terminal_cursor),
+                                source_commit_cursor: terminal_cursor,
+                            }),
+                        )
+                        .await
                         .unwrap();
-                    for event in page.data {
-                        assert!(seen.insert(event.id), "R2 cursor cannot cycle");
-                    }
-                    match page.next_page {
-                        Some(next) => cursor = Some(next),
-                        None => break,
+                }
+                state.refresh_committed_events(&session.id).await.unwrap();
+                let baseline = state
+                    .list_events(&session.id, None, Some(1000), false)
+                    .unwrap()
+                    .data;
+                for event in &issued {
+                    assert_eq!(
+                        serde_json::to_value(
+                            baseline.iter().find(|current| current.id == event.id)
+                        )
+                        .unwrap(),
+                        serde_json::to_value(Some(event)).unwrap(),
+                        "R4 issued event survives terminal={terminal}: {}",
+                        event.id,
+                    );
+                }
+                let cold = ManagedState::new(runtime.clone())
+                    .with_session_repo(state.application.session_repository_handle());
+                cold.refresh_committed_events(&session.id).await.unwrap();
+                assert_eq!(
+                    cold.list_events(&session.id, None, Some(1000), false)
+                        .unwrap()
+                        .data,
+                    baseline,
+                    "R4 cold reconstruction preserves the warm prefix at terminal={terminal}",
+                );
+                for _ in 0..60 {
+                    state.refresh_committed_events(&session.id).await.unwrap();
+                }
+                let actual = state
+                    .list_events(&session.id, None, Some(1000), false)
+                    .unwrap()
+                    .data;
+                assert_eq!(
+                    actual
+                        .iter()
+                        .map(|e| &e.id)
+                        .collect::<std::collections::HashSet<_>>()
+                        .len(),
+                    actual.len(),
+                    "R2/R3 unique event identities"
+                );
+                assert_eq!(
+                    serde_json::to_value(&actual).unwrap(),
+                    serde_json::to_value(&baseline).unwrap(),
+                    "R2/R3 repeated projection is stable"
+                );
+                for descending in [false, true] {
+                    for limit in [1, 2, 50] {
+                        let mut cursor = None;
+                        let mut seen = std::collections::HashSet::new();
+                        loop {
+                            let page = state
+                                .list_events(
+                                    &session.id,
+                                    cursor.as_deref(),
+                                    Some(limit),
+                                    descending,
+                                )
+                                .unwrap();
+                            for event in page.data {
+                                assert!(seen.insert(event.id), "R2 cursor cannot cycle");
+                            }
+                            match page.next_page {
+                                Some(next) => cursor = Some(next),
+                                None => break,
+                            }
+                        }
+                        assert_eq!(seen.len(), baseline.len(), "R2 all events reached");
                     }
                 }
-                assert_eq!(seen.len(), baseline.len(), "R2 all events reached");
             }
         }
     }
