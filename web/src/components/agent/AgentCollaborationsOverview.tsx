@@ -1,3 +1,4 @@
+import { ArrowRight, Plus } from "@awaken/ui/icons";
 import { Button, Card } from "@awaken/ui";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -65,7 +66,7 @@ export default function AgentCollaborationsOverview({ agents }: { agents: AgentC
             "Every primary Agent starts with its built-in auxiliary. Open Advanced → Orchestration to add parent-owned specialists.",
             "每个主 Agent 默认都有内置辅助 Agent；可在“高级 → 编排”中添加归属于它的专属辅助 Agent。",
             )}
-            action={!normalizedFilter ? <Button variant="primary" onClick={() => nav(`/w/${app.workspaceId}/agents/new`)}>+ {app.t("New Agent", "新建 Agent")}</Button> : undefined}
+            action={!normalizedFilter ? <Button variant="primary" onClick={() => nav(`/w/${app.workspaceId}/agents/new`)}><Plus /> {app.t("New Agent", "新建 Agent")}</Button> : undefined}
           />
         </Card>
       ) : (
@@ -85,12 +86,12 @@ export default function AgentCollaborationsOverview({ agents }: { agents: AgentC
                     <span className="mono mut">{coordinator.id}</span>
                   </div>
                   <Button onClick={() => nav(`/w/${app.workspaceId}/agents/${coordinator.id}?stage=advanced&section=orchestration`)}>
-                    {app.t("Edit roster", "编辑成员")} →
+                    {app.t("Edit roster", "编辑成员")} <ArrowRight />
                   </Button>
                 </div>
                 <div className="relationship-flow" role="list" aria-label={`${coordinator.id} ${app.t("auxiliary Agents", "辅助 Agent")}`}>
                   <span className="relationship-origin">{coordinator.name || coordinator.id}</span>
-                  <span aria-hidden="true">→</span>
+                  <ArrowRight />
                   <div className="relationship-targets">
                     {targets.map((target, index) => {
                       const item = agentById.get(target.id);

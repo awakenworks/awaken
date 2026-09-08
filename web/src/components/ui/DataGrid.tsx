@@ -1,3 +1,4 @@
+import { ArrowLeft, ArrowRight } from "@awaken/ui/icons";
 import {
   DataGrid as SharedDataGrid,
   Skeleton,
@@ -38,8 +39,8 @@ export function DataGrid<Row>({
       labels={{
         formatRange: ({ from, to, total }) =>
           app.t(`${from}–${to} of ${total}`, `${from}–${to} / ${total}`),
-        next: <>{app.t("Next", "下一页")} →</>,
-        previous: <>← {app.t("Prev", "上一页")}</>,
+        next: <>{app.t("Next", "下一页")} <ArrowRight /></>,
+        previous: <><ArrowLeft /> {app.t("Prev", "上一页")}</>,
         searchPlaceholder: searchPlaceholder ?? app.t("Filter…", "过滤…"),
       }}
       mobileCards

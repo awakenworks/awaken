@@ -1,3 +1,4 @@
+import { ArrowRight, Check, Info } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card } from "@awaken/ui";
 import type { AgentConfig, AgentToolsetMemberCap, InputBinding, PluginCap, RuntimeCap } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
@@ -61,12 +62,12 @@ export default function AgentPublicationModals({
               <Button variant="primary" disabled={quickRunPending} onClick={() => onConfirmQuickRun(quickRunIntent)}>
                 {quickRunPending
                   ? app.t("Publishing & starting…", "正在发布并启动…")
-                  : app.t("Publish & run", "发布并运行")} ➤
+                  : app.t("Publish & run", "发布并运行")} <ArrowRight />
               </Button>
             </>
           }
         >
-          <InlineNotice tone="info" icon={<span>ⓘ</span>}>
+          <InlineNotice tone="info" icon={<Info />}>
             <span>{app.t(
               "Awaken will check your draft, publish this reviewed version, create a Session, and send the first task. Later edits will not change this Session.",
               "Awaken 将检查草稿、发布当前审阅版本、创建 Session 并发送首次任务。后续编辑不会改变本次 Session。",
@@ -103,12 +104,12 @@ export default function AgentPublicationModals({
             <>
               <Button onClick={onClosePublish}>{app.t("Cancel", "取消")}</Button>
               <Button variant="primary" disabled={publishPending} onClick={onConfirmPublish}>
-                {app.t("Publish", "发布")} ➤
+                {app.t("Publish", "发布")} <ArrowRight />
               </Button>
             </>
           }
         >
-          <InlineNotice tone="success" icon={<span>✓</span>}>
+          <InlineNotice tone="success" icon={<Check />}>
             <span>{app.t(
               "The draft passed all checks. Review the changes below before making this version available for new Sessions.",
               "草稿已通过全部检查。请在下方审阅改动，再将此版本用于新的 Session。",

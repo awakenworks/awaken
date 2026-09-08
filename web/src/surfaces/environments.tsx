@@ -1,3 +1,4 @@
+import { Info, Plus } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 // Workspace · Environments: the reusable execution templates sessions run in
 // (Managed Agents `/v1/environments`). A session references one by
@@ -44,7 +45,7 @@ function PackageFields({ value, onChange }: { value: PackageDraft; onChange: (va
     <details>
       <summary className="mut" style={{ cursor: "pointer" }}>{app.t("Packages · optional", "Packages · 可选")}</summary>
       <p className="mut">{app.t("One package requirement per line. Versions are allowed; command options are rejected by the server.", "每行一个 package，可带版本；服务端会拒绝命令行选项。")}</p>
-      <InlineNotice tone="info" icon={<span>ⓘ</span>}><span>{app.t(
+      <InlineNotice tone="info" icon={<Info />}><span>{app.t(
         "Package lists are requirements for the Environment provider. A local runtime without package provisioning will reject the run instead of ignoring them.",
         "Package 列表是对 Environment Provider 的要求。若本地运行时不支持安装 Package，运行会明确失败，不会静默忽略。",
       )}</span></InlineNotice>
@@ -248,7 +249,7 @@ function EditModal({ environment, onClose }: { environment: Environment; onClose
           {net === "limited" && <><TextField label={app.t("Allowed hosts", "允许的 Host")} mono value={hosts} onChange={(event) => setHosts(event.target.value)} /><label className="row"><input type="checkbox" checked={allowMcpServers} onChange={(event) => setAllowMcpServers(event.target.checked)} />{app.t("Allow configured MCP servers", "允许已配置的 MCP Server")}</label><label className="row"><input type="checkbox" checked={allowPackageManagers} onChange={(event) => setAllowPackageManagers(event.target.checked)} />{app.t("Allow public package registries", "允许公共 Package Registry")}</label></>}</div>
           <PackageFields value={packages} onChange={setPackages} />
         </>}
-        <InlineNotice tone="info" icon={<span>ⓘ</span>}><span>{app.t("Saving creates a new immutable Environment revision. Existing Sessions keep their frozen revision.", "保存会生成新的不可变 Environment 修订；已有 Session 继续使用其冻结版本。")}</span></InlineNotice>
+        <InlineNotice tone="info" icon={<Info />}><span>{app.t("Saving creates a new immutable Environment revision. Existing Sessions keep their frozen revision.", "保存会生成新的不可变 Environment 修订；已有 Session 继续使用其冻结版本。")}</span></InlineNotice>
         {update.error instanceof Error && <div className="err">{update.error.message}</div>}
       </div>
     </Modal>
@@ -291,7 +292,7 @@ export default function EnvironmentsSurface() {
       <div className="row" style={{ justifyContent: "space-between" }}>
         <span />
         <Button variant="primary" onClick={() => setCreating(true)}>
-          + {app.t("New environment", "新建环境")}
+          <Plus /> {app.t("New environment", "新建环境")}
         </Button>
       </div>
       {envs.error instanceof Error && <div className="err">{envs.error.message}</div>}

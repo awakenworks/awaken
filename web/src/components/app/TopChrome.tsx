@@ -1,3 +1,4 @@
+import { ChevronDown, Search } from "@awaken/ui/icons";
 import { AppearanceSelect, BrandMark } from "@awaken/ui/brand/react";
 import { Button as SharedButton, MenuPopover, SuiteSwitcher } from "@awaken/ui";
 
@@ -6,10 +7,6 @@ import { suiteCloudUrl, suiteHubUrl, suiteProductEntryUrl, useSuiteNavigation } 
 
 export function openPalette() {
   window.dispatchEvent(new CustomEvent("awaken:open-palette"));
-}
-
-function SearchIcon() {
-  return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.4-3.4" /></svg>;
 }
 
 export default function TopChrome() {
@@ -38,7 +35,7 @@ export default function TopChrome() {
               <strong>Awaken</strong>
               <small>Agents</small>
             </span>
-            <span className="brand-chevron" aria-hidden="true">⌄</span>
+            <ChevronDown className="brand-chevron" />
           </button>}
         />
       ) : (
@@ -59,7 +56,7 @@ export default function TopChrome() {
       <span style={{ flex: 1 }} />
       <div className="topbar-actions">
         <button className="search-box" onClick={openPalette}>
-          <SearchIcon />
+          <Search />
           <span>{app.t("Search…", "搜索…")}</span>
           <kbd>⌘K</kbd>
         </button>

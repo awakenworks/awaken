@@ -1,3 +1,4 @@
+import { ExternalLink, Info, Plus } from "@awaken/ui/icons";
 import { InlineNotice, Button } from "@awaken/ui";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router";
@@ -97,7 +98,7 @@ function McpProtocolCoverage() {
           </div>
         ))}
       </div>
-      <InlineNotice tone="info" icon={<span>ⓘ</span>}>
+      <InlineNotice tone="info" icon={<Info />}>
         <span>{app.t(
           "This is Awaken's platform baseline, not a live claim about every configured server. Confirm negotiated capabilities and real behavior in a Session.",
           "这是 Awaken 平台基线，并非对每个已配置 Server 的实时声明；请在 Session 中确认协商能力和真实行为。",
@@ -247,14 +248,14 @@ export default function McpOverviewSurface() {
             target="_blank"
             rel="noreferrer"
           >
-            {app.t("Review the MCP and ToolSet guide ↗", "查看 MCP 与 ToolSet 指南 ↗")}
+            {app.t("Review the MCP and ToolSet guide", "查看 MCP 与 ToolSet 指南")} <ExternalLink />
           </a>
         </p>
         <Button variant="primary" onClick={() => nav(`/w/${wsId}/agents/new`)}>
-          + {app.t("Configure in an Agent", "在 Agent 中配置")}
+          <Plus /> {app.t("Configure in an Agent", "在 Agent 中配置")}
         </Button>
       </div>
-      <InlineNotice tone="info" icon={<span>ⓘ</span>}>
+      <InlineNotice tone="info" icon={<Info />}>
         <span>{app.t(
           "Configured means the Agent draft references this server. Confirm the connection in a real Session before relying on its tools.",
           "“已配置”表示 Agent 草稿已引用该服务器。请在真实会话中确认连接后，再依赖其中的工具。",

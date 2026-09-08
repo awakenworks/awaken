@@ -1,3 +1,4 @@
+import { ArrowRight, CornerDownRight, Play, Sparkles } from "@awaken/ui/icons";
 import { Tab, TabList, InlineNotice, Button } from "@awaken/ui";
 import type { AgentConfig, Capabilities, RuntimeCap, ValidationIssue } from "../../lib/api/types";
 import { effectiveAgentToolPermission, selectedAgentToolIds } from "../../lib/agent-toolsets";
@@ -144,11 +145,11 @@ export function AgentEditorStageNavigation({
             <strong>{app.t(item.label, item.zh)}</strong>
             <small>{app.t(item.description, item.descriptionZh)}</small>
           </span>
-          {changed(item.key) && <span className="agent-change-dot">✦</span>}
+          {changed(item.key) && <Sparkles className="agent-change-dot" label={app.t("Changed", "已修改")} />}
         </Tab>
       ))}
     </TabList>
-      {canTry && <Button variant="ghost" onClick={onTry}>▷ {app.t("Try draft", "试运行草稿")}</Button>}
+      {canTry && <Button variant="ghost" onClick={onTry}><Play /> {app.t("Try draft", "试运行草稿")}</Button>}
     </div>
   );
 }
@@ -167,7 +168,7 @@ export function AgentValidationIssues({
       {issues.map((issue, index) => (
         <div className="row" key={`${issue.path}-${index}`} style={{ justifyContent: "space-between" }}>
           <span><strong>{labelForPath(issue.path) || app.t("Config", "配置")}</strong>{" — "}{issue.message}</span>
-          <Button variant="ghost" onClick={() => onOpen(issue.path)}>{app.t("Open field →", "打开对应字段 →")}</Button>
+          <Button variant="ghost" onClick={() => onOpen(issue.path)}>{app.t("Open field", "打开对应字段")} <ArrowRight /></Button>
         </div>
       ))}
     </InlineNotice>
@@ -181,7 +182,7 @@ export function AttachedAgentContext({ parentId, onBack }: { parentId: string; o
     <InlineNotice
       tone="info"
       className="attached-agent-context"
-      icon={<span>↳</span>}
+      icon={<CornerDownRight />}
       actions={
         <>
           <Button variant="ghost" style={{ marginLeft: "auto" }} onClick={onBack}>

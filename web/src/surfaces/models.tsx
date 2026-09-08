@@ -1,3 +1,4 @@
+import { ArrowRight, TriangleAlert } from "@awaken/ui/icons";
 import { InlineNotice, Skeleton, Button, Card } from "@awaken/ui";
 
 // Workspace Models: Provider → ProtocolEndpoint → Offering, profiles and dry-run resolve.
@@ -165,7 +166,7 @@ function TestChat({ model }: { model: string }) {
     return (
       <InlineNotice
         tone="neutral"
-        icon={<span>!</span>}
+        icon={<TriangleAlert />}
         actions={
           <>
             <Button
@@ -348,7 +349,7 @@ export default function ModelsSurface() {
                   </div>
                   <div className="mut mono">{runtime.id}{runtime.local?.version ? ` · ${runtime.local.version}` : ""}</div>
                   {runtime.local?.remediation && status !== "ready" && (
-                    <div className="runtime-remediation"><span aria-hidden="true">→</span><small>{runtime.local.remediation}</small></div>
+                    <div className="runtime-remediation"><ArrowRight /><small>{runtime.local.remediation}</small></div>
                   )}
                 </div>
                 <div className="runtime-status-badges" aria-label={app.t(`${runtime.label} status`, `${runtime.label} 状态`)}>

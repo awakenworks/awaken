@@ -1,3 +1,4 @@
+import { ArrowRight, Check, TriangleAlert } from "@awaken/ui/icons";
 import { Skeleton, Card } from "@awaken/ui";
 
 import { useNavigate } from "react-router";
@@ -36,7 +37,7 @@ export default function ReadinessPanel({ compact = false }: { compact?: boolean 
           {readiness.items.map((item) => (
             <button key={item.id} className="readiness-item" onClick={() => nav(item.href)}>
               <span className={`readiness-icon ${item.status}`}>
-                {item.status === "ready" ? "✓" : item.status === "action" ? "→" : "!"}
+                {item.status === "ready" ? <Check /> : item.status === "action" ? <ArrowRight /> : <TriangleAlert />}
               </span>
               <span>
                 <strong>{item.label}</strong>

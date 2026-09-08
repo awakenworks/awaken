@@ -1,3 +1,4 @@
+import { Check, ExternalLink } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card } from "@awaken/ui";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
@@ -330,9 +331,9 @@ export default function ProviderConnectionPanel({
                   rel="noreferrer"
                 >
                   {app.t(
-                    `Get an API key from ${selectedDescriptor.display_name} ↗`,
-                    `前往 ${selectedDescriptor.display_name} 获取 API Key ↗`,
-                  )}
+                    `Get an API key from ${selectedDescriptor.display_name}`,
+                    `前往 ${selectedDescriptor.display_name} 获取 API Key`,
+                  )} <ExternalLink />
                 </a>
               )}
             </>
@@ -442,7 +443,7 @@ export default function ProviderConnectionPanel({
           </div>
         </details>
         {connect.data && (
-          <InlineNotice tone="info" icon={<span>✓</span>} style={{ marginTop: 12 }}>
+          <InlineNotice tone="info" icon={<Check />} style={{ marginTop: 12 }}>
             <span>
               {app.t(
                 "Credential verified and models imported",

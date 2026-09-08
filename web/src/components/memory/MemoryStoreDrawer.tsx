@@ -1,3 +1,4 @@
+import { ChevronDown, Plus } from "@awaken/ui/icons";
 import { Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -182,7 +183,7 @@ export default function MemoryStoreDrawer({ store, onClose }: { store: MemorySto
           <Card style={{ padding: 0, overflow: "hidden" }}>
             <div className="row" style={{ justifyContent: "space-between", padding: "10px 12px", borderBottom: "1px solid var(--line)" }}>
               <span className="mut">{app.t("ID is stable and machine-owned; name is the human label. Memory paths form virtual folders.", "ID 是稳定的机器标识，名称用于人类识别；记忆路径组成虚拟目录。")}</span>
-              <Button variant="primary" onClick={() => setEditing("new")}>+ {app.t("New memory", "新建记忆")}</Button>
+              <Button variant="primary" onClick={() => setEditing("new")}><Plus /> {app.t("New memory", "新建记忆")}</Button>
             </div>
             <table className="ui-data-grid__table">
               <thead><tr><th>{app.t("Path", "路径")}</th><th>{app.t("Content", "内容")}</th><th>{app.t("Size", "大小")}</th><th>{app.t("Updated", "更新时间")}</th><th /></tr></thead>
@@ -190,7 +191,7 @@ export default function MemoryStoreDrawer({ store, onClose }: { store: MemorySto
                 <tbody>
                   {memoryTreeRows(memories.data?.data ?? []).map((row) => row.directory ? (
                     <tr key={row.key}>
-                      <td colSpan={5} className="mono mut" style={{ paddingLeft: 12 + row.depth * 18 }}>▾ {row.path.split("/").at(-1)}/</td>
+                      <td colSpan={5} className="mono mut" style={{ paddingLeft: 12 + row.depth * 18 }}><ChevronDown /> {row.path.split("/").at(-1)}/</td>
                     </tr>
                   ) : row.memory && (
                     <tr key={row.key}>

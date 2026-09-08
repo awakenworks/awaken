@@ -1,3 +1,4 @@
+import { Plus } from "@awaken/ui/icons";
 import { Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 // Workspace · Memory stores: persistent memory that survives
 // across sessions (Managed Agents `/v1/memory_stores`). A session mounts one
@@ -110,7 +111,7 @@ export default function MemorySurface() {
           </span>
         </span>
         {surface === "stores" && <Button variant="primary" onClick={() => setCreating(true)}>
-          + {app.t("New memory store", "新建记忆库")}
+          <Plus /> {app.t("New memory store", "新建记忆库")}
         </Button>}
       </div>
       {surface === "dreams" ? <DreamList /> : stores.error instanceof Error ? (

@@ -295,7 +295,7 @@ test("Agent Resources: add a skill to an agent and persist it", async ({ page, r
   await page.goto(`/w/default/agents/${agent}`);
   expect((await hydrated).ok()).toBe(true);
   await openBuild(page, "Skills & MCP");
-  await page.getByRole("button", { name: "+ Skill", exact: true }).click();
+  await page.getByRole("button", { name: "Skill", exact: true }).click();
   // Skill-binding decision table: an id present in the authoritative catalog is
   // selected from that catalog; an absent id is retained only while rehydrating
   // an older binding. New bindings must not recreate the removed free-text path.
@@ -447,7 +447,11 @@ test("Deployment: create in the UI, run once, and open its resulting Session", a
   await expect(row.getByRole("button", { name: "Pause", exact: true })).toBeVisible();
   await row.getByRole("button", { name: "Run once", exact: true }).click();
   await expect(page.getByText("Deployment run created.")).toBeVisible();
-  await page.getByRole("link", { name: "Open Session", exact: true }).click();
+  // Both the immediate command receipt and durable history link to this Session.
+  // I6 decoration no longer changes link names: scope to the command receipt
+  // explicitly, preserving the separate history coverage and exact destination.
+  await page.locator(".ui-inline-notice", { hasText: "Deployment run created." })
+    .getByRole("link", { name: "Open Session", exact: true }).click();
   await expect(page).toHaveURL(/\/w\/default\/sessions\/[^/]+$/);
   await expect(page.getByText("Run the scheduled task.", { exact: true })).toBeVisible();
 });

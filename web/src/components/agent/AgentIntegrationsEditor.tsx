@@ -1,3 +1,4 @@
+import { ExternalLink, Info, Plus, X } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card, Switch } from "@awaken/ui";
 // Managed-Agent integration fields that were previously reachable only through the
 // API: direct MCP servers, Skill references, metadata, and multi-agent topology.
@@ -121,18 +122,18 @@ export default function AgentIntegrationsEditor({
             "每个服务器及其 ToolSet 策略构成一个集成；连接、默认权限、指定工具覆盖和 Prompt Skills 都在这里配置。",
           )}
         </p>
-        <InlineNotice tone="info" icon={<span>ⓘ</span>}>
+        <InlineNotice tone="info" icon={<Info />}>
           <span>{app.t(
             "Only MCP runtime credentials are listed here; model keys and worker credentials are excluded. You can also choose a categorized Vault when starting a Session.",
             "这里只列出 MCP 运行时凭证，模型 Key 和 Worker 凭证不会混入。启动 Session 时也可以选择已分类的 Vault。",
           )}{" "}
-            <Link to={`/w/${app.workspaceId}/vaults`}>{app.t("Manage Runtime Secrets ↗", "管理运行时凭证 ↗")}</Link>{" · "}
+            <Link to={`/w/${app.workspaceId}/vaults`}>{app.t("Manage Runtime Secrets", "管理运行时凭证")} <ExternalLink /></Link>{" · "}
             <a
               href={`https://awakenworks.com${app.locale === "zh" ? "/zh" : ""}/docs/agents/protocols/mcp/`}
               target="_blank"
               rel="noreferrer"
             >
-              {app.t("MCP connection and ToolSet guide ↗", "MCP 连接与 ToolSet 指南 ↗")}
+              {app.t("MCP connection and ToolSet guide", "MCP 连接与 ToolSet 指南")} <ExternalLink />
             </a>
           </span>
         </InlineNotice>
@@ -246,7 +247,7 @@ export default function AgentIntegrationsEditor({
                   onChange={(event) => setServer(index, { prompts_as_skills: event.target.checked })}
                 />
               </label>
-              <Button aria-label={app.t(`Remove ${server.name || "MCP"} integration`, `移除 ${server.name || "MCP"} 集成`)} variant="ghost" onClick={() => onChange(removeMcpIntegration(config, server.name))}>✕</Button>
+              <Button aria-label={app.t(`Remove ${server.name || "MCP"} integration`, `移除 ${server.name || "MCP"} 集成`)} variant="ghost" onClick={() => onChange(removeMcpIntegration(config, server.name))}><X /></Button>
             </div>
             <div className="mcp-policy-row">
               <label className="ui-field">
@@ -269,15 +270,15 @@ export default function AgentIntegrationsEditor({
                 <TextField label={app.t("Named tool override", "指定工具覆盖")} mono value={entry.name} onChange={(event) => updateToolset({ configs: configs.map((item, current) => current === configIndex ? { ...item, name: event.target.value } : item) })} />
                 <label className="ui-field"><span>{app.t("Tool permission", "工具权限")}</span><select aria-label={app.t("Tool permission", "工具权限")} className="ui-input" value={entry.permission_policy?.type ?? defaults?.permission_policy?.type ?? "always_ask"} onChange={(event) => updateToolset({ configs: configs.map((item, current) => current === configIndex ? { ...item, permission_policy: { type: event.target.value as "always_allow" | "always_ask" } } : item) })}><option value="always_ask">{app.t("Ask", "询问")}</option><option value="always_allow">{app.t("Allow", "允许")}</option></select></label>
                 <label className="ui-field compact-switch"><span>{app.t("Available", "可用")}</span><Switch checked={entry.enabled !== false} onChange={(event) => updateToolset({ configs: configs.map((item, current) => current === configIndex ? { ...item, enabled: event.target.checked } : item) })} /></label>
-                <Button aria-label={app.t("Remove named override", "移除指定工具覆盖")} variant="ghost" onClick={() => updateToolset({ configs: configs.filter((_, current) => current !== configIndex) })}>✕</Button>
+                <Button aria-label={app.t("Remove named override", "移除指定工具覆盖")} variant="ghost" onClick={() => updateToolset({ configs: configs.filter((_, current) => current !== configIndex) })}><X /></Button>
               </div>
             ))}
-            <Button variant="ghost" onClick={() => updateToolset({ configs: [...configs, { name: "", enabled: true, permission_policy: { type: defaults?.permission_policy?.type ?? "always_ask" } }] })}>+ {app.t("Named tool override", "指定工具覆盖")}</Button>
+            <Button variant="ghost" onClick={() => updateToolset({ configs: [...configs, { name: "", enabled: true, permission_policy: { type: defaults?.permission_policy?.type ?? "always_ask" } }] })}><Plus /> {app.t("Named tool override", "指定工具覆盖")}</Button>
             </div>
           );
         })}
         <Button onClick={() => syncServers([...servers, { type: "url", name: "", url: "", prompts_as_skills: false }])}>
-          + {app.t("MCP integration", "MCP 集成")}
+          <Plus /> {app.t("MCP integration", "MCP 集成")}
         </Button>
         {!effectiveMcpValid && <div className="err" role="alert">{app.t(
           "Complete every server name and connection target, and keep server names unique. Awaken maintains one ToolSet policy for each valid server.",
@@ -314,12 +315,12 @@ export default function AgentIntegrationsEditor({
                 ))}
               </select>
             </label>
-            <Button variant="ghost" onClick={() => onChange({ skills: skills.filter((_, i) => i !== index) })}>✕</Button>
+            <Button variant="ghost" aria-label={app.t(`Remove Skill ${index + 1}`, `移除 Skill ${index + 1}`)} onClick={() => onChange({ skills: skills.filter((_, i) => i !== index) })}><X /></Button>
           </div>
           );
         })}
         {skillCatalog.error instanceof Error && <div className="err">{app.t("Skills could not load. Existing bindings are unchanged.", "无法加载 Skill；已有绑定未发生变化。")}</div>}
-        <Button onClick={() => onChange({ skills: [...skills, { id: "" }] })}>+ Skill</Button>
+        <Button onClick={() => onChange({ skills: [...skills, { id: "" }] })}><Plus /> Skill</Button>
       </Card>
       </>
       )}
@@ -346,15 +347,15 @@ export default function AgentIntegrationsEditor({
               }}
             />
             <TextField label={app.t("Value", "值")} value={value} onChange={(event) => onChange({ metadata: { ...metadata, [key]: event.target.value } })} />
-            <Button variant="ghost" onClick={() => {
+            <Button variant="ghost" aria-label={app.t(`Remove metadata ${key}`, `移除元数据 ${key}`)} onClick={() => {
               const next = { ...metadata };
               delete next[key];
               onChange({ metadata: next });
-            }}>✕</Button>
+            }}><X /></Button>
           </div>
         ))}
         <Button onClick={() => onChange({ metadata: { ...metadata, [`key_${Object.keys(metadata).length + 1}`]: "" } })}>
-          + {app.t("metadata", "元数据")}
+          <Plus /> {app.t("metadata", "元数据")}
         </Button>
       </Card>
       </>

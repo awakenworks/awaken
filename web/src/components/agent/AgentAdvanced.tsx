@@ -1,3 +1,4 @@
+import { ArrowRight, Check } from "@awaken/ui/icons";
 import { Tabs, TabList, Tab, TabPanel, InlineNotice, Button, Card } from "@awaken/ui";
 import type {
   AgentConfig,
@@ -146,7 +147,7 @@ export default function AgentAdvanced({
             {extensionPlugins.length > 0 ? (
               <div className="stack">{extensionPlugins.map(renderBehavior)}</div>
             ) : (
-              <InlineNotice tone="info" icon={<span>✓</span>}>
+              <InlineNotice tone="info" icon={<Check />}>
                 <span>{app.t(
                   "No additional runtime plugins are advertised by this host.",
                   "当前 Host 没有提供其他运行时 Plugin。",
@@ -196,7 +197,7 @@ export default function AgentAdvanced({
           </div>
           <div className="row" style={{ justifyContent: "flex-end", marginTop: 16 }}>
             <Button variant="primary" disabled={publishPending} onClick={onPublish}>
-              {app.t("Review & publish", "审阅并发布")} ➤
+              {app.t("Review & publish", "审阅并发布")} <ArrowRight />
             </Button>
           </div>
         </Card>

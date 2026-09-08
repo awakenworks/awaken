@@ -1,3 +1,4 @@
+import { ArrowRight, Check, Plus } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card } from "@awaken/ui";
 // Workspace · Deployments: schedule an Agent to run on a cron
 // (Managed Agents `/v1/deployments`). Each firing creates a session from the
@@ -206,12 +207,12 @@ export default function DeploymentsSurface() {
       <div className="row" style={{ justifyContent: "space-between" }}>
         <span />
         <Button variant="primary" onClick={() => setCreating(true)}>
-          + {app.t("New deployment", "新建部署")}
+          <Plus /> {app.t("New deployment", "新建部署")}
         </Button>
       </div>
       {deployments.error instanceof Error && <div className="err">{deployments.error.message}</div>}
       {lastRun && (
-        <InlineNotice tone="info" icon={<span>✓</span>}>
+        <InlineNotice tone="info" icon={<Check />}>
           <span>
             {app.t("Deployment run created.", "部署运行已创建。")}
             {lastRun.session_id ? <>
@@ -328,7 +329,7 @@ export default function DeploymentsSurface() {
                     ) : result === "session_created" ? (
                       <span className="row">
                         <Pill tone="ok">{app.t("Session created", "已创建 Session")}</Pill>
-                        <Link to={`/w/${wsId}/sessions/${run.session_id}`}>{app.t("Open Session →", "打开 Session →")}</Link>
+                        <Link to={`/w/${wsId}/sessions/${run.session_id}`}>{app.t("Open Session", "打开 Session")} <ArrowRight /></Link>
                       </span>
                     ) : (
                       <Pill tone="warn">{app.t("starting", "启动中")}</Pill>

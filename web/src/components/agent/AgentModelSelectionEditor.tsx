@@ -1,3 +1,4 @@
+import { ExternalLink, LoaderCircle, TriangleAlert } from "@awaken/ui/icons";
 import { InlineNotice, Button as SharedButton } from "@awaken/ui";
 import type { AgentConfig, ModelSelection, RuntimeCap } from "../../lib/api/types";
 import {
@@ -94,11 +95,11 @@ export default function AgentModelSelectionEditor({
         <label htmlFor={runtimeSelectId}>{app.t("Execution runtime", "执行 Runtime")}</label>
         {runtimeId === "awaken" ? (
           <button type="button" className="manage-link" onClick={onManage}>
-            {app.t("Manage models ↗", "管理模型 ↗")}
+            {app.t("Manage models", "管理模型")} <ExternalLink />
           </button>
         ) : (
           <Link className="manage-link" to={protocolHelpPath(app.workspaceId, "acp")}>
-            {app.t("ACP setup ↗", "ACP 设置 ↗")}
+            {app.t("ACP setup", "ACP 设置")} <ExternalLink />
           </Link>
         )}
       </div>
@@ -190,7 +191,7 @@ export default function AgentModelSelectionEditor({
           ))}
         </select>
       ) : (
-        <InlineNotice tone="neutral" icon={<span>◌</span>}>
+        <InlineNotice tone="neutral" icon={<LoaderCircle />}>
           <span>{app.t(
             runtimeId === "awaken"
               ? "No runnable model is available. Open Models, connect a provider, and verify a real response before continuing."
@@ -287,7 +288,7 @@ export default function AgentModelSelectionEditor({
               : app.t("The Harness starts at the Session workspace root.", "Harness 将从 Session 工作区根目录启动。")}
           </span>
           {workingDirectoryIssue && (
-            <InlineNotice id={workingDirectoryErrorId} tone="warning" icon={<span>!</span>} role="alert">
+            <InlineNotice id={workingDirectoryErrorId} tone="warning" icon={<TriangleAlert />} role="alert">
               <span>{workingDirectoryIssue === "too_long"
                 ? app.t("Keep the working directory at 512 characters or fewer.", "工作目录不能超过 512 个字符。")
                 : workingDirectoryIssue === "absolute"

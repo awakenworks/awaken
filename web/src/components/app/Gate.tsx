@@ -1,3 +1,4 @@
+import { LoaderCircle } from "@awaken/ui/icons";
 import { InlineNotice, Skeleton } from "@awaken/ui";
 // Presentational wrapper over a GateState: renders a skeleton while loading, the
 // a user-facing capability state when absent, an error line on other failures,
@@ -32,7 +33,7 @@ export default function Gate<T>({
       return <>{loading ?? <Skeleton height={60} />}</>;
     case "absent":
       return (
-        <InlineNotice tone="neutral" icon={<span>◌</span>}>
+        <InlineNotice tone="neutral" icon={<LoaderCircle />}>
           <span>
             {app.t(
               "This optional capability is not available in this deployment.",

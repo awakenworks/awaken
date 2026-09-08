@@ -1,3 +1,4 @@
+import { Sparkles, TriangleAlert } from "@awaken/ui/icons";
 import { InlineNotice, Card, Switch } from "@awaken/ui";
 // One runtime behavior as a named card (agent-editor Behavior section): a title +
 // description + enable toggle, and — when enabled — its config as a friendly
@@ -109,7 +110,7 @@ export default function BehaviorCard({
         <span>
           <div className="behavior-title">
             {title}
-            {changed && <span className="agent-change-label">✦ {app.t("Agent updated", "Agent 已更新")}</span>}
+            {changed && <span className="agent-change-label"><Sparkles /> {app.t("Agent updated", "Agent 已更新")}</span>}
             {availability && !availability.supported && (
               <Pill tone="neutral">{app.t("Unavailable for this runtime", "当前 Runtime 不可用")}</Pill>
             )}
@@ -125,7 +126,7 @@ export default function BehaviorCard({
         }} />
       </label>
       {availability && !availability.supported && (
-        <InlineNotice tone={enabled ? "warning" : "info"} icon={<span>!</span>} style={{ marginTop: 10 }}>
+        <InlineNotice tone={enabled ? "warning" : "info"} icon={<TriangleAlert />} style={{ marginTop: 10 }}>
           <span>{availability.detail}{enabled && app.t(
             " Turn it off before publishing.",
             " 请在发布前关闭该能力。",

@@ -555,7 +555,7 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   await expect(page.getByText("Runtime-discovered MCP tool; resolved when the server connects.")).toBeVisible();
 
   await openBuild(page, "Skills & MCP");
-  await page.getByRole("button", { name: "+ MCP integration", exact: true }).click();
+  await page.getByRole("button", { name: "MCP integration", exact: true }).click();
   await page.getByLabel("Server name").fill("issues");
   await page.getByLabel("URL").fill("https://mcp.example.test/issues");
   await page.getByLabel("Credential source").selectOption(
@@ -564,10 +564,10 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   await page.getByLabel("Prompts as skills").check();
   const issuesIntegration = page.locator(".mcp-integration-card").first();
   await issuesIntegration.getByLabel("Default permission").selectOption("always_allow");
-  await issuesIntegration.getByRole("button", { name: "+ Named tool override" }).click();
+  await issuesIntegration.getByRole("button", { name: "Named tool override" }).click();
   await issuesIntegration.getByLabel("Named tool override").fill("create_issue");
   await issuesIntegration.getByLabel("Tool permission", { exact: true }).selectOption("always_ask");
-  await page.getByRole("button", { name: "+ MCP integration", exact: true }).click();
+  await page.getByRole("button", { name: "MCP integration", exact: true }).click();
   await page.getByLabel("Transport").last().selectOption("sandbox_stdio");
   await page.getByLabel("Server name").last().fill("browser");
   await page.getByLabel("Sandbox command").fill("playwright-mcp");
@@ -656,7 +656,7 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   await expect(issuesRow.getByText("Allow without asking", { exact: true })).toBeVisible();
   await expect(issuesRow.getByText("1 named override", { exact: true })).toBeVisible();
   await expect(page.getByText("sandbox stdio · playwright-mcp").first()).toBeVisible();
-  await expect(page.getByRole("link", { name: "Review the MCP and ToolSet guide ↗" }))
+  await expect(page.getByRole("link", { name: "Review the MCP and ToolSet guide" }))
     .toHaveAttribute("href", "https://awakenworks.com/docs/agents/protocols/mcp/");
   const agentLink = issuesRow.locator(`a[href*="/agents/${id}"]`);
   await expect(agentLink.getByText(displayName, { exact: true })).toBeVisible();
@@ -749,7 +749,7 @@ test("Agent orchestration authors a typed auxiliary roster, pins a version, and 
   await page.getByLabel("Model", { exact: true }).selectOption({ label: model });
   await openAdvanced(page, "Orchestration");
   await page.getByLabel("Add a published specialist").selectOption(auxiliary);
-  await page.getByRole("button", { name: "+ Add", exact: true }).click();
+  await page.getByRole("button", { name: "Add", exact: true }).click();
   await expect(page.getByRole("list", { name: "Auxiliary Agent roster" })).toContainText(auxiliary);
   await expect(page.getByLabel("Budget profile")).toHaveValue("conservative");
   await page.getByLabel("Version policy").selectOption("pinned");
@@ -1249,14 +1249,14 @@ test("Session Integrations shows only the durable active MCP projection", async 
   await expect(effective).toContainText("revision 7");
   await expect(effective).toContainText("immutable snapshot");
   await expect(page.getByRole("navigation", { name: "Open current Agent configuration" })
-    .getByRole("link", { name: "MCP integrations · 1 →" }))
+    .getByRole("link", { name: "MCP integrations · 1" }))
     .toHaveAttribute("href", "/w/default/agents/mcp-agent?stage=build&section=integrations");
   await page.getByRole("navigation", { name: "Session views" }).getByRole("link", { name: "Integrations", exact: true }).click();
   await expect(page.getByRole("heading", { name: "MCP connections used by this Session" })).toBeVisible();
   await expect(page.getByText("https://mcp.example.test/docs")).toBeVisible();
   await expect(page.getByText("remote Skills")).toBeVisible();
   await expect(page.getByText("active", { exact: true }).last()).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open current MCP configuration →" }))
+  await expect(page.getByRole("link", { name: "Open current MCP configuration" }))
     .toHaveAttribute("href", "/w/default/agents/mcp-agent?stage=build&section=integrations");
 });
 
@@ -1355,7 +1355,7 @@ test("Deployments keeps successful and failed run history visible after the tran
   const successful = page.locator("tr", { hasText: "deprun_success" });
   await expect(successful).toContainText("Repository maintenance");
   await expect(successful).toContainText("scheduled");
-  await expect(successful.getByRole("link", { name: "Open Session →" }))
+  await expect(successful.getByRole("link", { name: "Open Session" }))
     .toHaveAttribute("href", "/w/default/sessions/session_maintenance");
   const failed = page.locator("tr", { hasText: "deprun_failed" });
   await expect(failed).toContainText("manual");

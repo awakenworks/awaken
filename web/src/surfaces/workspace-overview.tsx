@@ -1,3 +1,4 @@
+import { ChevronRight } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card } from "@awaken/ui";
 // Workspace · Overview: readiness and recent runtime activity for the active scope.
 // session list (GET /v1/sessions via ws()). Observation only — the console
@@ -103,7 +104,7 @@ export default function WorkspaceOverviewSurface() {
                 <td data-label={app.t("State", "状态")}>
                   <StatusPill session={s} />
                 </td>
-                <td style={{ textAlign: "right", color: "var(--fg3)" }}>▸</td>
+                <td style={{ textAlign: "right", color: "var(--fg3)" }}><ChevronRight /></td>
               </tr>
             ))}
             {!sessions.error && recent.length === 0 && (

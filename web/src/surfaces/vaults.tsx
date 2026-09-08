@@ -1,3 +1,4 @@
+import { Info, Plus } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card } from "@awaken/ui";
 // Workspace · Runtime secrets: tool/integration credentials only. Inference
 // credentials have one separate authority in the model supply domain.
@@ -133,7 +134,7 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
         <span style={{ flex: 1 }} />
         {!renaming && <Button variant="ghost" onClick={() => setRenaming(true)}>{app.t("Rename", "重命名")}</Button>}
         <Button variant="ghost" onClick={() => setAdding(true)}>
-          + {app.t("Add credential", "添加凭证")}
+          <Plus /> {app.t("Add credential", "添加凭证")}
         </Button>
         <Button variant="danger" disabled={del.isPending} onClick={confirmDelete}>
           {app.t("Delete", "删除")}
@@ -186,7 +187,7 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
             {type === "environment_variable" && <TextField label={app.t("Allowed hosts", "允许的 Host")} mono value={allowedHosts} onChange={(event) => setAllowedHosts(event.target.value)} placeholder="api.github.com, github.com" />}
             {type === "mcp_oauth" && <details open={refreshEnabled}><summary><label className="row" onClick={(event) => event.stopPropagation()}><input type="checkbox" checked={refreshEnabled} onChange={(event) => setRefreshEnabled(event.target.checked)} />{app.t("Refresh this token automatically", "自动刷新 Token")}</label></summary>{refreshEnabled && <div className="stack" style={{ marginTop: 10 }}><div className="grid-2"><TextField label="Client id" mono value={clientId} onChange={(event) => setClientId(event.target.value)} /><SecretField label={app.t("Refresh token", "Refresh Token")} hasStored={false} onChange={(intent) => setRefreshToken(intent.value ?? "")} /></div><TextField label="Token endpoint" mono value={tokenEndpoint} onChange={(event) => setTokenEndpoint(event.target.value)} placeholder="https://provider.example.com/oauth/token" /></div>}</details>}
             {type === "mcp_oauth" && <TextField label={app.t("Expires at · optional", "过期时间 · 可选")} mono value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} placeholder="2026-12-31T00:00:00Z" />}
-            <InlineNotice tone="info" icon={<span>ⓘ</span>}><span>{app.t("Runtime Secrets stores integration and execution credentials. Add model API keys under Models & providers so Awaken can verify and rotate them with the matching provider.", "Runtime Secrets 用于保存集成和执行凭证。模型 API Key 请在“模型与供应商”中添加，以便 Awaken 按对应供应商验证和轮换。")}</span></InlineNotice>
+            <InlineNotice tone="info" icon={<Info />}><span>{app.t("Runtime Secrets stores integration and execution credentials. Add model API keys under Models & providers so Awaken can verify and rotate them with the matching provider.", "Runtime Secrets 用于保存集成和执行凭证。模型 API Key 请在“模型与供应商”中添加，以便 Awaken 按对应供应商验证和轮换。")}</span></InlineNotice>
             {create.error instanceof Error && <div className="err">{create.error.message}</div>}
             <div className="row" style={{ justifyContent: "flex-end" }}>
               <Button
@@ -258,7 +259,7 @@ export default function VaultsSurface() {
             />
           </div>
           <Button type="submit" variant="primary" disabled={create.isPending || !vaultName.trim()}>
-            + {app.t("Create Vault", "创建 Vault")}
+            <Plus /> {app.t("Create Vault", "创建 Vault")}
           </Button>
         </form>
       </div>

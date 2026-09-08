@@ -1,3 +1,4 @@
+import { ArrowRight, Plus, TriangleAlert, X } from "@awaken/ui/icons";
 import { InlineNotice, Button } from "@awaken/ui";
 // Agent default inputs (ADR-0063): typed File/Memory/Repository identities composed
 // with temporary Session attachments. Skills are configured under Build / Skills & MCP and
@@ -98,7 +99,7 @@ export default function ResourcesTab({
       </div>
 
       {!defaultMounts && (
-        <InlineNotice tone="warning" icon={<span>⚠</span>}>
+        <InlineNotice tone="warning" icon={<TriangleAlert />}>
           <span>{app.t(
             "Resource mount defaults are unavailable. Adding resources and changing kinds are disabled.",
             "资源挂载默认值不可用；已禁用新增资源和切换类型。",
@@ -170,8 +171,8 @@ export default function ResourcesTab({
             <option value="read_write">read_write</option>
             <option value="read_only">read_only</option>
           </SelectField>
-          <Button variant="ghost" style={{ height: 26 }} onClick={() => removeRow(i)}>
-            ✕
+          <Button variant="ghost" aria-label={app.t(`Remove resource ${i + 1}`, `移除资源 ${i + 1}`)} style={{ height: 26 }} onClick={() => removeRow(i)}>
+            <X />
           </Button>
         </div>
         <TextAreaField
@@ -189,12 +190,12 @@ export default function ResourcesTab({
           disabled={!defaultMounts || stores.isLoading || storeList.length === 0}
           title={storeList.length === 0 ? app.t("Create a Memory Store first", "请先创建记忆库") : undefined}
           onClick={() => addRow("memory_store")}
-        >+ {app.t("bind a store", "绑定记忆库")}</Button>
-        <Button disabled={!defaultMounts} onClick={() => addRow("file")}>+ {app.t("attach a file", "附加文件")}</Button>
-        <Button disabled={!defaultMounts} onClick={() => addRow("repository")}>+ {app.t("connect a repo", "连接仓库")}</Button>
+        ><Plus /> {app.t("bind a store", "绑定记忆库")}</Button>
+        <Button disabled={!defaultMounts} onClick={() => addRow("file")}><Plus /> {app.t("attach a file", "附加文件")}</Button>
+        <Button disabled={!defaultMounts} onClick={() => addRow("repository")}><Plus /> {app.t("connect a repo", "连接仓库")}</Button>
         {!stores.isLoading && storeList.length === 0 && !stores.error && (
           <Button variant="ghost" onClick={() => navigate(`/w/${app.workspaceId}/memory`)}>
-            {app.t("Create a Memory Store →", "创建记忆库 →")}
+            {app.t("Create a Memory Store", "创建记忆库")} <ArrowRight />
           </Button>
         )}
         <span className="mut">{app.t("Resource changes are part of this Agent draft and are used by Try immediately.", "资源改动属于当前 Agent 草稿，试运行会立即使用。")}</span>

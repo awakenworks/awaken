@@ -1,3 +1,4 @@
+import { Info, Plus, X } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card } from "@awaken/ui";
 // Provider-neutral inference and fallback routing controls. These values are
 // authored with the Agent and frozen into its published revision; they are not
@@ -45,7 +46,7 @@ export default function AgentModelRuntimeControls({
           : "配置推理强度、速度、处理地域和精确备用路由；这些设置会随 Agent 发布版本一起审阅并冻结。",
       )}</p>
       {acp ? (
-        <InlineNotice tone="info" icon={<span>ⓘ</span>}>
+        <InlineNotice tone="info" icon={<Info />}>
           <span>{app.t(
             "Reasoning, model, and Harness-specific options are shown under the selected ACP runtime above. Native inference settings remain in the draft but are not presented as active ACP controls.",
             "推理、模型及 Harness 专属选项显示在上方所选 ACP Runtime 下；草稿中的 Native 推理设置会保留，但不会被显示为生效的 ACP 配置。",
@@ -86,12 +87,12 @@ export default function AgentModelRuntimeControls({
             <TextField label={app.t("Provider identity", "供应商身份")} mono value={candidate.provider_identity_ref} onChange={(event) => setCandidate(index, { provider_identity_ref: event.target.value })} />
             <TextField label={app.t("Model", "模型")} mono value={candidate.model_ref} onChange={(event) => setCandidate(index, { model_ref: event.target.value })} />
             <TextField label={app.t("Backend", "执行后端")} mono value={candidate.backend_ref} onChange={(event) => setCandidate(index, { backend_ref: event.target.value })} />
-            <Button variant="ghost" aria-label={app.t(`Remove fallback ${index + 1}`, `移除备用路由 ${index + 1}`)} onClick={() => onPatch({ model_candidates: candidates.filter((_, current) => current !== index) })}>✕</Button>
+            <Button variant="ghost" aria-label={app.t(`Remove fallback ${index + 1}`, `移除备用路由 ${index + 1}`)} onClick={() => onPatch({ model_candidates: candidates.filter((_, current) => current !== index) })}><X /></Button>
           </div>
         ))}
         <Button onClick={() => onPatch({
           model_candidates: [...candidates, { provider_identity_ref: "", model_ref: "", backend_ref: "genai" }],
-        })}>+ {app.t("fallback route", "备用路由")}</Button>
+        })}><Plus /> {app.t("fallback route", "备用路由")}</Button>
       </div>
     </Card>
   );

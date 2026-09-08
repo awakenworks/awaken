@@ -1,3 +1,4 @@
+import { ArrowRight } from "@awaken/ui/icons";
 import { InlineNotice, Card } from "@awaken/ui";
 import { Link } from "react-router";
 import { EmptyState, Pill } from "../ui";
@@ -35,7 +36,7 @@ export default function SessionIntegrations({ session, workspaceId }: { session?
           tone="info"
           actions={
             <>
-              <Link to={agentHref}>{app.t("Open current MCP configuration →", "打开当前 MCP 配置 →")}</Link>
+              <Link to={agentHref}>{app.t("Open current MCP configuration", "打开当前 MCP 配置")} <ArrowRight /></Link>
             </>
           }
           style={{ marginTop: 10 }}

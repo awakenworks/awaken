@@ -1,3 +1,4 @@
+import { Plus, X } from "@awaken/ui/icons";
 import { Button, Switch } from "@awaken/ui";
 // Per-tool presentation overrides (ADR-0053): a row per override — the target tool id,
 // an alias (rename for the model), a description override, and an exposure toggle. `target`
@@ -91,11 +92,11 @@ export default function ToolOverridesEditor({
                 </div>
               </div>
             )}
-            <Button variant="ghost" style={{ height: 30 }} onClick={() => {
+            <Button variant="ghost" aria-label={app.t(`Remove override ${r.target}`, `移除覆盖 ${r.target}`)} style={{ height: 30 }} onClick={() => {
               setBackground(r.target, false);
               onChange(value.filter((_, j) => j !== i));
             }}>
-              ✕
+              <X />
             </Button>
           </div>
           {r.target.startsWith("mcp__") && (
@@ -108,8 +109,8 @@ export default function ToolOverridesEditor({
         </div>
       ))}
       <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-        <Button onClick={() => add()}>+ {app.t("override a selected tool", "覆盖已选工具")}</Button>
-        <Button onClick={() => add("mcp__server__tool")}>+ {app.t("override an MCP tool", "覆盖 MCP 工具")}</Button>
+        <Button onClick={() => add()}><Plus /> {app.t("override a selected tool", "覆盖已选工具")}</Button>
+        <Button onClick={() => add("mcp__server__tool")}><Plus /> {app.t("override an MCP tool", "覆盖 MCP 工具")}</Button>
       </div>
       {onBackgroundToolsChange && (
         <span className="mut" style={{ display: "block", marginTop: 8, fontSize: 11 }}>

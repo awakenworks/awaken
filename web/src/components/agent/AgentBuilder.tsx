@@ -1,3 +1,4 @@
+import { Info, TriangleAlert } from "@awaken/ui/icons";
 import { Tabs, TabList, Tab, TabPanel, InlineNotice, CheckPicker, Button, Card, SegmentedControl as Segmented } from "@awaken/ui";
 
 import type {
@@ -350,7 +351,7 @@ export default function AgentBuilder({
             {incompatibleTools.length > 0 && (
               <InlineNotice
                 tone="neutral"
-                icon={<span>!</span>}
+                icon={<TriangleAlert />}
                 actions={onRefreshRuntimes
                   ? <Button variant="ghost" onClick={onRefreshRuntimes}>{app.t("Refresh status", "刷新状态")}</Button>
                   : null}
@@ -369,7 +370,7 @@ export default function AgentBuilder({
               return (
                 <InlineNotice
                   tone="neutral"
-                  icon={<span>!</span>}
+                  icon={<TriangleAlert />}
                   actions={
                     <>
                       {hosted && <Button variant="ghost" onClick={() => onPatch({
@@ -457,7 +458,7 @@ export default function AgentBuilder({
               }}
             />
             {acp && (
-              <InlineNotice tone="info" icon={<span>ⓘ</span>} style={{ marginTop: 8 }}>
+              <InlineNotice tone="info" icon={<Info />} style={{ marginTop: 8 }}>
                 <span>{app.t(
                   "The selected ACP Harness cannot start new background tool executions. Existing selections remain visible so you can remove them before publishing.",
                   "所选 ACP Harness 不能启动新的后台工具执行；已有选择仍保持可见，以便在发布前移除。",
@@ -495,7 +496,7 @@ export default function AgentBuilder({
           {resourcesError ? (
             <InlineNotice
               tone="warning"
-              icon={<span>⚠</span>}
+              icon={<TriangleAlert />}
               actions={
                 <>
                   <Button variant="ghost" onClick={onRetryResources}>{app.t("Retry", "重试")}</Button>
