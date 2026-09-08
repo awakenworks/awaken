@@ -494,6 +494,7 @@ dependencies = [
  "bytes",
  "http-body",
  "http-body-util",
+ "kube",
  "opentelemetry",
  "rusqlite",
  "serde",

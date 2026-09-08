@@ -200,12 +200,36 @@ an identity without the allocated incarnation. Production constructors require
 HTTPS, reject redirects, and reject a configured CA bundle containing no valid
 certificates. Local embedding remains an explicitly selected posture.
 
-This adapter is preparation, not completed Kubernetes crash recovery: production
-startup must still co-select it with the execution-binding source using the same
-trusted Kubernetes client. Independent closed-domain stop evidence, exact
+Production startup now co-selects authentication and the existing execution-
+binding source through a private transport pair, using the same trusted client.
+The read-only `PodProcessObserver` is independent of Sandbox resource startup;
+Coordinator observation cannot provision a Sandbox NetworkPolicy. Its Pod read
+rechecks the authenticated UID so a same-name replacement between TokenReview
+and binding cannot acquire the old Worker's authority. The existing handler
+still performs Registry/claim checks before lookup and fresh checks before the
+atomic Dispatch admission; no database lock spans Kubernetes IO.
+
+Configuration is explicit and role-owned:
+
+- A server-mode Coordinator compiled with `container-k8s` accepts the
+  `[worker_kubernetes]` table with `namespace`, `service_account`, `audience`
+  and `provider_id`. The authenticated Kubernetes client uses the deployment's
+  kube configuration; the provider ID names that operator-controlled domain.
+- A server-mode Worker uses `worker_kubernetes_identity_directory`, containing
+  projected `namespace`, `name`, `uid` and the rotating `token`. Standalone and
+  CLI Worker startup share the same resolver and HTTPS upstream constructor.
+  Authored `worker_id`, if present, must exactly equal the projected coordinate;
+  projection identity drift between resolution and upstream assembly rejects.
+- Mixing Pod authentication with signing credentials or an injected Coordinator
+  authenticator rejects. Missing build features, malformed policy and wrong-role
+  configuration reject rather than silently selecting an unbound transport.
+
+This is not completed Kubernetes crash recovery. Independent closed-domain stop
+evidence, exact
 Dispatch retirement and the Native hard-crash k3d E2E are not established by its
 mock-API tests. No historical binding or remote termination can be inferred from
-successful caller authentication.
+successful caller authentication. Existing restartable/privileged Worker Pod
+profiles do not meet the observer's non-restarting private-process contract.
 
 The attached tests own the cause/effect matrices for TokenReview, projection
 rotation, transport posture and redirect/CA rejection. The existing Kani
@@ -213,6 +237,10 @@ transport selector covers 252 finite combinations, admitting exactly HTTPS with
 signed or Pod-bound credential verification and exact identity. API-server
 honesty, TLS internals, startup wiring and physical stop are outside that proof;
 this stateless adapter does not add a parallel temporal recovery model.
+The existing provider observation TLA+ model additionally separates TokenReview
+from the subsequent Pod read, explores same-name replacement between them, and
+checks that only matching identities can bind. Its finite model and semantic
+mutants do not prove API-server honesty or Rust/Kubernetes refinement.
 
 | Component | Owns | Must not own |
 |---|---|---|

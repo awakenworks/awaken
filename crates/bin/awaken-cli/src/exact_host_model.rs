@@ -20,8 +20,8 @@ pub(super) fn local_test_process_options(stores: &super::ProcessStores) -> super
         worker_observations: Some(
             super::worker_observation_wiring::WorkerObservationWiring::local(worker_directory),
         ),
-        worker_authenticator: Some(std::sync::Arc::new(
-            awaken_worker_transport_security::HeaderWorkerAuthenticator,
+        worker_transport: Some(super::worker_transport_security::WorkerTransport::unbound(
+            std::sync::Arc::new(awaken_worker_transport_security::HeaderWorkerAuthenticator),
         )),
         executable_agent_wiring: Some(
             super::executable_agent_registration::ExecutableAgentWiring::local(),

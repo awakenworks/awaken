@@ -206,7 +206,8 @@ execution floor, so upgrade cannot itself prevent observed-stop retirement.
 This retains ADR-0066's coordinated Control cutover requirement; it does not make
 mixed-version Control replicas safe, or replace independent stop evidence.
 The Kubernetes adapter now offers a narrower independent local observation:
-`bind_pod_process` freezes the complete ordinary-container set before effects,
+the read-only `PodProcessObserver::bind_pod_process` verifies the authenticated
+Pod UID and freezes the complete ordinary-container set before effects,
 and `observe_pod_process_termination` requires the same Pod UID, node, container
 IDs and start times plus every exact runtime exit. It rejects restartable,
 privileged, init and ephemeral-container profiles. A live projector vetoes the
@@ -241,10 +242,14 @@ fresh Registry check and a fresh dispatch clock sample before the ordinary
 transaction. Same-claim response-loss retries still use the existing immutable
 binding rule. The exact predecessor ACK does not depend on this lookup service.
 The source is threaded through the existing Coordinator composition, without a
-new cache, state store or recovery queue. The CLI deliberately leaves it absent:
-an authenticated Kubernetes Worker-to-Pod identity adapter has not been selected.
-The current restartable Worker Pod profile is not admitted by the Kubernetes
-adapter, and independent stop-result consumption remains unwired. The signed
+new cache, state store or recovery queue. With `container-k8s` and an explicit
+`worker_kubernetes` policy, CLI startup co-selects TokenReview authentication and
+this source using one authenticated Kubernetes client. Private assembly fields
+prevent an injected or signed authenticator from being paired with Pod facts.
+Read-only observation no longer constructs a Sandbox runtime or provisions its
+NetworkPolicy. Default non-Kubernetes transports remain unbound. The current
+restartable Worker Pod profile is not admitted by the Kubernetes adapter, and
+independent stop-result consumption remains unwired. The signed
 HTTP R1-R13 decision table covers source failures, identity/epoch changes during
 lookup, no-lock renewal progress and strict request parsing. Exact-claim preflight
 also rejects invented/stale Runs before provider lookup; it does not replace the

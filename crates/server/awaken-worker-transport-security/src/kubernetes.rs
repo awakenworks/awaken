@@ -108,6 +108,23 @@ impl KubernetesWorkerAuthenticator {
         audience: &str,
         timeout: Duration,
     ) -> Result<Self, String> {
+        Self::validate_policy(namespace, service_account, audience, timeout)?;
+        Ok(Self {
+            reviews: Api::all(client),
+            namespace: namespace.into(),
+            service_account: service_account.into(),
+            audience: audience.into(),
+            timeout,
+        })
+    }
+
+    /// Validate startup policy without connecting to an API server.
+    pub fn validate_policy(
+        namespace: &str,
+        service_account: &str,
+        audience: &str,
+        timeout: Duration,
+    ) -> Result<(), String> {
         if !dns_name(namespace, 63)
             || namespace.contains('.')
             || !dns_name(service_account, 253)
@@ -117,13 +134,7 @@ impl KubernetesWorkerAuthenticator {
         {
             return Err("invalid Kubernetes Worker authentication policy".into());
         }
-        Ok(Self {
-            reviews: Api::all(client),
-            namespace: namespace.into(),
-            service_account: service_account.into(),
-            audience: audience.into(),
-            timeout,
-        })
+        Ok(())
     }
 
     fn verified_pod(

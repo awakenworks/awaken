@@ -1,5 +1,38 @@
 use super::Role;
 
+/// Coordinator-owned trust domain. Worker projections carry only their own
+/// bound token, never this API-server credential or a mapping authority.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KubernetesWorkerTransport {
+    pub namespace: String,
+    pub service_account: String,
+    pub audience: String,
+    pub provider_id: String,
+}
+
+impl KubernetesWorkerTransport {
+    pub(crate) fn validate(
+        &self,
+        role: Role,
+        mode: super::OperatingMode,
+        has_signing_trust: bool,
+    ) -> Result<(), String> {
+        if role != Role::Coordinator || mode != super::OperatingMode::Server || has_signing_trust {
+            return Err("worker_kubernetes requires a server-mode Coordinator and cannot be mixed with worker_trust_credentials_file".into());
+        }
+        if self.provider_id.trim().is_empty() || self.provider_id.trim() != self.provider_id {
+            return Err("worker_kubernetes requires an exact nonempty provider_id".into());
+        }
+        #[cfg(feature = "container-k8s")]
+        return awaken_worker_transport_security::kubernetes::KubernetesWorkerAuthenticator::validate_policy(
+            &self.namespace, &self.service_account, &self.audience, std::time::Duration::from_secs(5),
+        );
+        #[cfg(not(feature = "container-k8s"))]
+        Err("worker_kubernetes requires the container-k8s build feature".into())
+    }
+}
+
 pub(super) fn validate_credential_file_ownership(
     role: Role,
     request_credential_file: bool,
@@ -28,6 +61,131 @@ pub(super) fn validate_credential_file_ownership(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kubernetes_file_configuration_reaches_only_its_owning_process() {
+        use super::super::{ConfigOverrides, FileConfig, ResolvedDeployment};
+        // F1 authored Coordinator policy -> retained unchanged at startup.
+        // F2 missing adapter -> explicit rejection, not an unsigned fallback.
+        // F3 projected identity on any non-Worker role or Local mode -> reject
+        // before reading files. F4 unknown policy fields -> parse rejection.
+        // These exercise TOML -> the production resolver, complementing the
+        // complete policy decision table below and Worker projection tests.
+        let source = r#"
+            role = "coordinator"
+            mode = "server"
+            internal_bind = "127.0.0.1:8081"
+            runtime_database_url = "postgres://coordinator/execution"
+            control_internal_url = "http://control:3000"
+            control_service_token_file = "/run/control-service-token"
+            [worker_kubernetes]
+            namespace = "workers"
+            service_account = "executor"
+            audience = "awaken-worker"
+            provider_id = "cluster-a"
+        "#;
+        let resolve = |file| {
+            ResolvedDeployment::resolve_file(
+                ConfigOverrides::default(),
+                Some("/home/dev".into()),
+                "/home/dev/config.toml".into(),
+                file,
+            )
+        };
+        let result = resolve(toml::from_str::<FileConfig>(source).unwrap());
+        if cfg!(feature = "container-k8s") {
+            let deployment = result.unwrap();
+            let policy = deployment.worker_kubernetes.unwrap();
+            assert_eq!(policy.namespace, "workers", "F1");
+            assert_eq!(policy.service_account, "executor", "F1");
+            assert_eq!(policy.audience, "awaken-worker", "F1");
+            assert_eq!(policy.provider_id, "cluster-a", "F1");
+            assert!(deployment.worker.kubernetes_identity_directory.is_none());
+        } else {
+            assert!(result.unwrap_err().contains("container-k8s"), "F2");
+        }
+        for (role, mode) in [
+            ("coordinator", "server"),
+            ("control", "server"),
+            ("all-in-one", "server"),
+            ("worker", "local"),
+        ] {
+            let file: FileConfig = toml::from_str(&format!(
+                "role = {role:?}\nmode = {mode:?}\nworker_server = \"https://coordinator\"\nworker_kubernetes_identity_directory = \"/missing-projection\""
+            ))
+            .unwrap();
+            assert!(
+                resolve(file)
+                    .unwrap_err()
+                    .contains("owned by a server-mode Worker"),
+                "F3 {role}/{mode}"
+            );
+        }
+        assert!(
+            toml::from_str::<FileConfig>(&format!("{source}\nnamespace_alias = \"other\""))
+                .is_err(),
+            "F4"
+        );
+    }
+
+    #[test]
+    fn kubernetes_trust_policy_is_role_feature_and_credential_exclusive() {
+        // K1 Coordinator + Server + no signer + compiled adapter => accepted.
+        // K2 any other role/mode/signing-trust combination => rejected before
+        // client discovery; K3 missing build feature also fails closed. Cross
+        // the complete finite role/mode/credential space, not just happy paths.
+        let policy = KubernetesWorkerTransport {
+            namespace: "workers".into(),
+            service_account: "executor".into(),
+            audience: "awaken-worker".into(),
+            provider_id: "cluster-a".into(),
+        };
+        for role in [
+            Role::Coordinator,
+            Role::Worker,
+            Role::Control,
+            Role::AllInOne,
+        ] {
+            for mode in [
+                super::super::OperatingMode::Local,
+                super::super::OperatingMode::Server,
+            ] {
+                for signed in [false, true] {
+                    assert_eq!(
+                        policy.validate(role, mode, signed).is_ok(),
+                        cfg!(feature = "container-k8s")
+                            && role == Role::Coordinator
+                            && mode == super::super::OperatingMode::Server
+                            && !signed,
+                        "K1-K3 {role:?} {mode:?} {signed}"
+                    );
+                }
+            }
+        }
+        for (field, value) in [
+            ("namespace", "../workers"),
+            ("service_account", ""),
+            ("audience", " "),
+            ("provider_id", " "),
+        ] {
+            let mut bad = policy.clone();
+            match field {
+                "namespace" => bad.namespace = value.into(),
+                "service_account" => bad.service_account = value.into(),
+                "audience" => bad.audience = value.into(),
+                _ => bad.provider_id = value.into(),
+            }
+            assert!(
+                bad.validate(
+                    Role::Coordinator,
+                    super::super::OperatingMode::Server,
+                    false
+                )
+                .is_err(),
+                "K4 {field}"
+            );
+        }
+    }
 
     #[test]
     fn credential_files_follow_process_authority() {

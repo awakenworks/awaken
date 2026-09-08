@@ -44,6 +44,7 @@ use file_support::{
 pub use role::Role;
 pub use seal_key::SealKeySource;
 pub use service_boundary::{ControlServiceConfig, ExecutableAgentRegistrationConfig};
+pub use worker_bootstrap::KubernetesWorkerTransport;
 pub(crate) use workspace_data::{WorkspaceDataLeaseGuard, enforce_workspace_data_lease};
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
@@ -185,10 +186,21 @@ impl ResolvedDeployment {
             file.worker_request_credential_file.is_some(),
             file.worker_trust_credentials_file.is_some(),
         )?;
+        if let Some(policy) = &file.worker_kubernetes {
+            policy.validate(role, mode, file.worker_trust_credentials_file.is_some())?;
+        }
+        if file.worker_kubernetes_identity_directory.is_some()
+            && (role != Role::Worker || mode != OperatingMode::Server)
+        {
+            return Err(
+                "worker_kubernetes_identity_directory is owned by a server-mode Worker".into(),
+            );
+        }
         let worker = WorkerBootstrap::resolve(
             awaken_worker::WorkerBootstrapInput {
                 worker_id: file.worker_id.clone(),
                 request_credential_file: file.worker_request_credential_file.clone(),
+                kubernetes_identity_directory: file.worker_kubernetes_identity_directory.clone(),
                 credential_material_root: file.worker_credential_material_root.clone(),
                 credential_trust_domain: file.worker_credential_trust_domain.clone(),
                 admin_listen: file.worker_admin_listen.clone(),
@@ -520,6 +532,7 @@ impl ResolvedDeployment {
             worker_server,
             worker,
             worker_trust_credentials_file: file.worker_trust_credentials_file,
+            worker_kubernetes: file.worker_kubernetes,
             identity_mode,
             cloud_models,
             org_id: file

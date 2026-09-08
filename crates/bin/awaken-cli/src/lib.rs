@@ -1696,8 +1696,8 @@ mod process_role_surface_tests {
                 worker_observations: Some(
                     worker_observation_wiring::WorkerObservationWiring::local(worker_directory),
                 ),
-                worker_authenticator: Some(Arc::new(
-                    awaken_worker_transport_security::HeaderWorkerAuthenticator,
+                worker_transport: Some(worker_transport_security::WorkerTransport::unbound(
+                    Arc::new(awaken_worker_transport_security::HeaderWorkerAuthenticator),
                 )),
                 ..Default::default()
             },

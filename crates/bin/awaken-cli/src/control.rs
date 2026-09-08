@@ -360,7 +360,7 @@ async fn prepare_control_process_with_model_supply_and_installations(
             web_search_publication_resolver: web_search.map(|value| value.1),
             executable_agent_wiring: Some(executable_agent_wiring),
             executable_environment_wiring: Some(executable_environment_wiring),
-            worker_authenticator: None,
+            worker_transport: None,
             worker_placement_policy: None,
             cloud_native_credential_realization: None,
             repository_transport_authorizer: None,

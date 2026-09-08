@@ -43,7 +43,7 @@ fn terminal_observation_requires_exact_complete_irreversible_process_evidence() 
     // R4 restart/extra participant/escape capability => Unknown.
     // R5 synthetic or incomplete exit => Unknown. Cross each changed cause with
     // an otherwise valid R1 witness (MC/DC); no remote/Dispatch effect is allowed.
-    let binding = bind("ns", "worker", &decode(running())).unwrap();
+    let binding = bind("ns", "worker", "uid-a", &decode(running())).unwrap();
     for reason in ["Completed", "Error", "OOMKilled"] {
         let mut pod = terminal();
         pod["status"]["containerStatuses"][0]["state"]["terminated"]["reason"] = json!(reason);
@@ -177,21 +177,32 @@ fn terminal_observation_requires_exact_complete_irreversible_process_evidence() 
 fn binding_must_precede_execution_and_cannot_be_reconstructed_from_terminal_status() {
     // R6 running exact private scope => bind; R7 terminal/deleting/missing start
     // or foreign lookup => reject. This prevents post-crash identity guesses.
-    let binding = bind("ns", "worker", &decode(running())).unwrap();
+    let binding = bind("ns", "worker", "uid-a", &decode(running())).unwrap();
+    // R7b caller's authenticated UID is mandatory and must survive the read;
+    // a same-name replacement cannot become the old caller's process domain.
+    for uid in ["", "replacement"] {
+        assert!(
+            bind("ns", "worker", uid, &decode(running())).is_err(),
+            "R7b"
+        );
+    }
     let serialized = serde_json::to_vec(&binding).unwrap();
     assert_eq!(
         serde_json::from_slice::<PodProcessBinding>(&serialized).unwrap(),
         binding
     );
     assert!(
-        bind("ns", "worker", &decode(terminal())).is_err(),
+        bind("ns", "worker", "uid-a", &decode(terminal())).is_err(),
         "R7 historical exit"
     );
     assert!(
-        bind("other", "worker", &decode(running())).is_err(),
+        bind("other", "worker", "uid-a", &decode(running())).is_err(),
         "R7 namespace"
     );
-    assert!(bind("ns", "other", &decode(running())).is_err(), "R7 name");
+    assert!(
+        bind("ns", "other", "uid-a", &decode(running())).is_err(),
+        "R7 name"
+    );
     for pointer in [
         "/metadata/uid",
         "/spec/nodeName",
@@ -200,11 +211,17 @@ fn binding_must_precede_execution_and_cannot_be_reconstructed_from_terminal_stat
     ] {
         let mut pod = running();
         *pod.pointer_mut(pointer).unwrap() = Value::Null;
-        assert!(bind("ns", "worker", &decode(pod)).is_err(), "R7 {pointer}");
+        assert!(
+            bind("ns", "worker", "uid-a", &decode(pod)).is_err(),
+            "R7 {pointer}"
+        );
     }
     let mut pod = running();
     pod["metadata"]["deletionTimestamp"] = json!("2026-09-08T00:00:01Z");
-    assert!(bind("ns", "worker", &decode(pod)).is_err(), "R7 deletion");
+    assert!(
+        bind("ns", "worker", "uid-a", &decode(pod)).is_err(),
+        "R7 deletion"
+    );
 }
 
 #[test]
@@ -212,7 +229,7 @@ fn deletion_and_legacy_exit_information_do_not_upgrade_unknown_to_stopped() {
     // R8 deleting + live => Unknown; R9 Failed + no exact exit => Unknown;
     // R10 deleting + exact completed exit => local observed only. Deletion is
     // neither required nor sufficient; old receipts never identify a new UID.
-    let binding = bind("ns", "worker", &decode(running())).unwrap();
+    let binding = bind("ns", "worker", "uid-a", &decode(running())).unwrap();
     for terminal_exit in [false, true] {
         let mut pod = if terminal_exit { terminal() } else { running() };
         pod["metadata"]["deletionTimestamp"] = json!("2026-09-08T00:00:02Z");
@@ -256,7 +273,7 @@ fn all_containers_must_match_the_frozen_set_and_exit_independently_of_list_order
     }
     let mut live = running();
     add_projector(&mut live);
-    let binding = bind("ns", "worker", &decode(live.clone())).unwrap();
+    let binding = bind("ns", "worker", "uid-a", &decode(live.clone())).unwrap();
     let mut stopped = terminal();
     add_projector(&mut stopped);
     let mut partial = stopped.clone();

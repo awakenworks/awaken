@@ -160,6 +160,15 @@ fn projected_identity_and_remote_constructor_fail_closed() {
     // P4 all three bounded metadata files + token + HTTPS => exact Pod Worker.
     // P5 one missing/invalid/oversized metadata file => no construction. P6
     // invalid endpoint, token or CA => fail, never downgrade to local/HMAC.
+    // P5b empty directory => reject before filesystem lookup, never implicitly
+    // read namespace/name/uid/token from the process working directory.
+    assert_eq!(
+        KubernetesWorkerRequestAuthorizer::from_projected_directory(std::path::Path::new(""))
+            .err()
+            .unwrap(),
+        "Kubernetes Worker identity directory must not be empty",
+        "P5b"
+    );
     let directory = tempfile::tempdir().unwrap();
     let projected =
         || KubernetesWorkerRequestAuthorizer::from_projected_directory(directory.path());

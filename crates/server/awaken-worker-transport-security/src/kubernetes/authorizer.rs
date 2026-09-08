@@ -17,6 +17,9 @@ impl KubernetesWorkerRequestAuthorizer {
     /// Downward API metadata is only a requested coordinate. The Coordinator
     /// independently verifies it with TokenReview on every authenticated call.
     pub fn from_projected_directory(directory: &std::path::Path) -> Result<Self, String> {
+        if directory.as_os_str().is_empty() {
+            return Err("Kubernetes Worker identity directory must not be empty".into());
+        }
         let read = |name: &str| -> Result<String, String> {
             let mut value = String::new();
             std::fs::File::open(directory.join(name))
