@@ -715,6 +715,32 @@ impl SharedHost {
                 .as_ref()
                 .map(|candidate| candidate.environment.as_ref())
         });
+        let authority = effect
+            .provider_fence
+            .as_ref()
+            .map(|fence| {
+                self.session_slots.provider_effect_authority(
+                    thread,
+                    fence,
+                    self.execution_authority.as_ref(),
+                )
+            })
+            .transpose()?;
+        let admit_original = || match (effect.provider_fence.as_ref(), authority.as_ref()) {
+            (Some(fence), Some(authority)) => {
+                awaken_provisioning_contract::with_current_sandbox_effect(fence, authority, || {
+                    Ok(())
+                })
+                .map_err(|error| {
+                    HostError::unavailable_classified(
+                        "session_environment_adoption_authority_lost",
+                        error.to_string(),
+                    )
+                })
+            }
+            (None, None) => Ok(()),
+            _ => unreachable!("fenced adoption always captures its authority"),
+        };
         let observation = match effect.provider_fence.as_ref() {
             Some(effect_fence) => {
                 provider
@@ -732,6 +758,7 @@ impl SharedHost {
                 ),
             )
         })?;
+        admit_original()?;
         // Ready-adoption cause/effect table: C1 the validated exact handle is
         // already Resident or ordinarily Retiring; C2 an exact hidden Candidate
         // was retained across cancellation; C3 no process-local owner exists;
@@ -770,9 +797,11 @@ impl SharedHost {
                             None => provider
                                 .adopt_effective_for_effect(
                                     &spec, &handle, effect.provider_fence.as_ref(),
+                                    authority.as_ref().map(|authority| authority as &dyn awaken_provisioning_contract::CurrentExecutionAuthority),
                                 )
                                 .await,
                         };
+                        admit_original()?;
                         let environment = Arc::new(rebound.map_err(|error| {
                             HostError::unavailable_classified(
                                 "session_environment_adoption_indeterminate", error.to_string(),

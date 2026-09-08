@@ -30,6 +30,7 @@ physicalDisposal == providerPhase = "disposal"
 coldReconstruction == providerPhase = "reconstruction"
 restoredDisposal == providerPhase = "restore-disposal"
 checkpointUpload == providerPhase = "checkpoint"
+liveAdoption == providerPhase = "adoption"
 (* Reconstruction, preparation, checkpoint upload and disposal share one wait transition,
    not independent authorization protocols. providerPhase is fixed at initialization;
    this proves admission within that phase, not aggregate preparation ordering.
@@ -57,7 +58,7 @@ bindingAll == <<allVars, bindingVars, deploymentReady, registeredWorker, provide
 BindingInit == RootInit
   /\ registeredWorker \in BOOLEAN
   /\ providerSource \in BOOLEAN
-  /\ providerPhase \in {"preparation", "disposal", "reconstruction", "restore-disposal", "checkpoint"}
+  /\ providerPhase \in {"preparation", "disposal", "reconstruction", "restore-disposal", "checkpoint", "adoption"}
   /\ deploymentReady = FALSE
   /\ selection = "unset" /\ boundSlot = 0 /\ boundGeneration = 0 /\ boundEnvironment = 0
   /\ environmentIdentity = 1 /\ environmentPhase = "candidate" /\ sessionExpired = FALSE
@@ -118,6 +119,8 @@ CommitEffect == /\ effectHeld /\ effectChecked /\ effects < 2
            (IF "restore-disposal" \in effectPhases THEN "restore-disposal-replay" ELSE "restore-disposal")
           ELSE IF checkpointUpload THEN
            (IF "checkpoint" \in effectPhases THEN "checkpoint-replay" ELSE "checkpoint")
+          ELSE IF liveAdoption THEN
+           (IF "adoption" \in effectPhases THEN "adoption-replay" ELSE "adoption")
           ELSE "preparation")
        ELSE IF providerSource THEN "provider" ELSE environmentPhase}
   /\ memoryDrains' = (IF memoryWait = 2 THEN 1 ELSE memoryDrains)
@@ -179,12 +182,12 @@ BindingNext == (((((Select \/ WeakSpawn \/ Bind
 BindingSpec == BindingInit /\ [][BindingNext]_bindingAll
 BindingTypeOK == RootTypeOK /\ selection \in {"unset", "weak", "scoped"}
   /\ deploymentReady \in BOOLEAN /\ registeredWorker \in BOOLEAN
-  /\ providerSource \in BOOLEAN /\ providerPhase \in {"preparation", "disposal", "reconstruction", "restore-disposal", "checkpoint"}
+  /\ providerSource \in BOOLEAN /\ providerPhase \in {"preparation", "disposal", "reconstruction", "restore-disposal", "checkpoint", "adoption"}
   /\ boundSlot \in 0..2 /\ boundGeneration \in 0..2 /\ boundEnvironment \in 0..2
   /\ environmentIdentity \in 1..2 /\ environmentPhase \in {"candidate", "resident", "retiring"}
   /\ sessionExpired \in BOOLEAN /\ effectHeld \in BOOLEAN /\ effectChecked \in BOOLEAN
   /\ badEffect \in BOOLEAN /\ weakStarted \in BOOLEAN /\ effects \in 0..2
-  /\ effectPhases \subseteq {"candidate", "resident", "retiring", "provider", "memory", "memory-replay", "preparation", "disposal", "disposal-replay", "reconstruction", "reconstruction-replay", "restore-disposal", "restore-disposal-replay", "checkpoint", "checkpoint-replay"}
+  /\ effectPhases \subseteq {"candidate", "resident", "retiring", "provider", "memory", "memory-replay", "preparation", "disposal", "disposal-replay", "reconstruction", "reconstruction-replay", "restore-disposal", "restore-disposal-replay", "checkpoint", "checkpoint-replay", "adoption", "adoption-replay"}
   /\ memoryWait \in 0..2 /\ memoryDrains \in 0..2
   /\ providerWait \in 0..2
 MemoryCopyDrainedOnce == memoryDrains <= 1
@@ -231,4 +234,10 @@ NoCheckpointUploadReached == "checkpoint" \notin effectPhases
 NoCheckpointReplayReached == "checkpoint-replay" \notin effectPhases
 NoRestoredDisposalReached == "restore-disposal" \notin effectPhases
 NoRestoredDisposalReplayReached == "restore-disposal-replay" \notin effectPhases
+(* Live adoption maps observation, Memory mount, staging, control and renew
+   responses onto the same provider wait. It adds no lease or state machine.
+   Exact marker/handle bytes, retained FUSE compensation and remote renewal
+   commits remain executable/adapter obligations, not proved by this model. *)
+NoLiveAdoptionReached == "adoption" \notin effectPhases
+NoLiveAdoptionReplayReached == "adoption-replay" \notin effectPhases
 =============================================================================

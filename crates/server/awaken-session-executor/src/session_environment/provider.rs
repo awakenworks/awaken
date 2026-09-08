@@ -673,7 +673,8 @@ impl SessionEnvironmentProvider {
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
-        self.adopt_effective_for_effect(spec, handle, None).await
+        self.adopt_effective_for_effect(spec, handle, None, None)
+            .await
     }
 
     /// Rebuild only the revoked process bindings after the lifecycle owner has
@@ -753,11 +754,19 @@ impl SessionEnvironmentProvider {
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
         effect_fence: Option<&awaken_provisioning_contract::SandboxEffectFence>,
+        authority: Option<&dyn pc::CurrentExecutionAuthority>,
     ) -> Result<SessionEnvironment, pc::SandboxError> {
-        match self {
+        let required_authority =
+            || authority.ok_or_else(|| pc::SandboxError::new("adoption has no current authority"));
+        let admit = || match effect_fence {
+            Some(fence) => pc::with_current_sandbox_effect(fence, required_authority()?, || Ok(())),
+            None => Ok(()),
+        };
+        admit()?;
+        let environment = match self {
             Self::Workdir { provider, hand } => match effect_fence {
                 Some(effect_fence) => provider
-                    .adopt_sandbox_for_effect(spec, handle, effect_fence)
+                    .adopt_sandbox_for_effect(spec, handle, effect_fence, required_authority()?)
                     .await
                     .map(|sandbox| {
                         SessionEnvironment::workdir(sandbox).with_workdir_hand(hand.as_ref())
@@ -777,7 +786,7 @@ impl SessionEnvironmentProvider {
             } => match effect_fence {
                 Some(effect_fence) => {
                     provider
-                        .adopt_sandbox_for_effect(spec, handle, effect_fence)
+                        .adopt_sandbox_for_effect(spec, handle, effect_fence, required_authority()?)
                         .await
                 }
                 None => {
@@ -807,9 +816,12 @@ impl SessionEnvironmentProvider {
                     .adopt_environment_for_effect(
                         awaken_sandbox_container::ContainerEnvironmentAdoption::new(spec, handle),
                         effect_fence,
+                        authority,
                     )
                     .await?;
+                admit()?;
                 environment.renew_lease().await?;
+                admit()?;
                 SessionEnvironment::container(
                     environment,
                     hand_factory.clone(),
@@ -820,7 +832,9 @@ impl SessionEnvironmentProvider {
                 )
                 .await
             }
-        }
+        }?;
+        admit()?;
+        Ok(environment)
     }
 
     /// Restore only the exact target frozen into the durable continuation

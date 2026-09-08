@@ -248,7 +248,9 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         spec: &pc::SandboxSpec,
         handle: &pc::SandboxHandle,
+        admit: &(impl Fn() -> Result<(), pc::SandboxError> + Sync),
     ) -> Result<ContainerSandbox<R>, pc::SandboxError> {
+        admit()?;
         pc::prepare_environment(spec, &self.runtime_sandbox_capabilities())
             .map_err(|error| err(RuntimeError::Backend(error.to_string())))?;
         let evidence = handle.restoration().cloned().ok_or_else(|| {
@@ -283,6 +285,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         if self.runtime.inspect(&container_id).await.map_err(err)? == ContainerState::Gone {
             return Err(err(RuntimeError::NotFound(container_id)));
         }
+        admit()?;
         if self
             .runtime
             .restoration_evidence(&container_id)
@@ -296,6 +299,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     .into(),
             )));
         }
+        admit()?;
         let expected_plan = restoration_plan_fingerprint(
             &self.restoration_environment_plan(spec, &payload.continuation_excluded_paths)?,
         );
@@ -311,6 +315,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 "container physical realization differs from the exact restore plan".into(),
             )));
         }
+        admit()?;
         let observed_runtime_handle = self
             .runtime
             .handle_extra(&container_id)
@@ -322,6 +327,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     .into(),
             )));
         }
+        admit()?;
         let recovered_staging =
             retained_host_staging(payload.runtime_handle.as_ref()).map_err(err)?;
 

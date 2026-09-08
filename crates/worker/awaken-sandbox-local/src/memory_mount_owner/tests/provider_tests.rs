@@ -2,6 +2,128 @@ use super::*;
 use pc::Sandbox as _;
 
 #[tokio::test]
+async fn cold_adoption_rechecks_current_authority_and_retains_pending_memory() {
+    // A1-A40: Local/Namespace x guard allocated before/after mount Pending x
+    // revoke/replace/exhaust/renew/cancel x past/future Control timestamps.
+    // Entry denial -> zero mounts. Loss after a REAL Pending mount -> no
+    // successful adoption or unauthenticated teardown; cancellation retains the
+    // pending owner. Renewal -> one confirmed participant. Exact retry retires
+    // an unconfirmed participant once, never changes marker/Agent bytes, and
+    // returns the original handle. This is port/FS/ownership qualification;
+    // the fake FUSE guard does not prove kernel mount or Worker-death recovery.
+    use std::time::Duration;
+    for namespace in [false, true] {
+        for before_pause in [false, true] {
+            for expiry in [100, u64::MAX - 1] {
+                for change in ["revoke", "replace", "exhaust", "renew", "cancel"] {
+                    let root = tempfile::tempdir().unwrap();
+                    let mounter = Arc::new(PausedMounter::new(before_pause, 0));
+                    let make_provider = || -> Box<dyn pc::SandboxProvider> {
+                        if namespace {
+                            Box::new(
+                                crate::NamespaceProvider::new(root.path())
+                                    .with_memory_mounter(mounter.clone()),
+                            )
+                        } else {
+                            Box::new(
+                                crate::LocalProvider::trusted_host(root.path())
+                                    .with_memory_mounter(mounter.clone()),
+                            )
+                        }
+                    };
+                    let mut spec = workdir_spec("adoption-proof", false);
+                    if namespace {
+                        spec.isolation = pc::IsolationClass::Namespace;
+                    }
+                    spec.mounts.push(requirement("memory"));
+                    let create =
+                        pc::SandboxEffectFence::new("create", "owner", "boot", 1, u64::MAX)
+                            .unwrap();
+                    mounter.mount_gate.add_permits(1);
+                    let old = make_provider();
+                    let first = old.create_for_effect(&spec, &create).await.unwrap();
+                    let handle = first.handle();
+                    let proof = root.path().join("adoption-proof/agent-proof");
+                    std::fs::write(&proof, b"unchanged Agent bytes").unwrap();
+                    drop(first);
+                    drop(old);
+                    assert_eq!(mounter.mount_gate.forget_permits(1), 1);
+                    let provider = make_provider();
+                    let fence =
+                        pc::SandboxEffectFence::new("adopt", "owner", "boot", 2, expiry).unwrap();
+                    let authority = pc::test_support::EffectAuthority::new(&fence);
+                    assert!(
+                        provider
+                            .adopt_for_effect(
+                                &spec,
+                                &handle,
+                                &fence,
+                                &pc::test_support::EffectAuthority::denied()
+                            )
+                            .await
+                            .is_err()
+                    );
+                    assert_eq!(mounter.mount_calls.load(Ordering::SeqCst), 1);
+                    let mut pending =
+                        Box::pin(provider.adopt_for_effect(&spec, &handle, &fence, &authority));
+                    assert_pending(pending.as_mut()).await;
+                    assert_eq!(mounter.mount_calls.load(Ordering::SeqCst), 2);
+                    {
+                        let mut current = authority.current.lock().unwrap();
+                        match change {
+                            "revoke" => *current = None,
+                            "replace" => current.as_mut().unwrap().0.epoch += 1,
+                            "exhaust" => current.as_mut().unwrap().1 = Duration::ZERO,
+                            "renew" => current.as_mut().unwrap().0.expires_at_unix_ms += 1,
+                            _ => {}
+                        }
+                    }
+                    if change == "cancel" {
+                        drop(pending);
+                    } else {
+                        mounter.mount_gate.add_permits(1);
+                        assert_eq!(
+                            pending.await.is_ok(),
+                            change == "renew",
+                            "{namespace}/{before_pause}/{expiry}/{change}"
+                        );
+                    }
+                    assert_eq!(
+                        mounter.teardowns.load(Ordering::SeqCst),
+                        0,
+                        "no stale compensation"
+                    );
+                    assert_eq!(
+                        mounter.drops.load(Ordering::SeqCst),
+                        1,
+                        "new participant remains owned"
+                    );
+                    *authority.current.lock().unwrap() =
+                        Some((fence.clone(), Duration::from_secs(1)));
+                    if change == "cancel" {
+                        mounter.mount_gate.add_permits(1);
+                    }
+                    let replay = provider
+                        .adopt_for_effect(&spec, &handle, &fence, &authority)
+                        .await
+                        .unwrap();
+                    assert_eq!(replay.handle(), handle);
+                    assert_eq!(std::fs::read(&proof).unwrap(), b"unchanged Agent bytes");
+                    assert_eq!(
+                        mounter.mount_calls.load(Ordering::SeqCst),
+                        if change == "renew" { 2 } else { 3 }
+                    );
+                    assert_eq!(
+                        mounter.teardowns.load(Ordering::SeqCst),
+                        usize::from(change != "renew")
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn copy_replay_keeps_original_bytes_and_ack_prevents_second_harvest() {
     use awaken_resource_contract::MemoryRepository as _;
     use pc::MemoryMounter as _;
@@ -49,7 +171,12 @@ async fn copy_replay_keeps_original_bytes_and_ack_prevents_second_harvest() {
             drop(first);
             let replay = if adoption {
                 provider
-                    .adopt_for_effect(&spec, &handle, &create)
+                    .adopt_for_effect(
+                        &spec,
+                        &handle,
+                        &create,
+                        &pc::test_support::EffectAuthority::new(&create),
+                    )
                     .await
                     .unwrap()
             } else {
@@ -165,7 +292,12 @@ async fn provider_retry_replay_and_adoption_share_the_original_participants() {
                 assert_eq!(replay.handle(), handle);
                 drop(replay);
                 let adopted = provider
-                    .adopt_for_effect(&spec, &handle, &effect)
+                    .adopt_for_effect(
+                        &spec,
+                        &handle,
+                        &effect,
+                        &pc::test_support::EffectAuthority::new(&effect),
+                    )
                     .await
                     .unwrap();
                 assert_eq!(adopted.handle(), handle);

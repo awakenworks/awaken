@@ -461,6 +461,7 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
         &self,
         adoption: ContainerEnvironmentAdoption<'_>,
         effect_fence: Option<&ContainerEffectFence>,
+        _authority: Option<&dyn pc::CurrentExecutionAuthority>,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
         if effect_fence.is_some() {
             return Err(pc::SandboxError::new(

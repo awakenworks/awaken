@@ -52,9 +52,8 @@ impl ReadyOperationGuard {
         &self,
         expected: &RealizationCompletionReceipt,
     ) -> Result<(), pc::SandboxError> {
-        // Ordinary adoption has not migrated to current proof yet. This clock
-        // belongs only to that receipt-reconstruction path, never checkpoint WAL.
-        validate_live_effect_fence(&self.authorization_effect_fence)?;
+        // The caller enters current Worker/Session authority after every wait;
+        // this participant owns only exact marker/root/receipt identity.
         execution_participant::require_quiescent(&self.current_marker()?)?;
         if self.marker.completion.as_ref() != Some(expected) {
             return Err(err(
