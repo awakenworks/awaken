@@ -784,7 +784,14 @@ Session Environment recovery similarly consumes one closed equality reducer
 over effect identity, physical binding, and immutable generation. Kani proves
 the complete decision table, while SessionEnvironmentProjection.tla proves
 that exact and stale same-owner projection are identity stutters and cannot
-rewrite a Resident or Retiring fence.
+rewrite a Resident or Retiring fence. The Candidate receipt reducer additionally
+distinguishes the prior source identity (`AdoptionFrom`) from the current
+committed Adopt. Same-generation source conversion is allowed; after current
+commit, a different receipt is rejected. Normal publication and post-dispatch
+failure retention consume this same decision. Cold/warm owner and SQLite claim
+replacement tests exercise the production mapping and retry sequence; the Kani
+harness exhausts the closed origin, exactness and compatibility inputs. It does
+not prove the Store/Provider's physical truth or arbitrary async interleavings.
 
 Closed physical observation after realization revocation consumes the captured
 Retiring owner through the same exact confirmation transition; it does not

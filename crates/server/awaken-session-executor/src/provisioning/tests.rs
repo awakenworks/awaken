@@ -191,10 +191,10 @@ fn install_terminal_artifact_environment(
     let candidate = host
         .begin_session_environment_adoption(session_id, environment)
         .expect("F2/E2 retain the exact adoption candidate");
-    let crate::session_slot::UnboundSessionEnvironmentOrigin::DurableAdoption(identity) =
+    let crate::session_slot::UnboundSessionEnvironmentOrigin::AdoptionFrom(identity) =
         &candidate.origin
     else {
-        panic!("F3 aggregate projection must own the durable adoption identity");
+        panic!("F3 aggregate projection must own the durable source identity");
     };
     host.publish_prepared_session_environment(session_id, &candidate, identity.clone())
         .expect("F2/E2 publish the exact durable owner");

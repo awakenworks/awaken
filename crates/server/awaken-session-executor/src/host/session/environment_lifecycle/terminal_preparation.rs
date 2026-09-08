@@ -210,7 +210,7 @@ impl SharedHost {
                 if adopted {
                     let candidate =
                         self.begin_session_environment_adoption(thread, environment.clone())?;
-                    let crate::session_slot::UnboundSessionEnvironmentOrigin::DurableAdoption(
+                    let crate::session_slot::UnboundSessionEnvironmentOrigin::AdoptionFrom(
                         identity,
                     ) = &candidate.origin
                     else {

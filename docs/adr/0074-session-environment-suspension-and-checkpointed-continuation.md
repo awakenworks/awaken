@@ -167,6 +167,17 @@ keeps Workdir/Namespace roots unchanged. The inline decision table in
 `revoked_durable_container_rebinds_hand_without_reconstructing_its_owner` owns
 its attached/resident, repeated revocation and failure coverage.
 
+Cold and revoked-owner adoption retain the prior durable identity as
+`AdoptionFrom` in the existing Candidate origin. That source proves the physical
+generation, not completion of the current Adopt. The authorized sink may return
+a new effect identity for that same generation (or upgrade typed legacy binding
+provenance). Normal publication and retention after a fenced derivative dispatch
+write share one receipt decision. Once the current receipt is retained as
+`DurableAdoption`, subsequent retries require its exact identity. Source and
+current receipts are never parallel owners or separately persisted records.
+The inline adoption decision tables cover cold/warm source conversion, repeated
+SQLite dispatch fencing, exact retry, generation conflict and publication parity.
+
 The provisioning contract extends the canonical `SandboxProvider` port with
 `checkpoint_formats`, while the existing `WorkerManifest.checkpoint_formats`
 and `PlacementRequirements.checkpoint_format` remain the scheduling source of
