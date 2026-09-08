@@ -107,14 +107,19 @@ pub enum RelinquishTransition {
 
 /// Decide whether the current durable claim may enter the physical executor.
 /// The caller supplies `claim_is_current` from the same locked snapshot that
-/// supplied `slot`.
+/// supplied `slot` and `thread_peer_occupied`. Thread exclusion is mandatory,
+/// not an optional post-decision check, and does not depend on peer Run status.
 #[must_use]
 pub const fn begin_physical_attempt(
     claim_is_current: bool,
     slot: PhysicalAttemptSlot,
+    thread_peer_occupied: bool,
 ) -> PhysicalAttemptTransition {
     if !claim_is_current {
         return PhysicalAttemptTransition::Fenced;
+    }
+    if !matches!(slot, PhysicalAttemptSlot::Corrupt) && thread_peer_occupied {
+        return PhysicalAttemptTransition::Blocked;
     }
     match slot {
         PhysicalAttemptSlot::Empty => PhysicalAttemptTransition::Install,
@@ -135,12 +140,15 @@ pub const fn begin_physical_attempt(
 pub const fn handoff_physical_attempt(
     claim_is_current: bool,
     slot: PhysicalAttemptSlot,
+    thread_peer_occupied: bool,
 ) -> PhysicalAttemptTransition {
     // Handoff changes only the disposition of a complete predecessor. Current
     // authority, exact replay, empty admission and corruption use the ordinary
     // kernel so that adding a guard cannot leave a parallel recovery bypass.
-    match begin_physical_attempt(claim_is_current, slot) {
-        PhysicalAttemptTransition::Blocked => PhysicalAttemptTransition::Replace,
+    match begin_physical_attempt(claim_is_current, slot, thread_peer_occupied) {
+        PhysicalAttemptTransition::Blocked if !thread_peer_occupied => {
+            PhysicalAttemptTransition::Replace
+        }
         transition => transition,
     }
 }
@@ -271,10 +279,20 @@ impl DispatchTransition {
         }))
     }
 
-    /// Apply a settlement only to the exact current leased epoch. `done` removes
-    /// the row; awaiting preserves its cancellation intent and epoch.
-    pub fn settle(self, claim_epoch: u64, done: bool) -> GuardedTransition {
-        if self.state != crate::DispatchState::Leased || self.lease_epoch != claim_epoch {
+    /// Apply settlement only to the exact leased epoch with no physical owner.
+    /// The slot must come from the same locked snapshot as this transition.
+    /// Keeping the physical gate inside the transition prevents a new adapter
+    /// from accidentally deleting an occupied row by omitting a preflight.
+    pub fn settle(
+        self,
+        claim_epoch: u64,
+        done: bool,
+        slot: PhysicalAttemptSlot,
+    ) -> GuardedTransition {
+        if self.state != crate::DispatchState::Leased
+            || self.lease_epoch != claim_epoch
+            || !slot.permits_settlement()
+        {
             return GuardedTransition::Fenced;
         }
         if done {
@@ -441,27 +459,51 @@ mod tests {
         use PhysicalAttemptTransition::{
             Blocked, Clear, Corrupt as CorruptTransition, Fenced, Install, Replace, Stutter,
         };
-        assert_eq!(begin_physical_attempt(true, Empty), Install, "R1/E1");
-        assert_eq!(handoff_physical_attempt(true, Empty), Install, "R1/E1");
+        assert_eq!(begin_physical_attempt(true, Empty, false), Install, "R1/E1");
+        assert_eq!(
+            handoff_physical_attempt(true, Empty, false),
+            Install,
+            "R1/E1"
+        );
         assert_eq!(finish_physical_attempt(Empty), Stutter, "R1/E2");
-        assert_eq!(begin_physical_attempt(true, ExactClaim), Stutter, "R2/E2");
-        assert_eq!(handoff_physical_attempt(true, ExactClaim), Stutter, "R2/E2");
+        assert_eq!(
+            begin_physical_attempt(true, ExactClaim, false),
+            Stutter,
+            "R2/E2"
+        );
+        assert_eq!(
+            handoff_physical_attempt(true, ExactClaim, false),
+            Stutter,
+            "R2/E2"
+        );
         assert_eq!(finish_physical_attempt(ExactClaim), Clear, "R2/E2");
-        assert_eq!(begin_physical_attempt(true, OtherClaim), Blocked, "R3/E3");
-        assert_eq!(handoff_physical_attempt(true, OtherClaim), Replace, "R4/E6");
+        assert_eq!(
+            begin_physical_attempt(true, OtherClaim, false),
+            Blocked,
+            "R3/E3"
+        );
+        assert_eq!(
+            handoff_physical_attempt(true, OtherClaim, false),
+            Replace,
+            "R4/E6"
+        );
         assert_eq!(finish_physical_attempt(OtherClaim), Fenced, "R3/E3");
         for slot in [Empty, ExactClaim, OtherClaim, Corrupt] {
-            assert_eq!(begin_physical_attempt(false, slot), Fenced, "R4/E4");
-            assert_eq!(handoff_physical_attempt(false, slot), Fenced, "R5/E4");
+            assert_eq!(begin_physical_attempt(false, slot, false), Fenced, "R4/E4");
+            assert_eq!(
+                handoff_physical_attempt(false, slot, false),
+                Fenced,
+                "R5/E4"
+            );
         }
         assert_eq!(
-            begin_physical_attempt(true, Corrupt),
+            begin_physical_attempt(true, Corrupt, false),
             CorruptTransition,
             "R5/E5"
         );
         assert_eq!(finish_physical_attempt(Corrupt), CorruptTransition, "R5/E5");
         assert_eq!(
-            handoff_physical_attempt(true, Corrupt),
+            handoff_physical_attempt(true, Corrupt, false),
             CorruptTransition,
             "R6/E5"
         );
@@ -470,7 +512,10 @@ mod tests {
     #[test]
     fn stale_settle_and_relinquish_are_fenced() {
         let current = leased(8);
-        assert_eq!(current.settle(7, true), GuardedTransition::Fenced);
+        assert_eq!(
+            current.settle(7, true, PhysicalAttemptSlot::Empty),
+            GuardedTransition::Fenced
+        );
         assert_eq!(
             current.relinquish(8, false, PhysicalAttemptSlot::Empty),
             RelinquishTransition::Fenced
@@ -591,14 +636,65 @@ mod tests {
     #[test]
     fn exact_settlement_has_only_terminal_or_awaiting_result() {
         let current = leased(8);
-        assert_eq!(current.settle(8, true), GuardedTransition::Removed);
         assert_eq!(
-            current.settle(8, false),
+            current.settle(8, true, PhysicalAttemptSlot::Empty),
+            GuardedTransition::Removed
+        );
+        assert_eq!(
+            current.settle(8, false, PhysicalAttemptSlot::Empty),
             GuardedTransition::Applied(DispatchTransition {
                 state: crate::DispatchState::Awaiting,
                 ..current
             })
         );
+    }
+
+    #[test]
+    fn settlement_requires_one_joint_claim_and_physical_snapshot() {
+        // Causes: C1 phase is leased or any other phase; C2 epoch is exact/stale;
+        // C3 slot is empty/exact/other/corrupt; C4 Done/Awaiting.
+        // Effects: E1 only C1+C2+empty may remove/await; E2 every other
+        // combination fences. NO adapter preflight precedes this call, so an
+        // omitted preflight cannot delete work. Exhaust the 7*2*4*2 table.
+        for phase in [
+            crate::DispatchState::Reserved,
+            crate::DispatchState::ReservationLeased,
+            crate::DispatchState::Pending,
+            crate::DispatchState::Leased,
+            crate::DispatchState::Awaiting,
+            crate::DispatchState::DeadLetter,
+            crate::DispatchState::Superseded,
+        ] {
+            let state = DispatchTransition {
+                state: phase,
+                ..leased(8)
+            };
+            for epoch in [7, 8] {
+                for slot in [
+                    PhysicalAttemptSlot::Empty,
+                    PhysicalAttemptSlot::ExactClaim,
+                    PhysicalAttemptSlot::OtherClaim,
+                    PhysicalAttemptSlot::Corrupt,
+                ] {
+                    for done in [false, true] {
+                        let expected = if phase != crate::DispatchState::Leased
+                            || epoch != 8
+                            || slot != PhysicalAttemptSlot::Empty
+                        {
+                            GuardedTransition::Fenced
+                        } else if done {
+                            GuardedTransition::Removed
+                        } else {
+                            GuardedTransition::Applied(DispatchTransition {
+                                state: crate::DispatchState::Awaiting,
+                                ..state
+                            })
+                        };
+                        assert_eq!(state.settle(epoch, done, slot), expected);
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -614,8 +710,14 @@ mod tests {
         assert!(revoked_lease);
         assert_eq!(cancelled.state, crate::DispatchState::Pending);
         assert_eq!(cancelled.lease_epoch, 9);
-        assert_eq!(old.settle(8, true), GuardedTransition::Removed);
-        assert_eq!(cancelled.settle(8, true), GuardedTransition::Fenced);
+        assert_eq!(
+            old.settle(8, true, PhysicalAttemptSlot::Empty),
+            GuardedTransition::Removed
+        );
+        assert_eq!(
+            cancelled.settle(8, true, PhysicalAttemptSlot::Empty),
+            GuardedTransition::Fenced
+        );
         assert_eq!(
             cancelled.cancel().unwrap(),
             CancelTransition::Applied {
@@ -728,8 +830,8 @@ mod proofs {
             slot.permits_settlement(),
             slot == PhysicalAttemptSlot::Empty
         );
-        let begin = begin_physical_attempt(current, slot);
-        let handoff = handoff_physical_attempt(current, slot);
+        let begin = begin_physical_attempt(current, slot, false);
+        let handoff = handoff_physical_attempt(current, slot, false);
         let finish = finish_physical_attempt(slot);
 
         // Normalization rule: continuation changes only the disposition of a
@@ -767,6 +869,45 @@ mod proofs {
     }
 
     #[kani::proof]
+    fn thread_physical_peer_vetoes_begin_and_handoff() {
+        // P1 current/stale, P2 all four slot shapes, P3 begin/handoff,
+        // P4 peer absent/present. A peer can only restrict admission; it never
+        // changes stale/corrupt classification and never becomes Clear.
+        let current = kani::any();
+        let slot = arbitrary_physical_slot();
+        let handoff = kani::any();
+        let peer = kani::any();
+        let base = if handoff {
+            handoff_physical_attempt(current, slot, false)
+        } else {
+            begin_physical_attempt(current, slot, false)
+        };
+        let result = if handoff {
+            handoff_physical_attempt(current, slot, peer)
+        } else {
+            begin_physical_attempt(current, slot, peer)
+        };
+        if !peer {
+            assert_eq!(result, base);
+        } else {
+            assert!(!matches!(
+                result,
+                PhysicalAttemptTransition::Install
+                    | PhysicalAttemptTransition::Replace
+                    | PhysicalAttemptTransition::Stutter
+            ));
+        }
+        assert_eq!(
+            result == PhysicalAttemptTransition::Fenced,
+            base == PhysicalAttemptTransition::Fenced
+        );
+        assert_eq!(
+            result == PhysicalAttemptTransition::Corrupt,
+            base == PhysicalAttemptTransition::Corrupt
+        );
+    }
+
+    #[kani::proof]
     fn physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair() {
         let owner_present = kani::any::<bool>();
         let epoch_present = kani::any::<bool>();
@@ -795,7 +936,7 @@ mod proofs {
         let stale_epoch = kani::any();
         kani::assume(stale_epoch != state.lease_epoch);
         assert_eq!(
-            state.settle(stale_epoch, kani::any()),
+            state.settle(stale_epoch, kani::any(), PhysicalAttemptSlot::Empty),
             GuardedTransition::Fenced
         );
         assert_eq!(
@@ -812,8 +953,12 @@ mod proofs {
     fn exact_dispatch_settlement_is_terminal_or_awaiting_only() {
         let state = arbitrary_transition();
         let done = kani::any();
-        let result = state.settle(state.lease_epoch, done);
-        if state.state != crate::DispatchState::Leased {
+        // S1 exact claim + empty slot => ordinary settlement; S2 any occupied
+        // or corrupt slot => fenced, regardless of logical outcome. Exercise
+        // the same joint production decision used by all stores.
+        let slot = arbitrary_physical_slot();
+        let result = state.settle(state.lease_epoch, done, slot);
+        if state.state != crate::DispatchState::Leased || slot != PhysicalAttemptSlot::Empty {
             assert_eq!(result, GuardedTransition::Fenced);
         } else if done {
             assert_eq!(result, GuardedTransition::Removed);
@@ -867,7 +1012,11 @@ mod proofs {
                     );
                     assert_eq!(cancelled.lease_epoch, state.lease_epoch + 1);
                     assert_eq!(
-                        cancelled.settle(state.lease_epoch, kani::any()),
+                        cancelled.settle(
+                            state.lease_epoch,
+                            kani::any(),
+                            PhysicalAttemptSlot::Empty
+                        ),
                         GuardedTransition::Fenced
                     );
                     assert_eq!(

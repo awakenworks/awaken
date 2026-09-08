@@ -328,6 +328,11 @@ pub(crate) fn converged_dispatch_bundle() -> Result<MigrationBundle, MigrationEr
                 PHYSICAL_ATTEMPT_SLOT_POSTGRES.trim(),
                 PHYSICAL_ATTEMPT_SLOT_SQLITE.trim(),
             )?,
+            portable_migration(
+                3,
+                "V0003__one_physical_attempt_per_thread.sql",
+                include_str!("migrations/V0003__one_physical_attempt_per_thread.sql"),
+            )?,
         ],
     )
 }
@@ -512,7 +517,7 @@ mod tests {
                 .iter()
                 .map(|migration| migration.version)
                 .collect::<Vec<_>>(),
-            [1, 2],
+            [1, 2, 3],
             "S1/E1"
         );
         for (table, column) in [
@@ -582,6 +587,106 @@ mod tests {
         // prefix -> only its suffix; D3 duplicate/gap -> bundle rejection.
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
         assert_eq!(versions, (1..=27).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn physical_thread_constraint_preserves_history_and_rejects_conflicting_upgrade() {
+        use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
+        use rusqlite::Connection;
+        // Causes: C1 compact/expanded history; C2 clean/duplicate occupied
+        // Thread at V2; C3 empty/occupied peer, same/different Thread at V3.
+        // Effects: M1 clean history upgrades and reopens; M2 corrupt history
+        // rejects V3 without deleting evidence or recording success; M3 V3
+        // rejects a second owner regardless of status; M4 empty and unrelated
+        // rows remain allowed. No data "repair" is hidden in this migration.
+        for history in [
+            dispatch_bundle().unwrap(),
+            expanded_dispatch_bundle().unwrap(),
+        ] {
+            for conflicting in [false, true] {
+                let conn = Connection::open_in_memory().unwrap();
+                let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
+                runner.run_bundle(&conn, &history).unwrap();
+                let full = converged_dispatch_bundle().unwrap();
+                let old =
+                    MigrationBundle::new(CONVERGED_BUNDLE_ID, full.migrations()[..2].to_vec())
+                        .unwrap();
+                runner.run_bundle(&conn, &old).unwrap();
+                conn.execute_batch(
+                    "INSERT INTO runtime_dispatch
+                    (run_id, thread_id, request, status, active_attempt_owner, active_attempt_epoch)
+                    VALUES ('a', 't', '{}', 'pending', 'a', 1);
+                    INSERT INTO runtime_dispatch (run_id, thread_id, request, status)
+                    VALUES ('b', 't', '{}', 'pending'), ('c', 'other', '{}', 'pending');",
+                )
+                .unwrap();
+                if conflicting {
+                    conn.execute(
+                        "UPDATE runtime_dispatch SET active_attempt_owner='b',
+                        active_attempt_epoch=2 WHERE run_id='b'",
+                        [],
+                    )
+                    .unwrap();
+                    assert!(runner.run_bundle(&conn, &full).is_err(), "M2");
+                    let retained: i64 = conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM runtime_dispatch
+                        WHERE active_attempt_owner IS NOT NULL",
+                            [],
+                            |r| r.get(0),
+                        )
+                        .unwrap();
+                    assert_eq!(retained, 2, "M2 neither owner erased");
+                    let applied: i64 = conn
+                        .query_row(
+                            "SELECT MAX(version) FROM runtime_schema_migrations
+                        WHERE bundle_id=?1",
+                            [CONVERGED_BUNDLE_ID],
+                            |r| r.get(0),
+                        )
+                        .unwrap();
+                    assert_eq!(applied, 2, "M2 no success receipt");
+                } else {
+                    runner.run_bundle(&conn, &full).unwrap();
+                    assert!(runner.run_bundle(&conn, &full).unwrap().is_empty(), "M1");
+                    assert!(
+                        conn.execute(
+                            "UPDATE runtime_dispatch SET active_attempt_owner='b',
+                        active_attempt_epoch=2 WHERE run_id='b'",
+                            []
+                        )
+                        .is_err(),
+                        "M3"
+                    );
+                    assert_eq!(
+                        conn.execute(
+                            "UPDATE runtime_dispatch SET active_attempt_owner='c',
+                        active_attempt_epoch=1 WHERE run_id='c'",
+                            []
+                        )
+                        .unwrap(),
+                        1,
+                        "M4"
+                    );
+                    conn.execute(
+                        "UPDATE runtime_dispatch SET active_attempt_owner=NULL,
+                        active_attempt_epoch=NULL WHERE run_id='a'",
+                        [],
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        conn.execute(
+                            "UPDATE runtime_dispatch SET active_attempt_owner='b',
+                        active_attempt_epoch=2 WHERE run_id='b'",
+                            []
+                        )
+                        .unwrap(),
+                        1,
+                        "M3 after release"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -802,9 +802,14 @@ impl MemoryDispatchStore {
     ) -> Result<AttemptAdmission, DispatchError> {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-        let Some(row) = state.rows.get_mut(&claim.run_id) else {
+        let Some(row) = state.rows.get(&claim.run_id) else {
             return Ok(AttemptAdmission::Fenced);
         };
+        let peer_occupied = state.rows.iter().any(|(id, peer)| {
+            id != &claim.run_id
+                && peer.request.thread_id() == row.request.thread_id()
+                && peer.active_attempt.is_some()
+        });
         let current = row.state == DispatchState::Leased
             && row.lease_epoch == claim.epoch
             && row
@@ -816,13 +821,21 @@ impl MemoryDispatchStore {
             Some(active) if active == claim => PhysicalAttemptSlot::ExactClaim,
             Some(_) => PhysicalAttemptSlot::OtherClaim,
         };
-        let (transition, admission) =
-            crate::dispatch::decide_physical_attempt_admission(current, slot, handoff)?;
+        let (transition, admission) = crate::dispatch::decide_physical_attempt_admission(
+            current,
+            slot,
+            handoff,
+            peer_occupied,
+        )?;
         if matches!(
             transition,
             PhysicalAttemptTransition::Install | PhysicalAttemptTransition::Replace
         ) {
-            row.active_attempt = Some(claim.clone());
+            state
+                .rows
+                .get_mut(&claim.run_id)
+                .expect("locked row")
+                .active_attempt = Some(claim.clone());
         }
         Ok(admission)
     }
@@ -1559,19 +1572,15 @@ impl DispatchQueue for MemoryDispatchStore {
         // owner (lower epoch, or a gone row) changes nothing — the reclaimer's
         // in-flight state is inviolate.
         let Some((transition, lease)) = state.rows.get(run_id).and_then(|row| {
-            if !PhysicalAttemptSlot::from_facts(
+            let slot = PhysicalAttemptSlot::from_facts(
                 row.active_attempt.is_some(),
                 row.active_attempt.is_some(),
                 false,
                 false,
-            )
-            .permits_settlement()
-            {
-                return None;
-            }
+            );
             let transition = row
                 .transition()
-                .settle(epoch, outcome == DispatchOutcome::Done);
+                .settle(epoch, outcome == DispatchOutcome::Done, slot);
             row.lease.clone().map(|lease| (transition, lease))
         }) else {
             return Ok(SettleOutcome::Fenced);

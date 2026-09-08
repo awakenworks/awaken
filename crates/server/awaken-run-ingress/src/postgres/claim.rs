@@ -1,5 +1,28 @@
 // PostgreSQL exact-claim transaction kernels. These remain private helpers of
 // the parent adapter and do not introduce a second claim policy.
+async fn lock_dispatch_thread(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    run_id: &RunId,
+) -> Result<Option<String>, DispatchError> {
+    let thread: Option<String> = sqlx::query_scalar(&format!(
+        "SELECT thread_id FROM {NS}_dispatch WHERE run_id = $1"
+    ))
+    .bind(&run_id.0)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(store_error)?;
+    if let Some(thread) = &thread {
+        // One Thread-before-row ordering for claim and physical admission.
+        // Hash collisions only over-serialize; unique indexes remain backstops.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(thread)
+            .execute(&mut **tx)
+            .await
+            .map_err(store_error)?;
+    }
+    Ok(thread)
+}
+
 async fn claim_exact_transaction(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     requested_run: &RunId,
@@ -56,24 +79,9 @@ async fn claim_exact_transaction_with_mode(
     mode: ExactClaimMode,
 ) -> Result<Option<Claimed>, DispatchError> {
     let p = NS;
-    let thread_id = sqlx::query_scalar::<_, String>(&format!(
-        "SELECT thread_id FROM {p}_dispatch WHERE run_id = $1"
-    ))
-    .bind(&requested_run.0)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(store_error)?;
-    let Some(thread_id) = thread_id else {
+    let Some(_) = lock_dispatch_thread(tx, requested_run).await? else {
         return Ok(None);
     };
-    // The partial unique index remains the hard backstop, while this transaction
-    // lock orders all claim transitions for one Thread before the eligibility
-    // recheck. Hash collisions only over-serialize unrelated Threads.
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-        .bind(&thread_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(store_error)?;
     let thread_available = thread_available_for_claim(p);
     let no_running_peer = no_running_peer(p);
     let eligibility = match mode {

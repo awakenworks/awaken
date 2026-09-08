@@ -413,6 +413,34 @@ ResolutionFairness ==
 
 Spec == Init /\ [][Next]_vars /\ ResolutionFairness
 
+\* Cancellation changes only the canonical Dispatch kernel, never the
+\* physical slot or external invocation. The cancellation slice deliberately
+\* makes no unconditional liveness claim after claim revocation.
+CancelRun(run) ==
+    /\ \/ /\ run = RootRun
+          /\ RootIngress!Cancel
+          /\ UNCHANGED <<childAVars, childBVars>>
+       \/ /\ run = ChildRunA
+          /\ ChildAIngress!Cancel
+          /\ UNCHANGED <<rootVars, childBVars>>
+       \/ /\ run = ChildRunB
+          /\ ChildBIngress!Cancel
+          /\ UNCHANGED <<rootVars, childAVars>>
+    /\ UNCHANGED protocolVars
+
+CancellationNext == Next \/ (\E run \in Runs: CancelRun(run))
+CancellationSpec == Init /\ [][CancellationNext]_vars
+
+\* A reduced interleaving slice fixes the independent root and store clock,
+\* but retains both child Runs, both Workers and cancellation's second epoch.
+CancellationSlice == rootState = "Reserved" /\ activityEpoch[RootRun] = 0
+                    /\ workNow = 0
+NoCancelledPeerClaim ==
+    ~\E old, next \in Runs:
+        /\ old # next /\ RunThread(old) = RunThread(next)
+        /\ old \in executionStarted /\ DState(old) = "Pending"
+        /\ DState(next) = "Leased"
+
 ConflictedRunsNeverExecute == executionStarted \intersect ConflictedRuns = {}
 NoConflictedRunHasSettled == \A run \in ConflictedRuns: DState(run) # "Removed"
 ConflictedChildCommitEventuallySettles ==
