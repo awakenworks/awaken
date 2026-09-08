@@ -427,7 +427,7 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
                 .map_err(storage)
         })
         .transpose()?;
-        if current_source != pending.before_source || current_child != pending.before_credential {
+        if !pending.is_unpublished_at(current_source.as_ref(), current_child.as_ref()) {
             return Err(CredentialError::MutationConflict(
                 "Managed credential changed before its mutation was prepared".into(),
             ));
@@ -556,7 +556,7 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
             tx.commit().await.map_err(storage)?;
             return Ok(durable);
         }
-        if current_source != pending.before_source || current_child != pending.before_credential {
+        if !pending.is_unpublished_at(current_source.as_ref(), current_child.as_ref()) {
             return Err(ManagedCredentialMutationError::RevisionConflict);
         }
         let existing = sqlx::query(&format!(

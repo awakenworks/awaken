@@ -396,15 +396,123 @@ pub fn managed_rollout_from_committed(
     })
 }
 
-#[must_use]
-#[cfg(kani)]
-const fn managed_rollout_publish_allowed(
-    pair_committed: bool,
-    is_create: bool,
-    exact_source_fence: bool,
-    exact_child_fence: bool,
-) -> bool {
-    pair_committed && !is_create && exact_source_fence && exact_child_fence
+#[cfg(any(test, kani))]
+mod publication_proofs {
+    use super::*;
+    use crate::catalog::ManagedCredentialAuth;
+
+    fn pending() -> PendingManagedCredentialMutation {
+        // Distinct field identities expose swapped projections. This fixture
+        // is a value input, never a replacement publication implementation.
+        PendingManagedCredentialMutation {
+            material_fence: CredentialMaterialMutationFence {
+                format_version: 1,
+                phase: CredentialMaterialMutationPhase::Ready,
+                ..Default::default()
+            },
+            operation_id: "e".into(),
+            operation: ManagedCredentialOperation::Create,
+            before_source: None,
+            before_credential: None,
+            after_source: CredentialSource {
+                id: CredentialSourceId("s".into()),
+                workspace_id: "w".into(),
+                kind: crate::CredentialKind::Vault,
+                replacement_of: None,
+                descriptor: None,
+                provider_id: None,
+                protocol_endpoint_id: None,
+                env_key: None,
+                material_ref: None,
+                auxiliary_material_refs: Default::default(),
+                oauth_command: None,
+                worker_local_binding: None,
+                status: CredentialStatus::Active,
+                version: 1,
+            },
+            after_credential: ManagedVaultCredential {
+                id: "c".into(),
+                vault_id: "v".into(),
+                workspace_id: "w".into(),
+                source_id: CredentialSourceId("s".into()),
+                auth: ManagedCredentialAuth::StaticBearer {
+                    mcp_server_url: "https://mcp.example.test".into(),
+                },
+                metadata: Default::default(),
+                display_name: None,
+                revision: 1,
+                lifecycle: ManagedCredentialLifecycle::Active,
+            },
+        }
+    }
+
+    #[test]
+    fn proof_creation_fixture_is_admitted_by_production_validation() {
+        // Non-vacuity: the fixed Create fixture used by the presence proof
+        // must satisfy actual command validation, not only an abstract shape.
+        pending().validate_for_begin().unwrap();
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn managed_creation_begin_rejects_every_published_identity() {
+        // C1/C2 independently present current source/child. A creation has
+        // no predecessor pair. R1 both absent => admit; R2 either or both
+        // present => reject. Call the same typed comparator used under the
+        // in-memory/SQLite/PostgreSQL transaction, not a cfg(kani) predicate.
+        // Presence is exhaustive; payload identities are the fixed fixture.
+        // validate_for_begin, database read truth and locking remain separate.
+        let pending = pending();
+        let source_present = kani::any::<bool>();
+        let child_present = kani::any::<bool>();
+        let source = source_present.then_some(&pending.after_source);
+        let child = child_present.then_some(&pending.after_credential);
+        assert_eq!(
+            pending.is_unpublished_at(source, child),
+            !(source_present || child_present)
+        );
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn managed_rollout_projection_preserves_committed_identity() {
+        // C1 all four operations; C2 full signed source revision; C3 full
+        // unsigned child revision. R1 Create => no event; R2 other operations
+        // => exactly the committed identity/payload, with the existing zero
+        // fallback for invalid signed revisions. Distinct fixed identity
+        // strings detect crossed fields; arbitrary strings and transaction
+        // atomicity are not inferred from this value-constructor proof.
+        let mut pending = pending();
+        pending.operation = match kani::any::<u8>() % 4 {
+            0 => ManagedCredentialOperation::Create,
+            1 => ManagedCredentialOperation::Update,
+            2 => ManagedCredentialOperation::Archive,
+            _ => ManagedCredentialOperation::Delete,
+        };
+        pending.after_source.version = kani::any();
+        pending.after_credential.revision = kani::any();
+        let event = managed_rollout_from_committed(&pending);
+        assert_eq!(
+            event.is_none(),
+            pending.operation == ManagedCredentialOperation::Create
+        );
+        if let Some(event) = event {
+            assert_eq!(event.id, "e");
+            assert_eq!(event.workspace_id, "w");
+            assert_eq!(event.vault_id, "v");
+            assert_eq!(event.credential_id, "c");
+            assert_eq!(event.source_id.0, "s");
+            assert_eq!(event.operation, pending.operation);
+            assert_eq!(event.credential_revision, pending.after_credential.revision);
+            if pending.after_source.version >= 0 {
+                assert_eq!(event.source_version, pending.after_source.version as u64);
+            } else {
+                assert_eq!(event.source_version, 0);
+            }
+        }
+    }
 }
 
 #[must_use]
@@ -444,12 +552,6 @@ const fn managed_mutation_operation_shape_allowed(
         _ => false,
     };
     operation_matches && (!before_child_deleted || after_child_deleted)
-}
-
-#[must_use]
-#[cfg(kani)]
-const fn managed_creation_begin_allowed(source_published: bool, child_published: bool) -> bool {
-    !source_published && !child_published
 }
 
 impl PendingManagedCredentialMutation {
@@ -788,18 +890,6 @@ fn managed_creation_pair_requires_every_binding_axis() {
 
 #[cfg(kani)]
 #[kani::proof]
-fn managed_creation_begin_rejects_every_published_identity() {
-    let source_published = kani::any::<bool>();
-    let child_published = kani::any::<bool>();
-    let admitted = managed_creation_begin_allowed(source_published, child_published);
-    assert_eq!(admitted, !(source_published || child_published));
-    if admitted {
-        assert!(!source_published && !child_published);
-    }
-}
-
-#[cfg(kani)]
-#[kani::proof]
 fn managed_mutation_operation_shape_is_closed_and_delete_is_absorbing() {
     let operation = kani::any::<u8>();
     let before_deleted = kani::any::<bool>();
@@ -1084,26 +1174,6 @@ pub async fn reconcile_managed_vault_deletions(
         }
     }
     first_error.map_or(Ok(completed), Err)
-}
-
-#[cfg(kani)]
-#[kani::proof]
-fn managed_rollout_never_precedes_exact_pair_publication() {
-    let pair_committed = kani::any::<bool>();
-    let is_create = kani::any::<bool>();
-    let exact_source_fence = kani::any::<bool>();
-    let exact_child_fence = kani::any::<bool>();
-    let published = managed_rollout_publish_allowed(
-        pair_committed,
-        is_create,
-        exact_source_fence,
-        exact_child_fence,
-    );
-    if published {
-        assert!(pair_committed);
-        assert!(!is_create);
-        assert!(exact_source_fence && exact_child_fence);
-    }
 }
 
 /// Write-only Managed creation command. Plaintext is consumed by the
