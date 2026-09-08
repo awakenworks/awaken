@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import {
   cargoArguments,
   cargoExecutable,
+  cargoExecutionBundle,
   cargoScenarioHostBundle,
   checkoutLocalCargoEnvironment,
   parseCargoExecutable,
@@ -330,4 +331,38 @@ test('exhaustively checks build/copy/cancel interleavings and rejects shared-out
   assert.ok(correct.states > 20);
   assert.equal(explore(true).violation, true, 'M1 shared outputs must be rejected');
   assert.equal(explore(false, true).violation, true, 'M2 cross-owner cleanup must be rejected');
+});
+
+// Production bundle cause/effect table:
+// C1 cold source or prebuilt host; C2 companion present/missing; C3 hand feature.
+// B3 cold source -> build both exact binaries, hand enabled, colocated output.
+// B4 prebuilt+missing -> fail before process startup, never restart-loop a Worker.
+// B5 prebuilt+present -> reuse the qualified pair without invoking Cargo.
+// Compile tiny real fixture crates to verify command selection and feature bytes;
+// actual product E2E owns namespace startup and execution capability validation.
+test('production fixtures prepare the complete execution bundle on a cold checkout', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'production-bundle-'));
+  try {
+    fs.writeFileSync(path.join(temp, 'Cargo.toml'), '[workspace]\nmembers=["host","companion"]\nresolver="2"\n');
+    for (const [directory, packageName, binary, body] of [
+      ['host', 'awaken-cli', 'awaken', 'fn main() { println!("host"); }'],
+      ['companion', 'awaken-sandbox', 'awaken-sandbox', 'fn main() { println!("{}", cfg!(feature="hand")); }'],
+    ]) {
+      fs.mkdirSync(path.join(temp, directory, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(temp, directory, 'Cargo.toml'),
+        `[package]\nname="${packageName}"\nversion="0.0.0"\nedition="2021"\n[[bin]]\nname="${binary}"\npath="src/main.rs"\n[features]\nhand=[]\n`);
+      fs.writeFileSync(path.join(temp, directory, 'src/main.rs'), body);
+    }
+    const environment = { ...withoutAmbientProviderKeys(process.env), RUSTC_WRAPPER: '',
+      CARGO_TARGET_DIR: path.join(temp, 'target'), CARGO_BUILD_BUILD_DIR: path.join(temp, 'cache') };
+    const options = { cwd: temp, environment, packageName: 'awaken-cli', targetName: 'awaken' };
+    const bundle = cargoExecutionBundle(options);
+    assert.equal(path.dirname(bundle.executable), path.dirname(bundle.handCompanion), 'B3');
+    assert.equal(spawnSync(bundle.executable, [], { encoding: 'utf8' }).stdout.trim(), 'host');
+    assert.equal(spawnSync(bundle.handCompanion, [], { encoding: 'utf8' }).stdout.trim(), 'true');
+    const prebuilt = { ...options, environment: { PATH: '', FIXTURE_HOST: bundle.executable }, prebuiltEnvironmentName: 'FIXTURE_HOST' };
+    assert.deepEqual(cargoExecutionBundle(prebuilt), bundle, 'B5');
+    fs.unlinkSync(bundle.handCompanion);
+    assert.throws(() => cargoExecutionBundle(prebuilt), /requires sibling execution companion/, 'B4');
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
 });
