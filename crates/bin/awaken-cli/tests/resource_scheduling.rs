@@ -50,7 +50,6 @@ impl ContainerEnvironmentProvider for RecordingProvider {
             enforced_network_allowlist: true,
             secret_egress_substitution: true,
             resource_limits: true,
-            process_tree_supervision: false,
             custom_rootfs: true,
             package_provisioning: true,
             control_services: Default::default(),
