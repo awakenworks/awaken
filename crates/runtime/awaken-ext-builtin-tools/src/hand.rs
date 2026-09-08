@@ -493,7 +493,7 @@ impl Tool for ReadTool {
     type Args = ReadArgs;
     type Output = String;
     const ID: &'static str = "read";
-    const DESCRIPTION: &'static str = "Read a file";
+    const DESCRIPTION: &'static str = "Read a UTF-8 text file, including Markdown instructions, SKILL.md, CSV, source code and scripts. Use the given file_path directly; no shell cat, head, encoding probe or path lookup is needed for a known text file. Omit view_range to receive the complete file within the environment's file-size limit; use view_range only when a partial read is intended. This tool does not decode images, PDF or Office binary formats; use an appropriate document or OCR tool for those files.";
 
     async fn call(&self, args: ReadArgs) -> Result<String, ToolError> {
         if args.path.is_empty() {
