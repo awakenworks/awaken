@@ -35,7 +35,10 @@ use awaken_agent_contract::RedactedString;
 pub use awaken_agent_contract::StructuredCredentialMaterial;
 
 /// Opaque handle into a [`SecretStore`]. Never the secret itself.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+/// Byte-lexical identity order is also the deterministic material cleanup order.
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(transparent)]
 pub struct SecretRef(pub String);

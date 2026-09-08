@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{CredentialError, CredentialSource};
@@ -150,6 +150,40 @@ impl CredentialMaterialMutationFence {
         Ok(Some(claimed))
     }
 
+    /// Project both envelopes through one material-membership/attempt rule.
+    /// A retained reference is not a new write, regardless of its slot or suffix.
+    /// Empty deltas are bound only when the attempt itself is nonempty; fresh
+    /// and recovery validation consume these facts with their existing rules.
+    pub(super) fn material_input_facts(
+        &self,
+        before: Option<&CredentialSource>,
+        after: &CredentialSource,
+    ) -> (bool, bool) {
+        // Membership needs no temporary Vec/sort from BTreeSet::from_iter.
+        let mut before_refs = BTreeSet::new();
+        before_refs.extend(before.into_iter().flat_map(CredentialSource::material_refs));
+        let mut new_refs = after
+            .material_refs()
+            .filter(|reference| !before_refs.contains(reference));
+        let Some(first_new) = new_refs.next() else {
+            return (false, !self.attempt_id().is_empty());
+        };
+        // Keep the first delta item instead of traversing its prefix again to
+        // derive the second fact. Both facts consume one membership traversal.
+        // Check the exact suffix without allocating a formatted copy of the
+        // attempt. strip_suffix keeps near-matching attempt prefixes distinct.
+        let bound_to_attempt = |reference: &crate::SecretRef| {
+            reference
+                .0
+                .strip_suffix(self.attempt_id())
+                .is_some_and(|prefix| prefix.ends_with(":attempt:"))
+        };
+        let new_refs_bound_to_attempt = !self.attempt_id().is_empty()
+            && bound_to_attempt(first_new)
+            && new_refs.all(bound_to_attempt);
+        (true, new_refs_bound_to_attempt)
+    }
+
     pub(super) fn validate(
         &self,
         writes_new_material: bool,
@@ -293,7 +327,7 @@ pub(super) fn namespace_new_material_refs(
         .into_iter()
         .flat_map(CredentialSource::material_refs)
         .cloned()
-        .collect::<HashSet<_>>();
+        .collect::<BTreeSet<_>>();
     let suffix = format!(":attempt:{attempt_id}");
     if let Some(reference) = after.material_ref.as_mut()
         && !before_refs.contains(reference)
@@ -325,7 +359,7 @@ pub(super) fn fence_material_writes<T>(
     let before_refs = before
         .into_iter()
         .flat_map(CredentialSource::material_refs)
-        .collect::<HashSet<_>>();
+        .collect::<BTreeSet<_>>();
     let suffix = format!(":attempt:{}", material_fence.attempt_id());
     for (reference, _) in materials {
         let fenced = if reference.0.ends_with(&suffix) {
@@ -423,6 +457,160 @@ pub(super) fn credential_material_now_unix_ms() -> Result<u64, CredentialError> 
         .as_millis();
     u64::try_from(millis)
         .map_err(|_| CredentialError::Storage("credential clock overflowed u64".into()))
+}
+
+#[cfg(any(test, kani))]
+mod material_input_proofs {
+    use super::*;
+
+    // Indices are a reference oracle, not another production membership path.
+    // 0 absent; 1 unbound; 2/3 bound to a; 4 foreign attempt; 5 prefix-only match.
+    fn reference(index: u8) -> Option<crate::SecretRef> {
+        // Allocate each literal before merging the branches: the same six
+        // classes avoid symbolic allocation lengths in the bounded heap proof.
+        let value = match index {
+            0 => return None,
+            1 => String::from("r"),
+            2 => String::from("r:attempt:a"),
+            3 => String::from("s:attempt:a"),
+            4 => String::from("r:attempt:b"),
+            5 => String::from("r:attempt:aa"),
+            _ => unreachable!("reference index outside the decision table"),
+        };
+        Some(crate::SecretRef(value))
+    }
+
+    fn source_with_slots(slots: [u8; 2]) -> CredentialSource {
+        let mut source = super::super::publication_proofs::source();
+        source.material_ref = reference(slots[0]);
+        if let Some(reference) = reference(slots[1]) {
+            source.auxiliary_material_refs.insert("k".into(), reference);
+        }
+        source
+    }
+
+    fn check_case(slots: [u8; 4], has_before: bool, has_attempt: bool) {
+        // Causes: independent primary/auxiliary slots on both rows, absent
+        // predecessor, absent attempt, retained/moved/duplicate references,
+        // bound/foreign/prefix-only suffix. Effects: new-write and exact-bound
+        // facts. R1 only after-minus-before is new, regardless of slot; R2
+        // all new refs must bind to the nonempty attempt; R3 empty delta is
+        // vacuously bound only with a nonempty attempt. The indexed oracle
+        // never calls BTreeSet, material_refs, strip_suffix or ends_with from production.
+        let before = has_before.then(|| source_with_slots([slots[0], slots[1]]));
+        let after = source_with_slots([slots[2], slots[3]]);
+        let fence = CredentialMaterialMutationFence {
+            attempt_id: if has_attempt {
+                "a".into()
+            } else {
+                String::new()
+            },
+            ..Default::default()
+        };
+        let mut expected_new = false;
+        let mut expected_bound = has_attempt;
+        for index in [slots[2], slots[3]] {
+            let is_new = index != 0 && (!has_before || (index != slots[0] && index != slots[1]));
+            expected_new |= is_new;
+            if is_new && index != 2 && index != 3 {
+                expected_bound = false;
+            }
+        }
+        assert_eq!(
+            fence.material_input_facts(before.as_ref(), &after),
+            (expected_new, expected_bound)
+        );
+    }
+
+    #[test]
+    fn material_input_facts_cover_slots_retention_and_attempt_binding() {
+        for encoded in 0..1296u16 {
+            let slots = [
+                (encoded % 6) as u8,
+                ((encoded / 6) % 6) as u8,
+                ((encoded / 36) % 6) as u8,
+                ((encoded / 216) % 6) as u8,
+            ];
+            for has_before in [false, true] {
+                for has_attempt in [false, true] {
+                    check_case(slots, has_before, has_attempt);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn borrowed_binding_matches_the_physical_namespace_for_variable_tokens() {
+        // Causes: empty, short, UUID-shaped, separator-bearing and Unicode
+        // attempt ids; exact/missing/near suffix; candidate first or after a
+        // valid reference. R1 any new reference => writes; R2 empty attempt =>
+        // unbound; R3 every new ref must match the exact physical namespace.
+        // The oracle uses the existing namespace wire grammar and ends_with,
+        // independently of the production strip_suffix + separator decision.
+        for attempt in [
+            "",
+            "a",
+            "aa",
+            "0123456789abcdef0123456789abcdef",
+            ":attempt:",
+            "é",
+            "🗝",
+        ] {
+            let suffix = format!(":attempt:{attempt}");
+            let canonical = format!("valid{suffix}");
+            for candidate in [
+                format!("candidate{suffix}"),
+                format!("candidate{suffix}x"),
+                format!("candidate:attemptX:{attempt}"),
+                format!("candidate{suffix}{suffix}"),
+                attempt.to_owned(),
+                String::new(),
+            ] {
+                let expected = !attempt.is_empty() && candidate.ends_with(&suffix);
+                for candidate_first in [false, true] {
+                    let mut after = source_with_slots([0, 0]);
+                    let (primary, auxiliary) = if candidate_first {
+                        (&candidate, &canonical)
+                    } else {
+                        (&canonical, &candidate)
+                    };
+                    after.material_ref = Some(crate::SecretRef(primary.clone()));
+                    after
+                        .auxiliary_material_refs
+                        .insert("k".into(), crate::SecretRef(auxiliary.clone()));
+                    let fence = CredentialMaterialMutationFence {
+                        attempt_id: attempt.into(),
+                        ..Default::default()
+                    };
+                    assert_eq!(fence.material_input_facts(None, &after), (true, expected));
+                }
+            }
+        }
+    }
+
+    #[cfg(kani)]
+    fn check_partition<const HAS_BEFORE: bool>() {
+        // The no-predecessor proof retains all six classes in both candidate
+        // slots and both attempt states. The shared executable table also
+        // covers predecessor presence; that heap proof remains outstanding.
+        // The proof calls the actual production implementation without stubs.
+        // Arbitrary strings/collection sizes and external material IO remain
+        // outside this bounded heap proof. Collection loops use unwind 3; CI
+        // gives builtin memcmp its own bound 16 for the longer attempt suffix.
+        // Every loop retains its unwinding assertion.
+        let slots: [u8; 4] = kani::any();
+        // Direct tuple constraints avoid increasing every collection loop's
+        // bound merely to iterate over the four independent input indices.
+        kani::assume(slots[0] < 6 && slots[1] < 6 && slots[2] < 6 && slots[3] < 6);
+        check_case(slots, HAS_BEFORE, kani::any());
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn credential_material_input_facts_without_predecessor() {
+        check_partition::<false>();
+    }
 }
 
 #[cfg(test)]

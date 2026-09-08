@@ -472,6 +472,35 @@ proof-only boolean predicates were removed; both complete transaction
 obligations retain abstract-model grades until production composition closes.
 
 The Source and Managed creation envelopes share `CredentialMaterialMutationFence`.
+Its material-input projection is also shared by both fresh-command and durable
+validation paths, replacing four copies of reference-set/attempt-suffix logic.
+Material lifecycle sets use the byte-lexical order derived by `SecretRef`, so
+cleanup's ordered union already supplies unique sorted deletion references;
+the former HashSet-plus-Vec-sort path is removed.
+The input projection extends its predecessor set directly, without the
+FromIterator temporary Vec/sort, and consumes the new-reference iterator once
+for both facts. Exact suffix checks borrow the attempt and fixed separator,
+without allocating a formatted suffix. The no-predecessor Kani harness executes
+the actual BTreeSet/BTreeMap/String projection with primary and one auxiliary
+candidate slot, six reference classes and optional attempt. The corresponding
+heap proof with a predecessor remains outstanding. Collection loops use unwind 3
+and builtin memcmp uses 16; every unwinding assertion remains enabled. The executable
+oracle covers 5,184 input rows across both predecessor states, including slot migration, duplicates,
+retained refs, mixed valid/foreign refs and near-matching suffixes. No set or
+comparison stubs are used. A separate executable table checks first and later
+references against the physical namespace grammar for empty, UUID-shaped,
+separator-bearing and Unicode attempt ids; it does not widen the Kani bound.
+The cleanup decision table also asserts the exact
+unique lexical delete sequence, including aliases across slots. Arbitrary
+strings/collection sizes, command-validation composition and external material
+IO remain outside these bounded checks.
+Source and Managed Ready recovery also share the existing candidate-read decision
+in `cleanup`: retained refs are not reopened, missing candidate material selects
+abort and unavailable reads retain the WAL for retry. Its cause/effect unit table
+includes mixed missing/unavailable candidate reads in both encounter orders;
+its existing recovery/backend tests are executable evidence, not an async
+refinement theorem or proof of SecretStore observations.
+
 Production Kani harnesses check its actual String-bearing Ready/publication/abort
 methods, preservation of all non-phase fields, and recovery dispatch at the
 exact expiry boundary. Epochs and clocks use the full `u64` domain; identities
