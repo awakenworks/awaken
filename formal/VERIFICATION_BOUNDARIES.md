@@ -223,6 +223,22 @@ type checking are valuable executable evidence, but are not formal proofs.
   queued state/no token hash and the exact MAX-1 -> MAX boundary. Schema checks
   already reject negative stored epochs. SQL locking and token entropy remain
   outside the numeric proof; expiry rules are unchanged.
+  Both durable claim adapters also consume the same refresh-age cutoff in
+  `schema.rs`. Its full-width Kani proof uses an independent signed i128 oracle:
+  absent age or age greater than now selects no cutoff; otherwise the exact
+  difference is clamped to the signed database ceiling. Equality retains
+  `Some(0)`, so a refresh at zero remains eligible. A 72-row native boundary
+  table and the same four-rule SQLite/PostgreSQL adapter table cross-check
+  absent/too-old age, the exact zero cutoff and a later refreshed lease.
+  The adjacent deadline proof calls the existing database conversion, requested
+  TTL normalization and lease-expiry functions over their full u64 domains.
+  Independent u128 arithmetic establishes the default 60 seconds, the minimum
+  requested second and the exact millisecond deadline capped to i64::MAX;
+  512 native rows cover unit-conversion and signed/unsigned overflow boundaries.
+  At the signed ceiling, a positive TTL need not be strictly in the future.
+  This proves the numeric clock rules, not SQL predicate evaluation, the
+  separate age-reclaim/claim transaction sequence, clock behavior, or complete
+  WorkQueue refinement. The exact-boundary obligation keeps its abstract grade.
 - Config CAS uses one statement owner per SQL adapter for both ordinary and
   audited writes: expected zero inserts only, positive revisions update only,
   and the returned revision is the stored `RETURNING` value. Existing `StoredU64`

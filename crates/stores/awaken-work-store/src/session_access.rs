@@ -33,11 +33,10 @@ impl SqliteWorkQueue {
         age_ms: Option<u64>,
         mint_session_access: bool,
     ) -> Result<Option<ClaimedWork>, WorkQueueError> {
-        if let Some(age) = age_ms.filter(|age| *age <= now_ms) {
+        if let Some(cutoff) = reclaim_cutoff(now_ms, age_ms) {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(storage)?;
-            let cutoff = db_millis(now_ms - age);
             tx.execute(
                 "UPDATE work_queue_item SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, lease_refreshed_ms = NULL, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
                  WHERE environment_id = ?1 AND state = 'active' AND lease_refreshed_ms IS NOT NULL AND lease_refreshed_ms <= ?2",
@@ -247,8 +246,7 @@ impl PostgresWorkQueue {
         mint_session_access: bool,
     ) -> Result<Option<ClaimedWork>, WorkQueueError> {
         self.book.record_poll(env_id, poller_id, now_ms);
-        if let Some(age) = age_ms.filter(|age| *age <= now_ms) {
-            let cutoff = db_millis(now_ms - age);
+        if let Some(cutoff) = reclaim_cutoff(now_ms, age_ms) {
             sqlx::query(
                 "UPDATE work_queue_item SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, lease_refreshed_ms = NULL, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
                  WHERE environment_id = $1 AND state = 'active' AND lease_refreshed_ms IS NOT NULL AND lease_refreshed_ms <= $2",
