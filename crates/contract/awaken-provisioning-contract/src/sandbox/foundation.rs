@@ -158,7 +158,18 @@ pub trait MemoryMounter: Send + Sync {
         store_id: &str,
         host_path: &Path,
         access: MountAccess,
-    ) -> Result<Box<dyn MemoryMount>, SandboxError>;
+    ) -> MemoryMountOutcome;
+
+    /// Reconcile an attempt whose physical outcome was not returned
+    /// authoritatively. The caller retains the exact store/path/access identity
+    /// and must not start another mount until this operation succeeds. This is
+    /// compensation for an unpublished attempt, never Copy write-back.
+    async fn recover_unknown_mount(
+        &self,
+        store_id: &str,
+        host_path: &Path,
+        access: MountAccess,
+    ) -> Result<(), SandboxError>;
 
     /// Reconcile the current files read from an adopted copy-backed sandbox.
     /// A hard process crash loses the original in-process [`MemoryMount`] guard,
@@ -175,6 +186,30 @@ pub trait MemoryMounter: Send + Sync {
         Err(SandboxError::new(
             "recovered Memory copy reconciliation is unsupported",
         ))
+    }
+}
+
+/// Typed result of the Memory effect boundary. A plain error is insufficient:
+/// after an external or kernel operation starts, losing its response must retain
+/// cleanup responsibility instead of making the path eligible for remount.
+pub enum MemoryMountOutcome {
+    /// A live participant whose teardown remains owned by the Sandbox.
+    Mounted(Box<dyn MemoryMount>),
+    /// The adapter proves that no physical effect remains.
+    NoEffect(SandboxError),
+    /// An effect may remain and the exact attempt must be recovered before retry.
+    RecoveryRequired(SandboxError),
+}
+
+impl MemoryMountOutcome {
+    /// Adapt an in-process implementation whose error paths are proven to leave
+    /// no physical effect. Production adapters must use this only when that
+    /// guarantee is part of their tested boundary contract.
+    pub fn from_no_effect(result: Result<Box<dyn MemoryMount>, SandboxError>) -> Self {
+        match result {
+            Ok(mount) => Self::Mounted(mount),
+            Err(error) => Self::NoEffect(error),
+        }
     }
 }
 

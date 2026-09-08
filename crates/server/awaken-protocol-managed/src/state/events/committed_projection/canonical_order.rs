@@ -574,23 +574,10 @@ impl ManagedState {
             .saturating_add(1);
         for (batch_index, batch) in persisted.event_batches.iter().enumerate() {
             for (ordinal, entry) in batch.events.iter().enumerate() {
-                let source_commit_cursor = if let Some(anchor) = entry.projection_anchor {
-                    anchor.source_commit_cursor
-                } else if entry.processed {
-                    // Isolated legacy lineage: rows written before projection
-                    // anchors remain visible as one fixed prefix, but are not
-                    // included in the new cross-replica ordering guarantee.
-                    0
-                } else {
+                let Some((source_commit_cursor, phase)) =
+                    inbound_admission_order(batch.admission_projection_anchor)
+                else {
                     continue;
-                };
-                let phase = match &entry.event {
-                    SessionEventCommand::ToolReply { reply, .. }
-                        if reply.answered_pending_commit_cursor.is_some() =>
-                    {
-                        110
-                    }
-                    _ => 0,
                 };
                 retain_earliest_order(
                     &mut orders,

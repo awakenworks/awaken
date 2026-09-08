@@ -34,18 +34,23 @@ fn coordinated_session(id: &str) -> PersistedSession {
 
 fn session_with_unsettled_event(id: &str) -> PersistedSession {
     let mut session = persisted(id, false, "idle");
-    session.event_batches.push(
-        awaken_session_contract::SessionEventBatch::compile(
-            id,
-            format!("batch:{id}"),
-            vec![awaken_session_contract::SessionEventInput::UserMessage {
-                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
-                    "accepted before terminal",
-                )],
-            }],
-        )
-        .expect("valid retained Event batch"),
-    );
+    let mut batch = awaken_session_contract::SessionEventBatch::compile(
+        id,
+        format!("batch:{id}"),
+        vec![awaken_session_contract::SessionEventInput::UserMessage {
+            content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                "accepted before terminal",
+            )],
+        }],
+    )
+    .expect("valid retained Event batch");
+    batch.admitted_revision = awaken_session_contract::SessionRevision(1);
+    batch
+        .anchor_admission_projection(awaken_session_contract::SessionEventProjectionAnchor {
+            source_commit_cursor: 0,
+        })
+        .unwrap();
+    session.event_batches.push(batch);
     session
 }
 

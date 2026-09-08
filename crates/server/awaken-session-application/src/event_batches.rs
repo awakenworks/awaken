@@ -437,6 +437,19 @@ impl SessionApplication {
                     "Session no longer accepts Event batches",
                 ));
             }
+            let admission_projection_anchor =
+                if matches!(admission, EventBatchAdmission::Accept { .. }) {
+                    let source_commit_cursor = self
+                        .runtime()
+                        .session_thread_recovery_snapshot(session_id, session_id)
+                        .await?
+                        .map_or(0, |snapshot| snapshot.store_cursor);
+                    Some(SessionEventProjectionAnchor {
+                        source_commit_cursor,
+                    })
+                } else {
+                    None
+                };
             let committed_revision = SessionRevision(
                 session
                     .revision
@@ -472,6 +485,11 @@ impl SessionApplication {
             }
             .map_err(|error| RunError::bad_request(error.to_string()))?;
             batch.admitted_revision = committed_revision;
+            if let Some(anchor) = admission_projection_anchor {
+                batch
+                    .anchor_admission_projection(anchor)
+                    .map_err(|error| RunError::internal(error.to_string()))?;
+            }
             if !batch.admission_closed
                 && let Some((key, request_fingerprint)) = idempotency.as_ref()
             {
