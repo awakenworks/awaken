@@ -426,6 +426,48 @@ type checking are valuable executable evidence, but are not formal proofs.
   exact-once table. SDK capture/serialization, signature authenticity,
   unbounded payloads, network and provider/LLM behavior are not proved.
 
+## Credential effect and MCP delivery evidence
+
+`CredentialEffectBoundary` expands exactness into Workspace, Session, source,
+revision, holder, trust domain, target, usage, envelope, payload, generation,
+and claim epoch. Its full configuration checks all 4,096 initial binary
+match/mismatch combinations; revision, generation and epoch may then advance
+independently. Expiry, withdrawal, crash and restart may interleave between
+preparation, materialization and receipt publication. Effect observations
+retain their original authority so later revocation cannot falsify history.
+The shared mutation runner removes each necessary guard and independently
+witnesses useful success, successor-epoch success, expired/revoked rejection,
+stale-material rejection and retained pre-revocation materialization. These
+abstract equalities do not prove resolver/crypto/transport implementation or
+instantaneous remote revocation. No new credential selector/store is modeled.
+
+`McpCredentialDelivery` proves the local post-adoption boundary: once a
+revocation transition removes the accepting attachment generation, no later MCP
+call can use that revision, and a replacement generation must rebuild the ACP
+process before it is accepted. Calls record their requested generation/source
+revision and the process, accepting route, revocation set, and delivery selection
+at effect entry. The safety oracle checks that concrete observation instead of
+a constant safe flag; later revocation cannot retroactively invalidate a legal
+call. The strict mutation runner checks wrong generation/source, crash bypass,
+revocation/activation, and delivery-policy regressions, and requires successful
+calls in both modeled modes, replacement, and retained pre-revocation history.
+Attachment replacement retains the credential revision and Session lease;
+credential adoption advances generation/revision while retaining the lease;
+recovery advances the lease while retaining desired generation/revision. The
+model retains earlier Stage receipts across all three transitions and records
+both the received and requested tuple at activation. Three stale-activation
+mutants and three independent-coordinate success witnesses prevent accidental
+counter aliasing. These are bounded model witnesses, not evidence that a
+deployment implements either delivery mode. The Runtime implementation
+additionally closes
+new local transport admission, cancels and waits for every busy generation call,
+quiesces the active Session Run, and reaps the generation-owned process before
+acknowledging `Removed`; executable concurrency tests cover that implementation
+boundary. The model still does not prove prompt provider-side revocation,
+network delivery, or reversal of a third-party side effect already accepted
+before cancellation. Those remain external operational boundaries rather than
+overclaimed formal theorems.
+
 ## What remains outside a direct proof
 
 - LLM meaning, quality, usefulness, and truthfulness have no complete decidable
