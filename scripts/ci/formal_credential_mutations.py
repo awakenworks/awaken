@@ -44,10 +44,31 @@ def check_mcp_credential_model_mutants(tlc_jar: Path) -> None:
         if source.count(anchor) != 1:
             raise SystemExit(f"MCP delivery mutation anchor drifted: {invariant}")
         mutations.append((source.replace(anchor, replacement), header + f"INVARIANTS {invariant}\n", invariant))
-    for witness in ("NoClientCallReached", "NoGatewayCallReached", "NoReplacementCallReached", "NoHistoricalRevokedCallReached"):
+    # A1 replacement retains source/epoch but invalidates an earlier generation;
+    # A2 source rotation changes generation+revision together; A3 reclaim retains
+    # generation/source but changes epoch. Keeping the earlier Stage observation
+    # lets the independent activation observer detect each delayed stale receipt.
+    # Rotation changes two coordinates, so its mutant drops both guards rather
+    # than miscounting either individually redundant comparison as a kill.
+    for replacements in (
+        [(r"/\ stagedGeneration = desiredGeneration", r"/\ TRUE")],
+        [(r"/\ stagedGeneration = desiredGeneration", r"/\ TRUE"),
+         (r"stagedRevision = desiredRevision /\ stagedEpoch = leaseEpoch", "stagedEpoch = leaseEpoch")],
+        [(r"stagedRevision = desiredRevision /\ stagedEpoch = leaseEpoch", "stagedRevision = desiredRevision")],
+    ):
+        mutant = source
+        for anchor, replacement in replacements:
+            if mutant.count(anchor) != 1:
+                raise SystemExit("MCP activation mutation anchor drifted")
+            mutant = mutant.replace(anchor, replacement)
+        mutations.append((mutant, header + "INVARIANTS ActivationUsesExactStage\n", "ActivationUsesExactStage"))
+    for witness in ("NoClientCallReached", "NoGatewayCallReached", "NoReplacementCallReached",
+                    "NoHistoricalRevokedCallReached", "NoIndependentReplacementReached",
+                    "NoIndependentRotationReached", "NoIndependentReclaimReached"):
         mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
-    check_tlc_model_mutations(tlc_jar, "McpCredentialDelivery", source, config, mutations)
-    print("MCP credential delivery: 6/6 mutants killed; 4 useful/history witnesses reachable")
+    check_tlc_model_mutations(tlc_jar, "McpCredentialDelivery", source, config, mutations,
+                              heap_mb=1024, timeout_seconds=120)
+    print("MCP credential delivery: 9/9 mutants killed; 7 useful/history/independent-authority witnesses reachable")
 
 
 def check_credential_effect_model_mutants(tlc_jar: Path) -> None:

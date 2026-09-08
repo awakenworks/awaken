@@ -451,8 +451,15 @@ a constant safe flag; later revocation cannot retroactively invalidate a legal
 call. The strict mutation runner checks wrong generation/source, crash bypass,
 revocation/activation, and delivery-policy regressions, and requires successful
 calls in both modeled modes, replacement, and retained pre-revocation history.
-These are bounded model witnesses, not evidence that a deployment implements
-either delivery mode. The Runtime implementation additionally closes
+Attachment replacement retains the credential revision and Session lease;
+credential adoption advances generation/revision while retaining the lease;
+recovery advances the lease while retaining desired generation/revision. The
+model retains earlier Stage receipts across all three transitions and records
+both the received and requested tuple at activation. Three stale-activation
+mutants and three independent-coordinate success witnesses prevent accidental
+counter aliasing. These are bounded model witnesses, not evidence that a
+deployment implements either delivery mode. The Runtime implementation
+additionally closes
 new local transport admission, cancels and waits for every busy generation call,
 quiesces the active Session Run, and reaps the generation-owned process before
 acknowledging `Removed`; executable concurrency tests cover that implementation

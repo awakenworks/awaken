@@ -22,14 +22,14 @@ VARIABLE selectedMode, selectedHolder, selectedMechanism,
          stagedGeneration, stagedRevision, stagedEpoch,
          acceptingGeneration, acceptingRevision,
          revokedRevisions, processUp, processGeneration,
-         rejected, lastCall
+         rejected, lastCall, lastActivation
 
 vars == <<selectedMode, selectedHolder, selectedMechanism,
           desiredGeneration, desiredRevision, leaseEpoch,
           stagedGeneration, stagedRevision, stagedEpoch,
           acceptingGeneration, acceptingRevision,
           revokedRevisions, processUp, processGeneration,
-          rejected, lastCall>>
+          rejected, lastCall, lastActivation>>
 
 Init == /\ selectedMode = "None"
         /\ selectedHolder = "None"
@@ -39,6 +39,7 @@ Init == /\ selectedMode = "None"
         /\ acceptingGeneration = 0 /\ acceptingRevision = 0
         /\ revokedRevisions = {} /\ processUp = TRUE /\ processGeneration = 0
         /\ rejected = FALSE
+        /\ lastActivation = [staged |-> <<0, 0, 0>>, requested |-> <<0, 0, 0>>]
         /\ lastCall = [generation |-> 0, revision |-> 0, accepting |-> 0,
                         source |-> 0, process |-> 0, live |-> FALSE,
                         revoked |-> {}, mode |-> "None", holder |-> "None",
@@ -64,7 +65,7 @@ Request(mode, holder, mechanism) ==
     /\ UNCHANGED <<stagedGeneration, stagedRevision, stagedEpoch,
                     acceptingGeneration, acceptingRevision,
                     revokedRevisions, processUp, processGeneration,
-                    lastCall>>
+                    lastCall, lastActivation>>
 
 Stage ==
     /\ processUp /\ selectedMode \in Modes
@@ -76,7 +77,7 @@ Stage ==
                     desiredGeneration, desiredRevision, leaseEpoch,
                     acceptingGeneration, acceptingRevision,
                     revokedRevisions, processUp, processGeneration,
-                    rejected, lastCall>>
+                    rejected, lastCall, lastActivation>>
 
 RejectStaleStage(generation, revision, epoch) ==
     /\ processUp /\ selectedMode \in Modes
@@ -90,7 +91,7 @@ RejectStaleStage(generation, revision, epoch) ==
                     stagedGeneration, stagedRevision, stagedEpoch,
                     acceptingGeneration, acceptingRevision,
                     revokedRevisions, processUp, processGeneration,
-                    lastCall>>
+                    lastCall, lastActivation>>
 
 Activate ==
     /\ processUp /\ selectedMode \in Modes
@@ -98,6 +99,8 @@ Activate ==
     /\ stagedGeneration = desiredGeneration
     /\ stagedRevision = desiredRevision /\ stagedEpoch = leaseEpoch
     /\ stagedRevision \notin revokedRevisions
+    /\ lastActivation' = [staged |-> <<stagedGeneration, stagedRevision, stagedEpoch>>,
+                           requested |-> <<desiredGeneration, desiredRevision, leaseEpoch>>]
     /\ acceptingGeneration' = stagedGeneration
     /\ acceptingRevision' = stagedRevision
     /\ processGeneration' = stagedGeneration
@@ -106,17 +109,38 @@ Activate ==
                     stagedGeneration, stagedRevision, stagedEpoch,
                     revokedRevisions, processUp, rejected, lastCall>>
 
+\* Three authorities do not share a revision counter. Ordinary replacement
+\* changes only attachment generation. Credential adoption changes generation
+\* and source revision while retaining the Session lease. Recovery advances
+\* only its lease epoch, retaining the desired generation/source pair.
+\* Keep an earlier staged receipt to explore its delayed arrival after changes.
+Replace ==
+    /\ processUp /\ selectedMode \in Modes /\ desiredGeneration < MaxGeneration
+    /\ desiredGeneration' = desiredGeneration + 1
+    /\ UNCHANGED <<selectedMode, selectedHolder, selectedMechanism,
+                    desiredRevision, leaseEpoch, stagedGeneration, stagedRevision, stagedEpoch,
+                    acceptingGeneration, acceptingRevision, revokedRevisions, processUp,
+                    processGeneration, rejected, lastCall, lastActivation>>
+
 Rotate ==
     /\ processUp /\ selectedMode \in Modes
     /\ desiredGeneration < MaxGeneration /\ desiredRevision < MaxGeneration
     /\ desiredGeneration' = desiredGeneration + 1
     /\ desiredRevision' = desiredRevision + 1
-    /\ leaseEpoch' = leaseEpoch + 1
-    /\ stagedGeneration' = 0 /\ stagedRevision' = 0 /\ stagedEpoch' = 0
     /\ UNCHANGED <<selectedMode, selectedHolder, selectedMechanism,
-                    acceptingGeneration, acceptingRevision,
-                    revokedRevisions, processUp, processGeneration,
-                    rejected, lastCall>>
+                    leaseEpoch, stagedGeneration, stagedRevision, stagedEpoch,
+                    acceptingGeneration, acceptingRevision, revokedRevisions, processUp,
+                    processGeneration, rejected, lastCall, lastActivation>>
+
+Reclaim ==
+    /\ processUp /\ selectedMode \in Modes /\ leaseEpoch < MaxGeneration
+    /\ leaseEpoch' = leaseEpoch + 1
+    \* This is the new process's accepting fence, not loss of durable Active
+    \* attachment state: claim_recovery retains that state in the Session root.
+    /\ acceptingGeneration' = 0 /\ acceptingRevision' = 0 /\ processGeneration' = 0
+    /\ UNCHANGED <<selectedMode, selectedHolder, selectedMechanism,
+                    desiredGeneration, desiredRevision, stagedGeneration, stagedRevision,
+                    stagedEpoch, revokedRevisions, processUp, rejected, lastCall, lastActivation>>
 
 Revoke(revision) ==
     /\ revision \in 1..MaxGeneration
@@ -129,7 +153,7 @@ Revoke(revision) ==
     /\ UNCHANGED <<selectedMode, selectedHolder, selectedMechanism,
                     desiredGeneration, desiredRevision, leaseEpoch,
                     stagedGeneration, stagedRevision, stagedEpoch,
-                    processUp, rejected, lastCall>>
+                    processUp, rejected, lastCall, lastActivation>>
 
 \* C1 live process; C2 positive accepting generation; C3 exact requested
 \* generation/revision; C4 rebuilt process; C5 adopted revision not revoked;
@@ -153,14 +177,14 @@ Call(generation, revision) ==
                     desiredGeneration, desiredRevision, leaseEpoch,
                     stagedGeneration, stagedRevision, stagedEpoch,
                     acceptingGeneration, acceptingRevision,
-                    revokedRevisions, processUp, processGeneration, rejected>>
+                    revokedRevisions, processUp, processGeneration, rejected, lastActivation>>
 
 Crash == /\ processUp /\ processUp' = FALSE /\ processGeneration' = 0
          /\ UNCHANGED <<selectedMode, selectedHolder, selectedMechanism,
                          desiredGeneration, desiredRevision, leaseEpoch,
                          stagedGeneration, stagedRevision, stagedEpoch,
                          acceptingGeneration, acceptingRevision,
-                         revokedRevisions, rejected, lastCall>>
+                         revokedRevisions, rejected, lastCall, lastActivation>>
 
 Restart == /\ ~processUp /\ processUp' = TRUE
            /\ stagedGeneration' = 0 /\ stagedRevision' = 0 /\ stagedEpoch' = 0
@@ -168,7 +192,7 @@ Restart == /\ ~processUp /\ processUp' = TRUE
            /\ processGeneration' = 0
            /\ UNCHANGED <<selectedMode, selectedHolder, selectedMechanism,
                            desiredGeneration, desiredRevision, leaseEpoch,
-                           revokedRevisions, rejected, lastCall>>
+                           revokedRevisions, rejected, lastCall, lastActivation>>
 
 RequestAny == \E mode \in Modes, holder \in Holders, mechanism \in Mechanisms:
                   Request(mode, holder, mechanism)
@@ -179,7 +203,7 @@ RejectAny == \E generation \in 1..MaxGeneration,
 CallAny == \E generation \in 1..MaxGeneration, revision \in 1..MaxGeneration: Call(generation, revision)
 RevokeAny == \E revision \in 1..MaxGeneration: Revoke(revision)
 
-Next == RequestAny \/ Stage \/ RejectAny \/ Activate \/ Rotate
+Next == RequestAny \/ Stage \/ RejectAny \/ Activate \/ Replace \/ Rotate \/ Reclaim
         \/ RevokeAny \/ CallAny \/ Crash \/ Restart
 
 CallObservations == [generation: 0..MaxGeneration, revision: 0..MaxGeneration,
@@ -203,6 +227,8 @@ TypeOK == /\ selectedMode \in Modes \cup {"None"}
           /\ revokedRevisions \subseteq 1..MaxGeneration
           /\ processUp \in BOOLEAN /\ rejected \in BOOLEAN
           /\ lastCall \in CallObservations
+          /\ lastActivation \in [staged: (0..MaxGeneration) \X (0..MaxGeneration) \X (0..MaxGeneration),
+                                  requested: (0..MaxGeneration) \X (0..MaxGeneration) \X (0..MaxGeneration)]
 
 SelectedModeIsAlwaysAdmissible ==
     selectedMode \in Modes => Allowed(selectedMode, selectedHolder, selectedMechanism)
@@ -217,6 +243,14 @@ AcceptingGenerationNeverExceedsDesired ==
     acceptingGeneration <= desiredGeneration /\ acceptingRevision <= desiredRevision
 AcceptingGenerationUsesRebuiltProcess ==
     processUp /\ acceptingGeneration > 0 => processGeneration = acceptingGeneration
+ActivationUsesExactStage == lastActivation.staged = lastActivation.requested
+NoIndependentReplacementReached ==
+    lastActivation.requested[1] <= lastActivation.requested[2]
+NoIndependentRotationReached ==
+    lastActivation.requested[2] <= lastActivation.requested[3]
+NoIndependentReclaimReached ==
+    lastActivation.requested[3] <= lastActivation.requested[1]
+
 NoUnauthorizedEffect ==
     lastCall.generation = 0 \/
       /\ lastCall.live
