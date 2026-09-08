@@ -5,7 +5,8 @@
 //! plays for the commit boundary). It is the executable specification of the
 //! claim/lease/wake/recovery rules; the Postgres store must match it.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
+use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::{Arc, Mutex};
 
 use crate::{
@@ -121,6 +122,23 @@ fn guarded_claim_row(
 }
 
 impl Row {
+    fn summary(&self, run_id: &RunId) -> DispatchSummary {
+        DispatchSummary {
+            run_id: run_id.clone(),
+            thread_id: self.request.thread_id().clone(),
+            session_thread_id: self.request.session_thread_id.clone(),
+            session_activity_epoch: self.request.session_activity_epoch,
+            reservation_deadline_ms: (self.state == DispatchState::Reserved)
+                .then_some(self.reservation_deadline_ms)
+                .flatten(),
+            state: self.state,
+            cancellation_requested: self.cancellation_requested,
+            attempt_count: self.attempt_count,
+            sandbox_bound: self.sandbox.is_some(),
+            physical_attempt_active: self.active_attempt.is_some(),
+        }
+    }
+
     fn transition(&self) -> DispatchTransition {
         DispatchTransition {
             state: self.state,
@@ -163,7 +181,7 @@ struct PendingRow {
 struct State {
     /// Enqueue order, so claim is deterministic (oldest first).
     order: Vec<RunId>,
-    rows: HashMap<RunId, Row>,
+    rows: BTreeMap<RunId, Row>,
     /// Undelivered pending input, in arrival order.
     pending: Vec<PendingRow>,
     /// Cross-thread deliveries staged for relay, in arrival order.
@@ -1732,23 +1750,32 @@ impl DispatchQueue for MemoryDispatchStore {
         Ok(state
             .order
             .iter()
-            .filter_map(|run| {
-                state.rows.get(run).map(|row| DispatchSummary {
-                    run_id: run.clone(),
-                    thread_id: row.request.thread_id().clone(),
-                    session_thread_id: row.request.session_thread_id.clone(),
-                    session_activity_epoch: row.request.session_activity_epoch,
-                    reservation_deadline_ms: (row.state == DispatchState::Reserved)
-                        .then_some(row.reservation_deadline_ms)
-                        .flatten(),
-                    state: row.state,
-                    cancellation_requested: row.cancellation_requested,
-                    attempt_count: row.attempt_count,
-                    sandbox_bound: row.sandbox.is_some(),
-                    physical_attempt_active: row.active_attempt.is_some(),
-                })
-            })
+            .filter_map(|run| state.rows.get(run).map(|row| row.summary(run)))
             .collect())
+    }
+
+    async fn scan_dispatch_ids(
+        &self,
+        after: Option<&RunId>,
+        limit: usize,
+    ) -> Result<Vec<RunId>, DispatchError> {
+        let state = lock(&self.state)?;
+        Ok(state
+            .rows
+            .range((after.map_or(Unbounded, Excluded), Unbounded))
+            .take(limit)
+            .map(|(run_id, _)| run_id.clone())
+            .collect())
+    }
+
+    async fn dispatch_summary(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<DispatchSummary>, DispatchError> {
+        Ok(lock(&self.state)?
+            .rows
+            .get(run_id)
+            .map(|row| row.summary(run_id)))
     }
 
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {

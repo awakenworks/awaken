@@ -467,6 +467,7 @@ impl PostgresDispatchStore {
 }
 
 include!("postgres/dispatch_queue.rs");
+include!("postgres/summaries.rs");
 include!("postgres/message_ports.rs");
 include!("postgres/claim.rs");
 fn store_error(err: sqlx::Error) -> DispatchError {

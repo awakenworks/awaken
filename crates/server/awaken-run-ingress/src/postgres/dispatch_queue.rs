@@ -882,7 +882,7 @@ impl DispatchQueue for PostgresDispatchStore {
         requested_run: &RunId,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
+        _now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let mut tx = self.pool.begin().await.map_err(store_error)?;
         let claimed = claim_exact_transaction_with_mode(
@@ -890,7 +890,6 @@ impl DispatchQueue for PostgresDispatchStore {
             requested_run,
             owner,
             lease_ms,
-            now_ms,
             None,
             &Default::default(),
             ExactClaimMode::TerminalRecovery,
@@ -904,13 +903,15 @@ impl DispatchQueue for PostgresDispatchStore {
         &self,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
+        _now_ms: u64,
         max_attempts: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
-        let now_ms = crate::clock::normalize_millis(now_ms);
         let max_attempts_i64 = durable_i64("dispatch retry limit", max_attempts)?;
         let mut tx = self.pool.begin().await.map_err(store_error)?;
         loop {
+            // Discovery and the exact claim must use the same clock authority;
+            // a future caller timestamp otherwise repeatedly selects live rows.
+            let now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
             let run_id = retry_exhausted_candidate(&mut tx, NS, now_ms, max_attempts_i64).await?;
             let Some(run_id) = run_id else {
                 tx.commit().await.map_err(store_error)?;
@@ -921,7 +922,6 @@ impl DispatchQueue for PostgresDispatchStore {
                 &RunId(run_id),
                 owner,
                 lease_ms,
-                now_ms,
                 None,
                 &Default::default(),
                 ExactClaimMode::RetryExhausted { max_attempts },
@@ -1510,64 +1510,49 @@ impl DispatchQueue for PostgresDispatchStore {
     }
 
     async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError> {
-        let p = NS;
-        let rows = sqlx::query(&format!(
-            "SELECT run_id, thread_id, request, status, attempt_count, cancel_requested, sandbox, lease_until, active_attempt_epoch FROM {p}_dispatch \
-             ORDER BY created_at"
-        ))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(store_error)?;
-        rows.into_iter()
-            .map(|row| {
-                let Json(request): Json<RunDispatch> =
-                    row.try_get("request").map_err(store_error)?;
-                Ok(DispatchSummary {
-                    run_id: RunId(row.try_get("run_id").map_err(store_error)?),
-                    thread_id: ThreadId(row.try_get("thread_id").map_err(store_error)?),
-                    session_thread_id: request.session_thread_id,
-                    session_activity_epoch: request.session_activity_epoch,
-                    reservation_deadline_ms: if row
-                        .try_get::<String, _>("status")
-                        .map_err(store_error)?
-                        == "reserved"
-                    {
-                        row.try_get::<Option<i64>, _>("lease_until")
-                            .map_err(store_error)?
-                            .map(crate::clock::millis_from_db)
-                            .transpose()
-                            .map_err(|error| DispatchError::Rejected(error.to_string()))?
-                    } else {
-                        None
-                    },
-                    state: {
-                        let status = row.try_get::<String, _>("status").map_err(store_error)?;
-                        DispatchState::from_db(&status).ok_or_else(|| {
-                            DispatchError::Rejected(format!(
-                                "unknown persisted dispatch state {status}"
-                            ))
-                        })?
-                    },
-                    cancellation_requested: row
-                        .try_get::<i64, _>("cancel_requested")
-                        .map_err(store_error)?
-                        != 0,
-                    attempt_count: durable_u64(
-                        "dispatch attempt count",
-                        row.try_get::<i64, _>("attempt_count")
-                            .map_err(store_error)?,
-                    )?,
-                    sandbox_bound: row
-                        .try_get::<Option<String>, _>("sandbox")
-                        .map_err(store_error)?
-                        .is_some(),
-                    physical_attempt_active: row
-                        .try_get::<Option<i64>, _>("active_attempt_epoch")
-                        .map_err(store_error)?
-                        .is_some(),
-                })
-            })
-            .collect()
+        self.read_dispatch_summaries(None).await
+    }
+
+    async fn scan_dispatch_ids(
+        &self,
+        after: Option<&RunId>,
+        limit: usize,
+    ) -> Result<Vec<RunId>, DispatchError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).map_err(|_| {
+            DispatchError::Rejected("dispatch scan limit exceeds database range".into())
+        })?;
+        let clause = if after.is_some() {
+            "WHERE run_id > $2"
+        } else {
+            ""
+        };
+        let sql = format!("SELECT run_id FROM {NS}_dispatch {clause} ORDER BY run_id LIMIT $1");
+        let query = sqlx::query_scalar::<_, String>(&sql).bind(limit);
+        let query = if let Some(after) = after {
+            query.bind(&after.0)
+        } else {
+            query
+        };
+        Ok(query
+            .fetch_all(&self.pool)
+            .await
+            .map_err(store_error)?
+            .into_iter()
+            .map(RunId)
+            .collect())
+    }
+
+    async fn dispatch_summary(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<DispatchSummary>, DispatchError> {
+        Ok(self
+            .read_dispatch_summaries(Some(run_id.0.clone()))
+            .await?
+            .pop())
     }
 
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {

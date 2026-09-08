@@ -5,6 +5,35 @@ from pathlib import Path
 from formal_model_mutation_runner import ROOT, check_tlc_model_mutations
 
 
+def check_terminal_scan_model_mutants(tlc_jar: Path) -> None:
+    # Causes: failing prefix fills a page, healthy suffix is beyond that page,
+    # periodic work is fair, and at most one restart forgets the cursor.
+    # R1 normal => bounded page + suffix progress. R2 remove cursor advance =>
+    # precise temporal starvation counterexample (not syntax/timeout failure).
+    # R3 healthy suffix AND wrap must be reachable, excluding vacuous progress.
+    source = (ROOT / "formal/tla/TerminalReconciliationScan.tla").read_text()
+    config = (ROOT / "formal/tla/TerminalReconciliationScan.cfg").read_text()
+    anchor = "              /\\ cursor' = row\n"
+    if source.count(anchor) != 1:
+        raise SystemExit("Terminal scan cursor mutation anchor drifted")
+    check_tlc_model_mutations(tlc_jar, "TerminalReconciliationScan", source, config, [
+        (source.replace(anchor, "              /\\ cursor' = cursor\n"), config,
+         "temporal:HealthySuffixEventuallyObserved"),
+        (source, config.replace("INVARIANTS Safety", "INVARIANTS Safety NoHealthySuffixAfterWrap"),
+         "NoHealthySuffixAfterWrap"),
+    ])
+    # R4 exact-full last page => next empty page wraps. R5 one page can hold
+    # every row. R6 empty store => zero reads, no invented candidate. These
+    # bounded baselines exercise different pagination shapes, not real SQL.
+    for boundary in (
+        config.replace("MaxRun = 5", "MaxRun = 4"),
+        config.replace("Budget = 2", "Budget = 6"),
+        config.replace("MaxRun = 5", "MaxRun = 0").replace("Failed = {1, 2}", "Failed = {}"),
+    ):
+        check_tlc_model_mutations(tlc_jar, "TerminalReconciliationScan", source, boundary, [])
+    print("Terminal scan: bounded fair progress checked; cursor mutant killed; suffix/wrap witnessed")
+
+
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
     # R1 remove the conflict execution gate -> exact safety violation. R2 the
     # original model must REACH a settled conflict, guarding against a vacuous

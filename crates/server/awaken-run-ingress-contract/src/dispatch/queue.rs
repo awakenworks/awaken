@@ -560,4 +560,34 @@ pub trait DispatchQueue: Send + Sync {
     /// Every dispatch row's operational summary, in enqueue order — the query
     /// surface for monitoring and maintenance (ADR-0025).
     async fn list_dispatches(&self) -> Result<Vec<DispatchSummary>, DispatchError>;
+
+    /// Bounded keyset read of current Dispatch identities, in ascending Run-id
+    /// order strictly after `after`. A zero limit reads nothing. No lifecycle
+    /// filtering or request decoding occurs here: each returned identity spends
+    /// one caller inspection budget, including malformed or ineligible rows.
+    /// The cursor is only a scheduling hint, not a snapshot or mutation right;
+    /// callers wrap after an empty page and revalidate each exact row. Rows
+    /// inserted behind the cursor are discovered on the next traversal.
+    /// Backends must not implement this by materializing `list_dispatches`.
+    async fn scan_dispatch_ids(
+        &self,
+        _after: Option<&RunId>,
+        _limit: usize,
+    ) -> Result<Vec<RunId>, DispatchError> {
+        Err(DispatchError::Rejected(
+            "bounded dispatch reads are unsupported".into(),
+        ))
+    }
+
+    /// Read one current operational projection without scanning its peers.
+    /// Missing means this row is absent, not that its external effects stopped.
+    /// Invalid durable data returns an error rather than an absent summary.
+    async fn dispatch_summary(
+        &self,
+        _run_id: &RunId,
+    ) -> Result<Option<DispatchSummary>, DispatchError> {
+        Err(DispatchError::Rejected(
+            "exact dispatch reads are unsupported".into(),
+        ))
+    }
 }

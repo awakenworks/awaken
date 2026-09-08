@@ -5,7 +5,9 @@
 use super::{DispatchWorker, PendingInputAdmission, pending_input_admission};
 use crate::Error;
 use crate::clock::Clock;
-use crate::dispatch::{Claimed, Dispatch, DispatchOutcome, DispatchState, RunClaim, SettleOutcome};
+use crate::dispatch::{
+    Claimed, Dispatch, DispatchOutcome, DispatchSummary, RunClaim, SettleOutcome,
+};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::terminal::{
@@ -339,18 +341,22 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         run_id: &RunId,
         clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
-        let now_ms = clock.now_ms();
+        let Some(row) = self.store.dispatch_summary(run_id).await? else {
+            return Ok(None);
+        };
+        self.reconcile_terminal_row(row, clock).await
+    }
+
+    async fn reconcile_terminal_row(
+        &self,
+        row: DispatchSummary,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Option<(RunId, RunState)>, Error> {
+        let run_id = &row.run_id;
         // A local active-active worker's process projection may predate the peer
         // that committed the terminal fact. Refresh the exact thread snapshot
         // before making the claim/no-claim authority decision.
-        if self.recovery_source.is_some()
-            && let Some(row) = self
-                .store
-                .list_dispatches()
-                .await?
-                .into_iter()
-                .find(|row| &row.run_id == run_id)
-        {
+        if self.recovery_source.is_some() {
             self.refresh_local_recovery_projection(&row.thread_id, run_id)
                 .await?;
         }
@@ -359,7 +365,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         }
         let Some(claimed) = self
             .store
-            .claim_for_terminal_recovery(run_id, &self.owner, self.lease_ms, now_ms)
+            .claim_for_terminal_recovery(run_id, &self.owner, self.lease_ms, clock.now_ms())
             .await?
         else {
             return Ok(None);
@@ -367,33 +373,18 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         self.settle_claimed_terminal(claimed, clock).await
     }
 
-    /// Bounded scan used by both the per-Session daemon and process pool host
-    /// adapter. Rows outside this Worker's committed reader naturally return no
-    /// state, so one implementation owns selection and settlement semantics.
+    /// Inspect a bounded page through the same scan owner used by the Host.
+    /// The budget counts inspected IDs, not successful terminal settlements.
     pub async fn reconcile_committed_terminals(
         &self,
         clock: Arc<dyn Clock>,
         limit: usize,
     ) -> Result<Vec<(RunId, RunState)>, Error> {
-        let rows = self.store.list_dispatches().await?;
-        let mut processed = Vec::new();
-        for row in rows.into_iter().filter(|row| {
-            matches!(
-                row.state,
-                DispatchState::Pending | DispatchState::Awaiting | DispatchState::Leased
-            )
-        }) {
-            if processed.len() >= limit {
-                break;
-            }
-            if let Some(terminal) = self
-                .reconcile_committed_terminal(&row.run_id, clock.clone())
-                .await?
-            {
-                processed.push(terminal);
-            }
-        }
-        Ok(processed)
+        self.terminal_scan
+            .reconcile(self.store.as_ref(), limit, |row| {
+                self.reconcile_terminal_row(row, clock.clone())
+            })
+            .await
     }
 
     /// Complete a terminal-recovery claim without executing the Run. If the
