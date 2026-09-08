@@ -59,6 +59,7 @@ cargo test -p awaken-session-executor --lib \
 cargo test -p awaken-agent-config --lib \
   backend_owned_selection_cannot_encode_an_inexact_backend_or_model
 cargo test -p awaken-run-executor-acp --lib
+cargo test -p awaken-acp-application --lib
 cargo test -p awaken-worker-contract --lib
 cargo test -p awaken-cli --lib acp_local_credentials
 # Publication lifecycle uses the same portable task/slot kernel. Include both

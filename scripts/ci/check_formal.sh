@@ -925,6 +925,14 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -config formal/tla/WorkerCredentialLiveness.cfg \
     formal/tla/WorkerCredentialLiveness.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/acp-local-binding-batch" \
+    -config formal/tla/AcpLocalBindingBatch.cfg formal/tla/AcpLocalBindingBatch.tla
+  python3 scripts/ci/check_formal_mutations.py --acp-binding-model-mutants "$tla_jar"
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/acp-observation-refresh" \
+    -config formal/tla/AcpObservationRefresh.cfg formal/tla/AcpObservationRefresh.tla
+  python3 scripts/ci/check_formal_mutations.py --acp-observation-model-mutants "$tla_jar"
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/audit-commit" \
     -config formal/tla/AuditCommit.cfg formal/tla/AuditCommit.tla
   python3 scripts/ci/check_formal_mutations.py --audit-commit-model-mutants "$tla_jar"
