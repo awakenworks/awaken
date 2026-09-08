@@ -138,7 +138,8 @@
       "Store traces retain committed sequence/time pairs. The same Rust test compares all recovered facts against the full committed snapshot; those content semantics are erased from this TLA projection.",
       "Time values use one injective increasing rank map per scenario because TLC integers cannot contain real millisecond clocks. This preserves and reflects the canonical relations using equality/order/max only, retains unknown values, and never rewrites the raw Rust trace.",
       "Continuous HTTP traces retain execution sequence/Session, durable root revision/times/lease, attachment active/ACK sets, complete generation coordinates in root claims/directives/completed calls/reports, and stage/publish/drain ordering. Target credentials, process scheduling between checkpoints and provider internals are erased; this checks only recorded paths through the canonical driver, not every implementation execution.",
-      "Environment installation observations retain the actual slot receipt revision/digest, cached binding, and installation Result across independent Hosts. Digests erase aggregate payload contents; this is executed Dispatch-entry trace checking, not universal async refinement or provider-side recovery proof."
+      "Environment installation observations retain the actual slot receipt revision/digest, cached binding, and installation Result across independent Hosts. Digests erase aggregate payload contents; this is executed Dispatch-entry trace checking, not universal async refinement or provider-side recovery proof.",
+      "Maintenance observations retain actual ownership/topology/timer settings, port begin/return ordering, ordinary claim attempts, and shutdown Pending/release/join events. Empty-memory-store effects, Tokio task/waker internals and physical termination are not projected; returning injected I/O is an explicit premise, not a proof of universal async fairness. The existing session-observations container includes this Coordinator domain without introducing a second trace pipeline."
     ],
     "families": {
       "root": {
@@ -211,6 +212,20 @@
           "incoming",
           "after",
           "admitted"
+        ],
+        "dependencies": []
+      },
+      "maintenance": {
+        "model": "DispatchMaintenanceScheduling",
+        "config": "DispatchMaintenanceScheduling",
+        "operator": "MaintenanceObservation",
+        "arguments": [
+          "owns",
+          "topology",
+          "terminal",
+          "pause",
+          "fail",
+          "trace"
         ],
         "dependencies": []
       }
@@ -345,6 +360,54 @@
           "p2-stale-replay",
           "p2-conflict",
           "p2-identity-conflict"
+        ]
+      },
+      "maintenance-scheduler-composition": {
+        "family": "maintenance",
+        "source": "crates/server/awaken-dispatch/tests/pool_memory/maintenance_observations.rs",
+        "rules": [
+          "owner-false-service-timer-false-pause-none-error-false",
+          "owner-false-service-timer-true-pause-none-error-false",
+          "owner-false-pool-timer-false-pause-none-error-false",
+          "owner-false-pool-timer-true-pause-none-error-false",
+          "owner-false-reconciler-timer-false-pause-none-error-false",
+          "owner-false-reconciler-timer-true-pause-none-error-false",
+          "owner-true-service-timer-false-pause-none-error-false",
+          "owner-true-service-timer-false-pause-gc-error-false",
+          "owner-true-service-timer-false-pause-gc-error-true",
+          "owner-true-service-timer-false-pause-relay-error-false",
+          "owner-true-service-timer-false-pause-relay-error-true",
+          "owner-true-service-timer-true-pause-none-error-false",
+          "owner-true-service-timer-true-pause-gc-error-false",
+          "owner-true-service-timer-true-pause-gc-error-true",
+          "owner-true-service-timer-true-pause-relay-error-false",
+          "owner-true-service-timer-true-pause-relay-error-true",
+          "owner-true-service-timer-true-pause-scan-error-false",
+          "owner-true-service-timer-true-pause-scan-error-true",
+          "owner-true-pool-timer-false-pause-none-error-false",
+          "owner-true-pool-timer-false-pause-gc-error-false",
+          "owner-true-pool-timer-false-pause-gc-error-true",
+          "owner-true-pool-timer-false-pause-relay-error-false",
+          "owner-true-pool-timer-false-pause-relay-error-true",
+          "owner-true-pool-timer-true-pause-none-error-false",
+          "owner-true-pool-timer-true-pause-gc-error-false",
+          "owner-true-pool-timer-true-pause-gc-error-true",
+          "owner-true-pool-timer-true-pause-relay-error-false",
+          "owner-true-pool-timer-true-pause-relay-error-true",
+          "owner-true-pool-timer-true-pause-scan-error-false",
+          "owner-true-pool-timer-true-pause-scan-error-true",
+          "owner-true-reconciler-timer-false-pause-none-error-false",
+          "owner-true-reconciler-timer-false-pause-gc-error-false",
+          "owner-true-reconciler-timer-false-pause-gc-error-true",
+          "owner-true-reconciler-timer-false-pause-relay-error-false",
+          "owner-true-reconciler-timer-false-pause-relay-error-true",
+          "owner-true-reconciler-timer-true-pause-none-error-false",
+          "owner-true-reconciler-timer-true-pause-gc-error-false",
+          "owner-true-reconciler-timer-true-pause-gc-error-true",
+          "owner-true-reconciler-timer-true-pause-relay-error-false",
+          "owner-true-reconciler-timer-true-pause-relay-error-true",
+          "owner-true-reconciler-timer-true-pause-scan-error-false",
+          "owner-true-reconciler-timer-true-pause-scan-error-true"
         ]
       }
     }

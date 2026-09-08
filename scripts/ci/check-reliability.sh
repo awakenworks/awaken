@@ -31,6 +31,7 @@ if [ "${1:-}" = "--session-observations" ]; then
     -p awaken-store-inmem -p awaken-store-fs -p awaken-store-sqlite -p awaken-protocol-managed
   cargo test --locked -p awaken-session-executor --lib projection_convergence::
   cargo test --locked -p awaken-coordinator --lib runtime_authority::tests
+  cargo test --locked -p awaken-dispatch --features test-support --test pool_memory only_the_queue_owner_runs_maintenance_without_disabling_worker_drains
   pnpm -C e2e exec tsx managed_mcp_recovery_e2e.ts
   python3 scripts/ci/render_runtime_refinement_traces.py --projection session-observations \
     "$AWAKEN_OBSERVATION_TRACE_DIR" "$session_evidence_dir/rendered" --require-complete-transition-coverage
