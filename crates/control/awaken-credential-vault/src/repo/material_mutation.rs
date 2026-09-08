@@ -113,6 +113,20 @@ impl CredentialMaterialMutationFence {
         now_unix_ms: u64,
         lease_expires_at_unix_ms: u64,
     ) -> Result<Option<Self>, CredentialError> {
+        self.claim_after_expiry_with_token(now_unix_ms, lease_expires_at_unix_ms, || {
+            uuid::Uuid::new_v4().simple().to_string()
+        })
+    }
+
+    // Keep entropy at the edge; the production wrapper and bounded proof use
+    // this same transition. The token factory remains lazy, including error
+    // precedence and the pre-existing epoch-exhaustion allocation behavior.
+    fn claim_after_expiry_with_token(
+        &self,
+        now_unix_ms: u64,
+        lease_expires_at_unix_ms: u64,
+        new_writer_token: impl FnOnce() -> String,
+    ) -> Result<Option<Self>, CredentialError> {
         if self.phase != CredentialMaterialMutationPhase::Writing
             || self.writer_lease_expires_at_unix_ms > now_unix_ms
         {
@@ -124,7 +138,7 @@ impl CredentialMaterialMutationFence {
             ));
         }
         let mut claimed = self.clone();
-        claimed.writer_token = uuid::Uuid::new_v4().simple().to_string();
+        claimed.writer_token = new_writer_token();
         claimed.writer_epoch = self.writer_epoch.checked_add(1).ok_or_else(|| {
             CredentialError::MutationConflict(
                 "credential material writer epoch is exhausted".into(),
@@ -578,6 +592,71 @@ mod phase_proofs {
             }
         }
         assert_eq!(input, snapshot);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(36)]
+    fn credential_material_takeover_preserves_attempt_and_cannot_restore_original_writer() {
+        // C1 all phases and full-width expiry/now/successor deadlines; C2 all
+        // epochs including zero/MAX; C3 independent empty/two valid 32-byte UUID attempt, old and
+        // replacement tokens. T1 non-Writing or live => None before any token
+        // call; T2 expired Writing + invalid new lease => error without entropy;
+        // T3 exhausted epoch => error; T4 otherwise exactly one successor.
+        // T4 preserves every field except token/epoch/deadline. For an existing
+        // positive epoch it is abort-only even if entropy repeats the original
+        // token. Epoch-zero legacy input is checked but is not assumed owned.
+        // This is the production transition; UUID entropy, arbitrary strings,
+        // envelope validation and repository CAS remain separate boundaries.
+        use CredentialMaterialMutationPhase::*;
+        let identity = || match kani::any::<u8>() % 3 {
+            0 => String::new(),
+            1 => "0000000000004000800000000000000a".into(),
+            _ => "0000000000004000800000000000000b".into(),
+        };
+        let original = CredentialMaterialMutationFence {
+            format_version: kani::any(),
+            phase: phase(),
+            attempt_id: identity(),
+            writer_token: identity(),
+            writer_epoch: kani::any(),
+            writer_lease_expires_at_unix_ms: kani::any(),
+        };
+        let snapshot = original.clone();
+        let now = kani::any::<u64>();
+        let deadline = kani::any::<u64>();
+        let token = identity();
+        let mut calls = 0u8;
+        let result = original.claim_after_expiry_with_token(now, deadline, || {
+            calls += 1;
+            token.clone()
+        });
+        assert_eq!(original, snapshot);
+        if original.phase != Writing || original.writer_lease_expires_at_unix_ms > now {
+            assert!(matches!(result, Ok(None)));
+            assert_eq!(calls, 0);
+        } else if deadline <= now {
+            assert!(result.is_err());
+            assert_eq!(calls, 0);
+        } else if original.writer_epoch == u64::MAX {
+            assert!(result.is_err());
+            assert_eq!(calls, 1);
+        } else {
+            let mut claimed = result.unwrap().unwrap();
+            assert_eq!(calls, 1);
+            assert_eq!(claimed.phase, Writing);
+            assert_eq!(claimed.writer_epoch, original.writer_epoch + 1);
+            assert_eq!(claimed.writer_token, token);
+            assert_eq!(claimed.writer_lease_expires_at_unix_ms, deadline);
+            assert!(claimed.reclaiming().is_err());
+            if original.writer_epoch > 0 {
+                assert!(claimed.ready().is_err());
+            }
+            assert_eq!(claimed.reclaiming_abort().unwrap().phase, ReclaimingAbort);
+            claimed.writer_epoch = original.writer_epoch;
+            claimed.writer_token = original.writer_token.clone();
+            claimed.writer_lease_expires_at_unix_ms = original.writer_lease_expires_at_unix_ms;
+            assert_eq!(claimed, snapshot);
+        }
     }
 
     #[kani::proof]

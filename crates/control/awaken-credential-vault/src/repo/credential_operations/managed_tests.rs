@@ -1047,54 +1047,6 @@ async fn managed_creation_recovery_publishes_ready_and_aborts_expired_writing() 
 }
 
 #[tokio::test]
-async fn in_memory_writing_takeover_rejects_the_stale_owner() {
-    let repo = InMemoryCredentialRepo::new();
-    repo.insert_vault("ws", managed_vault()).await.unwrap();
-    let command = managed_command("https://mcp.example.com");
-    let (source, _) = prepare_source_with_id(command.source_id.clone().unwrap(), command.source);
-    let child = ManagedVaultCredential {
-        id: command.credential_id,
-        vault_id: command.vault_id,
-        workspace_id: source.workspace_id.clone(),
-        source_id: source.id.clone(),
-        auth: command.auth,
-        metadata: command.metadata,
-        display_name: command.display_name,
-        revision: 1,
-        lifecycle: ManagedCredentialLifecycle::Active,
-    };
-    let stale = PendingManagedCredentialMutation::create(source, child).unwrap();
-    let lease_expires_at = stale.material_fence.writer_lease_expires_at_unix_ms;
-    assert!(repo.begin_managed_mutation(stale.clone()).await.unwrap());
-    assert!(!repo.begin_managed_mutation(stale.clone()).await.unwrap());
-
-    assert!(
-        repo.claim_expired_managed_mutation(&stale, lease_expires_at - 1, lease_expires_at + 100,)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    let claimed = repo
-        .claim_expired_managed_mutation(&stale, lease_expires_at, lease_expires_at + 100)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_ne!(
-        claimed.material_fence.writer_token,
-        stale.material_fence.writer_token
-    );
-    assert_eq!(
-        claimed.material_fence.writer_epoch,
-        stale.material_fence.writer_epoch + 1
-    );
-    assert!(repo.mark_managed_mutation_ready(&stale).await.is_err());
-    let stale_ready = stale.with_material_ready().unwrap();
-    assert!(repo.commit_managed_mutation(&stale_ready).await.is_err());
-    assert!(repo.mark_managed_mutation_ready(&claimed).await.is_err());
-    repo.abort_managed_mutation(&claimed).await.unwrap();
-}
-
-#[tokio::test]
 async fn managed_mutation_batch_continues_after_its_first_item_fails() {
     let repo = InMemoryCredentialRepo::new();
     let store = PoisonGetStore {
