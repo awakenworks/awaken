@@ -92,12 +92,26 @@ def check_execution_replacement_model_mutants(tlc_jar: Path) -> None:
     chain_mutations.append((source.replace(capture,
         "/\\ captures' = [captures EXCEPT ![lease[1]] = nextCapture', ![2] = nextCapture']"),
         chain_header + "PROPERTY SuccessorCaptureIsWriteOnce\n", "action:SuccessorCaptureIsWriteOnce"))
-    for witness in ("NoMultiRecovery00", "NoMultiRecovery01", "NoMultiRecovery10", "NoMultiRecovery11"):
+    # MC-M: rematerializing the source at Adopt must rewind a prior local edit;
+    # attributing a successor write to an old wrapper must violate exact writer
+    # identity. Keep a positive final Memory write witness to exclude over-denial.
+    for anchor, broken, kind, oracle in [
+        ("(Adopt /\\ UNCHANGED copyWriter)", "(Adopt /\\ copyWriter' = 0)",
+         "PROPERTY", "CopyNeverRewinds"),
+        ("ExecuteSuccessor /\\ copyWriter' = environmentIdentity",
+         "ExecuteSuccessor /\\ copyWriter' = boundEnvironment",
+         "INVARIANTS", "SuccessorMemoryIsCurrent"),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit(f"replacement Copy mutation anchor drifted: {oracle}")
+        check = f"action:{oracle}" if kind == "PROPERTY" else oracle
+        chain_mutations.append((source.replace(anchor, broken), chain_header + f"{kind} {oracle}\n", check))
+    for witness in ("NoMultiRecovery00", "NoMultiRecovery01", "NoMultiRecovery10", "NoMultiRecovery11", "NoMultiMemoryRecovery"):
         chain_mutations.append((source, chain_header + f"CONSTRAINT RecoveryWitnessScope\nINVARIANTS {witness}\n", witness))
     check_tlc_model_mutations(tlc_jar, "SessionExecutionReplacement", source, chain_config, chain_mutations,
                              dependencies=("SessionExecutionBinding", "WorkerExecutionAuthority", "SessionRealizationAuthority"),
-                             heap_mb=2048, timeout_seconds=600, workers=4)
-    print("Execution replacement chain: 3/3 mutants killed; 4 successive cancellation recovery witnesses")
+                             heap_mb=4096, timeout_seconds=1800, workers=8)
+    print("Execution replacement chain: 5/5 mutants killed; 5 successive cancellation/Memory recovery witnesses")
     check_terminal_owner_model_mutants(tlc_jar)
 
 

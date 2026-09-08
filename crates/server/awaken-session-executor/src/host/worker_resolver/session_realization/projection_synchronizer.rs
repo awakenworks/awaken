@@ -368,8 +368,7 @@ mod tests {
     use super::super::tests::{RecoveryControl, RecoveryEnvironmentBindingSink, frozen_projection};
     use super::*;
     use crate::host::worker_resolver::test_support::{
-        AdoptionModel, eager_environment, empty_frozen_projection_for_snapshot, managed_test_host,
-        test_activation,
+        AdoptionModel, eager_environment, empty_frozen_projection_for_snapshot, test_activation,
     };
     use std::sync::Arc;
 
@@ -583,6 +582,13 @@ mod tests {
         // Runtime consumes only D. Same immutable Sandbox generation is not
         // proof that this Adopt committed. The fixture root is in-memory;
         // this is Host/real-process evidence, not distributed database CAS.
+        // MC-M: a published filesystem tool selects filesystem delivery, not
+        // semantic Memory. All eight schedules carry one writable Copy Memory
+        // participant. Each actual scoped process reads its predecessor's
+        // exact bytes before writing its own; cancelled adoption must not
+        // rematerialize the seed or lose the materialization heads. The source
+        // store stays unchanged until terminal reconciliation, outside this
+        // live adoption test. This does not stand in for FUSE/Worker-death tests.
         for initial in [
             InitialEnvironment::Resident,
             InitialEnvironment::BeforeCommit,
@@ -643,9 +649,60 @@ mod tests {
                 .unwrap();
         }
         let host = Arc::new(raw_host.with_store_dir(storage.path()));
-        let managed = managed_test_host(host.clone());
+        let managed = crate::host::worker_resolver::test_support::complete_managed_test_host(
+            crate::ManagedHost::new(host.clone())
+                .with_resource_validator(crate::host::tests::test_resource_validator()),
+        );
         let snapshot = test_activation(thread, "run-claimed-ready-durable").snapshot;
+        let snapshot = if successor_cancellations.is_empty() {
+            snapshot
+        } else {
+            awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
+                .resolved_model(snapshot.resolved_spec.model_binding.clone())
+                .tools(
+                    crate::config::advertised_tools(&Default::default(), &Default::default(), &[])
+                        .into_iter()
+                        .filter(|tool| tool.id == "bash"),
+                )
+                .build()
+        };
         let mut projection = frozen_projection();
+        let memory_store = "replacement-chain-memory";
+        if !successor_cancellations.is_empty() {
+            crate::host::tests::install_test_memory_mounter(&host);
+            host.memory_repository()
+                .create(memory_store, "/note.txt", "seed")
+                .await
+                .unwrap();
+            let resources = awaken_session_contract::ResolvedSessionResources::try_new(
+                vec![awaken_session_contract::ResolvedInput {
+                    created_at_unix_ms: None,
+                    updated_at_unix_ms: None,
+                    binding_id: "chain-memory".into(),
+                    source: awaken_session_contract::ResolvedInputSource::MemoryStore {
+                        memory_store_id: memory_store.into(),
+                        config: awaken_resource_contract::MemoryStoreConfigVersion {
+                            memory_store_id: memory_store.into(),
+                            version: awaken_resource_contract::ConfigVersion::INITIAL,
+                            retention_policy: Default::default(),
+                        },
+                    },
+                    mount_path: "/mnt/memory".into(),
+                    access: awaken_resource_contract::ResourceAccess::ReadWrite,
+                    instructions: None,
+                }],
+                Vec::new(),
+            )
+            .unwrap();
+            projection = crate::host::worker_resolver::test_support::frozen_projection_for_manifest(
+                projection.baseline.environment.clone(),
+                &awaken_session_contract::SessionResourceManifest::at_revision(
+                    projection.workspace_id.clone(),
+                    1,
+                    resources,
+                ),
+            );
+        }
         projection.agent_publication = Some(snapshot.clone());
         let control = RecoveryControl::fixed(projection.clone());
         let binding_sink = Arc::new(RecoveryEnvironmentBindingSink::new(&control));
@@ -671,6 +728,13 @@ mod tests {
         )
         .await
         .expect("DH1 install complete durable projection");
+        if !successor_cancellations.is_empty() {
+            assert_eq!(
+                host.sandbox_spec(thread).mounts.len(),
+                1,
+                "MC-M complete frozen projection stages the Memory requirement before Create"
+            );
+        }
         let cached_runtime = if !acknowledged {
             let sink = Arc::new(
                 crate::host::worker_resolver::test_support::BlockingBindingSink::around(
@@ -790,6 +854,19 @@ mod tests {
         let original = owned_environment();
         let original_handle = original.handle();
         let original_hand = original.tool_executor();
+        let mut memory_bytes = "seed".to_string();
+        if !successor_cancellations.is_empty() {
+            scoped_memory_edit(&original, &memory_bytes, "generation-1").await;
+            memory_bytes = "generation-1".into();
+            assert_eq!(
+                original_handle
+                    .memory_materializations()
+                    .unwrap()
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
         let projection = control.current_projection();
         let binding = serde_json::to_string(&original_handle).unwrap();
         let claimed_binding = projection.environment.binding();
@@ -1137,6 +1214,9 @@ mod tests {
                 scoped_admission(&candidate.environment)
                     .await
                     .expect("MC current Candidate execution remains valid before replacement");
+                let next_bytes = format!("generation-{}", claim.epoch);
+                scoped_memory_edit(&candidate.environment, &memory_bytes, &next_bytes).await;
+                memory_bytes = next_bytes;
                 assert_eq!(
                     binding_sink.calls(),
                     persisted_creates
@@ -1163,6 +1243,25 @@ mod tests {
             .await
             .expect("DH1/E1-E2 fresh Resident Environment B");
         let rebuilt_hand = rebuilt.tool_executor();
+        if !successor_cancellations.is_empty() {
+            scoped_memory_edit(&rebuilt, &memory_bytes, "generation-final").await;
+            assert_eq!(
+                std::fs::read(root_sentinel.parent().unwrap().join("mnt/memory/note.txt")).unwrap(),
+                b"generation-final",
+                "MC-M exact local Copy bytes survive every cancelled adoption"
+            );
+            assert_eq!(
+                host.memory_repository()
+                    .get_by_path(memory_store, "/note.txt")
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .content
+                    .as_deref(),
+                Some("seed"),
+                "MC-M live adoption does not invent terminal writeback"
+            );
+        }
         if scoped {
             assert!(
                 predecessor
@@ -1252,6 +1351,48 @@ mod tests {
                 ))
                 .unwrap_or(false),
             "DH1/E4 fresh Runtime and Resident are published together"
+        );
+    }
+
+    async fn scoped_memory_edit(
+        environment: &crate::session_environment::SessionEnvironment,
+        before: &str,
+        after: &str,
+    ) {
+        // Literal fixture bytes are positional arguments, never shell source.
+        let view = environment.agent_filesystem_view(
+            None,
+            crate::session_environment::AgentFilesystemClient::AcpProcess,
+        );
+        let handle = environment.handle();
+        let materializations = handle.memory_materializations().unwrap().unwrap();
+        assert_eq!(materializations.len(), 1, "MC-M exact Copy participant");
+        assert_eq!(materializations[0].mount_path, "/mnt/memory");
+        let rendered = view.prompt_paths.render("/mnt/memory/note.txt");
+        let mut command = awaken_provisioning_contract::Command::new([
+            "/bin/sh",
+            "-c",
+            "test \"$(cat \"$3\")\" = \"$1\" && printf %s \"$2\" > \"$3\"",
+            "memory-chain",
+            before,
+            after,
+            &rendered,
+        ]);
+        command.cwd = "/workspace".into();
+        command.stdio = awaken_provisioning_contract::Stdio::Piped;
+        let (process, _channel) = environment.spawn_agent(command).await.unwrap();
+        assert_eq!(
+            process.wait().await.unwrap().code,
+            Some(0),
+            "MC-M real Memory read/write before {after}"
+        );
+        // The provider creates the process cwd at launch. Observe from the
+        // host AFTER that operation; a lexical cwd/../mount path need not be
+        // traversable before the first process. The child checked prior bytes.
+        assert_eq!(
+            std::fs::read(std::path::Path::new(&view.protocol_cwd).join(&rendered)).unwrap(),
+            after.as_bytes(),
+            "MC-M independent physical Memory bytes after {after}"
         );
     }
 
