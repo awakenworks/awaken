@@ -700,10 +700,15 @@ impl ManagedState {
             let message_source_run_id = root_pending_source_run_id
                 .or_else(|| historical_boundaries.first().map(|(_, run)| *run));
             let tool_index = record.projected_tool_index_for(None);
+            let pending_history = historical_boundaries
+                .iter()
+                .map(|(pending, _)| pending)
+                .collect::<Vec<_>>();
             let selected = transcript_evidence.project_message(
                 message,
                 &tool_index.sources,
                 message_source_run_id.map(|run_id| run_id.0.as_str()),
+                &pending_history,
             );
             pending_is_in_new_message |= selected.pending_occurrence;
             // The exact current ticket wins over any earlier call in this
@@ -713,10 +718,6 @@ impl ManagedState {
                 .retained_pending_occurrence
                 .then_some(root_pending)
                 .flatten();
-            let pending_history = historical_boundaries
-                .iter()
-                .map(|(pending, _)| *pending)
-                .collect::<Vec<_>>();
             let mut projected = project_messages_with_mcp_ids(
                 std::slice::from_ref(&selected.message),
                 message_pending,

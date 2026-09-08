@@ -512,6 +512,17 @@ not event stores: the outbox remains delete-after-delivery, while the Session
 root CAS retains every closed customer-visible Running interval for the Session
 lifetime.
 
+A historical Awaiting target remains tool-classification evidence after a
+later failure or cancellation clears the current ResumeTicket. Root and child
+transcripts use the same occurrence selector and encoder: an unmatched intent
+without a result or committed wait stays hidden, while a committed wait keeps
+its original source-qualified public tool event. Internal ticket names can
+differ from model-facing aliases; exact Thread, committed source Run, call id,
+and arguments bind that alias without consulting mutable configuration. Legacy
+messages without source Run coordinates still require exact name matching.
+This is a disposable projection of existing facts, not a new ticket store or
+permission decision, and it never invents a ToolResult for unexecuted work.
+
 Each interval freezes its opening/closing root revisions, exact Runtime
 lifecycle observations, cumulative neutral usage, and historical budget limit.
 The existing Event-entry processed CAS freezes the exact Runtime commit anchor

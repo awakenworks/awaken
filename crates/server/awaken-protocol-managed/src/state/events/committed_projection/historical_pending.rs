@@ -143,7 +143,10 @@ impl ManagedState {
 
     /// Root and child use the same ordered, source-scoped history selection.
     /// A provider-local call id alone cannot transfer an earlier permission to
-    /// another Thread, Run, tool name or input. Keep every matching boundary:
+    /// another Thread, Run or input. With committed Run coordinates the call id
+    /// binds the internal ticket name to the model-facing alias; legacy messages
+    /// without those coordinates still require an exact tool name. Keep every
+    /// matching boundary:
     /// one assistant response can contain several separately approved calls.
     pub(in crate::state::events) fn historical_message_boundaries<'a>(
         message: &awaken_agent_contract::agent::message::Message,
@@ -151,17 +154,31 @@ impl ManagedState {
         lifecycle: &'a [RunLifecycleEvent],
         thread_id: &str,
         source_run_id: Option<&str>,
-    ) -> Vec<(&'a Pending, &'a awaken_agent_contract::agent::run::Id)> {
-        lifecycle.iter().filter(|event| {
-            event.thread_id.0 == thread_id
-                && source_run_id.is_none_or(|run| event.run_id.0 == run)
-        }).filter_map(|event| {
-            let pending = history.get(&event.cursor)?;
-            message.content.iter().any(|block| matches!(block,
-                ContentBlock::ToolUse { id, name, input }
-                    if id == &pending.tool_use_id && name == &pending.name && input == &pending.input
-            )).then_some((pending, &event.run_id))
-        }).collect()
+    ) -> Vec<(Pending, &'a awaken_agent_contract::agent::run::Id)> {
+        lifecycle
+            .iter()
+            .filter(|event| {
+                event.thread_id.0 == thread_id
+                    && source_run_id.is_none_or(|run| event.run_id.0 == run)
+            })
+            .filter_map(|event| {
+                let pending = history.get(&event.cursor)?;
+                message.content.iter().find_map(|block| {
+                    let ContentBlock::ToolUse { id, name, input } = block else {
+                        return None;
+                    };
+                    (id == &pending.tool_use_id
+                        && input == &pending.input
+                        && (name == &pending.name
+                            || source_run_id == Some(event.run_id.0.as_str())))
+                    .then(|| {
+                        let mut public_pending = pending.clone();
+                        public_pending.name = name.clone();
+                        (public_pending, &event.run_id)
+                    })
+                })
+            })
+            .collect()
     }
 }
 
@@ -171,10 +188,11 @@ mod tests {
 
     #[test]
     fn permission_history_does_not_cross_message_ownership() {
-        // Causes: Thread, source Run, raw call id, name and input can each
+        // Causes: Thread, source Run, raw call id, public alias and input can each
         // differ. Effects: H1 all equal selects the committed boundary; H2 any
-        // mismatch selects none. Run coordinates absent in older neutral
-        // messages retain exact Thread+call+payload matching (H3).
+        // ownership/payload mismatch selects none. Proven same-Run aliases
+        // retain the public name (H3); absent coordinates require name equality
+        // (H4), including a negative legacy-alias row.
         // The table is shared for root/child consumers; a same-name call alone
         // is never permission evidence. No ordering comes from HashMap keys.
         let pending = Pending {
@@ -201,12 +219,13 @@ mod tests {
             Some("name"),
             Some("input"),
             Some("no-coordinate"),
+            Some("legacy-alias"),
         ] {
             let mut call = pending.clone();
             if changed == Some("id") {
                 call.tool_use_id = "other".into();
             }
-            if changed == Some("name") {
+            if matches!(changed, Some("name" | "legacy-alias")) {
                 call.name = "read".into();
             }
             if changed == Some("input") {
@@ -228,7 +247,7 @@ mod tests {
             };
             let run = match changed {
                 Some("run") => Some("other"),
-                Some("no-coordinate") => None,
+                Some("no-coordinate" | "legacy-alias") => None,
                 _ => Some("run"),
             };
             let selected = ManagedState::historical_message_boundaries(
@@ -236,7 +255,7 @@ mod tests {
             );
             assert_eq!(
                 selected.len(),
-                usize::from(changed.is_none() || changed == Some("no-coordinate")),
+                usize::from(changed.is_none() || matches!(changed, Some("no-coordinate" | "name"))),
                 "H1-H3 {changed:?}"
             );
         }
