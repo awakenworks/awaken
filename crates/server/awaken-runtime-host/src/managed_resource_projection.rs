@@ -636,7 +636,14 @@ impl crate::ManagedHost {
             !desired_manifest.resources.inputs().is_empty(),
             !desired_manifest.resources.skills().is_empty(),
         );
-        let old_memory: Vec<_> = previous_manifest
+        // This is the completed physical projection, not the desired-only
+        // requirements cache. A lost aggregate acknowledgement may resend A→B
+        // after this process completed B. Memory must compare against B while
+        // the remaining Resource effects still replay the authored A→B command.
+        let installed_manifest = self.host.thread_resource_manifest(thread);
+        let old_memory: Vec<_> = installed_manifest
+            .as_ref()
+            .unwrap_or(previous_manifest)
             .resources
             .inputs()
             .iter()
@@ -660,12 +667,9 @@ impl crate::ManagedHost {
             })
             .cloned()
             .collect();
-        // Another cold-rehydration request can install this exact manifest while
-        // the environment lookup above yields. Re-read the canonical manifest at
-        // the decision boundary. Equality is completion evidence only for an
-        // explicit no-op generation; A→B must replay even if a crashed process
-        // staged B before its physical effects.
-        let installed_manifest = self.host.thread_resource_manifest(thread);
+        // Only a completed, explicit no-op may skip the entire transition.
+        // A→B still replays non-Memory effects; staging desired requirements
+        // alone is never completion evidence.
         if live_environment.is_some()
             && transition.previous() == transition.desired()
             && installed_manifest.as_ref() == Some(&desired_manifest)
@@ -708,6 +712,13 @@ impl crate::ManagedHost {
             .resources
             .inputs()
             .iter()
+            .filter(|input| {
+                !matches!(
+                    input.source,
+                    awaken_session_contract::ResolvedInputSource::MemoryStore { .. }
+                )
+            })
+            .chain(old_memory.iter())
             .filter_map(|input| {
                 crate::managed_resource_projection::resolved_input_validation_mount(
                     input,
@@ -904,6 +915,18 @@ impl crate::ManagedHost {
                 || reconciliation != crate::session_slot::EnvironmentResourceReconciliation::None
             {
                 for input in desired_manifest.resources.inputs() {
+                    if installed_manifest.is_some()
+                        && matches!(
+                            input.source,
+                            awaken_session_contract::ResolvedInputSource::MemoryStore { .. }
+                        )
+                    {
+                        // Admission above proved exact installed Memory. Never
+                        // rematerialize its editable Copy or original heads on
+                        // an unacknowledged A→B replay. Adoption separately
+                        // reconciles provider-owned participants above.
+                        continue;
+                    }
                     if reconciliation
                         == crate::session_slot::EnvironmentResourceReconciliation::None
                         && previous_manifest

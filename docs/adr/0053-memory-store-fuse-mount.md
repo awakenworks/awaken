@@ -248,6 +248,20 @@ them. ACK rejects unfinished participants. Replay compensation never harvests a
 confirmed Copy just because publication failed. Unfenced Copy adoption remains
 zero-effect and rejects unfinished work rather than opportunistically cleaning it.
 
+Host Resource replay uses the completed installed Memory pin, not the original
+transition's starting manifest, to admit continuity. If Control loses the
+acknowledgement of an empty-to-Memory transition, replay retains the existing
+Memory bytes and original heads; it still executes the other aggregate-authored
+Resource effects before publishing completion. A different installed Memory pin
+rejects both a mutation command and an incoming self-equal command. Desired-only
+requirements staging is not completed-install evidence. The existing lifecycle
+and Resource locks serialize this decision, and the Provider remains the physical
+participant owner; no second receipt or recovery registry is added. The live
+manifest decision table and eight four-generation Linux scoped cancellation
+chains exercise this composition with Copy Memory. Their bounded TLA+ companion
+checks non-rewinding edits and successor identity, not FUSE, partial writes,
+terminal writeback or actual Worker death.
+
 Adjacent test comments own the decision tables: pending-before/after-guard cuts,
 failed compensation, wrapper Drop, root replacement, concurrent cleanup, exact
 FUSE reuse/reference change, both Provider entrypoints and Namespace attachment.

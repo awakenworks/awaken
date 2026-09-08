@@ -15,6 +15,10 @@ EXTENDS SessionExecutionBinding
    The successor's root commit and readback are separate steps: cancellation
    loses neither the owner nor the committed receipt and replay writes once.
    Immutable physical generation is distinct from per-Adopt root receipts.
+   copyWriter abstracts one complete Copy edit by its execution generation.
+   Live adoption retains that local image, not a fresh snapshot of the source.
+   This is not MemoryCAS writeback, partial I/O, FUSE or a content-hash proof;
+   the real MC-M processes check exact bytes through the retained mount.
    Observer truth, exact root/Memory identity and atomic Host publication are
    assumptions discharged separately by executable tests, not Rust refinement.
    Unknown evidence has no liveness guarantee. Enabledness below forbids a
@@ -25,7 +29,8 @@ VARIABLES rootReceipt, observedReceipt, rootWrites, cancelledAfterCommit, badRoo
           captures, cancelledFresh, cancelledCommitted
 receiptVars == <<rootReceipt, observedReceipt, rootWrites, cancelledAfterCommit, badRootCommit,
                 captures, cancelledFresh, cancelledCommitted>>
-replacementAll == <<bindingAll, replacementVars, receiptVars>>
+VARIABLE copyWriter
+replacementAll == <<bindingAll, replacementVars, receiptVars, copyWriter>>
 FourGenerations == 4
 OriginalEnvironmentPhase == IF originalPhase = "resident" THEN "resident" ELSE "candidate"
 Successor == INSTANCE SessionExecutionBinding
@@ -44,6 +49,7 @@ ReplacementInit == BindingInit
   /\ cancelledAfterCommit = FALSE /\ badRootCommit = FALSE
   /\ tree = "absent" /\ observation = "unknown"
   /\ nextCapture = <<0, 0, 0>> /\ newEffect = FALSE /\ badNewEffect = FALSE
+  /\ copyWriter = 0
 
 Setup == /\ phase = "initial"
   /\ (ProbeReady \/ ((Select \/ Bind \/
@@ -135,14 +141,19 @@ ReplaceSuccessor == /\ caller = 0 /\ phase \in {"fresh", "ready"}
   /\ phase' = "old" /\ tree' = "live" /\ observation' = "unknown"
   /\ newEffect' = FALSE
   /\ UNCHANGED <<bindingAll, caller, cancelled, nextCapture, badNewEffect>>
-ReplacementNext == /\ UNCHANGED originalPhase
-  /\ (((Setup \/ StartOriginal \/ Authority
+ReplacementControlStep == (((Setup \/ Authority
   \/ (\E c \in Callers : Acquire(c)) \/ Retire \/ Stop
-  \/ ObserveAbsent \/ ObserveUnknown \/ Install \/ Publish \/ ExecuteSuccessor \/ ReplaceSuccessor)
-  /\ UNCHANGED receiptVars) \/ Adopt \/ Cancel \/ CommitRoot \/ ReadReceipt)
+  \/ ObserveAbsent \/ ObserveUnknown \/ Install \/ Publish \/ ReplaceSuccessor)
+  /\ UNCHANGED receiptVars) \/ Cancel \/ CommitRoot \/ ReadReceipt)
+ReplacementNext == /\ UNCHANGED originalPhase
+  /\ ((ReplacementControlStep /\ UNCHANGED copyWriter)
+  \/ (Adopt /\ UNCHANGED copyWriter)
+  \/ (((StartOriginal /\ copyWriter' = 1)
+       \/ (ExecuteSuccessor /\ copyWriter' = environmentIdentity)) /\ UNCHANGED receiptVars))
 ReplacementSpec == ReplacementInit /\ [][ReplacementNext]_replacementAll
 
 ReplacementTypeOK == BindingTypeOK
+  /\ copyWriter \in 0..GenerationLimit
   /\ phase \in {"initial", "old", "retiring", "adoptable", "fresh", "ready"}
   /\ caller \in 0..2 /\ cancelled \subseteq Callers
   /\ originalPhase \in {"candidate", "resident", "uncommitted", "lost"}
@@ -174,6 +185,8 @@ CancellationRetainsOwner == [][Cancel => UNCHANGED <<phase, environmentIdentity,
 SuccessorCaptureIsWriteOnce == [][\A g \in 2..GenerationLimit :
   captures[g] # <<0, 0, 0>> => UNCHANGED captures[g]]_replacementAll
 CaptureSelectsImmutableObject == phase \in {"fresh", "ready"} => captures[environmentIdentity] = nextCapture
+CopyNeverRewinds == [][copyWriter' >= copyWriter]_replacementAll
+SuccessorMemoryIsCurrent == newEffect => copyWriter = environmentIdentity
 NoSuccessorReached == ~newEffect
 NoCancelledRecoveryReached == ~(newEffect /\ cancelled = Callers)
 NoCandidateSuccessorReached == ~(newEffect /\ originalPhase = "candidate")
@@ -189,4 +202,6 @@ NoMultiRecovery00 == ~(phase = "ready" /\ environmentIdentity = 4 /\ cancelledFr
 NoMultiRecovery01 == ~(phase = "ready" /\ environmentIdentity = 4 /\ cancelledFresh = {2, 3} /\ cancelledCommitted = {3})
 NoMultiRecovery10 == ~(phase = "ready" /\ environmentIdentity = 4 /\ cancelledFresh = {2, 3} /\ cancelledCommitted = {2})
 NoMultiRecovery11 == ~(phase = "ready" /\ environmentIdentity = 4 /\ cancelledFresh = {2, 3} /\ cancelledCommitted = {2, 3})
+NoMultiMemoryRecovery == ~(phase = "ready" /\ environmentIdentity = 4
+  /\ newEffect /\ copyWriter = 4 /\ cancelledFresh = {2, 3})
 =============================================================================
