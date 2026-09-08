@@ -49,6 +49,7 @@ use crate::{
 use awaken_connection_plan::{ChannelFactory, ConnectionPlan, TokioChannelFactory};
 pub(crate) mod api_defaults;
 mod channel;
+mod checkpoint;
 mod client;
 mod continuation;
 mod creation;

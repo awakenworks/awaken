@@ -26,6 +26,16 @@ pub(super) fn deletion_incarnation(
 
 #[async_trait]
 impl ContainerRuntime for K8sRuntime {
+    async fn checkpoint_upload(
+        &self,
+        expectation: ContainerObservationExpectation<'_>,
+        access: crate::ContainerCheckpointAccess<'_>,
+        mutation: crate::ContainerCheckpointMutation<'_>,
+    ) -> Result<Option<pc::SandboxCheckpointUpload>, RuntimeError> {
+        self.persist_checkpoint_upload(expectation, access, mutation)
+            .await
+    }
+
     fn realization_configuration(
         &self,
     ) -> Result<std::collections::BTreeMap<String, String>, RuntimeError> {

@@ -837,3 +837,33 @@ remain at their existing owners. In particular, decoding this value or adding
 an archive codec does not establish a conforming container checkpoint provider;
 the concrete provider must implement both fenced upload and terminal replay
 before it advertises the format.
+
+### Container physical upload participant
+
+`ContainerEnvironment::checkpoint_upload` projects the Sandbox's existing exact
+handle into `ContainerRuntime::checkpoint_upload`. Its borrowed
+`ContainerCheckpointAccess` separates the immutable Suspend fence/request
+fingerprint from current operation-bound execution authority. The mutation is
+only acquire, begin exact upload, or complete exact receipt; it grants no
+archive, object-store or Session effect by itself.
+
+Kubernetes persists this participant in the existing source Pod metadata, not
+in a ConfigMap, database, queue or Worker cache. Pod UID, resourceVersion,
+adoption/realization fingerprints and retained PVC UID must all match. The
+existing Pod effect-fence coordinates advance at the same resourceVersion CAS
+as the participant. Terminal acquisition is irreversible for that participant:
+ordinary Suspend replay cannot reacquire it, even within the same realization
+lease. Exact receipt comparison uses `SandboxCheckpointUpload`, not a second
+container receipt implementation. Every API response is followed by current
+authority admission; stale responses never permit the next effect or success.
+
+The codec remains a deployment adapter and the object store remains byte
+custody. Their caller acquires the participant, captures exact bytes, persists
+pending evidence, uploads, and persists completion before root acknowledgement.
+Terminal takeover uses the same record to recover the original upload and then
+delete it under its current grant. Source Pod absence, terminating/replaced
+PVC, malformed evidence, cleanup-gate acquisition, and CAS conflict fail closed
+without manufacturing a receipt or deleting a source. Source disappearance
+before a checkpoint receipt is durable is not proven recoverable by this port.
+Physical source disposal still requires the existing aggregate preparation and
+cleanup gate; this participant neither adds a finalizer nor authorizes disposal.
