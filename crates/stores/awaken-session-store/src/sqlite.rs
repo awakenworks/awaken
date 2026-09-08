@@ -1054,22 +1054,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             if current_owner != owner_scope || current_revision != mutation.expected_revision {
                 return Ok(SessionMutationResult::Conflict { current_revision });
             }
-            let deleted_admissions =
-                if matches!(&mutation.payload, SessionMutationPayload::Delete(_)) {
-                    let current_session = decode(current_row).map_err(corrupt)?;
-                    let SessionMutationPayload::Delete(tombstone) = &mutation.payload else {
-                        unreachable!("guarded above")
-                    };
-                    if !current_session.admits_tombstone(&session_id, tombstone.deleted_revision) {
-                        return Err(SessionRepositoryError::InvalidMutation(
-                    "Session tombstone requires hidden terminal disposition and completed cleanup"
-                        .into(),
-                ));
-                    }
-                    Some(super::event_admissions::encode(&current_session)?)
-                } else {
-                    None
-                };
+            let deleted_admissions = validate_current_mutation(&mutation, current_row)?;
             match &mutation.payload {
                 SessionMutationPayload::Replace(replacement) => {
                     let mut replacement = replacement.clone();

@@ -17,15 +17,8 @@ pub(super) async fn candidate_material_complete(
     after: &CredentialSource,
     store: &dyn crate::SecretStore,
 ) -> Result<bool, CredentialError> {
-    let before_refs = before
-        .into_iter()
-        .flat_map(CredentialSource::material_refs)
-        .collect::<std::collections::BTreeSet<_>>();
     let mut complete = true;
-    for reference in after.material_refs() {
-        if before_refs.contains(reference) {
-            continue;
-        }
+    for reference in super::new_material_refs(before, after) {
         match store.get(reference).await {
             Ok(_) => {}
             Err(CredentialError::SecretNotFound(_)) => complete = false,

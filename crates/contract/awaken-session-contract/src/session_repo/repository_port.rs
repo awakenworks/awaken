@@ -162,6 +162,10 @@ pub enum SessionMutationValidationError {
     EmptySessionId,
     #[error("Session mutation revision is exhausted")]
     RevisionExhausted,
+    #[error("Session replacement changed its immutable creation observation")]
+    CreationObservationChanged,
+    #[error("Session replacement erased or regressed its update observation")]
+    UpdateObservationRegressed,
     #[error("replacement carries a revision different from expected_revision")]
     ReplacementRevisionMismatch,
     #[error("tombstone deleted_revision is not the next root revision")]
@@ -284,6 +288,108 @@ impl SessionMutation {
     }
 }
 
+/// Validate the existing root fields, without inventing a second timestamp
+/// record or sampling a clock in the repository. Legacy unknown creation is as
+/// immutable as a known creation time; a known update may never be erased.
+fn validate_root_observation_replacement(
+    previous_created: Option<u64>,
+    replacement_created: Option<u64>,
+    previous_updated: Option<u64>,
+    replacement_updated: Option<u64>,
+) -> Result<(), SessionMutationValidationError> {
+    if previous_created != replacement_created {
+        return Err(SessionMutationValidationError::CreationObservationChanged);
+    }
+    if let Some(previous) = previous_updated {
+        let Some(replacement) = replacement_updated else {
+            return Err(SessionMutationValidationError::UpdateObservationRegressed);
+        };
+        if replacement < previous {
+            return Err(SessionMutationValidationError::UpdateObservationRegressed);
+        }
+    }
+    Ok(())
+}
+
+impl PersistedSession {
+    /// Check a fresh replacement against this current durable root, inside the
+    /// existing owner/revision transaction. Call this after receipt replay has
+    /// been classified: replay must return durable truth without admitting the
+    /// caller's newly observed candidate. This method owns only observation
+    /// preservation; root identity/revision and tombstones retain their fences.
+    pub fn validate_observation_replacement(
+        &self,
+        replacement: &Self,
+    ) -> Result<(), SessionMutationValidationError> {
+        validate_root_observation_replacement(
+            self.created_at_unix_ms,
+            replacement.created_at_unix_ms,
+            self.updated_at_unix_ms,
+            replacement.updated_at_unix_ms,
+        )
+    }
+}
+
+#[cfg(any(test, kani))]
+mod root_observation_proofs {
+    use super::*;
+
+    fn check_case(
+        created: Option<u64>,
+        next_created: Option<u64>,
+        updated: Option<u64>,
+        next_updated: Option<u64>,
+    ) {
+        let result =
+            validate_root_observation_replacement(created, next_created, updated, next_updated);
+        // Independent oracle uses Option's total order (None < every Some),
+        // rather than repeating the production nested known-time branches.
+        let expected = created == next_created && next_updated >= updated;
+        assert_eq!(result.is_ok(), expected);
+        if created != next_created {
+            assert_eq!(
+                result,
+                Err(SessionMutationValidationError::CreationObservationChanged)
+            );
+        } else if next_updated < updated {
+            assert_eq!(
+                result,
+                Err(SessionMutationValidationError::UpdateObservationRegressed)
+            );
+        }
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    fn session_root_replacement_preserves_creation_and_monotonic_update_observations() {
+        // Causes: C1 old/new creation identity (including None); C2 old update
+        // known/unknown; C3 candidate update absent/lower/equal/higher. Effects:
+        // R1=!C1=>CreationObservationChanged; R2=C1+C2+(absent/lower)=>
+        // UpdateObservationRegressed; R3=otherwise=>admit. R1 has precedence if
+        // both fail. Every Option<u64> input is symbolic, with no numeric bound,
+        // comparison stub or trusted-caller assumption. SQL locking, codec and
+        // placement of this gate remain separately tested adapter boundaries.
+        check_case(kani::any(), kani::any(), kani::any(), kani::any());
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn root_observation_preservation_decision_table() {
+        // R1-R3 Cartesian native cross-check: unknown, zero, adjacent values
+        // and MAX cross every equality/order class and both failure causes.
+        let values = [None, Some(0), Some(1), Some(u64::MAX - 1), Some(u64::MAX)];
+        for created in values {
+            for next_created in values {
+                for updated in values {
+                    for next_updated in values {
+                        check_case(created, next_created, updated, next_updated);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The port the Managed adapter drives to persist and restore [`PersistedSession`]
 /// rows. The default in-memory impl keeps single-process behavior; a durable impl
 /// (e.g. SQLite alongside the transcript store) lets a session survive a restart
@@ -311,7 +417,9 @@ pub trait ManagedSessionRepository: Send + Sync {
         idempotency: &IdempotencyRecord,
     ) -> Result<Option<PersistedSession>, SessionRepositoryError>;
 
-    /// Commit the one root-revision CAS transaction.
+    /// Commit the one root-revision CAS transaction. A fresh Replace preserves
+    /// the current root's creation observation and cannot erase/regress a known
+    /// update observation; exact receipt replay is classified before this gate.
     async fn commit_mutation(
         &self,
         owner_scope: &str,
