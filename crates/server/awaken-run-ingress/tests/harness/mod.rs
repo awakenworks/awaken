@@ -1577,7 +1577,7 @@ pub async fn assert_millis_boundaries<S: awaken_run_ingress::Dispatch>(
             .is_none(),
         "TM7: a saturated huge lease cannot be stolen early"
     );
-    assert!(
+    assert_eq!(
         store
             .renew_lease(
                 &awaken_run_ingress::RunClaim::from(&lease.lease),
@@ -1585,8 +1585,8 @@ pub async fn assert_millis_boundaries<S: awaken_run_ingress::Dispatch>(
                 max_signed - 1,
             )
             .await
-            .unwrap()
-            .is_current(),
+            .unwrap(),
+        awaken_run_ingress::LeaseRenewalOutcome::Current,
         "TM12: huge renewal succeeds without overflow"
     );
     assert!(
@@ -2757,7 +2757,7 @@ pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(
     // steal it because the lease has not expired.
     let renew_at = first.lease.expires_ms.saturating_sub(40);
     clock.advance_past(renew_at.saturating_sub(1)).await;
-    assert!(
+    assert_eq!(
         store
             .renew_lease(
                 &awaken_run_ingress::RunClaim::from(&first.lease),
@@ -2765,8 +2765,9 @@ pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(
                 renew_at,
             )
             .await
-            .unwrap()
-            .is_current()
+            .unwrap(),
+        awaken_run_ingress::LeaseRenewalOutcome::Current,
+        "LR1/E1 exact current claim renews",
     );
     clock.advance_past(first.lease.expires_ms).await;
     assert!(
@@ -2783,8 +2784,8 @@ pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(
         "a renewed lease is not yet expired"
     );
     // A non-owner cannot renew.
-    assert!(
-        !store
+    assert_eq!(
+        store
             .renew_lease(
                 &awaken_run_ingress::RunClaim {
                     run_id: run.clone(),
@@ -2795,8 +2796,9 @@ pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(
                 first.lease.expires_ms.saturating_add(2),
             )
             .await
-            .unwrap()
-            .is_current()
+            .unwrap(),
+        awaken_run_ingress::LeaseRenewalOutcome::Lost,
+        "LR2/E2 a non-owner receives typed loss",
     );
 
     // Once the renewed lease expires, recovery reclaims for the new owner.
@@ -2862,7 +2864,7 @@ pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(
         awaken_run_ingress::LeaseRenewalOutcome::Lost,
         "LR3/E2 stale epoch cannot renew a same-owner replacement",
     );
-    assert!(
+    assert_eq!(
         store
             .renew_lease(
                 &awaken_run_ingress::RunClaim::from(&replacement.lease),
@@ -2870,8 +2872,8 @@ pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(
                 replacement_at,
             )
             .await
-            .unwrap()
-            .is_current(),
+            .unwrap(),
+        awaken_run_ingress::LeaseRenewalOutcome::Current,
         "LR4/E1 current epoch renews"
     );
     assert_eq!(replacement.request.run_id(), &same_owner_run);
