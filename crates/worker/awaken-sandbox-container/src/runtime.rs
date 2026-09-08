@@ -1800,6 +1800,19 @@ pub trait ContainerRuntime: Send + Sync {
         ))
     }
 
+    /// Compare-and-persist the upload participant within the exact physical
+    /// realization. Implementations re-enter current authority after every wait.
+    async fn checkpoint_upload(
+        &self,
+        _expectation: crate::ContainerObservationExpectation<'_>,
+        _access: crate::ContainerCheckpointAccess<'_>,
+        _mutation: crate::ContainerCheckpointMutation<'_>,
+    ) -> Result<Option<pc::SandboxCheckpointUpload>, RuntimeError> {
+        Err(RuntimeError::Backend(
+            "container runtime does not implement a fenced checkpoint participant".into(),
+        ))
+    }
+
     async fn restore_or_adopt(
         &self,
         _id: &str,
