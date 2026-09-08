@@ -141,3 +141,84 @@ def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
             "INVARIANTS NoCancelledPeerClaim Safety"), "NoCancelledPeerClaim"),
     ], dependencies=("RunIngressKernel", "SessionActivityKernel", "WorkQueueKernel"))
     print("Thread exclusion: cancelled peer claim reachable; missing physical guard mutant killed")
+
+
+def check_maintenance_observation_mutants(tlc_jar: Path, trace_dir: Path) -> None:
+    """Cross-check the actual scheduler traces, using the canonical TLC runner."""
+    import copy
+    import json
+    import tempfile
+    from render_runtime_refinement_traces import render_observations, module_name
+
+    name = "maintenance-scheduler-composition"
+    document = json.loads((trace_dir / f"{name}.json").read_text())
+    manifest = json.loads((ROOT / "formal/runtime-refinement-manifest.json").read_text())
+    # Causes: ownership, timer, role, in-flight begin/return, observed Pending,
+    # explicit release, successful/error return. Effects: wrong authority,
+    # overlap, early stop, missing join witness and outcome laundering reject.
+    # All counterfactuals mutate emitted production observations; the positive
+    # inserted hint checks that an irrelevant wake does not fabricate a failure.
+    labels = ["remote-work", "missing-return", "overlap", "early-stop",
+              "missing-pending", "maintenance-drain", "disabled-scan", "hide-error"]
+    with tempfile.TemporaryDirectory(prefix="awaken-maintenance-observation-") as temp:
+        directory = Path(temp)
+        raw, rendered = directory / "raw", directory / "rendered"
+        raw.mkdir()
+        path = raw / f"{name}.json"
+        def render_case(value):
+            path.write_text(json.dumps(value))
+            render_observations(raw, rendered, ROOT, manifest, False)
+            module = module_name(name)
+            return ((rendered / f"{module}.tla").read_text(),
+                    (rendered / f"{module}.cfg").read_text())
+        baseline, config = render_case(document)
+        mutants = []
+        for label in labels:
+            mutant = copy.deepcopy(document)
+            steps = mutant["steps"]
+            pending = next(step for step in steps if step["pause"] == "gc" and not step["fail"])
+            if label == "remote-work":
+                step = next(step for step in steps if not step["owns"])
+                step["trace"].insert(0, {"kind": "begin", "operation": "gc"})
+            elif label == "missing-return":
+                index = next(i for i, event in enumerate(pending["trace"]) if event["kind"] == "ok")
+                pending["trace"].pop(index)
+            elif label == "overlap":
+                index = next(i for i, event in enumerate(pending["trace"]) if event["kind"] == "pending")
+                pending["trace"].insert(index, {"kind": "begin", "operation": "relay"})
+            elif label == "early-stop":
+                stop = pending["trace"].pop()
+                index = next(i for i, event in enumerate(pending["trace"]) if event["kind"] == "release")
+                pending["trace"].insert(index, stop)
+            elif label == "missing-pending":
+                pending["trace"] = [event for event in pending["trace"] if event["kind"] != "pending"]
+            elif label == "maintenance-drain":
+                step = next(step for step in steps if step["topology"] == "reconciler")
+                step["trace"].insert(0, {"kind": "drain", "operation": "none"})
+            elif label == "disabled-scan":
+                step = next(step for step in steps if step["owns"] and not step["terminal"] and step["pause"] == "none")
+                source = next(step for step in steps if step["owns"] and step["terminal"] and step["pause"] == "none" and step["topology"] == "service")
+                step["trace"] = copy.deepcopy(source["trace"])
+            else:
+                step = next(step for step in steps if step["fail"])
+                next(event for event in step["trace"] if event["kind"] == "error")["kind"] = "ok"
+            text, _ = render_case(mutant)
+            assert text != baseline, label
+            mutants.append((text, config, "constant:TraceRefines"))
+        positive = copy.deepcopy(document)
+        positive["steps"][0]["trace"].insert(0, {"kind": "hint", "operation": "none"})
+        text, _ = render_case(positive)
+        check_tlc_model_mutations(tlc_jar, module_name(name), baseline, config, mutants,
+            dependencies=("DispatchMaintenanceScheduling",))
+        check_tlc_model_mutations(tlc_jar, module_name(name), text, config, [],
+            dependencies=("DispatchMaintenanceScheduling",))
+        # Rule/schema gates are independent of the model's outcome relation.
+        for malformed in ("missing-row", "wrong-label", "missing-event-field"):
+            mutant = copy.deepcopy(document)
+            if malformed == "missing-row": mutant["steps"].pop()
+            elif malformed == "wrong-label": mutant["steps"][0]["owns"] = not mutant["steps"][0]["owns"]
+            else: del mutant["steps"][0]["trace"][0]["operation"]
+            try: render_case(mutant)
+            except ValueError: pass
+            else: raise AssertionError(f"maintenance schema mutation survived: {malformed}")
+    print("Maintenance production traces: 42 rules, 8 semantic mutants + 3 schema mutants killed; extra hint accepted")

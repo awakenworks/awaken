@@ -497,7 +497,13 @@ the HTTP test checks that type erasure preserves refusal. The bounded
 `DispatchMaintenanceScheduling` model covers lost/duplicate hints, periodic
 progress and cancellation with three semantic mutants and reachability witnesses.
 Its atomic scheduling steps assume no storage operation is in flight: it does
-not prove driver completion, claim semantics or physical process termination.
+not prove driver completion, claim semantics or physical process termination. The
+same model additionally checks raw observations from the actual three public
+entrypoints: a pending maintenance port keeps explicit shutdown pending until
+that port returns, including an error. The original ownership/timer matrix and
+these cancellation cuts share one fixture and the existing Rust-to-TLA pipeline.
+This finite correspondence does not turn returning fixture I/O into a guarantee
+that a production database, callback or provider will eventually return.
 
 Standalone reconciliation directly consumes the configured `WakeSignal`.
 Within a Pool, only the existing wake coordinator consumes that external port

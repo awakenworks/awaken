@@ -38,7 +38,8 @@ from formal_credential_mutations import (
     check_acp_observation_model_mutants,
     check_acp_projection_model_mutants,
 )
-from formal_dispatch_mutations import check_resolution_failure_model_mutant, check_terminal_scan_model_mutants
+from formal_dispatch_mutations import (check_resolution_failure_model_mutant, check_terminal_scan_model_mutants,
+    check_maintenance_observation_mutants)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1370,7 +1371,8 @@ def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:
                 [(mutant, config, "constant:TraceRefines")], dependencies=(definition["model"], *definition["dependencies"]))
     check_observation_rule_mutants(trace_dir, manifest)
     check_realization_trace_mutants(tlc_jar, trace_dir, manifest)
-    print("Production observation trace mutation score: 5/5 killed")
+    check_maintenance_observation_mutants(tlc_jar, trace_dir)
+    print("Production observation trace mutation score: 5/5 base families plus maintenance controls killed")
 
 def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
     # Worker fault matrix W1 registry-only renewal; W2 evidence-only renewal;

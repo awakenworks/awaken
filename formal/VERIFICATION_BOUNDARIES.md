@@ -61,6 +61,27 @@ type checking are valuable executable evidence, but are not formal proofs.
   refinement or universal liveness; the whole scan obligation retains its
   abstract-model grade.
 
+- Maintenance keeps its existing Service and Pool/Reconciler entrypoints.
+  The shared observation gate now checks 42 executed rules, including 30
+  in-flight GC/relay/scan cancellation cuts with successful and failed returns.
+  Raw port events and polling the actual shutdown Future establish the observed
+  begin/return order and Pending-before-release-before-join boundary. The same
+  DispatchMaintenanceScheduling model owns that relation; eight real-trace
+  counterfactuals, three schema/coverage negatives and an extra-hint positive
+  control qualify it. Three production shutdown mutants (Service, Pool and
+  Reconciler returning before their in-flight task joins) are also rejected by
+  the native Pending-before-release assertions. This is finite trace
+  correspondence, not exhaustive Tokio
+  interleaving or universal Rust refinement. Returning I/O, runtime scheduling
+  and clock correctness remain explicit premises, and the whole obligation
+  keeps its abstract-model grade. Direct Kani qualification remains open:
+  with Kani 0.67.0 and Tokio 1.53.1, a harness calling
+  `tokio::time::Instant::now()` reaches unsupported C `clock_gettime`
+  (1 failed check, 55 undetermined); polling the actual cancelled
+  `publish_dispatch_hint` Future did not finish within 240 seconds. Neither
+  result is a business counterexample or a proof. Stubbing that clock and
+  sequentializing Tokio atomics would require an explicit runtime refinement
+  boundary before any wider direct-proof claim.
 - ACP crossing writes extend the existing AcpBoundary model with a bounded
   duplex schedule, FIFO read-ahead, cancellation and explicit overflow. Kani
   proves the production buffer admission arithmetic over usize inputs; it does

@@ -372,6 +372,18 @@ def validate_observation_rule(name: str, step: dict[str, Any]) -> None:
         snapshot = {"revision": "uint", "fingerprint": "text", "binding": "text"}
         state = {"exists": "bool", **snapshot}
         validate_observation_schema(step, {"rule": "text", "before": state, "incoming": snapshot, "after": state, "admitted": "bool"}, name)
+    elif name == "maintenance-scheduler-composition":
+        validate_observation_schema(step, {"rule": "text", "owns": "bool",
+            "topology": ("service", "pool", "reconciler"), "terminal": "bool",
+            "pause": ("none", "gc", "relay", "scan"), "fail": "bool",
+            "trace": [{"kind": ("begin", "ok", "error", "drain", "hint", "poll",
+                "cancel", "pending", "release", "stop"),
+                "operation": ("none", "gc", "relay", "scan")}]}, name)
+        expected = (f'owner-{str(step["owns"]).lower()}-{step["topology"]}'
+            f'-timer-{str(step["terminal"]).lower()}-pause-{step["pause"]}'
+            f'-error-{str(step["fail"]).lower()}')
+        if rule != expected:
+            raise ValueError("observation rule conditions drift")
     elif name == "publication-cardinality-renewal":
         match = re.fullmatch(r"count-(\d+)-predecessor-(true|false)-renewed-(true|false)", rule)
         count, predecessor, renewed = match.groups()
