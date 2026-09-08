@@ -4,6 +4,27 @@ from pathlib import Path
 from formal_model_mutation_runner import ROOT, check_tlc_model_mutations
 
 
+def check_k8s_process_observation_model_mutants(tlc_jar: Path) -> None:
+    # KPT: UID replacement, phase-only failure, omitted participant, and absent
+    # historical binding must fail closed. A reachable positive exit excludes
+    # an observer that always returns Unknown. No Dispatch protocol is copied.
+    source = (ROOT / "formal/tla/K8sProcessObservation.tla").read_text()
+    config = (ROOT / "formal/tla/K8sProcessObservation.cfg").read_text()
+    mutations = []
+    for anchor, broken in [
+        ("g = current", "TRUE"),
+        ("/\\ CompleteExit(current)", "/\\ (CompleteExit(current) \\/ current \\in failed)"),
+        ("/\\ CompleteExit(current)", "/\\ (Domain(current) \\intersect exited # {})"),
+        ("/\\ g \\in bound", "/\\ g \\in Generations"),
+    ]:
+        if source.count(anchor) != 1:
+            raise SystemExit("Kubernetes process observation mutation anchor drifted")
+        mutations.append((source.replace(anchor, broken), config, "Safety"))
+    mutations.append((source, config.replace("INVARIANT Safety", "INVARIANT NoObservedExit"), "NoObservedExit"))
+    check_tlc_model_mutations(tlc_jar, "K8sProcessObservation", source, config, mutations)
+    print("Kubernetes process observation: 4 unsafe-evidence mutants killed; real-exit witness reached")
+
+
 def check_execution_replacement_model_mutants(tlc_jar: Path) -> None:
     # SR/SC/UC match the real Host projection/retirement tests. Semantic kills
     # distinguish old-wrapper reuse, unknown/live predecessor, cancellation

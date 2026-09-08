@@ -995,6 +995,10 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/dispatch-maintenance-scheduling" \
     -config formal/tla/DispatchMaintenanceScheduling.cfg formal/tla/DispatchMaintenanceScheduling.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/k8s-process-observation" \
+    -config formal/tla/K8sProcessObservation.cfg formal/tla/K8sProcessObservation.tla
+  python3 scripts/ci/check_formal_mutations.py --k8s-process-observation-model-mutants "$tla_jar"
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-run-cancellation" \
     -config formal/tla/SessionRunProtocolCancellation.cfg formal/tla/SessionRunProtocol.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \

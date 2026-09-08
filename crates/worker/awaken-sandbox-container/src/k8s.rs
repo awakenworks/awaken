@@ -61,6 +61,7 @@ mod network_policy;
 mod pod_projection;
 mod pod_security;
 mod process;
+mod process_termination;
 pub(crate) mod realization;
 mod restore;
 mod runtime_contract;
@@ -88,6 +89,7 @@ pub(crate) use pod_security::{has_forbidden_sandbox_namespace_shape, sandbox_net
 use process::{K8sExecProcess, K8sExecState, k8s_exec_argv, k8s_live_file_result};
 #[cfg(test)]
 use process::{k8s_exit_status, signal_effect_is_complete};
+pub use process_termination::{ObservedPodProcessExit, PodProcessBinding, PodProcessTermination};
 use realization::{PodReadiness, create_or_verify, pod_readiness, stamp_pod_realization};
 pub(crate) use realization::{create_or_verify_exact, stamp_realization};
 pub use sandbox_control::{

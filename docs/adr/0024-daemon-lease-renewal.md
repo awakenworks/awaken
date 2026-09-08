@@ -178,6 +178,26 @@ the same claim without rerunning the executor. This also covers a committed ACK
 whose response was lost: the existing empty-slot transition is idempotent, while
 a different successor slot remains fenced. Permanent rejection still fails.
 Process death before a successful ACK remains an explicit recovery boundary.
+The Kubernetes adapter now offers a narrower independent local observation:
+`bind_pod_process` freezes the complete ordinary-container set before effects,
+and `observe_pod_process_termination` requires the same Pod UID, node, container
+IDs and start times plus every exact runtime exit. It rejects restartable,
+privileged, init and ephemeral-container profiles. A live projector vetoes the
+whole-domain observation even after the main container is killed. Pod absence,
+controller-synthesized Failed, synthetic ContainerStatusUnknown, missing legacy
+bindings and name reuse never establish termination. The subject-bound result
+has private fields and cannot be deserialized as an incoming receipt.
+
+This is a provider observation, not a Native recovery command. Dispatch does
+not yet persist this binding in its physical slot or consume the result; the
+current restartable Worker Pod profile is not admitted by this adapter.
+No remote model/MCP stop capability or historical evidence repair is implied.
+The authenticated API, kubelet/runtime exit-report honesty, private process
+confinement and non-restart semantics remain the trusted infrastructure boundary.
+The provider-only three-generation/two-container model deliberately does not
+duplicate Dispatch. A real k3d test uses exact-container CRI hard stop, observes
+the live projector veto, drains the full Pod behind a test-owned finalizer,
+checks delayed exec rejection and then verifies that removed history is unknown.
 Cooperative cancellation may cause a verified return; dropping or aborting a
 nested Future does not prove an opaque remote request stopped. Task abort, process crash, Lease
 expiry, and heartbeat expiry therefore leave the slot occupied. Recovery waits
