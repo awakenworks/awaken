@@ -1,13 +1,73 @@
-//! Projected-file adapters for the existing signed Worker transport contract.
+//! Deployment assembly for the existing Worker transport and binding ports.
 //!
 //! These are startup-only DTOs. The authoritative authentication behavior
-//! remains in `awaken-session-executor`; this module only turns deployment files into
-//! its existing client and server ports.
+//! remains in `awaken-worker-transport-security`; Dispatch alone owns admission.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use crate::config::{OperatingMode, ResolvedDeployment};
+
+#[cfg(feature = "container-k8s")]
+mod kubernetes;
+
+/// Private fields keep authentication and physical binding selected together.
+/// An injected authenticator alone is deliberately an unbound transport.
+pub(super) struct WorkerTransport {
+    authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
+    bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
+}
+
+impl WorkerTransport {
+    pub(super) fn unbound(
+        authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
+    ) -> Self {
+        Self {
+            authenticator,
+            bindings: None,
+        }
+    }
+
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
+        Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
+    ) {
+        (self.authenticator, self.bindings)
+    }
+}
+
+pub(super) async fn select(
+    deployment: &ResolvedDeployment,
+    injected: Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
+) -> Result<WorkerTransport, String> {
+    if let Some(policy) = &deployment.worker_kubernetes {
+        policy.validate(
+            deployment.role,
+            deployment.mode,
+            deployment.worker_trust_credentials_file.is_some(),
+        )?;
+        if injected.is_some() {
+            return Err(
+                "worker_kubernetes cannot be mixed with an injected Worker authenticator".into(),
+            );
+        }
+        #[cfg(feature = "container-k8s")]
+        {
+            let client = awaken_sandbox_container::k8s::connect_control_client()
+                .await
+                .map_err(|error| error.to_string())?;
+            return kubernetes::assemble(policy, client);
+        }
+        #[cfg(not(feature = "container-k8s"))]
+        unreachable!("configuration validation rejects the missing feature");
+    }
+    Ok(WorkerTransport::unbound(match injected {
+        Some(authenticator) => authenticator,
+        None => authenticator(deployment)?,
+    }))
+}
 
 fn read_projected_file(path: &Path) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|error| {
@@ -18,7 +78,7 @@ fn read_projected_file(path: &Path) -> Result<String, String> {
     })
 }
 
-pub(crate) fn authenticator(
+fn authenticator(
     deployment: &ResolvedDeployment,
 ) -> Result<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>, String> {
     let Some(path) = deployment.worker_trust_credentials_file.as_deref() else {
@@ -65,6 +125,41 @@ fn listeners_are_loopback(deployment: &ResolvedDeployment) -> bool {
 mod tests {
     use super::*;
     use crate::config;
+
+    #[tokio::test]
+    async fn transport_selection_never_combines_foreign_authentication_with_pod_bindings() {
+        // S1 explicit injected auth without Pod policy => original unbound
+        // transport. S2 Pod policy plus injected auth => fail before kube client
+        // discovery (even if the injector claims to authenticate Kubernetes).
+        // This constructor is the production ProcessStartup entry, not a second
+        // selection model. API/UID races are covered by kubernetes/tests.rs.
+        let dir = tempfile::tempdir().unwrap();
+        let mut deployment = config::local_test_deployment(dir.path().into());
+        let injected = || {
+            Some(
+                Arc::new(awaken_worker_transport_security::HeaderWorkerAuthenticator)
+                    as Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
+            )
+        };
+        assert!(
+            select(&deployment, injected())
+                .await
+                .unwrap()
+                .into_parts()
+                .1
+                .is_none(),
+            "S1"
+        );
+        deployment.mode = OperatingMode::Server;
+        deployment.role = config::Role::Coordinator;
+        deployment.worker_kubernetes = Some(config::KubernetesWorkerTransport {
+            namespace: "workers".into(),
+            service_account: "executor".into(),
+            audience: "awaken-worker".into(),
+            provider_id: "cluster".into(),
+        });
+        assert!(select(&deployment, injected()).await.is_err(), "S2");
+    }
 
     #[tokio::test]
     async fn coordinator_transport_posture_follows_the_deployment_decision_table() {

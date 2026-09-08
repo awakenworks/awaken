@@ -5,9 +5,10 @@ from formal_model_mutation_runner import ROOT, check_tlc_model_mutations
 
 
 def check_k8s_process_observation_model_mutants(tlc_jar: Path) -> None:
-    # KPT: UID replacement, phase-only failure, omitted participant, and absent
-    # historical binding must fail closed. A reachable positive exit excludes
-    # an observer that always returns Unknown. No Dispatch protocol is copied.
+    # KPT: UID replacement, phase-only failure, omitted participant, absent
+    # historical binding and authentication/read TOCTOU must fail closed. Real
+    # exit and fresh replacement binding witnesses exclude blanket denial.
+    # The same provider model owns both observations; no Dispatch is copied.
     source = (ROOT / "formal/tla/K8sProcessObservation.tla").read_text()
     config = (ROOT / "formal/tla/K8sProcessObservation.cfg").read_text()
     mutations = []
@@ -15,14 +16,16 @@ def check_k8s_process_observation_model_mutants(tlc_jar: Path) -> None:
         ("g = current", "TRUE"),
         ("/\\ CompleteExit(current)", "/\\ (CompleteExit(current) \\/ current \\in failed)"),
         ("/\\ CompleteExit(current)", "/\\ (Domain(current) \\intersect exited # {})"),
-        ("/\\ g \\in bound", "/\\ g \\in Generations"),
+        ("/\\ <<g, g>> \\in bound", "/\\ g \\in Generations"),
+        ("/\\ authenticated = current", "/\\ authenticated # 0"),
     ]:
         if source.count(anchor) != 1:
             raise SystemExit("Kubernetes process observation mutation anchor drifted")
         mutations.append((source.replace(anchor, broken), config, "Safety"))
     mutations.append((source, config.replace("INVARIANT Safety", "INVARIANT NoObservedExit"), "NoObservedExit"))
+    mutations.append((source, config.replace("INVARIANT Safety", "INVARIANT NoReplacementBinding"), "NoReplacementBinding"))
     check_tlc_model_mutations(tlc_jar, "K8sProcessObservation", source, config, mutations)
-    print("Kubernetes process observation: 4 unsafe-evidence mutants killed; real-exit witness reached")
+    print("Kubernetes process observation: 5 unsafe-evidence mutants killed; real-exit and fresh-replacement witnesses reached")
 
 
 def check_execution_replacement_model_mutants(tlc_jar: Path) -> None:

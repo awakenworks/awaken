@@ -10,6 +10,7 @@ use serde::Deserialize;
 pub struct WorkerBootstrap {
     pub worker_id: String,
     pub request_credential_file: Option<PathBuf>,
+    pub kubernetes_identity_directory: Option<PathBuf>,
     pub credential_material_root: PathBuf,
     pub credential_trust_domain: String,
     pub admin_listen: Option<String>,
@@ -28,6 +29,7 @@ pub struct WorkerBootstrap {
 pub struct WorkerBootstrapInput {
     pub worker_id: Option<String>,
     pub request_credential_file: Option<PathBuf>,
+    pub kubernetes_identity_directory: Option<PathBuf>,
     pub credential_material_root: Option<PathBuf>,
     pub credential_trust_domain: Option<String>,
     pub admin_listen: Option<String>,
@@ -57,6 +59,33 @@ impl WorkerBootstrap {
         server: impl Into<String>,
         security: WorkerUpstreamSecurity<'_>,
     ) -> Result<awaken_worker_transport_security::WorkerUpstream, String> {
+        let server = server.into();
+        if let Some(directory) = &self.kubernetes_identity_directory {
+            if self.request_credential_file.is_some() {
+                return Err("Worker cannot mix Pod-bound tokens and signing credentials".into());
+            }
+            #[cfg(feature = "container-k8s")]
+            {
+                let authorizer = awaken_worker_transport_security::kubernetes::KubernetesWorkerRequestAuthorizer::from_projected_directory(directory)?;
+                if authorizer.pod().worker_id() != self.worker_id {
+                    return Err("Worker Pod projection changed after bootstrap resolution".into());
+                }
+                let ca = match security {
+                    WorkerUpstreamSecurity::Local => None,
+                    WorkerUpstreamSecurity::Remote {
+                        server_ca_certificate,
+                    } => server_ca_certificate,
+                };
+                return authorizer.into_remote_upstream(&server, ca);
+            }
+            #[cfg(not(feature = "container-k8s"))]
+            {
+                let _ = directory;
+                return Err(
+                    "Pod-bound Worker transport requires the container-k8s build feature".into(),
+                );
+            }
+        }
         use awaken_worker_transport_security::{
             WorkerUpstream, parse_projected_signing_credentials, projected_request_authorizer,
         };
@@ -100,9 +129,37 @@ impl WorkerBootstrap {
     }
 
     pub fn resolve(input: WorkerBootstrapInput, data_dir: &Path) -> Result<Self, String> {
+        let worker_id = if let Some(directory) = &input.kubernetes_identity_directory {
+            if input.request_credential_file.is_some() {
+                return Err("Worker cannot mix Pod-bound tokens and signing credentials".into());
+            }
+            #[cfg(feature = "container-k8s")]
+            {
+                let pod = awaken_worker_transport_security::kubernetes::KubernetesWorkerRequestAuthorizer::from_projected_directory(directory)?;
+                let exact = pod.pod().worker_id();
+                if input
+                    .worker_id
+                    .as_ref()
+                    .is_some_and(|configured| configured != &exact)
+                {
+                    return Err("worker_id must exactly match its Kubernetes Pod projection".into());
+                }
+                Some(exact)
+            }
+            #[cfg(not(feature = "container-k8s"))]
+            {
+                let _ = directory;
+                return Err(
+                    "Pod-bound Worker transport requires the container-k8s build feature".into(),
+                );
+            }
+        } else {
+            input.worker_id
+        };
         let worker = Self {
-            worker_id: input.worker_id.unwrap_or_else(|| "awaken-worker".into()),
+            worker_id: worker_id.unwrap_or_else(|| "awaken-worker".into()),
             request_credential_file: input.request_credential_file,
+            kubernetes_identity_directory: input.kubernetes_identity_directory,
             credential_material_root: input
                 .credential_material_root
                 .unwrap_or_else(|| data_dir.join("worker-credentials")),
@@ -148,6 +205,7 @@ struct WorkerFileConfig {
     worker_server_ca_certificate_file: Option<PathBuf>,
     worker_id: Option<String>,
     worker_request_credential_file: Option<PathBuf>,
+    worker_kubernetes_identity_directory: Option<PathBuf>,
     worker_credential_material_root: Option<PathBuf>,
     worker_credential_trust_domain: Option<String>,
     worker_local_credential_bindings_file: Option<PathBuf>,
@@ -203,6 +261,7 @@ impl WorkerDaemonConfig {
             WorkerBootstrapInput {
                 worker_id: file.worker_id,
                 request_credential_file: file.worker_request_credential_file,
+                kubernetes_identity_directory: file.worker_kubernetes_identity_directory,
                 credential_material_root: file.worker_credential_material_root,
                 credential_trust_domain: file.worker_credential_trust_domain,
                 admin_listen: file.worker_admin_listen,
@@ -404,6 +463,124 @@ impl WorkerDaemonConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pod_bootstrap_freezes_projected_identity_and_never_falls_back_to_signing() {
+        // P1 supported feature + complete projection => derive exact Worker ID
+        // and use the existing HTTPS upstream with a rotating Pod bearer. P2
+        // unsupported feature/missing metadata/mismatched authored ID => reject.
+        // P3 signer and Pod token together => reject even after public config
+        // mutation. P4 metadata replacement after resolve => reject; rotating
+        // token alone remains supported by the transport's own decision table.
+        let directory = tempfile::tempdir().unwrap();
+        let input = || WorkerBootstrapInput {
+            kubernetes_identity_directory: Some(directory.path().into()),
+            ..Default::default()
+        };
+        assert!(
+            WorkerBootstrap::resolve(input(), directory.path()).is_err(),
+            "P2 missing"
+        );
+        for (name, value) in [
+            ("namespace", "workers"),
+            ("name", "worker-a"),
+            ("uid", "uid-a"),
+            ("token", "fixture-token"),
+        ] {
+            std::fs::write(directory.path().join(name), value).unwrap();
+        }
+        // P5 the standalone TOML entry must forward the same projection into
+        // the shared resolver; a parsed-but-discarded field would select the
+        // default Worker identity and lose Pod authentication at deployment.
+        let config_path = directory.path().join("worker.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                "role = \"worker\"\nmode = \"server\"\nworker_server = \"https://coordinator\"\nsandbox_tier = \"k8s\"\nworker_kubernetes_identity_directory = {:?}",
+                directory.path().to_str().unwrap()
+            ),
+        )
+        .unwrap();
+        let loaded = WorkerDaemonConfig::load(&config_path, None);
+        assert_eq!(
+            loaded.is_ok(),
+            cfg!(feature = "container-k8s"),
+            "P5 {loaded:?}"
+        );
+        #[cfg(feature = "container-k8s")]
+        {
+            let loaded = loaded.unwrap();
+            assert_eq!(loaded.worker.worker_id, "k8s:workers:worker-a:uid-a", "P5");
+            assert_eq!(
+                loaded.worker.kubernetes_identity_directory.as_deref(),
+                Some(directory.path()),
+                "P5"
+            );
+        }
+        let resolved = WorkerBootstrap::resolve(input(), directory.path());
+        assert_eq!(
+            resolved.is_ok(),
+            cfg!(feature = "container-k8s"),
+            "P1/P2 feature"
+        );
+        #[cfg(feature = "container-k8s")]
+        {
+            let mut worker = resolved.unwrap();
+            assert_eq!(worker.worker_id, "k8s:workers:worker-a:uid-a");
+            let upstream = worker
+                .upstream("https://coordinator", WorkerUpstreamSecurity::Local)
+                .unwrap();
+            let request = upstream
+                .authorize_request(
+                    "POST",
+                    "/v1/worker/register",
+                    upstream
+                        .client()
+                        .post("https://coordinator/v1/worker/register"),
+                )
+                .unwrap()
+                .build()
+                .unwrap();
+            assert_eq!(
+                request.headers()["authorization"],
+                "Bearer fixture-token",
+                "P1"
+            );
+            assert!(
+                worker
+                    .upstream("http://coordinator", WorkerUpstreamSecurity::Local)
+                    .is_err(),
+                "P1 still HTTPS"
+            );
+            let mut mismatch = input();
+            mismatch.worker_id = Some("foreign".into());
+            assert!(
+                WorkerBootstrap::resolve(mismatch, directory.path()).is_err(),
+                "P2 mismatch"
+            );
+            worker.request_credential_file = Some(directory.path().join("signer"));
+            assert!(
+                worker
+                    .upstream("https://coordinator", WorkerUpstreamSecurity::Local)
+                    .is_err(),
+                "P3 mutation"
+            );
+            worker.request_credential_file = None;
+            std::fs::write(directory.path().join("uid"), "replacement").unwrap();
+            assert!(
+                worker
+                    .upstream("https://coordinator", WorkerUpstreamSecurity::Local)
+                    .is_err(),
+                "P4"
+            );
+        }
+        let mut mixed = input();
+        mixed.request_credential_file = Some(directory.path().join("signer"));
+        assert!(
+            WorkerBootstrap::resolve(mixed, directory.path()).is_err(),
+            "P3"
+        );
+    }
 
     #[test]
     fn shared_bootstrap_keeps_local_and_remote_security_postures_distinct() {

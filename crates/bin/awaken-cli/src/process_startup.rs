@@ -35,8 +35,7 @@ pub(super) struct ProcessStartup {
         Option<executable_agent_registration::ExecutableAgentWiring>,
     pub(super) executable_environment_wiring:
         Option<executable_environment_registration::ExecutableEnvironmentWiring>,
-    pub(super) worker_authenticator:
-        Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
+    pub(super) worker_transport: Option<super::worker_transport_security::WorkerTransport>,
     pub(super) worker_placement_policy: Option<Arc<dyn awaken_dispatch::PlacementPolicy>>,
     pub(super) cloud_native_credential_realization:
         Option<awaken_runtime_contract::CredentialRealizationProfile>,

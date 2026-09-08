@@ -1,5 +1,5 @@
 use super::*;
-use awaken_sandbox_container::k8s::PodProcessTermination;
+use awaken_sandbox_container::k8s::{PodProcessObserver, PodProcessTermination};
 
 #[tokio::test]
 async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_history() {
@@ -38,12 +38,14 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
     let pod = pod_of(&sandbox);
     let client = kube::Client::try_default().await.unwrap();
     let pods: kube::Api<k8s_openapi::api::core::v1::Pod> =
-        kube::Api::namespaced(client, &namespace);
+        kube::Api::namespaced(client.clone(), &namespace);
+    let observer = PodProcessObserver::new(client, &namespace).unwrap();
     let finalizer = "test.awaken.dev/retain-process-stop-evidence";
     k8s_common::set_test_finalizer(&pods, &pod, finalizer, true).await;
+    let uid = pods.get(&pod).await.unwrap().metadata.uid.unwrap();
     let binding = tokio::time::timeout(Duration::from_secs(60), async {
         loop {
-            if let Ok(binding) = runtime.bind_pod_process(&pod).await {
+            if let Ok(binding) = observer.bind_pod_process(&pod, &uid).await {
                 break binding;
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -52,7 +54,7 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
     .await
     .expect("process binding before fault");
     assert_eq!(
-        runtime
+        observer
             .observe_pod_process_termination(&binding)
             .await
             .unwrap(),
@@ -103,9 +105,13 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
         "exact CRI fault: {}",
         String::from_utf8_lossy(&stopped.stderr)
     );
-    let observer = K8sRuntime::connect(&namespace, "127.0.0.1:1".parse().unwrap())
-        .await
-        .unwrap();
+    let observer = PodProcessObserver::new(
+        awaken_sandbox_container::k8s::connect_control_client()
+            .await
+            .unwrap(),
+        &namespace,
+    )
+    .unwrap();
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             let current = pods.get(&pod).await.unwrap();

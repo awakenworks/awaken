@@ -29,6 +29,7 @@ pub struct ResolvedDeployment {
     pub worker_server: Option<String>,
     pub worker: super::WorkerBootstrap,
     pub worker_trust_credentials_file: Option<PathBuf>,
+    pub worker_kubernetes: Option<super::KubernetesWorkerTransport>,
     pub identity_mode: awaken_control::ManagementIdentityMode,
     pub cloud_models: CloudModelMode,
     pub org_id: String,

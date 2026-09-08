@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use awaken_cli::build_all_in_one_router_with_host_customizer;
 use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::resolved::ModelBinding;
-use awaken_runtime_contract::tool::{ToolCall, ToolError, ToolExecutor, ToolOutput};
+use awaken_runtime_contract::tool::ToolExecutor;
 use awaken_sandbox_container::{ContainerEnvironment, ContainerEnvironmentProvider};
 use awaken_scenario_host::EchoModel;
 use axum::Router;
@@ -23,125 +23,14 @@ struct RecordingProvider {
     specs: Arc<Mutex<Vec<pc::SandboxSpec>>>,
 }
 
-struct ReadyEnvironment;
-
-struct ReadyProcess;
-
-#[async_trait]
-impl pc::ProcessHandle for ReadyProcess {
-    fn id(&self) -> &str {
-        "resource-proof-process"
-    }
-
-    async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
-        std::future::pending().await
-    }
-
-    async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
-        Ok(None)
-    }
-
-    async fn signal(&self, _signal: pc::Signal) -> Result<(), pc::SandboxError> {
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl pc::Sandbox for ReadyEnvironment {
-    fn id(&self) -> &str {
-        "resource-proof"
-    }
-
-    fn handle(&self) -> pc::SandboxHandle {
-        pc::SandboxHandle::new("resource-proof", self.id())
-    }
-
-    async fn spawn(
-        &self,
-        _command: pc::Command,
-    ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
-        Err(pc::SandboxError::new(
-            "resource proof does not execute a process",
-        ))
-    }
-
-    async fn attach(
-        &self,
-        _requirement: pc::MountRequirement,
-    ) -> Result<pc::RealizedMount, pc::SandboxError> {
-        Err(pc::SandboxError::new("resource proof has no live mounts"))
-    }
-
-    async fn artifacts(&self) -> Result<Vec<pc::Artifact>, pc::SandboxError> {
-        Ok(Vec::new())
-    }
-
-    async fn read_artifact(&self, _id: &str) -> Result<Vec<u8>, pc::SandboxError> {
-        Err(pc::SandboxError::new("resource proof has no artifacts"))
-    }
-
-    fn realized(&self) -> &[pc::RealizedMount] {
-        &[]
-    }
-
-    async fn process(
-        &self,
-        _process_id: &str,
-    ) -> Result<Box<dyn pc::ProcessHandle>, pc::SandboxError> {
-        Err(pc::SandboxError::new("resource proof has no process"))
-    }
-
-    async fn status(&self) -> Result<pc::SandboxStatus, pc::SandboxError> {
-        Ok(pc::SandboxStatus::Ready)
-    }
-
-    async fn renew_lease(&self) -> Result<(), pc::SandboxError> {
-        Ok(())
-    }
-
-    async fn dispose(&self) -> Result<(), pc::SandboxError> {
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl ContainerEnvironment for ReadyEnvironment {
-    async fn spawn_agent_process(
-        &self,
-        _command: pc::Command,
-    ) -> Result<awaken_sandbox_container::RuntimeAgentProcess, pc::SandboxError> {
-        let (host, mut sandbox) = tokio::io::duplex(64 * 1024);
-        tokio::spawn(async move {
-            use tokio::io::AsyncReadExt as _;
-            let mut sink = Vec::new();
-            let _ = sandbox.read_to_end(&mut sink).await;
-        });
-        Ok(awaken_sandbox_container::RuntimeAgentProcess {
-            process: Box::new(ReadyProcess),
-            channel: Box::new(host),
-        })
-    }
-
-    async fn read_files(
-        &self,
-        _root: &str,
-    ) -> Result<Vec<awaken_sandbox_container::EnvironmentFile>, pc::SandboxError> {
-        Ok(Vec::new())
-    }
-}
-
-#[async_trait]
-impl awaken_sandbox_container::SandboxControlServicePublisher for ReadyEnvironment {
-    async fn publish_sandbox_control_service(
-        &self,
-        _kind: awaken_sandbox_container::SandboxControlServiceKind,
-        _service: Arc<dyn awaken_sandbox_container::SandboxControlService>,
-    ) -> Result<
-        Box<dyn awaken_sandbox_container::PublishedSandboxControlService>,
-        awaken_sandbox_container::SandboxControlPublishError,
-    > {
-        Err(awaken_sandbox_container::SandboxControlPublishError)
-    }
+#[test]
+fn recording_provider_cannot_advertise_process_stop_evidence() {
+    // RP1 a scheduling-only fixture has no physical process supervisor => it
+    // must not gain stop-proof capability when SandboxCapabilities evolves.
+    let provider = RecordingProvider {
+        specs: Arc::new(Mutex::new(Vec::new())),
+    };
+    assert!(!provider.sandbox_capabilities().process_tree_supervision);
 }
 
 #[async_trait]
@@ -160,6 +49,7 @@ impl ContainerEnvironmentProvider for RecordingProvider {
             enforced_network_allowlist: true,
             secret_egress_substitution: true,
             resource_limits: true,
+            process_tree_supervision: false,
             custom_rootfs: true,
             package_provisioning: true,
             control_services: Default::default(),
@@ -168,10 +58,40 @@ impl ContainerEnvironmentProvider for RecordingProvider {
 
     async fn create_environment(
         &self,
-        spec: &pc::SandboxSpec,
+        _spec: &pc::SandboxSpec,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        self.specs.lock().unwrap().push(spec.clone());
-        Ok(Arc::new(ReadyEnvironment))
+        panic!("managed Session creation must use the fenced provider entrance");
+    }
+
+    async fn create_environment_for_effect(
+        &self,
+        spec: &pc::SandboxSpec,
+        fence: Option<&pc::SandboxEffectFence>,
+        source: Option<&dyn pc::CurrentExecutionAuthority>,
+        intent: awaken_sandbox_container::ContainerRealizationIntent,
+    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
+        let fence = fence.ok_or_else(|| pc::SandboxError::new("missing creation fence"))?;
+        let source = source.ok_or_else(|| pc::SandboxError::new("missing creation authority"))?;
+        assert!(matches!(
+            intent,
+            awaken_sandbox_container::ContainerRealizationIntent::Create
+        ));
+        pc::with_current_sandbox_effect(fence, source, || {
+            let mut specs = self.specs.lock().unwrap();
+            if let Some(prior) = specs.iter().find(|prior| prior.scope == spec.scope) {
+                assert_eq!(
+                    prior.requests, spec.requests,
+                    "retry preserves frozen requests"
+                );
+                assert_eq!(prior.limits, spec.limits, "retry preserves frozen limits");
+            } else {
+                specs.push(spec.clone());
+            }
+            Ok(())
+        })?;
+        // This test owns projection, not process creation or stop evidence.
+        // End the probe here; no fabricated SandboxHandle/remote Hand is needed.
+        Err(pc::SandboxError::new("resource projection probe complete"))
     }
 
     async fn adopt_environment(
@@ -193,16 +113,7 @@ impl awaken_session_executor::HandExecutorFactory for UnusedHandFactory {
         _operation_scope: &str,
         _recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
     ) -> Arc<dyn ToolExecutor> {
-        Arc::new(UnusedToolExecutor)
-    }
-}
-
-struct UnusedToolExecutor;
-
-#[async_trait]
-impl ToolExecutor for UnusedToolExecutor {
-    async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
-        Ok(ToolOutput::ok(call.call_id.clone(), "unused"))
+        panic!("resource projection stops before Hand execution")
     }
 }
 
@@ -270,14 +181,27 @@ async fn trigger_session_provisioning(app: &Router, session_id: &str, rule: &str
     assert_eq!(status, StatusCode::OK, "{rule} trigger Run");
 }
 
-async fn wait_for_spec(specs: &Arc<Mutex<Vec<pc::SandboxSpec>>>, count: usize) -> pc::SandboxSpec {
+async fn wait_for_spec(
+    app: &Router,
+    session_id: &str,
+    specs: &Arc<Mutex<Vec<pc::SandboxSpec>>>,
+    count: usize,
+) -> pc::SandboxSpec {
     for _ in 0..200 {
         if let Some(spec) = specs.lock().unwrap().get(count - 1).cloned() {
             return spec;
         }
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     }
-    panic!("Host did not provision sandbox {count}");
+    let (_, session) = call(app, "GET", &format!("/v1/sessions/{session_id}"), None).await;
+    let (_, events) = call(
+        app,
+        "GET",
+        &format!("/v1/sessions/{session_id}/events"),
+        None,
+    )
+    .await;
+    panic!("Host did not provision sandbox {count}; session={session}; events={events}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -295,6 +219,10 @@ async fn exact_http_policy_reaches_session_and_kubernetes_pod_requests() {
     // | Rule | binding | current policy | Session | Pod requests |
     // | R1 | v1 | v2 | first | exact v1 |
     // | R2 | v2 | v2 | second | exact v2 |
+    // RP2 both records must cross the current operation-bound authority before
+    // recording. The unfenced entrance panics; the probe intentionally stops
+    // before physical creation. Retries are checked against the same scope's
+    // first frozen values and cannot be mistaken for a second Session.
     let specs = Arc::new(Mutex::new(Vec::new()));
     let provider = Arc::new(RecordingProvider {
         specs: specs.clone(),
@@ -378,7 +306,7 @@ async fn exact_http_policy_reaches_session_and_kubernetes_pod_requests() {
     .await;
     assert_eq!(status, StatusCode::OK, "R1 first Session");
     trigger_session_provisioning(&app, first_session["id"].as_str().unwrap(), "R1").await;
-    let v1 = wait_for_spec(&specs, 1).await;
+    let v1 = wait_for_spec(&app, first_session["id"].as_str().unwrap(), &specs, 1).await;
     assert_eq!(
         pod_requests(&v1),
         ("250m".into(), "33554432".into(), "67108864".into()),
@@ -402,7 +330,7 @@ async fn exact_http_policy_reaches_session_and_kubernetes_pod_requests() {
     .await;
     assert_eq!(status, StatusCode::OK, "R2 second Session");
     trigger_session_provisioning(&app, second_session["id"].as_str().unwrap(), "R2").await;
-    let v2 = wait_for_spec(&specs, 2).await;
+    let v2 = wait_for_spec(&app, second_session["id"].as_str().unwrap(), &specs, 2).await;
     assert_eq!(
         pod_requests(&v2),
         ("900m".into(), "268435456".into(), "536870912".into()),

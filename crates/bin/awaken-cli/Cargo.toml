@@ -32,6 +32,7 @@ path = "src/bin/awaken-coordinator.rs"
 [dependencies]
 # Deployment-file PVC policy is owned by the existing container substrate.
 awaken-sandbox-container.workspace = true
+kube = { version = "1", default-features = false, features = ["client", "rustls-tls", "http-proxy"], optional = true }
 awaken-protocol-mcp.workspace = true
 awaken-service-lifecycle.workspace = true
 awaken-api-contract = { workspace = true }
@@ -156,7 +157,7 @@ test-support = [
 # deployment runs its agents on. Off by default — the namespace tier needs no feature.
 container-docker = ["awaken-session-executor/container-docker"]
 container-podman = ["awaken-session-executor/container-podman"]
-container-k8s = ["awaken-session-executor/container-k8s"]
+container-k8s = ["awaken-session-executor/container-k8s", "awaken-worker/container-k8s", "awaken-worker-transport-security/kubernetes", "dep:kube"]
 
 [build-dependencies]
 serde_json.workspace = true

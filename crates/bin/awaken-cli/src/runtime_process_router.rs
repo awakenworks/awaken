@@ -30,9 +30,10 @@ pub(super) async fn prepare_runtime_routers(
         .expect("runtime process requires explicit Worker observation wiring");
     let worker_observations = worker_observation_wiring.source;
     let worker_observation_private_router = worker_observation_wiring.private_router;
-    let worker_authenticator = process
-        .worker_authenticator
-        .expect("runtime process requires an explicitly selected Worker authenticator");
+    let (worker_authenticator, worker_execution_bindings) = process
+        .worker_transport
+        .expect("runtime process requires an explicitly selected Worker transport")
+        .into_parts();
     let worker_placement_policy = process.worker_placement_policy;
     let cloud_native_credential_realization = process.cloud_native_credential_realization;
     let (
@@ -755,9 +756,7 @@ pub(super) async fn prepare_runtime_routers(
             dream_process_store,
             worker_authenticator,
             worker_placement_policy,
-            // No trusted Kubernetes Worker-to-process identity adapter has been
-            // selected by this deployment yet. Never derive it from Worker JSON.
-            worker_execution_bindings: None,
+            worker_execution_bindings,
             repository_transport_authorizer: process.repository_transport_authorizer,
             worker_directory: worker_directory.clone(),
             deployment_application,

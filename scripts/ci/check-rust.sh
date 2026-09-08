@@ -123,10 +123,11 @@ step "run-ingress-neutral" "keep store-only arithmetic out of the database-less 
 step "run-ingress-neutral-unit" "keep memory and domain tests independent from optional SQL drivers" \
   cargo test -p awaken-dispatch --no-default-features --lib "${locked[@]}"
 
-# CR6 optional Pod transport is not enabled by default -> explicitly include it
-# in the one workspace gate, so TokenReview regressions cannot silently vanish.
+# CR6 optional Pod transport and its production startup are not enabled by
+# default -> include the owning CLI feature, which also enables Worker and
+# security adapters. A leaf-only check would miss configuration/wiring drift.
 # The full gate retains its existing real Hand companion in the same graph.
-workspace_features="awaken-worker-transport-security/kubernetes"
+workspace_features="awaken-cli/container-k8s"
 case "$mode" in
   --quick)
     # Causal regression: the physical Attempt owns chained ScheduledActions;

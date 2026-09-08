@@ -54,6 +54,9 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
         role,
         config::Role::AllInOne | config::Role::Coordinator
     ));
+    let worker_transport =
+        worker_transport_security::select(deployment, coordinator_services.worker_authenticator)
+            .await?;
     let publish_local_workspace = installations.publishes_local_workspace();
     let platform_workspace = installations.platform_workspace_before_write()?;
     let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
@@ -144,10 +147,6 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
             .reclamation(),
     )
     .await?;
-    let worker_authenticator = match coordinator_services.worker_authenticator {
-        Some(authenticator) => authenticator,
-        None => worker_transport_security::authenticator(deployment)?,
-    };
     let control_service = if role == config::Role::Coordinator {
         let (url, token_source) = deployment.control_service.coordinator_credentials()?;
         Some(ControlServices::remote(Arc::new(
@@ -185,7 +184,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
             web_search_publication_resolver: None,
             executable_agent_wiring: Some(executable_agent_wiring),
             executable_environment_wiring: Some(executable_environment_wiring),
-            worker_authenticator: Some(worker_authenticator),
+            worker_transport: Some(worker_transport),
             worker_placement_policy: coordinator_services.worker_placement_policy,
             cloud_native_credential_realization: coordinator_services
                 .cloud_native_credential_realization,

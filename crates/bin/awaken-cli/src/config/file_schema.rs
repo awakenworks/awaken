@@ -24,6 +24,8 @@ pub(super) struct FileConfig {
     pub(super) worker_id: Option<String>,
     pub(super) worker_request_credential_file: Option<PathBuf>,
     pub(super) worker_trust_credentials_file: Option<PathBuf>,
+    pub(super) worker_kubernetes: Option<super::KubernetesWorkerTransport>,
+    pub(super) worker_kubernetes_identity_directory: Option<PathBuf>,
     pub(super) worker_credential_material_root: Option<PathBuf>,
     pub(super) worker_credential_trust_domain: Option<String>,
     pub(super) worker_admin_listen: Option<String>,
