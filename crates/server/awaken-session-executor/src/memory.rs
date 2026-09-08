@@ -15,15 +15,15 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::transcript::TranscriptSnapshot;
 use awaken_ext_builtin_tools::erase;
 use awaken_ext_memory::{
     EXTRACT_PROMPT, MemoryExtractionController, MemoryExtractionDriver, MemoryExtractionError,
-    MemoryExtractionIntent, MemoryExtractionMutation, MemoryExtractionRepository,
-    MemoryExtractorSnapshot, MemoryMutationReceipt, MemoryStoreHandle,
+    MemoryExtractionIntent, MemoryExtractionMutation, MemoryExtractionOutcome,
+    MemoryExtractionRepository, MemoryExtractorSnapshot, MemoryMutationReceipt, MemoryStoreHandle,
     MemoryTerminalExtractionRequest, WriteMemoryTool, accepts_memory_content, sanitize_stem,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
@@ -31,7 +31,7 @@ use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
-use crate::agent_runner::run_configured_agent_with_id;
+use crate::agent_runner::{AgentRunError, run_configured_agent_with_id};
 use crate::background::{BackgroundRuns, BackgroundWorkClass};
 use crate::store::HostCommit;
 
@@ -524,10 +524,7 @@ impl BoundMemory {
             .await;
     }
 
-    async fn extract_mutations(
-        &self,
-        intent: &MemoryExtractionIntent,
-    ) -> Result<Vec<MemoryExtractionMutation>, String> {
+    async fn extract_mutations(&self, intent: &MemoryExtractionIntent) -> MemoryExtractionOutcome {
         let capture = Arc::new(CapturedMemoryWrites::default());
         let mut seed = intent.transcript.clone();
         seed.push(Message {
@@ -543,21 +540,30 @@ impl BoundMemory {
             )],
         });
         let catalog = AgentCatalog::new().with_agent(intent.extractor.agent.clone());
-        let (executor, context) = self.runtime.materialize_extractor(intent)?;
+        let (executor, context) = match self.runtime.materialize_extractor(intent) {
+            Ok(materialized) => materialized,
+            Err(reason) => return MemoryExtractionOutcome::Retryable { reason },
+        };
         let tool = erase(WriteMemoryTool::from_handle(capture.clone()));
-        let commit = self
+        let commit = match self
             .execution
             .read()
             .expect("Memory execution context lock poisoned")
             .clone()
-            .ok_or_else(|| {
-                "Memory extraction is waiting for the Session commit/history binding".to_string()
-            })?;
+        {
+            Some(commit) => commit,
+            None => {
+                return MemoryExtractionOutcome::Retryable {
+                    reason: "Memory extraction is waiting for the Session commit/history binding"
+                        .to_string(),
+                };
+            }
+        };
         let context = context
             .with_commit(commit.clone())
             .with_reader(commit.clone());
         let auxiliary_thread_id = intent.auxiliary_thread_id();
-        run_configured_agent_with_id(
+        if let Err(error) = run_configured_agent_with_id(
             &catalog,
             crate::agent_runner::AgentRunSandbox::Fresh(&self.runtime.provider),
             executor,
@@ -569,14 +575,23 @@ impl BoundMemory {
             context,
         )
         .await
-        .map_err(|error| error.to_string())?;
+        {
+            return classify_extraction_run_error(
+                intent,
+                commit.run_state(&RunId(intent.auxiliary_run_id())),
+                error,
+            );
+        }
         let mut writes = capture.take();
         if writes.is_empty() {
             writes = writes_from_committed_agent(
                 &commit.committed_messages(&ThreadId(auxiliary_thread_id)),
             );
         }
-        self.platform.plan_mutations(writes).await
+        match self.platform.plan_mutations(writes).await {
+            Ok(mutations) => MemoryExtractionOutcome::Mutations(mutations),
+            Err(reason) => MemoryExtractionOutcome::Retryable { reason },
+        }
     }
 
     /// A live-validating Memory handle shared with the recall plugin. Returning
@@ -598,10 +613,7 @@ impl MemoryExtractionDriver for BoundMemory {
             .map_err(|_| "MemoryStore is missing, suspended, archived, or deleted".to_string())
     }
 
-    async fn extract(
-        &self,
-        intent: &MemoryExtractionIntent,
-    ) -> Result<Vec<MemoryExtractionMutation>, String> {
+    async fn extract(&self, intent: &MemoryExtractionIntent) -> MemoryExtractionOutcome {
         self.extract_mutations(intent).await
     }
 
@@ -611,6 +623,29 @@ impl MemoryExtractionDriver for BoundMemory {
         mutation: &MemoryExtractionMutation,
     ) -> Result<MemoryMutationReceipt, String> {
         self.platform.apply_mutation(mutation).await
+    }
+}
+
+fn classify_extraction_run_error(
+    intent: &MemoryExtractionIntent,
+    observed_state: Option<RunState>,
+    error: AgentRunError,
+) -> MemoryExtractionOutcome {
+    let reason = error.to_string();
+    match error {
+        AgentRunError::Configuration(_) => MemoryExtractionOutcome::PermanentFailure { reason },
+        AgentRunError::Provisioning(_) => MemoryExtractionOutcome::Retryable { reason },
+        AgentRunError::Runtime(_) => match observed_state {
+            Some(RunState::Ended(EndCause::Indeterminate)) | None | Some(RunState::Running) => {
+                MemoryExtractionOutcome::ExecutionIndeterminate {
+                    auxiliary_run_id: intent.auxiliary_run_id(),
+                    reason,
+                }
+            }
+            Some(RunState::Ended(_)) | Some(RunState::Awaiting) => {
+                MemoryExtractionOutcome::PermanentFailure { reason }
+            }
+        },
     }
 }
 
@@ -842,6 +877,72 @@ mod tests {
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult, ToolCall,
     };
+
+    #[test]
+    fn extractor_run_error_classification_never_replays_unknown_execution() {
+        // Cause/effect graph: C1 the error occurs before Runtime execution or at
+        // Runtime; C2 committed Run state is absent/running/terminal; C3 terminal
+        // cause is known/indeterminate. Effects: E1 provisioning is retryable on
+        // the same stable id; E2 unknown execution carries that exact id; E3 a
+        // committed known failure is permanent. Decision rules:
+        // R1=pre-runtime provisioning=>E1; R2=runtime+(absent|running|unknown)
+        // =>E2; R3=runtime+known-terminal=>E3. Configuration is also permanent.
+        let intent = MemoryExtractionIntent::new_range(
+            "extract-1",
+            "run-1:terminal",
+            "ws-a",
+            "session-a",
+            "terminal",
+            "memory-a",
+            1,
+            0,
+            0,
+            Vec::new(),
+            MemoryExtractorSnapshot::host_executor("memory-agent", "host", "model", "host"),
+        )
+        .unwrap();
+        let runtime_error = || {
+            AgentRunError::Runtime(awaken_runtime_contract::execution::Error::Execution(
+                "runtime boundary lost".into(),
+            ))
+        };
+
+        assert!(matches!(
+            classify_extraction_run_error(
+                &intent,
+                None,
+                AgentRunError::Provisioning("sandbox unavailable".into())
+            ),
+            MemoryExtractionOutcome::Retryable { .. }
+        ));
+        for state in [
+            None,
+            Some(RunState::Running),
+            Some(RunState::Ended(EndCause::Indeterminate)),
+        ] {
+            assert!(matches!(
+                classify_extraction_run_error(&intent, state, runtime_error()),
+                MemoryExtractionOutcome::ExecutionIndeterminate { auxiliary_run_id, .. }
+                    if auxiliary_run_id == "extract-1/agent/run"
+            ));
+        }
+        assert!(matches!(
+            classify_extraction_run_error(
+                &intent,
+                Some(RunState::Ended(EndCause::Stopped("policy".into()))),
+                runtime_error()
+            ),
+            MemoryExtractionOutcome::PermanentFailure { .. }
+        ));
+        assert!(matches!(
+            classify_extraction_run_error(
+                &intent,
+                None,
+                AgentRunError::Configuration("invalid frozen Agent".into())
+            ),
+            MemoryExtractionOutcome::PermanentFailure { .. }
+        ));
+    }
 
     /// A stub extractor model: first Step emits a write_memory call; once it sees
     /// the tool result, it replies done.
