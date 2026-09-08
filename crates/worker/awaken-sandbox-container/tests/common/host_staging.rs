@@ -28,6 +28,8 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
      * R7=R2+second process loss => a cold provider reconstructs the same terminal
      * participants, prepares and performs exact fenced cleanup without reactivation;
      * R8=absent container after R3 => reject without recreating physical state.
+     * R9 retained staging does not authorize a foreign effect or changed mount
+     * policy; exact adoption keeps the original input OS-enforced read-only.
      * The creating wrapper being gone is not itself evidence of missing binds.
      * Both real daemon adapters consume this one decision table. */
     let scope = format!(
@@ -139,6 +141,33 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
         (rejected, preserved)
     };
     std::fs::rename(&displaced, &root).unwrap();
+    let foreign = super::disposal::effect_fence(&spec.scope, "foreign", "foreign", 1);
+    assert!(
+        matches!(
+            peer.observe_environment_for_effect(
+                ContainerEnvironmentAdoption::new(&spec, &handle),
+                &foreign,
+            )
+            .await
+            .unwrap(),
+            pc::SandboxObservation::Incompatible { .. }
+        ),
+        "R9 retained inputs cannot authorize a foreign effect"
+    );
+    let mut changed = spec.clone();
+    changed.mounts[0].access = pc::MountAccess::ReadWrite;
+    assert!(
+        matches!(
+            peer.observe_environment_for_effect(
+                ContainerEnvironmentAdoption::new(&changed, &handle),
+                &initial_fence,
+            )
+            .await
+            .unwrap(),
+            pc::SandboxObservation::Incompatible { .. }
+        ),
+        "R9 adoption cannot silently change read-only mount policy"
+    );
     let adopted = peer
         .adopt_environment(ContainerEnvironmentAdoption::new(&spec, &handle))
         .await
@@ -148,6 +177,24 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
         "test \"$(cat /data/source.txt)\" = source-before-drop && test \"$(cat /mnt/session/uploads/after.txt)\" = source-after-drop"
     ])).await.unwrap();
     let result = tokio::time::timeout(Duration::from_secs(20), process.wait()).await;
+    let write = adopted
+        .spawn(pc::Command::new([
+            "sh",
+            "-c",
+            "printf CHANGED > /data/source.txt",
+        ]))
+        .await
+        .unwrap();
+    let denied_write = tokio::time::timeout(Duration::from_secs(20), write.wait()).await;
+    let input_check = adopted
+        .spawn(pc::Command::new([
+            "sh",
+            "-c",
+            "test \"$(cat /data/source.txt)\" = source-before-drop",
+        ]))
+        .await
+        .unwrap();
+    let retained_input = tokio::time::timeout(Duration::from_secs(20), input_check.wait()).await;
     let error = match peer.create(&spec).await {
         Ok(_) => panic!("R4 unfenced create cannot recover an existing effect"),
         Err(error) => error,
@@ -203,6 +250,16 @@ pub(crate) async fn verify_ordinary_host_staging_recovery<R: ContainerRuntime + 
         result.unwrap().unwrap().code,
         Some(0),
         "R2 exact original and fresh bytes"
+    );
+    assert_eq!(
+        denied_write.unwrap().unwrap().code,
+        Some(1),
+        "R9 input remains OS-enforced read-only"
+    );
+    assert_eq!(
+        retained_input.unwrap().unwrap().code,
+        Some(0),
+        "R9 denied write preserves exact source bytes"
     );
     assert!(
         !root.exists(),
