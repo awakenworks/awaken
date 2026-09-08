@@ -829,6 +829,65 @@ async fn worker_claims_and_settles_a_run_over_a_real_dispatch_transport() {
     );
 }
 
+#[tokio::test]
+async fn continuation_handoff_preserves_replacement_provenance_over_http() {
+    // Causes: C1 A occupies the physical slot; C2 A's mutation lease expires
+    // and B recovers it; C3 ordinary begin observes A; C4 the executor-authorized
+    // handoff replaces A. Effects: E1 ordinary recovery is Blocked; E2 HTTP
+    // preserves Replaced instead of flattening it to fresh Applied; E3 only B's
+    // exact ACK clears the slot. Decision rules: H1=C1+C2+C3 -> E1;
+    // H2=C1+C2+C4 -> E2+E3. This is the real JSON client/server boundary.
+    let (base, store, clock, _) = spawn_transport_server().await;
+    let queue_a =
+        HttpDispatchQueue::new(base.clone(), WorkerIdentity::new("worker-A", "boot-A", 1));
+    let queue_b = HttpDispatchQueue::new(base, WorkerIdentity::new("worker-B", "boot-B", 1));
+    queue_a
+        .enqueue(RunDispatch::new(activation("handoff-provenance")))
+        .await
+        .unwrap();
+    clock.store(0, Ordering::SeqCst);
+    let a = queue_a
+        .claim("worker-A", 1_000, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("A claims");
+    let claim_a = RunClaim::from(&a.lease);
+    assert_eq!(
+        queue_a.begin_attempt(&claim_a, 0).await.unwrap(),
+        AttemptAdmission::Applied,
+        "H1 A installs the fresh slot"
+    );
+
+    clock.store(2_000, Ordering::SeqCst);
+    let b = queue_b
+        .claim("worker-B", 1_000, 2_000, &Default::default())
+        .await
+        .unwrap()
+        .expect("B recovers");
+    let claim_b = RunClaim::from(&b.lease);
+    assert_eq!(
+        queue_b.begin_attempt(&claim_b, 2_000).await.unwrap(),
+        AttemptAdmission::Blocked,
+        "H1/E1 ordinary recovery cannot inherit A's slot"
+    );
+    assert_eq!(
+        queue_b.handoff_attempt(&claim_b, 2_000).await.unwrap(),
+        AttemptAdmission::Replaced,
+        "H2/E2 replacement provenance survives JSON"
+    );
+    assert_eq!(
+        queue_a.finish_attempt(&claim_a).await.unwrap(),
+        SettleOutcome::Fenced,
+        "H2/E3 A cannot clear B"
+    );
+    assert!(store.list_dispatches().await.unwrap()[0].physical_attempt_active);
+    assert_eq!(
+        queue_b.finish_attempt(&claim_b).await.unwrap(),
+        SettleOutcome::Applied,
+        "H2/E3 exact B ACK clears the inherited slot"
+    );
+}
+
 // ── 3. renew_lease FALSE path over the wire (lease stolen by recovery) ───────────
 
 /// Lease-fencing cause/effect graph: C1 owner A's lease is live; C2 it expires;

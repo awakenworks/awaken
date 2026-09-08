@@ -186,7 +186,10 @@ pub enum SettleOutcome {
 /// aggregate. A Run claim authorizes durable mutation, but an expired claim may
 /// still have a model/tool/Sandbox future physically unwinding. The successor
 /// may hold the new claim while it waits; it cannot cross an external execution
-/// boundary until this result is [`Applied`](Self::Applied).
+/// boundary until this result records one of the three admitted transitions.
+/// Keeping install, exact retry, and predecessor replacement distinct prevents
+/// a caller from treating inherited physical responsibility as proof that no
+/// effect has started.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptAdmission {
@@ -194,10 +197,48 @@ pub enum AttemptAdmission {
     Applied,
     /// This exact claim already owns the slot; an idempotent retry succeeds.
     AlreadyApplied,
+    /// This exact claim replaced a predecessor after the leaf executor proved
+    /// it can continue the same durable remote operation without resubmitting
+    /// the initiating effect. The predecessor's responsibility is inherited;
+    /// this is never evidence that the admitted operation has not started.
+    Replaced,
     /// A predecessor claim has not yet acknowledged physical quiescence.
     Blocked,
     /// This claim is no longer the current durable owner.
     Fenced,
+}
+
+impl AttemptAdmission {
+    /// Whether this admission itself proves that the caller installed an empty
+    /// slot and therefore owns no inherited or previously admitted effect.
+    ///
+    /// This is the only admission provenance that can acknowledge a
+    /// cancellation observed before the executor Future is constructed.
+    #[must_use]
+    pub const fn permits_pre_start_no_effect_ack(self) -> bool {
+        matches!(self, Self::Applied)
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn pre_start_no_effect_ack_requires_fresh_install_admission() {
+    // Cause/effect decision table: C1 admission installed an empty slot; C2 it
+    // stuttered an exact prior admission; C3 it replaced a predecessor; C4 it
+    // did not admit. E1 permits a pre-start no-effect ACK; E2 retains the slot.
+    // R1=C1 -> E1. R2=C2|C3|C4 -> E2. This proof prevents future enum growth
+    // from becoming ACK-authoritative by default.
+    let admission = match kani::any::<u8>() % 5 {
+        0 => AttemptAdmission::Applied,
+        1 => AttemptAdmission::AlreadyApplied,
+        2 => AttemptAdmission::Replaced,
+        3 => AttemptAdmission::Blocked,
+        _ => AttemptAdmission::Fenced,
+    };
+    assert_eq!(
+        admission.permits_pre_start_no_effect_ack(),
+        admission == AttemptAdmission::Applied
+    );
 }
 
 /// One durable observation that a dispatch applied [`DispatchOutcome::Done`].

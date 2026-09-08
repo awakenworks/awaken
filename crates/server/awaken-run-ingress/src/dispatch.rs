@@ -28,7 +28,8 @@ pub(crate) fn decide_physical_attempt_admission(
         begin_physical_attempt(current, slot)
     };
     let outcome = match transition {
-        T::Install | T::Replace => AttemptAdmission::Applied,
+        T::Install => AttemptAdmission::Applied,
+        T::Replace => AttemptAdmission::Replaced,
         T::Stutter => AttemptAdmission::AlreadyApplied,
         T::Blocked => AttemptAdmission::Blocked,
         T::Fenced => AttemptAdmission::Fenced,
@@ -83,7 +84,7 @@ mod physical_attempt_tests {
         // R2 current + empty + any -> Install / Applied.
         // R3 current + exact + any -> Stutter / AlreadyApplied.
         // R4 current + other + ordinary -> Blocked / Blocked.
-        // R5 current + other + handoff -> Replace / Applied.
+        // R5 current + other + handoff -> Replace / Replaced.
         // R6 current + torn + any -> Rejected; never silently clear the slot.
         // Finish has no lease precondition: R7 empty -> Stutter / Applied;
         // R8 exact -> Clear / Applied; R9 other -> Fenced; R10 torn -> Rejected.
@@ -102,13 +103,21 @@ mod physical_attempt_tests {
                             Some((T::Blocked, AttemptAdmission::Blocked))
                         }
                         (true, S::OtherClaim, true) => {
-                            Some((T::Replace, AttemptAdmission::Applied))
+                            Some((T::Replace, AttemptAdmission::Replaced))
                         }
                         (true, S::Corrupt, _) => None,
                     };
                     let actual = decide_physical_attempt_admission(current, slot, handoff);
                     match expected {
-                        Some(expected) => assert_eq!(actual.unwrap(), expected),
+                        Some(expected) => {
+                            let actual = actual.unwrap();
+                            assert_eq!(actual, expected);
+                            assert_eq!(
+                                actual.1.permits_pre_start_no_effect_ack(),
+                                actual.0 == T::Install,
+                                "only the fresh-install provenance can certify no pre-start effect"
+                            );
+                        }
                         None => assert!(matches!(actual, Err(DispatchError::Rejected(_)))),
                     }
                 }
