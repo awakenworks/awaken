@@ -989,6 +989,8 @@ impl SharedHost {
             let selected = self.session_slots.read(thread, |slot| {
                 let environment = match &slot.environment_owner {
                     SessionEnvironmentOwner::Resident(owned) => &owned.environment,
+                    SessionEnvironmentOwner::Preparing(SessionEnvironmentPreparation::Candidate(candidate))
+                        if candidate.durable_identity().is_some() => &candidate.environment,
                     SessionEnvironmentOwner::Retiring(retiring)
                         if retiring.cause == SessionEnvironmentRetirementCause::RealizationRevocation =>
                         return Some(retiring.owned.environment()),

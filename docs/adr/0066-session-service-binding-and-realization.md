@@ -142,6 +142,27 @@ bytes and restart recovery. Codex/Claude deterministic peers do not establish
 real vendor credential compatibility. These rows also do not establish Windows,
 macOS, cross-machine failover or all pending-Candidate replacement schedules.
 
+Store-read committed Candidates use the same retirement selector and existing
+committed-Candidate transition: their exact hidden Arc and durable identity move
+directly to Bound `Retiring(RealizationRevocation)`, without prior publication.
+Complete-projection preflight reuses the durable-identity decision to reject a
+foreign generation before stopping processes. Same-generation receipt stutter
+and renewal preserve the hidden owner. Uncommitted cleanup stays Unbound;
+projected binding equality cannot establish its missing commit evidence.
+
+SC1-SC4 extend the same real Linux projection fixture with a fenced Create,
+canonical sink readback and retained unpublished Candidate. They check renewal,
+foreign binding/generation preflight, live-tree stop, unknown-observer retention,
+exact retry, explicit revocation, old-object denial and successor execution over
+unchanged root bytes.
+The adjacent lifecycle table crosses Create/Adopt origin, commitment, exact
+selection and retirement cause. The replacement model starts with either
+Resident or committed Candidate and adds positive retirement enabledness: seven
+semantic mutants and three reachability witnesses. It assumes commitment, not
+response-loss commit discovery, a second replacement of the successor Candidate,
+or real sink/dispatch cancellation ordering. Those schedules still require
+end-to-end qualification rather than inference from this retained-owner fixture.
+
 ## 2026-09-01 amendment: lease-only renewal
 
 Initial assignment and desired-state progression continue to use the one
