@@ -104,6 +104,7 @@ cargo test -p awaken-credential-vault --lib managed_update_atomically
 # Exercise SQLite and the canonical in-memory fixture without
 # making this SQLite-only formal stage silently skip an optional PostgreSQL.
 cargo test -p awaken-credential-vault --lib repo::cleanup
+cargo test -p awaken-credential-vault --lib repo::material_mutation::tests
 cargo test -p awaken-credential-store --features test-support,sqlite --test repo_conformance
 # The audit scalar proof assumes exact SQL tuple selection and record equality.
 # Keep the production projection and SQLite conformance/migration tests beside it;
@@ -259,6 +260,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness erasure_withdrawal_is_absorbing_and_idempotent \
     --harness revision_advance_is_strict_or_explicitly_exhausted
   run_kani awaken-credential-vault \
+    --harness credential_material_phase_transitions_preserve_exact_writer_fence \
+    --harness credential_material_recovery_action_is_total_and_expiry_exact \
     --harness credential_cleanup_requires_exact_authority_and_phase_truth \
     --harness credential_reclamation_never_deletes_shared_or_live_predecessor_material \
     --harness injection_location_represents_exactly_the_three_usable_states \
