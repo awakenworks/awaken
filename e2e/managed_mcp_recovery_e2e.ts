@@ -207,7 +207,9 @@ async function main(): Promise<void> {
       await waitForValue(() => fs.existsSync(markerPath), Boolean, `${rule}: exact production boundary`, { timeoutMs: 30_000 });
       const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
       assert.equal(marker.point, boundary);
-      const initializationsBeforeCrash = newFixtures.map(fixture => fixture.calls.filter((call: any) => call.method === 'initialize').length);
+      const initializationsBeforeCrash = newFixtures.map(
+        (fixture: (typeof newFixtures)[number]) => fixture.calls.filter((call: any) => call.method === 'initialize').length,
+      );
       await hardKillServer(server, `MCP exact boundary ${rule}`);
       server = null;
       assert.equal(await pending, 'interrupted', `${rule}: no response before crash`);
@@ -225,7 +227,14 @@ async function main(): Promise<void> {
       client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl, maxRetries: 0 });
       const restored = await client.beta.sessions.retrieve(candidate.id, { betas: BETAS });
       assert.deepEqual(restored.agent.mcp_servers, desired, `${rule}: exact desired generation`);
-      await waitForValue(readTrace, events => events.slice(interrupted.length + 1).some((event: any) => event.point === 'complete'), `${rule}: recovered terminal driver`, { timeoutMs: 30_000 });
+      await waitForValue(
+        readTrace,
+        (events: ReturnType<typeof readTrace>) => events
+          .slice(interrupted.length + 1)
+          .some((event: any) => event.point === 'complete'),
+        `${rule}: recovered terminal driver`,
+        { timeoutMs: 30_000 },
+      );
       // Every desired endpoint must perform a real authenticated handshake in
       // the new process, including the second attachment; zero desired means
       // no handshake. Driver observations alone cannot establish actual HTTP I/O.
@@ -234,9 +243,19 @@ async function main(): Promise<void> {
         assert.equal(actual, initializationsBeforeCrash[index] + (index < count ? 1 : 0), `${rule}: endpoint ${index} cold handshake`);
       }
       // Replay the persisted update identity: no new generation or adapter I/O.
-      const callsBeforeReplay = newFixtures.reduce((total, fixture) => total + fixture.calls.length, 0);
+      const callsBeforeReplay = newFixtures.reduce(
+        (total: number, fixture: (typeof newFixtures)[number]) => total + fixture.calls.length,
+        0,
+      );
       await update(client, candidate.id, desired, `crash-${rule}`);
-      assert.equal(newFixtures.reduce((total, fixture) => total + fixture.calls.length, 0), callsBeforeReplay, `${rule}: exact HTTP replay`);
+      assert.equal(
+        newFixtures.reduce(
+          (total: number, fixture: (typeof newFixtures)[number]) => total + fixture.calls.length,
+          0,
+        ),
+        callsBeforeReplay,
+        `${rule}: exact HTTP replay`,
+      );
       const observed = readTrace();
       const terminalIndex = observed.findIndex((event, index) => index > interrupted.length && event.point === 'complete');
       const events = observed.slice(0, terminalIndex + 1);
