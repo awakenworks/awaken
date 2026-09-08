@@ -101,9 +101,9 @@ fn relative_logical_path(from: &str, to: &str, separator: char) -> String {
 #[path = "resource_prompt_tests.rs"]
 mod resource_prompt_tests;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum ResourcePromptKind {
-    File,
+    File(awaken_resource_contract::FileId),
     MemoryStore,
     Repository,
 }
@@ -129,8 +129,8 @@ impl ResourcePromptProjection {
         use awaken_session_contract::ResolvedInputSource;
 
         let (kind, logical_path) = match &input.source {
-            ResolvedInputSource::File { .. } => (
-                ResourcePromptKind::File,
+            ResolvedInputSource::File { file_id } => (
+                ResourcePromptKind::File(file_id.clone()),
                 managed_file_mount_path(&input.mount_path),
             ),
             ResolvedInputSource::MemoryStore { .. } => (
@@ -174,9 +174,19 @@ impl ResourcePromptProjection {
             ResourceAccess::ReadWrite => "read/write",
         };
         let path = path_view.render(&self.logical_path);
-        let base = match (self.kind, delivery) {
-            (ResourcePromptKind::File, _) => {
-                format!("A file is mounted read-only at `{path}`.")
+        let base = match (&self.kind, delivery) {
+            (ResourcePromptKind::File(file_id), _) => {
+                // The frozen binding and the selected Environment jointly own
+                // identity and usable path. A client mount request is not an
+                // executable path, and equal filenames never select a version.
+                format!(
+                    "Read-only file reference (JSON data): {}",
+                    serde_json::json!({
+                        "file_id": file_id,
+                        "binding_id": self.binding,
+                        "path": path,
+                    })
+                )
             }
             (ResourcePromptKind::Repository, _) => format!(
                 "A git repository is checked out at `{path}` ({access}); use git there to read, edit, commit, and export a reviewable patch. Remote publication requires an explicit operator workflow."

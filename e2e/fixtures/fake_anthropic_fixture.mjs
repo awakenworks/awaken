@@ -15,6 +15,7 @@
 
 import http from 'node:http';
 import path from 'node:path';
+import { singleFileReference } from './resource_prompt_fixture.mjs';
 import { isIP } from 'node:net';
 import { closeHttpServer } from '../http_server.mjs';
 
@@ -470,7 +471,7 @@ export const BEHAVIORS = {
         return quoted(path.posix.relative(path.posix.resolve('/workspace', cwd),
           path.posix.resolve('/workspace', logical.replaceAll('\\', '/'))) || '.');
       };
-      const file = relative(/A file is mounted read-only at `([^`]+)`/u.exec(instructions)?.[1]);
+      const file = relative(singleFileReference(instructions).path);
       const repository = relative(/A git repository is checked out at `([^`]+)`/u.exec(instructions)?.[1]);
       const memory = relative(field('MEMORY', instructions));
       const outputs = relative(field('OUTPUTS', instructions));

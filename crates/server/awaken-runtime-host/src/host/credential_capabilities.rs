@@ -183,17 +183,11 @@ mod tests {
                     "awaken.workload.acp",
                 ),
             ] {
-                for source in
-                    [awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference]
-                {
-                    for envelope in [false] {
-                        profiles.insert(awaken_runtime_contract::CredentialMaterialCapability {
-                            holder: holder.clone(),
-                            source,
-                            envelope,
-                        });
-                    }
-                }
+                profiles.insert(awaken_runtime_contract::CredentialMaterialCapability {
+                    holder,
+                    source: CredentialMaterialSource::ControlPlaneReference,
+                    envelope: false,
+                });
             }
             profiles
         }
