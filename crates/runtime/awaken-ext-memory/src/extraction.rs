@@ -827,12 +827,13 @@ mod tests {
     }
 
     #[test]
-    fn extractor_snapshot_decodes_current_and_legacy_storage_shapes() {
+    fn extractor_snapshot_requires_the_complete_current_storage_shape() {
         // Cause graph / decision table:
-        // C1=stored value has the current complete `agent`; C2=stored value has
-        // legacy `agent_id` + `model`; E1=preserve the complete snapshot;
-        // E2=migrate through the one canonical Memory Agent constructor.
-        // Constraint: exactly one of C1/C2 matches the untagged stored shape.
+        // C1=stored value has the required complete `agent`; C2=only historical
+        // `agent_id` + `model` fields exist. Effects: E1=preserve the exact
+        // complete snapshot; E2=reject the incomplete shape without inventing
+        // publication, policy, tool, plugin, or credential-reference facts.
+        // Constraint: `extraction_prompt` remains optional in the current shape.
         // | Rule | C1 | C2 | effect |
         // | R1   | T  | F  | E1     |
         // | R2   | F  | T  | E2     |
@@ -847,30 +848,21 @@ mod tests {
             serde_json::from_value(current_json).unwrap();
         assert_eq!(decoded_current, current, "R1");
 
-        let legacy_model = awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-            awaken_runtime_contract::resolved::ModelBinding::new(
-                "legacy-provider",
-                "legacy-model",
-                "host",
+        let incomplete_json = serde_json::json!({
+            "agent_id": "incomplete-memory-agent",
+            "model": awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                awaken_runtime_contract::resolved::ModelBinding::new(
+                    "provider",
+                    "model",
+                    "host",
+                ),
             ),
-        );
-        let legacy_json = serde_json::json!({
-            "agent_id": "legacy-memory-agent",
-            "model": legacy_model,
-            "instructions": "legacy instructions",
+            "instructions": "incomplete instructions",
             "extraction_prompt": "extract durable facts"
         });
-        let decoded_legacy: MemoryExtractorSnapshot = serde_json::from_value(legacy_json).unwrap();
-        assert_eq!(
-            decoded_legacy.agent,
-            crate::memory_agent("legacy-memory-agent", legacy_model, "legacy instructions"),
-            "R2"
-        );
-        assert_eq!(
-            decoded_legacy.extraction_prompt.as_deref(),
-            Some("extract durable facts"),
-            "R2"
-        );
+        let error = serde_json::from_value::<MemoryExtractorSnapshot>(incomplete_json)
+            .expect_err("R2 incomplete extractor storage must be rejected");
+        assert!(error.to_string().contains("agent"), "R2/E2: {error}");
     }
 
     fn credential_receipt(
@@ -995,8 +987,11 @@ mod tests {
         // C2 its execution is known/unknown; C3 a later worker scans recoverable
         // work. Effects: E1 unknown retires the claim without changing the Run
         // id; E2 it is terminal for automatic scheduling; E3 no mutations or
-        // receipt are fabricated. Decision rules: R1=C1+unknown=>E1,E2,E3;
-        // R2=C1+known-success is covered by the ordinary Extracted path above.
+        // receipt are fabricated; C4 the terminal is serialized and recovered.
+        // E4=the typed terminal and stable Run identity survive persistence.
+        // Decision rules: R1=C1+unknown=>E1,E2,E3;
+        // R2=R1+C4=>E4;
+        // R3=C1+known-success is covered by the ordinary Extracted path above.
         let mut intent = intent();
         let run_id = intent.auxiliary_run_id();
         let generation = intent.claim("worker-a", 100, 50).unwrap();
@@ -1020,6 +1015,16 @@ mod tests {
         assert!(intent.claim_owner.is_none(), "R1/E1");
         assert!(intent.mutations.is_empty(), "R1/E3");
         assert!(intent.receipt.is_none(), "R1/E3");
+
+        let stored = serde_json::to_string(&intent).unwrap();
+        let recovered: MemoryExtractionIntent = serde_json::from_str(&stored).unwrap();
+        assert_eq!(
+            recovered.status,
+            MemoryExtractionStatus::ExecutionIndeterminate,
+            "R2/E4"
+        );
+        assert_eq!(recovered.auxiliary_run_id(), run_id, "R2/E4");
+        assert_eq!(recovered.last_error, intent.last_error, "R2/E4");
     }
 
     #[test]

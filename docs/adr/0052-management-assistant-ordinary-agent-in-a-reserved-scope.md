@@ -93,6 +93,8 @@ first, freezes the complete executable snapshot, and uses only a built-in
 fallback when no publication exists. Per-parent Memory/Compact plugin settings
 may select a different auxiliary Agent id and override prompt text without
 creating a private catalog or a special authoring contract.
+Durable Memory extraction recovery accepts only that complete snapshot; it does
+not reconstruct missing publication facts from partial persisted fields.
 
 ### D2: Its configuration home is a reserved `ScopeId`; execution uses a real Workspace
 

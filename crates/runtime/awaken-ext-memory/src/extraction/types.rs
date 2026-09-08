@@ -3,64 +3,16 @@
 use serde::{Deserialize, Serialize};
 
 /// Frozen, secret-free extractor configuration used by every retry.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+///
+/// Durable intents require the complete executable Agent snapshot. Partial
+/// historical shapes are rejected instead of being reinterpreted at recovery.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemoryExtractorSnapshot {
     /// Complete ordinary Agent publication used on every retry. It contains
     /// model/tool/plugin references only, never secret bytes.
     pub agent: awaken_runtime_contract::ExecutableAgentSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extraction_prompt: Option<String>,
-}
-
-impl<'de> Deserialize<'de> for MemoryExtractorSnapshot {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Stored {
-            Current {
-                agent: Box<awaken_runtime_contract::ExecutableAgentSnapshot>,
-                #[serde(default)]
-                extraction_prompt: Option<String>,
-            },
-            Legacy {
-                agent_id: String,
-                model: Box<awaken_runtime_contract::resolved::ResolvedModelCandidate>,
-                #[serde(default)]
-                instructions: Option<String>,
-                #[serde(default)]
-                extraction_prompt: Option<String>,
-            },
-        }
-
-        Ok(match Stored::deserialize(deserializer)? {
-            Stored::Current {
-                agent,
-                extraction_prompt,
-            } => Self {
-                agent: *agent,
-                extraction_prompt,
-            },
-            Stored::Legacy {
-                agent_id,
-                model,
-                instructions,
-                extraction_prompt,
-            } => Self {
-                agent: crate::memory_agent(
-                    &agent_id,
-                    *model,
-                    instructions
-                        .as_deref()
-                        .filter(|value| !value.trim().is_empty())
-                        .unwrap_or(crate::DEFAULT_MEMORY_INSTRUCTIONS),
-                ),
-                extraction_prompt,
-            },
-        })
-    }
 }
 
 impl MemoryExtractorSnapshot {
