@@ -22,14 +22,14 @@ VARIABLE selectedMode, selectedHolder, selectedMechanism,
          stagedGeneration, stagedRevision, stagedEpoch,
          acceptingGeneration, acceptingRevision,
          revokedRevisions, processUp, processGeneration,
-         rejected, unsafeEffectSeen
+         rejected, lastCall
 
 vars == <<selectedMode, selectedHolder, selectedMechanism,
           desiredGeneration, desiredRevision, leaseEpoch,
           stagedGeneration, stagedRevision, stagedEpoch,
           acceptingGeneration, acceptingRevision,
           revokedRevisions, processUp, processGeneration,
-          rejected, unsafeEffectSeen>>
+          rejected, lastCall>>
 
 Init == /\ selectedMode = "None"
         /\ selectedHolder = "None"
@@ -38,7 +38,11 @@ Init == /\ selectedMode = "None"
         /\ stagedGeneration = 0 /\ stagedRevision = 0 /\ stagedEpoch = 0
         /\ acceptingGeneration = 0 /\ acceptingRevision = 0
         /\ revokedRevisions = {} /\ processUp = TRUE /\ processGeneration = 0
-        /\ rejected = FALSE /\ unsafeEffectSeen = FALSE
+        /\ rejected = FALSE
+        /\ lastCall = [generation |-> 0, revision |-> 0, accepting |-> 0,
+                        source |-> 0, process |-> 0, live |-> FALSE,
+                        revoked |-> {}, mode |-> "None", holder |-> "None",
+                        mechanism |-> "None"]
 
 Request(mode, holder, mechanism) ==
     /\ processUp /\ selectedMode = "None"
@@ -60,7 +64,7 @@ Request(mode, holder, mechanism) ==
     /\ UNCHANGED <<stagedGeneration, stagedRevision, stagedEpoch,
                     acceptingGeneration, acceptingRevision,
                     revokedRevisions, processUp, processGeneration,
-                    unsafeEffectSeen>>
+                    lastCall>>
 
 Stage ==
     /\ processUp /\ selectedMode \in Modes
@@ -72,7 +76,7 @@ Stage ==
                     desiredGeneration, desiredRevision, leaseEpoch,
                     acceptingGeneration, acceptingRevision,
                     revokedRevisions, processUp, processGeneration,
-                    rejected, unsafeEffectSeen>>
+                    rejected, lastCall>>
 
 RejectStaleStage(generation, revision, epoch) ==
     /\ processUp /\ selectedMode \in Modes
@@ -86,7 +90,7 @@ RejectStaleStage(generation, revision, epoch) ==
                     stagedGeneration, stagedRevision, stagedEpoch,
                     acceptingGeneration, acceptingRevision,
                     revokedRevisions, processUp, processGeneration,
-                    unsafeEffectSeen>>
+                    lastCall>>
 
 Activate ==
     /\ processUp /\ selectedMode \in Modes
@@ -100,7 +104,7 @@ Activate ==
     /\ UNCHANGED <<selectedMode, selectedHolder, selectedMechanism,
                     desiredGeneration, desiredRevision, leaseEpoch,
                     stagedGeneration, stagedRevision, stagedEpoch,
-                    revokedRevisions, processUp, rejected, unsafeEffectSeen>>
+                    revokedRevisions, processUp, rejected, lastCall>>
 
 Rotate ==
     /\ processUp /\ selectedMode \in Modes
@@ -112,7 +116,7 @@ Rotate ==
     /\ UNCHANGED <<selectedMode, selectedHolder, selectedMechanism,
                     acceptingGeneration, acceptingRevision,
                     revokedRevisions, processUp, processGeneration,
-                    rejected, unsafeEffectSeen>>
+                    rejected, lastCall>>
 
 Revoke(revision) ==
     /\ revision \in 1..MaxGeneration
@@ -125,14 +129,26 @@ Revoke(revision) ==
     /\ UNCHANGED <<selectedMode, selectedHolder, selectedMechanism,
                     desiredGeneration, desiredRevision, leaseEpoch,
                     stagedGeneration, stagedRevision, stagedEpoch,
-                    processUp, rejected, unsafeEffectSeen>>
+                    processUp, rejected, lastCall>>
 
-Call ==
+\* C1 live process; C2 positive accepting generation; C3 exact requested
+\* generation/revision; C4 rebuilt process; C5 adopted revision not revoked;
+\* C6 frozen delivery pair allowed. E1 records the ACTUAL request and authority
+\* at effect entry. Historical calls remain legal after a later revocation.
+\* The observer never writes a precomputed "safe" flag. Removing a guard must
+\* produce a concrete record rejected by NoUnauthorizedEffect below.
+Call(generation, revision) ==
+    /\ generation \in 1..MaxGeneration /\ revision \in 1..MaxGeneration
     /\ processUp /\ acceptingGeneration > 0
+    /\ generation = acceptingGeneration /\ revision = acceptingRevision
     /\ processGeneration = acceptingGeneration
     /\ acceptingRevision \notin revokedRevisions
     /\ Allowed(selectedMode, selectedHolder, selectedMechanism)
-    /\ unsafeEffectSeen' = FALSE
+    /\ lastCall' = [generation |-> generation, revision |-> revision,
+                    accepting |-> acceptingGeneration, source |-> acceptingRevision,
+                    process |-> processGeneration, live |-> processUp,
+                    revoked |-> revokedRevisions, mode |-> selectedMode,
+                    holder |-> selectedHolder, mechanism |-> selectedMechanism]
     /\ UNCHANGED <<selectedMode, selectedHolder, selectedMechanism,
                     desiredGeneration, desiredRevision, leaseEpoch,
                     stagedGeneration, stagedRevision, stagedEpoch,
@@ -144,7 +160,7 @@ Crash == /\ processUp /\ processUp' = FALSE /\ processGeneration' = 0
                          desiredGeneration, desiredRevision, leaseEpoch,
                          stagedGeneration, stagedRevision, stagedEpoch,
                          acceptingGeneration, acceptingRevision,
-                         revokedRevisions, rejected, unsafeEffectSeen>>
+                         revokedRevisions, rejected, lastCall>>
 
 Restart == /\ ~processUp /\ processUp' = TRUE
            /\ stagedGeneration' = 0 /\ stagedRevision' = 0 /\ stagedEpoch' = 0
@@ -152,7 +168,7 @@ Restart == /\ ~processUp /\ processUp' = TRUE
            /\ processGeneration' = 0
            /\ UNCHANGED <<selectedMode, selectedHolder, selectedMechanism,
                            desiredGeneration, desiredRevision, leaseEpoch,
-                           revokedRevisions, rejected, unsafeEffectSeen>>
+                           revokedRevisions, rejected, lastCall>>
 
 RequestAny == \E mode \in Modes, holder \in Holders, mechanism \in Mechanisms:
                   Request(mode, holder, mechanism)
@@ -160,10 +176,17 @@ RejectAny == \E generation \in 1..MaxGeneration,
                  revision \in 1..MaxGeneration,
                  epoch \in 1..MaxGeneration:
                  RejectStaleStage(generation, revision, epoch)
+CallAny == \E generation \in 1..MaxGeneration, revision \in 1..MaxGeneration: Call(generation, revision)
 RevokeAny == \E revision \in 1..MaxGeneration: Revoke(revision)
 
 Next == RequestAny \/ Stage \/ RejectAny \/ Activate \/ Rotate
-        \/ RevokeAny \/ Call \/ Crash \/ Restart
+        \/ RevokeAny \/ CallAny \/ Crash \/ Restart
+
+CallObservations == [generation: 0..MaxGeneration, revision: 0..MaxGeneration,
+                     accepting: 0..MaxGeneration, source: 0..MaxGeneration,
+                     process: 0..MaxGeneration, live: BOOLEAN,
+                     revoked: SUBSET (1..MaxGeneration), mode: Modes \cup {"None"},
+                     holder: Holders \cup {"None"}, mechanism: Mechanisms \cup {"None"}]
 
 TypeOK == /\ selectedMode \in Modes \cup {"None"}
           /\ selectedHolder \in Holders \cup {"None"}
@@ -179,7 +202,7 @@ TypeOK == /\ selectedMode \in Modes \cup {"None"}
           /\ processGeneration \in 0..MaxGeneration
           /\ revokedRevisions \subseteq 1..MaxGeneration
           /\ processUp \in BOOLEAN /\ rejected \in BOOLEAN
-          /\ unsafeEffectSeen \in BOOLEAN
+          /\ lastCall \in CallObservations
 
 SelectedModeIsAlwaysAdmissible ==
     selectedMode \in Modes => Allowed(selectedMode, selectedHolder, selectedMechanism)
@@ -194,7 +217,24 @@ AcceptingGenerationNeverExceedsDesired ==
     acceptingGeneration <= desiredGeneration /\ acceptingRevision <= desiredRevision
 AcceptingGenerationUsesRebuiltProcess ==
     processUp /\ acceptingGeneration > 0 => processGeneration = acceptingGeneration
-NoUnauthorizedEffect == ~unsafeEffectSeen
+NoUnauthorizedEffect ==
+    lastCall.generation = 0 \/
+      /\ lastCall.live
+      /\ lastCall.accepting > 0
+      /\ lastCall.generation = lastCall.accepting
+      /\ lastCall.revision = lastCall.source
+      /\ lastCall.process = lastCall.generation
+      /\ lastCall.revision \notin lastCall.revoked
+      /\ Allowed(lastCall.mode, lastCall.holder, lastCall.mechanism)
+
+\* These deliberately false invariants are checked only by the shared mutation
+\* runner as existential witnesses. Both useful modes, replacement, and a call
+\* retained across later revocation must be reachable; reject-all cannot pass.
+NoClientCallReached == lastCall.generation = 0 \/ lastCall.mode # "ClientInjection"
+NoGatewayCallReached == lastCall.generation = 0 \/ lastCall.mode # "GatewayMediation"
+NoReplacementCallReached == lastCall.generation = 0 \/ lastCall.generation < 2
+NoHistoricalRevokedCallReached ==
+    lastCall.generation = 0 \/ lastCall.revision \notin revokedRevisions
 
 Spec == Init /\ [][Next]_vars
 =====================================================================

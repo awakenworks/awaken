@@ -1075,7 +1075,15 @@ cannot prove them.
 `McpCredentialDelivery` proves the local post-adoption boundary: once a
 revocation transition removes the accepting attachment generation, no later MCP
 call can use that revision, and a replacement generation must rebuild the ACP
-process before it is accepted. The Runtime implementation additionally closes
+process before it is accepted. Calls record their requested generation/source
+revision and the process, accepting route, revocation set, and delivery selection
+at effect entry. The safety oracle checks that concrete observation instead of
+a constant safe flag; later revocation cannot retroactively invalidate a legal
+call. The strict mutation runner checks wrong generation/source, crash bypass,
+revocation/activation, and delivery-policy regressions, and requires successful
+calls in both modeled modes, replacement, and retained pre-revocation history.
+These are bounded model witnesses, not evidence that a deployment implements
+either delivery mode. The Runtime implementation additionally closes
 new local transport admission, cancels and waits for every busy generation call,
 quiesces the active Session Run, and reaps the generation-owned process before
 acknowledging `Removed`; executable concurrency tests cover that implementation
