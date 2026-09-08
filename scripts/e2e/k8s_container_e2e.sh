@@ -20,6 +20,12 @@ FIXTURE_IMAGE="${AWAKEN_K8S_FIXTURE_IMAGE:-awaken-bb:1}"
 export AWAKEN_K8S_FIXTURE_IMAGE="$FIXTURE_IMAGE"
 SESSION_IMAGE="${AWAKEN_K8S_SESSION_IMAGE:-awaken-sandbox:local}"
 export AWAKEN_K8S_SESSION_IMAGE="$SESSION_IMAGE"
+CONTROL_IMAGE="${AWAKEN_K8S_CONTROL_IMAGE:-}"
+if [[ ! "$CONTROL_IMAGE" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]]; then
+  echo "AWAKEN_K8S_CONTROL_IMAGE must name the digest-pinned operator image used by the control E2E" >&2
+  exit 2
+fi
+export AWAKEN_K8S_CONTROL_IMAGE="$CONTROL_IMAGE"
 KUBECONFIG_FILE="$(mktemp)"
 export KUBECONFIG="$KUBECONFIG_FILE"
 FIXTURE_CONTAINER="awaken-bb-tmp-$$"
@@ -90,7 +96,7 @@ kubectl apply -k deploy/k3d/bases/sandbox-network-policy
 # importing it from the host keeps this proof independent of in-node registry
 # access, which is intentionally unavailable in offline CI topologies.
 log "loading images through the shared k3d harness"
-k3d_import_storage_images "$CLUSTER" "$FIXTURE_IMAGE" "$SESSION_IMAGE"
+k3d_import_storage_images "$CLUSTER" "$FIXTURE_IMAGE" "$SESSION_IMAGE" "$CONTROL_IMAGE"
 
 # Live cross-namespace allowlist cause/effect decision table:
 # C1 the client is selected by the canonical default-deny and exact allowlist
@@ -230,7 +236,14 @@ AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s --test k8
 # single-node cleanup queue into the subject under test and can leave Pods in
 # Terminating long enough to mask the Sandbox lifecycle contract. Keep the
 # product assertions strict, but serialize this substrate fixture.
-AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s \
+# Live-suite qualification decision table: C1 the cluster gate is enabled; C2
+# the control gate is enabled; C3 the exact digest-pinned control image was
+# imported above. KQ1 C1+C2+C3 executes the marker/helper roundtrip; KQ2 any
+# absent cause fails before Cargo rather than returning a successful skipped
+# test. The Rust test remains the sole owner of the control-path assertions.
+AWAKEN_K8S_E2E=1 AWAKEN_K8S_CONTROL_E2E=1 \
+  AWAKEN_K8S_CONTROL_IMAGE="$CONTROL_IMAGE" \
+  cargo test -p awaken-sandbox-container --features k8s \
   --test k8s_e2e -- --nocapture --test-threads=1
 AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s \
   --test k8s_policy_drift -- --nocapture --test-threads=1

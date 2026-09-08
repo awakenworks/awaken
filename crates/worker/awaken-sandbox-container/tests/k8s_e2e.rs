@@ -924,7 +924,9 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
      * C1 a fenced create produced the exact Session Pod plus durable V2 handle;
      * C2 recovery presents that handle with the byte-identical frozen creation
      * spec and same live effect; C3 the separately owned live Managed File
-     * manifest changes from path/value A to path/value B. C1+C2+C3 => E1 adopt
+     * manifest changes from path/value A to path/value B; C4 this direct
+     * provider test has no external Session authority callback. C1+C2+C3+C4
+     * => E1 adopt
      * reuses the same Pod without a create/re-fingerprint path, E2 the canonical
      * live projection port removes A and projects B, E3 no per-file ConfigMap
      * exists, E4 source-dependent preparation leaves the Pod live, and E5 the
@@ -967,6 +969,7 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
         &provider,
         ContainerEnvironmentAdoption::new(&first_spec, &handle),
         Some(&create_fence),
+        None,
     )
     .await
     .expect("recover the stable Pod from its frozen spec and exact V2 handle");
@@ -1391,7 +1394,7 @@ async fn an_expired_hand_exec_is_indeterminate_but_a_later_call_uses_the_same_se
      * process is killed before the next request; C3 the same dead executor is
      * invoked; C4 one replacement Hand receives a different operation in the
      * unchanged Pod. Effects: E1 the initial call succeeds; E2 the attempted send
-     * on the dead stream is conservatively Indeterminate/Execution; E3 the later
+     * on the dead stream is the typed Indeterminate outcome; E3 the later
      * operation executes on the replacement; E4 the Session Pod identity is
      * unchanged and is disposed. Constraint K1: a stream write cannot prove that
      * zero bytes were dispatched, so C3 must never become the pre-dispatch retry
@@ -1459,10 +1462,7 @@ async fn an_expired_hand_exec_is_indeterminate_but_a_later_call_uses_the_same_se
         .await
         .expect_err("the expired channel cannot dispatch another call");
     assert!(
-        matches!(
-            error,
-            ToolError::Execution(ref message) if message.contains("indeterminate")
-        ),
+        matches!(error, ToolError::Indeterminate(_)),
         "an attempted stream write is never safe to replay: {error:?}"
     );
 
