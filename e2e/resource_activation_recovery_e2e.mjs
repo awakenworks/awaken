@@ -17,6 +17,7 @@ import {
   waitForValue,
 } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
+import { stableFingerprintFixture } from './fixtures/stable_fingerprint_fixture.mjs';
 import {
   parseDurableJson,
   sqliteExec,
@@ -119,13 +120,7 @@ function terminalCleanupEffectId(sessionId) {
   // Exact test-fixture encoding of the contract's stable cleanup identity. The
   // production aggregate remains the authority; this helper only lets the SQL
   // crash seam represent the post-Requested/pre-effect durable window.
-  const bytes = Buffer.from(JSON.stringify(['session-terminal-cleanup-v1', sessionId]));
-  let hash = 0xcbf29ce484222325n;
-  for (const byte of bytes) {
-    hash ^= BigInt(byte);
-    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
-  }
-  return `fnv1a64:${hash.toString(16).padStart(16, '0')}`;
+  return stableFingerprintFixture(['session-terminal-cleanup-v1', sessionId]);
 }
 
 function sessionRow(database, sessionId) {

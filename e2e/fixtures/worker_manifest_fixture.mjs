@@ -21,7 +21,9 @@ export function workdirWorkerManifestFixture({ buildDigest, capabilities }) {
     },
     sandbox_backends: [],
     dispatch_contract: { min: 1, max: 1 },
-    runtime_protocol: { min: 1, max: 1 },
+    // V3 carries request-relative Session lease receipts. Keep this explicit;
+    // worker_manifest_fixture.test.mjs detects drift against the Rust contract.
+    runtime_protocol: { min: 3, max: 3 },
     checkpoint_formats: ['stream-v1'],
     capacity: { max_concurrent: 1, resources: {} },
   };

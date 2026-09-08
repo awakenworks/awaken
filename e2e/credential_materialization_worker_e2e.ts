@@ -41,6 +41,7 @@ import {
 } from './fixtures/thread_commit_fixture.mjs';
 import { workdirWorkerManifestFixture } from './fixtures/worker_manifest_fixture.mjs';
 import { createTlsIdentityFixture } from './fixtures/tls_identity_fixture.mjs';
+import { stableFingerprintFixture } from './fixtures/stable_fingerprint_fixture.mjs';
 // @ts-expect-error The shared Cargo artifact resolver is intentionally JavaScript.
 import { WORKER_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 
@@ -57,16 +58,6 @@ const PROVIDER_KEY = 'sk-worker-materialization-e2e'; // awaken-allow: secret
 
 function hexComponent(value: string): string {
   return Buffer.from(value).toString('hex');
-}
-
-function stableFingerprint(value: unknown): string {
-  const bytes = Buffer.from(JSON.stringify(value));
-  let hash = 0xcbf29ce484222325n;
-  for (const byte of bytes) {
-    hash ^= BigInt(byte);
-    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
-  }
-  return `fnv1a64:${hash.toString(16).padStart(16, '0')}`;
 }
 
 function workerBinary(): string {
@@ -455,7 +446,7 @@ async function main() {
     assert.equal(settled.json.settled, true, settled.text);
 
     const materialRoot = path.join(storage, 'projected-worker-credentials');
-    const targetUseFingerprint = stableFingerprint([
+    const targetUseFingerprint = stableFingerprintFixture([
       [publishedCandidate.provisioning.provider_ref, publishedCandidate.provisioning.endpoint],
       publishedCandidate.provisioning.credential.usage,
     ]);
