@@ -32,6 +32,8 @@ mod model_discovery;
 pub use model_discovery::{ModelDiscoveryError, discover_model_ids};
 mod openai_responses;
 pub use openai_responses::OpenAiResponsesExecutor;
+mod stop_reason;
+pub use stop_reason::map_stop_reason;
 mod transcript_projection;
 
 use transcript_projection::{
@@ -1126,23 +1128,6 @@ mod visible_response_tests {
     }
 }
 
-/// Map the SDK's stop reason onto the neutral one. A provider-specific reason
-/// the SDK cannot classify (`Other`) fails at this adapter boundary instead of
-/// being erased into `None` and mistaken for a natural end by Runtime.
-pub fn map_stop_reason(reason: &genai::chat::StopReason) -> Result<StopReason> {
-    use genai::chat::StopReason as GenaiStopReason;
-    match reason {
-        GenaiStopReason::Completed(_) => Ok(StopReason::NaturalEnd),
-        GenaiStopReason::MaxTokens(_) => Ok(StopReason::MaxTokens),
-        GenaiStopReason::ToolCall(_) => Ok(StopReason::ToolUse),
-        GenaiStopReason::StopSequence(_) => Ok(StopReason::StopSequence),
-        GenaiStopReason::ContentFilter(_) => Ok(StopReason::ContentFilter),
-        GenaiStopReason::Other(_) => Err(Error::Provider(
-            "model returned an unclassified stop reason".into(),
-        )),
-    }
-}
-
 /// Map a provider response onto neutral content blocks, preserving the order of text
 /// and tool requests so an interleaved response (text + tool call + text) survives.
 pub fn map_assistant_output(content: &MessageContent) -> AssistantOutput {
@@ -1395,12 +1380,6 @@ mod verification {
         } else {
             assert_eq!(outcome, CredentialProbe::Unknown);
         }
-    }
-
-    #[kani::proof]
-    fn unclassified_provider_stop_reason_fails_closed() {
-        let result = map_stop_reason(&genai::chat::StopReason::Other(String::new()));
-        assert!(matches!(result, Err(Error::Provider(_))));
     }
 }
 
