@@ -17,10 +17,9 @@ pub(super) async fn pump_to_response(
     seq: &mut u64,
     resolver: &dyn PermissionResolver,
 ) -> Result<serde_json::Value, AcpError> {
-    match pump_response(wire, target_id, sink, seq, resolver).await? {
-        RpcResponse::Result(result) => Ok(result),
-        RpcResponse::Error(error) => Err(AcpError::Frame(error.to_string())),
-    }
+    pump_response(wire, target_id, sink, seq, resolver)
+        .await?
+        .into_result()
 }
 
 /// Read the active prompt to its business boundary, then settle a suspended
@@ -33,12 +32,17 @@ pub(super) async fn pump_prompt(
     resolver: &dyn PermissionResolver,
     settle_deadline: std::time::Duration,
 ) -> Result<serde_json::Value, AcpError> {
-    let outcome = pump_to_response(wire, ID_PROMPT, sink, seq, resolver).await;
-    if matches!(&outcome, Err(AcpError::PermissionAwait { .. })) {
+    let mut context = PermissionContext::for_session(session_id);
+    let outcome = pump_response_in_context(wire, ID_PROMPT, sink, seq, resolver, &mut context)
+        .await
+        .and_then(RpcResponse::into_result);
+    if let Err(AcpError::PermissionAwait { ask, .. }) = &outcome {
         // Cancelling the permission request alone does not finish the SDK turn.
         // Let the adapter interrupt and flush its session before process teardown.
-        // Late frames are attempt-local cancellation residue: never commit them
-        // or authorize another call using the original resolver's one-shot grant.
+        // The pending call and new work remain cancellation residue, but an
+        // already observed sibling may have executed before this Await. Retain
+        // its exact late terminal fact through the same sink and sequence.
+        context.begin_settlement(&ask.call_id);
         let settle = async {
             wire.send(&serde_json::json!({
                 "jsonrpc": JSONRPC,
@@ -46,14 +50,8 @@ pub(super) async fn pump_prompt(
                 "params": agent_client_protocol::CancelNotification::new(session_id.clone()),
             }))
             .await?;
-            pump_to_response(
-                wire,
-                ID_PROMPT,
-                &mut crate::DiscardRunFacts,
-                &mut 0,
-                &RejectPermission,
-            )
-            .await
+            pump_response_in_context(wire, ID_PROMPT, sink, seq, &RejectPermission, &mut context)
+                .await
         };
         // EOF, a bad acknowledgement or timeout cannot replace the durable Await
         // with success/failure. The supervisor still owns bounded physical reap.
@@ -65,6 +63,15 @@ pub(super) async fn pump_prompt(
 pub(super) enum RpcResponse {
     Result(serde_json::Value),
     Error(serde_json::Value),
+}
+
+impl RpcResponse {
+    fn into_result(self) -> Result<serde_json::Value, AcpError> {
+        match self {
+            Self::Result(result) => Ok(result),
+            Self::Error(error) => Err(AcpError::Frame(error.to_string())),
+        }
+    }
 }
 
 pub(super) fn is_missing_session_error(error: &serde_json::Value) -> bool {
@@ -88,12 +95,30 @@ pub(super) async fn pump_response(
     seq: &mut u64,
     resolver: &dyn PermissionResolver,
 ) -> Result<RpcResponse, AcpError> {
+    pump_response_in_context(
+        wire,
+        target_id,
+        sink,
+        seq,
+        resolver,
+        &mut PermissionContext::default(),
+    )
+    .await
+}
+
+async fn pump_response_in_context(
+    wire: &mut Wire<'_>,
+    target_id: u64,
+    sink: &mut dyn RunFactAppender,
+    seq: &mut u64,
+    resolver: &dyn PermissionResolver,
+    permission_context: &mut PermissionContext,
+) -> Result<RpcResponse, AcpError> {
     // Some ACP adapters (notably Codex) report the precise MCP identity only in
     // the preceding tool_call update, then ask permission for a generic
     // `execute` operation. The ACP toolCallId is the protocol correlation key;
     // retain the already-projected identity for the lifetime of this response
     // pump so the one neutral policy sees the real tool rather than a lossy title.
-    let mut permission_context = PermissionContext::default();
     loop {
         let Some(msg) = wire.read().await? else {
             return Err(AcpError::Truncated);
@@ -119,7 +144,7 @@ pub(super) async fn pump_response(
                     method,
                     msg.params,
                     resolver,
-                    &mut permission_context,
+                    permission_context,
                     (sink, seq),
                 )
                 .await?;
@@ -127,7 +152,7 @@ pub(super) async fn pump_response(
             // A notification (no id).
             None => {
                 if msg.method.as_deref() == Some(CLIENT_METHOD_NAMES.session_update) {
-                    project_notification(msg.params, sink, seq, &mut permission_context).await?;
+                    project_notification(msg.params, sink, seq, permission_context).await?;
                 }
             }
         }
@@ -146,6 +171,17 @@ async fn project_notification(
         return Ok(());
     };
     let notification: SessionNotification = parse(params)?;
+    if !permission_context.accepts_session(&notification.session_id) {
+        return Ok(());
+    }
+    if permission_context.is_settling() {
+        if let Some(event) = permission_context.settlement_result(&notification.update) {
+            *seq += 1;
+            sink.append(*seq, &event).await?;
+            permission_context.observe(&event);
+        }
+        return Ok(());
+    }
     // One update can finish arguments and report a result together. Refine the
     // attempt-local call first, then project its result through the same sink.
     if let agent_client_protocol::SessionUpdate::ToolCallUpdate(update) = &notification.update
@@ -315,6 +351,121 @@ mod tests {
                 1,
                 "only original requested operation is retained"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn permission_settlement_retains_only_prior_unsettled_sibling_results() {
+        // Cause/effect graph: a prior observed sibling + no terminal result +
+        // exact unchanged input + a different Await call -> retain the sibling's
+        // late terminal fact once. S1 completed/failed siblings survive; S2 the
+        // Await target, unknown/late calls, duplicate results, changed arguments
+        // and text never cross settlement. S3 late permission remains denied,
+        // original ticket unchanged. All effects flow through the same sink and
+        // monotonic sequence; no synthetic ToolResult or second commit owner.
+        for status in ["completed", "failed"] {
+            let (mut ours, mut theirs) = tokio::io::duplex(16384);
+            struct Ask;
+            #[async_trait::async_trait]
+            impl PermissionResolver for Ask {
+                async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
+                    assert_eq!(
+                        ask.call_id, "await",
+                        "S4 foreign permission cannot reach policy"
+                    );
+                    PermissionVerdict::Await {
+                        correlation_id: "ticket".into(),
+                    }
+                }
+            }
+            let peer = tokio::spawn(async move {
+                let mut wire = Wire::new(&mut theirs);
+                wire.send(&serde_json::json!({"jsonrpc":"2.0","id":41,"method":"session/request_permission",
+                    "params":{"sessionId":"foreign","toolCall":{"toolCallId":"foreign","title":"bash","rawInput":{"command":"foreign"}},
+                    "options":[{"optionId":"yes","name":"Allow","kind":"allow_once"}]}})).await.unwrap();
+                assert_eq!(
+                    wire.read().await.unwrap().unwrap().result.unwrap()["outcome"]["outcome"],
+                    "cancelled"
+                );
+                for id in ["read", "changed", "settled", "reused"] {
+                    wire.send(
+                        &serde_json::json!({"jsonrpc":"2.0","method":"session/update",
+                        "params":{"sessionId":"s","update":{"sessionUpdate":"tool_call",
+                        "toolCallId":id,"title":"read","rawInput":{"path":"SKILL.md"}}}}),
+                    )
+                    .await
+                    .unwrap();
+                }
+                wire.send(&serde_json::json!({"jsonrpc":"2.0","method":"session/update",
+                    "params":{"sessionId":"s","update":{"sessionUpdate":"tool_call_update","toolCallId":"settled","status":"completed",
+                    "content":[{"type":"content","content":{"type":"text","text":"earlier result"}}]}}})).await.unwrap();
+                wire.send(&serde_json::json!({"jsonrpc":"2.0","id":42,"method":"session/request_permission",
+                    "params":{"sessionId":"s","toolCall":{"toolCallId":"await","title":"bash","rawInput":{"command":"work"}},
+                    "options":[{"optionId":"yes","name":"Allow","kind":"allow_once"}]}})).await.unwrap();
+                assert_eq!(
+                    wire.read().await.unwrap().unwrap().result.unwrap()["outcome"]["outcome"],
+                    "cancelled"
+                );
+                assert_eq!(
+                    wire.read().await.unwrap().unwrap().method.as_deref(),
+                    Some("session/cancel")
+                );
+                for id in ["reused", "late"] {
+                    wire.send(&serde_json::json!({"jsonrpc":"2.0","method":"session/update",
+                        "params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":id,"title":"read","rawInput":{"path":"SKILL.md"}}}})).await.unwrap();
+                }
+                // S4 a foreign Session cannot close the same wire call id.
+                wire.send(&serde_json::json!({"jsonrpc":"2.0","method":"session/update",
+                    "params":{"sessionId":"foreign","update":{"sessionUpdate":"tool_call_update","toolCallId":"read","status":"completed",
+                    "content":[{"type":"content","content":{"type":"text","text":"foreign result"}}]}}})).await.unwrap();
+                for (id, input) in [
+                    ("await", None),
+                    ("unknown", None),
+                    ("changed", Some(serde_json::json!({"path":"other"}))),
+                    ("changed", None),
+                    ("settled", None),
+                    ("reused", None),
+                    ("late", None),
+                    ("read", Some(serde_json::json!({"path":"SKILL.md"}))),
+                    ("read", None),
+                ] {
+                    let mut update = serde_json::json!({"sessionUpdate":"tool_call_update","toolCallId":id,"status":status,
+                        "content":[{"type":"content","content":{"type":"text","text":"exact sibling result"}}]});
+                    if let Some(input) = input {
+                        update["rawInput"] = input;
+                    }
+                    wire.send(&serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":update}})).await.unwrap();
+                }
+                wire.send(&serde_json::json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":"cancelled"}})).await.unwrap();
+            });
+            let mut sink = Sink::default();
+            let mut seq = 0;
+            let outcome = pump_prompt(
+                &mut Wire::new(&mut ours),
+                &SessionId::new("s"),
+                &mut sink,
+                &mut seq,
+                &Ask,
+                std::time::Duration::from_secs(1),
+            )
+            .await;
+            assert!(
+                matches!(outcome,Err(AcpError::PermissionAwait{correlation_id,ask}) if correlation_id=="ticket" && ask.call_id=="await")
+            );
+            peer.await.unwrap();
+            assert_eq!(
+                seq, 7,
+                "five original calls, prior result, exact sibling result"
+            );
+            assert_eq!(
+                sink.0.last(),
+                Some(&AcpProjectedEvent::ToolResult {
+                    id: "read".into(),
+                    content: "exact sibling result".into(),
+                    is_error: status == "failed"
+                })
+            );
+            assert_eq!(sink.0.len(), 7);
         }
     }
 
