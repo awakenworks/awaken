@@ -211,6 +211,230 @@ struct MapResolver {
     workers: HashMap<String, Arc<MemWorker>>,
 }
 
+#[derive(Default)]
+struct ObservedWake {
+    local: LocalWakeSignal,
+    waiting: tokio::sync::Notify,
+}
+
+#[async_trait]
+impl WakeSignal for ObservedWake {
+    async fn publish(&self) -> Result<(), DispatchError> {
+        self.local.publish().await
+    }
+    async fn wait(&self) {
+        self.waiting.notify_one();
+        self.local.wait().await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn standalone_reconciler_consumes_hints_and_recovers_lost_hints_by_polling() {
+    // Causes W1 coordinator without drainers; W2 startup before input;
+    // W3 delivered/duplicate/missing hint; W4 60s fallback poll.
+    // Effects: W1+W2 consumes the external port; W3 delivered => relay before
+    // W4; duplicates => one pending record; missing => relay at W4, not loss.
+    // Virtual time and a wait-entry barrier distinguish real wiring from a
+    // test that merely succeeds at the fallback timer.
+    use awaken_dispatch::Outbox;
+    let store = Arc::new(MemoryDispatchStore::new());
+    let wake = Arc::new(ObservedWake::default());
+    let reconciler = DispatchReconciler::spawn(
+        store.clone(),
+        Arc::new(ManualClock::new(0)),
+        wake.clone(),
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(60),
+            terminal_reconciliation_interval: None,
+            ..Default::default()
+        },
+        Arc::new(MapResolver {
+            workers: HashMap::new(),
+        }),
+        None,
+    );
+    tokio::time::timeout(Duration::from_millis(1), wake.waiting.notified())
+        .await
+        .expect("W1 consumes the external wake port");
+    let input = harness::pending("wake-1", "wake-run", harness::TICKET, ResumeResult::allow());
+    store.stage(input.clone()).await.unwrap();
+    wake.publish().await.unwrap();
+    tokio::time::timeout(Duration::from_millis(1), wake.waiting.notified())
+        .await
+        .expect("W3 relay before fallback");
+    assert_eq!(store.list(&input.thread_id).await.unwrap().len(), 1);
+    wake.publish().await.unwrap();
+    wake.publish().await.unwrap();
+    tokio::time::advance(Duration::from_millis(1)).await;
+    assert_eq!(
+        store.list(&input.thread_id).await.unwrap().len(),
+        1,
+        "duplicate hint"
+    );
+    store
+        .stage(harness::pending(
+            "wake-2",
+            "wake-run",
+            harness::TICKET,
+            ResumeResult::allow(),
+        ))
+        .await
+        .unwrap();
+    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(
+        store.list(&input.thread_id).await.unwrap().len(),
+        2,
+        "W4 lost hint"
+    );
+    reconciler.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn dispatch_shutdown_does_not_depend_on_non_authoritative_publication() {
+    // Causes S1 Service/Pool/standalone Reconciler; S2 publish never returns;
+    // S3 no in-flight mutation. Effect S1+S2+S3 => local cancellation and join
+    // finish, with zero publish calls. Pool begin_drain obeys the same rule.
+    // This does not assert that in-flight storage operations are preemptible.
+    struct UnavailableWake(std::sync::atomic::AtomicUsize);
+    #[async_trait]
+    impl WakeSignal for UnavailableWake {
+        async fn publish(&self) -> Result<(), DispatchError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::future::pending().await
+        }
+        async fn wait(&self) {
+            std::future::pending().await
+        }
+    }
+    for topology in 0..3 {
+        let store = Arc::new(MemoryDispatchStore::new());
+        let wake = Arc::new(UnavailableWake(std::sync::atomic::AtomicUsize::new(0)));
+        let clock = Arc::new(ManualClock::new(0));
+        let config = DispatchServiceConfig::default();
+        let resolver = Arc::new(MapResolver {
+            workers: HashMap::new(),
+        });
+        tokio::time::timeout(Duration::from_millis(1), async {
+            match topology {
+                0 => {
+                    awaken_dispatch::DispatchService::spawn_with_wake(
+                        worker_over(
+                            text_runtime(),
+                            store,
+                            Arc::new(MemoryCommitCoordinator::new()),
+                        ),
+                        clock,
+                        config,
+                        wake.clone(),
+                    )
+                    .shutdown()
+                    .await
+                }
+                1 => {
+                    let pool = DispatchPool::spawn_with_wake(
+                        store,
+                        clock,
+                        "pool",
+                        DEFAULT_LEASE_MS,
+                        config,
+                        resolver,
+                        1,
+                        wake.clone(),
+                    );
+                    pool.begin_drain().await;
+                    pool.shutdown().await;
+                }
+                _ => {
+                    DispatchReconciler::spawn(store, clock, wake.clone(), config, resolver, None)
+                        .shutdown()
+                        .await
+                }
+            }
+        })
+        .await
+        .expect("S1/S2/S3 local shutdown must not await network");
+        assert_eq!(wake.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+    // S4 relay has durably completed, but its best-effort notification hangs.
+    // E4 cancellation may abandon that hint (not the preceding store write).
+    // The paired in-flight-observation test requires joining authoritative work.
+    use awaken_dispatch::Outbox;
+    let store = Arc::new(MemoryDispatchStore::new());
+    let input = harness::pending(
+        "stop-relay",
+        "stop-run",
+        harness::TICKET,
+        ResumeResult::allow(),
+    );
+    store.stage(input.clone()).await.unwrap();
+    let wake = Arc::new(UnavailableWake(std::sync::atomic::AtomicUsize::new(0)));
+    let reconciler = DispatchReconciler::spawn(
+        store.clone(),
+        Arc::new(ManualClock::new(0)),
+        wake.clone(),
+        DispatchServiceConfig::default(),
+        Arc::new(MapResolver {
+            workers: HashMap::new(),
+        }),
+        None,
+    );
+    tokio::task::yield_now().await;
+    assert_eq!(wake.0.load(std::sync::atomic::Ordering::SeqCst), 1, "S4");
+    tokio::time::timeout(Duration::from_millis(1), reconciler.shutdown())
+        .await
+        .expect("E4 notification is not a shutdown dependency");
+    assert_eq!(
+        store.list(&input.thread_id).await.unwrap().len(),
+        1,
+        "E4 durable input retained"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn service_terminal_cadence_remains_independent_and_optional() {
+    // T1 empty service has entered its wake wait; T2 work arrives without a
+    // hint; T3 terminal cadence enabled/disabled; T4 queue fallback is 60s.
+    // R1 enabled => a 5s terminal tick also revisits ordinary durable work;
+    // R2 disabled => no 5s tick, but an explicit hint still drains immediately.
+    // Both reject early execution at 4s and use the public Service wiring.
+    for interval in [Some(Duration::from_secs(5)), None] {
+        let store = Arc::new(MemoryDispatchStore::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let wake = Arc::new(ObservedWake::default());
+        let service = awaken_dispatch::DispatchService::spawn_with_wake(
+            worker_over(text_runtime(), store.clone(), commit.clone()),
+            Arc::new(ManualClock::new(0)),
+            DispatchServiceConfig {
+                poll_interval: Duration::from_secs(60),
+                terminal_reconciliation_interval: interval,
+                ..Default::default()
+            },
+            wake.clone(),
+        );
+        tokio::time::timeout(Duration::from_millis(1), wake.waiting.notified())
+            .await
+            .unwrap();
+        store
+            .enqueue(RunDispatch::new(activation("cadence-run")))
+            .await
+            .unwrap();
+        tokio::time::advance(Duration::from_secs(4)).await;
+        assert_eq!(commit.commit_count(), 0, "no early work");
+        tokio::time::advance(Duration::from_secs(1)).await;
+        if interval.is_none() {
+            assert_eq!(commit.commit_count(), 0, "R2 disabled");
+            wake.publish().await.unwrap();
+        }
+        tokio::time::timeout(Duration::from_millis(1), wake.waiting.notified())
+            .await
+            .expect("R1 timer / R2 explicit hint");
+        assert!(commit.commit_count() > 0);
+        assert_eq!(store.dispatch_count(), 0);
+        service.shutdown().await;
+    }
+}
+
 #[async_trait]
 impl WorkerResolver<MemoryDispatchStore> for MapResolver {
     async fn worker_for(
