@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { test } from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
   cargoArguments,
   checkoutLocalCargoEnvironment,
@@ -75,6 +79,7 @@ test('derives every Cargo target and feature argument through one decision path'
 test('selects only the exact Cargo executable artifact', () => {
   const output = [
     'not json',
+    JSON.stringify({ reason: 'compiler-message', target: { name: 'awaken', kind: ['bin'] }, executable: '/tmp/not-artifact' }),
     JSON.stringify({ reason: 'compiler-artifact', target: { name: 'other', kind: ['bin'] }, executable: '/tmp/other' }),
     JSON.stringify({ reason: 'compiler-artifact', target: { name: 'awaken', kind: ['example'] }, executable: '/tmp/example' }),
     JSON.stringify({ reason: 'compiler-artifact', target: { name: 'awaken', kind: ['bin'] }, executable: '/tmp/awaken' }),
@@ -107,4 +112,55 @@ test('preserves structured Cargo diagnostics with a stderr fallback', () => {
     }),
     'broken',
   );
+});
+
+// Process-level decision table: S1 exact artifact + unrelated records => one
+// build and exact stdout path; S2 nonzero Cargo, even with a matching artifact
+// => failure + rendered diagnostics; S3 successful Cargo without exact artifact
+// => failure; S4 unknown CLI option => reject before Cargo. Cross S1 with the
+// actual K3d shell adapter to prove forwarding of feature/toolchain/target inputs.
+// These tests execute a fake Cargo process, never a second production resolver.
+test('shell and JS consumers share one fail-closed Cargo build', { skip: process.platform === 'win32' }, () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'cargo-resolver-'));
+  try {
+    const resolver = fileURLToPath(new URL('./cargo_binary.mjs', import.meta.url));
+    const harness = fileURLToPath(new URL('./k3d/harness.sh', import.meta.url));
+    const calls = path.join(temp, 'calls');
+    fs.writeFileSync(path.join(temp, 'cargo'), `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.appendFileSync(process.env.CALLS, JSON.stringify({args:process.argv.slice(2), target:process.env.CARGO_TARGET_DIR, toolchain:process.env.RUSTUP_TOOLCHAIN})+'\\n');
+if (process.env.MODE !== 'missing') console.log(JSON.stringify({reason:'compiler-artifact', target:{name:'server',kind:['bin']}, executable:'/artifact with spaces/server'}));
+if (process.env.MODE === 'failed') {
+  console.log(JSON.stringify({reason:'compiler-message', message:{rendered:'fixture compilation failed'}}));
+  process.exit(7);
+}
+`, { mode: 0o755 });
+    for (const mode of ['success', 'failed', 'missing', 'invalid', 'k3d']) {
+      fs.writeFileSync(calls, '');
+      const env = { ...process.env, PATH: `${temp}:${process.env.PATH}`, CALLS: calls, MODE: mode, CARGO_TARGET_DIR: path.join(temp, 'target'), RUSTUP_TOOLCHAIN: 'fixture-toolchain' };
+      const options = { cwd: temp, env, encoding: 'utf8' };
+      const result = mode === 'k3d'
+        ? spawnSync('bash', ['-c', 'source "$1"; resolve_cargo_executable app server --features container-k8s,nats --no-default-features', 'test', harness], options)
+        : spawnSync(process.execPath, [resolver, 'app', 'server', ...(mode === 'invalid' ? ['--unknown'] : ['--features', 'container-k8s,nats', '--no-default-features'])], options);
+      const builds = fs.readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+      assert.equal(builds.length, mode === 'invalid' ? 0 : 1, mode);
+      if (builds.length) {
+        assert.deepEqual(builds[0], {
+          args: cargoArguments({ packageName: 'app', targetName: 'server', features: ['container-k8s,nats'], noDefaultFeatures: true }),
+          target: env.CARGO_TARGET_DIR,
+          toolchain: 'fixture-toolchain',
+        }, mode);
+      }
+      if (mode === 'success' || mode === 'k3d') {
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.stdout, '/artifact with spaces/server\n');
+      } else {
+        assert.equal(result.status, 1, mode);
+        assert.equal(result.stdout, '', mode);
+        assert.match(result.stderr, mode === 'failed' ? /fixture compilation failed/ : mode === 'missing' ? /no bin artifact/ : /Unknown option/);
+      }
+    }
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
 });

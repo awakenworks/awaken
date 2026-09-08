@@ -31,40 +31,54 @@ def fixture():
 
 
 class ProfileTests(unittest.TestCase):
-    def test_worker_evidence_obligation_requires_its_existing_product_journey(self):
-        # J1 explicit worker_authority obligation + existing Worker journey stage
-        # => complete. J2 remove the obligation edge => reject the disconnected
-        # proof even though its model and Rust files still exist. J3 remove the
-        # stage from every journey => reject the disconnected product feature.
-        # The neighboring `worker` prefix must not silently consume this distinct
-        # namespace. Run the canonical checker with only its JSON input varied;
-        # these are assurance-graph controls, not Rust or model proof results.
+    def test_evidence_namespaces_require_their_existing_product_journeys(self):
+        # J1 explicit obligation / exact namespace + existing product journey
+        # => complete. J2 remove its edge => reject the disconnected proof even
+        # when model and Rust files still exist. J3 remove the journey stage =>
+        # reject the disconnected feature. Cross J1-J3 with Worker authority,
+        # Memory invalidation and retained Memory participants: a neighboring
+        # `worker` / `memory` prefix cannot consume the underscore namespace.
+        # Shared baseline and journey-stage controls run once per distinct
+        # graph. This exercises the canonical checker with only JSON varied;
+        # it verifies assurance wiring, not Rust refinement or model validity.
         checker = check_feature_coverage
         original_load = checker.load_json
         current = original_load(checker.FEATURES)
-        obligation = "worker_authority.independent_evidence_never_extends_expired_proof"
-        for rule in ("linked", "missing-obligation", "missing-stage"):
-            with self.subTest(rule=rule):
-                features = copy.deepcopy(current)
-                feature = next(row for row in features["features"] if row["id"] == "worker.remote_execution")
-                requirement = next(row for row in feature["requirements"] if row["id"] == "remote_protocol")
-                self.assertIn(obligation, requirement["obligations"])
-                if rule == "missing-obligation":
-                    requirement["obligations"].remove(obligation)
-                elif rule == "missing-stage":
-                    for journey in features["product_journeys"]:
-                        journey["stages"] = [stage for stage in journey["stages"] if stage != feature["id"]]
-                def load(path):
-                    return features if path == checker.FEATURES else original_load(path)
-                errors = io.StringIO()
-                with mock.patch.object(checker, "load_json", side_effect=load), mock.patch.object(sys, "argv", [str(checker.__file__), "--require-complete"]), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
-                    if rule == "linked":
-                        checker.main()
-                    else:
+        with mock.patch.object(sys, "argv", [str(checker.__file__), "--require-complete"]), contextlib.redirect_stdout(io.StringIO()):
+            checker.main()  # J1: one green baseline for all linked namespaces.
+        checked_stages = set()
+        for feature_id, requirement_id, field, edge, obligation in [
+            ("worker.remote_execution", "remote_protocol", "obligations",
+             "worker_authority.independent_evidence_never_extends_expired_proof",
+             "worker_authority.independent_evidence_never_extends_expired_proof"),
+            ("resource.memory", "memory_consistency", "obligation_prefixes",
+             "memory_invalidation", "memory_invalidation.listener_cleanup_is_owned_and_joined"),
+            ("resource.memory", "memory_consistency", "obligation_prefixes",
+             "memory_participant", "memory_participant.live_provider_retains_pending_and_failed_operations"),
+        ]:
+            for rule in ("missing-obligation", "missing-stage"):
+                if rule == "missing-stage":
+                    if feature_id in checked_stages:
+                        continue
+                    checked_stages.add(feature_id)
+                with self.subTest(obligation=obligation, rule=rule):
+                    features = copy.deepcopy(current)
+                    feature = next(row for row in features["features"] if row["id"] == feature_id)
+                    requirement = next(row for row in feature["requirements"] if row["id"] == requirement_id)
+                    self.assertIn(edge, requirement[field])
+                    if rule == "missing-obligation":
+                        requirement[field].remove(edge)
+                    elif rule == "missing-stage":
+                        for journey in features["product_journeys"]:
+                            journey["stages"] = [stage for stage in journey["stages"] if stage != feature_id]
+                    def load(path):
+                        return features if path == checker.FEATURES else original_load(path)
+                    errors = io.StringIO()
+                    with mock.patch.object(checker, "load_json", side_effect=load), mock.patch.object(sys, "argv", [str(checker.__file__), "--require-complete"]), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
                         with self.assertRaises(SystemExit) as stopped:
                             checker.main()
                         self.assertEqual(stopped.exception.code, 1)
-                        self.assertIn(obligation if rule == "missing-obligation" else "worker.remote_execution", errors.getvalue())
+                        self.assertIn(obligation if rule == "missing-obligation" else feature_id, errors.getvalue())
 
     def test_readme_does_not_duplicate_live_proof_measurements(self):
         # D1 source/model changes make copied proof counts and state-space tables
