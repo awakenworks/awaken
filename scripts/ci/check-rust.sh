@@ -123,6 +123,10 @@ step "run-ingress-neutral" "keep store-only arithmetic out of the database-less 
 step "run-ingress-neutral-unit" "keep memory and domain tests independent from optional SQL drivers" \
   cargo test -p awaken-dispatch --no-default-features --lib "${locked[@]}"
 
+# CR6 optional Pod transport is not enabled by default -> explicitly include it
+# in the one workspace gate, so TokenReview regressions cannot silently vanish.
+# The full gate retains its existing real Hand companion in the same graph.
+workspace_features="awaken-worker-transport-security/kubernetes"
 case "$mode" in
   --quick)
     # Causal regression: the physical Attempt owns chained ScheduledActions;
@@ -132,20 +136,21 @@ case "$mode" in
     # the owned boundary fixes layout without detaching execution or increasing
     # recursion limits; an ingress-only replacement would lose this coverage.
     step "check" "fix the compile errors shown above" \
-      cargo check --workspace --all-targets "${locked[@]}"
+      cargo check --workspace --all-targets --features "$workspace_features" "${locked[@]}"
     ;;
   --full)
     # C1 Cargo's user build-dir differs from target-dir; C2 Scenario tests
     # resolve the real Hand beside their test executable. E1 one full-test
     # artifact tree preserves Cargo's sibling layout for either C1 value.
     export CARGO_BUILD_BUILD_DIR="$CARGO_TARGET_DIR"
+    workspace_features+=",awaken-sandbox/hand"
     if step "clippy" "review the errors above; auto-fixable lints: cargo clippy --fix --all-targets --allow-dirty" \
-      cargo clippy --workspace --all-targets --features awaken-sandbox/hand "${locked[@]}" -- -D warnings; then
+      cargo clippy --workspace --all-targets --features "$workspace_features" "${locked[@]}" -- -D warnings; then
       # Scenario/Coordinator integration uses the real release Hand companion.
       # C1 full workspace tests => E1 build its authored feature in the same
       # Cargo graph; a thin default binary must not replace the tested companion.
       step "test" "re-run a single failure with: cargo test --workspace <test_name> -- --nocapture" \
-        cargo test --workspace --features awaken-sandbox/hand "${locked[@]}"
+        cargo test --workspace --features "$workspace_features" "${locked[@]}"
     else
       echo "   (skipping tests until clippy compiles)" >&2
     fi

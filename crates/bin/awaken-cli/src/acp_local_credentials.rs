@@ -133,18 +133,9 @@ fn configured_worker_upstream(
     upstream: impl Into<String>,
     deployment: &crate::config::ResolvedDeployment,
 ) -> Result<awaken_worker_transport_security::WorkerUpstream, String> {
-    let worker = &deployment.worker;
-    let mut upstream = awaken_worker_transport_security::WorkerUpstream::new(upstream)
-        .with_worker_id(&worker.worker_id);
-    if let Some(path) = worker.request_credential_file.as_deref() {
-        upstream = upstream.with_request_authorizer(
-            awaken_worker_transport_security::load_projected_request_authorizer(
-                path,
-                &worker.worker_id,
-            )?,
-        );
-    }
-    Ok(upstream)
+    deployment
+        .worker
+        .upstream(upstream, awaken_worker::WorkerUpstreamSecurity::Local)
 }
 
 fn configured_worker_builder(
