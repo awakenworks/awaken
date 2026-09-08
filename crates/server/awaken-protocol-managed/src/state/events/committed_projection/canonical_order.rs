@@ -198,7 +198,7 @@ pub(super) fn interval_lifecycle_open_event<'a>(
         interval.opened_revision,
         interval.activity_epoch,
         &interval.observations,
-        prior_close,
+        (prior_close, interval_close_cursor(interval)),
         batches,
         lifecycle_events,
     )
@@ -209,12 +209,13 @@ fn select_interval_opening<'a>(
     opened_revision: awaken_session_contract::SessionRevision,
     activity_epoch: u64,
     observations: &[awaken_session_contract::SessionRuntimeIntervalObservation],
-    prior_close: u64,
+    (prior_close, close): (u64, Option<u64>),
     batches: &[awaken_session_contract::SessionEventBatch],
     lifecycle_events: &'a [RunLifecycleEvent],
 ) -> Option<&'a RunLifecycleEvent> {
     let candidates = lifecycle_events
         .iter()
+        .filter(|event| close.is_none_or(|close| event.source_commit_cursor <= close))
         .filter(|event| {
             matches!(
                 event.kind,
@@ -385,7 +386,7 @@ pub(super) fn running_interval_lifecycle_open_event<'a>(
         interval.opened_revision,
         interval.activity_epoch,
         &interval.observations,
-        prior_close,
+        (prior_close, None),
         batches,
         lifecycle_events,
     )

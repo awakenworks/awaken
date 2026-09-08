@@ -201,14 +201,16 @@ Safety ==
     /\ ProjectionNeverInventsSourcePrefix
     /\ SuccessfulRefreshReachesObservedSourcePrefix
     /\ HistoricalProjectionPreservesCausalOrder
-\* Opening-identity submodel: one exact retained interval, with its admission
-\* fence normalized to cursor zero and up to MaxSourceVersion Running facts.
+\* Opening-identity submodel: one retained opening, one optional later interval,
+\* and up to MaxSourceVersion source commits. The first interval either has
+\* Running evidence or contains only its terminal commit.
 \* The same selector is used before/after terminal observation and after cache
 \* loss. Runtime/Session source agreement and the selected Run/Thread boundary
 \* are assumptions here; Rust reducer and real restart tests check that binding.
 \* Existing variables are reused only by the separate OpeningInit/OpeningNext
 \* configuration, so this submodel does not multiply the UI admission state space.
-OpeningChoice == CHOOSE cursor \in 1..sourceVersion :
+OpeningChoice == IF aggregate = "terminal-only" THEN 1 ELSE
+                 CHOOSE cursor \in 1..sourceVersion :
                     \A other \in 1..sourceVersion : cursor <= other
 OpeningInit == Init
 OpeningAppend ==
@@ -231,7 +233,22 @@ OpeningColdRead ==
     /\ projectedVersion' = OpeningChoice
     /\ UNCHANGED <<phase, pending, resolving, lastError, sourceVersion,
                     refreshSucceeded, history, aggregate>>
+\* A fast ACP first interval may contain only its terminal commit. After a
+\* second interval opens, its Running commits cannot replace the first bracket.
+OpeningTerminalOnly ==
+    /\ sourceVersion = 0
+    /\ sourceVersion' = 1 /\ phase' = "closed" /\ aggregate' = "terminal-only"
+    /\ UNCHANGED <<pending, resolving, lastError, projectedVersion,
+                    refreshSucceeded, history>>
+OpeningReopen ==
+    /\ phase = "closed" /\ ~history.terminalCommitted
+    /\ sourceVersion < MaxSourceVersion
+    /\ sourceVersion' = sourceVersion + 1 /\ phase' = "running"
+    /\ history' = HistoryValue(FALSE, TRUE, FALSE, FALSE)
+    /\ UNCHANGED <<pending, resolving, lastError, projectedVersion,
+                    refreshSucceeded, aggregate>>
 OpeningNext == OpeningAppend \/ OpeningWarmRead \/ OpeningClose \/ OpeningColdRead
+               \/ OpeningTerminalOnly \/ OpeningReopen
 OpeningIdentityStable ==
     /\ pending \subseteq {1}
     /\ projectedVersion \in {0, 1}
