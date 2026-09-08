@@ -313,6 +313,8 @@ pub(super) async fn session_resume(
                     // the sole executor for the Session thread. It may therefore
                     // fence a predecessor Worker's longer-lived projection lease
                     // without waiting for an unrelated timeout.
+                    // The same process also needs a successor: Work retirement
+                    // can close its predecessor while the root lease is live.
                     reassign_existing_lease: true,
                 },
             })
