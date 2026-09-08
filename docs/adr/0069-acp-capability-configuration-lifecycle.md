@@ -962,13 +962,25 @@ coverage or an ambient API key with that proof.
 
 The Linux real-login gate now selects the same scoped deployment and resource
 oracle as the hermetic profiles through `e2e/acp_live_profile.mjs`; it cannot
-silently qualify an unsupervised host instead. The 2026-09-08 live deployment
-also yielded one WorkerLocal source, zero material references and zero sealed
-secret rows in a read-only credential-store observation. That observation and
-the existing registration/resolver conformance tests support local credential
-custody; they are not a credential-exfiltration audit or a real remote-cloud
-fault test. The resource mission's local bare Git remote uses test-support,
-not production HTTPS authentication. ADR-0038 owns its detailed resource scope.
+silently qualify an unsupervised host instead. The same runner now checks
+credential custody at startup, after every graceful/abrupt restart and after
+the resource mission. Its shared SQLite assertion requires one active
+WorkerLocal source for the selected backend, an unchanged source/workspace/
+revision, no material references and zero sealed secret rows in one query
+snapshot. It reads neither vendor login files nor sealed bytes. Native profiles
+retain their legitimate imported managed Vault credential and are deliberately
+outside this fresh single-ACP installation rule. Positive and negative decision
+rules live beside the assertion tests in the canonical `test:runner` suite,
+including malformed metadata and secret-free failure diagnostics.
+On 2026-09-08 the real Codex host-login resource mission and both ACP fixtures
+passed these checkpoints; the Native TrustedHost fixture also completed with
+its separate managed credential semantics intact.
+These checkpoint observations and the existing registration/resolver
+conformance tests support local credential custody; they do not prove absence
+of transient writes between checkpoints, credential exfiltration, or real
+remote-cloud fault recovery. The resource mission's local bare Git remote uses
+test-support, not production HTTPS authentication. ADR-0038 owns its detailed
+resource scope.
 
 ADR-0057's trigger-gated G2 implementation now has request attribution,
 subject-scoped ACP continuity, a registered `ContentEraser`, and an Art.17 HTTP
