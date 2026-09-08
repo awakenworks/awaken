@@ -417,7 +417,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness dispatch_claim_preserves_every_frozen_binding \
     --harness shared_error_gate_admits_exactly_one_probe_after_the_deadline \
     --harness drain_error_backoff_is_bounded_monotonic_and_saturating \
-    --harness store_deadline_is_monotonic_saturating_and_never_wraps
+    --harness store_deadline_is_monotonic_saturating_and_never_wraps \
+    --harness terminal_scan_page_preserves_budget_cursor_and_cancellation
   run_kani awaken-credential-materializer \
     --harness exact_vault_revision_accepts_only_a_positive_matching_or_unpinned_source \
     --harness platform_relay_local_gate_admits_only_exact_platform_relay \

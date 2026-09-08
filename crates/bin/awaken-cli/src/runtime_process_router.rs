@@ -755,6 +755,9 @@ pub(super) async fn prepare_runtime_routers(
             dream_process_store,
             worker_authenticator,
             worker_placement_policy,
+            // No trusted Kubernetes Worker-to-process identity adapter has been
+            // selected by this deployment yet. Never derive it from Worker JSON.
+            worker_execution_bindings: None,
             repository_transport_authorizer: process.repository_transport_authorizer,
             worker_directory: worker_directory.clone(),
             deployment_application,

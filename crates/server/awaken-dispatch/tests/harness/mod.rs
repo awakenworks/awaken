@@ -771,6 +771,8 @@ pub enum FinishFault {
 pub struct FlakyDispatchStore {
     inner: Arc<awaken_dispatch::MemoryDispatchStore>,
     local_maintenance: bool,
+    oversized_scan_page: bool,
+    scan_limits: std::sync::Mutex<Vec<usize>>,
     maintenance_calls: [AtomicUsize; 2],
     fail_claims: AtomicUsize,
     claim_attempts: AtomicUsize,
@@ -791,6 +793,8 @@ impl FlakyDispatchStore {
         Self {
             inner: Arc::new(awaken_dispatch::MemoryDispatchStore::new()),
             local_maintenance: true,
+            oversized_scan_page: false,
+            scan_limits: std::sync::Mutex::new(Vec::new()),
             maintenance_calls: [AtomicUsize::new(0), AtomicUsize::new(0)],
             fail_claims: AtomicUsize::new(fail_claims),
             claim_attempts: AtomicUsize::new(0),
@@ -813,6 +817,15 @@ impl FlakyDispatchStore {
     pub fn with_local_maintenance(mut self, owns: bool) -> Self {
         self.local_maintenance = owns;
         self
+    }
+
+    pub fn with_oversized_scan_page(mut self) -> Self {
+        self.oversized_scan_page = true;
+        self
+    }
+
+    pub fn scan_limits(&self) -> Vec<usize> {
+        self.scan_limits.lock().unwrap().clone()
     }
 
     pub fn maintenance_calls(&self) -> [usize; 2] {
@@ -1108,7 +1121,24 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
         after: Option<&RunId>,
         limit: usize,
     ) -> Result<Vec<RunId>, awaken_dispatch::DispatchError> {
-        self.inner.scan_dispatch_ids(after, limit).await
+        self.scan_limits.lock().unwrap().push(limit);
+        // Fault injection reuses this adapter rather than introducing a second
+        // Dispatch implementation. Return all remaining IDs, violating the
+        // bounded-read contract; the production scanner must still cap visits.
+        if self.oversized_scan_page {
+            let mut ids: Vec<_> = self
+                .inner
+                .list_dispatches()
+                .await?
+                .into_iter()
+                .map(|row| row.run_id)
+                .filter(|id| after.is_none_or(|cursor| id.0 > cursor.0))
+                .collect();
+            ids.sort_by(|left, right| left.0.cmp(&right.0));
+            Ok(ids)
+        } else {
+            self.inner.scan_dispatch_ids(after, limit).await
+        }
     }
 
     async fn dispatch_summary(

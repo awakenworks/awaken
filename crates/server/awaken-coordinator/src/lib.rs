@@ -704,6 +704,7 @@ pub fn mount_with_managed_and_application_access_and_models(
                 awaken_worker_transport_security::HeaderWorkerAuthenticator,
             ),
             worker_placement_policy: None,
+            worker_execution_bindings: None,
             repository_transport_authorizer: None,
             worker_directory: test_worker_directory(),
             ai_sdk_browser_cors: AiSdkBrowserCors::default(),
@@ -727,6 +728,8 @@ pub struct ManagedRoutingExtensions {
         Arc<dyn awaken_session_contract::SkillBundleSource<awaken_dispatch::RunClaim>>,
     pub worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
     pub worker_placement_policy: Option<Arc<dyn awaken_worker_contract::PlacementPolicy>>,
+    pub worker_execution_bindings:
+        Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     pub repository_transport_authorizer:
         Option<Arc<dyn awaken_resource_worker_http::RepositoryTransportAuthorizer>>,
     pub worker_directory: Arc<dyn awaken_worker_registry::WorkerDirectory>,
@@ -1078,6 +1081,7 @@ fn mount_with_managed_over(
                     awaken_worker_transport_security::HeaderWorkerAuthenticator,
                 ),
                 worker_placement_policy: None,
+                worker_execution_bindings: None,
                 repository_transport_authorizer: None,
                 worker_directory: test_worker_directory(),
                 ai_sdk_browser_cors: AiSdkBrowserCors::default(),
@@ -1125,6 +1129,7 @@ fn mount_with_managed_over_and_models(
         worker_skill_bundles,
         worker_authenticator,
         worker_placement_policy,
+        worker_execution_bindings,
         repository_transport_authorizer,
         worker_directory,
         ai_sdk_browser_cors,
@@ -1342,6 +1347,7 @@ fn mount_with_managed_over_and_models(
     let checkpoint = worker_checkpoint_authority(dispatch.as_ref(), host.storage_dir())?;
     let dispatch_router = awaken_dispatch_http::registered_dispatch_router(
         awaken_dispatch_http::RegisteredDispatchDependencies {
+            execution_bindings: worker_execution_bindings,
             dispatch: dispatch.clone() as Arc<dyn awaken_dispatch::DispatchQueue>,
             checkpoint,
             directory: worker_directory.clone(),

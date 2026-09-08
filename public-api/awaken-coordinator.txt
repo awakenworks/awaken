@@ -195,6 +195,7 @@ pub awaken_coordinator::CoordinatorDependencies::session_application: alloc::syn
 pub awaken_coordinator::CoordinatorDependencies::sessions: alloc::sync::Arc<dyn awaken_session_contract::session_repo::repository_port::ManagedSessionRepository>
 pub awaken_coordinator::CoordinatorDependencies::worker_authenticator: alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
 pub awaken_coordinator::CoordinatorDependencies::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>
+pub awaken_coordinator::CoordinatorDependencies::worker_execution_bindings: core::option::Option<alloc::sync::Arc<dyn awaken_dispatch::application::WorkerExecutionBindingSource>>
 pub awaken_coordinator::CoordinatorDependencies::worker_file_application: alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>
 pub awaken_coordinator::CoordinatorDependencies::worker_placement_policy: core::option::Option<alloc::sync::Arc<dyn awaken_worker_contract::placement::PlacementPolicy>>
 pub awaken_coordinator::CoordinatorDependencies::worker_skill_bundles: alloc::sync::Arc<dyn awaken_session_contract::skill_execution::SkillBundleSource<awaken_dispatch_contract::dispatch::RunClaim>>
@@ -217,6 +218,7 @@ pub awaken_coordinator::ManagedRoutingExtensions::repository_transport_authorize
 pub awaken_coordinator::ManagedRoutingExtensions::resource_management_router: axum::routing::Router
 pub awaken_coordinator::ManagedRoutingExtensions::worker_authenticator: alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
 pub awaken_coordinator::ManagedRoutingExtensions::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::registry::WorkerDirectory>
+pub awaken_coordinator::ManagedRoutingExtensions::worker_execution_bindings: core::option::Option<alloc::sync::Arc<dyn awaken_dispatch::application::WorkerExecutionBindingSource>>
 pub awaken_coordinator::ManagedRoutingExtensions::worker_file_application: alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>
 pub awaken_coordinator::ManagedRoutingExtensions::worker_placement_policy: core::option::Option<alloc::sync::Arc<dyn awaken_worker_contract::placement::PlacementPolicy>>
 pub awaken_coordinator::ManagedRoutingExtensions::worker_skill_bundles: alloc::sync::Arc<dyn awaken_session_contract::skill_execution::SkillBundleSource<awaken_dispatch_contract::dispatch::RunClaim>>
