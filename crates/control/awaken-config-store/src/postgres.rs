@@ -150,9 +150,8 @@ async fn write_config_revision(
     config: &AgentConfig,
     expected: u64,
 ) -> Result<Option<u64>, ConfigStoreError> {
-    let expected = StoredU64::try_from(expected).map_err(reject)?;
-    let next = expected.checked_add(1).map_err(reject)?;
-    let statement = if expected.domain_value() == 0 {
+    let plan = crate::ConfigRevisionWritePlan::new(expected).map_err(reject)?;
+    let statement = if plan.kind == crate::ConfigRevisionWriteKind::Insert {
         format!(
             "INSERT INTO {NS}_agent (id, data, scope_id, generation) \
                  SELECT $1, $2, $3, $4 WHERE $5 = 0 \
@@ -168,8 +167,8 @@ async fn write_config_revision(
         .bind(&config.id)
         .bind(Json(config))
         .bind(&scope.0)
-        .bind(next.database_value())
-        .bind(expected.database_value())
+        .bind(plan.next.database_value())
+        .bind(plan.expected.database_value())
         .fetch_optional(conn)
         .await
         .map_err(reject)?

@@ -524,6 +524,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness processing_geography_requires_exact_evidence_from_every_candidate \
     --harness publication_revision_decision_is_target_safe_fail_closed_and_replay_first
   run_kani awaken-config-store \
+    --harness config_revision_write_plan_preserves_full_u64_contract \
     --harness management_effect_retirement_requires_present_matching_receipt
   run_kani awaken-credential-contract --solver minisat \
     --harness managed_rollout_identity_requires_every_payload_field
@@ -1004,6 +1005,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/config-cas" \
     -config formal/tla/AggregateCAS.cfg formal/tla/AggregateCAS.tla
+  # Config family owns the five counterexamples; the shared dispatcher/runner executes them.
   python3 scripts/ci/check_formal_mutations.py --config-cas-model-mutant "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/deployment-cas" \

@@ -21,6 +21,7 @@ import unittest
 from unittest.mock import patch
 
 from formal_model_mutation_runner import check_tlc_model_mutations
+from formal_config_mutations import check_config_cas_model_mutant
 from formal_worker_registration_mutations import check_worker_registration_model_mutants
 from formal_realization_capacity_mutations import check_realization_capacity_observation_mutants
 from formal_event_batch_mutations import check_event_batch_model_mutants, check_event_batch_observation_mutants
@@ -1099,23 +1100,6 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
                               heap_mb=4096, timeout_seconds=600)
     print("Session execution binding: 47/47 mutants killed; 22 witnesses cover execution, provider projection, Memory, preparation, physical/restored disposal, cold reconstruction, live adoption, local creation and checkpoint upload/replay; fresh provider admission cannot be suppressed by a second clock")
 
-
-def check_config_cas_model_mutant(tlc_jar: Path) -> None:
-    # R2: the old unconditional INSERT accepted a nonzero expected revision on
-    # absence; R5: removing exhaustion admits a successor outside storage bounds.
-    # The shared oracle requires a green baseline and each exact invariant;
-    # parser errors and unavailable TLC are never credited as detection.
-    source = (ROOT / "formal/tla/AggregateCAS.tla").read_text(encoding="utf-8")
-    config = (ROOT / "formal/tla/AggregateCAS.cfg").read_text(encoding="utf-8")
-    guard = "expected[w] = generation /\\ generation < MaxGeneration"
-    if source.count(guard) != 1:
-        raise SystemExit("Config CAS mutation anchor drifted; review the model")
-    check_tlc_model_mutations(tlc_jar, "AggregateCAS", source, config, [
-        (source.replace(guard, "(generation = 0 \\/ expected[w] = generation) /\\ generation < MaxGeneration"),
-         config, "AppliedMatchedGeneration"),
-        (source.replace(guard, "expected[w] = generation"), config, "TypeOK"),
-    ])
-    print("Config CAS mutation score: 2/2 killed (absent-row predicate, exhaustion)")
 
 
 
