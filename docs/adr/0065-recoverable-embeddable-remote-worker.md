@@ -264,14 +264,43 @@ an identity without the allocated incarnation. Production constructors require
 HTTPS, reject redirects, and reject a configured CA bundle containing no valid
 certificates. Local embedding remains an explicitly selected posture.
 
-Production startup now co-selects authentication and the existing execution-
-binding source through a private transport pair, using the same trusted client.
+Production startup co-selects authentication, the execution-binding source and
+independent stop source through one private transport assembly and trusted client.
 The read-only `PodProcessObserver` is independent of Sandbox resource startup;
 Coordinator observation cannot provision a Sandbox NetworkPolicy. Its Pod read
 rechecks the authenticated UID so a same-name replacement between TokenReview
 and binding cannot acquire the old Worker's authority. The existing handler
 still performs Registry/claim checks before lookup and fresh checks before the
 atomic Dispatch admission; no database lock spans Kubernetes IO.
+
+New Pod admissions also require the deployment's process-evidence finalizer;
+the frozen binding must retain that fact before effects. A historical unretained
+binding cannot gain stop capability by observing a later finalizer.
+
+On `Blocked` admission, the same Coordinator application path checks the current
+successor claim and reads the original physical slot. Only a different Worker
+with a persisted binding can be considered. Exact `expire_incarnation` must
+return Applied before constructing the private `ClosedWorkerExecution` command;
+the slot is reread before provider IO. Live, replaced, absent or unbound subjects
+do not reach the stopper. Kubernetes validates the configured provider, immutable
+Worker UID and frozen coordinate, then uses the existing conditional Pod stop.
+Its credentials belong to Coordinator; the dead Worker's token is unnecessary.
+Normal Worker admission retries drive this path, with bounded IO and no new
+queue, timer, table or broad expiry scan. Concurrent/repeated requests target
+only the same closed domain. A late local observation never clears a successor.
+
+The resulting `WorkerProcessStopStatus` is deliberately local-only and has no
+Dispatch mutation capability. An Exited observation preserves the original
+binding and provider evidence reference; blank references and cross-domain cached
+receipts reject. Neither the closed command nor the observation is deserializable.
+Unknown/Exited both retain `Blocked`; provider
+failure or timeout returns retryable Unavailable and retains occupancy. This
+implements independent process-stop consumption, not complete attempt recovery.
+Remote participants still require their own authoritative terminal/continuation
+evidence before exact Dispatch retirement can be enabled. The HTTP decision
+matrix crosses Registry adapters and old-response races; production CLI tests
+exercise the assembled stop source against a mock Kubernetes API. Neither is
+the Native hard-crash k3d acceptance test.
 
 Configuration is explicit and role-owned:
 
@@ -288,9 +317,8 @@ Configuration is explicit and role-owned:
   authenticator rejects. Missing build features, malformed policy and wrong-role
   configuration reject rather than silently selecting an unbound transport.
 
-This is not completed Kubernetes crash recovery. Independent closed-domain stop
-evidence, exact
-Dispatch retirement and the Native hard-crash k3d E2E are not established by its
+This is not completed Kubernetes crash recovery. Complete remote-participant
+evidence, exact Dispatch retirement and the Native hard-crash k3d E2E are not established by its
 mock-API tests. No historical binding or remote termination can be inferred from
 successful caller authentication. Existing restartable/privileged Worker Pod
 profiles do not meet the observer's non-restarting private-process contract.

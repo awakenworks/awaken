@@ -36,6 +36,18 @@ pub struct PodProcessBinding {
     retained: bool,
 }
 
+impl PodProcessBinding {
+    /// Match the provider coordinate to the authenticated Worker, not a name
+    /// alone. The full node/container binding is still checked by the observer.
+    pub fn matches_pod(&self, namespace: &str, name: &str, uid: &str) -> bool {
+        self.namespace == namespace && self.name == name && self.uid == uid
+    }
+
+    pub fn evidence_was_retained(&self) -> bool {
+        self.retained
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ContainerProcessBinding {

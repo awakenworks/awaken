@@ -79,18 +79,23 @@ def check_k8s_process_observation_model_mutants(tlc_jar: Path) -> None:
         ("/\\ authenticated = current", "/\\ authenticated # 0"),
         ("/\\ incarnation = current", "/\\ TRUE"),
         ("/\\ current = g", "/\\ TRUE"),
+        ("/\\ g \\in closedAdmission", "/\\ TRUE"),
         ("/\\ g \\in protectedBindings", "/\\ TRUE"),
         ("/\\ current \\in retained\n    /\\ ~CompleteExit(current)", "/\\ TRUE\n    /\\ ~CompleteExit(current)"),
-        ("/\\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,\n                    observation, retained, protectedBindings>>",
-         "/\\ observation' = g\n    /\\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,\n                    retained, protectedBindings>>"),
+        ("/\\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,\n                    observation, retained, protectedBindings, closedAdmission>>",
+         "/\\ observation' = g\n    /\\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,\n                    retained, protectedBindings, closedAdmission>>"),
     ]:
         if source.count(anchor) != 1:
             raise SystemExit(f"Kubernetes process observation mutation anchor drifted: {anchor}")
         mutations.append((source.replace(anchor, broken), config, "Safety"))
     for witness in ("NoObservedExit", "NoReplacementBinding", "NoReplacementExit", "NoLiveStopRequest", "NoReplacementStop"):
         mutations.append((source, config.replace("INVARIANT Safety", f"INVARIANT {witness}"), witness))
-    check_tlc_model_mutations(tlc_jar, "K8sProcessObservation", source, config, mutations)
-    print("Kubernetes process observation/stop: 11 unsafe-evidence mutants killed; 5 observation and exact-stop witnesses reached")
+    # Registry closure adds one monotone bit per Pod generation. Keep the full
+    # three-generation/two-container bound; increase the bounded tool budget
+    # rather than weakening the model after a baseline timeout.
+    check_tlc_model_mutations(tlc_jar, "K8sProcessObservation", source, config, mutations,
+                              heap_mb=1024, timeout_seconds=300)
+    print("Kubernetes process observation/stop: 12 unsafe-evidence mutants killed; 5 observation and exact-stop witnesses reached")
 
 
 def check_execution_replacement_model_mutants(tlc_jar: Path) -> None:

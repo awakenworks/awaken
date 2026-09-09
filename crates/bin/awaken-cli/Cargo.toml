@@ -163,6 +163,9 @@ container-k8s = ["awaken-runtime-host/container-k8s", "awaken-worker/container-k
 serde_json.workspace = true
 
 [dev-dependencies]
+awaken-run-ingress-testkit.workspace = true
+awaken-worker-registry = { workspace = true, features = ["test-support"] }
+awaken-run-ingress = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }
 awaken-credential.workspace = true
 awaken-session-application = { workspace = true, features = ["test-support"] }

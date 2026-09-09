@@ -30,10 +30,12 @@ pub(super) async fn prepare_runtime_routers(
         .expect("runtime process requires explicit Worker observation wiring");
     let worker_observations = worker_observation_wiring.source;
     let worker_observation_private_router = worker_observation_wiring.private_router;
-    let (worker_authenticator, worker_execution_bindings) = process
+    let worker_transport = process
         .worker_transport
-        .expect("runtime process requires an explicitly selected Worker transport")
-        .into_parts();
+        .expect("runtime process requires an explicitly selected Worker transport");
+    let worker_authenticator = worker_transport.authenticator();
+    let worker_execution_bindings = worker_transport.binding_source();
+    let worker_execution_stops = worker_transport.stop_source();
     let worker_placement_policy = process.worker_placement_policy;
     let cloud_native_credential_realization = process.cloud_native_credential_realization;
     let (
@@ -770,6 +772,7 @@ pub(super) async fn prepare_runtime_routers(
             worker_authenticator,
             worker_placement_policy,
             worker_execution_bindings,
+            worker_execution_stops,
             repository_transport_authorizer: process.repository_transport_authorizer,
             worker_directory: worker_directory.clone(),
             deployment_application,
