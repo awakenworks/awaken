@@ -647,10 +647,8 @@ mod tests {
         // Brokered access; C2 this binary has no brokered adapter. C1+C2 => E1
         // fail with cloud_models_disabled before direct credential lookup or
         // provider I/O. Route text is deliberately plain, so it has no causal
-        // role. Decision rule N1=C1+C2=>E1.
-        let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
-        let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
-        let error = CredentialInferenceMaterializer::new(credentials, secrets)
+        // role. Decision rule N1=C1+C2=>E1, with/without authority (N2).
+        let error = neutral_materializer()
             .materialize_exact(
                 &brokered_candidate("model-a"),
                 &RuntimeRunContext::new(),
@@ -681,6 +679,25 @@ mod tests {
         .expect("coherent direct provider candidate")
     }
 
+    fn neutral_materializer() -> CredentialInferenceMaterializer {
+        struct NoCredentialAccess;
+        #[async_trait]
+        impl awaken_runtime_contract::CredentialMaterialResolver for NoCredentialAccess {
+            async fn resolve_exact(
+                &self,
+                _: awaken_runtime_contract::CredentialMaterialRequest<'_>,
+            ) -> Result<
+                awaken_runtime_contract::ResolvedCredentialMaterial,
+                awaken_runtime_contract::CredentialMaterialError,
+            > {
+                panic!("brokered inference must not read local or external Provider credentials")
+            }
+        }
+        CredentialInferenceMaterializer::from_pinned(PinnedCredentialMaterializer::external_only(
+            Arc::new(NoCredentialAccess),
+        ))
+    }
+
     #[cfg(feature = "brokered")]
     #[tokio::test]
     async fn pinned_materialization_preserves_journal_identity_in_both_model_modes() {
@@ -697,6 +714,8 @@ mod tests {
         // key; the next recorded invocation must differ. The fake broker records
         // the real grant request then refuses it, so no model/credential IO is
         // hidden in this cross-adapter regression.
+        // P4 run the same assertions with/without the authority feature: both
+        // must compile and use the neutral composition, with zero secret reads.
         #[derive(Default)]
         struct LostGrant(std::sync::Mutex<Vec<BrokeredInferenceRequest>>);
         #[async_trait]
@@ -725,11 +744,7 @@ mod tests {
             async fn on_text(&self, _: &str) {}
         }
         let client = Arc::new(LostGrant::default());
-        let materializer = CredentialInferenceMaterializer::new(
-            Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
-            Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
-        )
-        .with_brokered_client(client.clone());
+        let materializer = neutral_materializer().with_brokered_client(client.clone());
         let candidate = brokered_candidate("model-a");
         let router = PinnedCandidateExecutor {
             materializer,
@@ -791,9 +806,10 @@ mod tests {
         // B4=C1&&C2&&!C3 -> E4; B5=direct access+prefixed route -> E5.
         // Primary and fallback use plain route identities and exercise B3,
         // proving route text has no access-routing authority.
-        let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
-        let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
-        let materializer = CredentialInferenceMaterializer::new(credentials, secrets);
+        // B6 authority present/absent x B1..B5: identical routing through the
+        // neutral constructor; an accidental credential read panics instead of
+        // succeeding against an otherwise unnecessary empty Vault fixture.
+        let materializer = neutral_materializer();
         let primary = brokered_candidate("model-primary");
         let fallback = brokered_candidate("model-fallback");
         let context = RuntimeRunContext::new().with_ownership(Arc::new(CurrentOwnership));

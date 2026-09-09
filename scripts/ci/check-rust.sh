@@ -128,8 +128,20 @@ step "run-ingress-neutral-unit" "keep memory and domain tests independent from o
 # feature unification. CR8 SQL adapters/tests still own migration-history helpers;
 # the workspace check below and Admin schema tests retain those consumers. Do not
 # silence dead-code warnings or enable a database merely to hide this boundary.
-step "brokered-inference-neutral" "keep database-only migration helpers out of the brokered client graph" \
-  cargo clippy -p awaken-credential-materializer --features brokered --all-targets "${locked[@]}" -- -D warnings
+# CR9 default authority must be disabled explicitly: both brokered tests and
+# the adapter-absent rejection test formerly called an authority-only constructor.
+# Cross adapter present/absent with no authority; the workspace graph retains
+# authority-enabled consumers. Execute the same tests, not cfg-filtered copies.
+for materializer_profile in bare brokered; do
+  materializer_features=()
+  if [ "$materializer_profile" = brokered ]; then
+    materializer_features=(--features brokered)
+  fi
+  step "credential-materializer-$materializer_profile-neutral" "keep database-only helpers out of neutral materializer consumers" \
+    cargo clippy -p awaken-credential-materializer --no-default-features "${materializer_features[@]}" --all-targets "${locked[@]}" -- -D warnings
+  step "credential-materializer-$materializer_profile-neutral-unit" "keep neutral materializer tests independent of local Vault authority" \
+    cargo test -p awaken-credential-materializer --no-default-features "${materializer_features[@]}" --lib "${locked[@]}"
+done
 
 # CR6 optional Pod transport and its production startup are not enabled by
 # default -> include the owning CLI feature, which also enables Worker and

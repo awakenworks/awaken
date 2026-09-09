@@ -128,6 +128,22 @@ Revocation, owner mismatch, revision mismatch, unsupported injection kind, or a
 model outside the pinned candidate set fails closed. Runtime never falls back to
 a new global default or a weaker injection mechanism.
 
+Brokered inference reuses the Runtime ownership verifier at both external
+boundaries: before requesting a grant and after the asynchronous grant response,
+before calling the native executor. Missing authority, loss of ownership, and an
+unavailable ownership service reject execution. A grant acquired during ownership
+loss is closed through the existing client; a close failure does not replace the
+ownership error. Because the native executor was never entered, this rejection
+is `NotDispatched` for the model operation, not a statement about grant cleanup.
+
+These are fresh observations, not an atomic transaction with the remote Provider.
+Neither grant closure, grant expiry, nor usage-accounting finalization is a
+physical model-stop receipt. Requests already sent retain their existing
+execution evidence; independent stop confirmation remains necessary for crash
+recovery. The existing ownership Kani kernel proves the observation decision,
+while the brokered adapter's barrier-driven tests cover grant-wait ownership
+changes, failed cleanup, and both native inference entry points.
+
 ### Scope and authorization
 
 Inference publication receives a trusted Workspace scope from the management
