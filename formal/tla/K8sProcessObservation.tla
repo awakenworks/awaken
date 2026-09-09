@@ -6,11 +6,15 @@ EXTENDS Naturals, FiniteSets
 CONSTANTS MaxGeneration, Containers
 Generations == 1..MaxGeneration
 VARIABLES current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed, observation
-VARIABLES retained, protectedBindings, stopRequests, closedAdmission
-stopState == <<retained, protectedBindings, stopRequests, closedAdmission>>
+VARIABLES retained, protectedBindings, stopRequests, closedAdmission, stopObservation
+stopState == <<retained, protectedBindings, stopRequests, closedAdmission, stopObservation>>
 vars == <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed, observation, stopState>>
 Domain(g) == {<<g, c>> : c \in Containers}
 CompleteExit(g) == Domain(g) \subseteq exited
+StopRequested(g) == \E request \in stopRequests: request[1] = g
+ExactExit(g) == /\ g = current
+                /\ current \in present
+                /\ CompleteExit(current)
 
 Init ==
     /\ current = 1
@@ -26,6 +30,7 @@ Init ==
     /\ protectedBindings = {}
     /\ stopRequests = {}
     /\ closedAdmission = {}
+    /\ stopObservation = 0
 
 \* Never-restart is a provider premise, not inferred from an empty status list.
 Start(g, c) ==
@@ -59,7 +64,7 @@ Bind ==
                                /\ current \in retained
                             THEN protectedBindings \cup {current}
                             ELSE protectedBindings
-    /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, failed, observation, retained, stopRequests, closedAdmission>>
+    /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, failed, observation, retained, stopRequests, closedAdmission, stopObservation>>
 
 Crash(g, c) ==
     /\ <<g, c>> \in started \ exited
@@ -76,7 +81,9 @@ Delete(g) ==
     /\ g \in present
     /\ present' = present \ {g}
     /\ observation' = 0
-    /\ UNCHANGED <<current, started, exited, authenticated, authenticatedIncarnation, bound, failed, stopState>>
+    /\ stopObservation' = 0
+    /\ UNCHANGED <<current, started, exited, authenticated, authenticatedIncarnation, bound, failed,
+                    retained, protectedBindings, stopRequests, closedAdmission>>
 
 Replace ==
     /\ current \notin present
@@ -84,17 +91,30 @@ Replace ==
     /\ current' = current + 1
     /\ present' = present \cup {current + 1}
     /\ observation' = 0
-    /\ UNCHANGED <<started, exited, authenticated, authenticatedIncarnation, bound, failed, stopState>>
+    /\ stopObservation' = 0
+    /\ UNCHANGED <<started, exited, authenticated, authenticatedIncarnation, bound, failed,
+                    retained, protectedBindings, stopRequests, closedAdmission>>
 
 \* Query a historical binding against the current name. Missing, replaced,
 \* phase-only and partially stopped observations fail closed.
 Observe(g) ==
     /\ <<g, g>> \in bound
-    /\ observation' = IF /\ g = current
-                           /\ current \in present
-                           /\ CompleteExit(current)
-                       THEN g ELSE 0
+    /\ observation' = IF ExactExit(g) THEN g ELSE 0
     /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed, stopState>>
+
+\* The stopper consumes the same exact exit facts, but its returned observation
+\* additionally requires the Pod's accepted deletion intent. This is an output
+\* of the existing provider port, not a second recovery authority or store.
+ObserveStopped(g) ==
+    /\ <<g, g>> \in bound
+    /\ stopObservation' = IF /\ ExactExit(g)
+                               /\ g \in protectedBindings
+                               /\ g \in retained
+                               /\ g \in closedAdmission
+                               /\ StopRequested(g)
+                           THEN g ELSE 0
+    /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,
+                    observation, retained, protectedBindings, stopRequests, closedAdmission>>
 
 \* Trusted deployment installs retention; external loss remains possible and
 \* is not interpreted as proof. The stopper itself never releases this history.
@@ -102,7 +122,7 @@ Retention(g) ==
     /\ g \in present
     /\ retained' \in {retained \cup {g}, retained \ {g}}
     /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,
-                    observation, protectedBindings, stopRequests, closedAdmission>>
+                    observation, protectedBindings, stopRequests, closedAdmission, stopObservation>>
 
 \* Interface fact supplied by exact Registry expiry, not a duplicate Registry
 \* state machine. Its atomic renewal/replacement rules have their own production
@@ -111,7 +131,7 @@ CloseAdmission(g) ==
     /\ <<g, g>> \in bound
     /\ closedAdmission' = closedAdmission \cup {g}
     /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,
-                    observation, retained, protectedBindings, stopRequests>>
+                    observation, retained, protectedBindings, stopRequests, stopObservation>>
 
 \* UID/resourceVersion conditional DELETE linearizes at the API. A lost reply
 \* permits this exact retry, not an unconditional name-based write or receipt.
@@ -122,17 +142,17 @@ RequestStop(g) ==
     /\ current = g
     /\ current \in present
     /\ current \in retained
-    /\ ~CompleteExit(current)
+    /\ ~StopRequested(g)
     /\ stopRequests' = stopRequests \cup
-         {<<g, current, g \in protectedBindings, current \in retained, g \in closedAdmission>>}
+         {<<g, current, g \in protectedBindings, current \in retained, g \in closedAdmission, CompleteExit(current)>>}
     /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,
-                    observation, retained, protectedBindings, closedAdmission>>
+                    observation, retained, protectedBindings, closedAdmission, stopObservation>>
 
 Next ==
     \/ \E g \in Generations, c \in Containers: Start(g, c) \/ Crash(g, c)
     \/ (\E incarnation \in Generations: Authenticate(incarnation)) \/ Bind
     \/ \E g \in Generations: ControllerFailure(g) \/ Delete(g) \/ Observe(g)
-                              \/ Retention(g) \/ RequestStop(g) \/ CloseAdmission(g)
+                              \/ Retention(g) \/ RequestStop(g) \/ CloseAdmission(g) \/ ObserveStopped(g)
     \/ Replace
 
 TypeOK ==
@@ -145,16 +165,25 @@ TypeOK ==
     /\ bound \subseteq ((Generations \cup {0}) \X Generations)
     /\ failed \subseteq Generations
     /\ observation \in Generations \cup {0}
+    /\ stopObservation \in Generations \cup {0}
     /\ retained \subseteq Generations
     /\ protectedBindings \subseteq Generations
     /\ closedAdmission \subseteq Generations
-    /\ stopRequests \subseteq (Generations \X Generations \X BOOLEAN \X BOOLEAN \X BOOLEAN)
+    /\ stopRequests \subseteq (Generations \X Generations \X BOOLEAN \X BOOLEAN \X BOOLEAN \X BOOLEAN)
 
 ExactCompleteObservation == observation # 0 =>
     /\ observation = current
     /\ observation \in present
     /\ <<observation, observation>> \in bound
     /\ CompleteExit(observation)
+
+StopObservationRequiresClosureAndExit == stopObservation # 0 =>
+    /\ stopObservation = current
+    /\ stopObservation \in present
+    /\ <<stopObservation, stopObservation>> \in bound
+    /\ CompleteExit(stopObservation)
+    /\ StopRequested(stopObservation)
+    /\ stopObservation \in closedAdmission
 
 \* Negative witness used by the mutation runner to reject vacuous proofs.
 NoObservedExit == observation = 0
@@ -169,7 +198,12 @@ StopRequestsAreExactAndRetained == \A request \in stopRequests :
     /\ request[3] /\ request[4] /\ request[5]
 NoLiveStopRequest == \A request \in stopRequests : CompleteExit(request[1])
 NoReplacementStop == \A request \in stopRequests : request[1] # 2
+\* The sixth coordinate records exit at DELETE acceptance, not after it. This
+\* witness excludes a stopper that permanently rejects an already-exited Pod.
+NoPostExitStopReceipt == stopObservation = 0 \/
+    ~\E request \in stopRequests: request[1] = stopObservation /\ request[6]
 Safety == TypeOK /\ ExactCompleteObservation /\ BindingMatchesAuthenticatedPod
           /\ StopRequestsAreExactAndRetained /\ AuthenticatedIncarnationIsPod
+          /\ StopObservationRequiresClosureAndExit
 Spec == Init /\ [][Next]_vars
 =============================================================================

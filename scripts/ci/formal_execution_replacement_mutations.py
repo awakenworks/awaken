@@ -65,37 +65,43 @@ def check_k8s_process_observation_model_mutants(tlc_jar: Path) -> None:
     # KPT: UID replacement, deleted history, phase-only failure, omitted
     # participant, absent binding and authentication/read TOCTOU fail closed.
     # Real exit, replacement binding and replacement exit exclude blanket denial.
-    # The same provider model owns both observations; no Dispatch is copied.
+    # The same provider model owns read-only exits and closed stop receipts;
+    # natural exit must still pass exact DELETE and a fresh observation.
+    # No Dispatch or new recovery authority is copied.
     source = (ROOT / "formal/tla/K8sProcessObservation.tla").read_text()
     config = (ROOT / "formal/tla/K8sProcessObservation.cfg").read_text()
     mutations = []
     for anchor, broken in [
         ("g = current", "TRUE"),
-        ("/\\ current \\in present\n                           /\\ CompleteExit(current)",
-         "/\\ TRUE\n                           /\\ CompleteExit(current)"),
+        ("/\\ current \\in present\n                /\\ CompleteExit(current)",
+         "/\\ TRUE\n                /\\ CompleteExit(current)"),
         ("/\\ CompleteExit(current)", "/\\ (CompleteExit(current) \\/ current \\in failed)"),
         ("/\\ CompleteExit(current)", "/\\ (Domain(current) \\intersect exited # {})"),
         ("Observe(g) ==\n    /\\ <<g, g>> \\in bound", "Observe(g) ==\n    /\\ g \\in Generations"),
         ("/\\ authenticated = current", "/\\ authenticated # 0"),
         ("/\\ incarnation = current", "/\\ TRUE"),
         ("/\\ current = g", "/\\ TRUE"),
-        ("/\\ g \\in closedAdmission", "/\\ TRUE"),
-        ("/\\ g \\in protectedBindings", "/\\ TRUE"),
-        ("/\\ current \\in retained\n    /\\ ~CompleteExit(current)", "/\\ TRUE\n    /\\ ~CompleteExit(current)"),
-        ("/\\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,\n                    observation, retained, protectedBindings, closedAdmission>>",
-         "/\\ observation' = g\n    /\\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,\n                    retained, protectedBindings, closedAdmission>>"),
+        ("/\\ g \\in closedAdmission\n    /\\ g \\in protectedBindings",
+         "/\\ TRUE\n    /\\ g \\in protectedBindings"),
+        ("/\\ g \\in protectedBindings\n    /\\ current = g",
+         "/\\ TRUE\n    /\\ current = g"),
+        ("/\\ current \\in retained\n    /\\ ~StopRequested(g)", "/\\ TRUE\n    /\\ ~StopRequested(g)"),
+        ("/\\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,\n                    observation, retained, protectedBindings, closedAdmission, stopObservation>>",
+         "/\\ observation' = g\n    /\\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,\n                    retained, protectedBindings, closedAdmission, stopObservation>>"),
+        ("/\\ StopRequested(g)", "/\\ (StopRequested(g) \\/ CompleteExit(g))"),
+        ("/\\ ExactExit(g)", "/\\ (g = current /\\ current \\in present)"),
     ]:
         if source.count(anchor) != 1:
             raise SystemExit(f"Kubernetes process observation mutation anchor drifted: {anchor}")
         mutations.append((source.replace(anchor, broken), config, "Safety"))
-    for witness in ("NoObservedExit", "NoReplacementBinding", "NoReplacementExit", "NoLiveStopRequest", "NoReplacementStop"):
+    for witness in ("NoObservedExit", "NoReplacementBinding", "NoReplacementExit", "NoLiveStopRequest", "NoReplacementStop", "NoPostExitStopReceipt"):
         mutations.append((source, config.replace("INVARIANT Safety", f"INVARIANT {witness}"), witness))
     # Registry closure adds one monotone bit per Pod generation. Keep the full
     # three-generation/two-container bound; increase the bounded tool budget
     # rather than weakening the model after a baseline timeout.
     check_tlc_model_mutations(tlc_jar, "K8sProcessObservation", source, config, mutations,
                               heap_mb=1024, timeout_seconds=300)
-    print("Kubernetes process observation/stop: 12 unsafe-evidence mutants killed; 5 observation and exact-stop witnesses reached")
+    print("Kubernetes process observation/stop: 14 unsafe-evidence mutants killed; 6 observation and exact-stop witnesses reached")
 
 
 def check_execution_replacement_model_mutants(tlc_jar: Path) -> None:

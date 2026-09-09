@@ -266,6 +266,16 @@ The command reads the exact private non-restarting process set, requires the hel
 retention marker, and submits UID/resourceVersion-conditional Pod deletion.
 Neither acceptance nor an already-deleting Pod proves exit; retries observe the
 same bound domain, and only the original exit validator may return its receipt.
+The stop command requires an observed deletion intent even when all containers
+exited before recovery began. It first closes that exact retained Pod with the
+same conditional DELETE and returns Unknown; a subsequent read must observe the
+deletion intent together with complete matching exits. The read-only observer
+still reports only local process facts, not lifecycle closure. In particular,
+`restartPolicy: Never` is not a substitute for the stop command: Kubernetes
+documents that kubelet/runtime state loss can cause unexpected reruns under
+[restart policies](https://v1-35.docs.kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#individual-container-restart-policy-and-rules).
+Control-plane deletion intent and runtime exit reports remain trusted
+infrastructure facts, not a proof of node isolation or remote-operation stop.
 CAS conflicts and response loss retry without retargeting a replacement. The
 adapter never removes the finalizer or deletes Session/PVC participants. Its
 whole-Worker scope requires trusted recovery composition, not per-Run cancellation.
@@ -333,10 +343,18 @@ It also recreates the same Pod name through the canonical provider: the old UID
 cannot bind or delete the live successor, and the successor's later exit proves
 only its fresh binding. The stale DELETE rule checks Kubernetes UID preconditions;
 the provider stop command separately rejects that old binding without a write.
-Ten model mutants and five positive observation/stop witnesses cover the finite
+Fourteen model mutants and six positive observation/stop witnesses cover the finite
 provider boundary; neither those
 checks nor the live test establish whole-attempt recovery or evidence retention
 after API history is removed.
+The exit-before-stop regression crosses Completed/Error/OOMKilled and every
+existing stop-response-loss, CAS, replacement and retention-loss fault. Its KPT10
+extension in the existing live test hard-stops every container before invoking
+the stopper and requires the first accepted stop to remain Unknown. On 2026-09-09
+the updated 226-test container library suite and strict all-target Clippy passed;
+the updated live case was blocked before cluster creation by the canonical disk
+capacity check (about 4.4 GiB available, 10 GiB required). Earlier live results do
+not qualify this new fault cut.
 Cooperative cancellation may cause a verified return; dropping or aborting a
 nested Future does not prove an opaque remote request stopped. Task abort, process crash, Lease
 expiry, and heartbeat expiry therefore leave the slot occupied. Recovery waits
