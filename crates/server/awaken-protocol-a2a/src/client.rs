@@ -195,12 +195,6 @@ pub async fn try_cancel_task(transport: &dyn Transport, task_id: &str) -> Result
     ok_status(&response, "tasks:cancel")
 }
 
-/// Best-effort compatibility wrapper for callers that have no durable retry
-/// owner. Delegation uses [`try_cancel_task`] instead.
-pub async fn cancel_task(transport: &dyn Transport, task_id: &str) {
-    let _ = try_cancel_task(transport, task_id).await;
-}
-
 /// Fetch the remote agent's discovery card (`agent-card`).
 pub async fn agent_card(transport: &dyn Transport) -> Result<AgentCard, ClientError> {
     let response = transport
@@ -579,15 +573,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancel_task_ignores_failures() {
-        // A 500 reply and a request that never completes both go unreported —
-        // cancel is best-effort.
-        let failing_status = CannedTransport {
-            status: 500,
-            body: "boom",
-            www_authenticate: None,
-        };
-        cancel_task(&failing_status, "t").await;
+    async fn cancellation_delivery_preserves_every_error_class() {
+        // Cause/effect table: C1 delivery returns 2xx, C2 returns 401/403,
+        // C3 another non-2xx, C4 transport fails. R1=C1 => delivery Ok only
+        // (never a stop receipt); R2=C2 => exact Unauthorized challenge;
+        // R3=C3 => exact HTTP status; R4=C4 => transport error. The task driver
+        // owns the separate terminal GET; there is no error-erasing wrapper.
+        // Exhaust the HTTP status domain, including 202 Accepted: acceptance
+        // must never acquire stronger terminal semantics in this client.
+        for status in 100..=599 {
+            let transport = CannedTransport {
+                status,
+                body: "fixture",
+                www_authenticate: Some("Bearer realm=\"fixture\""),
+            };
+            let result = try_cancel_task(&transport, "t").await;
+            match status {
+                200..=299 => assert!(result.is_ok(), "R1: {status}"),
+                401 | 403 => assert!(
+                    matches!(
+                        result,
+                        Err(ClientError::Unauthorized { what: "tasks:cancel", challenge })
+                            if challenge.status == status
+                                && challenge.www_authenticate.as_deref()
+                                    == Some("Bearer realm=\"fixture\"")
+                    ),
+                    "R2: {status}"
+                ),
+                _ => assert!(
+                    matches!(
+                        result,
+                        Err(ClientError::Http { what: "tasks:cancel", status: actual, .. })
+                            if actual == status
+                    ),
+                    "R3: {status}"
+                ),
+            }
+        }
 
         struct Down;
         #[async_trait]
@@ -601,7 +623,13 @@ mod tests {
                 Err("connection refused".to_string())
             }
         }
-        cancel_task(&Down, "t").await;
+        assert!(
+            matches!(
+                try_cancel_task(&Down, "t").await,
+                Err(ClientError::Transport(error)) if error == "connection refused"
+            ),
+            "R4"
+        );
     }
 
     #[tokio::test]
