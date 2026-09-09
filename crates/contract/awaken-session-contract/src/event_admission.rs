@@ -664,6 +664,16 @@ mod verification {
         check_single_retained_literal::<24>(kani::any());
     }
 
+    // CASE27: matching key/fingerprint, open retained receipt, two ordered
+    // IDs and every u64 revision. Reuse the complete two-live-output oracle:
+    // actual owned Clone/reverse/clear/replay/Drop and all source fields.
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn deleted_admission_one_retained_accepted_two_27() {
+        check_single_retained_literal::<27>(kani::any());
+    }
+
     #[cfg(kani)]
     #[kani::proof]
     #[kani::unwind(3)]
