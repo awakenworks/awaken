@@ -499,6 +499,135 @@ async fn dropped_and_timed_out_model_futures_preserve_distinct_durable_evidence(
     }
 }
 
+#[tokio::test]
+async fn provider_operation_context_follows_committed_invocations_across_retry_and_restore() {
+    use awaken_runtime_contract::model_operation::{
+        ModelExecutionEvidence, ModelOperationContext, ModelOperationPhase,
+        current_model_operation_context,
+    };
+    // J1 fresh Run; J2 reconstructed terminal predecessor; J3 retry after a
+    // proven NotDispatched error. Every actual provider entry must observe its
+    // already committed Entered record, exact Run/Thread/binding and advancing
+    // ordinal. The same context survives adapter awaits; it never escapes the
+    // invocation. Existing rejected/lost-entry-write cases assert zero entries.
+    struct RecordingModel {
+        commit: Arc<MemoryCommitCoordinator>,
+        seen: std::sync::Mutex<Vec<ModelOperationContext>>,
+    }
+    #[async_trait::async_trait]
+    impl LlmExecutor for RecordingModel {
+        async fn infer(
+            &self,
+            request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            let identity = current_model_operation_context().expect("Runtime supplies identity");
+            let recorded = model_operations(&self.commit).pop().unwrap();
+            assert_eq!(recorded.phase, ModelOperationPhase::Entered);
+            assert_eq!(recorded.binding, request.model_binding);
+            assert_eq!(
+                identity,
+                ModelOperationContext::from_operation(
+                    &ThreadId("thread-1".into()),
+                    &RunId("run-1".into()),
+                    &recorded
+                )
+            );
+            tokio::task::yield_now().await;
+            assert_eq!(current_model_operation_context(), Some(identity.clone()));
+            let first = {
+                let mut seen = self.seen.lock().unwrap();
+                seen.push(identity);
+                seen.len() == 1
+            };
+            if first {
+                Err(
+                    awaken_runtime_contract::llm::Error::Provider("before send".into())
+                        .with_execution_evidence(ModelExecutionEvidence::NotDispatched),
+                )
+            } else {
+                TextLlm("done").infer(request).await
+            }
+        }
+    }
+    for restored in [false, true] {
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        if restored {
+            commit_terminated_model(&commit).await;
+        }
+        let model = Arc::new(RecordingModel {
+            commit: commit.clone(),
+            seen: Default::default(),
+        });
+        let runtime = Runtime::new().with_llm(model.clone()).with_retry_policy(
+            awaken_runtime::LlmRetryPolicy {
+                max_retries: 1,
+                backoff_base_ms: 0,
+                overloaded_backoff_base_ms: 0,
+                ..Default::default()
+            },
+        );
+        let result = runtime
+            .execute(
+                activation("catalog-a"),
+                RuntimeRunContext::new()
+                    .with_commit(commit.clone())
+                    .with_reader(commit.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, RunState::Ended(EndCause::NaturalEnd));
+        let seen = model.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_ne!(seen[0].operation_id(), seen[1].operation_id());
+        let entries: Vec<_> = model_operations(&commit)
+            .into_iter()
+            .filter(|op| op.phase == ModelOperationPhase::Entered)
+            .map(|op| op.ordinal.get())
+            .collect();
+        assert_eq!(entries, if restored { vec![2, 3] } else { vec![1, 2] });
+        assert_eq!(current_model_operation_context(), None);
+    }
+}
+
+#[tokio::test]
+async fn unjournaled_runtime_masks_an_outer_model_identity() {
+    use awaken_runtime_contract::model_operation::{
+        ModelOperation, ModelOperationContext, current_model_operation_context,
+        with_model_operation_context,
+    };
+    // J4 no commit owner => no reconstructible invocation identity. Even when
+    // a caller has an outer model scope, this direct Runtime must mask it at
+    // provider entry. Returning from the inner scope restores the caller only.
+    struct DirectModel;
+    #[async_trait::async_trait]
+    impl LlmExecutor for DirectModel {
+        async fn infer(
+            &self,
+            request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            assert_eq!(current_model_operation_context(), None);
+            TextLlm("done").infer(request).await
+        }
+    }
+    let record = ModelOperation::next(None, ModelBinding::new("outer", "outer", "outer")).unwrap();
+    let outer = ModelOperationContext::from_operation(
+        &ThreadId("outer".into()),
+        &RunId("outer".into()),
+        &record,
+    );
+    with_model_operation_context(Some(outer.clone()), async {
+        let result = Runtime::new()
+            .with_llm(Arc::new(DirectModel))
+            .execute(activation("catalog-a"), RuntimeRunContext::new())
+            .await
+            .unwrap();
+        assert_eq!(result, RunState::Ended(EndCause::NaturalEnd));
+        assert_eq!(current_model_operation_context(), Some(outer));
+    })
+    .await;
+    assert_eq!(current_model_operation_context(), None);
+}
+
 struct ReturnedUnknownModel {
     calls: AtomicUsize,
     timeout: bool,

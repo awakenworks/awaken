@@ -293,6 +293,10 @@ pub awaken_runtime_contract::credential::AttemptCredentialBindingError::MissingP
 pub awaken_runtime_contract::credential::AttemptCredentialBindingError::UnsupportedRealization
 pub awaken_runtime_contract::credential::AttemptCredentialBindingError::UnsupportedRealization::backend: alloc::string::String
 pub awaken_runtime_contract::credential::AttemptCredentialBindingError::UnsupportedRealization::boundary: awaken_credential_contract::PlaintextBoundary
+pub enum awaken_runtime_contract::credential::CredentialRealizationPersistenceDecision
+pub awaken_runtime_contract::credential::CredentialRealizationPersistenceDecision::Collision
+pub awaken_runtime_contract::credential::CredentialRealizationPersistenceDecision::ExactReplay
+pub awaken_runtime_contract::credential::CredentialRealizationPersistenceDecision::Insert
 pub enum awaken_runtime_contract::credential::CredentialReceiptError
 pub awaken_runtime_contract::credential::CredentialReceiptError::BindingMismatch
 pub awaken_runtime_contract::credential::CredentialReceiptError::Fingerprint(alloc::string::String)
@@ -326,6 +330,7 @@ pub trait awaken_runtime_contract::credential::CredentialRealizationRecorder: co
 pub fn awaken_runtime_contract::credential::CredentialRealizationRecorder::record<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::credential::CredentialRealizationReceipt) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::credential::CredentialRealizationRecordError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime_contract::credential::candidate_fingerprint(&awaken_runtime_contract::resolved::ResolvedModelCandidate) -> core::result::Result<awaken_runtime_contract::credential::CandidateFingerprint, awaken_runtime_contract::credential::CredentialReceiptError>
 pub fn awaken_runtime_contract::credential::compile_candidate_credential_bindings(&[&awaken_runtime_contract::resolved::ResolvedModelCandidate], core::option::Option<&awaken_credential_contract::PlaintextHolder>, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_runtime_contract::credential::AttemptCredentialBindingError>
+pub fn awaken_runtime_contract::credential::credential_realization_persistence_decision(core::option::Option<&awaken_runtime_contract::credential::CredentialRealizationReceipt>, &awaken_runtime_contract::credential::CredentialRealizationReceipt) -> awaken_runtime_contract::credential::CredentialRealizationPersistenceDecision
 pub fn awaken_runtime_contract::credential::verify_credential_realization_receipt(&[awaken_runtime_contract::credential::AttemptCredentialBinding], &awaken_runtime_contract::credential::CredentialRealizationReceipt) -> core::result::Result<(), awaken_runtime_contract::credential::CredentialReceiptError>
 pub mod awaken_runtime_contract::data_subject
 pub enum awaken_runtime_contract::data_subject::CaptureError
@@ -730,6 +735,14 @@ pub awaken_runtime_contract::model_operation::ModelOperation::phase: awaken_runt
 impl awaken_runtime_contract::model_operation::ModelOperation
 pub fn awaken_runtime_contract::model_operation::ModelOperation::next(core::option::Option<&Self>, awaken_runtime_contract::resolved::ModelBinding) -> core::option::Option<Self>
 pub fn awaken_runtime_contract::model_operation::ModelOperation::permits_reentry(core::option::Option<&Self>, bool) -> bool
+pub struct awaken_runtime_contract::model_operation::ModelOperationContext
+impl awaken_runtime_contract::model_operation::ModelOperationContext
+pub fn awaken_runtime_contract::model_operation::ModelOperationContext::binding(&self) -> &awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::model_operation::ModelOperationContext::from_operation(&awaken_agent_contract::agent::thread::Id, &awaken_agent_contract::agent::run::Id, &awaken_runtime_contract::model_operation::ModelOperation) -> Self
+pub fn awaken_runtime_contract::model_operation::ModelOperationContext::operation_id(&self) -> alloc::string::String
+pub fn awaken_runtime_contract::model_operation::ModelOperationContext::run_id(&self) -> &awaken_agent_contract::agent::run::Id
+pub fn awaken_runtime_contract::model_operation::current_model_operation_context() -> core::option::Option<awaken_runtime_contract::model_operation::ModelOperationContext>
+pub async fn awaken_runtime_contract::model_operation::with_model_operation_context<T>(core::option::Option<awaken_runtime_contract::model_operation::ModelOperationContext>, impl core::future::future::Future<Output = T>) -> T
 pub mod awaken_runtime_contract::model_routing
 pub fn awaken_runtime_contract::model_routing::exact_candidate_identity(&awaken_runtime_contract::resolved::ResolvedModelCandidate, &awaken_runtime_contract::resolved::ResolvedModelCandidate) -> bool
 pub fn awaken_runtime_contract::model_routing::pinned_candidate_at<'a>(&'a awaken_runtime_contract::resolved::ResolvedModelCandidate, &'a [awaken_runtime_contract::resolved::ResolvedModelCandidate], usize) -> core::option::Option<&'a awaken_runtime_contract::resolved::ResolvedModelCandidate>
@@ -1910,6 +1923,10 @@ pub awaken_runtime_contract::ContentKind::InputMessages
 pub awaken_runtime_contract::ContentKind::OutputMessages
 pub awaken_runtime_contract::ContentKind::ToolArguments
 pub awaken_runtime_contract::ContentKind::ToolResult
+pub enum awaken_runtime_contract::CredentialRealizationPersistenceDecision
+pub awaken_runtime_contract::CredentialRealizationPersistenceDecision::Collision
+pub awaken_runtime_contract::CredentialRealizationPersistenceDecision::ExactReplay
+pub awaken_runtime_contract::CredentialRealizationPersistenceDecision::Insert
 pub enum awaken_runtime_contract::CredentialReceiptError
 pub awaken_runtime_contract::CredentialReceiptError::BindingMismatch
 pub awaken_runtime_contract::CredentialReceiptError::Fingerprint(alloc::string::String)
@@ -2735,6 +2752,7 @@ pub fn awaken_runtime_contract::permission::DenyAllTools::evaluate<'life0, 'life
 pub fn awaken_runtime_contract::candidate_fingerprint(&awaken_runtime_contract::resolved::ResolvedModelCandidate) -> core::result::Result<awaken_runtime_contract::credential::CandidateFingerprint, awaken_runtime_contract::credential::CredentialReceiptError>
 pub fn awaken_runtime_contract::compile_candidate_credential_bindings(&[&awaken_runtime_contract::resolved::ResolvedModelCandidate], core::option::Option<&awaken_credential_contract::PlaintextHolder>, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_runtime_contract::credential::AttemptCredentialBindingError>
 pub fn awaken_runtime_contract::content_fingerprint<T: serde_core::ser::Serialize + ?core::marker::Sized>(&T) -> core::result::Result<alloc::string::String, serde_json::error::Error>
+pub fn awaken_runtime_contract::credential_realization_persistence_decision(core::option::Option<&awaken_runtime_contract::credential::CredentialRealizationReceipt>, &awaken_runtime_contract::credential::CredentialRealizationReceipt) -> awaken_runtime_contract::credential::CredentialRealizationPersistenceDecision
 pub fn awaken_runtime_contract::evaluate_boundary(&awaken_runtime_contract::runtime_context::RuntimeRunContext, &awaken_agent_contract::agent::run::Id, &[awaken_agent_contract::agent::message::Message]) -> awaken_runtime_contract::boundary::BoundaryOutcome
 pub fn awaken_runtime_contract::execution_capability(&str) -> alloc::string::String
 pub fn awaken_runtime_contract::freeze_delegation_publications(&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, core::option::Option<&dyn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource>, &str) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>

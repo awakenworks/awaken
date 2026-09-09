@@ -350,8 +350,8 @@ async fn infer_with_retry_inner(
                     "model request attempt no longer owns execution: {error}"
                 ))
             })?;
-        if let Some(journal) = journal.as_deref_mut() {
-            journal.enter(&attempt_request.model_binding).await?;
+        let operation = if let Some(journal) = journal.as_deref_mut() {
+            let identity = journal.enter(&attempt_request.model_binding).await?;
             // Persistence may have waited past a lease boundary. The original
             // ownership port remains the only permission to enter the executor.
             awaken_runtime_contract::execution::verify_attempt_ownership(ownership)
@@ -359,7 +359,10 @@ async fn infer_with_retry_inner(
                 .map_err(|error| {
                     awaken_runtime_contract::llm::Error::Unauthorized(error.to_string())
                 })?;
-        }
+            identity
+        } else {
+            None
+        };
         // Journal persistence and ownership verification both await. A sibling
         // may have vetoed this attempt during either wait; its old model receipt
         // is not proof that every participant stopped. Recheck at actual entry.
@@ -372,7 +375,10 @@ async fn infer_with_retry_inner(
             cancellation,
             tokio::time::timeout(
                 policy.attempt_timeout,
-                quiescence.observe_return(llm.infer_streaming(attempt_request, &sink)),
+                awaken_runtime_contract::model_operation::with_model_operation_context(
+                    operation,
+                    quiescence.observe_return(llm.infer_streaming(attempt_request, &sink)),
+                ),
             ),
         )
         .await;
