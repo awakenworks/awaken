@@ -49,34 +49,23 @@ async fn state_create(state: &ManagedState) -> String {
     .id
 }
 
-async fn reconcile_published_run(state: &ManagedState, session_id: &str) {
-    // The shared fake commits through reserve/activate/state, while the real Host
-    // supplies the later completion callback. Drive and settle that exact
-    // application-owned activity here; no test transcript or lifecycle state is
-    // synthesized beside the production authority.
-    let application = state.session_application();
-    Box::pin(support::drive_retained_session_events(state, session_id)).await;
-    let session = Box::pin(application.session(session_id))
-        .await
-        .expect("read the retained activity epochs");
-    for epoch in session.active_activity_epochs {
-        Box::pin(application.settle_activity(session_id, epoch))
-            .await
-            .expect("settle the application-owned activity epoch");
-    }
-    // The completion callback wakes a subsequent supervisor turn. The fake
-    // commits terminal truth synchronously but has no Runtime Host callback, so
-    // drive that exact second turn explicitly before asking GET to project it.
-    Box::pin(support::drive_retained_session_events(state, session_id)).await;
-}
-
-async fn state_send_user(state: &Arc<ManagedState>, id: &str, text: &str) {
+async fn state_send_user(
+    state: &Arc<ManagedState>,
+    runtime: &CoordinatedRuntimeFake,
+    id: &str,
+    text: &str,
+) {
     let req = serde_json::from_value(serde_json::json!({
         "events": [{ "type": "user.message", "content": [{ "type": "text", "text": text }] }]
     }))
     .unwrap();
     Box::pin(state.send_events(id, req)).await.expect("send");
-    Box::pin(reconcile_published_run(state, id)).await;
+    Box::pin(support::drive_completed_user_dispatches(
+        state,
+        id,
+        &runtime.completed_user_dispatches(),
+    ))
+    .await;
     // GET owns warm projection in production. Calling the route after the
     // committed Run keeps this integration helper on that same projector and
     // publishes its appended suffix to an already-open receiver.
@@ -232,7 +221,8 @@ async fn live_broadcast_delivers_one_runs_committed_frames_in_order() {
     // independent branch selecting `all output, state, side-effect, error, and terminal assertions
     // below hold together`; a multi-row decision table is not applicable, and sibling tests own
     // alternate causes.
-    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
+    let runtime = CoordinatedRuntimeFake::default();
+    let state = Arc::new(ManagedState::new(runtime.clone()));
     let id = state_create(&state).await;
 
     // Subscribe first: a fresh session has no committed events, so nothing is
@@ -240,7 +230,7 @@ async fn live_broadcast_delivers_one_runs_committed_frames_in_order() {
     let (snapshot, mut rx) = state.stream_subscribe(&id).expect("subscribe");
     assert!(snapshot.is_empty(), "a fresh session backfills nothing");
 
-    state_send_user(&state, &id, "hi").await;
+    state_send_user(&state, &runtime, &id, "hi").await;
 
     let (frames, lagged) = drain(&mut rx);
     assert_eq!(lagged, 0, "no lag on a single small Run");
@@ -278,12 +268,13 @@ async fn live_broadcast_preserves_order_across_two_runs() {
     // Coverage rationale: `live broadcast` is one independent branch selecting `preserves order
     // across two runs`; a multi-row decision table is not applicable, and sibling tests own
     // alternate causes.
-    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
+    let runtime = CoordinatedRuntimeFake::default();
+    let state = Arc::new(ManagedState::new(runtime.clone()));
     let id = state_create(&state).await;
     let (_snap, mut rx) = state.stream_subscribe(&id).expect("subscribe");
 
-    state_send_user(&state, &id, "one").await;
-    state_send_user(&state, &id, "two").await;
+    state_send_user(&state, &runtime, &id, "one").await;
+    state_send_user(&state, &runtime, &id, "two").await;
 
     let (frames, _) = drain(&mut rx);
     assert_eq!(
@@ -427,7 +418,8 @@ async fn child_thread_sse_is_isolated_and_archive_projects_durable_terminal() {
     // stores and committed facts remain the single behavior authority.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
+    let runtime = CoordinatedRuntimeFake::default();
+    let state = Arc::new(ManagedState::new(runtime.clone()));
     let app = router(state.clone());
     let id = http_create(&app).await;
 
@@ -439,7 +431,8 @@ async fn child_thread_sse_is_isolated_and_archive_projects_durable_terminal() {
         serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "go" }] }] }),
     )
     .await;
-    reconcile_published_run(&state, &id).await;
+    support::drive_completed_user_dispatches(&state, &id, &runtime.completed_user_dispatches())
+        .await;
     let threads = http_json(
         &app,
         "GET",
@@ -570,7 +563,7 @@ async fn durable_child_archive_broadcasts_and_backfills_one_terminal_frame() {
     let id = state_create(&state).await;
     // Project the delegation, then subscribe: the returned snapshot owns backfill
     // while this receiver contains only facts committed after subscription.
-    state_send_user(&state, &id, "go").await;
+    state_send_user(&state, &runtime, &id, "go").await;
     let (snapshot, mut rx) = state.stream_subscribe(&id).expect("subscribe");
     assert!(
         !snapshot.is_empty(),
@@ -627,7 +620,8 @@ async fn stream_thread_events_backfills_the_primary_thread() {
     // stores and committed facts remain the single behavior authority.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
+    let runtime = CoordinatedRuntimeFake::default();
+    let state = Arc::new(ManagedState::new(runtime.clone()));
     let app = router(state.clone());
     let id = http_create(&app).await;
     http_json(
@@ -637,7 +631,8 @@ async fn stream_thread_events_backfills_the_primary_thread() {
         serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "hi" }] }] }),
     )
     .await;
-    reconcile_published_run(&state, &id).await;
+    support::drive_completed_user_dispatches(&state, &id, &runtime.completed_user_dispatches())
+        .await;
     // Codec integration rule P1: a listed public root is `sthr_` and selects
     // the internal Session root on the per-Thread stream route. A fabricated
     // internal/sentinel id is covered by the unknown-Thread rejection below.
@@ -682,7 +677,8 @@ async fn stream_thread_events_accepts_the_preview_opt_in() {
     // Coverage rationale: `stream thread events` is one independent branch selecting `accepts the
     // preview opt in`; a multi-row decision table is not applicable, and sibling tests own
     // alternate causes.
-    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
+    let runtime = CoordinatedRuntimeFake::default();
+    let state = Arc::new(ManagedState::new(runtime.clone()));
     let app = router(state.clone());
     let id = http_create(&app).await;
     http_json(
@@ -692,7 +688,8 @@ async fn stream_thread_events_accepts_the_preview_opt_in() {
         serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "hi" }] }] }),
     )
     .await;
-    reconcile_published_run(&state, &id).await;
+    support::drive_completed_user_dispatches(&state, &id, &runtime.completed_user_dispatches())
+        .await;
     let primary_id = http_primary_thread_id(&app, &id).await;
     let (status, _) = http_sse(
         &app,
@@ -799,7 +796,8 @@ async fn child_stream_previews_only_ordinary_text_and_never_the_terminal_report(
     runtime.publish_child_live_reasoning("terminal private chain");
     runtime.publish_child_live_text("terminal report");
     runtime.complete_deferred_child("terminal report");
-    reconcile_published_run(&state, &id).await;
+    support::drive_completed_user_dispatches(&state, &id, &runtime.completed_user_dispatches())
+        .await;
     let terminal_events = http_json(
         &app,
         "GET",
@@ -908,7 +906,8 @@ async fn stream_thread_events_unknown_thread_is_404() {
 async fn session_stream_event_deltas_follow_the_boundary_decision_rule() {
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
+    let runtime = CoordinatedRuntimeFake::default();
+    let state = Arc::new(ManagedState::new(runtime.clone()));
     let app = router(state.clone());
     let id = http_create(&app).await;
     http_json(
@@ -918,7 +917,8 @@ async fn session_stream_event_deltas_follow_the_boundary_decision_rule() {
         serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "hi" }] }] }),
     )
     .await;
-    reconcile_published_run(&state, &id).await;
+    support::drive_completed_user_dispatches(&state, &id, &runtime.completed_user_dispatches())
+        .await;
 
     let repeated = |count: usize| {
         std::iter::repeat_n("event_deltas[]=agent.message", count)
@@ -968,7 +968,8 @@ async fn the_stream_full_replays_and_ignores_last_event_id() {
     // branch selecting `all output, state, side-effect, error, and terminal assertions below hold
     // together`; a multi-row decision table is not applicable, and sibling tests own alternate
     // causes.
-    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
+    let runtime = CoordinatedRuntimeFake::default();
+    let state = Arc::new(ManagedState::new(runtime.clone()));
     let app = router(state.clone());
     let id = http_create(&app).await;
     http_json(
@@ -978,7 +979,8 @@ async fn the_stream_full_replays_and_ignores_last_event_id() {
         serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "hi" }] }] }),
     )
     .await;
-    reconcile_published_run(&state, &id).await;
+    support::drive_completed_user_dispatches(&state, &id, &runtime.completed_user_dispatches())
+        .await;
 
     // Discover the final id from the canonical chronological event list.
     let list = http_json(
@@ -1024,7 +1026,8 @@ async fn a_lagging_subscriber_skips_frames_but_still_receives_later_ones() {
     // stores and committed facts remain the single behavior authority.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
+    let runtime = CoordinatedRuntimeFake::default();
+    let state = Arc::new(ManagedState::new(runtime.clone()));
     let id = state_create(&state).await;
     let (_snap, mut rx) = state.stream_subscribe(&id).expect("subscribe");
 
@@ -1034,7 +1037,7 @@ async fn a_lagging_subscriber_skips_frames_but_still_receives_later_ones() {
     // the same durable projection path instead of relying on unanchored User
     // inputs that are intentionally withheld from the public event prefix.
     state_send_interrupts(&state, &id, 65).await;
-    state_send_user(&state, &id, "after lag").await;
+    state_send_user(&state, &runtime, &id, "after lag").await;
 
     let (frames, lagged) = drain(&mut rx);
     assert!(
@@ -1059,7 +1062,8 @@ async fn a_lagging_subscriber_skips_frames_but_still_receives_later_ones() {
 /// the broadcast channel is only a best-effort tail.
 #[tokio::test]
 async fn slow_http_consumers_and_reconnect_storm_recover_from_durable_replay() {
-    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
+    let runtime = CoordinatedRuntimeFake::default();
+    let state = Arc::new(ManagedState::new(runtime.clone()));
     let app = router(state.clone());
     let id = http_create(&app).await;
     let uri = format!("/v1/sessions/{id}/events/stream");
@@ -1082,7 +1086,7 @@ async fn slow_http_consumers_and_reconnect_storm_recover_from_durable_replay() {
 
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         state_send_interrupts(&state, &id, 65).await;
-        state_send_user(&state, &id, "terminal after slow consumers").await;
+        state_send_user(&state, &runtime, &id, "terminal after slow consumers").await;
     })
     .await
     .expect("R2/E1 slow consumers never backpressure committed admission");

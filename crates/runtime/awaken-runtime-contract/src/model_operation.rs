@@ -169,15 +169,19 @@ impl StateKey for ActiveModelOperation {
 }
 
 impl ActiveModelOperation {
-    /// Read the exact Run's evidence at a committed lifecycle boundary. A later
-    /// receipt must not rewrite an already published historical error. Reuse the
-    /// typed cell and state materializer; this observer grants no recovery rights.
-    pub fn at_commit(
+    /// Read every recorded invocation of the exact Run at one committed prefix.
+    /// Later ordinals cannot erase an earlier Unknown; updates to one ordinal
+    /// must preserve its binding. Results are ordered by ordinal and reconstruct
+    /// the original ModelOperationContext without allocating new identities.
+    /// This is a transient view of ThreadCommit, not a receipt store. An empty
+    /// result is NOT proof of no execution or complete participant enrollment.
+    /// Later receipts cannot rewrite an already published historical diagnosis.
+    pub fn recorded_at_commit(
         state: &[awaken_agent_contract::agent::state::Command],
         cursors: &[u64],
         run_id: &awaken_agent_contract::agent::run::Id,
         through: u64,
-    ) -> Result<Option<ModelOperation>, awaken_agent_contract::agent::state::StateError> {
+    ) -> Result<Vec<ModelOperation>, awaken_agent_contract::agent::state::StateError> {
         use awaken_agent_contract::agent::state::{StateError, Store};
         let belongs = |command: &&awaken_agent_contract::agent::state::Command| {
             command.scope == Self::SCOPE
@@ -185,23 +189,56 @@ impl ActiveModelOperation {
                 && command.run_id.as_ref() == Some(run_id)
         };
         if !state.iter().any(|command| belongs(&command)) {
-            return Ok(None);
+            return Ok(Vec::new());
         }
+        let invalid = |detail: &str| StateError {
+            key: Self::KEY.into(),
+            scope: Self::SCOPE,
+            detail: detail.into(),
+        };
         if state.len() != cursors.len() {
-            return Err(StateError {
-                key: Self::KEY.into(),
-                scope: Self::SCOPE,
-                detail: "model evidence has no aligned commit coordinates".into(),
-            });
+            return Err(invalid("model evidence has no aligned commit coordinates"));
         }
-        let mut store = Store::new();
+        let mut recorded = Vec::new();
+        let mut previous_cursor = 0;
         for (command, cursor) in state.iter().zip(cursors) {
+            if *cursor == 0 || *cursor < previous_cursor {
+                return Err(invalid("model evidence commit coordinates are not ordered"));
+            }
+            previous_cursor = *cursor;
             if belongs(&command) && *cursor <= through {
+                if command.merge != Self::MERGE {
+                    return Err(invalid("model evidence has an incompatible merge policy"));
+                }
+                // Decode EACH write through the existing typed cell. Folding
+                // first would hide malformed/removed history behind a later Set.
+                let mut store = Store::new();
                 store.apply(command);
+                let operation = Self::load(&store)?
+                    .ok_or_else(|| invalid("model evidence cannot erase recorded invocations"))?;
+                if !fold_recorded_operation(&mut recorded, operation) {
+                    return Err(invalid("model invocation ordinal changed its binding"));
+                }
             }
         }
-        Self::load(&store)
+        Ok(recorded)
     }
+}
+
+/// One history fold, shared by the committed observer and its implementation
+/// proof. Binary lookup keeps repeated receipts from scanning every prior call.
+/// Rebinding rejects without changing either invocation or its neighbors.
+fn fold_recorded_operation(recorded: &mut Vec<ModelOperation>, operation: ModelOperation) -> bool {
+    match recorded.binary_search_by_key(&operation.ordinal, |record| record.ordinal) {
+        Ok(index) => {
+            if recorded[index].binding != operation.binding {
+                return false;
+            }
+            recorded[index] = operation;
+        }
+        Err(index) => recorded.insert(index, operation),
+    }
+    true
 }
 
 #[cfg(kani)]
@@ -271,6 +308,53 @@ fn model_operation_ordinal_never_wraps_or_reuses_a_coordinate() {
             assert_eq!(identity.ordinal, next);
         }
         None => assert_eq!(previous, u64::MAX),
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(4)]
+fn model_operation_history_preserves_distinct_subjects() {
+    // Production fold, two arbitrary nonzero u64 ordinals, equal/different
+    // bindings, and all evidence values. R1 new ordinal => retain both subjects;
+    // R2 same ordinal+binding => replace only that observation; R3 same ordinal
+    // with rebinding => reject with no mutation. Strings are fixed empty/one-byte
+    // literals; decoding, arbitrary history length and provider truth are outside
+    // this bounded implementation proof and remain executable/TCB boundaries.
+    let first: u64 = kani::any();
+    let second: u64 = kani::any();
+    kani::assume(first > 0 && second > 0);
+    let same_binding: bool = kani::any();
+    let evidence = match kani::any::<u8>() % 3 {
+        0 => ModelExecutionEvidence::Unknown,
+        1 => ModelExecutionEvidence::NotDispatched,
+        _ => ModelExecutionEvidence::Terminated,
+    };
+    let original = ModelOperation {
+        ordinal: NonZeroU64::new(first).unwrap(),
+        binding: ModelBinding::new("", "", ""),
+        phase: ModelOperationPhase::Entered,
+        execution: ModelExecutionEvidence::Unknown,
+    };
+    let incoming = ModelOperation {
+        ordinal: NonZeroU64::new(second).unwrap(),
+        binding: ModelBinding::new(if same_binding { "" } else { "x" }, "", ""),
+        phase: ModelOperationPhase::Returned,
+        execution: evidence,
+    };
+    let mut recorded = vec![original.clone()];
+    let accepted = fold_recorded_operation(&mut recorded, incoming.clone());
+    if first == second {
+        assert_eq!(accepted, same_binding);
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0], if same_binding { incoming } else { original });
+    } else {
+        assert!(accepted);
+        assert_eq!(recorded.len(), 2);
+        let first_index = usize::from(first > second);
+        assert_eq!(recorded[first_index], original);
+        assert_eq!(recorded[1 - first_index], incoming);
+        assert!(recorded[0].ordinal < recorded[1].ordinal);
     }
 }
 
@@ -365,10 +449,12 @@ mod tests {
         let commands = [entered, returned];
         for through in 0..=3 {
             for run in [&a, &b] {
-                let value =
-                    ActiveModelOperation::at_commit(&commands, &[1, 3], run, through).unwrap();
+                let mut value =
+                    ActiveModelOperation::recorded_at_commit(&commands, &[1, 3], run, through)
+                        .unwrap();
+                assert!(value.len() <= 1);
                 assert_eq!(
-                    value.map(|v| v.execution),
+                    value.pop().map(|v| v.execution),
                     if run == &b || through == 0 {
                         None
                     } else if through < 3 {
@@ -379,11 +465,186 @@ mod tests {
                 );
             }
         }
-        assert!(ActiveModelOperation::at_commit(&commands, &[1], &a, 2).is_err());
+        assert!(ActiveModelOperation::recorded_at_commit(&commands, &[1], &a, 2).is_err());
         let mut corrupt = commands[0].clone();
         corrupt.action =
             awaken_agent_contract::agent::state::Action::Set(serde_json::json!("corrupt"));
-        assert!(ActiveModelOperation::at_commit(&[corrupt], &[1], &a, 2).is_err());
+        assert!(ActiveModelOperation::recorded_at_commit(&[corrupt], &[1], &a, 2).is_err());
+    }
+
+    #[test]
+    fn recorded_history_keeps_each_invocation_and_ignores_future_receipts() {
+        // Causes: H1 distinct ordinals; H2 repeated exact receipt; H3 foreign,
+        // unowned or wrong-scope command; H4 late receipt for an older ordinal;
+        // H5 frozen commit cut. Effects: retain every H1 once; H2 idempotent;
+        // H3 excluded; H4 changes only its subject at/after H5. No future receipt
+        // can stop a historical participant. Empty is observed absence only,
+        // never complete Native enrollment or permission to retire Dispatch.
+        use awaken_agent_contract::agent::{run::Id, thread::Id as ThreadId};
+        let run = Id("run".into());
+        let thread = ThreadId("thread".into());
+        let one = ModelOperation::next(None, ModelBinding::new("p", "one", "b")).unwrap();
+        let mut two = ModelOperation::next(Some(&one), ModelBinding::new("p", "two", "b")).unwrap();
+        two.execution = ModelExecutionEvidence::Terminated;
+        let mut three =
+            ModelOperation::next(Some(&two), ModelBinding::new("p", "three", "b")).unwrap();
+        three.execution = ModelExecutionEvidence::NotDispatched;
+        let command = |operation: &ModelOperation| {
+            let mut command = ActiveModelOperation::write(&Some(operation.clone()));
+            command.bind_run(&run);
+            command
+        };
+        let mut foreign = command(&one);
+        foreign.bind_run(&Id("foreign".into()));
+        let mut unowned = command(&one);
+        unowned.run_id = None;
+        let mut wrong_scope = command(&one);
+        wrong_scope.scope = Scope::Thread;
+        let mut returned_one = one.clone();
+        returned_one.execution = ModelExecutionEvidence::Terminated;
+        let commands = [
+            command(&one),
+            foreign,
+            unowned,
+            wrong_scope,
+            command(&two),
+            command(&two),
+            command(&three),
+            command(&returned_one),
+        ];
+        for through in 0..=7 {
+            let recorded = ActiveModelOperation::recorded_at_commit(
+                &commands,
+                &[1, 2, 2, 2, 3, 4, 5, 6],
+                &run,
+                through,
+            )
+            .unwrap();
+            assert_eq!(
+                recorded.len(),
+                usize::from(through >= 1) + usize::from(through >= 3) + usize::from(through >= 5)
+            );
+            for (observed, original) in recorded.iter().zip([&one, &two, &three]) {
+                assert_eq!(
+                    ModelOperationContext::from_operation(&thread, &run, observed),
+                    ModelOperationContext::from_operation(&thread, &run, original)
+                );
+            }
+            if let Some(first) = recorded.first() {
+                assert_eq!(
+                    first.execution,
+                    if through < 6 {
+                        ModelExecutionEvidence::Unknown
+                    } else {
+                        ModelExecutionEvidence::Terminated
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn damaged_history_cannot_be_hidden_by_a_later_valid_write() {
+        // Causes: D1 binding drift in any identity component; D2 malformed/zero
+        // ordinal/extra field; D3 Remove/null; D4 noncanonical merge; D5 cursor
+        // zero, disorder or cardinality mismatch. D1-D5 => error, never a
+        // partial successful inventory. A valid later Set cannot hide D1-D4;
+        // cuts before that damaged write remain readable. Ordinary same-cursor
+        // commands are positive controls in the multi-invocation test above.
+        use awaken_agent_contract::agent::{run::Id, state::Action};
+        let run = Id("run".into());
+        let operation = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
+        let mut original = ActiveModelOperation::write(&Some(operation.clone()));
+        original.bind_run(&run);
+        for mode in 0..10 {
+            let mut broken = original.clone();
+            match mode {
+                0..=2 => {
+                    let mut other = operation.clone();
+                    match mode {
+                        0 => other.binding.provider_identity_ref.push('x'),
+                        1 => other.binding.model_ref.push('x'),
+                        _ => other.binding.backend_ref.push('x'),
+                    }
+                    broken = ActiveModelOperation::write(&Some(other));
+                    broken.bind_run(&run);
+                }
+                3 => broken.action = Action::Set(serde_json::json!("malformed")),
+                4 | 5 => {
+                    let Action::Set(value) = &mut broken.action else {
+                        unreachable!()
+                    };
+                    if mode == 4 {
+                        value["ordinal"] = 0.into();
+                    } else {
+                        value["unknown-field"] = true.into();
+                    }
+                }
+                6 => broken.action = Action::Remove,
+                7 => broken.action = Action::Set(serde_json::Value::Null),
+                8 => broken.merge = MergePolicy::Commutative,
+                _ => broken.merge = MergePolicy::Exclusive,
+            }
+            let commands = [original.clone(), broken, original.clone()];
+            assert_eq!(
+                ActiveModelOperation::recorded_at_commit(&commands, &[1, 2, 3], &run, 1).unwrap(),
+                vec![operation.clone()]
+            );
+            assert!(
+                ActiveModelOperation::recorded_at_commit(&commands, &[1, 2, 3], &run, 3).is_err(),
+                "D mode {mode}"
+            );
+        }
+        for cursors in [vec![], vec![1], vec![0, 1], vec![2, 1]] {
+            assert!(
+                ActiveModelOperation::recorded_at_commit(
+                    &[original.clone(), original.clone()],
+                    &cursors,
+                    &run,
+                    3
+                )
+                .is_err(),
+                "D5 {cursors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn recorded_history_fold_is_sorted_exact_and_rebinding_is_inert() {
+        // F1 arbitrary insertion order and 1/MAX boundaries; F2 update an exact
+        // subject; F3 rebind its ordinal. Effects: sorted unique inventory, F2
+        // changes only its record, F3 rejects without mutating ANY record. The
+        // larger 1024-record case exercises lookup beyond the proof's two-record
+        // bound without claiming an asymptotic benchmark or provider truth.
+        let make = |ordinal| ModelOperation {
+            ordinal: NonZeroU64::new(ordinal).unwrap(),
+            binding: ModelBinding::new("p", "m", "b"),
+            phase: ModelOperationPhase::Entered,
+            execution: ModelExecutionEvidence::Unknown,
+        };
+        let mut recorded = Vec::new();
+        for ordinal in [u64::MAX, 1, u64::MAX - 1, 2]
+            .into_iter()
+            .chain((3..=1024).rev())
+        {
+            assert!(fold_recorded_operation(&mut recorded, make(ordinal)));
+        }
+        assert_eq!(recorded.len(), 1026);
+        assert!(
+            recorded
+                .windows(2)
+                .all(|pair| pair[0].ordinal < pair[1].ordinal)
+        );
+        for index in [0, 511, 1025] {
+            let mut update = recorded[index].clone();
+            update.execution = ModelExecutionEvidence::Terminated;
+            assert!(fold_recorded_operation(&mut recorded, update.clone()));
+            let before = recorded.clone();
+            assert_eq!(recorded[index], update);
+            update.binding.backend_ref.push('x');
+            assert!(!fold_recorded_operation(&mut recorded, update));
+            assert_eq!(recorded, before);
+        }
     }
 
     #[test]

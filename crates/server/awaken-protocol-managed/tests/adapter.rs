@@ -156,7 +156,8 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
     // another event; N3 same K/changed F=>409; N4 missing key=>400;
     // N5 foreign Workspace=>404 before any close. The native route is explicitly
     // mounted: no fields or paths are added to the standard Anthropic surface.
-    let state = Arc::new(ManagedState::new(EchoFake::default()));
+    let runtime = EchoFake::default();
+    let state = Arc::new(ManagedState::new(runtime.clone()));
     let app = router(state.clone()).merge(
         awaken_protocol_awaken::session_event_admission_router(
             awaken_protocol_managed::close_event_admission,
@@ -258,7 +259,7 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
     // D2 unseen identity=>Closed with deletion proof, late POST cannot execute;
     // D3 changed body=>409; D4 foreign owner=>404, including after cold restart.
     // Actual cleanup and store CAS run here; no fabricated tombstone fixture.
-    support::drive_retained_session_events(&state, id).await;
+    runtime.drive(&state, id).await;
     state.delete_session(id).await.unwrap();
     state
         .session_application()
@@ -681,6 +682,8 @@ struct EchoFake {
 static ECHO_MESSAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[derive(Default)]
 struct EchoState {
+    reservations: HashMap<String, AdmitSessionRun>,
+    settlements: Vec<awaken_session_contract::SessionAgentBoundaryCommand>,
     runs: HashMap<String, RunState>,
     messages: HashMap<String, Vec<Message>>,
     message_commit_cursors: HashMap<String, Vec<u64>>,
@@ -688,6 +691,30 @@ struct EchoState {
 }
 
 impl EchoFake {
+    async fn drive(&self, state: &ManagedState, session_id: &str) {
+        // Fixture boundary: the canonical supervisor drives admission/activation;
+        // this fake substitutes only for the absent Host Dispatch observer.
+        // Each pass must produce an exact activation receipt or stop. No sleep,
+        // guessed epoch, transcript-derived settlement, or processed-bit write.
+        loop {
+            support::drive_retained_session_events(state, session_id).await;
+            let boundaries = {
+                let mut state = self.state.lock().unwrap();
+                let (current, others) = std::mem::take(&mut state.settlements)
+                    .into_iter()
+                    .partition::<Vec<_>, _>(|boundary| boundary.session_id == session_id);
+                state.settlements = others;
+                current
+            };
+            if boundaries.is_empty() {
+                break;
+            }
+            for boundary in boundaries {
+                support::finalize_applied_user_dispatch(state, boundary).await;
+            }
+        }
+    }
+
     fn recovery_snapshot(
         &self,
         thread_id: &str,
@@ -774,6 +801,43 @@ impl SessionRuntime for EchoFake {
         if state.runs.contains_key(&command.run_id.0) {
             return Ok(SessionRunReservation::Completed);
         }
+        if state.reservations.contains_key(&command.run_id.0) {
+            return Ok(SessionRunReservation::AlreadyReserved);
+        }
+        state.reservations.insert(command.run_id.0.clone(), command);
+        Ok(SessionRunReservation::Reserved)
+    }
+
+    async fn activate_session_run(
+        &self,
+        delivery: awaken_session_contract::SessionRunDelivery,
+    ) -> Result<awaken_session_contract::SessionRunActivation, RunError> {
+        let mut state = self.state.lock().unwrap();
+        if delivery.session_activity_epoch == 0 {
+            return Err(RunError::bad_request(
+                "fixture activation requires an activity",
+            ));
+        }
+        if state.runs.contains_key(&delivery.run_id.0) {
+            return Ok(awaken_session_contract::SessionRunActivation::Completed);
+        }
+        let command = state
+            .reservations
+            .get(&delivery.run_id.0)
+            .filter(|command| command.session_id == delivery.session_id)
+            .ok_or_else(|| RunError::bad_request("fixture activation has no exact reservation"))?
+            .clone();
+        state.reservations.remove(&delivery.run_id.0);
+        state
+            .settlements
+            .push(awaken_session_contract::SessionAgentBoundaryCommand {
+                session_id: delivery.session_id.clone(),
+                source_thread_id: ThreadId(delivery.session_id),
+                source_run_id: delivery.run_id,
+                source_agent_id: command.agent_id.clone(),
+                session_activity_epoch: delivery.session_activity_epoch,
+                cancellation_requested: false,
+            });
         state.runs.insert(
             command.run_id.0.clone(),
             RunState::Ended(EndCause::NaturalEnd),
@@ -844,7 +908,7 @@ impl SessionRuntime for EchoFake {
             state: RunState::Ended(EndCause::NaturalEnd),
             await_reason: None,
         });
-        Ok(SessionRunReservation::Completed)
+        Ok(awaken_session_contract::SessionRunActivation::Completed)
     }
 
     async fn session_run_state(
@@ -1139,7 +1203,8 @@ async fn initial_events_idle_case() {
 }
 
 async fn initial_events_message_case() {
-    let running_state = Arc::new(ManagedState::new(EchoFake::default()));
+    let runtime = EchoFake::default();
+    let running_state = Arc::new(ManagedState::new(runtime.clone()));
     let running_app = router(running_state.clone());
     let (status, session) = json_response(
         &running_app,
@@ -1157,7 +1222,7 @@ async fn initial_events_message_case() {
     assert_eq!(status, StatusCode::OK, "C2 message admitted");
     assert_eq!(session["status"], "running", "C2 starts immediately");
     let id = session["id"].as_str().unwrap();
-    support::drive_retained_session_events(&running_state, id).await;
+    runtime.drive(&running_state, id).await;
     let completed = json_call(
         &running_app,
         "GET",
@@ -1273,7 +1338,9 @@ async fn happy_path_projects_message_and_idle() {
     // stores and committed facts remain the single behavior authority.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let state = Arc::new(ManagedState::new(EchoFake::default()));
+    let runtime = EchoFake::default();
+    let repo = Arc::new(SqliteManagedSessionRepository::open(":memory:").unwrap());
+    let state = Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repo.clone()));
     let app = router(state.clone());
     let id = create(&app).await;
     // Send-response cause/effect rules: C1 one valid User Event is atomically
@@ -1292,9 +1359,36 @@ async fn happy_path_projects_message_and_idle() {
         serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "hi" }] }] }),
     )
     .await;
-    // R1/R2 deliberately stop at durable acceptance. Advance the same
-    // application driver used by the lifecycle supervisor before asserting W3.
+    // Settlement decision table: S1 terminal Thread + no Dispatch callback =>
+    // unprocessed input and retained activity; S2 exact Applied callback =>
+    // processed input, one Running/output/Idle bracket; S3 callback/read replay
+    // and cold rehydration => identical ids/order, no duplicate bracket. This
+    // fast Run has separate opening/terminal commits but no Running-phase
+    // input observation, reproducing the terminal-anchor misclassification.
     support::drive_retained_session_events(&state, &id).await;
+    let application = state.session_application();
+    let unsettled = application.session(&id).await.unwrap();
+    assert!(
+        !unsettled.active_activity_epochs.is_empty(),
+        "S1 retains activity"
+    );
+    assert!(
+        unsettled
+            .event_batches
+            .iter()
+            .flat_map(|batch| &batch.events)
+            .all(|entry| !entry.processed && entry.dispatch_settlement.is_none()),
+        "S1"
+    );
+    let pending = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert!(pending["data"][0]["processed_at"].is_null(), "S1");
+    runtime.drive(&state, &id).await;
     assert_eq!(sent["data"][0]["type"], "user.message", "R1/R2 W1");
     assert_eq!(
         sent["data"][0]["content"],
@@ -1324,6 +1418,22 @@ async fn happy_path_projects_message_and_idle() {
     );
     assert_eq!(list["data"][0]["id"], sent["data"][0]["id"], "R1/R2 W2");
     assert!(list["data"][0]["processed_at"].is_string(), "R1/R2 W2");
+    let settled = application.session(&id).await.unwrap();
+    assert!(settled.active_activity_epochs.is_empty(), "S2");
+    assert_eq!(settled.closed_runtime_intervals.len(), 1, "S2 one interval");
+    let cold = router(Arc::new(
+        ManagedState::new(runtime.clone()).with_session_repo(repo),
+    ));
+    for reader in [&app, &cold, &cold] {
+        let replay = json_call(
+            reader,
+            "GET",
+            &format!("/v1/sessions/{id}/events"),
+            serde_json::Value::Null,
+        )
+        .await;
+        assert_eq!(replay["data"], list["data"], "S3 warm/cold exact history");
+    }
     let threads = json_call(
         &app,
         "GET",
@@ -3007,6 +3117,13 @@ impl SessionRuntime for RecordingFake {
         self.committed.reserve_session_run(command).await
     }
 
+    async fn activate_session_run(
+        &self,
+        delivery: awaken_session_contract::SessionRunDelivery,
+    ) -> Result<awaken_session_contract::SessionRunActivation, RunError> {
+        self.committed.activate_session_run(delivery).await
+    }
+
     async fn session_run_state(
         &self,
         session_id: &str,
@@ -3103,10 +3220,11 @@ async fn system_message_follows_the_batch_admission_decision_table() {
     // selects only its stated effect and preserves the authority constraint.
     let interrupts = Arc::new(Mutex::new(Vec::new()));
     let subjects = Arc::new(Mutex::new(Vec::new()));
+    let runtime = EchoFake::default();
     let state = Arc::new(ManagedState::new(RecordingFake {
         interrupts: interrupts.clone(),
         subjects: subjects.clone(),
-        committed: EchoFake::default(),
+        committed: runtime.clone(),
         supports_mid_conversation_system: true,
     }));
     let app = router(state.clone());
@@ -3122,7 +3240,7 @@ async fn system_message_follows_the_batch_admission_decision_table() {
         ] }),
     )
     .await;
-    support::drive_retained_session_events(&state, &id).await;
+    runtime.drive(&state, &id).await;
     assert_eq!(
         types(&receipt),
         vec!["user.message", "system.message"],
@@ -3148,7 +3266,7 @@ async fn system_message_follows_the_batch_admission_decision_table() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "H2 inclusive maximum");
-    support::drive_retained_session_events(&state, &id).await;
+    runtime.drive(&state, &id).await;
     assert_eq!(
         subjects.lock().unwrap().len(),
         2,
@@ -3296,10 +3414,11 @@ async fn managed_event_attribution_uses_request_header_not_body_field() {
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
     let subjects = Arc::new(Mutex::new(Vec::new()));
+    let runtime = EchoFake::default();
     let state = Arc::new(ManagedState::new(RecordingFake {
         interrupts: Arc::new(Mutex::new(Vec::new())),
         subjects: subjects.clone(),
-        committed: EchoFake::default(),
+        committed: runtime.clone(),
         supports_mid_conversation_system: true,
     }));
     let app = router(state.clone());
@@ -3330,7 +3449,7 @@ async fn managed_event_attribution_uses_request_header_not_body_field() {
         }]}),
     )
     .await;
-    support::drive_retained_session_events(&state, &id).await;
+    runtime.drive(&state, &id).await;
     assert_eq!(*subjects.lock().unwrap(), vec![None], "R2");
 
     let response = app
@@ -3353,7 +3472,7 @@ async fn managed_event_attribution_uses_request_header_not_body_field() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK, "R3");
-    support::drive_retained_session_events(&state, &id).await;
+    runtime.drive(&state, &id).await;
     assert_eq!(
         *subjects.lock().unwrap(),
         vec![None, Some("user_alice".into())],
@@ -3404,6 +3523,13 @@ impl SessionRuntime for InterruptRedirectFake {
             .unwrap_or_default();
         self.order.lock().unwrap().push(format!("run:{text}"));
         self.committed.reserve_session_run(command).await
+    }
+
+    async fn activate_session_run(
+        &self,
+        delivery: awaken_session_contract::SessionRunDelivery,
+    ) -> Result<awaken_session_contract::SessionRunActivation, RunError> {
+        self.committed.activate_session_run(delivery).await
     }
 
     async fn session_run_state(
@@ -3503,9 +3629,10 @@ async fn interrupt_then_message_redirects_in_order() {
     // together`; a multi-row decision table is not applicable, and sibling tests own alternate
     // causes.
     let order = Arc::new(Mutex::new(Vec::new()));
+    let runtime = EchoFake::default();
     let state = Arc::new(ManagedState::new(InterruptRedirectFake {
         order: order.clone(),
-        committed: EchoFake::default(),
+        committed: runtime.clone(),
     }));
     let app = router(state.clone());
     let id = create(&app).await;
@@ -3520,7 +3647,7 @@ async fn interrupt_then_message_redirects_in_order() {
         ] }),
     )
     .await;
-    support::drive_retained_session_events(&state, &id).await;
+    runtime.drive(&state, &id).await;
 
     // The interrupt is handled before the redirect Run starts (documented order).
     assert_eq!(
@@ -3555,7 +3682,8 @@ async fn retrieve_session_and_sse_event_names() {
     // selecting `all output, state, side-effect, error, and terminal assertions below hold
     // together`; a multi-row decision table is not applicable, and sibling tests own alternate
     // causes.
-    let state = Arc::new(ManagedState::new(EchoFake::default()));
+    let runtime = EchoFake::default();
+    let state = Arc::new(ManagedState::new(runtime.clone()));
     let app = router(state.clone());
     let id = create(&app).await;
 
@@ -3578,7 +3706,7 @@ async fn retrieve_session_and_sse_event_names() {
         serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "hi" }] }] }),
     )
     .await;
-    support::drive_retained_session_events(&state, &id).await;
+    runtime.drive(&state, &id).await;
     let req = Request::builder()
         .method("GET")
         .uri(format!("/v1/sessions/{id}/events/stream"))
@@ -3890,7 +4018,8 @@ async fn events_are_paged_by_cursor() {
      * overlap; E3 commit order is the deterministic tie-break for equal
      * timestamps; E4 invalid order is rejected. Rules: R1=C1(asc)+C2=>E1;
      * R2=C1(desc)+C2+C3=>E2+E3; R3=C4=>E4. */
-    let state = Arc::new(ManagedState::new(EchoFake::default()));
+    let runtime = EchoFake::default();
+    let state = Arc::new(ManagedState::new(runtime.clone()));
     let app = router(state.clone());
     let id = create(&app).await;
     // Two Runs → 14 events (User/Session-running/Thread-running/message/
@@ -3903,7 +4032,7 @@ async fn events_are_paged_by_cursor() {
             serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": text }] }] }),
         )
         .await;
-        support::drive_retained_session_events(&state, &id).await;
+        runtime.drive(&state, &id).await;
     }
     let ids = |list: &serde_json::Value| -> Vec<String> {
         list["data"]

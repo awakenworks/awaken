@@ -344,6 +344,19 @@ matrix crosses Registry adapters and old-response races; production CLI tests
 exercise the assembled stop source against a mock Kubernetes API. Neither is
 the Native hard-crash k3d acceptance test.
 
+Recorded model participants are now read from the existing ThreadCommit prefix
+by ordinal and immutable binding, rather than only its latest-value projection.
+The one read owner rejects rebinding, damaged/erased records and invalid commit
+coordinates. It returns the latest observation of each recorded invocation;
+duplicates do not create new identities and receipts beyond the selected prefix
+cannot change it. Managed root/child cancellation diagnostics consume this same
+inventory, so a later completed invocation cannot hide an older Unknown. The
+production fold has a bounded two-record Kani harness; native tests additionally
+cover 1026 records and warm/repeated/cold event projection. This is neither a
+complete enrollment certificate nor a provider query: an empty inventory and
+legacy unowned records cannot prove historical execution stopped. Dispatch
+retirement and Runtime replay permissions are unchanged by this read-only work.
+
 The gated CLI live test additionally composes the actual Kubernetes API's
 Pod-bound TokenRequest/TokenReview, production Worker HTTP clients, and SQLite
 Registry/Dispatch. Wrong audiences and copied tokens under another Pod UID

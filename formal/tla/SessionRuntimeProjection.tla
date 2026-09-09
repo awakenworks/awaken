@@ -213,6 +213,9 @@ Safety ==
 \* are assumptions here; Rust reducer and real restart tests check that binding.
 \* Existing variables are reused only by the separate OpeningInit/OpeningNext
 \* configuration, so this submodel does not multiply the UI admission state space.
+\* resolving is the immutable optional public User observation, not a Running
+\* lower bound. It can first be observed at input or after fast terminal
+\* settlement. Neither choice can move the exact Run's opening identity.
 OpeningChoice == IF aggregate = "terminal-only" THEN 1 ELSE
                  CHOOSE cursor \in 1..sourceVersion :
                     \A other \in 1..sourceVersion : cursor <= other
@@ -252,11 +255,17 @@ OpeningReopen ==
     /\ history' = HistoryValue(FALSE, TRUE, FALSE, FALSE)
     /\ UNCHANGED <<pending, resolving, lastError, projectedVersion,
                     refreshSucceeded, aggregate>>
+OpeningObservePublicAnchor ==
+    /\ sourceVersion > 0 /\ resolving = {}
+    /\ \E anchor \in 1..sourceVersion: resolving' = {anchor}
+    /\ UNCHANGED <<phase, pending, lastError, sourceVersion, projectedVersion,
+                    refreshSucceeded, history, aggregate>>
 OpeningNext == OpeningAppend \/ OpeningWarmRead \/ OpeningClose \/ OpeningColdRead
-               \/ OpeningTerminalOnly \/ OpeningReopen
+               \/ OpeningTerminalOnly \/ OpeningReopen \/ OpeningObservePublicAnchor
 OpeningIdentityStable ==
     /\ (refreshSucceeded => projectedVersion = 1)
     /\ pending \subseteq {1}
     /\ projectedVersion \in {0, 1}
     /\ (pending # {} /\ projectedVersion # 0 => projectedVersion \in pending)
+    /\ resolving \subseteq 1..MaxSourceVersion
 =============================================================================

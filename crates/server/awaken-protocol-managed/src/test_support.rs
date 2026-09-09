@@ -224,6 +224,8 @@ pub fn environment_components() -> (
 /// accepted primary Run; no `DelegatedRun` hint or child-named store participates.
 #[derive(Clone)]
 pub struct CoordinatedRuntimeFake {
+    completed_user_dispatches:
+        std::sync::Arc<std::sync::Mutex<Vec<awaken_session_contract::SessionAgentBoundaryCommand>>>,
     runs: std::sync::Arc<std::sync::atomic::AtomicU64>,
     reserved_user_runs: std::sync::Arc<
         std::sync::Mutex<
@@ -292,6 +294,7 @@ impl awaken_session_contract::SessionThreadLiveSubscription for FakeLiveSubscrip
 impl Default for CoordinatedRuntimeFake {
     fn default() -> Self {
         Self {
+            completed_user_dispatches: Default::default(),
             runs: Default::default(),
             reserved_user_runs: Default::default(),
             user_run_states: Default::default(),
@@ -336,6 +339,15 @@ impl CoordinatedRuntimeFake {
     /// cannot accidentally pass when an adapter opens a child-named partition.
     pub fn take_interrupts(&self) -> Vec<String> {
         std::mem::take(&mut *self.interrupts.lock().unwrap())
+    }
+
+    /// Exact activation coordinates for explicit simulated post-Dispatch
+    /// delivery. Terminal transcript projection cannot manufacture this fence.
+    pub fn completed_user_dispatches(
+        &self,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<awaken_session_contract::SessionAgentBoundaryCommand>>>
+    {
+        self.completed_user_dispatches.clone()
     }
 
     /// Reject one exact physical interrupt target while continuing to record
@@ -636,6 +648,14 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
         ))
         .await?;
         let root_terminal_cursor = if deferred { base + 3 } else { base + 4 };
+        let boundary = awaken_session_contract::SessionAgentBoundaryCommand {
+            session_id: delivery.session_id.clone(),
+            source_thread_id: awaken_agent_contract::agent::thread::Id(delivery.session_id),
+            source_run_id: delivery.run_id,
+            source_agent_id: command.agent_id.clone(),
+            session_activity_epoch: delivery.session_activity_epoch,
+            cancellation_requested: false,
+        };
         self.lifecycle
             .lock()
             .unwrap()
@@ -656,6 +676,10 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
             .lock()
             .unwrap()
             .insert(command.run_id.0, outcome);
+        self.completed_user_dispatches
+            .lock()
+            .unwrap()
+            .push(boundary);
         Ok(awaken_session_contract::SessionRunActivation::Activated)
     }
 

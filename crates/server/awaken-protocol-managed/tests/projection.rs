@@ -101,32 +101,13 @@ async fn send_user(app: &Router, id: &str, text: &str) -> serde_json::Value {
     .await
 }
 
-fn app_with_runtime(runtime: impl SessionRuntime + 'static) -> (Arc<ManagedState>, Router) {
+type CompletedDispatches = Arc<Mutex<Vec<awaken_session_contract::SessionAgentBoundaryCommand>>>;
+
+fn app_with_runtime(runtime: ScriptFake) -> (Arc<ManagedState>, Router, CompletedDispatches) {
+    let completions = runtime.completions.clone();
     let state = Arc::new(ManagedState::new(runtime));
     let app = router(state.clone());
-    (state, app)
-}
-
-async fn reconcile_published_run(state: &ManagedState, session_id: &str) {
-    // A queued Event's first opportunistic drive publishes its reserved Run and
-    // returns at that external boundary. The lifecycle supervisor's next scan
-    // observes terminal committed truth and advances the retained Event. This
-    // in-process fake has no Runtime Host completion callback, so the harness
-    // then settles the exact application-owned activity epoch through the same
-    // canonical API. Box the application future like the production supervisor.
-    support::drive_retained_session_events(state, session_id).await;
-    // The first scan owns external-effect admission and deliberately returns
-    // Pending even when this synchronous fake has already committed terminal
-    // truth. The next supervisor scan observes that durable result, settles the
-    // exact wake epoch, and anchors the retained input.
-    support::drive_retained_session_events(state, session_id).await;
-    let application = state.session_application();
-    let session = Box::pin(application.session(session_id)).await.unwrap();
-    for epoch in session.active_activity_epochs {
-        Box::pin(application.settle_activity(session_id, epoch))
-            .await
-            .unwrap();
-    }
+    (state, app, completions)
 }
 
 async fn list_events(app: &Router, id: &str) -> serde_json::Value {
@@ -144,6 +125,7 @@ async fn list_events(app: &Router, id: &str) -> serde_json::Value {
 /// and a configurable cumulative usage tally. The evidence uses the production
 /// snapshot/lifecycle contracts; it is not a Step-local observation substitute.
 struct ScriptFake {
+    completions: CompletedDispatches,
     make: Box<dyn Fn() -> StepOutcome + Send + Sync>,
     usage: SessionUsage,
     evidence_profile: Option<CommittedEvidence>,
@@ -303,6 +285,7 @@ impl CommittedEvidence {
 impl ScriptFake {
     fn new(make: impl Fn() -> StepOutcome + Send + Sync + 'static) -> Self {
         Self {
+            completions: Default::default(),
             make: Box::new(make),
             usage: SessionUsage::default(),
             evidence_profile: None,
@@ -508,6 +491,16 @@ impl SessionRuntime for ScriptFake {
                 ),
             });
         }
+        self.completions.lock().unwrap().push(
+            awaken_session_contract::SessionAgentBoundaryCommand {
+                session_id: delivery.session_id.clone(),
+                source_thread_id: ThreadId(delivery.session_id),
+                source_run_id: delivery.run_id.clone(),
+                source_agent_id: command.agent_id,
+                session_activity_epoch: delivery.session_activity_epoch,
+                cancellation_requested: false,
+            },
+        );
         durable
             .run_states
             .insert(delivery.run_id.0, outcome.state().clone());
@@ -572,7 +565,7 @@ async fn a_terminal_run_fault_projects_session_error_before_idle() {
     // stores and committed facts remain the single behavior authority.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let (state, app) = app_with_runtime(
+    let (state, app, completions) = app_with_runtime(
         ScriptFake::new(|| {
             failed(
                 vec![assistant_text("a", "partial work")],
@@ -584,7 +577,7 @@ async fn a_terminal_run_fault_projects_session_error_before_idle() {
     );
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
-    reconcile_published_run(&state, &id).await;
+    support::drive_completed_user_dispatches(&state, &id, &completions).await;
     let list = list_events(&app, &id).await;
 
     // The error is a first-class event between running and idle — not dropped.
@@ -694,13 +687,13 @@ async fn a_classified_fault_projects_the_matching_sdk_error_variant() {
             "HTTP 402: tool service requires payment",
         ),
     ] {
-        let (state, app) = app_with_runtime(
+        let (state, app, completions) = app_with_runtime(
             ScriptFake::new(move || failed(vec![assistant_text("a", "partial")], code, message))
                 .with_committed_evidence(CommittedEvidence::Terminal),
         );
         let id = create(&app).await;
         send_user(&app, &id, "go").await;
-        reconcile_published_run(&state, &id).await;
+        support::drive_completed_user_dispatches(&state, &id, &completions).await;
         let list = list_events(&app, &id).await;
         let err = list["data"]
             .as_array()
@@ -733,17 +726,17 @@ async fn a_rescheduled_run_projects_the_complete_thread_status_sequence() {
     // selects only its stated effect and preserves the authority constraint.
     let runtime = ScriptFake::new(|| ended(vec![assistant_text("a", "after a retry")]))
         .with_committed_evidence(CommittedEvidence::Reschedule);
-    let (state, app) = app_with_runtime(runtime);
+    let (state, app, completions) = app_with_runtime(runtime);
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
-    reconcile_published_run(&state, &id).await;
+    support::drive_completed_user_dispatches(&state, &id, &completions).await;
     let persisted = state.session_application().session(&id).await.unwrap();
     assert_eq!(
         persisted.event_batches[0].events[0]
             .projection_anchor
             .map(|anchor| anchor.source_commit_cursor),
-        Some(1),
-        "R3/C1 the retained input owns the exact pre-opening commit anchor"
+        Some(3),
+        "R3/C1 no intermediate input observation: the first public anchor is the terminal fallback"
     );
     let list = list_events(&app, &id).await;
     assert_eq!(
@@ -801,10 +794,10 @@ async fn a_compacted_run_projects_the_compaction_marker() {
     // alternate causes.
     let runtime = ScriptFake::new(|| ended(vec![assistant_text("a", "after compaction")]))
         .with_committed_evidence(CommittedEvidence::Compaction);
-    let (state, app) = app_with_runtime(runtime);
+    let (state, app, completions) = app_with_runtime(runtime);
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
-    reconcile_published_run(&state, &id).await;
+    support::drive_completed_user_dispatches(&state, &id, &completions).await;
     let list = list_events(&app, &id).await;
     assert_eq!(
         types(&list),
@@ -859,14 +852,14 @@ async fn session_usage_reflects_the_runtime_tally() {
         cache_creation_tokens: 12,
         ..Default::default()
     };
-    let (state, app) = app_with_runtime(
+    let (state, app, completions) = app_with_runtime(
         ScriptFake::new(|| ended(vec![assistant_text("a", "hi")]))
             .with_usage(usage)
             .with_committed_evidence(CommittedEvidence::Terminal),
     );
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
-    reconcile_published_run(&state, &id).await;
+    support::drive_completed_user_dispatches(&state, &id, &completions).await;
     let after = json_call(
         &app,
         "GET",
@@ -919,13 +912,13 @@ async fn session_usage_event_keeps_zero_counters_instead_of_omitting_the_snapsho
     // counters; E2 omit budget and list cost rather than suppressing the event or
     // fabricating a price. Decision rule Z1=C1+C2+C3=>E1+E2. The fixture's
     // `Terminal` evidence is the only completion authority.
-    let (state, app) = app_with_runtime(
+    let (state, app, completions) = app_with_runtime(
         ScriptFake::new(|| ended(vec![assistant_text("a", "unmetered")]))
             .with_committed_evidence(CommittedEvidence::Terminal),
     );
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
-    reconcile_published_run(&state, &id).await;
+    support::drive_completed_user_dispatches(&state, &id, &completions).await;
     let events = list_events(&app, &id).await;
     let usage = events["data"]
         .as_array()
@@ -958,13 +951,13 @@ async fn an_all_empty_text_assistant_message_is_dropped() {
     // stores and committed facts remain the single behavior authority.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let (state, app) = app_with_runtime(
+    let (state, app, completions) = app_with_runtime(
         ScriptFake::new(|| ended(vec![assistant_text("a", "")]))
             .with_committed_evidence(CommittedEvidence::Terminal),
     );
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
-    reconcile_published_run(&state, &id).await;
+    support::drive_completed_user_dispatches(&state, &id, &completions).await;
     let list = list_events(&app, &id).await;
     assert_eq!(
         types(&list),
@@ -1003,7 +996,7 @@ async fn an_mcp_tool_call_projects_mcp_events() {
     // stores and committed facts remain the single behavior authority.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let (state, app) = app_with_runtime(
+    let (state, app, completions) = app_with_runtime(
         ScriptFake::new(|| {
             ended(vec![
                 Message::new(
@@ -1033,7 +1026,7 @@ async fn an_mcp_tool_call_projects_mcp_events() {
     );
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
-    reconcile_published_run(&state, &id).await;
+    support::drive_completed_user_dispatches(&state, &id, &completions).await;
     let list = list_events(&app, &id).await;
     assert_eq!(
         types(&list),
@@ -1083,7 +1076,7 @@ async fn a_retries_exhausted_run_idles_with_that_stop_reason() {
     // branch selecting `all output, state, side-effect, error, and terminal assertions below hold
     // together`; a multi-row decision table is not applicable, and sibling tests own alternate
     // causes.
-    let (state, app) = app_with_runtime(
+    let (state, app, completions) = app_with_runtime(
         ScriptFake::new(|| {
             StepOutcome::ended(vec![assistant_text("a", "gave up")], EndCause::MaxSteps)
         })
@@ -1091,7 +1084,7 @@ async fn a_retries_exhausted_run_idles_with_that_stop_reason() {
     );
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
-    reconcile_published_run(&state, &id).await;
+    support::drive_completed_user_dispatches(&state, &id, &completions).await;
     let list = list_events(&app, &id).await;
     let idle = list["data"]
         .as_array()
@@ -1135,11 +1128,13 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
     // stores and committed facts remain the single behavior authority.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
+    let runtime = CoordinatedRuntimeFake::default();
+    let completions = runtime.completed_user_dispatches();
+    let state = Arc::new(ManagedState::new(runtime));
     let app = router(state.clone());
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
-    reconcile_published_run(&state, &id).await;
+    support::drive_completed_user_dispatches(&state, &id, &completions).await;
     // Direct-read cause/effect rule M0: C0 the Runtime committed a child
     // lifecycle after the disposable HTTP cache was last touched; C1 the first
     // observer is GET /threads rather than GET /events. Effect E0 is the same
@@ -1300,7 +1295,7 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
     assert_eq!(sent["content"][0]["text"], "here are the docs");
 
     send_user(&app, &id, "follow up").await;
-    reconcile_published_run(&state, &id).await;
+    support::drive_completed_user_dispatches(&state, &id, &completions).await;
     let threads = json_call(
         &app,
         "GET",
