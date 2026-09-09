@@ -10,20 +10,6 @@ source scripts/ci/_cargo_target.sh
 awaken_configure_cargo_target "$PWD"
 source scripts/ci/_deadline.sh
 
-# Prefer the repository-pinned source build when bootstrapped. The published
-# Kani 0.67 bundle embeds Rust 1.93 and cannot compile the workspace's Rust 1.96
-# IAM dependencies. Its setup still owns the CBMC/GOTO backend binaries.
-kani_cache_root="${AWAKEN_KANI_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/awaken-kani}"
-kani_source_dir="${AWAKEN_KANI_SOURCE_DIR:-$kani_cache_root/current}"
-if [ -x "$kani_source_dir/scripts/cargo-kani" ]; then
-  # Freeze this invocation's selection before another bootstrap moves current.
-  kani_source_dir="$(cd "$kani_source_dir" && pwd -P)"
-  kani_backend_dir="${AWAKEN_KANI_BACKEND_DIR:-}"
-  if [ -z "$kani_backend_dir" ]; then
-    kani_backend_dir="$HOME/.kani/kani-0.67.0/bin"
-  fi
-  export PATH="$kani_source_dir/scripts${kani_backend_dir:+:$kani_backend_dir}:$PATH"
-fi
 
 require_tools=0
 if [ "${1:-}" = "--require-tools" ]; then
@@ -98,6 +84,17 @@ if ! [[ "$kani_batch_timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
   echo "invalid cargo-kani batch deadline: $kani_batch_timeout_seconds" >&2
   exit 2
 fi
+# The bootstrap is the sole owner of compiler/backend defaults and pins.
+# Freeze both physical selections before another bootstrap moves current.
+kani_selection="$(scripts/ci/bootstrap_kani.sh --paths)"
+mapfile -t kani_paths <<< "$kani_selection"
+kani_source_dir="${kani_paths[0]}"
+kani_backend_dir="${kani_paths[1]}"
+export AWAKEN_KANI_BACKEND_DIR="$kani_backend_dir"
+if [ -x "$kani_source_dir/scripts/cargo-kani" ]; then
+  export PATH="$kani_source_dir/scripts:$kani_backend_dir:$PATH"
+fi
+
 rust_trace_dir="$formal_artifact_dir/rust-traces"
 rendered_trace_dir="$formal_artifact_dir/rendered-traces"
 observation_trace_dir="$formal_artifact_dir/session-observations/raw"
