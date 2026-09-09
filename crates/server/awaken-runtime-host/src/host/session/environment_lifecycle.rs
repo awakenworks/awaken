@@ -185,9 +185,9 @@ struct UnavailableEnvironmentRecovery<'a> {
 /// validated. The value itself is the fence consumed by the sole lifecycle
 /// writer; no binding-only or cause-only proxy can authorize recovery.
 enum ClosedEnvironmentRecoveryOwner {
-    Retiring(RetiringSessionEnvironment),
+    Retiring(Box<RetiringSessionEnvironment>),
     Resident(Arc<crate::session_environment::SessionEnvironment>),
-    Pending(BoundSessionEnvironmentIdentity, String),
+    Pending(Box<BoundSessionEnvironmentIdentity>, String),
     Vacant,
 }
 
@@ -324,7 +324,9 @@ impl SharedHost {
                 {
                     (
                         ClosedEnvironmentRecoveryOwnerClass::Revoked,
-                        Some(ClosedEnvironmentRecoveryOwner::Retiring(expected.clone())),
+                        Some(ClosedEnvironmentRecoveryOwner::Retiring(Box::new(
+                            expected.clone(),
+                        ))),
                     )
                 } else if let Some(expected) = resident
                     && let SessionEnvironmentOwner::Retiring(current) = &slot.environment_owner
@@ -334,7 +336,9 @@ impl SharedHost {
                 {
                     (
                         ClosedEnvironmentRecoveryOwnerClass::RecoveryDiscard,
-                        Some(ClosedEnvironmentRecoveryOwner::Retiring(current.clone())),
+                        Some(ClosedEnvironmentRecoveryOwner::Retiring(Box::new(
+                            current.clone(),
+                        ))),
                     )
                 } else if let Some(expected) = resident
                     && matches!(
@@ -362,7 +366,7 @@ impl SharedHost {
                     (
                         ClosedEnvironmentRecoveryOwnerClass::Pending,
                         Some(ClosedEnvironmentRecoveryOwner::Pending(
-                            identity.clone(),
+                            Box::new(identity.clone()),
                             binding.clone(),
                         )),
                     )
