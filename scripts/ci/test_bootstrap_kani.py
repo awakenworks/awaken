@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -113,10 +114,50 @@ class BootstrapTests(unittest.TestCase):
                         CBMC_PATCH=str(self.scripts / "patches/cbmc-smt-type-dependencies.patch"),
                         PINNED_REVISION=revision, PATCH=str(self.scripts / "patches/kani-wide-niche.patch"),
                         KANI_WITNESS=str(bindir / "kani"))
+        # The fixture owns tool selection; callers may explicitly override it
+        # through run_bootstrap/verify, but ambient production selections cannot.
+        self.env.pop("AWAKEN_KANI_SOURCE_DIR", None)
+        self.env.pop("AWAKEN_KANI_BACKEND_DIR", None)
 
     def run_bootstrap(self, **changes):
         return subprocess.run(["bash", str(self.scripts / "bootstrap_kani.sh")],
                               env=dict(self.env, **changes), capture_output=True, text=True)
+
+    def test_ambient_selectors_cannot_escape_the_owned_fixture(self):
+        # I1 neither ambient selector, I2 source only, I3 backend only, I4 both:
+        # every case must build/select the fixture's own qualified package and
+        # leave the external sentinel unchanged. This covers check_formal.sh
+        # exporting its frozen real backend before running these same tests.
+        # Explicit per-call selection remains covered by B5 and R8 below.
+        selectors = ("AWAKEN_KANI_SOURCE_DIR", "AWAKEN_KANI_BACKEND_DIR")
+        external = self.root / "ambient-package"
+        external.mkdir()
+        sentinel = external / "keep"
+        sentinel.write_bytes(b"caller-owned toolchain")
+        for mask in range(4):
+            with self.subTest(rule=f"I{mask + 1}"):
+                ambient = {key: value for key, value in os.environ.items()
+                           if key not in selectors}
+                ambient.update({key: str(external / key) for bit, key in enumerate(selectors)
+                                if mask & (1 << bit)})
+                fixture = BootstrapTests(
+                    "test_success_and_exact_cache_replay_publish_only_after_qualification")
+                try:
+                    with mock.patch.dict(os.environ, ambient, clear=True):
+                        fixture.setUp()
+                    result = fixture.run_bootstrap()
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    selected = subprocess.run(
+                        ["bash", str(fixture.scripts / "bootstrap_kani.sh"), "--paths"],
+                        env=fixture.env, capture_output=True, text=True)
+                    self.assertEqual(selected.returncode, 0, selected.stderr)
+                    self.assertEqual(selected.stdout.splitlines(),
+                                     [str(fixture.patched), str(fixture.backend() / "bin")])
+                    self.assertNotIn(str(external), fixture.calls.read_text())
+                    self.assertEqual(list(external.iterdir()), [sentinel])
+                    self.assertEqual(sentinel.read_bytes(), b"caller-owned toolchain")
+                finally:
+                    fixture.doCleanups()
 
     def test_success_and_exact_cache_replay_publish_only_after_qualification(self):
         # C1 clean/new or exactly patched cache; C2 successful build; C3 real
