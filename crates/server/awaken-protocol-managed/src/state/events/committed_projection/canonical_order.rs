@@ -10,6 +10,31 @@ pub(super) struct CanonicalEventOrder {
     pub(super) processed_at_unix_ms: Option<u64>,
 }
 
+const HISTORICAL_PENDING_PHASE: u16 = 50;
+const LIFECYCLE_TERMINAL_PHASE: u16 = 80;
+
+/// Bind a synthetic historical pending event to its committed Awaiting
+/// coordinate. If a later terminal for the same Run is observed behind that
+/// coordinate, withhold the pending order so the private projection fails
+/// closed instead of publishing terminal history first.
+fn historical_pending_projection_order(
+    awaiting_source_commit_cursor: u64,
+    next_terminal_source_commit_cursor: Option<u64>,
+    processed_at_unix_ms: Option<u64>,
+) -> Option<CanonicalEventOrder> {
+    if next_terminal_source_commit_cursor
+        .is_some_and(|terminal| terminal < awaiting_source_commit_cursor)
+    {
+        return None;
+    }
+    Some(CanonicalEventOrder {
+        source_commit_cursor: awaiting_source_commit_cursor,
+        phase: HISTORICAL_PENDING_PHASE,
+        ordinal: 0,
+        processed_at_unix_ms,
+    })
+}
+
 // Wall time is evidence, never ordering/identity; clock rollback cannot move events.
 impl PartialEq for CanonicalEventOrder {
     fn eq(&self, other: &Self) -> bool {
@@ -78,9 +103,12 @@ pub(super) fn index_lifecycle_orders(
         ("rescheduled-lifecycle-status-running", 22),
         ("root-lifecycle-error", 70),
         ("lifecycle-error", 70),
-        ("root-lifecycle-status-idle", 80),
-        ("lifecycle-status-idle", 80),
-        ("failed-lifecycle-status-terminated", 80),
+        ("root-lifecycle-status-idle", LIFECYCLE_TERMINAL_PHASE),
+        ("lifecycle-status-idle", LIFECYCLE_TERMINAL_PHASE),
+        (
+            "failed-lifecycle-status-terminated",
+            LIFECYCLE_TERMINAL_PHASE,
+        ),
         ("advisor-lifecycle-status-terminated", 81),
     ];
     for lifecycle in lifecycle_events {
@@ -561,25 +589,39 @@ impl ManagedState {
             if let Some(awaiting) = lifecycle_events.iter().find(|event| {
                 event.cursor == *cursor && event.kind == RunLifecycleEventKind::Awaiting
             }) {
+                let next_terminal_source_commit_cursor = lifecycle_events
+                    .iter()
+                    .filter(|event| {
+                        event.thread_id == awaiting.thread_id
+                            && event.run_id == awaiting.run_id
+                            && event.cursor > awaiting.cursor
+                            && matches!(
+                                event.kind,
+                                RunLifecycleEventKind::Awaiting
+                                    | RunLifecycleEventKind::Completed
+                                    | RunLifecycleEventKind::Failed
+                                    | RunLifecycleEventKind::Cancelled
+                            )
+                    })
+                    .min_by_key(|event| event.cursor)
+                    .map(|event| event.source_commit_cursor);
                 let public_owner_thread_id =
                     public_thread_id(&record.session.id, &awaiting.thread_id.0);
-                retain_earliest_order(
-                    &mut orders,
-                    managed_tool_event_id(
-                        &public_owner_thread_id,
-                        &awaiting.run_id.0,
-                        &pending.tool_use_id,
-                    ),
-                    CanonicalEventOrder {
-                        processed_at_unix_ms: time_for(
-                            &awaiting.thread_id.0,
-                            awaiting.source_commit_cursor,
+                if let Some(order) = historical_pending_projection_order(
+                    awaiting.source_commit_cursor,
+                    next_terminal_source_commit_cursor,
+                    time_for(&awaiting.thread_id.0, awaiting.source_commit_cursor),
+                ) {
+                    retain_earliest_order(
+                        &mut orders,
+                        managed_tool_event_id(
+                            &public_owner_thread_id,
+                            &awaiting.run_id.0,
+                            &pending.tool_use_id,
                         ),
-                        source_commit_cursor: awaiting.source_commit_cursor,
-                        phase: 50,
-                        ordinal: 0,
-                    },
-                );
+                        order,
+                    );
+                }
             }
         }
         for (thread_id, pending) in std::iter::once((record.session.id.as_str(), root_pending))
@@ -1411,6 +1453,38 @@ fn canonical_event_order_never_depends_on_wall_time() {
     );
 }
 
+#[cfg(kani)]
+#[kani::proof]
+fn historical_pending_order_precedes_every_admitted_terminal() {
+    // Causes: C1 arbitrary Awaiting source cursor; C2 a later terminal is
+    // absent/present at an arbitrary source cursor; C3 wall time is absent or
+    // arbitrary. Effects: E1 no terminal retains pending; E2 terminal at/after
+    // Awaiting admits pending strictly before terminal by canonical phase;
+    // E3 a terminal behind Awaiting withholds the pending order, causing the
+    // private canonicalization transaction to fail closed. This is the exact
+    // production order constructor; lifecycle collection remains TCB.
+    let awaiting: u64 = kani::any();
+    let has_terminal: bool = kani::any();
+    let terminal: u64 = kani::any();
+    let observed_time = kani::any::<bool>().then(kani::any::<u64>);
+    let planned = historical_pending_projection_order(
+        awaiting,
+        has_terminal.then_some(terminal),
+        observed_time,
+    );
+
+    assert_eq!(planned.is_some(), !has_terminal || terminal >= awaiting);
+    if let (Some(pending), true) = (planned, has_terminal) {
+        let terminal = CanonicalEventOrder {
+            source_commit_cursor: terminal,
+            phase: LIFECYCLE_TERMINAL_PHASE,
+            ordinal: 0,
+            processed_at_unix_ms: kani::any::<bool>().then(kani::any::<u64>),
+        };
+        assert!(pending < terminal);
+    }
+}
+
 #[cfg(test)]
 #[test]
 fn canonical_order_time_metamorphism_covers_every_sort_axis() {
@@ -1437,6 +1511,33 @@ fn canonical_order_time_metamorphism_covers_every_sort_axis() {
                     assert_eq!(left == right, left_key == right_key);
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn historical_pending_order_decision_table() {
+    // Cause/effect table: H1 no terminal=>publish pending; H2 same-coordinate
+    // terminal=>pending phase first; H3 later terminal=>pending cursor first;
+    // H4 terminal behind Awaiting=>withhold so canonicalization fails closed.
+    // Wall-time is intentionally varied and never changes any decision/order.
+    for (rule, terminal, expected) in [
+        ("H1", None, true),
+        ("H2", Some(10), true),
+        ("H3", Some(11), true),
+        ("H4", Some(9), false),
+    ] {
+        let planned = historical_pending_projection_order(10, terminal, Some(u64::MAX));
+        assert_eq!(planned.is_some(), expected, "{rule}");
+        if let (Some(pending), Some(terminal)) = (planned, terminal) {
+            let terminal = CanonicalEventOrder {
+                source_commit_cursor: terminal,
+                phase: LIFECYCLE_TERMINAL_PHASE,
+                ordinal: 0,
+                processed_at_unix_ms: Some(0),
+            };
+            assert!(pending < terminal, "{rule}");
         }
     }
 }

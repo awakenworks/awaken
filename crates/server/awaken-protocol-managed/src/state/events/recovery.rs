@@ -614,22 +614,24 @@ impl ManagedState {
         }
     }
 
-    /// Classify Runtime tickets already owned by an exact retained Session-root
-    /// reply. The root entry is the existing durable admission fact; this
-    /// projection deliberately creates no second pending/recovery registry.
-    pub(super) fn retained_tool_reply_identities(
+    /// Classify each current Runtime ticket against the exact retained
+    /// Session-root reply. The root entry's processed marker distinguishes a
+    /// reply still resolving from a processed reply; absence remains pending
+    /// and therefore blocks follow-up. This disposable map creates no second
+    /// pending/recovery registry.
+    pub(super) fn tool_reply_projection_phases(
         session: &awaken_session_contract::PersistedSession,
         candidates: &[PendingToolReplyCandidate],
-    ) -> std::collections::HashSet<PendingToolReplyKey> {
-        session
-            .event_batches
+    ) -> std::collections::HashMap<PendingToolReplyKey, project::RuntimeToolProjectionPhase> {
+        candidates
             .iter()
-            .flat_map(|batch| &batch.events)
-            .filter_map(|entry| match &entry.event {
-                awaken_session_contract::SessionEventCommand::ToolReply { reply, .. } => {
-                    candidates
-                        .iter()
-                        .find(|candidate| {
+            .map(|candidate| {
+                let retained = session
+                    .event_batches
+                    .iter()
+                    .flat_map(|batch| &batch.events)
+                    .find(|entry| match &entry.event {
+                        awaken_session_contract::SessionEventCommand::ToolReply { reply, .. } => {
                             let client_executed = matches!(
                                 reply.reply,
                                 awaken_session_contract::SessionEventToolReplyKind::CustomToolResult { .. }
@@ -645,10 +647,20 @@ impl ManagedState {
                                     == Some(candidate.answered_pending_commit_cursor)
                                 && reply.runtime_tool_use_id == candidate.key.runtime_call_id
                                 && client_executed == candidate.key.client_executed
-                        })
-                        .map(|candidate| candidate.key.clone())
-                }
-                _ => None,
+                        }
+                        _ => false,
+                    });
+                let phase = retained.map_or_else(
+                    || {
+                        project::RuntimeToolProjectionPhase::from_pending(
+                            candidate.key.client_executed,
+                        )
+                    },
+                    |entry| {
+                        project::RuntimeToolProjectionPhase::from_retained_reply(entry.processed)
+                    },
+                );
+                (candidate.key.clone(), phase)
             })
             .collect()
     }
