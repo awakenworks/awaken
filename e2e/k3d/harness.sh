@@ -60,7 +60,7 @@ k3d_ensure_images() {
 }
 
 k3d_validate_name() {
-  [[ "$1" =~ ^[a-z0-9][a-z0-9-]*$ ]]
+  [[ ${#1} -le 32 && "$1" =~ ^[a-z0-9][a-z0-9-]*$ ]]
 }
 
 k3d_require_tools() {
@@ -678,6 +678,26 @@ print(json.dumps(value))
 
   k3d_validate_name "awaken-test-1"
   ! k3d_validate_name "--all"
+  # Name-boundary decision table: N1 ASCII canonical shape and length 1/32
+  # => accepted; N2 empty/option/space/uppercase/33-byte/observed 35-byte
+  # name => rejected. N2 must reach no capacity, delete/create, import or
+  # diagnostic IO. The live CLI rejected the 35-byte name only AFTER our
+  # pre-create cleanup; all lifecycle consumers must share this admission.
+  local boundary_name invalid_name
+  printf -v boundary_name '%032d' 1
+  k3d_validate_name a
+  k3d_validate_name "$boundary_name"
+  for invalid_name in "" --all "with space" Upper "${boundary_name}a" awaken-process-stop-dd4f28-20260909; do
+    ! k3d_validate_name "$invalid_name"
+    local prior_k3d=${#k3d_calls[@]} prior_capacity=${#capacity_calls[@]} prior_deadlines=${#deadline_calls[@]}
+    ! k3d_create_cluster "$invalid_name" 0
+    ! k3d_delete_cluster "$invalid_name"
+    ! k3d_import_images "$invalid_name" app:latest
+    ! k3d_diagnostic_kubectl "$invalid_name" get pods
+    (( ${#k3d_calls[@]} == prior_k3d ))
+    (( ${#capacity_calls[@]} == prior_capacity ))
+    (( ${#deadline_calls[@]} == prior_deadlines ))
+  done
   k3d_create_cluster "awaken-test-1" 2
   [[ "${k3d_calls[0]}" = "cluster delete awaken-test-1" ]]
   [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<128Mi,nodefs.available<128Mi@server:*"* ]]
