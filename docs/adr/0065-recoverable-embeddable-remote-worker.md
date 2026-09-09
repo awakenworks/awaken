@@ -349,6 +349,19 @@ SIGKILL and checks partial-domain exit, name reuse and stale deletion. Both test
 use the existing isolated k3d harness; neither proves remote termination or
 complete Native crash takeover.
 
+On 2026-09-09 both gated cases actually passed at `a62b3895b` on a disposable
+rootful k3d 5.8.3 / k3s v1.31.5-k3s1 cluster: the container case executed
+KPT1-KPT10 (including complete crash before stop), and the CLI case executed
+L1-L5 above. Each Cargo invocation reported one passed test, not a skipped gate.
+Qualification used the existing harness's capacity admission, absolute `8Gi`
+eviction reserve, canonical Sandbox NetworkPolicy and offline image importer.
+The fixture was `busybox:1.36`; no real model was called. Initial attempts
+failed at disk admission and rootless cpuset bootstrap, and one targeted run
+correctly rejected missing NetworkPolicy before the canonical setup was applied.
+These results establish the two local identity/stop boundaries described above;
+complete Native participant enrollment, remote termination and safe takeover
+remain unverified and unimplemented by the production Kubernetes adapter.
+
 Configuration is explicit and role-owned:
 
 - A server-mode Coordinator compiled with `container-k8s` accepts the
