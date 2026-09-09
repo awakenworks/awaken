@@ -20948,7 +20948,7 @@ async fn coordinator_terminal_quiescence_waits_for_remote_parent_and_child_settl
 }
 
 #[derive(Default)]
-struct RemoteTerminalCleanupControl {
+pub(crate) struct RemoteTerminalCleanupControl {
     assignments: Mutex<
         std::collections::VecDeque<awaken_session_contract::SessionTerminalCleanupAssignment>,
     >,
@@ -22183,95 +22183,184 @@ async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup
      * platform boundary; the production typed permit kernels own admission,
      * identity recheck, bounded capacity, and terminal release decisions.
      */
-    const SESSION_COUNT: usize = 16;
-    let control = Arc::new(RemoteTerminalCleanupControl::default());
-    *control.renewal_gate.lock().unwrap() = Some(Arc::new(tokio::sync::Semaphore::new(0)));
-    let host =
-        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()));
-    let now = crate::terminal_repository_publication::runtime_unix_now_ms();
-    let mut held = Vec::new();
-    for index in 0..SESSION_COUNT {
-        let session = format!("deadline-mutex-{index:02}");
-        let lease = awaken_session_contract::SessionRealizationLease {
-            owner: "worker-a".into(),
-            runtime_incarnation: "worker-a:incarnation".into(),
-            epoch: 1,
-            expires_at_unix_ms: now.saturating_add(90_000),
+    // M4 cancellation while first-wave completions hold scheduler permits and
+    // wait for exact mutexes also drops second-wave queued completions. No
+    // physical cleanup may consume a held Session. Synchronous admission close
+    // is required before waiting; cancellation keeps Closed and its exact lease.
+    // Existing revocation selection (not Live-only renewal) owns cleanup retry.
+    let mut observations = Vec::new();
+    for cancel_waiting_completion in [false, true] {
+        const SESSION_COUNT: usize = 16;
+        let control = Arc::new(RemoteTerminalCleanupControl::default());
+        *control.renewal_gate.lock().unwrap() = Some(Arc::new(tokio::sync::Semaphore::new(0)));
+        let host = Arc::new(
+            SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()),
+        );
+        let now = crate::terminal_repository_publication::runtime_unix_now_ms();
+        let mut held = Vec::new();
+        for index in 0..SESSION_COUNT {
+            let session = format!("deadline-mutex-{index:02}");
+            let lease = awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "worker-a:incarnation".into(),
+                epoch: 1,
+                expires_at_unix_ms: now.saturating_add(90_000),
+            };
+            host.session_slots.update(&session, |slot| {
+                slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+                    crate::session_slot::test_expired_observed_lease(lease.clone()),
+                );
+            });
+            control
+                .renewals
+                .lock()
+                .unwrap()
+                .insert(session.clone(), lease);
+            if index < crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS {
+                held.push(
+                    host.session_slots
+                        .realization_lock(&session)
+                        .lock_owned()
+                        .await,
+                );
+            }
+        }
+
+        // Capture exactly the eight original mutex allocations and complete
+        // retained lease bytes before the actual sweep can wait on cleanup.
+        let held_frame = || {
+            (0..crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS)
+                .map(|index| {
+                    let session = format!("deadline-mutex-{index:02}");
+                    host.session_slots.read(&session, |slot| serde_json::json!({
+                    "session": session,
+                    "identity": format!("{:p}", Arc::as_ptr(&slot.realization)),
+                    "lease": serde_json::to_string(&match &slot.realization_authority {
+                        crate::session_slot::SessionRealizationAuthority::Live(proof) => Some(&proof.lease),
+                        crate::session_slot::SessionRealizationAuthority::Closed(lease) => lease.as_ref(),
+                        crate::session_slot::SessionRealizationAuthority::Uninstalled => None,
+                    }).unwrap(),
+                    "closed": slot.realization_authority.is_closed(),
+                    "locked": slot.realization.try_lock().is_err(),
+                })).unwrap_or(serde_json::Value::Null)
+                })
+                .collect::<Vec<_>>()
         };
-        host.session_slots.update(&session, |slot| {
-            slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
-                crate::session_slot::test_expired_observed_lease(lease.clone()),
-            );
+        let before_wait = held_frame();
+        let running_host = host.clone();
+        let reconciliation = tokio::spawn(async move {
+            running_host
+                .renew_due_session_realizations(
+                    awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+                        300_000,
+                    ),
+                )
+                .await
         });
-        control
-            .renewals
-            .lock()
-            .unwrap()
-            .insert(session.clone(), lease);
-        if index < crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS {
-            held.push(
+        // Yield to both 50s request-deadline waves without a runnable spin loop
+        // that would prevent Tokio's paused clock from advancing.
+        tokio::time::sleep(std::time::Duration::from_secs(110)).await;
+        assert_eq!(
+            control.renewal_sessions.lock().unwrap().len(),
+            SESSION_COUNT,
+            "M1-M2 both deadline waves enter while first cleanup waits"
+        );
+        assert_eq!(
+            control.max_renewals_active.load(Ordering::SeqCst),
+            crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS,
+            "M2/E3"
+        );
+        assert!(
+            !reconciliation.is_finished(),
+            "M1/E2 held per-Session mutex is never bypassed"
+        );
+        for index in 0..crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS {
+            assert!(
                 host.session_slots
-                    .realization_lock(&session)
-                    .lock_owned()
-                    .await,
+                    .contains(&format!("deadline-mutex-{index:02}")),
+                "M1/E2 held Session remains installed"
+            );
+        }
+
+        observations.push(serde_json::json!({
+            "rule": if cancel_waiting_completion { "cancel-wait" } else { "finish-wait" },
+            "observation": {"kind":"mutex", "before":before_wait,
+                "after":held_frame(), "pending":!reconciliation.is_finished(),
+                "entered":control.renewal_sessions.lock().unwrap().len(),
+                "peak":control.max_renewals_active.load(Ordering::SeqCst), "capacity":8}
+        }));
+        if cancel_waiting_completion {
+            let before: Vec<_> = (0..SESSION_COUNT)
+                .map(|index| {
+                    host.session_slots
+                        .read(&format!("deadline-mutex-{index:02}"), |slot| {
+                            (slot.realization.clone(), slot.realization_authority.clone())
+                        })
+                        .unwrap()
+                })
+                .collect();
+            reconciliation.abort();
+            assert!(
+                reconciliation.await.unwrap_err().is_cancelled(),
+                "M4 cancellation is joined"
+            );
+            assert_eq!(
+                control.renewals_active.load(Ordering::SeqCst),
+                0,
+                "M4 cancelled transport futures are gone"
+            );
+            for (index, (identity, lease)) in before.iter().enumerate() {
+                host.session_slots
+                    .read(&format!("deadline-mutex-{index:02}"), |slot| {
+                        assert!(
+                            Arc::ptr_eq(&slot.realization, identity),
+                            "M4 exact slot is retained"
+                        );
+                        assert_eq!(
+                            &slot.realization_authority, lease,
+                            "M4 cancellation cannot revoke a waiting projection"
+                        );
+                    })
+                    .expect("M4 no queued cleanup removes its Session");
+            }
+            observations.push(serde_json::json!({"rule":"cancel-joined",
+                "observation":{"kind":"mutex", "before":before_wait,
+                    "after":held_frame(), "pending":false,
+                    "entered":control.renewal_sessions.lock().unwrap().len(),
+                    "peak":control.max_renewals_active.load(Ordering::SeqCst), "capacity":8}}));
+            drop(held);
+            assert_eq!(
+                host.revoke_all_session_realizations().await.unwrap(),
+                SESSION_COUNT,
+                "M4 existing revocation selection resumes all closed/live cleanup"
+            );
+        } else {
+            drop(held);
+            assert_eq!(
+                tokio::time::timeout(std::time::Duration::from_secs(2), reconciliation)
+                    .await
+                    .expect("M3 cleanup finishes after original mutex release")
+                    .expect("M3 reconciliation task")
+                    .expect("M3 expired timeout is a handled revocation"),
+                0,
+                "M3/E4"
+            );
+        }
+        assert_eq!(control.renewals_active.load(Ordering::SeqCst), 0, "M3/E4");
+        for index in 0..SESSION_COUNT {
+            assert!(
+                !host
+                    .session_slots
+                    .contains(&format!("deadline-mutex-{index:02}")),
+                "M3/E4"
             );
         }
     }
-
-    let running_host = host.clone();
-    let reconciliation = tokio::spawn(async move {
-        running_host
-            .renew_due_session_realizations(
-                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
-                    300_000,
-                ),
-            )
-            .await
-    });
-    // Yield to both 50s request-deadline waves without a runnable spin loop
-    // that would prevent Tokio's paused clock from advancing.
-    tokio::time::sleep(std::time::Duration::from_secs(110)).await;
-    assert_eq!(
-        control.renewal_sessions.lock().unwrap().len(),
-        SESSION_COUNT,
-        "M1-M2 both deadline waves enter while first cleanup waits"
+    awaken_reliability_testkit::write_observation_trace(
+        "realization-capacity-mutex",
+        "realization-capacity",
+        serde_json::json!(observations),
     );
-    assert_eq!(
-        control.max_renewals_active.load(Ordering::SeqCst),
-        crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS,
-        "M2/E3"
-    );
-    assert!(
-        !reconciliation.is_finished(),
-        "M1/E2 held per-Session mutex is never bypassed"
-    );
-    for index in 0..crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS {
-        assert!(
-            host.session_slots
-                .contains(&format!("deadline-mutex-{index:02}")),
-            "M1/E2 held Session remains installed"
-        );
-    }
-
-    drop(held);
-    assert_eq!(
-        tokio::time::timeout(std::time::Duration::from_secs(2), reconciliation)
-            .await
-            .expect("M3 cleanup finishes after original mutex release")
-            .expect("M3 reconciliation task")
-            .expect("M3 expired timeout is a handled revocation"),
-        0,
-        "M3/E4"
-    );
-    assert_eq!(control.renewals_active.load(Ordering::SeqCst), 0, "M3/E4");
-    for index in 0..SESSION_COUNT {
-        assert!(
-            !host
-                .session_slots
-                .contains(&format!("deadline-mutex-{index:02}")),
-            "M3/E4"
-        );
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

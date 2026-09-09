@@ -21,6 +21,7 @@ import unittest
 from unittest.mock import patch
 
 from formal_model_mutation_runner import check_tlc_model_mutations
+from formal_realization_capacity_mutations import check_realization_capacity_observation_mutants
 from formal_event_batch_mutations import check_event_batch_model_mutants, check_event_batch_observation_mutants
 from formal_session_deletion_mutations import (check_session_deletion_model_mutants, check_deletion_observation_mutants)
 from formal_local_process_mutations import (
@@ -1566,6 +1567,7 @@ def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:
     check_maintenance_observation_mutants(tlc_jar, trace_dir)
     check_deletion_observation_mutants(tlc_jar, trace_dir)
     check_event_batch_observation_mutants(tlc_jar, trace_dir)
+    check_realization_capacity_observation_mutants(tlc_jar, trace_dir)
     print("Production observation trace mutation score: 5/5 base families plus maintenance, deletion and event-batch controls killed")
 
 def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:

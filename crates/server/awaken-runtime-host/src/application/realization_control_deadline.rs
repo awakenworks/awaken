@@ -219,55 +219,6 @@ fn session_realization_control_permit_is_bounded_and_every_settlement_releases()
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn control_capacity_decision_is_bounded_and_releases_every_terminal_row() {
-        // Cause/effect table: C1 active requests are below/at capacity; C2 the
-        // event acquires, returns, reaches its deadline, or is cancelled.
-        // Effects: E1 acquire advances only below the bound; E2 every terminal
-        // event releases exactly one occupied slot; E3 invalid underflow and
-        // over-capacity transitions fail closed.
-        //
-        // | Rule | active/capacity | event | Effect |
-        // |---|---|---|---|
-        // | C1 | 0/1 | acquire | E1 -> 1 |
-        // | C2 | 1/1 | acquire | E3 |
-        // | C3 | 1/1 | return/deadline/cancel | E2 -> 0 |
-        // | C4 | 0/1 | return/deadline/cancel | E3 |
-        let empty = ControlCapacityState { active: 0 };
-        let occupied = ControlCapacityState { active: 1 };
-        assert_eq!(
-            control_capacity_transition(empty, 1, ControlPermitEvent::Acquire),
-            Some(occupied),
-            "C1/E1"
-        );
-        assert_eq!(
-            control_capacity_transition(occupied, 1, ControlPermitEvent::Acquire),
-            None,
-            "C2/E3"
-        );
-        for event in [
-            ControlPermitEvent::Returned,
-            ControlPermitEvent::DeadlineElapsed,
-            ControlPermitEvent::ScopeEnded,
-        ] {
-            assert_eq!(
-                control_capacity_transition(occupied, 1, event),
-                Some(empty),
-                "C3/E2 {event:?}"
-            );
-            assert_eq!(
-                control_capacity_transition(empty, 1, event),
-                None,
-                "C4/E3 {event:?}"
-            );
-        }
-    }
-}
-
 /// Deadline decoration only bounds transport waiting. The wrapped Control
 /// remains the sole owner of leases, phases, cleanup commands, and receipts.
 #[async_trait::async_trait]
@@ -475,5 +426,57 @@ impl awaken_session_contract::SessionRealizationControl for DeadlineSessionReali
             self.inner.record_terminal_cleanup_disposal(lease, receipt),
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod composition_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_capacity_decision_is_bounded_and_releases_every_terminal_row() {
+        // Cause/effect table: C1 active requests are below/at capacity; C2 the
+        // event acquires, returns, reaches its deadline, or is cancelled.
+        // Effects: E1 acquire advances only below the bound; E2 every terminal
+        // event releases exactly one occupied slot; E3 invalid underflow and
+        // over-capacity transitions fail closed.
+        //
+        // | Rule | active/capacity | event | Effect |
+        // |---|---|---|---|
+        // | C1 | 0/1 | acquire | E1 -> 1 |
+        // | C2 | 1/1 | acquire | E3 |
+        // | C3 | 1/1 | return/deadline/cancel | E2 -> 0 |
+        // | C4 | 0/1 | return/deadline/cancel | E3 |
+        let empty = ControlCapacityState { active: 0 };
+        let occupied = ControlCapacityState { active: 1 };
+        assert_eq!(
+            control_capacity_transition(empty, 1, ControlPermitEvent::Acquire),
+            Some(occupied),
+            "C1/E1"
+        );
+        assert_eq!(
+            control_capacity_transition(occupied, 1, ControlPermitEvent::Acquire),
+            None,
+            "C2/E3"
+        );
+        for event in [
+            ControlPermitEvent::Returned,
+            ControlPermitEvent::DeadlineElapsed,
+            ControlPermitEvent::ScopeEnded,
+        ] {
+            assert_eq!(
+                control_capacity_transition(occupied, 1, event),
+                Some(empty),
+                "C3/E2 {event:?}"
+            );
+            assert_eq!(
+                control_capacity_transition(empty, 1, event),
+                None,
+                "C4/E3 {event:?}"
+            );
+        }
     }
 }

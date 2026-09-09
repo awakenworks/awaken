@@ -543,11 +543,14 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   permission projection, exact-claim materialization/publication, and exclusive
   Session realization phase driving. The mutex model ranges over multiple
   Sessions and proves both one driver per Session and a bounded number of
-  cross-Session drivers. It also models the authority-derived Control deadline:
-  under weak process fairness every acquired capacity slot either receives a
-  response or times out and is eventually released. Its explicit finite
-  completion bound is only for TLC; the concurrency invariants are independent
-  of the chosen bound.
+  cross-Session phase drivers; its fair deadline releases that abstract owner.
+  This is not a mapping of request/completion permits onto a Session mutex.
+  The same module checks seven actual adapter return/cancellation traces and
+  three Host held-mutex frames on one eight-slot scheduler per sweep; twelve
+  semantic trace mutants qualify the relation. Admission closes before waiting;
+  cancellation retains the exact lease for the existing revocation retry.
+  Arbitrary Tokio schedules, overlapping sweeps and unbounded fairness remain
+  outside these finite observations and the original bounded phase-driver model.
   Credential effect and MCP delivery scope is maintained in the
   [verification boundaries](VERIFICATION_BOUNDARIES.md#credential-effect-and-mcp-delivery-evidence).
   `AcpBoundary` additionally checks two independent waiters, cancellation of an

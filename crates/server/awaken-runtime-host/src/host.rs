@@ -116,9 +116,9 @@ mod terminal_reconciliation;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-pub(crate) use tests::install_test_memory_mounter;
-#[cfg(test)]
 pub(crate) use tests::{MemoryHostModel, test_resource_validator};
+#[cfg(test)]
+pub(crate) use tests::{RemoteTerminalCleanupControl, install_test_memory_mounter};
 mod types;
 mod worker_resolver;
 
