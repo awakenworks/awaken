@@ -28,7 +28,10 @@ pub use custody::{
     CredentialMaterialDelivery, credential_envelope_payload_fingerprint,
 };
 mod managed_rollout;
-pub use managed_rollout::{ManagedCredentialOperation, ManagedCredentialRollout};
+pub use managed_rollout::{
+    ManagedCredentialOperation, ManagedCredentialRollout, ManagedCredentialRolloutIdentityDecision,
+    managed_credential_rollout_identity_decision,
+};
 mod observation_admission;
 pub use observation_admission::require_exact_available_worker_reference;
 mod usage;

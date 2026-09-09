@@ -5,7 +5,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-pub use awaken_credential_contract::{ManagedCredentialOperation, ManagedCredentialRollout};
+pub use awaken_credential_contract::{
+    ManagedCredentialOperation, ManagedCredentialRollout, ManagedCredentialRolloutIdentityDecision,
+    managed_credential_rollout_identity_decision,
+};
 
 /// Local adoption progress. The cross-service HTTP adapter maps these two
 /// states directly to 204 and 202, while command receipts serialize this same

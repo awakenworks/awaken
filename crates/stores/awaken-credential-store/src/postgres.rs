@@ -31,7 +31,9 @@ use awaken_credential_vault::catalog::{
 use awaken_credential_vault::repo::{
     CredentialMaterialMutationPhase, CredentialMutationIntent, CredentialPublicationAdmission,
     CredentialRepo, ManagedCredentialOperation, ManagedCredentialRepository,
-    ManagedCredentialRollout, PendingManagedCredentialMutation, managed_retirement_parent_admitted,
+    ManagedCredentialRollout, ManagedCredentialRolloutIdentityDecision,
+    PendingManagedCredentialMutation, managed_credential_rollout_identity_decision,
+    managed_retirement_parent_admitted,
     managed_rollout_from_committed,
 };
 use awaken_credential_vault::{
@@ -744,7 +746,9 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
             .try_get::<Json<ManagedCredentialRollout>, _>("data")
             .map(|Json(value)| value)
             .map_err(storage)?;
-            if durable != rollout {
+            if managed_credential_rollout_identity_decision(Some(&durable), &rollout)
+                == ManagedCredentialRolloutIdentityDecision::Collision
+            {
                 return Err(ManagedCredentialMutationError::RevisionConflict);
             }
         }
@@ -1070,7 +1074,9 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
             tx.commit().await.map_err(storage)?;
             return Ok(());
         };
-        if durable != *rollout {
+        if managed_credential_rollout_identity_decision(Some(&durable), rollout)
+            == ManagedCredentialRolloutIdentityDecision::Collision
+        {
             return Err(CredentialError::MutationConflict(
                 "Managed credential rollout acknowledgement is stale".into(),
             ));

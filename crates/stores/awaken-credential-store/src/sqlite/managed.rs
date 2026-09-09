@@ -357,7 +357,9 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                     .map_err(storage)?;
                 let durable: ManagedCredentialRollout =
                     serde_json::from_str(&durable).map_err(storage)?;
-                if durable != rollout {
+                if managed_credential_rollout_identity_decision(Some(&durable), &rollout)
+                    == ManagedCredentialRolloutIdentityDecision::Collision
+                {
                     return Err(ManagedCredentialMutationError::RevisionConflict);
                 }
             }
@@ -717,7 +719,9 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
             };
             let durable: ManagedCredentialRollout =
                 serde_json::from_str(&current).map_err(storage)?;
-            if durable != rollout {
+            if managed_credential_rollout_identity_decision(Some(&durable), &rollout)
+                == ManagedCredentialRolloutIdentityDecision::Collision
+            {
                 return Err(CredentialError::MutationConflict(
                     "Managed credential rollout acknowledgement is stale".into(),
                 ));

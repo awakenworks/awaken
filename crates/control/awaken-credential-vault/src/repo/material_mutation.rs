@@ -930,5 +930,57 @@ mod phase_proofs {
             action == AbortExpiredWriting,
             input.phase == Writing && now >= input.writer_lease_expires_at_unix_ms
         );
+        check_recovery_plan_conditionally_reaches_cleanup();
+    }
+
+    fn check_recovery_plan_conditionally_reaches_cleanup() {
+        // Causes: C1 every durable material phase; C2 the Writing lease is at
+        // or past expiry; C3 each selected repository/external action returns
+        // success. Effects: E1 expired Writing advances only to abort cleanup;
+        // E2 Ready advances only to published cleanup; E3 both cleanup phases
+        // are terminal recovery actions. The phase rules are exhaustive, so
+        // under C2+C3 every non-cleanup phase reaches cleanup in one transition.
+        // SQL CAS, SecretStore completion and scheduler fairness remain TCB;
+        // this proves only the production decision and phase methods they call.
+        use CredentialMaterialMutationPhase::*;
+        use CredentialMaterialRecoveryAction::*;
+
+        let phase = phase();
+        let now = kani::any::<u64>();
+        let input = CredentialMaterialMutationFence {
+            format_version: CREDENTIAL_MATERIAL_MUTATION_FORMAT_VERSION,
+            phase,
+            attempt_id: "a".into(),
+            writer_token: "a".into(),
+            writer_epoch: 1,
+            writer_lease_expires_at_unix_ms: now,
+        };
+        let action = credential_material_recovery_action(&input, now);
+        assert_ne!(
+            action, SkipLiveWriting,
+            "C2 excludes the only stutter action"
+        );
+        match action {
+            AbortExpiredWriting => {
+                let next = input.reclaiming_abort().expect("expired Writing aborts");
+                assert_eq!(
+                    credential_material_recovery_action(&next, now),
+                    CleanupAborted,
+                    "E1"
+                );
+            }
+            PublishReady => {
+                let next = input.reclaiming().expect("Ready publishes");
+                assert_eq!(
+                    credential_material_recovery_action(&next, now),
+                    CleanupPublished,
+                    "E2"
+                );
+            }
+            CleanupPublished | CleanupAborted => {
+                assert!(matches!(phase, Reclaiming | ReclaimingAbort), "E3")
+            }
+            SkipLiveWriting => unreachable!("the lease is expired by construction"),
+        }
     }
 }

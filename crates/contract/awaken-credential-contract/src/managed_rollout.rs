@@ -36,6 +36,31 @@ pub struct ManagedCredentialRollout {
     pub operation: ManagedCredentialOperation,
 }
 
+/// Exact durable-event identity decision shared by every Credential store.
+///
+/// `Absent` admits first publication or an idempotent acknowledgement. `Exact`
+/// admits replay/acknowledgement of the complete payload. `Collision` rejects
+/// reuse of the event id with any different authority coordinate. The store
+/// adapter still owns its transaction and affected-row checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedCredentialRolloutIdentityDecision {
+    Absent,
+    Exact,
+    Collision,
+}
+
+#[must_use]
+pub fn managed_credential_rollout_identity_decision(
+    durable: Option<&ManagedCredentialRollout>,
+    proposed: &ManagedCredentialRollout,
+) -> ManagedCredentialRolloutIdentityDecision {
+    match durable {
+        None => ManagedCredentialRolloutIdentityDecision::Absent,
+        Some(durable) if durable == proposed => ManagedCredentialRolloutIdentityDecision::Exact,
+        Some(_) => ManagedCredentialRolloutIdentityDecision::Collision,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,6 +147,18 @@ mod identity_proofs {
         let right = right.event();
         assert_eq!(left == right, exact);
         assert_eq!(left != right, !exact);
+        assert_eq!(
+            managed_credential_rollout_identity_decision(Some(&left), &right),
+            if exact {
+                ManagedCredentialRolloutIdentityDecision::Exact
+            } else {
+                ManagedCredentialRolloutIdentityDecision::Collision
+            }
+        );
+        assert_eq!(
+            managed_credential_rollout_identity_decision(None, &right),
+            ManagedCredentialRolloutIdentityDecision::Absent
+        );
     }
 
     #[test]

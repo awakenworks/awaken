@@ -418,10 +418,10 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
         }
         let rollout = managed_rollout_from_committed(pending);
         if rollout.as_ref().is_some_and(|proposed| {
-            state
-                .managed_rollouts
-                .get(&proposed.id)
-                .is_some_and(|durable| durable != proposed)
+            managed_credential_rollout_identity_decision(
+                state.managed_rollouts.get(&proposed.id),
+                proposed,
+            ) == ManagedCredentialRolloutIdentityDecision::Collision
         }) {
             return Err(ManagedCredentialMutationError::RevisionConflict);
         }
@@ -591,15 +591,20 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
         rollout: &ManagedCredentialRollout,
     ) -> Result<(), CredentialError> {
         let mut state = self.state.lock().expect("credential repo");
-        match state.managed_rollouts.get(&rollout.id) {
-            Some(durable) if durable == rollout => {
+        match managed_credential_rollout_identity_decision(
+            state.managed_rollouts.get(&rollout.id),
+            rollout,
+        ) {
+            ManagedCredentialRolloutIdentityDecision::Exact => {
                 state.managed_rollouts.remove(&rollout.id);
                 Ok(())
             }
-            None => Ok(()),
-            Some(_) => Err(CredentialError::MutationConflict(
-                "Managed credential rollout acknowledgement is stale".into(),
-            )),
+            ManagedCredentialRolloutIdentityDecision::Absent => Ok(()),
+            ManagedCredentialRolloutIdentityDecision::Collision => {
+                Err(CredentialError::MutationConflict(
+                    "Managed credential rollout acknowledgement is stale".into(),
+                ))
+            }
         }
     }
 
