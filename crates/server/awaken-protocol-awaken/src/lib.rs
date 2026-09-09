@@ -11,6 +11,7 @@ mod file_outputs;
 mod live_inbox;
 mod memory_copy_conflicts;
 mod profiled_sessions;
+mod repositories;
 mod resource_manifests;
 mod sandbox_policies;
 
@@ -32,5 +33,6 @@ pub use profiled_sessions::{
     ProfiledSessionRepositoryPublished, ProfiledSessionRunReceipt, ProfiledSessionRunSubmit,
     profiled_session_release_router, profiled_session_router, profiled_session_run_router,
 };
+pub use repositories::{CreateRepository, RepositoryObject, repositories_router};
 pub use resource_manifests::session_resource_manifest_router;
 pub use sandbox_policies::environment_extensions_router;
