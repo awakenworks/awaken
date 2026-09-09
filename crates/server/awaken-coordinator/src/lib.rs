@@ -705,6 +705,7 @@ pub fn mount_with_managed_and_application_access_and_models(
             ),
             worker_placement_policy: None,
             worker_execution_bindings: None,
+            worker_execution_stops: None,
             repository_transport_authorizer: None,
             worker_directory: test_worker_directory(),
             ai_sdk_browser_cors: AiSdkBrowserCors::default(),
@@ -730,6 +731,7 @@ pub struct ManagedRoutingExtensions {
     pub worker_placement_policy: Option<Arc<dyn awaken_worker_contract::PlacementPolicy>>,
     pub worker_execution_bindings:
         Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
+    pub worker_execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
     pub repository_transport_authorizer:
         Option<Arc<dyn awaken_resource_worker_http::RepositoryTransportAuthorizer>>,
     pub worker_directory: Arc<dyn awaken_worker_registry::WorkerDirectory>,
@@ -1082,6 +1084,7 @@ fn mount_with_managed_over(
                 ),
                 worker_placement_policy: None,
                 worker_execution_bindings: None,
+                worker_execution_stops: None,
                 repository_transport_authorizer: None,
                 worker_directory: test_worker_directory(),
                 ai_sdk_browser_cors: AiSdkBrowserCors::default(),
@@ -1130,6 +1133,7 @@ fn mount_with_managed_over_and_models(
         worker_authenticator,
         worker_placement_policy,
         worker_execution_bindings,
+        worker_execution_stops,
         repository_transport_authorizer,
         worker_directory,
         ai_sdk_browser_cors,
@@ -1348,6 +1352,7 @@ fn mount_with_managed_over_and_models(
     let dispatch_router = awaken_dispatch_http::registered_dispatch_router(
         awaken_dispatch_http::RegisteredDispatchDependencies {
             execution_bindings: worker_execution_bindings,
+            execution_stops: worker_execution_stops,
             dispatch: dispatch.clone() as Arc<dyn awaken_dispatch::DispatchQueue>,
             checkpoint,
             directory: worker_directory.clone(),

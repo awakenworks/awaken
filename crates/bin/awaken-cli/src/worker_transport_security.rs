@@ -16,6 +16,7 @@ mod kubernetes;
 pub(super) struct WorkerTransport {
     authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
     bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
+    stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
 }
 
 impl WorkerTransport {
@@ -25,16 +26,26 @@ impl WorkerTransport {
         Self {
             authenticator,
             bindings: None,
+            stops: None,
         }
     }
 
-    pub(super) fn into_parts(
-        self,
-    ) -> (
-        Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
-        Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
-    ) {
-        (self.authenticator, self.bindings)
+    pub(super) fn authenticator(
+        &self,
+    ) -> Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator> {
+        self.authenticator.clone()
+    }
+
+    pub(super) fn binding_source(
+        &self,
+    ) -> Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>> {
+        self.bindings.clone()
+    }
+
+    pub(super) fn stop_source(
+        &self,
+    ) -> Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>> {
+        self.stops.clone()
     }
 }
 
@@ -145,8 +156,7 @@ mod tests {
             select(&deployment, injected())
                 .await
                 .unwrap()
-                .into_parts()
-                .1
+                .binding_source()
                 .is_none(),
             "S1"
         );

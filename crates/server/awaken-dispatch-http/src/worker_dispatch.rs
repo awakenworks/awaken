@@ -160,6 +160,7 @@ pub struct WorkerDispatchService {
     local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
     max_attempts: u64,
     execution_bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
+    execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
 }
 
 impl WorkerDispatchService {
@@ -190,6 +191,7 @@ impl WorkerDispatchService {
             local_credential_capabilities: Default::default(),
             max_attempts: 5,
             execution_bindings: None,
+            execution_stops: None,
         }
     }
 
@@ -199,6 +201,15 @@ impl WorkerDispatchService {
         source: Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>,
     ) -> Self {
         self.execution_bindings = Some(source);
+        self
+    }
+
+    #[must_use]
+    pub fn with_execution_stop_source(
+        mut self,
+        source: Arc<dyn awaken_dispatch::WorkerExecutionStopSource>,
+    ) -> Self {
+        self.execution_stops = Some(source);
         self
     }
 
@@ -392,6 +403,7 @@ async fn claim_authority(
 
 pub struct RegisteredDispatchDependencies {
     pub execution_bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
+    pub execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
     pub dispatch: Arc<dyn DispatchQueue>,
     pub checkpoint: Arc<dyn StreamCheckpointStore>,
     pub directory: Arc<dyn WorkerDirectory>,
@@ -411,6 +423,7 @@ pub struct RegisteredDispatchDependencies {
 pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) -> Router {
     let RegisteredDispatchDependencies {
         execution_bindings,
+        execution_stops,
         dispatch,
         checkpoint,
         directory,
@@ -444,6 +457,10 @@ pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) 
     .with_session_work_authority(session_work);
     let service = match execution_bindings {
         Some(source) => service.with_execution_binding_source(source),
+        None => service,
+    };
+    let service = match execution_stops {
+        Some(source) => service.with_execution_stop_source(source),
         None => service,
     };
     dispatch_transport_router_with_service(Arc::new(service))

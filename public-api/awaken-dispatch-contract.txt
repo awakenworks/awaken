@@ -64,6 +64,10 @@ pub enum awaken_dispatch_contract::dispatch::CasOutcome
 pub awaken_dispatch_contract::dispatch::CasOutcome::Applied
 pub awaken_dispatch_contract::dispatch::CasOutcome::NotFound
 pub awaken_dispatch_contract::dispatch::CasOutcome::RevisionMismatch
+pub enum awaken_dispatch_contract::dispatch::ClaimCredentialOperation
+pub awaken_dispatch_contract::dispatch::ClaimCredentialOperation::Cancel
+pub awaken_dispatch_contract::dispatch::ClaimCredentialOperation::Execute
+pub awaken_dispatch_contract::dispatch::ClaimCredentialOperation::TerminalResolution
 pub enum awaken_dispatch_contract::dispatch::CommitEpochAdmission
 pub awaken_dispatch_contract::dispatch::CommitEpochAdmission::Corrupt
 pub awaken_dispatch_contract::dispatch::CommitEpochAdmission::Fenced
@@ -101,6 +105,10 @@ pub awaken_dispatch_contract::dispatch::DispatchState::Reserved
 pub awaken_dispatch_contract::dispatch::DispatchState::Superseded
 impl awaken_dispatch_contract::dispatch::DispatchState
 pub fn awaken_dispatch_contract::dispatch::DispatchState::from_db(&str) -> core::option::Option<Self>
+pub enum awaken_dispatch_contract::dispatch::LeaseRenewalOutcome
+pub awaken_dispatch_contract::dispatch::LeaseRenewalOutcome::CancellationRequested
+pub awaken_dispatch_contract::dispatch::LeaseRenewalOutcome::Current
+pub awaken_dispatch_contract::dispatch::LeaseRenewalOutcome::Lost
 pub enum awaken_dispatch_contract::dispatch::SessionRunReservationActivation
 pub awaken_dispatch_contract::dispatch::SessionRunReservationActivation::Activated
 pub awaken_dispatch_contract::dispatch::SessionRunReservationActivation::AlreadyActivated
@@ -266,7 +274,7 @@ pub fn awaken_dispatch_contract::dispatch::DispatchQueue::quarantine_retry_exhau
 pub fn awaken_dispatch_contract::dispatch::DispatchQueue::record_credential_realization<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, awaken_runtime_contract::credential::CredentialRealizationReceipt) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SettleOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch_contract::dispatch::DispatchQueue::reject_session_run_reservation<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch_contract::dispatch::DispatchQueue::relinquish_claim<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SettleOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch_contract::dispatch::DispatchQueue::renew_lease<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_dispatch_contract::dispatch::DispatchQueue::renew_lease<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::LeaseRenewalOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch_contract::dispatch::DispatchQueue::requeue<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch_contract::dispatch::DispatchQueue::reserve_session_run<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::run_dispatch::RunDispatch, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SessionRunReservationOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch_contract::dispatch::DispatchQueue::resolve_claimed_session_run_reservation<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, awaken_dispatch_contract::dispatch::SessionRunReservationResolution) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SettleOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -291,10 +299,15 @@ pub fn awaken_dispatch_contract::dispatch::Outbox::stage<'life0, 'async_trait>(&
 pub fn awaken_dispatch_contract::dispatch::Outbox::stage_session_resume<'life0, 'life1, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput, &'life1 awaken_agent_contract::agent::thread::Id, core::option::Option<u64>, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub const fn awaken_dispatch_contract::dispatch::attempt_binding_retry_is_exact(bool, bool) -> bool
 pub fn awaken_dispatch_contract::dispatch::can_admit_attempt_credentials(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> bool
+pub fn awaken_dispatch_contract::dispatch::can_admit_claim_credentials(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64, awaken_dispatch_contract::ClaimCredentialOperation) -> bool
+pub const fn awaken_dispatch_contract::dispatch::claim_credential_operation(bool, bool) -> awaken_dispatch_contract::ClaimCredentialOperation
 pub const fn awaken_dispatch_contract::dispatch::classify_commit_epoch_admission(bool, bool, bool, bool, bool) -> awaken_dispatch_contract::dispatch::CommitEpochAdmission
 pub fn awaken_dispatch_contract::dispatch::compile_attempt_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_dispatch_contract::DispatchCredentialAdmissionError>
+pub fn awaken_dispatch_contract::dispatch::compile_claim_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64, awaken_dispatch_contract::ClaimCredentialOperation) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_dispatch_contract::DispatchCredentialAdmissionError>
+pub const fn awaken_dispatch_contract::dispatch::decide_lease_renewal(bool, bool) -> awaken_dispatch_contract::dispatch::LeaseRenewalOutcome
 pub const fn awaken_dispatch_contract::dispatch::session_run_replacement_candidate_is_safe(awaken_dispatch_contract::dispatch::DispatchState) -> bool
 pub fn awaken_dispatch_contract::dispatch::verify_attempt_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64, &[awaken_runtime_contract::credential::AttemptCredentialBinding]) -> core::result::Result<(), awaken_dispatch_contract::DispatchCredentialAdmissionError>
+pub fn awaken_dispatch_contract::dispatch::verify_claim_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64, awaken_dispatch_contract::ClaimCredentialOperation, &[awaken_runtime_contract::credential::AttemptCredentialBinding]) -> core::result::Result<(), awaken_dispatch_contract::DispatchCredentialAdmissionError>
 pub fn awaken_dispatch_contract::dispatch::worker_credential_realization_capabilities(&awaken_worker_contract::registry::WorkerSnapshot) -> core::result::Result<awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, awaken_runtime_contract::credential::AttemptCredentialBindingError>
 pub mod awaken_dispatch_contract::operational
 pub enum awaken_dispatch_contract::operational::DispatchOperation
@@ -418,6 +431,10 @@ pub enum awaken_dispatch_contract::CasOutcome
 pub awaken_dispatch_contract::CasOutcome::Applied
 pub awaken_dispatch_contract::CasOutcome::NotFound
 pub awaken_dispatch_contract::CasOutcome::RevisionMismatch
+pub enum awaken_dispatch_contract::ClaimCredentialOperation
+pub awaken_dispatch_contract::ClaimCredentialOperation::Cancel
+pub awaken_dispatch_contract::ClaimCredentialOperation::Execute
+pub awaken_dispatch_contract::ClaimCredentialOperation::TerminalResolution
 pub enum awaken_dispatch_contract::CommitEpochAdmission
 pub awaken_dispatch_contract::CommitEpochAdmission::Corrupt
 pub awaken_dispatch_contract::CommitEpochAdmission::Fenced
@@ -492,6 +509,10 @@ pub awaken_dispatch_contract::LeaseLossReason::Cancelled
 pub awaken_dispatch_contract::LeaseLossReason::Expired
 pub awaken_dispatch_contract::LeaseLossReason::Relinquished
 pub awaken_dispatch_contract::LeaseLossReason::RetryExhausted
+pub enum awaken_dispatch_contract::LeaseRenewalOutcome
+pub awaken_dispatch_contract::LeaseRenewalOutcome::CancellationRequested
+pub awaken_dispatch_contract::LeaseRenewalOutcome::Current
+pub awaken_dispatch_contract::LeaseRenewalOutcome::Lost
 pub enum awaken_dispatch_contract::PhysicalAttemptSlot
 pub awaken_dispatch_contract::PhysicalAttemptSlot::Corrupt
 pub awaken_dispatch_contract::PhysicalAttemptSlot::Empty
@@ -854,7 +875,7 @@ pub fn awaken_dispatch_contract::DispatchQueue::quarantine_retry_exhausted<'life
 pub fn awaken_dispatch_contract::DispatchQueue::record_credential_realization<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, awaken_runtime_contract::credential::CredentialRealizationReceipt) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SettleOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch_contract::DispatchQueue::reject_session_run_reservation<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch_contract::DispatchQueue::relinquish_claim<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SettleOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch_contract::DispatchQueue::renew_lease<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_dispatch_contract::DispatchQueue::renew_lease<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::LeaseRenewalOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch_contract::DispatchQueue::requeue<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch_contract::DispatchQueue::reserve_session_run<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::run_dispatch::RunDispatch, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SessionRunReservationOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch_contract::DispatchQueue::resolve_claimed_session_run_reservation<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, awaken_dispatch_contract::dispatch::SessionRunReservationResolution) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SettleOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -879,12 +900,17 @@ pub fn awaken_dispatch_contract::Outbox::stage<'life0, 'async_trait>(&'life0 sel
 pub fn awaken_dispatch_contract::Outbox::stage_session_resume<'life0, 'life1, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput, &'life1 awaken_agent_contract::agent::thread::Id, core::option::Option<u64>, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub const fn awaken_dispatch_contract::attempt_epoch_is_open(u64, u64) -> bool
 pub const fn awaken_dispatch_contract::begin_physical_attempt(bool, awaken_dispatch_contract::PhysicalAttemptSlot, bool) -> awaken_dispatch_contract::PhysicalAttemptTransition
+pub fn awaken_dispatch_contract::can_admit_claim_credentials(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64, awaken_dispatch_contract::ClaimCredentialOperation) -> bool
+pub const fn awaken_dispatch_contract::claim_credential_operation(bool, bool) -> awaken_dispatch_contract::ClaimCredentialOperation
 pub const fn awaken_dispatch_contract::classify_commit_epoch_admission(bool, bool, bool, bool, bool) -> awaken_dispatch_contract::dispatch::CommitEpochAdmission
 pub fn awaken_dispatch_contract::compile_attempt_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_dispatch_contract::DispatchCredentialAdmissionError>
+pub fn awaken_dispatch_contract::compile_claim_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64, awaken_dispatch_contract::ClaimCredentialOperation) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_dispatch_contract::DispatchCredentialAdmissionError>
+pub const fn awaken_dispatch_contract::decide_lease_renewal(bool, bool) -> awaken_dispatch_contract::dispatch::LeaseRenewalOutcome
 pub const fn awaken_dispatch_contract::finish_physical_attempt(awaken_dispatch_contract::PhysicalAttemptSlot) -> awaken_dispatch_contract::PhysicalAttemptTransition
 pub const fn awaken_dispatch_contract::handoff_physical_attempt(bool, awaken_dispatch_contract::PhysicalAttemptSlot, bool) -> awaken_dispatch_contract::PhysicalAttemptTransition
 pub fn awaken_dispatch_contract::retry_exhaustion_eligible(awaken_dispatch_contract::dispatch::DispatchState, core::option::Option<u64>, u64, u64, u64) -> bool
 pub const fn awaken_dispatch_contract::session_run_replacement_candidate_is_safe(awaken_dispatch_contract::dispatch::DispatchState) -> bool
 pub fn awaken_dispatch_contract::verify_attempt_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64, &[awaken_runtime_contract::credential::AttemptCredentialBinding]) -> core::result::Result<(), awaken_dispatch_contract::DispatchCredentialAdmissionError>
+pub fn awaken_dispatch_contract::verify_claim_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64, awaken_dispatch_contract::ClaimCredentialOperation, &[awaken_runtime_contract::credential::AttemptCredentialBinding]) -> core::result::Result<(), awaken_dispatch_contract::DispatchCredentialAdmissionError>
 pub fn awaken_dispatch_contract::worker_credential_realization_capabilities(&awaken_worker_contract::registry::WorkerSnapshot) -> core::result::Result<awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, awaken_runtime_contract::credential::AttemptCredentialBindingError>
 pub type awaken_dispatch_contract::ArtifactPublicationFence = awaken_dispatch_contract::ResourceOperationFence

@@ -22,6 +22,149 @@ pub trait WorkerExecutionBindingSource: Send + Sync {
     ) -> Result<crate::AttemptExecutionBinding, ApplicationError>;
 }
 
+/// Coordinator-authorized whole-Worker stop, not user cancellation of one Run.
+/// Only the application below can construct it, after exact Registry closure.
+/// It carries the original persisted binding, never a newly observed replacement.
+///
+/// ```compile_fail
+/// use awaken_dispatch::{AttemptExecutionBinding, ClosedWorkerExecution};
+/// fn forge(binding: AttemptExecutionBinding) {
+///     let _ = ClosedWorkerExecution { binding };
+/// }
+/// ```
+pub struct ClosedWorkerExecution {
+    binding: crate::AttemptExecutionBinding,
+}
+
+impl ClosedWorkerExecution {
+    pub fn binding(&self) -> &crate::AttemptExecutionBinding {
+        &self.binding
+    }
+
+    /// Trusted adapters call this only after observing exact local process exit.
+    /// This provider reference supports audit/reobservation, not remote replay.
+    pub fn observed_exit(
+        &self,
+        evidence_ref: impl Into<String>,
+    ) -> Result<WorkerProcessStopStatus, ApplicationError> {
+        let evidence_ref = evidence_ref.into();
+        if evidence_ref.trim().is_empty() {
+            return Err(ApplicationError::invalid(
+                "process exit requires provider evidence",
+            ));
+        }
+        Ok(WorkerProcessStopStatus::Exited(ObservedWorkerProcessExit {
+            binding: self.binding.clone(),
+            evidence_ref,
+        }))
+    }
+}
+
+/// Subject-bound LOCAL exit evidence. No wire deserialization and no conversion
+/// to whole-attempt acknowledgement. The provider still owns the physical fact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedWorkerProcessExit {
+    binding: crate::AttemptExecutionBinding,
+    evidence_ref: String,
+}
+
+impl ObservedWorkerProcessExit {
+    pub fn binding(&self) -> &crate::AttemptExecutionBinding {
+        &self.binding
+    }
+    pub fn evidence_ref(&self) -> &str {
+        &self.evidence_ref
+    }
+}
+
+/// Local process observation only. Neither value authorizes Dispatch retirement
+/// or replay: independent model, MCP and Sandbox participants may remain active.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkerProcessStopStatus {
+    Unknown,
+    Exited(ObservedWorkerProcessExit),
+}
+
+/// Trusted, independent infrastructure control, selected by Coordinator startup.
+/// Implementations must validate the provider and exact frozen process identity,
+/// stop idempotently, preserve evidence, and never upgrade local exit to an ACK.
+#[async_trait::async_trait]
+pub trait WorkerExecutionStopSource: Send + Sync {
+    async fn stop_closed_worker(
+        &self,
+        execution: &ClosedWorkerExecution,
+    ) -> Result<WorkerProcessStopStatus, ApplicationError>;
+}
+
+/// Progress a blocked successor through the existing authorities, without a
+/// recovery queue or a second copy of slot state. The caller bounds provider IO
+/// and retries through ordinary admission. `None` means no stop was authorized.
+/// Even `Some(Exited)` is NOT complete attempt quiescence and cannot clear a slot.
+pub async fn stop_expired_predecessor(
+    dispatch: &dyn DispatchQueue,
+    directory: &dyn crate::WorkerDirectory,
+    source: &dyn WorkerExecutionStopSource,
+    successor: &crate::RunClaim,
+    now_ms: u64,
+) -> Result<Option<WorkerProcessStopStatus>, ApplicationError> {
+    if !dispatch
+        .claim_is_current(successor, now_ms)
+        .await
+        .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+    {
+        return Ok(None);
+    }
+    let Some(predecessor) = dispatch
+        .load_physical_attempt(&successor.run_id)
+        .await
+        .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    // Never kill the current caller's shared process for a per-Run conflict.
+    if predecessor.claim.owner == successor.owner {
+        return Ok(None);
+    }
+    let Some(binding) = &predecessor.binding else {
+        return Ok(None); // Historical absence cannot be backfilled into proof.
+    };
+    binding
+        .validate_for(&predecessor.claim)
+        .map_err(|error| ApplicationError::internal(error.to_string()))?;
+    if directory
+        .expire_incarnation(binding.worker(), now_ms)
+        .await
+        .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+        != crate::RegistryMutation::Applied
+    {
+        return Ok(None);
+    }
+    // The Registry transaction is over before any provider IO. A concurrent
+    // normal ACK/handoff must not retarget this command to the successor slot.
+    if dispatch
+        .load_physical_attempt(&successor.run_id)
+        .await
+        .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+        .as_ref()
+        != Some(&predecessor)
+    {
+        return Ok(None);
+    }
+    let observation = source
+        .stop_closed_worker(&ClosedWorkerExecution {
+            binding: binding.clone(),
+        })
+        .await?;
+    if let WorkerProcessStopStatus::Exited(receipt) = &observation
+        && receipt.binding() != binding
+    {
+        return Err(ApplicationError::internal(
+            "provider exit observation names another execution",
+        ));
+    }
+    Ok(Some(observation))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplicationErrorKind {
     InvalidRequest,

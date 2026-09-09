@@ -50,8 +50,10 @@ mod worker_context;
 pub use any::AnyDispatchStore;
 pub use application::{
     ApplicationError, ApplicationErrorKind, ClaimedCommitService,
-    ClaimedOperationCoordinatorResolver, DurableDispatchStatus, DurableRunOperations,
-    DurableSupersedeResult, WorkerExecutionBindingSource,
+    ClaimedOperationCoordinatorResolver, ClosedWorkerExecution, DurableDispatchStatus,
+    DurableRunOperations, DurableSupersedeResult, ObservedWorkerProcessExit,
+    WorkerExecutionBindingSource, WorkerExecutionStopSource, WorkerProcessStopStatus,
+    stop_expired_predecessor,
 };
 pub use awaken_dispatch_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,

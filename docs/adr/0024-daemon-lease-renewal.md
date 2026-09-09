@@ -270,7 +270,8 @@ CAS conflicts and response loss retry without retargeting a replacement. The
 adapter never removes the finalizer or deletes Session/PVC participants. Its
 whole-Worker scope requires trusted recovery composition, not per-Run cancellation.
 Production deployment installation and post-retirement release of retention,
-Coordinator stop-result consumption and remote-participant proof remain unwired.
+remote-participant proof and exact crash retirement remain unwired. ADR-0065
+owns the Coordinator's independent local-stop consumption and its evidence limit.
 
 This is a provider observation, not a Native recovery command. Dispatch now
 freezes an optional `AttemptExecutionBinding` with its physical slot, in the
@@ -304,8 +305,7 @@ this source using one authenticated Kubernetes client. Private assembly fields
 prevent an injected or signed authenticator from being paired with Pod facts.
 Read-only observation no longer constructs a Sandbox runtime or provisions its
 NetworkPolicy. Default non-Kubernetes transports remain unbound. The current
-restartable Worker Pod profile is not admitted by the Kubernetes adapter, and
-independent stop-result consumption remains unwired. The signed
+restartable Worker Pod profile is not admitted by the Kubernetes adapter. The signed
 HTTP R1-R13 decision table covers source failures, identity/epoch changes during
 lookup, no-lock renewal progress and strict request parsing. Exact-claim preflight
 also rejects invented/stale Runs before provider lookup; it does not replace the

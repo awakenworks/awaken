@@ -64,6 +64,7 @@ pub struct CoordinatorDependencies {
     /// Trusted provider composition, not Worker-authored manifest metadata.
     pub worker_execution_bindings:
         Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
+    pub worker_execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
     pub repository_transport_authorizer:
         Option<Arc<dyn awaken_resource_worker_http::RepositoryTransportAuthorizer>>,
     /// Coordinator-owned Worker identity/incarnation authority. The process
@@ -244,6 +245,7 @@ pub async fn build_coordinator_component(
         worker_authenticator,
         worker_placement_policy,
         worker_execution_bindings,
+        worker_execution_stops,
         repository_transport_authorizer,
         worker_directory,
         deployment_application,
@@ -290,6 +292,7 @@ pub async fn build_coordinator_component(
                 worker_authenticator,
                 worker_placement_policy,
                 worker_execution_bindings,
+                worker_execution_stops,
                 repository_transport_authorizer,
                 worker_directory,
                 ai_sdk_browser_cors,

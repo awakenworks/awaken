@@ -6,8 +6,8 @@ EXTENDS Naturals, FiniteSets
 CONSTANTS MaxGeneration, Containers
 Generations == 1..MaxGeneration
 VARIABLES current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed, observation
-VARIABLES retained, protectedBindings, stopRequests
-stopState == <<retained, protectedBindings, stopRequests>>
+VARIABLES retained, protectedBindings, stopRequests, closedAdmission
+stopState == <<retained, protectedBindings, stopRequests, closedAdmission>>
 vars == <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed, observation, stopState>>
 Domain(g) == {<<g, c>> : c \in Containers}
 CompleteExit(g) == Domain(g) \subseteq exited
@@ -25,6 +25,7 @@ Init ==
     /\ retained = {}
     /\ protectedBindings = {}
     /\ stopRequests = {}
+    /\ closedAdmission = {}
 
 \* Never-restart is a provider premise, not inferred from an empty status list.
 Start(g, c) ==
@@ -58,7 +59,7 @@ Bind ==
                                /\ current \in retained
                             THEN protectedBindings \cup {current}
                             ELSE protectedBindings
-    /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, failed, observation, retained, stopRequests>>
+    /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, failed, observation, retained, stopRequests, closedAdmission>>
 
 Crash(g, c) ==
     /\ <<g, c>> \in started \ exited
@@ -101,27 +102,37 @@ Retention(g) ==
     /\ g \in present
     /\ retained' \in {retained \cup {g}, retained \ {g}}
     /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,
-                    observation, protectedBindings, stopRequests>>
+                    observation, protectedBindings, stopRequests, closedAdmission>>
+
+\* Interface fact supplied by exact Registry expiry, not a duplicate Registry
+\* state machine. Its atomic renewal/replacement rules have their own production
+\* kernel/Kani/Loom tests. Closure is absorbing for this authenticated Pod UID.
+CloseAdmission(g) ==
+    /\ <<g, g>> \in bound
+    /\ closedAdmission' = closedAdmission \cup {g}
+    /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,
+                    observation, retained, protectedBindings, stopRequests>>
 
 \* UID/resourceVersion conditional DELETE linearizes at the API. A lost reply
 \* permits this exact retry, not an unconditional name-based write or receipt.
 RequestStop(g) ==
     /\ <<g, g>> \in bound
+    /\ g \in closedAdmission
     /\ g \in protectedBindings
     /\ current = g
     /\ current \in present
     /\ current \in retained
     /\ ~CompleteExit(current)
     /\ stopRequests' = stopRequests \cup
-         {<<g, current, g \in protectedBindings, current \in retained>>}
+         {<<g, current, g \in protectedBindings, current \in retained, g \in closedAdmission>>}
     /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,
-                    observation, retained, protectedBindings>>
+                    observation, retained, protectedBindings, closedAdmission>>
 
 Next ==
     \/ \E g \in Generations, c \in Containers: Start(g, c) \/ Crash(g, c)
     \/ (\E incarnation \in Generations: Authenticate(incarnation)) \/ Bind
     \/ \E g \in Generations: ControllerFailure(g) \/ Delete(g) \/ Observe(g)
-                              \/ Retention(g) \/ RequestStop(g)
+                              \/ Retention(g) \/ RequestStop(g) \/ CloseAdmission(g)
     \/ Replace
 
 TypeOK ==
@@ -136,7 +147,8 @@ TypeOK ==
     /\ observation \in Generations \cup {0}
     /\ retained \subseteq Generations
     /\ protectedBindings \subseteq Generations
-    /\ stopRequests \subseteq (Generations \X Generations \X BOOLEAN \X BOOLEAN)
+    /\ closedAdmission \subseteq Generations
+    /\ stopRequests \subseteq (Generations \X Generations \X BOOLEAN \X BOOLEAN \X BOOLEAN)
 
 ExactCompleteObservation == observation # 0 =>
     /\ observation = current
@@ -154,7 +166,7 @@ NoReplacementBinding == <<2, 2>> \notin bound
 NoReplacementExit == observation # 2
 StopRequestsAreExactAndRetained == \A request \in stopRequests :
     /\ request[1] = request[2]
-    /\ request[3] /\ request[4]
+    /\ request[3] /\ request[4] /\ request[5]
 NoLiveStopRequest == \A request \in stopRequests : CompleteExit(request[1])
 NoReplacementStop == \A request \in stopRequests : request[1] # 2
 Safety == TypeOK /\ ExactCompleteObservation /\ BindingMatchesAuthenticatedPod

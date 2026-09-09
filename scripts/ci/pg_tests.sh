@@ -153,7 +153,8 @@ self_test() {
   fi
   # P9 immutable Pod registration must exercise the real database rather than
   # merely compiling a self-skipping test in the no-database workspace gate.
-  grep -Fq "cargo test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http" "$0" || {
+  # P10 independent predecessor stopping exercises the same exact Registry CAS.
+  grep -Fq "cargo test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http" "$0" || {
     echo "Postgres gate omits the coordinator-owned active/active transport test" >&2
     return 1
   }
@@ -447,7 +448,7 @@ record_failure() {
 # a no-URL workspace pass is not PostgreSQL conformance evidence.
 pg_test cargo test -p awaken-worker-registry --features test-support --lib --test conformance || record_failure "$?"
 pg_test cargo test -p awaken-dispatch --features test-support || record_failure "$?"
-pg_test cargo test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http -- --test-threads=1 \
+pg_test cargo test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http -- --test-threads=1 \
   || record_failure "$?"
 pg_test cargo test -p awaken-session-store --features test-support --test session_repo_conformance -- --test-threads=1 \
   || record_failure "$?"
