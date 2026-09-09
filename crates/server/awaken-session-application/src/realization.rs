@@ -30,7 +30,10 @@ use crate::{
 
 mod authority;
 mod control;
+mod publication;
 mod recovery_backoff;
+
+use publication::{draining_generations, publication_action, publication_generations};
 
 pub(super) use authority::terminal_cleanup_worker_requirements;
 use authority::{
@@ -700,37 +703,6 @@ impl SessionApplication {
             .collect()
     }
 
-    fn publication_generations(
-        session: &PersistedSession,
-    ) -> Result<Vec<McpGenerationRef>, SessionRealizationControlFailure> {
-        session
-            .mcp
-            .attachments
-            .iter()
-            .filter(|attachment| {
-                attachment.state == McpAttachmentState::Active
-                    && !attachment.publication_acknowledged
-            })
-            .map(|attachment| {
-                projection::mcp_generation_ref(&session.session_id, attachment).map_err(unavailable)
-            })
-            .collect()
-    }
-
-    fn draining_generations(
-        session: &PersistedSession,
-    ) -> Result<Vec<McpGenerationRef>, SessionRealizationControlFailure> {
-        session
-            .mcp
-            .attachments
-            .iter()
-            .filter(|attachment| attachment.state == McpAttachmentState::Draining)
-            .map(|attachment| {
-                projection::mcp_generation_ref(&session.session_id, attachment).map_err(unavailable)
-            })
-            .collect()
-    }
-
     async fn realization_directive(
         &self,
         owner_scope: String,
@@ -791,8 +763,8 @@ impl SessionApplication {
                 )
                 .await;
         }
-        let publish = Self::publication_generations(session)?;
-        let drain = Self::draining_generations(session)?;
+        let publish = publication_generations(&session.session_id, &session.mcp.attachments)?;
+        let drain = draining_generations(&session.session_id, &session.mcp.attachments)?;
         let action = if publish.is_empty() && drain.is_empty() {
             SessionRealizationAction::Complete
         } else {

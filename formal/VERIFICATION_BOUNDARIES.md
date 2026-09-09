@@ -583,6 +583,18 @@ type checking are valuable executable evidence, but are not formal proofs.
 - A published Memory plugin remains satisfiable when recall is disabled, but
   the proved selector contributes no recall hook or state authority. Memory
   store durability and extraction effects remain external adapter boundaries.
+- Session post-activation MCP publication has one application-owned collection
+  plan. Activate consumes it; ACK and recovery reuse the same generation
+  selectors and exact receipt bijection. A 144-row native decision table starts
+  with the real initial/replacement constructors and then claims, activates,
+  renews, acknowledges and removes generations. It checks unique identities,
+  exact staged receipt ownership, publish/drain disjointness, no root mutation
+  and rejection of missing, duplicate, future-expiry or wrong-identity live
+  receipts. Five actual production mutants break generation allocation,
+  retirement, publication selection, bijection or drain coverage and are rejected
+  by those assertions. This is executable combination evidence, not a completed
+  Kani proof of the owned Vec/BTreeSet/Drop paths or durable/HTTP refinement.
+  The publication-excludes-retired obligation retains its abstract-model grade.
 - Session realization failures consume a closed seven-variant disposition
   table and one shared Worker-effect kernel. Initial/replacement ownership also
   consumes one proved assignment kernel: a live foreign owner cannot be shared,
