@@ -164,17 +164,14 @@ async fn acp_mcp_server_name_drift_uses_only_conservative_session_alias_consensu
 
 #[test]
 fn terminal_business_outcome_is_not_rewritten_by_cleanup_failure() {
-    // C1 logical terminal; C2 cleanup failed. E1 retain NaturalEnd; E2 veto
-    // physical ACK. A terminal frame and a process receipt are independent.
-    let quiescence = awaken_runtime_contract::runtime_context::AttemptQuiescence::default();
+    // C1 logical terminal; C2 cleanup failed => preserve NaturalEnd.
+    // Physical return and owner-drop are covered by the execution matrix below.
     let outcome = preserve_terminal_outcome(
         Ok(TerminationReason::NaturalEnd),
         Err(AcpError::Io("cleanup failed".into())),
         "test-process",
-        &quiescence,
     );
     assert_eq!(outcome.unwrap(), TerminationReason::NaturalEnd);
-    assert!(!quiescence.can_acknowledge_return());
 }
 
 #[cfg(unix)]
@@ -183,7 +180,8 @@ async fn failed_term_escalation_requires_real_child_exit_before_ack() {
     // Causes: C1 TERM transport returns an error without delivery; C2 KILL is
     // delivered/refused; C3 terminal/cancellation entry. Effects: E1 the same
     // LocalProcess is killed and reaped, allowing return ACK; E2 it remains
-    // alive at the cleanup deadline, retaining uncertainty and the logical end.
+    // alive at the cleanup deadline, retaining missing evidence and the logical end.
+    // Scope ownership/drop and ACK veto are checked in the execution matrix below.
     // Decision table R1=C1+C2(delivered), each C3 => E1; R2=C1+C2(refused),
     // each C3 => E2. Signal results never substitute for an OS wait receipt.
     // The decorator injects only signal delivery faults; production LocalProcess
@@ -248,15 +246,9 @@ async fn failed_term_escalation_requires_real_child_exit_before_ack() {
                 *process.signals.lock().unwrap(),
                 vec![Signal::Term, Signal::Kill]
             );
-            let quiescence = awaken_runtime_contract::runtime_context::AttemptQuiescence::default();
-            let outcome = preserve_terminal_outcome(
-                Ok(TerminationReason::NaturalEnd),
-                result,
-                process.id(),
-                &quiescence,
-            );
+            let outcome =
+                preserve_terminal_outcome(Ok(TerminationReason::NaturalEnd), result, process.id());
             assert_eq!(outcome.unwrap(), TerminationReason::NaturalEnd);
-            assert_eq!(quiescence.can_acknowledge_return(), deliver_kill);
         }
     }
 }
@@ -446,7 +438,7 @@ impl AttemptOwnershipVerifier for ScriptedOwnership {
 
 struct CountingProcess {
     polls: Arc<AtomicUsize>,
-    fail_cleanup: bool,
+    observation: Arc<AtomicUsize>,
 }
 
 #[async_trait]
@@ -456,21 +448,25 @@ impl ProcessHandle for CountingProcess {
     }
 
     async fn wait(&self) -> std::result::Result<ExitStatus, SandboxError> {
-        Ok(ExitStatus {
-            code: Some(0),
-            signaled: false,
-        })
+        loop {
+            if let Some(status) = self.poll().await? {
+                return Ok(status);
+            }
+            tokio::task::yield_now().await;
+        }
     }
 
     async fn poll(&self) -> std::result::Result<Option<ExitStatus>, SandboxError> {
         self.polls.fetch_add(1, Ordering::SeqCst);
-        if self.fail_cleanup {
-            return Err(SandboxError::new("cleanup observation unavailable"));
+        match self.observation.load(Ordering::SeqCst) {
+            0 => Ok(Some(ExitStatus {
+                code: Some(0),
+                signaled: false,
+            })),
+            1 => Ok(None),
+            2 => Err(SandboxError::new("transport unavailable")),
+            _ => std::future::pending().await,
         }
-        Ok(Some(ExitStatus {
-            code: Some(0),
-            signaled: false,
-        }))
     }
 
     async fn signal(&self, _signal: Signal) -> std::result::Result<(), SandboxError> {
@@ -482,7 +478,7 @@ struct CountingSource {
     opens: Arc<AtomicUsize>,
     prompts: Arc<AtomicUsize>,
     process_polls: Arc<AtomicUsize>,
-    fail_cleanup: bool,
+    observation: Arc<AtomicUsize>,
 }
 
 #[async_trait]
@@ -513,7 +509,7 @@ impl AgentChannelSource for CountingSource {
             channel: Box::new(ours),
             process: Arc::new(CountingProcess {
                 polls: self.process_polls.clone(),
-                fail_cleanup: self.fail_cleanup,
+                observation: self.observation.clone(),
             }),
             codec: Codec::Newline,
             workspace_cwd: None,
@@ -541,7 +537,7 @@ fn counting_executor() -> (
             opens: opens.clone(),
             prompts: prompts.clone(),
             process_polls: process_polls.clone(),
-            fail_cleanup: false,
+            observation: Arc::new(AtomicUsize::new(0)),
         })),
         opens,
         prompts,
@@ -2019,49 +2015,195 @@ async fn live_inbox_steer_folds_into_a_relaunched_run() {
 
 #[tokio::test]
 async fn terminal_business_outcome_cleanup_gates_relaunch_without_consuming_steer() {
-    // Causes C1 cleanup fails; C2 steer is queued. Effects E1 fixed NaturalEnd
-    // commits once; E2 no overlapping process; E3 queued steer remains intact;
-    // E4 physical ACK is vetoed. Rules: !C1+C2 -> two opens, consume steer;
-    // !C1+!C2 -> one open; C1+* -> one open + E4; C1+C2 -> E3. All four
-    // combinations assert E1. The fake fails the actual supervisor poll seam.
+    // Cause/effect rules: cleanup initially healthy/pending x queued steer x
+    // eventual exact exit/owner loss x independent child uncertainty.
+    // Healthy+queued => relaunch and consume; pending+* => commit once, retain
+    // original future and queued input, never relaunch. Pending+late exit =>
+    // return; pending+owner drop => veto. Other-child veto is never cleared.
+    // Every combination uses the real executor/supervisor poll and commit path.
     use awaken_runtime_contract::live_inbox::{LiveInbox, MessageOrigin};
-
-    for fail_cleanup in [false, true] {
+    for pending in [false, true] {
         for queued in [false, true] {
-            let opens = Arc::new(AtomicUsize::new(0));
-            let prompts = Arc::new(AtomicUsize::new(0));
-            let executor = AcpRunExecutor::new(Arc::new(CountingSource {
-                opens: opens.clone(),
-                prompts: prompts.clone(),
-                process_polls: Arc::new(AtomicUsize::new(0)),
-                fail_cleanup,
-            }));
-            let inbox = LiveInbox::new();
-            if queued {
-                let _ = inbox.offer_as(
-                    MessageOrigin::External,
-                    Message::text(MessageId("retained-steer".into()), Role::User, "next"),
-                );
+            for abort in [false, true] {
+                for other_unknown in [false, true] {
+                    let gate = Arc::new(AtomicUsize::new(if pending { 2 } else { 0 }));
+                    let opens = Arc::new(AtomicUsize::new(0));
+                    let prompts = Arc::new(AtomicUsize::new(0));
+                    let mut executor = AcpRunExecutor::new(Arc::new(CountingSource {
+                        opens: opens.clone(),
+                        prompts: prompts.clone(),
+                        process_polls: Arc::new(AtomicUsize::new(0)),
+                        observation: gate.clone(),
+                    }));
+                    executor.policy.reap_grace = std::time::Duration::from_millis(1);
+                    let inbox = LiveInbox::new();
+                    if queued {
+                        let _ = inbox.offer_as(
+                            MessageOrigin::External,
+                            Message::text(MessageId("retained-steer".into()), Role::User, "next"),
+                        );
+                    }
+                    let coordinator = Arc::new(RecordingCoordinator::default());
+                    let context = RuntimeRunContext::new()
+                        .with_commit(coordinator.clone())
+                        .with_live_inbox(inbox.clone());
+                    let quiescence = context.physical_quiescence.clone();
+                    if other_unknown {
+                        quiescence.mark_uncertain();
+                    }
+                    let mut execution = Box::pin(executor.execute(activation(), context));
+                    if pending {
+                        assert!(
+                            tokio::time::timeout(
+                                std::time::Duration::from_millis(100),
+                                execution.as_mut()
+                            )
+                            .await
+                            .is_err(),
+                            "pending process cannot return"
+                        );
+                        assert_eq!(coordinator.commits.lock().unwrap().len(), 1);
+                        assert_eq!(opens.load(Ordering::SeqCst), 1);
+                        assert_eq!(prompts.load(Ordering::SeqCst), 1);
+                        assert_eq!(inbox.list().len(), usize::from(queued));
+                        if abort {
+                            drop(execution);
+                            assert!(!quiescence.can_acknowledge_return(), "lost observer veto");
+                            continue;
+                        }
+                        gate.store(0, Ordering::SeqCst);
+                    }
+                    let state = tokio::time::timeout(std::time::Duration::from_secs(2), execution)
+                        .await
+                        .expect("late exact exit releases original execution")
+                        .unwrap();
+                    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+                    assert_eq!(coordinator.commits.lock().unwrap().len(), 1);
+                    let relaunch = queued && !pending && !other_unknown;
+                    assert_eq!(opens.load(Ordering::SeqCst), 1 + usize::from(relaunch));
+                    assert_eq!(prompts.load(Ordering::SeqCst), 1 + usize::from(relaunch));
+                    assert_eq!(inbox.list().len(), usize::from(queued && !relaunch));
+                    assert_eq!(quiescence.can_acknowledge_return(), !other_unknown);
+                }
             }
-            let coordinator = Arc::new(RecordingCoordinator::default());
-            let context = RuntimeRunContext::new()
-                .with_commit(coordinator.clone())
-                .with_live_inbox(inbox.clone());
-            let quiescence = context.physical_quiescence.clone();
-            let state = executor.execute(activation(), context).await.unwrap();
-            assert_eq!(state, RunState::Ended(EndCause::NaturalEnd), "E1");
-            assert_eq!(coordinator.commits.lock().unwrap().len(), 1, "E1");
-            let expected_opens = if queued && !fail_cleanup { 2 } else { 1 };
-            assert_eq!(opens.load(Ordering::SeqCst), expected_opens, "E2");
-            assert_eq!(prompts.load(Ordering::SeqCst), expected_opens, "E2");
-            assert_eq!(
-                inbox.list().len(),
-                usize::from(queued && fail_cleanup),
-                "E3"
-            );
-            assert_eq!(quiescence.can_acknowledge_return(), !fail_cleanup, "E4");
         }
     }
+}
+
+// Reuse the scripted protocol and counting process; change only observation.
+struct RecoverableSource {
+    script: ScriptedSource,
+    observation: Arc<AtomicUsize>,
+}
+#[async_trait]
+impl AgentChannelSource for RecoverableSource {
+    async fn open(
+        &self,
+        activation: &RunActivation,
+        context: &RuntimeRunContext,
+    ) -> std::result::Result<AgentSession, OpenError> {
+        let mut session = self.script.open(activation, context).await?;
+        session.process = Arc::new(CountingProcess {
+            polls: Arc::new(AtomicUsize::new(0)),
+            observation: self.observation.clone(),
+        });
+        Ok(session)
+    }
+}
+
+#[tokio::test]
+async fn agent_terminal_reason_never_substitutes_for_late_physical_exit() {
+    // Rules T1..T9: agent NaturalEnd/Cancelled/TimedOut x live None/poll error/
+    // stuck poll => commit the logical outcome but keep outer execution pending.
+    // Exact exit on that same handle then releases it without rewriting the fact.
+    // EOF from the script and failed TERM/KILL are deliberately not receipts.
+    for reason in ["natural_end", "cancelled", "timed_out"] {
+        for mode in [1, 2, 3] {
+            let observation = Arc::new(AtomicUsize::new(mode));
+            let mut executor = AcpRunExecutor::new(Arc::new(RecoverableSource {
+                script: ScriptedSource {
+                    frames: vec![
+                        r#"{"type":"message","text":"done"}"#.into(),
+                        format!(r#"{{"type":"turn_end","reason":"{reason}"}}"#),
+                    ],
+                    open_error: None,
+                },
+                observation: observation.clone(),
+            }));
+            executor.policy.reap_grace = std::time::Duration::from_millis(2);
+            let coordinator = Arc::new(RecordingCoordinator::default());
+            let context = RuntimeRunContext::new().with_commit(coordinator.clone());
+            let quiescence = context.physical_quiescence.clone();
+            let mut execution = Box::pin(executor.execute(activation(), context));
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(100), execution.as_mut())
+                    .await
+                    .is_err(),
+                "{reason}/{mode}: no exit yet"
+            );
+            assert_eq!(coordinator.commits.lock().unwrap().len(), 1);
+            observation.store(0, Ordering::SeqCst);
+            let state = tokio::time::timeout(std::time::Duration::from_secs(2), execution)
+                .await
+                .expect("original observer recovers")
+                .unwrap();
+            if reason == "natural_end" {
+                assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+            } else if reason == "cancelled" {
+                assert_eq!(state, RunState::Ended(EndCause::Cancelled));
+            } else {
+                assert!(matches!(state, RunState::Ended(EndCause::Stopped(_))));
+            }
+            assert_eq!(coordinator.commits.lock().unwrap().len(), 1);
+            assert!(quiescence.can_acknowledge_return());
+        }
+    }
+}
+
+#[tokio::test]
+async fn retained_cleanup_drains_the_original_channel_until_exit() {
+    // D1: first cleanup fails, then a peer must write more than pipe capacity
+    // before exit can be observed => same-scope draining releases the writer.
+    // D2: late bytes look like a terminal frame but cause no fact/commit replay.
+    let observation = Arc::new(AtomicUsize::new(2));
+    let source = RecoverableSource {
+        script: ScriptedSource {
+            frames: vec![],
+            open_error: None,
+        },
+        observation: observation.clone(),
+    };
+    let quiescence = awaken_runtime_contract::runtime_context::AttemptQuiescence::default();
+    let mut scope = CleanupScope::new(quiescence.clone());
+    let mut session = source
+        .open(&activation(), &RuntimeRunContext::new())
+        .await
+        .unwrap();
+    let (ours, mut peer) = tokio::io::duplex(32);
+    session.channel = Box::new(ours);
+    scope.session = Some(session);
+    scope.complete = false;
+    let grace = std::time::Duration::from_millis(2);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(30), scope.finish(grace))
+            .await
+            .is_err()
+    );
+    observation.store(1, Ordering::SeqCst);
+    let writer = async {
+        peer.write_all(&vec![b'x'; 4096]).await.unwrap();
+        peer.write_all(b"{\"type\":\"turn_end\",\"reason\":\"natural_end\"}\n")
+            .await
+            .unwrap();
+        observation.store(0, Ordering::SeqCst);
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::join!(scope.finish(grace), writer);
+    })
+    .await
+    .expect("retained duplex permits the exit receipt");
+    drop(scope);
+    assert!(quiescence.can_acknowledge_return());
 }
 
 #[tokio::test]

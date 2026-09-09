@@ -159,6 +159,23 @@ remains occupied until the Future explicitly returns, and uncertain external
 tool cancellation vetoes the ACK even after local return. No timeout or destructor
 fabricates that terminal fact.
 
+ACP retains the current `AgentSession` (process handle and duplex channel) in
+its original executor scope after a bounded cleanup failure. The Step outcome
+may commit once, but no next Step or queued steer is consumed while cleanup is
+pending. That same scope retries the existing bounded Supervisor cleanup and
+drains trailing output until the exact handle observes exit; only then can the
+outer executor return and the existing Dispatch owner consider an ACK. An
+agent-originated `Cancelled` or `TimedOut` frame is not a process exit receipt.
+Dropping the scope before observation adds the monotonic quiescence veto;
+recovering this process never clears an independent child or remote-effect veto.
+This is live-owner recovery, not a detached cleanup service or a durable recovery
+queue. A historical slot with no frozen execution binding and no surviving
+observer remains unknown: current container inspection cannot reconstruct its
+original whole-attempt evidence, and neither SQL edits nor late binding backfill
+may release it. Cross-physical-host process loss, partition and reboot acceptance
+requires dedicated hosts and provider evidence; local duplex, process or
+container tests do not satisfy that qualification.
+
 On graceful Worker shutdown, local admission closes before the configured drain.
 If that budget expires (including a configured zero), the existing authority-loss
 cleanup cancels the resident attempt through its installed claim and Runtime

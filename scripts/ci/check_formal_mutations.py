@@ -1602,7 +1602,9 @@ def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:
 def check_acp_boundary_model_mutants(tlc_jar: Path) -> None:
     # One baseline and mutation owner for the strict Cowork gate and focused
     # checks: observer drop, fabricated ACK, duplex deadlock, failed-TERM
-    # escalation veto, and a reachable error-then-KILL witness.
+    # escalation veto, and reachable error-then-KILL / timeout-then-exit witnesses.
+    # Cause/effect: retained owner + timeout + actual exit must permit ACK; the
+    # deliberately false invariant must fail, preventing vacuous recovery claims.
     source = (ROOT / "formal/tla/AcpBoundary.tla").read_text()
     config = (ROOT / "formal/tla/AcpBoundary.cfg").read_text()
     timeout = source[source.index("CleanupTimeout =="):source.index("ObserveExit(code) ==")]
@@ -1616,6 +1618,8 @@ def check_acp_boundary_model_mutants(tlc_jar: Path) -> None:
          config.replace("INVARIANTS Safety", "INVARIANTS TermFailureAllowsEscalation Safety"), "TermFailureAllowsEscalation"),
         (source, config.replace("INVARIANTS Safety", "INVARIANTS NoFailedTermEscalationReached Safety"),
          "NoFailedTermEscalationReached"),
+        (source, config.replace("INVARIANTS Safety", "INVARIANTS NoLateExitAcknowledged Safety"),
+         "NoLateExitAcknowledged"),
     ])
 
 def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
