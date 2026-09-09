@@ -25,7 +25,9 @@ if report := os.environ.get("AWAKEN_TEST_DOCKER_CALLS"):
 if args[0] in ("info", "rm"):
     sys.exit(0)
 if args[0] == "run":
-    mount = next(value for value in args if value.endswith(":/recovery-base"))
+    mount = next((value for value in args if value.endswith(":/recovery-base")), None)
+    if mount is None:
+        sys.exit(73 if mode == "object-create" else 0)
     base = Path(mount.removesuffix(":/recovery-base"))
     if report := os.environ.get("AWAKEN_TEST_ALLOCATION"):
         Path(report).write_text(json.dumps({
@@ -37,7 +39,7 @@ if args[0] == "port":
     print("invalid" if mode == "port" else "127.0.0.1:49152")
     sys.exit(0)
 if args[0] == "exec":
-    sys.exit(1)
+    sys.exit(0 if mode == "object-create" else 1)
 if args[0] in ("inspect", "logs"):
     print("fixture " + args[0])
     sys.exit(79 if mode == "create" else 0)
@@ -94,6 +96,12 @@ class RecoveryRootTests(unittest.TestCase):
         # exact failed phase/status even when output was suppressed; E3 inspect
         # and logs precede cleanup, only for the attempted container; E4 C4 never
         # masks C1. P13=C1+C4, P14=C2, P15=C3 => E1-E3 (and E4 for P13).
+        # P16: C5 object creation fails after PG is ready => diagnose both exact
+        # attempted containers before cleanup. C6 host image storage is shared
+        # => E5 MinIO requests its own 4 GiB tmpfs instead of inheriting host free
+        # capacity. Assert the real Docker invocation, not a parallel config.
+        # This fixture is deliberately volatile; MinIO power-loss persistence
+        # is outside this PG PITR and S3 copy/restore test's evidence boundary.
         # No cargo or real Docker is run; invoke the canonical producer itself.
         with tempfile.TemporaryDirectory(prefix="awaken-pg-diagnostics-") as tmp:
             fixture = Path(tmp).resolve()
@@ -103,7 +111,8 @@ class RecoveryRootTests(unittest.TestCase):
             calls = fixture / "calls.jsonl"
             for mode, phase, status in (("create", "postgres-create", 73),
                                         ("port", "postgres-port", 0),
-                                        ("ready", "postgres-ready", 1)):
+                                        ("ready", "postgres-ready", 1),
+                                        ("object-create", "object-create", 73)):
                 with self.subTest(mode=mode):
                     calls.unlink(missing_ok=True)
                     result = subprocess.run(
@@ -124,10 +133,15 @@ class RecoveryRootTests(unittest.TestCase):
                     verbs = [command[0] for command in commands]
                     self.assertLess(verbs.index("inspect"), verbs.index("rm"))
                     self.assertLess(verbs.index("logs"), verbs.index("rm"))
-                    created = next(c[c.index("--name") + 1] for c in commands if c[0] == "run")
-                    for command in commands:
-                        if command[0] in ("inspect", "logs"):
-                            self.assertEqual(command[-1], created, "P13-P15 exact attempted container")
+                    creations = [c for c in commands if c[0] == "run"]
+                    created = {c[c.index("--name") + 1] for c in creations}
+                    for verb in ("inspect", "logs"):
+                        diagnosed = {c[-1] for c in commands if c[0] == verb}
+                        self.assertEqual(diagnosed, created, "P13-P16 exact attempted containers")
+                    if mode == "object-create":
+                        self.assertEqual(len(creations), 2, "P16 PG then MinIO")
+                        self.assertEqual(creations[1][creations[1].index("--tmpfs") + 1],
+                                         "/data:rw,nosuid,nodev,noexec,size=4g", "P16/E5")
                     self.assertNotIn("Config.Env", result.stderr)
                     self.assertFalse(list(fixture.glob("awaken-pg-recovery.*")))
 

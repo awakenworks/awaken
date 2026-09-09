@@ -357,9 +357,15 @@ export FILE_STORE_ACCESS_KEY="awaken-file-store" # awaken-allow: secret (throwaw
 FILE_STORE_INITIAL_SECRET_KEY="awaken-file-store-initial" # awaken-allow: secret (throwaway fixture)
 export FILE_STORE_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow: secret
 # awaken-allow: secret (throwaway MinIO fixture, destroyed by the exit trap)
+# This disposable object's lifetime is the fixture lifetime. Give its real S3
+# substrate an independent bounded capacity: Docker's shared image filesystem
+# can cross MinIO's free-drive threshold despite this fixture storing few bytes.
+# The drill proves database PITR plus exact object copy/restore while MinIO stays
+# live; it does not claim recovery from loss of the MinIO process or its storage.
 OBJECT_CREATE_ATTEMPTED=1
 if ! pg_run_with_deadline object-create "$PG_OPERATION_TIMEOUT_SECONDS" \
   docker run -d --name "$OBJECT_NAME" \
+  --tmpfs /data:rw,nosuid,nodev,noexec,size=4g \
   -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
   -p 127.0.0.1::9000 "$MINIO_IMAGE" server /data --address :9000 >/dev/null; then
   echo "✗ Docker could not create the ephemeral object store" >&2
