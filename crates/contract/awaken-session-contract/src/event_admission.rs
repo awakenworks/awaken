@@ -203,6 +203,17 @@ mod verification {
         first: Option<usize>,
     ) {
         let before = proof.clone();
+        check_replay_against_frame(proof, before, key, fingerprint, first);
+    }
+
+    fn check_replay_against_frame(
+        proof: DeletedSessionEventAdmissions,
+        before: DeletedSessionEventAdmissions,
+        key: &str,
+        fingerprint: &str,
+        first: Option<usize>,
+    ) {
+        assert!(proof == before, "independent complete input frame agrees");
         let mut result = proof.resolve(key, fingerprint);
         check_result(&before, first, fingerprint, &result);
         assert!(proof == before);
@@ -393,5 +404,141 @@ mod verification {
             short_str(),
             short_str(),
         );
+    }
+    // C1 key equality, C2 fingerprint equality and C3 closed are independent
+    // bits; C4 distinguishes None/empty/one/two ordered operation ids. The 32
+    // literal partitions cover absent=16, conflict=8, closed=4, accepted=4.
+    // Each retains every u64 revision and the same complete replay oracle.
+    // Literal fixture choices remove symbolic allocation-branch joins only:
+    // real output Clone, mutation, two-live-output replay and Drop stay intact.
+    fn check_single_retained_literal<const CASE: u8>(revision: u64) {
+        assert!(CASE < 32);
+        let receipt = || RetainedEventAdmission {
+            key: if CASE & 1 == 0 { "b" } else { "a" }.into(),
+            request_fingerprint: if CASE & 2 == 0 { "b" } else { "a" }.into(),
+            batch_id: "0".into(),
+            closed: CASE & 4 != 0,
+            operation_ids: match CASE >> 3 {
+                0 => None,
+                1 => Some(vec![]),
+                2 => Some(vec!["x".into()]),
+                _ => Some(vec!["x".into(), "y".into()]),
+            },
+        };
+        let fixture = || DeletedSessionEventAdmissions {
+            deleted_revision: SessionRevision(revision),
+            admissions: Some(vec![receipt()]),
+        };
+        check_replay_against_frame(
+            fixture(),
+            fixture(),
+            "a",
+            "a",
+            if CASE & 1 == 0 { None } else { Some(0) },
+        );
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn deleted_admission_literal_partition_crosscheck() {
+        // Cross the exact proof fixtures with revision endpoints and one;
+        // the original 3,174-row table still checks broader receipt strings,
+        // legacy/empty inventories and all ordered two-receipt combinations.
+        for revision in [0, 1, u64::MAX] {
+            check_single_retained_literal::<0>(revision);
+            check_single_retained_literal::<1>(revision);
+            check_single_retained_literal::<2>(revision);
+            check_single_retained_literal::<3>(revision);
+            check_single_retained_literal::<4>(revision);
+            check_single_retained_literal::<5>(revision);
+            check_single_retained_literal::<6>(revision);
+            check_single_retained_literal::<7>(revision);
+            check_single_retained_literal::<8>(revision);
+            check_single_retained_literal::<9>(revision);
+            check_single_retained_literal::<10>(revision);
+            check_single_retained_literal::<11>(revision);
+            check_single_retained_literal::<12>(revision);
+            check_single_retained_literal::<13>(revision);
+            check_single_retained_literal::<14>(revision);
+            check_single_retained_literal::<15>(revision);
+            check_single_retained_literal::<16>(revision);
+            check_single_retained_literal::<17>(revision);
+            check_single_retained_literal::<18>(revision);
+            check_single_retained_literal::<19>(revision);
+            check_single_retained_literal::<20>(revision);
+            check_single_retained_literal::<21>(revision);
+            check_single_retained_literal::<22>(revision);
+            check_single_retained_literal::<23>(revision);
+            check_single_retained_literal::<24>(revision);
+            check_single_retained_literal::<25>(revision);
+            check_single_retained_literal::<26>(revision);
+            check_single_retained_literal::<27>(revision);
+            check_single_retained_literal::<28>(revision);
+            check_single_retained_literal::<29>(revision);
+            check_single_retained_literal::<30>(revision);
+            check_single_retained_literal::<31>(revision);
+        }
+    }
+
+    // Qualified occupied cases exhaust key/fingerprint/closed combinations
+    // for one receipt with no operation ids, fixed one-byte strings and every
+    // u64 revision. The 24 Some(ids) literals and all two-receipt cases remain
+    // native-only. Bound 2 includes one-entry loop exit; default checks remain.
+    // Conflict's complete 64-byte message needs memcmp bound 65 for loop exit;
+    // the bound-64 qualification failed its unwinding assertion, not silently
+    // truncating the error comparison. Nonerror calls use memcmp bound 2.
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn deleted_admission_one_retained_closed_none_07() {
+        check_single_retained_literal::<7>(kani::any());
+    }
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn deleted_admission_one_retained_absent_none_00() {
+        check_single_retained_literal::<0>(kani::any());
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn deleted_admission_one_retained_conflict_none_01() {
+        check_single_retained_literal::<1>(kani::any());
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn deleted_admission_one_retained_absent_none_02() {
+        check_single_retained_literal::<2>(kani::any());
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn deleted_admission_one_retained_accepted_none_03() {
+        check_single_retained_literal::<3>(kani::any());
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn deleted_admission_one_retained_absent_none_04() {
+        check_single_retained_literal::<4>(kani::any());
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn deleted_admission_one_retained_conflict_none_05() {
+        check_single_retained_literal::<5>(kani::any());
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn deleted_admission_one_retained_absent_none_06() {
+        check_single_retained_literal::<6>(kani::any());
     }
 }
