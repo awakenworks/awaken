@@ -163,6 +163,9 @@ container-k8s = ["awaken-session-executor/container-k8s", "awaken-worker/contain
 serde_json.workspace = true
 
 [dev-dependencies]
+k8s-openapi = { version = "0.25", features = ["v1_30"] }
+awaken-dispatch-http.workspace = true
+awaken-coordinator-client.workspace = true
 awaken-dispatch-testkit.workspace = true
 awaken-worker-registry = { workspace = true, features = ["test-support"] }
 awaken-dispatch = { workspace = true, features = ["test-support"] }
