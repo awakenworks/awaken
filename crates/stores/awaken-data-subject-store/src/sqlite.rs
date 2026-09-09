@@ -218,26 +218,51 @@ impl ErasureJobRepo for SqliteDataSubjectRepo {
         progress: &ErasureProgress,
     ) -> Result<(), DataSubjectError> {
         let id = id.0.clone();
-        if !progress.follows(expected_revision) {
-            return Err(DataSubjectError::Conflict(id));
-        }
-        let revision = i64::try_from(progress.revision)
-            .map_err(|_| DataSubjectError::RevisionExhausted(id.clone()))?;
-        let expected = expected_revision
-            .map(i64::try_from)
-            .transpose()
-            .map_err(|_| DataSubjectError::RevisionExhausted(id.clone()))?;
-        let data = serde_json::to_string(progress).map_err(storage)?;
+        let progress = progress.clone();
         with_conn(&self.conn, move |conn, p| {
+            // IMMEDIATE reserves the writer before reading. The old JSON and
+            // revision, admission, and conditional update share this transaction;
+            // neither another connection nor this connection can replace the
+            // observed checkpoint between admission and publication.
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            let current: Option<(String, i64)> = tx
+                .query_row(
+                    &format!("SELECT data, revision FROM {p}_erasure_job WHERE subject_id = ?1"),
+                    params![id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(storage)?;
+            let current = current
+                .map(|(data, revision)| {
+                    let current: ErasureProgress = serde_json::from_str(&data).map_err(storage)?;
+                    if i64::try_from(current.revision).ok() != Some(revision) {
+                        return Err(storage("erasure checkpoint revision mismatch"));
+                    }
+                    Ok(current)
+                })
+                .transpose()?;
+            if !progress.follows(expected_revision, current.as_ref()) {
+                return Err(DataSubjectError::Conflict(id));
+            }
+            let revision = i64::try_from(progress.revision)
+                .map_err(|_| DataSubjectError::RevisionExhausted(id.clone()))?;
+            let expected = expected_revision
+                .map(i64::try_from)
+                .transpose()
+                .map_err(|_| DataSubjectError::RevisionExhausted(id.clone()))?;
+            let data = serde_json::to_string(&progress).map_err(storage)?;
             let changed = match expected {
-                None => conn.execute(
+                None => tx.execute(
                     &format!(
                         "INSERT OR IGNORE INTO {p}_erasure_job (subject_id, data, revision) \
                          VALUES (?1, ?2, ?3)"
                     ),
                     params![id, data, revision],
                 ),
-                Some(expected) => conn.execute(
+                Some(expected) => tx.execute(
                     &format!(
                         "UPDATE {p}_erasure_job SET data = ?2, revision = ?3, \
                          updated_at = CURRENT_TIMESTAMP WHERE subject_id = ?1 AND revision = ?4"
@@ -247,6 +272,7 @@ impl ErasureJobRepo for SqliteDataSubjectRepo {
             }
             .map_err(storage)?;
             if changed == 1 {
+                tx.commit().map_err(storage)?;
                 Ok(())
             } else {
                 Err(DataSubjectError::Conflict(id))
@@ -280,5 +306,78 @@ mod tests {
             repo.get(&DataSubjectId("dsub_a".into())).await.unwrap().org,
             "org_1"
         );
+    }
+
+    #[tokio::test]
+    async fn erasure_cas_rejects_revision_drift_and_storage_exhaustion_without_writes() {
+        // Causes: old JSON revision differs from indexed SQL revision, malformed
+        // JSON, or valid signed MAX old revision has no SQL-storable successor.
+        // Rules D1/D2 -> Storage, D3 -> RevisionExhausted. Each rejection preserves
+        // the exact raw JSON and indexed revision, including corrupt historical
+        // bytes; no repair or normalizing rewrite is allowed.
+        let old = ErasureProgress {
+            revision: 0,
+            completed_targets: vec![awaken_data_subject_application::ErasureTarget::Coordinator],
+            records_removed: 2,
+            accountability_stamped: false,
+            complete: false,
+        };
+        let maximum = ErasureProgress {
+            revision: i64::MAX as u64,
+            ..old.clone()
+        };
+        for (data, stored_revision, expected, candidate_revision, exhaustion) in [
+            (serde_json::to_string(&old).unwrap(), 1_i64, 0, 1, false),
+            ("not json".to_string(), 0_i64, 0, 1, false),
+            (
+                serde_json::to_string(&maximum).unwrap(),
+                i64::MAX,
+                maximum.revision,
+                maximum.revision + 1,
+                true,
+            ),
+        ] {
+            let repo = SqliteDataSubjectRepo::open_in_memory().unwrap();
+            let id = DataSubjectId("corrupt-erasure".into());
+            repo.conn
+                .lock()
+                .unwrap()
+                .execute(
+                    &format!(
+                        "INSERT INTO {NS}_erasure_job(subject_id,data,revision) VALUES (?1,?2,?3)"
+                    ),
+                    params![id.0, data, stored_revision],
+                )
+                .unwrap();
+            let candidate = ErasureProgress {
+                revision: candidate_revision,
+                completed_targets: vec![
+                    awaken_data_subject_application::ErasureTarget::Coordinator,
+                ],
+                records_removed: 2,
+                accountability_stamped: false,
+                complete: false,
+            };
+            let error = repo
+                .compare_and_swap_progress(&id, Some(expected), &candidate)
+                .await
+                .unwrap_err();
+            if exhaustion {
+                assert!(matches!(error, DataSubjectError::RevisionExhausted(_)));
+            } else {
+                assert!(matches!(error, DataSubjectError::Storage(_)));
+            }
+            let raw: (String, i64) = repo
+                .conn
+                .lock()
+                .unwrap()
+                .query_row(
+                    &format!("SELECT data,revision FROM {NS}_erasure_job WHERE subject_id=?1"),
+                    params![id.0],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(raw, (data, stored_revision));
+        }
     }
 }

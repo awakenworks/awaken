@@ -25,6 +25,7 @@ from formal_config_mutations import check_config_cas_model_mutant, check_config_
 from formal_worker_registration_mutations import check_worker_registration_model_mutants
 from formal_realization_capacity_mutations import check_realization_capacity_observation_mutants
 from formal_event_batch_mutations import check_event_batch_model_mutants, check_event_batch_observation_mutants
+from formal_erasure_mutations import check_erasure_checkpoint_model_mutants
 from formal_session_deletion_mutations import (check_session_deletion_model_mutants, check_deletion_observation_mutants)
 from formal_local_process_mutations import (
     check_local_process_model_mutants, check_local_recovery_model_mutants,
@@ -559,6 +560,7 @@ def main() -> None:
         "terminal-scan-model-mutants": check_terminal_scan_model_mutants,
         "k8s-process-observation-model-mutants": check_k8s_process_observation_model_mutants,
         "config-cas-model-mutant": check_config_cas_model_mutant,
+        "erasure-checkpoint-model-mutants": check_erasure_checkpoint_model_mutants,
         "config-activation-model-mutants": check_config_activation_model_mutants,
         "background-completion-model-mutant": check_background_completion_model_mutant,
         "sandbox-control-model-mutants": check_sandbox_control_model_mutants,

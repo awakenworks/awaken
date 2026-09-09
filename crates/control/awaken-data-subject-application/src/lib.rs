@@ -412,13 +412,25 @@ impl ErasureProgress {
         Ok(())
     }
 
-    /// Repository invariant shared by every adapter: an absent checkpoint starts
-    /// at zero; an existing checkpoint advances by exactly one.
+    /// The sole checkpoint successor relation, evaluated against the row read
+    /// under the adapter's lock/transaction. Caller revision and stored revision
+    /// must agree; creation starts at zero and updates advance exactly once.
+    /// Completed targets are a set: ordering and duplicate occurrences do not
+    /// matter, but no old target may disappear. Counts and terminal flags are
+    /// deliberately outside this relation and retain their existing owners.
     #[must_use]
-    pub fn follows(&self, expected_revision: Option<u64>) -> bool {
-        match expected_revision {
-            None => self.revision == 0,
-            Some(expected) => expected.checked_add(1) == Some(self.revision),
+    pub fn follows(&self, expected_revision: Option<u64>, current: Option<&Self>) -> bool {
+        match (expected_revision, current) {
+            (None, None) => self.revision == 0,
+            (Some(expected), Some(current)) => {
+                current.revision == expected
+                    && expected.checked_add(1) == Some(self.revision)
+                    && current
+                        .completed_targets
+                        .iter()
+                        .all(|target| self.completed_targets.contains(target))
+            }
+            _ => false,
         }
     }
 }
@@ -452,7 +464,10 @@ pub trait DataSubjectRepo: Send + Sync {
 pub trait ErasureJobRepo: Send + Sync {
     async fn load(&self, id: &DataSubjectId) -> Result<Option<ErasureProgress>, DataSubjectError>;
     /// Create or replace exactly the checkpoint revision observed by the caller.
-    /// `None` means the row must still be absent; stale writers receive Conflict.
+    /// `None` means the row must still be absent. Every adapter evaluates
+    /// [`ErasureProgress::follows`] against its actual row under one lock or
+    /// transaction, then atomically fences publication at that same revision.
+    /// Stale or target-regressive writers receive Conflict without changing it.
     async fn compare_and_swap_progress(
         &self,
         id: &DataSubjectId,

@@ -89,11 +89,8 @@ impl ErasureJobRepo for InMemoryDataSubjectRepo {
     ) -> Result<(), DataSubjectError> {
         self.progress_cas
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if !progress.follows(expected_revision) {
-            return Err(DataSubjectError::Conflict(id.0.clone()));
-        }
         let mut erasures = self.erasures.lock().expect("test erasures");
-        if erasures.get(&id.0).map(|value| value.revision) != expected_revision {
+        if !progress.follows(expected_revision, erasures.get(&id.0)) {
             return Err(DataSubjectError::Conflict(id.0.clone()));
         }
         erasures.insert(id.0.clone(), progress.clone());

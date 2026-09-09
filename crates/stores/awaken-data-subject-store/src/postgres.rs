@@ -199,7 +199,29 @@ impl ErasureJobRepo for PgDataSubjectRepo {
         expected_revision: Option<u64>,
         progress: &ErasureProgress,
     ) -> Result<(), DataSubjectError> {
-        if !progress.follows(expected_revision) {
+        let p = NS;
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        // Lock an existing row until commit. Absence cannot be row-locked:
+        // competing creators are still fenced by the subject primary key and
+        // insert-only statement below, on this same transaction connection.
+        let current = sqlx::query(&format!(
+            "SELECT data, revision FROM {p}_erasure_job WHERE subject_id = $1 FOR UPDATE"
+        ))
+        .bind(&id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?;
+        let current = current
+            .map(|row| {
+                let Json(current): Json<ErasureProgress> = row.try_get("data").map_err(storage)?;
+                let revision: i64 = row.try_get("revision").map_err(storage)?;
+                if i64::try_from(current.revision).ok() != Some(revision) {
+                    return Err(storage("erasure checkpoint revision mismatch"));
+                }
+                Ok(current)
+            })
+            .transpose()?;
+        if !progress.follows(expected_revision, current.as_ref()) {
             return Err(DataSubjectError::Conflict(id.0.clone()));
         }
         let revision = i64::try_from(progress.revision)
@@ -208,7 +230,6 @@ impl ErasureJobRepo for PgDataSubjectRepo {
             .map(i64::try_from)
             .transpose()
             .map_err(|_| DataSubjectError::RevisionExhausted(id.0.clone()))?;
-        let p = NS;
         let result =
             match expected {
                 None => sqlx::query(&format!(
@@ -218,7 +239,7 @@ impl ErasureJobRepo for PgDataSubjectRepo {
                 .bind(&id.0)
                 .bind(Json(progress))
                 .bind(revision)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await,
                 Some(expected) => {
                     sqlx::query(&format!(
@@ -229,12 +250,13 @@ impl ErasureJobRepo for PgDataSubjectRepo {
                     .bind(Json(progress))
                     .bind(revision)
                     .bind(expected)
-                    .execute(&self.pool)
+                    .execute(&mut *tx)
                     .await
                 }
             }
             .map_err(storage)?;
         if result.rows_affected() == 1 {
+            tx.commit().await.map_err(storage)?;
             Ok(())
         } else {
             Err(DataSubjectError::Conflict(id.0.clone()))

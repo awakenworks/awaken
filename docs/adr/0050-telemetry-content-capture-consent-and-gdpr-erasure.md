@@ -377,6 +377,15 @@ idempotent by subject and replays its durable receipt. Therefore two Control
 replicas may repeat the physical call across an effect/checkpoint crash window,
 but only one checkpoint counts it; the loser reloads the winning target set and
 receipt before continuing. Blind checkpoint upsert is forbidden.
+Every checkpoint replacement also retains the set of completed targets. The one
+`ErasureProgress::follows` relation consumes both the caller's expected revision
+and the stored checkpoint observed under the adapter's lock or transaction;
+duplicate/order differences have set semantics, not a wire rewrite. SQLite uses
+an immediate transaction, PostgreSQL locks an existing row on that transaction's
+connection, and both retain the final SQL revision fence (creation remains
+insert-only). A decoded/indexed revision mismatch fails closed without repair.
+This relation does not impose a new count or terminal-flag transition rule;
+those retain their existing application owners.
 
 **Enrollment flow (no stub).** standalone: routes not mounted, no consent. managed:
 (1) `POST /v1/user_profiles/:id/enrollment_url` mints a **signed, expiring** URL

@@ -97,12 +97,8 @@ impl ErasureJobRepo for InMemoryDataSubjectRepo {
         expected_revision: Option<u64>,
         progress: &ErasureProgress,
     ) -> Result<(), DataSubjectError> {
-        if !progress.follows(expected_revision) {
-            return Err(DataSubjectError::Conflict(id.0.clone()));
-        }
         let mut erasures = self.erasures.lock().expect("data-subject memory erasures");
-        let current_revision = erasures.get(&id.0).map(|current| current.revision);
-        if current_revision != expected_revision {
+        if !progress.follows(expected_revision, erasures.get(&id.0)) {
             return Err(DataSubjectError::Conflict(id.0.clone()));
         }
         erasures.insert(id.0.clone(), progress.clone());
