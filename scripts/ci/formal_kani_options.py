@@ -63,6 +63,23 @@ TOOL_RESULT_EMPTY_OBJECT_LOOPS = (
     ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeSNtNtNtCsecBtpv2pihN_21awaken_agent_contract5agent7message7MessageEBN_.0', 1),
 )
 
+# Actual ErasureProgress two-slot GOTOs, pinned nightly/Kani above. These
+# bounds retain the complete 0..2-row input list (including duplicates/order),
+# and the count proof may append one row. All other loops retain global 32,
+# including the 24-byte overflow error comparison and allocation/Drop checks.
+ERASURE_PROGRESS_LOOPS = (
+    # vec/mod.rs:3999: at most two yielded targets plus loop exit.
+    ('_RINvMsj_NtCs5YUhLFlCshu_5alloc3vecINtB6_3VecNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetE16extend_desugaredINtNtNtNtCsjxLPRqQEPX2_4core4iter8adapters7flatten7FlattenINtNtNtB2a_5array4iter8IntoIterINtNtB2a_6option6OptionBG_EKj2_EEEBI_.0', 3),
+    # flatten.rs:855: the outer iterator owns exactly two Option slots.
+    ('_RNvXsI_NtNtNtCsjxLPRqQEPX2_4core4iter8adapters7flattenINtB5_13FlattenCompatINtNtNtBb_5array4iter8IntoIterINtNtBb_6option6OptionNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetEKj2_EINtB1I_8IntoIterB21_EENtNtNtB9_6traits8iterator8Iterator4nextB23_.0', 3),
+    # slice/iter/macros.rs:331: at most three targets after one append, plus exit.
+    ('_RINvXs2J_NtNtCsjxLPRqQEPX2_4core5slice4iterINtB7_4IterNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetENtNtNtNtBb_4iter6traits8iterator8Iterator3anyNCNvXsf_NtB9_3cmpBQ_NtB2K_13SliceContains14slice_contains0EBS_.0', 4),
+    # slice/cmp.rs:132: full target frame equality covers at most three rows.
+    ('_RNvXs2_NtNtCsjxLPRqQEPX2_4core5slice3cmpNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetINtB5_14SlicePartialEqBC_E17equal_same_lengthBE_.0', 4),
+    # array/mod.rs:936: each arbitrary bool array has exactly two slots.
+    ('_RINvNtCsjxLPRqQEPX2_4core5array18try_from_fn_erasedINtNtNtB4_3ops9try_trait17NeverShortCircuitbEQINtNtB2_5drain5DrainuKj2_INtBQ_7WrappedbuNCINvYbNtCsjPMFoRXFuRd_4kani9Arbitrary9any_arrayKB1T_E0EEECs7LhrEI5S3s3_31awaken_data_subject_application.0', 3),
+)
+
 # Profiles bind solver options to their exact production package and harnesses.
 PROFILES = {
     "resume-validator-empty-object-v1": (
@@ -70,6 +87,26 @@ PROFILES = {
         frozenset({"resume_validator_preserves_complete_binding_decision_table"}),
         TOOL_RESULT_EMPTY_OBJECT_LOOPS,
         "cadical",
+    ),
+    'erasure-progress-selection-v1': (
+        "awaken-data-subject-application",
+        frozenset({'erasure_progress_selects_exact_first_pending_target'}),
+        ERASURE_PROGRESS_LOOPS + (
+            # index_range.rs:167: first-match scan of two adapter references, plus exit.
+            ('_RINvXs_NtNtCsjxLPRqQEPX2_4core3ops11index_rangeNtB5_10IndexRangeNtNtNtNtB9_4iter6traits8iterator8Iterator8try_folduNCINvMs6_NtNtNtB9_5array4iter10iter_innerINtB1Y_15PolymorphicIterSINtNtNtB9_3mem12maybe_uninit11MaybeUninitTNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetINtNtB9_6option6OptionRhEEEE8try_folduNCINvNvB10_4find5checkB3y_NCINvMs0_B3B_NtB3B_15ErasureProgress14pending_targetB4X_E0E0INtNtB7_12control_flow11ControlFlowB3y_EE0B6B_EB3B_.0', 3),
+        ),
+        "cadical",  # Explicitly retains Kani's default solver.
+    ),
+    'erasure-progress-count-v1': (
+        "awaken-data-subject-application",
+        frozenset({'erasure_progress_counts_selected_target_once_or_preserves_overflow'}),
+        ERASURE_PROGRESS_LOOPS + (
+            # index_range.rs:167: the same two-slot scan with unit adapter payloads.
+            ('_RINvXs_NtNtCsjxLPRqQEPX2_4core3ops11index_rangeNtB5_10IndexRangeNtNtNtNtB9_4iter6traits8iterator8Iterator8try_folduNCINvMs6_NtNtNtB9_5array4iter10iter_innerINtB1Y_15PolymorphicIterSINtNtNtB9_3mem12maybe_uninit11MaybeUninitTNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetINtNtB9_6option6OptionuEEEE8try_folduNCINvNvB10_4find5checkB3y_NCINvMs0_B3B_NtB3B_15ErasureProgress14pending_targetuE0E0INtNtB7_12control_flow11ControlFlowB3y_EE0B6x_EB3B_.0', 3),
+            # slice/iter/macros.rs:276: occurrence fold visits at most three target rows.
+            ('_RINvXs2J_NtNtCsjxLPRqQEPX2_4core5slice4iterINtB7_4IterNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetENtNtNtNtBb_4iter6traits8iterator8Iterator4foldjNCINvNtNtB1Z_8adapters3map8map_foldRBQ_jjNCINvNvXs1_NtB2L_6filterINtB3u_6FilterppEB1T_5count8to_usizeB3d_NCNvNtBS_20erasure_verification20check_selected_count0E0NCINvXsK_NtB1X_5accumjNtB5o_3Sum3sumINtB2J_3MapBF_B3j_EE0E0EBS_.0', 4),
+        ),
+        "cadical",  # Explicitly retains Kani's default solver.
     ),
     "fingerprint-fnv-hex-v1": (
         "awaken-agent-contract",
