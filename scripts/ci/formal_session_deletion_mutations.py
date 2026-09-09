@@ -101,6 +101,10 @@ def check_deletion_observation_mutants(tlc_jar: Path, trace_dir: Path) -> None:
         ("active-false-fence", "receiptOwner", "foreign"),
         ("active-false-first", "receiptRoot", "stale-root"),
         ("active-false-tombstone", "tombstone", "null"),
+        ("race-active-same_snapshot-111-retry", "result", "applied"),
+        ("race-active-different_revision-111-retry", "receiptRoot", "stale-candidate"),
+        ("race-active-after_ack-111-retry", "outbox", "re-enqueued-acknowledged-fact"),
+        ("race-active-after_tombstone-111-retry", "tombstone", "null"),
     ]
     with tempfile.TemporaryDirectory(prefix="awaken-deletion-observations-") as temp:
         directory = Path(temp)
@@ -124,4 +128,21 @@ def check_deletion_observation_mutants(tlc_jar: Path, trace_dir: Path) -> None:
             mutants.append(((rendered / f"{module}.tla").read_text(), config, "constant:TraceRefines"))
         check_tlc_model_mutations(tlc_jar, module, baseline, config, mutants,
             dependencies=("SessionDeletion", "SessionCleanupKernel"))
-    print("Session deletion: 12 actual-observation mutants qualified")
+        # Each recorded cause comes from the paused actual request or the
+        # real SQLite result. Corrupting one must not keep the same case label.
+        for field, value in [("candidateRevision", 99), ("winnerRevision", 99),
+                ("sqliteResult", "conflict"), ("winnerTimestamp", 222),
+                ("delayedTimestamp", 111), ("acknowledged", True), ("tombstoned", True)]:
+            mutant = deepcopy(document)
+            step = next(step for step in mutant["steps"] if step["rule"] == "race-active-same_snapshot-111-retry")
+            assert step["race"][field] != value
+            step["race"][field] = value
+            path.write_text(json.dumps(mutant))
+            try:
+                render_observations(raw, rendered, ROOT, manifest, False)
+            except ValueError as error:
+                if "rule conditions drift" not in str(error):
+                    raise
+            else:
+                raise AssertionError(f"deletion race cause mutant survived: {field}")
+    print("Session deletion: 16 actual-observation and 7 race-cause mutants qualified")

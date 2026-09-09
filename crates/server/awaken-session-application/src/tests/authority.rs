@@ -2456,6 +2456,44 @@ async fn terminal_edges_wait_for_every_accepted_event_effect_anchor() {
     );
 }
 
+async fn deletion_fixture(
+    initial: &str,
+    session_id: &str,
+) -> (
+    Arc<dyn ManagedSessionRepository>,
+    Arc<FaultingSessionRepository>,
+    Arc<RecordingCleanupRuntime>,
+    Arc<SessionApplication>,
+) {
+    let durable: Arc<dyn ManagedSessionRepository> =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let repo = Arc::new(FaultingSessionRepository::new(durable.clone()));
+    let runtime = Arc::new(RecordingCleanupRuntime::default());
+    let app = Arc::new(application_with_runtime(
+        runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    ));
+    let mut root = persisted(session_id, false, "idle");
+    if initial != "active" {
+        root.archive("original-archive").unwrap();
+    }
+    if initial == "archived-requested" {
+        root.freeze_terminal_cleanup_targets(Vec::<String>::new(), 17, 19)
+            .unwrap();
+    }
+    create(repo.as_ref(), root).await;
+    if initial == "archived-completed" {
+        let completed = app
+            .release_terminal_resources("workspace", session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(completed.terminal_cleanup.is_completed());
+    }
+    (durable, repo, runtime, app)
+}
+
 #[tokio::test]
 async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombstone() {
     // Causes: C1 Active or Archived with Fenced/Requested/Completed cleanup;
@@ -2487,33 +2525,7 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
     ] {
         for lost_ack in [false, true] {
             let session_id = format!("delete-{initial}-{lost_ack}");
-            let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
-                awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
-            );
-            let repo = Arc::new(FaultingSessionRepository::new(durable.clone()));
-            let runtime = Arc::new(RecordingCleanupRuntime::default());
-            let app = application_with_runtime(
-                runtime.clone(),
-                repo.clone(),
-                Arc::new(RecordingEnvironmentSource::default()),
-            );
-            let mut root = persisted(&session_id, false, "idle");
-            if initial != "active" {
-                root.archive("original-archive").unwrap();
-            }
-            if initial == "archived-requested" {
-                root.freeze_terminal_cleanup_targets(Vec::<String>::new(), 17, 19)
-                    .unwrap();
-            }
-            create(repo.as_ref(), root).await;
-            if initial == "archived-completed" {
-                let completed = app
-                    .release_terminal_resources("workspace", &session_id)
-                    .await
-                    .unwrap()
-                    .unwrap();
-                assert!(completed.terminal_cleanup.is_completed());
-            }
+            let (durable, repo, runtime, app) = deletion_fixture(initial, &session_id).await;
             let before_root = durable.get(&session_id).await.unwrap();
             let before = deletion_observation(durable.as_ref(), &session_id, "workspace").await;
             if lost_ack {
@@ -2673,6 +2685,206 @@ async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombsto
             observations.push(serde_json::json!({"rule": format!("{initial}-{lost_ack}-tombstone"), "kind": "retry", "lostAck": lost_ack, "result": "not_found", "receiptOwner": "none", "receiptRoot": "null", "before": before, "after": after}));
         }
     }
+    // Real CAS table (not the post-commit Conflict injection above): C6 two
+    // detached Delete candidates, with distinct deterministic command times;
+    // C7 a legitimate intervening root write changes the winner's revision;
+    // C8 delivery ACK / completed cleanup and tombstone win before the delayed
+    // CAS. Every initial cleanup class crosses both timestamp orderings.
+    // R1 !C7,!C8: SQLite Applied then Replayed, only winner transitioned=true.
+    // R2 C7: SQLite Conflict, then the application rereads the full winner.
+    // R3 ACK: same receipt replay cannot overwrite/re-enqueue the acknowledged
+    // fact, even with the delayed command's distinct timestamp.
+    // R4 tombstone: receipt replay's authoritative reload returns typed NotFound;
+    // it cannot recreate a root, cleanup operation, fact, or provider effect.
+    // Observation reads are deliberately made at quiescent cuts: the delayed
+    // candidate is paused before the CAS, or both calls have returned. These
+    // separate reads are not claimed to be one transactional snapshot.
+    let mut race_rules = 0;
+    for initial in [
+        "active",
+        "archived-fenced",
+        "archived-requested",
+        "archived-completed",
+    ] {
+        for schedule in [
+            "same_snapshot",
+            "different_revision",
+            "after_ack",
+            "after_tombstone",
+        ] {
+            for winner_time in [111, 222] {
+                let loser_time = if winner_time == 111 { 222 } else { 111 };
+                let session_id = "delete-cas";
+                let (durable, repo, runtime, app) = deletion_fixture(initial, session_id).await;
+                let origin = durable.get(session_id).await.unwrap();
+                let pause = repo.pause_next_mutation("session:delete-intent:");
+                let delayed = app.clone();
+                let loser = tokio::spawn(async move {
+                    delayed
+                        .commit_delete_intent(SessionDeleteCommand::at_for_test(
+                            session_id, loser_time,
+                        ))
+                        .await
+                });
+                tokio::time::timeout(std::time::Duration::from_secs(5), pause.entered.notified())
+                    .await
+                    .unwrap();
+                let candidate = pause.candidate.lock().unwrap().clone().unwrap();
+                assert_eq!(
+                    candidate.expected_revision, origin.revision,
+                    "R1/R2 both requests start from the actual origin"
+                );
+                let expected_fact = |timestamp| ManagedLifecycleFact {
+                    id: "session:delete-cas:deleted".into(),
+                    object_id: session_id.into(),
+                    workspace_id: Some("workspace".into()),
+                    event_type: "session.deleted".into(),
+                    timestamp,
+                    runtime_interval: None,
+                };
+                assert_eq!(
+                    candidate.lifecycle_facts,
+                    vec![expected_fact(loser_time)],
+                    "R1 detached losing fact is real and distinguishable"
+                );
+                if schedule == "different_revision" {
+                    let mut predecessor = origin.clone();
+                    predecessor.title = Some("independent committed predecessor".into());
+                    app.commit_session_snapshot(
+                        "workspace",
+                        predecessor,
+                        "delete-race-predecessor",
+                        Vec::new(),
+                    )
+                    .await
+                    .unwrap();
+                }
+                let before_root = durable.get(session_id).await.unwrap();
+                let before = deletion_observation(durable.as_ref(), session_id, "workspace").await;
+                let winner = app
+                    .commit_delete_intent(SessionDeleteCommand::at_for_test(
+                        session_id,
+                        winner_time,
+                    ))
+                    .await
+                    .unwrap();
+                assert!(winner.transitioned, "R1/R2 winner really applied");
+                assert_eq!(winner.owner_scope, "workspace");
+                assert_eq!(
+                    winner.session,
+                    durable.get(session_id).await.unwrap(),
+                    "R1 complete winner receipt"
+                );
+                assert_eq!(winner.session.revision.0, before_root.revision.0 + 1);
+                if initial != "active" {
+                    assert_eq!(
+                        winner.session.terminal_cleanup, before_root.terminal_cleanup,
+                        "R2 archived cleanup identity and entire progress are preserved"
+                    );
+                }
+                let facts = durable.pending_lifecycle().await.unwrap();
+                assert_eq!(
+                    facts,
+                    vec![expected_fact(winner_time)],
+                    "R1 complete winner fact retains its own command time"
+                );
+                let after = deletion_observation(durable.as_ref(), session_id, "workspace").await;
+                let mut fence_observation = serde_json::json!({"rule": format!("race-{initial}-{schedule}-{winner_time}-fence"), "kind": "fence", "lostAck": false, "result": "applied", "receiptOwner": winner.owner_scope, "receiptRoot": serde_json::to_string(&winner.session).unwrap(), "before": before, "after": after});
+                if matches!(schedule, "after_ack" | "after_tombstone") {
+                    durable.complete_lifecycle(&facts[0].id).await.unwrap();
+                }
+                if schedule == "after_tombstone" {
+                    assert!(
+                        app.release_terminal_resources("workspace", session_id)
+                            .await
+                            .unwrap()
+                            .is_none()
+                    );
+                }
+                let before = deletion_observation(durable.as_ref(), session_id, "workspace").await;
+                let effect_calls = runtime.intents.lock().unwrap().len();
+                pause.release.notify_one();
+                let loser = tokio::time::timeout(std::time::Duration::from_secs(5), loser)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let actual_result = pause.result.lock().unwrap().clone().unwrap();
+                if schedule == "different_revision" {
+                    assert!(
+                        matches!(
+                            actual_result,
+                            awaken_session_contract::SessionMutationResult::Conflict { .. }
+                        ),
+                        "R2 real stale-root CAS conflict"
+                    );
+                } else {
+                    assert!(
+                        matches!(
+                            actual_result,
+                            awaken_session_contract::SessionMutationResult::Replayed { .. }
+                        ),
+                        "R1/R3/R4 actual SQLite receipt replay"
+                    );
+                }
+                let sqlite_result = match actual_result {
+                    awaken_session_contract::SessionMutationResult::Conflict { .. } => "conflict",
+                    awaken_session_contract::SessionMutationResult::Replayed { .. } => "replayed",
+                    _ => unreachable!("race must actually reach a losing CAS branch"),
+                };
+                let race = serde_json::json!({
+                    "candidateRevision": candidate.expected_revision.0,
+                    "winnerRevision": winner.session.revision.0,
+                    "sqliteResult": sqlite_result,
+                    "winnerTimestamp": facts[0].timestamp,
+                    "delayedTimestamp": candidate.lifecycle_facts[0].timestamp,
+                    "acknowledged": before["facts"] == 0,
+                    "tombstoned": before["disposition"] == "tombstoned",
+                });
+                fence_observation["race"] = race.clone();
+                observations.push(fence_observation);
+                let (result, receipt_owner, receipt_root) = if schedule == "after_tombstone" {
+                    assert!(
+                        matches!(loser, Err(SessionPreparationError::NotFound)),
+                        "R4 typed reload absence"
+                    );
+                    ("not_found", "none".to_string(), "null".to_string())
+                } else {
+                    let loser = loser.unwrap();
+                    assert!(
+                        !loser.transitioned,
+                        "R1 replay cannot claim a second applied Delete"
+                    );
+                    assert_eq!(loser.owner_scope, "workspace");
+                    assert_eq!(
+                        loser.session,
+                        durable.get(session_id).await.unwrap(),
+                        "R2 return the complete current winner after Conflict/replay"
+                    );
+                    (
+                        "replayed",
+                        loser.owner_scope,
+                        serde_json::to_string(&loser.session).unwrap(),
+                    )
+                };
+                let after = deletion_observation(durable.as_ref(), session_id, "workspace").await;
+                assert_eq!(
+                    after, before,
+                    "R1-R4 complete durable cleanup/root/outbox/tombstone stutter"
+                );
+                assert_eq!(
+                    runtime.intents.lock().unwrap().len(),
+                    effect_calls,
+                    "R4 no additional physical cleanup"
+                );
+                observations.push(serde_json::json!({"rule": format!("race-{initial}-{schedule}-{winner_time}-retry"), "race": race, "kind": "retry", "lostAck": false, "result": result, "receiptOwner": receipt_owner, "receiptRoot": receipt_root, "before": before, "after": after}));
+                race_rules += 1;
+            }
+        }
+    }
+    assert_eq!(
+        race_rules, 32,
+        "R1-R4 x four initial cleanup frames x both command timestamp orderings"
+    );
     awaken_reliability_testkit::write_observation_trace(
         "delete-retry-lifecycle",
         "deletion",
