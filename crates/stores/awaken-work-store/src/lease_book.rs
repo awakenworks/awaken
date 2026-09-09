@@ -37,6 +37,13 @@ struct LeaseWindow {
     expires_at_ms: u64,
 }
 
+/// One coherent read of the process-local lease authority tuple.
+pub(crate) struct LeaseAuthoritySnapshot {
+    pub(crate) owner: Option<String>,
+    pub(crate) epoch: Option<u64>,
+    pub(crate) lease_present: bool,
+}
+
 impl LeaseBook {
     pub fn record_poll(&self, env_id: &str, worker_id: &str, now_ms: u64) {
         self.polls
@@ -115,11 +122,13 @@ impl LeaseBook {
             && authority.epochs.get(work_id).copied() == Some(expected_epoch)
     }
 
-    pub fn is_released_at_epoch(&self, work_id: &str, expected_epoch: u64) -> bool {
+    pub(crate) fn snapshot(&self, work_id: &str) -> LeaseAuthoritySnapshot {
         let authority = self.authority.lock().unwrap();
-        !authority.owners.contains_key(work_id)
-            && !authority.leases.contains_key(work_id)
-            && authority.epochs.get(work_id).copied() == Some(expected_epoch)
+        LeaseAuthoritySnapshot {
+            owner: authority.owners.get(work_id).cloned(),
+            epoch: authority.epochs.get(work_id).copied(),
+            lease_present: authority.leases.contains_key(work_id),
+        }
     }
 
     pub fn authority(&self, work_id: &str, now_ms: u64) -> Option<(String, u64, u64)> {

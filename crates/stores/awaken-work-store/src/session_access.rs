@@ -33,21 +33,17 @@ impl SqliteWorkQueue {
         age_ms: Option<u64>,
         mint_session_access: bool,
     ) -> Result<Option<ClaimedWork>, WorkQueueError> {
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
         if let Some(cutoff) = reclaim_cutoff(now_ms, age_ms) {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(storage)?;
             tx.execute(
                 "UPDATE work_queue_item SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, lease_refreshed_ms = NULL, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
                  WHERE environment_id = ?1 AND state = 'active' AND lease_refreshed_ms IS NOT NULL AND lease_refreshed_ms <= ?2",
                 params![env_id, cutoff],
             )
             .map_err(storage)?;
-            tx.commit().map_err(storage)?;
         }
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage)?;
         Self::reclaim_lapsed(&tx, env_id, now_ms)?;
         let active: i64 = tx
             .query_row(
@@ -57,6 +53,7 @@ impl SqliteWorkQueue {
             )
             .map_err(storage)?;
         if active > 0 {
+            tx.commit().map_err(storage)?;
             return Ok(None);
         }
         let selected: Option<(String, String, i64)> = tx
@@ -69,6 +66,7 @@ impl SqliteWorkQueue {
             .optional()
             .map_err(storage)?;
         let Some((wid, data_type, current_epoch)) = selected else {
+            tx.commit().map_err(storage)?;
             return Ok(None);
         };
         let (next_epoch, _) = lease_epoch(current_epoch, true)?;
@@ -246,17 +244,6 @@ impl PostgresWorkQueue {
         mint_session_access: bool,
     ) -> Result<Option<ClaimedWork>, WorkQueueError> {
         self.book.record_poll(env_id, poller_id, now_ms);
-        if let Some(cutoff) = reclaim_cutoff(now_ms, age_ms) {
-            sqlx::query(
-                "UPDATE work_queue_item SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, lease_refreshed_ms = NULL, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
-                 WHERE environment_id = $1 AND state = 'active' AND lease_refreshed_ms IS NOT NULL AND lease_refreshed_ms <= $2",
-            )
-            .bind(env_id)
-            .bind(cutoff)
-            .execute(&self.pool)
-            .await
-            .map_err(storage)?;
-        }
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let _: Vec<String> = sqlx::query_scalar(
             "SELECT work_id FROM work_queue_item WHERE environment_id = $1 FOR UPDATE",
@@ -265,6 +252,17 @@ impl PostgresWorkQueue {
         .fetch_all(&mut *tx)
         .await
         .map_err(storage)?;
+        if let Some(cutoff) = reclaim_cutoff(now_ms, age_ms) {
+            sqlx::query(
+                "UPDATE work_queue_item SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, lease_refreshed_ms = NULL, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
+                 WHERE environment_id = $1 AND state = 'active' AND lease_refreshed_ms IS NOT NULL AND lease_refreshed_ms <= $2",
+            )
+            .bind(env_id)
+            .bind(cutoff)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        }
         sqlx::query(
             "UPDATE work_queue_item \
              SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, \
@@ -285,6 +283,7 @@ impl PostgresWorkQueue {
         .await
         .map_err(storage)?;
         if active > 0 {
+            tx.commit().await.map_err(storage)?;
             return Ok(None);
         }
         let selected: Option<(String, String, i64)> = sqlx::query_as(
@@ -296,6 +295,7 @@ impl PostgresWorkQueue {
         .await
         .map_err(storage)?;
         let Some((wid, data_type, current_epoch)) = selected else {
+            tx.commit().await.map_err(storage)?;
             return Ok(None);
         };
         let (next_epoch, _) = lease_epoch(current_epoch, true)?;

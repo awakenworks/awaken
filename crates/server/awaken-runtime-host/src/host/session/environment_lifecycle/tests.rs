@@ -1767,6 +1767,35 @@ async fn closed_revoked_durable_environment_can_enter_canonical_rebuild() {
     );
 }
 
+#[test]
+fn closed_environment_recovery_admission_covers_every_owner_class() {
+    // Causes: C1 Reject/Rebuild policy; C2 exact Revocation,
+    // RecoveryDiscard, Resident, pending, Vacant, or protected/stale owner.
+    // Effects: E1 only Rebuild plus an exact unprotected class consumes; E2
+    // every Reject or protected/stale row retains. This is the complete 2x6
+    // decision table used before the production plan carries the exact fence.
+    let owners = [
+        ClosedEnvironmentRecoveryOwnerClass::Revoked,
+        ClosedEnvironmentRecoveryOwnerClass::RecoveryDiscard,
+        ClosedEnvironmentRecoveryOwnerClass::Resident,
+        ClosedEnvironmentRecoveryOwnerClass::Pending,
+        ClosedEnvironmentRecoveryOwnerClass::Vacant,
+        ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale,
+    ];
+    for policy in [
+        SessionEnvironmentUnavailablePolicy::Reject,
+        SessionEnvironmentUnavailablePolicy::Rebuild,
+    ] {
+        for owner in owners {
+            assert_eq!(
+                closed_environment_recovery_admission(policy, owner),
+                policy == SessionEnvironmentUnavailablePolicy::Rebuild
+                    && owner != ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn closed_recovery_cannot_override_protected_retirements() {
     // C1 exact closed physical owner; C2 Terminal or Checkpoint owns retirement;

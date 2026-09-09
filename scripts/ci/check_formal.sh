@@ -327,6 +327,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness only_active_work_accepts_lease_extension \
     --harness stop_is_absorbing_for_every_work_state \
     --harness work_lease_mutation_requires_present_exact_authority_and_matching_condition \
+    --harness session_work_release_requires_exact_owner_and_epoch \
     --harness first_heartbeat_is_authorized_exactly_once \
     --harness matching_heartbeat_rejects_every_other_receipt \
     --harness resolved_environment_snapshot_accepts_only_exact_positive_identity_and_revision \
@@ -684,6 +685,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness projection_revision_admission_is_monotonic_and_exact \
     --harness durable_projection_identity_is_exact_or_a_same_physical_owner_stutter \
     --harness committed_candidate_retains_effect_kind_and_rejects_identity_relabeling \
+    --harness closed_environment_recovery_consumes_only_rebuildable_owner_classes \
     --harness terminal_quiescence_rejects_only_unstarted_reservations \
     --harness unsettled_running_is_always_rejected_and_settled_kinds_never_interchange \
     --harness settled_step_projection_cannot_invent_pending_or_observations

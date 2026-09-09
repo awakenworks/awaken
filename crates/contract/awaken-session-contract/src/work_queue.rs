@@ -267,6 +267,34 @@ pub const fn work_lease_mutation_admission(
     }
 }
 
+/// Storage-neutral plan for settling one exact Session Work lease. Durable
+/// adapters obtain these facts from one locked row; the reference adapter
+/// obtains owner, epoch, and lease presence from one LeaseBook snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionWorkReleaseAdmission {
+    Apply,
+    AlreadyReleased,
+    Reject,
+}
+
+#[must_use]
+pub const fn session_work_release_admission(
+    identity_matches: bool,
+    state_is_active: bool,
+    state_is_stopped: bool,
+    owner_matches: bool,
+    epoch_matches: bool,
+    authority_is_cleared: bool,
+) -> SessionWorkReleaseAdmission {
+    if identity_matches && state_is_active && owner_matches && epoch_matches {
+        SessionWorkReleaseAdmission::Apply
+    } else if identity_matches && state_is_stopped && epoch_matches && authority_is_cleared {
+        SessionWorkReleaseAdmission::AlreadyReleased
+    } else {
+        SessionWorkReleaseAdmission::Reject
+    }
+}
+
 /// One queued/leased unit of work in an environment's queue (the domain shape; the
 /// Managed adapter renders the `BetaSelfHostedWork` wire object from it).
 #[derive(Clone, Debug)]
@@ -734,7 +762,8 @@ pub trait WorkQueue: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::{
-        WorkLeaseMutationAdmission, next_heartbeat_receipt, work_lease_mutation_admission,
+        SessionWorkReleaseAdmission, WorkLeaseMutationAdmission, next_heartbeat_receipt,
+        session_work_release_admission, work_lease_mutation_admission,
     };
 
     #[test]
@@ -803,6 +832,38 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn session_work_release_follows_the_complete_authority_table() {
+        // Causes: C1 exact Work/Environment/Session identity; C2 Active or
+        // Stopped state; C3 exact owner; C4 exact epoch; C5 authority cleared.
+        // Effects: E1 Apply only for exact active owner+epoch; E2 idempotent
+        // success only for exact stopped epoch with no owner/lease; E3 every
+        // other combination rejects unchanged. This exhausts all 2^6 rules.
+        for identity in [false, true] {
+            for active in [false, true] {
+                for stopped in [false, true] {
+                    for owner in [false, true] {
+                        for epoch in [false, true] {
+                            for cleared in [false, true] {
+                                let actual = session_work_release_admission(
+                                    identity, active, stopped, owner, epoch, cleared,
+                                );
+                                let expected = if identity && active && owner && epoch {
+                                    SessionWorkReleaseAdmission::Apply
+                                } else if identity && stopped && epoch && cleared {
+                                    SessionWorkReleaseAdmission::AlreadyReleased
+                                } else {
+                                    SessionWorkReleaseAdmission::Reject
+                                };
+                                assert_eq!(actual, expected);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(kani)]
@@ -842,6 +903,29 @@ mod verification {
             present && authority && condition
         );
         assert_eq!(decision == WorkLeaseMutationAdmission::NotFound, !present);
+    }
+
+    #[kani::proof]
+    fn session_work_release_requires_exact_owner_and_epoch() {
+        // Same complete C1-C5/E1-E3 table as the native test. The asserted
+        // formula is independent of the production decision implementation.
+        let identity: bool = kani::any();
+        let active: bool = kani::any();
+        let stopped: bool = kani::any();
+        let owner: bool = kani::any();
+        let epoch: bool = kani::any();
+        let cleared: bool = kani::any();
+        kani::assume(!(active && stopped));
+        let decision =
+            session_work_release_admission(identity, active, stopped, owner, epoch, cleared);
+        assert_eq!(
+            decision == SessionWorkReleaseAdmission::Apply,
+            identity && active && owner && epoch
+        );
+        assert_eq!(
+            decision == SessionWorkReleaseAdmission::AlreadyReleased,
+            identity && stopped && epoch && cleared
+        );
     }
 
     #[kani::proof]
