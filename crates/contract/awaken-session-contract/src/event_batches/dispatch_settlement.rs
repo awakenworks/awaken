@@ -6,7 +6,9 @@ use super::{
 };
 use awaken_agent_contract::agent::run::Id as RunId;
 
-/// Durable evidence that the exact User Run's Dispatch CAS returned Applied.
+/// Latest durable evidence that the exact User Run's Dispatch CAS returned Applied.
+/// One Run can resume after several approvals; each admitted activity settles
+/// separately while the original Event's processed time and input anchor stay frozen.
 /// The Worker/transport supplies this only after the Dispatch owner settles;
 /// the Session root then commits this receipt with activity removal and the
 /// Event processed marker in one replacement CAS.
@@ -45,6 +47,20 @@ pub const fn session_event_dispatch_settlement_plan(
         return SessionEventDispatchSettlementPlan::Reject;
     }
     match existing {
+        Some(recorded)
+            if processed
+                && active_activity_epoch
+                && recorded.session_activity_epoch != 0
+                && recorded.commit_observation_anchor.source_commit_cursor != 0
+                && incoming.session_activity_epoch > recorded.session_activity_epoch
+                && incoming.commit_observation_anchor.source_commit_cursor
+                    >= recorded.commit_observation_anchor.source_commit_cursor =>
+        {
+            // An approval resumes the SAME User Run under a newly admitted
+            // activity. Only its applied Dispatch receipt advances this fence;
+            // public input processing remains the immutable first observation.
+            SessionEventDispatchSettlementPlan::Apply
+        }
         Some(recorded)
             if recorded.session_activity_epoch == incoming.session_activity_epoch
                 && recorded.commit_observation_anchor.source_commit_cursor
@@ -120,11 +136,14 @@ impl SessionEventBatch {
             if let Some(system) = self.events.get_mut(entry_index + 1)
                 && matches!(system.event, SessionEventCommand::SystemMessage { .. })
             {
+                let system_anchor = system
+                    .projection_anchor
+                    .or(Some(receipt.commit_observation_anchor));
                 mark_processed_observation(
                     &mut system.processed,
                     &mut system.projection_anchor,
                     &mut system.processed_at_unix_ms,
-                    Some(receipt.commit_observation_anchor),
+                    system_anchor,
                     processed_at_unix_ms,
                 )?;
             }
@@ -142,9 +161,10 @@ fn user_event_processing_requires_exact_applied_dispatch_and_activity_settlement
     // Cause/effect table exhausts command identity, processed/activity state,
     // optional prior receipt, and arbitrary u64 epoch/anchor coordinates. R1:
     // matching pending command + active non-zero epoch + no receipt => Apply;
-    // R2 exact receipt + processed + inactive => Replay; every incomplete,
-    // conflicting, zero, or partially applied combination rejects. R3 Running
-    // may close only after R1, exact activity removal, final activity and full
+    // R2 processed + newly active greater epoch + non-regressing commit => Apply;
+    // R3 exact receipt + processed + inactive => Replay; every incomplete,
+    // stale, zero, or partially applied combination rejects. R4 Running
+    // may close only after R1 or R2, exact activity removal, final activity and full
     // retained Event completion all hold.
     let incoming = SessionEventDispatchSettlementReceipt {
         session_activity_epoch: kani::any(),
@@ -171,9 +191,19 @@ fn user_event_processing_requires_exact_applied_dispatch_and_activity_settlement
     let valid = command_matches
         && incoming.session_activity_epoch != 0
         && incoming.commit_observation_anchor.source_commit_cursor != 0;
+    let first = existing.is_none() && !processed && active;
+    let resumed = existing.is_some_and(|recorded| {
+        processed
+            && active
+            && recorded.session_activity_epoch != 0
+            && recorded.commit_observation_anchor.source_commit_cursor != 0
+            && incoming.session_activity_epoch > recorded.session_activity_epoch
+            && incoming.commit_observation_anchor.source_commit_cursor
+                >= recorded.commit_observation_anchor.source_commit_cursor
+    });
     assert_eq!(
         plan == SessionEventDispatchSettlementPlan::Apply,
-        valid && existing.is_none() && !processed && active
+        valid && (first || resumed)
     );
     assert_eq!(
         plan == SessionEventDispatchSettlementPlan::Replay,
@@ -181,7 +211,7 @@ fn user_event_processing_requires_exact_applied_dispatch_and_activity_settlement
     );
     assert_eq!(
         plan == SessionEventDispatchSettlementPlan::Reject,
-        !(valid && existing.is_none() && !processed && active)
+        !(valid && (first || resumed))
             && !(valid && existing == Some(incoming) && processed && !active)
     );
     let exact_activity_removed = kani::any();
@@ -331,5 +361,93 @@ mod tests {
             batch.is_complete(),
             "one Run settles its paired System input"
         );
+        // R4 first Awaiting -> resumed Awaiting -> resumed terminal: SAME Run,
+        // strictly newer active epochs and non-regressing commit observations.
+        // Each receipt applies once; User and paired System publication stays
+        // byte-identical. R5 stale/inactive/rollback receipts reject atomically.
+        let public_inputs = |batch: &SessionEventBatch| {
+            batch
+                .events
+                .iter()
+                .map(|entry| {
+                    serde_json::json!({
+                        "event": entry.event, "processed": entry.processed,
+                        "anchor": entry.projection_anchor, "time": entry.processed_at_unix_ms,
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        let published = public_inputs(&batch);
+        for (epoch, cursor) in [(8, 12), (9, 13)] {
+            let next = SessionEventDispatchSettlementReceipt {
+                session_activity_epoch: epoch,
+                commit_observation_anchor: SessionEventProjectionAnchor {
+                    source_commit_cursor: cursor,
+                },
+            };
+            assert_eq!(
+                batch
+                    .record_user_run_dispatch_settlement(
+                        &operation_id,
+                        &run_id,
+                        true,
+                        next,
+                        1_700_000_001_000,
+                    )
+                    .unwrap(),
+                SessionEventDispatchSettlementPlan::Apply,
+                "R4 resume"
+            );
+            assert_eq!(batch.events[0].dispatch_settlement, Some(next));
+            assert_eq!(
+                public_inputs(&batch),
+                published,
+                "R4 immutable input publication"
+            );
+            assert_eq!(
+                batch
+                    .record_user_run_dispatch_settlement(
+                        &operation_id,
+                        &run_id,
+                        false,
+                        next,
+                        1_700_000_002_000,
+                    )
+                    .unwrap(),
+                SessionEventDispatchSettlementPlan::Replay,
+                "R4 exact replay"
+            );
+        }
+        let settled = serde_json::to_value(&batch).unwrap();
+        for (active, epoch, cursor) in [
+            (true, 8, 14),
+            (true, 9, 14),
+            (true, 10, 12),
+            (false, 10, 14),
+        ] {
+            let wrong = SessionEventDispatchSettlementReceipt {
+                session_activity_epoch: epoch,
+                commit_observation_anchor: SessionEventProjectionAnchor {
+                    source_commit_cursor: cursor,
+                },
+            };
+            assert!(
+                batch
+                    .record_user_run_dispatch_settlement(
+                        &operation_id,
+                        &run_id,
+                        active,
+                        wrong,
+                        1_700_000_003_000,
+                    )
+                    .is_err(),
+                "R5 stale or unowned receipt"
+            );
+            assert_eq!(
+                serde_json::to_value(&batch).unwrap(),
+                settled,
+                "R5 no partial mutation"
+            );
+        }
     }
 }
