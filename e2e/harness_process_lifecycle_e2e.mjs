@@ -17,12 +17,119 @@ import {
   scenarioMemoryStore,
   spawnServer,
   stopServer,
+  runCleanupSteps,
   trackSpawnedServer,
   waitForPort,
   waitForSessionEventReceipt,
 } from './harness.mjs';
 
 async function main() {
+  // Shutdown cause/effect graph: live-at-request × stdin pipe × observed
+  // terminal (0/nonzero/signal) × strict mode -> acceptance or failure.
+  // S1 live + graceful 0 => pass (EOF and Unix SIGINT); S2 live + nonzero =>
+  // fail; S3 already terminal => strict failure EVEN for 0, but default cleanup
+  // stays idempotent for deliberate faults. IPC proves handlers exist before
+  // stopping; exact child handles and finally cleanup prevent orphan fixtures.
+  for (const piped of process.platform === 'win32' ? [true] : [true, false]) {
+    for (const code of [0, 7]) {
+      const child = spawn(process.execPath, ['-e', `
+        const finish = () => process.exit(${code});
+        process.on('SIGINT', finish);
+        process.stdin.on('end', finish);
+        process.stdin.resume();
+        setInterval(() => {}, 1000);
+        process.send('ready');
+      `], {stdio:[piped ? 'pipe' : 'ignore', 'ignore', 'ignore', 'ipc']});
+      try {
+        await once(child, 'message', {signal:AbortSignal.timeout(5000)});
+        const stopped = stopServer(child, {requireCleanExit:true});
+        if (code === 0) await stopped;
+        else await assert.rejects(stopped, /live_before=true; code=7; signal=null/, 'S2');
+        assert.equal(child.exitCode, code, 'S1/S2 actual OS terminal outcome');
+      } finally { await stopServer(child); }
+    }
+  }
+  for (const code of [0, 7, 'SIGKILL']) {
+    const child = spawn(process.execPath, ['-e', code === 'SIGKILL'
+      ? `process.kill(process.pid, 'SIGKILL')` : `process.exit(${code})`], {stdio:'ignore'});
+    await once(child, 'exit');
+    await assert.rejects(stopServer(child, {requireCleanExit:true}), /live_before=false/, 'S3');
+    await stopServer(child);
+  }
+  // S4 Unix parent exits 0 while a descendant still owns stdout -> strict
+  // shutdown remains pending until the last diagnostic bytes and close event.
+  // fd 4 is an exact release barrier; this is not a timing-based log guess.
+  if (process.platform !== 'win32') {
+    const descendant = `
+      const input = new (require('node:net').Socket)({fd:3});
+      input.once('data', () => process.stdout.write('last diagnostic', () => process.exit(0)));
+      input.once('end', () => process.exit(0));
+      setTimeout(() => process.exit(9), 5000).unref();
+      process.send('ready');
+    `;
+    const child = spawn(process.execPath, ['-e', `
+      const nested = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}],
+        {stdio:['ignore',1,'ignore',4,'ipc']});
+      nested.once('message', () => process.send('ready'));
+      process.stdin.on('end', () => process.exit(0));
+      process.stdin.resume();
+    `], {stdio:['pipe','pipe','ignore','ipc','pipe']});
+    let output = '';
+    child.stdout.on('data', chunk => { output += chunk; });
+    try {
+      await once(child, 'message', {signal:AbortSignal.timeout(5000)});
+      const exited = once(child, 'exit');
+      let settled = false;
+      const stopped = stopServer(child, {requireCleanExit:true}).then(() => { settled = true; });
+      await exited;
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(settled, false, 'S4 process exit alone cannot erase diagnostic evidence');
+      child.stdio[4].write('release');
+      await stopped;
+      assert.equal(output, 'last diagnostic');
+    } finally {
+      child.stdio[4].end();
+      await stopServer(child);
+    }
+  }
+  // C1 original failure × C2-C4 each dependent cleanup succeeds/fails. Enumerate
+  // all 16 combinations: EVERY step runs once in order, original error first,
+  // all teardown errors preserved, and evidence is erased iff no error exists.
+  // Async rejection and synchronous throw are both causes. No parallel cleanup
+  // may stop Control/transport before the Worker's drain attempt settles.
+  const cleanupRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-cleanup-rules-'));
+  try {
+    for (let mask = 0; mask < 16; mask++) {
+      const evidence = path.join(cleanupRoot, String(mask));
+      fs.writeFileSync(evidence, 'diagnostic bytes');
+      const errors = Array.from({length:4}, (_, i) => new Error(`cause-${i}`));
+      const observed = [];
+      let pending = false;
+      const steps = [1, 2, 3].map(index => () => {
+        assert.equal(pending, false, 'previous cleanup settled');
+        observed.push(index);
+        if (index === 2 && (mask & (1 << index))) throw errors[index];
+        pending = true;
+        return new Promise((resolve, reject) => setImmediate(() => {
+          pending = false;
+          if (mask & (1 << index)) reject(errors[index]);
+          else resolve();
+        }));
+      });
+      const cleanup = runCleanupSteps(steps, mask & 1 ? [errors[0]] : [])
+        .then(() => fs.unlinkSync(evidence));
+      if (mask === 0) await cleanup;
+      else await assert.rejects(cleanup, error => {
+        assert.ok(error instanceof AggregateError);
+        assert.deepEqual(error.errors, errors.filter((_, i) => mask & (1 << i)));
+        return true;
+      });
+      assert.deepEqual(observed, [1,2,3]);
+      assert.equal(fs.existsSync(evidence), mask !== 0);
+      if (mask) assert.equal(fs.readFileSync(evidence,'utf8'), 'diagnostic bytes');
+    }
+  } finally { fs.rmSync(cleanupRoot, {recursive:true,force:true}); }
+
   // Port-selection cause/effect table: C1 no caller assignment; C2 explicit
   // server/Worker assignment; C3 the preferred socket is occupied; C4 invalid
   // port input; C5 the previous listener has fully closed. Effects: P1 C1 ->
