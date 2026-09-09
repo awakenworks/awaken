@@ -531,6 +531,57 @@ async fn commit_persists_facts_messages_and_serves_reads() {
 }
 
 #[tokio::test]
+async fn rolled_back_append_reuses_the_dense_global_successor() {
+    // Cause/effect decision table: C1 empty history + forced event conflict
+    // after the commit-row insert -> E1 whole transaction rolls back; C2 remove
+    // the fault and retry -> E2 sequence 1, not 2; C3 committed successor -> E3
+    // exactly one commit row. This exercises the production allocator and its
+    // later-write rollback boundary against a real database when available.
+    let Some(pool) = schema_pool("t_dense_rollback").await else {
+        return;
+    };
+    let coordinator = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .expect("coordinator");
+    sqlx::query(
+        "INSERT INTO runtime_event (sequence, run_id, kind, payload) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(1_000_i64)
+    .bind("fault")
+    .bind(Json(&EventKind::RunStateChanged))
+    .bind(Json(&serde_json::json!({"fault": true})))
+    .execute(&pool)
+    .await
+    .expect("install later-write conflict");
+    let commit = ThreadCommit {
+        thread_id: ThreadId("thread-dense".into()),
+        run: running("run-dense"),
+        messages: Vec::new(),
+        state: Vec::new(),
+        events: vec![Draft {
+            kind: EventKind::RunStateChanged,
+            payload: serde_json::json!({"attempt": 1}),
+        }],
+    };
+    assert!(coordinator.commit(commit.clone()).await.is_err(), "C1/E1");
+    sqlx::query("DELETE FROM runtime_event WHERE run_id = 'fault'")
+        .execute(&pool)
+        .await
+        .expect("remove fault");
+    assert_eq!(
+        coordinator.commit(commit).await.unwrap().sequence,
+        1,
+        "C2/E2"
+    );
+    let sequences: Vec<i64> =
+        sqlx::query_scalar("SELECT sequence FROM runtime_commit ORDER BY sequence")
+            .fetch_all(&pool)
+            .await
+            .expect("read dense history");
+    assert_eq!(sequences, vec![1], "C3/E3");
+}
+
+#[tokio::test]
 async fn fence_increments_monotonically() {
     let Some(pool) = schema_pool("t_fence").await else {
         return;

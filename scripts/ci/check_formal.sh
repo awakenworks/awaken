@@ -458,6 +458,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness work_lease_epoch_is_exact_nonnegative_and_nonwrapping \
     --harness work_reclaim_cutoff_is_exact_and_underflow_free \
     --harness work_lease_deadlines_clamp_without_wrapping
+  run_kani awaken-store-postgres \
+    --harness dense_commit_sequence_is_exact_nonnegative_and_nonwrapping
+  run_kani awaken-store-fs \
+    --harness recovery_replay_preserves_complete_entry_and_time
   run_kani awaken-agent-config \
     --harness management_audit_admission_requires_exact_intent_and_closed_state \
     --harness management_effect_confirmation_requires_positive_exact_readback \

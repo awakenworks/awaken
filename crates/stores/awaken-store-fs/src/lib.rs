@@ -32,7 +32,9 @@ use awaken_agent_contract::stream::checkpoint::{
 use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator, Error, OperationCoordinator,
 };
-use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
+use awaken_agent_contract::thread::commit::operation::{
+    CommitOperation, CommitReceipt, require_commit_operation_receipt,
+};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
@@ -62,6 +64,64 @@ struct StoredCommitLogEntry {
     committed_at_unix_ms: Option<u64>,
     #[serde(flatten)]
     entry: CommitLogEntry,
+}
+
+/// Typed hand-off from durable decoding to the sole replay owner. Keeping the
+/// complete entry and its original observation together prevents recovery from
+/// sampling a new clock or reconstructing operation identity from projections.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecoveryReplayPlan<E, T> {
+    entry: E,
+    committed_at: T,
+}
+
+fn recovery_replay_plan<E, T>(entry: E, committed_at: T) -> RecoveryReplayPlan<E, T> {
+    RecoveryReplayPlan {
+        entry,
+        committed_at,
+    }
+}
+
+#[cfg(test)]
+mod recovery_plan_tests {
+    use super::*;
+
+    #[test]
+    fn replay_plan_has_no_identity_or_time_remapping_branch() {
+        // Cause/effect decision table: C1 known time + operation identity -> E1
+        // both unchanged; C2 legacy unknown time + plain entry -> E2 None and
+        // identity unchanged. Kani generalizes both rules to all u8/u64 values.
+        assert_eq!(
+            recovery_replay_plan(7_u8, Some(41_u64)),
+            RecoveryReplayPlan {
+                entry: 7,
+                committed_at: Some(41)
+            },
+            "C1/E1"
+        );
+        assert_eq!(
+            recovery_replay_plan(9_u8, None::<u64>),
+            RecoveryReplayPlan {
+                entry: 9,
+                committed_at: None
+            },
+            "C2/E2"
+        );
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn recovery_replay_preserves_complete_entry_and_time() {
+    // Full scalar cause/effect table: every decoded entry identity byte and
+    // every optional u64 committed time are carried unchanged to replay. There
+    // is no alternate clock/identity branch. Filesystem decoding, fsync and the
+    // inner coordinator's lock remain TCB/executable evidence.
+    let entry: u8 = kani::any();
+    let committed_at: Option<u64> = kani::any();
+    let plan = recovery_replay_plan(entry, committed_at);
+    assert_eq!(plan.entry, entry);
+    assert_eq!(plan.committed_at, committed_at);
 }
 
 /// A filesystem `CommitCoordinator` + `CheckpointReader`. Durable truth is the
@@ -261,29 +321,28 @@ impl FsCommitCoordinator {
         if let Ok(file) = File::open(&path) {
             let mut reader = BufReader::new(file);
             let mut record = Vec::new();
-            while let Some(entry) =
+            while let Some(stored) =
                 read_next_log_entry(&mut reader, &mut record, &mut durable_len, false)?
             {
-                match entry {
-                    StoredCommitLogEntry {
-                        entry: CommitLogEntry::Commit(commit),
-                        committed_at_unix_ms,
-                    } => {
+                let plan = recovery_replay_plan(stored.entry, stored.committed_at_unix_ms);
+                match plan.entry {
+                    CommitLogEntry::Commit(commit) => {
                         // Replaying through the tested read model reconstructs the
                         // same committed state (and sequence) the writer produced.
                         inner
-                            .commit_at(commit, committed_at_unix_ms)
+                            .commit_at(commit, plan.committed_at)
                             .await
                             .map_err(|err| std::io::Error::other(err.to_string()))?;
                     }
-                    StoredCommitLogEntry {
-                        entry: CommitLogEntry::Operation(operation),
-                        committed_at_unix_ms,
-                    } => {
-                        inner
-                            .commit_operation_at(operation, committed_at_unix_ms)
+                    CommitLogEntry::Operation(operation) => {
+                        let receipt = inner
+                            .commit_operation_at(operation.clone(), plan.committed_at)
                             .await
                             .map_err(|err| std::io::Error::other(err.to_string()))?;
+                        // Recovery refuses to open if the rebuilt receipt does
+                        // not name the exact durable operation and payload.
+                        require_commit_operation_receipt(&operation, &receipt)
+                            .map_err(|err| invalid_log(err.to_string()))?;
                     }
                 }
             }
