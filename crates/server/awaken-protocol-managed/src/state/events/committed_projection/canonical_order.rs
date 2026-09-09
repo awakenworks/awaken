@@ -263,9 +263,6 @@ fn select_interval_opening<'a>(
                     .copied()
                     .filter(|event| owner.matches(session_id, event));
                 match owner.anchor {
-                    Some(IntervalOwnerAnchor::Input(anchor)) => matching
-                        .filter(|event| event.source_commit_cursor >= anchor)
-                        .min_by(lifecycle_opening_order),
                     Some(IntervalOwnerAnchor::ReplyTerminal(anchor)) => matching
                         .filter(|event| event.source_commit_cursor <= anchor)
                         .max_by(lifecycle_opening_order),
@@ -332,8 +329,6 @@ enum IntervalOwnerTarget<'a> {
 
 #[derive(Clone, Copy)]
 enum IntervalOwnerAnchor {
-    /// The retained User input is committed before or with its Run opening.
-    Input(u64),
     /// A ToolReply projection anchor observes the resumed Run's complete reply
     /// prefix, so its opening is the latest one no later than that fence.
     ReplyTerminal(u64),
@@ -371,9 +366,12 @@ fn interval_owner_openings(
             SessionEventCommand::UserMessage { run_id, .. } => Some(IntervalOwnerOpening {
                 run_id,
                 target: IntervalOwnerTarget::Primary,
-                anchor: entry
-                    .projection_anchor
-                    .map(|anchor| IntervalOwnerAnchor::Input(anchor.source_commit_cursor)),
+                // This command owns a unique Run, so its first lifecycle
+                // opening is authoritative. The public observation may be an
+                // input commit OR a fast Run's post-Dispatch terminal fallback;
+                // neither is another execution-start fence. In particular a
+                // terminal observation must not hide an earlier real opening.
+                anchor: None,
             }),
             SessionEventCommand::ToolReply { reply, .. } => Some(IntervalOwnerOpening {
                 run_id: &reply.expected_run_id,
@@ -1482,6 +1480,80 @@ fn historical_pending_order_precedes_every_admitted_terminal() {
             processed_at_unix_ms: kani::any::<bool>().then(kani::any::<u64>),
         };
         assert!(pending < terminal);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn user_observation_cannot_move_the_exact_run_opening() {
+    // Decision table: U1 no observation; U2 input observed at opening; U3 first
+    // observation is the later terminal fallback; U4 still later receipt. For
+    // every U1-U4, a present exact opening wins unchanged, absent opening stays
+    // absent. Foreign Run/Thread, a same-Run later checkpoint, array order and
+    // a future resumed interval cannot create or replace that opening. This
+    // exercises the production collection selector, not a scalar reimplementation.
+    use awaken_agent_contract::agent::run::{Id as RunId, RunState};
+    use awaken_agent_contract::agent::thread::Id as ThreadId;
+    use awaken_session_contract::{
+        SessionEventBatch, SessionEventInput, SessionEventProjectionAnchor, SessionRevision,
+    };
+    let mut batch = SessionEventBatch::compile(
+        "session",
+        "batch",
+        vec![SessionEventInput::UserMessage {
+            content: vec![ContentBlock::text("explain")],
+        }],
+    )
+    .unwrap();
+    batch.admitted_revision = SessionRevision(1);
+    let SessionEventCommand::UserMessage { run_id, .. } = &batch.events[0].event else {
+        unreachable!()
+    };
+    let run_id = run_id.clone();
+    let event = |cursor, thread: &str, run| RunLifecycleEvent {
+        cursor: awaken_agent_contract::encode_run_lifecycle_cursor(cursor, 0).unwrap(),
+        source_commit_cursor: cursor,
+        thread_id: ThreadId(thread.into()),
+        run_id: run,
+        kind: RunLifecycleEventKind::Running,
+        state: RunState::Running,
+        await_reason: None,
+    };
+    for anchor in [None, Some(1), Some(3), Some(9)] {
+        batch.events[0].projection_anchor =
+            anchor.map(|source_commit_cursor| SessionEventProjectionAnchor {
+                source_commit_cursor,
+            });
+        for present in [false, true] {
+            let mut events = vec![
+                event(4, "session", run_id.clone()),
+                event(1, "foreign", run_id.clone()),
+                event(1, "session", RunId("foreign".into())),
+            ];
+            if present {
+                events.extend([
+                    event(2, "session", run_id.clone()),
+                    event(1, "session", run_id.clone()),
+                ]);
+            }
+            for _ in 0..2 {
+                let selected = select_interval_opening(
+                    "session",
+                    SessionRevision(1),
+                    1,
+                    &[],
+                    (0, Some(3)),
+                    std::slice::from_ref(&batch),
+                    &events,
+                );
+                assert_eq!(
+                    selected.map(|event| event.source_commit_cursor),
+                    present.then_some(1),
+                    "anchor={anchor:?}, present={present}"
+                );
+                events.reverse();
+            }
+        }
     }
 }
 

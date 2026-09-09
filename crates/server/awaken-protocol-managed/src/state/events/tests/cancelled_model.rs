@@ -12,6 +12,10 @@ async fn cancelled_model_evidence_projects_without_rewriting_logical_outcome() {
     // R1 C1+Unknown+same=>one stable terminal error before idle; R2 positive or
     // absent/foreign=>no invented error; R3 C4 cannot rewrite the earlier error.
     // R4 all rows preserve Cancelled and never execute or acknowledge an attempt.
+    // C6 retained older invocation Unknown, with a distinct later ordinal:
+    // R5 C6+same Run => error even when the latest invocation has terminated.
+    // Such historical input must not be laundered by the latest-value cell;
+    // this does not authorize today's Runtime to advance an unknown invocation.
     // This proves projection, not physical termination or provider receipt truth.
     for evidence in [
         None,
@@ -19,7 +23,10 @@ async fn cancelled_model_evidence_projects_without_rewriting_logical_outcome() {
         Some(ModelExecutionEvidence::NotDispatched),
         Some(ModelExecutionEvidence::Terminated),
     ] {
-        for foreign in [false, true] {
+        for (foreign, prior_unknown) in [false, true]
+            .into_iter()
+            .flat_map(|foreign| [false, true].map(|prior| (foreign, prior)))
+        {
             let runtime = LifecycleRuntime::default();
             let repository = Arc::new(ephemeral_session_repo());
             let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
@@ -51,16 +58,26 @@ async fn cancelled_model_evidence_projects_without_rewriting_logical_outcome() {
                     RunState::Ended(EndCause::Cancelled),
                 ),
             ]);
+            let owner = if foreign {
+                RunId("foreign".into())
+            } else {
+                run.clone()
+            };
+            let prior = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
+            if prior_unknown {
+                let mut command = ActiveModelOperation::write(&Some(prior.clone()));
+                command.bind_run(&owner);
+                runtime.state.lock().unwrap().push(command);
+                runtime.state_cursors.lock().unwrap().push(2);
+            }
             if let Some(evidence) = evidence {
-                let mut operation =
-                    ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
+                let mut operation = ModelOperation::next(
+                    prior_unknown.then_some(&prior),
+                    ModelBinding::new("p", "m", "b"),
+                )
+                .unwrap();
                 operation.execution = evidence;
                 let mut command = ActiveModelOperation::write(&Some(operation.clone()));
-                let owner = if foreign {
-                    RunId("foreign".into())
-                } else {
-                    run.clone()
-                };
                 command.bind_run(&owner);
                 runtime.state.lock().unwrap().push(command);
                 runtime.state_cursors.lock().unwrap().push(2);
@@ -98,7 +115,8 @@ async fn cancelled_model_evidence_projects_without_rewriting_logical_outcome() {
                     .iter()
                     .filter(|event| matches!(event.kind, OutboundKind::SessionError { .. }))
                     .collect();
-                let expected = evidence == Some(ModelExecutionEvidence::Unknown) && !foreign;
+                let expected = (prior_unknown || evidence == Some(ModelExecutionEvidence::Unknown))
+                    && !foreign;
                 assert_eq!(errors.len(), usize::from(expected));
                 let wire = serde_json::to_value(&errors).unwrap();
                 if expected {
@@ -135,10 +153,15 @@ async fn cancelled_child_uses_the_same_committed_execution_classifier() {
     // C1 Unknown => one child-owned error visible in both views; C2 Terminated
     // => no fabricated failure. Event ids stay identical; cancellation is never
     // rewritten and the child cannot authorize parent physical settlement.
-    for execution in [
+    // C3 older Unknown and later Terminated => retain the child-owned error in
+    // both views. Cross C1/C2 x C3; a different ordinal cannot stop its sibling.
+    for (execution, prior_unknown) in [
         ModelExecutionEvidence::Unknown,
         ModelExecutionEvidence::Terminated,
-    ] {
+    ]
+    .into_iter()
+    .flat_map(|execution| [false, true].map(|prior| (execution, prior)))
+    {
         let runtime = RehydrateFake::default();
         runtime
             .delegate_ids
@@ -194,20 +217,33 @@ async fn cancelled_child_uses_the_same_committed_execution_classifier() {
                 RunState::Ended(EndCause::Cancelled),
             ),
         ]);
-        let mut operation = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
+        let prior = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
+        let mut commands = Vec::new();
+        if prior_unknown {
+            let mut command = ActiveModelOperation::write(&Some(prior.clone()));
+            command.bind_run(&run);
+            commands.push(command);
+        }
+        let mut operation = ModelOperation::next(
+            prior_unknown.then_some(&prior),
+            ModelBinding::new("p", "m", "b"),
+        )
+        .unwrap();
         operation.execution = execution;
         let mut command = ActiveModelOperation::write(&Some(operation));
         command.bind_run(&run);
+        commands.push(command);
+        let cursors = vec![2; commands.len()];
         runtime
             .state_by_thread
             .lock()
             .unwrap()
-            .insert(child_id.into(), vec![command]);
+            .insert(child_id.into(), commands);
         runtime
             .state_cursors_by_thread
             .lock()
             .unwrap()
-            .insert(child_id.into(), vec![2]);
+            .insert(child_id.into(), cursors);
         let cold = ManagedState::new(runtime).with_session_repo(repository);
         let mut previous = None;
         for state in [&warm, &warm, &cold] {
@@ -222,7 +258,7 @@ async fn cancelled_child_uses_the_same_committed_execution_classifier() {
                 .collect();
             assert_eq!(
                 errors.len(),
-                usize::from(execution == ModelExecutionEvidence::Unknown)
+                usize::from(prior_unknown || execution == ModelExecutionEvidence::Unknown)
             );
             let wire = serde_json::to_value(errors).unwrap();
             let child_events = state

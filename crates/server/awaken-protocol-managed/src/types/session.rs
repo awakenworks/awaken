@@ -777,14 +777,17 @@ impl SessionError {
         if matches!(terminal.state, RunState::Ended(EndCause::Cancelled))
             && let Some(snapshot) = snapshot
         {
-            let operation =
-                awaken_runtime_contract::model_operation::ActiveModelOperation::at_commit(
+            let operations =
+                awaken_runtime_contract::model_operation::ActiveModelOperation::recorded_at_commit(
                     &snapshot.state,
                     &snapshot.state_commit_cursors,
                     &terminal.run_id,
                     terminal.source_commit_cursor,
                 )?;
-            if operation.is_some_and(|operation| !operation.execution.permits_reentry()) {
+            if operations
+                .iter()
+                .any(|operation| !operation.execution.permits_reentry())
+            {
                 return Ok(Some(Self::execution_unknown()));
             }
         }

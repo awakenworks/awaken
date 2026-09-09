@@ -125,6 +125,48 @@ pub async fn drive_retained_session_events(
     }
 }
 
+/// Deliver a simulated applied Dispatch through the production Session observer.
+#[allow(dead_code)]
+pub async fn drive_completed_user_dispatches(
+    state: &awaken_protocol_managed::ManagedState,
+    session_id: &str,
+    completions: &Mutex<Vec<awaken_session_contract::SessionAgentBoundaryCommand>>,
+) {
+    // Run only the canonical supervisor, then deliver exact activation facts.
+    // No scan of active epochs can substitute for a simulated Applied receipt.
+    drive_retained_session_events(state, session_id).await;
+    let boundaries = std::mem::take(&mut *completions.lock().unwrap());
+    for boundary in boundaries {
+        assert_eq!(boundary.session_id, session_id, "fixture exact Session");
+        finalize_applied_user_dispatch(state, boundary).await;
+    }
+}
+
+/// Deliver a simulated applied Dispatch through the production Session observer.
+#[allow(dead_code)]
+pub async fn finalize_applied_user_dispatch(
+    state: &awaken_protocol_managed::ManagedState,
+    boundary: awaken_session_contract::SessionAgentBoundaryCommand,
+) {
+    // C1 exact activation coordinates retained by the fake; C2 committed Run;
+    // C3 simulated Dispatch CAS Applied. C1+C2+C3 => the production callback
+    // records processed and removes only that activity; duplicate callback is
+    // a no-op. Calling this without C3 is forbidden: Thread completion alone
+    // is not a Dispatch receipt. Production Host/queue tests own actual CAS.
+    use awaken_session_contract::SessionAgentCoordination;
+    let application = state.session_application();
+    application
+        .settle_session_agent_boundary(boundary.clone())
+        .await
+        .expect("fixture pre-Dispatch boundary");
+    for _ in 0..2 {
+        application
+            .finalize_session_agent_boundary(boundary.clone())
+            .await
+            .expect("fixture applied Dispatch boundary");
+    }
+}
+
 /// Shared integration-test decorator for deterministic root-CAS races.
 ///
 /// It delegates every real read/write to the SQLite adapter; only selected
