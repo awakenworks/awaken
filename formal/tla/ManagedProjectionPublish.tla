@@ -1,7 +1,8 @@
 ---------------------- MODULE ManagedProjectionPublish ----------------------
 EXTENDS Naturals, TLC
 
-CONSTANTS Writers, Components, MaxSourceVersion, MaxCacheRevision, NoWriter
+CONSTANTS Writers, Components, OptionalComponents, Absent,
+          MaxSourceVersion, MaxCacheRevision, NoWriter
 
 VARIABLES source, cacheRevision, resultFence, checkpointFence,
           writerPhase, observedCacheRevision, candidateFence,
@@ -15,10 +16,17 @@ vars == <<source, cacheRevision, resultFence, checkpointFence,
           previousResultFence, lastWriter, lastOutcome,
           lastCacheBefore, lastCacheAfter, lastBroadcast, lastCandidateChanged>>
 
-ZeroFence == [component \in Components |-> 0]
+\* Absent is a model-only sentinel outside the numeric version domain.
+Fences == {f \in [Components -> (0..MaxSourceVersion) \cup {Absent}]:
+    \A component \in Components \ OptionalComponents: f[component] # Absent}
+ZeroFence == [component \in Components |->
+    IF component \in OptionalComponents THEN Absent ELSE 0]
 
 Dominates(left, right) ==
-    \A component \in Components: left[component] >= right[component]
+    \A component \in Components:
+      IF right[component] = Absent THEN TRUE
+      ELSE IF left[component] = Absent THEN FALSE
+      ELSE left[component] >= right[component]
 
 Init ==
     /\ source = ZeroFence
@@ -40,8 +48,9 @@ Init ==
 
 SourceAdvance(component) ==
     /\ component \in Components
-    /\ source[component] < MaxSourceVersion
-    /\ source' = [source EXCEPT ![component] = @ + 1]
+    /\ IF source[component] = Absent THEN TRUE
+       ELSE source[component] < MaxSourceVersion
+    /\ source' = [source EXCEPT ![component] = IF @ = Absent THEN 0 ELSE @ + 1]
     /\ previousResultFence' = resultFence
     /\ lastWriter' = NoWriter
     /\ lastOutcome' = "source_advanced"
@@ -149,16 +158,18 @@ Next ==
     \/ \E writer \in Writers: RefreshFailure(writer)
 
 TypeOK ==
-    /\ source \in [Components -> 0..MaxSourceVersion]
+    /\ Absent > MaxSourceVersion
+    /\ OptionalComponents \subseteq Components
+    /\ source \in Fences
     /\ cacheRevision \in 0..MaxCacheRevision
-    /\ resultFence \in [Components -> 0..MaxSourceVersion]
-    /\ checkpointFence \in [Components -> 0..MaxSourceVersion]
+    /\ resultFence \in Fences
+    /\ checkpointFence \in Fences
     /\ writerPhase \in [Writers -> {"idle", "reading", "built"}]
     /\ observedCacheRevision \in [Writers -> 0..MaxCacheRevision]
-    /\ candidateFence \in [Writers -> [Components -> 0..MaxSourceVersion]]
-    /\ firstSource \in [Writers -> [Components -> 0..MaxSourceVersion]]
+    /\ candidateFence \in [Writers -> Fences]
+    /\ firstSource \in [Writers -> Fences]
     /\ candidateChanged \in [Writers -> BOOLEAN]
-    /\ previousResultFence \in [Components -> 0..MaxSourceVersion]
+    /\ previousResultFence \in Fences
     /\ lastWriter \in Writers \cup {NoWriter}
     /\ lastOutcome \in {"none", "source_advanced", "first_read", "built", "mixed_source", "applied",
                          "stale_cache", "source_regression", "already_current", "failed"}
@@ -170,6 +181,7 @@ TypeOK ==
 ResultAndCheckpointArePaired == resultFence = checkpointFence
 ProjectionNeverInventsSource == Dominates(source, resultFence)
 VisibleProjectionNeverRegresses == Dominates(resultFence, previousResultFence)
+CacheReceiptMatchesVisible == cacheRevision = lastCacheAfter
 PublishIsAtomicCAS ==
     IF lastOutcome = "applied"
        THEN lastCacheAfter = lastCacheBefore + 1
@@ -191,11 +203,54 @@ MixedSourceNeverBuilds ==
     lastOutcome = "mixed_source"
       => writerPhase[lastWriter] = "idle"
 
+\* The complete R1-R4 decision table must hold even for a stable lagging
+\* candidate. Normal concurrent reads alone may never exercise regression;
+\* DecisionInit supplies the actual publisher's finite source-input boundary.
+DecisionIsExact ==
+    lastOutcome \in {"stale_cache", "source_regression", "already_current", "applied"}
+    => lastOutcome =
+       IF observedCacheRevision[lastWriter] # lastCacheBefore THEN "stale_cache"
+       ELSE IF ~Dominates(candidateFence[lastWriter], previousResultFence)
+            THEN "source_regression"
+       ELSE IF candidateFence[lastWriter] = previousResultFence /\ ~lastCandidateChanged
+            THEN "already_current"
+       ELSE "applied"
+
+DecisionInit ==
+    \E current \in Fences, candidate \in Fences, changed \in BOOLEAN,
+       cacheMatches \in BOOLEAN:
+    /\ source = [component \in Components |-> MaxSourceVersion]
+    /\ cacheRevision = 0
+    /\ resultFence = current /\ checkpointFence = current
+    /\ writerPhase = [writer \in Writers |-> "built"]
+    /\ observedCacheRevision = [writer \in Writers |-> IF cacheMatches THEN 0 ELSE 1]
+    /\ candidateFence = [writer \in Writers |-> candidate]
+    /\ firstSource = candidateFence
+    /\ candidateChanged = [writer \in Writers |-> changed]
+    /\ previousResultFence = current
+    /\ lastWriter = NoWriter /\ lastOutcome = "none"
+    /\ lastCacheBefore = 0 /\ lastCacheAfter = 0
+    /\ lastBroadcast = FALSE /\ lastCandidateChanged = FALSE
+DecisionNext == \E writer \in Writers: Publish(writer)
+
+NoApply == lastOutcome # "applied"
+NoRetry == lastOutcome # "stale_cache"
+NoRegressionRejection == lastOutcome # "source_regression"
+NoCompletedRead == lastOutcome # "already_current"
+NoZeroChildAddition == ~(lastOutcome = "applied" /\
+    \E child \in OptionalComponents:
+        previousResultFence[child] = Absent /\ resultFence[child] = 0)
+NoZeroChildRemovalRejection == ~(lastOutcome = "source_regression" /\
+    \E child \in OptionalComponents:
+        previousResultFence[child] = 0 /\ candidateFence[lastWriter][child] = Absent)
+
 Safety ==
     /\ TypeOK
+    /\ DecisionIsExact
     /\ ResultAndCheckpointArePaired
     /\ ProjectionNeverInventsSource
     /\ VisibleProjectionNeverRegresses
+    /\ CacheReceiptMatchesVisible
     /\ PublishIsAtomicCAS
     /\ FailureAndRejectionStutter
     /\ ChangedCandidateIsRequiredForPublish

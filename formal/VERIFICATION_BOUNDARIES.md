@@ -464,10 +464,24 @@ type checking are valuable executable evidence, but are not formal proofs.
   stuttering, and that equal source coordinates plus equal rendered content
   change neither cache nor broadcast. Equal legacy coordinates with changed
   rendered content still publish rather than hiding an unversioned source.
-  The Rust decision-table and concurrent-reader tests exercise the same publication
-  branches. Together, the models prove that a retained reply no longer needs
-  user action while remaining recoverable and that a stale refresher cannot
-  roll the visible projection backwards. They do not prove database snapshot
+  The original three numeric clocks/version-two/cache-four configuration is
+  retained. Additional configurations cover two writers with an optional child,
+  and the complete one-step decision input boundary with two numeric coordinates
+  and two independently absent/zero/one child keys. Missing a zero-version child
+  or renaming that child is a regression; adding a zero-version child is a change.
+  The input configuration covers stable lagging candidates even when an ordinary
+  monotonic read schedule cannot reach the regression branch. Nine semantic
+  mutants and six positive witnesses qualify the exact decision, actual cache
+  increment, result/checkpoint pair and broadcast. The cache oracle binds its
+  recorded receipt to the visible cache revision; a missing actual increment
+  previously survived Safety despite a correctly recorded ghost increment.
+  The existing Rust decision test now checks 419,904 real HashMap/String calls
+  across all four scalar clocks, two child identities, unsigned boundaries,
+  cache CAS and content changes. The actual publisher test also requires one
+  visible cache increment. These are native cross-checks alongside the bounded
+  models, not an unbounded HashMap/serde/mutex or Rust-to-model refinement.
+  Together, the models check bounded pending-reply and publication safety.
+  They do not prove database snapshot
   isolation, cold reconstruction of pre-anchor legacy history, browser delivery,
   or lifecycle-supervisor fairness.
   Direct Kani evidence additionally calls the production reply-anchor selector

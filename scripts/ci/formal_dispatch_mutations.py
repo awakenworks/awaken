@@ -222,3 +222,44 @@ def check_maintenance_observation_mutants(tlc_jar: Path, trace_dir: Path) -> Non
             except ValueError: pass
             else: raise AssertionError(f"maintenance schema mutation survived: {malformed}")
     print("Maintenance production traces: 42 rules, 8 semantic mutants + 3 schema mutants killed; extra hint accepted")
+
+
+def check_managed_projection_model_mutants(tlc_jar: Path) -> None:
+    # Closed publication decision rules R1-R4: stale CAS retries; a regressing
+    # scalar/child fence rejects; exact source+content is a completed read;
+    # otherwise the paired result/checkpoint, actual CAS and broadcast advance.
+    # Finite input qualification includes absent/zero child identity, which a
+    # fixed total numeric map cannot express. Concurrent reads remain checked
+    # separately by the original and topology configurations of this same model.
+    source = (ROOT / "formal/tla/ManagedProjectionPublish.tla").read_text()
+    config = (ROOT / "formal/tla/ManagedProjectionPublishInputs.cfg").read_text()
+    header = config[:config.index("INVARIANTS")]
+    start, end = source.index("Publish(writer) =="), source.index("RefreshFailure(writer) ==")
+    original = source[start:end]
+    cases = []
+    for anchor, replacement, invariant in (
+        ("IF observedCacheRevision[writer] # cacheRevision", "IF FALSE", "DecisionIsExact"),
+        ("ELSE IF ~Dominates(candidateFence[writer], checkpointFence)", "ELSE IF FALSE", "DecisionIsExact"),
+        (r"candidateFence[writer] = checkpointFence /\ ~candidateChanged[writer]", "FALSE", "DecisionIsExact"),
+        ('lastOutcome\' = "already_current"', 'lastOutcome\' = "source_regression"', "DecisionIsExact"),
+        (r"candidateFence[writer] = checkpointFence /\ ~candidateChanged[writer]", "candidateFence[writer] = checkpointFence", "DecisionIsExact"),
+        ("checkpointFence' = candidateFence[writer]", "checkpointFence' = checkpointFence", "ResultAndCheckpointArePaired"),
+        ("lastBroadcast' = TRUE", "lastBroadcast' = FALSE", "BroadcastIffPublished"),
+        ("cacheRevision' = cacheRevision + 1", "cacheRevision' = cacheRevision", "CacheReceiptMatchesVisible"),
+    ):
+        if original.count(anchor) != 1:
+            raise SystemExit(f"Managed publication mutation anchor drifted: {anchor}")
+        cases.append((source[:start] + original.replace(anchor, replacement) + source[end:],
+                      header + f"INVARIANTS {invariant}\n", invariant))
+    # A missing child must not compare equal to a present child at version zero.
+    zero_filled = "ZeroFilled(f) == [c \\in Components |-> IF f[c] = Absent THEN 0 ELSE f[c]]\n\n"
+    anchor = "Dominates(candidateFence[writer], checkpointFence)"
+    assert original.count(anchor) == 1
+    zero_mutant = original.replace(anchor, "Dominates(ZeroFilled(candidateFence[writer]), ZeroFilled(checkpointFence))")
+    cases.append((source[:start] + zero_filled + zero_mutant + source[end:],
+                  header + "INVARIANTS DecisionIsExact\n", "DecisionIsExact"))
+    for witness in ("NoApply", "NoRetry", "NoRegressionRejection", "NoCompletedRead",
+                    "NoZeroChildAddition", "NoZeroChildRemovalRejection"):
+        cases.append((source, header + f"INVARIANTS {witness}\n", witness))
+    check_tlc_model_mutations(tlc_jar, "ManagedProjectionPublish", source, config, cases)
+    print("Managed projection publication: 9/9 semantic mutants killed; 6/6 decision/topology witnesses reachable")

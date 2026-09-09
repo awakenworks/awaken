@@ -3481,6 +3481,7 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
         )
     };
     let (base_revision, previous_event_ids, candidate) = projection_candidate(&current);
+    let cache_before_newer = base_revision;
     assert!(
         state
             .publish_projection_candidate(
@@ -3501,6 +3502,14 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
             record.session.status,
         )
     };
+
+    // R0 matching CAS + newer source commits exactly one actual cache step.
+    // A ghost before/after receipt alone cannot prove the visible token moved.
+    assert_eq!(
+        before.0,
+        cache_before_newer + 1,
+        "R0 actual cache revision advances once"
+    );
 
     let (base_revision, previous_event_ids, candidate) = projection_candidate(&stale);
     assert!(
