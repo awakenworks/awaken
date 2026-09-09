@@ -23,9 +23,7 @@ mod repository_port;
 mod repository_publication;
 mod runtime_intervals;
 
-use disposition::{
-    SessionDeleteDispositionClass, SessionDeleteRequestPlan, session_delete_request_plan,
-};
+use disposition::{SessionDeleteDispositionClass, session_delete_request_plan};
 pub use disposition::{SessionDisposition, SessionDispositionTransitionError};
 pub use persisted_session::{PersistedSession, SessionEventDispatchSettlementEffect};
 pub use recovery::{
@@ -1392,13 +1390,37 @@ mod mutation_tests {
 
     #[test]
     fn disposition_is_orthogonal_to_execution_and_delete_is_idempotent() {
+        // Causes: D1 Active/Archived x terminal/nonterminal execution; D2 the
+        // same root is requested again with another timestamp. Effects: E1 the
+        // first plan hides and terminalizes exactly when required, carries the
+        // canonical cleanup identity, and emits one owner-bound fact; E2 retry
+        // is Replay and leaves the complete aggregate unchanged. Rules below
+        // cover Archived+terminal, its replay, and Active+ActivationFailed; the
+        // 4x2 Kani table exhausts the disposition/execution classification.
         let mut archived = session("archived", SessionRevision(1));
         assert_eq!(archived.archive("2026-08-08T00:00:00Z"), Ok(true));
         assert_eq!(archived.execution, SessionExecutionState::Terminated);
         assert_eq!(archived.archived_at(), Some("2026-08-08T00:00:00Z"));
-        assert!(archived.request_delete());
+        let fact = archived
+            .request_delete("workspace", 7)
+            .unwrap()
+            .expect("D1/E1 commit fact");
+        assert_eq!(fact.id, "session:archived:deleted", "D1/E1 fact id");
+        assert_eq!(fact.object_id, "archived", "D1/E1 fact object");
+        assert_eq!(
+            fact.workspace_id.as_deref(),
+            Some("workspace"),
+            "D1/E1 owner"
+        );
+        assert_eq!(fact.event_type, "session.deleted", "D1/E1 type");
+        assert_eq!(fact.timestamp, 7, "D1/E1 command time");
         assert!(archived.is_hidden());
-        assert!(!archived.request_delete(), "delete replay is idempotent");
+        let after_first = archived.clone();
+        assert!(
+            archived.request_delete("workspace", 99).unwrap().is_none(),
+            "D2/E2 delete replay is idempotent"
+        );
+        assert_eq!(archived, after_first, "D2/E2 complete aggregate stutter");
 
         let mut failed = session("failed", SessionRevision(1));
         failed.execution = SessionExecutionState::ActivationFailed;
@@ -1407,7 +1429,10 @@ mod mutation_tests {
             failed.is_publicly_readable(),
             "failed async creation remains exactly queryable"
         );
-        assert!(failed.request_delete(), "failed Sessions remain deletable");
+        assert!(
+            failed.request_delete("workspace", 0).unwrap().is_some(),
+            "failed Sessions remain deletable"
+        );
         assert_eq!(failed.execution, SessionExecutionState::ActivationFailed);
         assert!(matches!(failed.disposition, SessionDisposition::Deleting));
     }
@@ -1906,8 +1931,8 @@ mod mutation_tests {
 #[cfg(kani)]
 mod verification {
     use super::{
-        SessionDeleteDispositionClass, SessionDeleteRequestPlan, SessionExecutionState,
-        session_delete_request_plan, session_tombstone_is_admitted,
+        SessionDeleteDispositionClass, SessionExecutionState, session_delete_request_plan,
+        session_tombstone_is_admitted,
     };
 
     #[kani::proof]
@@ -1967,12 +1992,13 @@ mod verification {
     #[kani::proof]
     fn session_delete_request_plan_is_exact_hidden_terminal_and_idempotent() {
         // Cause/effect table: C1 disposition is Active, Archived, Deleting, or
-        // Deleted; C2 execution is terminal/nonterminal. Effects: E1 Active or
-        // Archived transitions once, requests the canonical cleanup operation,
-        // and terminalizes only when needed; E2 Deleting/Deleted replay without
-        // transition, cleanup request, or execution rewrite. Kani covers all
-        // 4x2 rows. Repository CAS, fact insertion, and async cleanup remain
-        // outside this aggregate-plan proof.
+        // Deleted; C2 execution is terminal/nonterminal; C3 request time is any
+        // i64. Effects: E1 Active/Archived select one Commit carrying the exact
+        // terminalize decision, canonical cleanup identity, and one canonical
+        // lifecycle fact; E2 Deleting/Deleted select Replay, which carries none
+        // of those effects. Kani covers all 4x2 disposition/execution rows with
+        // arbitrary C3. Repository CAS, fact insertion, delivery ACK, and async
+        // cleanup remain outside this aggregate-plan proof.
         let disposition_code = kani::any::<u8>();
         kani::assume(disposition_code < 4);
         let disposition = match disposition_code {
@@ -1983,17 +2009,31 @@ mod verification {
             _ => unreachable!(),
         };
         let execution_terminal = kani::any::<bool>();
-        let plan = session_delete_request_plan(disposition, execution_terminal);
-        let first_request = disposition_code < 2;
-        assert_eq!(
-            matches!(plan, SessionDeleteRequestPlan::Commit { .. }),
-            first_request
+        let requested_at_unix_s = kani::any::<i64>();
+        let session_id = "session-1";
+        let owner_scope = "workspace-1";
+        let plan = session_delete_request_plan(
+            disposition,
+            execution_terminal,
+            session_id,
+            owner_scope,
+            requested_at_unix_s,
         );
-        match plan {
-            SessionDeleteRequestPlan::Commit {
-                terminalize_execution,
-            } => assert_eq!(terminalize_execution, !execution_terminal),
-            SessionDeleteRequestPlan::Replay => assert!(!first_request),
+        let first_request = disposition_code < 2;
+        assert_eq!(plan.transitioned(), first_request);
+        match plan.commit_parts() {
+            Some((terminalize_execution, cleanup_identity)) => {
+                assert_eq!(terminalize_execution, !execution_terminal);
+                assert!(std::ptr::eq(cleanup_identity.session_id(), session_id));
+                let lifecycle_fact = plan.lifecycle_fact_plan().unwrap();
+                assert!(std::ptr::eq(lifecycle_fact.session_id, session_id));
+                assert!(std::ptr::eq(lifecycle_fact.owner_scope, owner_scope));
+                assert_eq!(lifecycle_fact.requested_at_unix_s, requested_at_unix_s);
+            }
+            None => {
+                assert!(!first_request);
+                assert!(plan.lifecycle_fact_plan().is_none());
+            }
         }
     }
 }

@@ -1996,7 +1996,7 @@ async fn delete_fixture<R: ManagedSessionRepository>(
 
 fn make_deletable(session: &mut PersistedSession) {
     let session_id = session.session_id.clone();
-    session.request_delete();
+    session.request_delete("workspace", 0).unwrap();
     session
         .terminal_cleanup
         .freeze_targets(&session_id, [], 0, 0)

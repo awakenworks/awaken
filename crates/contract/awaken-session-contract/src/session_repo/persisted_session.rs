@@ -467,26 +467,35 @@ impl PersistedSession {
         Ok(true)
     }
 
-    /// Commit the hidden deletion phase before any external cleanup. Archived
-    /// and activation-failed Sessions remain deletable because disposition is an
+    /// Compile and apply the hidden deletion phase before any external cleanup.
+    /// The returned optional fact is the application's sole lifecycle-fact
+    /// source; Replay returns `None` and makes no cleanup request. Archived and
+    /// activation-failed Sessions remain deletable because disposition is an
     /// orthogonal state axis.
-    pub fn request_delete(&mut self) -> bool {
-        let terminalize_execution = match session_delete_request_plan(
+    pub fn request_delete(
+        &mut self,
+        owner_scope: &str,
+        requested_at_unix_s: i64,
+    ) -> Result<Option<crate::ManagedLifecycleFact>, crate::SessionCleanupError> {
+        let session_id = self.session_id.as_str();
+        let plan = session_delete_request_plan(
             SessionDeleteDispositionClass::from(&self.disposition),
             self.execution.is_terminal(),
-        ) {
-            SessionDeleteRequestPlan::Commit {
-                terminalize_execution,
-            } => terminalize_execution,
-            SessionDeleteRequestPlan::Replay => return false,
+            session_id,
+            owner_scope,
+            requested_at_unix_s,
+        );
+        let Some((terminalize_execution, cleanup_identity)) = plan.commit_parts() else {
+            return Ok(None);
         };
+        self.terminal_cleanup
+            .request_exact(session_id, &cleanup_identity)?;
         if terminalize_execution {
             self.execution = SessionExecutionState::Terminated;
         }
         self.active_activity_epochs.clear();
-        self.terminal_cleanup.request(&self.session_id);
         self.disposition = SessionDisposition::Deleting;
-        true
+        Ok(plan.into_lifecycle_fact())
     }
 
     /// Install the durable admission fence required by terminal recovery.

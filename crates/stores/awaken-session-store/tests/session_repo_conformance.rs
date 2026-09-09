@@ -729,7 +729,7 @@ async fn credential_source_dependency_decision_table<R: ManagedSessionRepository
     );
 
     let mut deleting = deleted;
-    assert!(deleting.request_delete());
+    assert!(deleting.request_delete("ws_a", 0).unwrap().is_some());
     complete_terminal_cleanup(&mut deleting);
     let deleting =
         replace_session(r, "ws_a", deleting, "test:source:delete-ready", Vec::new()).await;
@@ -807,7 +807,10 @@ async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRep
 
     let deleted = fact("evt:delete", "sesn_lifecycle", "session.deleted");
     let mut current = r.get("sesn_lifecycle").await.unwrap();
-    assert!(current.request_delete(), "archive remains deletable");
+    assert!(
+        current.request_delete("ws_a", 0).unwrap().is_some(),
+        "archive remains deletable"
+    );
     complete_terminal_cleanup(&mut current);
     let current = replace_session(
         r,
@@ -967,7 +970,7 @@ async fn tombstone_requires_hidden_completed_cleanup<R: ManagedSessionRepository
     let archived = create_session(repo, "ws_a", archived, Vec::new()).await;
 
     let mut pending = session("sesn_delete_pending", "pending");
-    assert!(pending.request_delete());
+    assert!(pending.request_delete("ws_a", 0).unwrap().is_some());
     pending
         .terminal_cleanup
         .freeze_targets(&pending.session_id.clone(), [], 0, 0)
@@ -1008,7 +1011,7 @@ async fn tombstone_requires_hidden_completed_cleanup<R: ManagedSessionRepository
     }
 
     let mut completed = session("sesn_delete_completed", "completed");
-    assert!(completed.request_delete());
+    assert!(completed.request_delete("ws_a", 0).unwrap().is_some());
     complete_terminal_cleanup(&mut completed);
     let completed = create_session(repo, "ws_a", completed, Vec::new()).await;
     let mutation = delete_mutation(&completed, "test:tombstone:completed");
@@ -1122,7 +1125,7 @@ async fn deleted_event_admission_decision_table<R: ManagedSessionRepository>(rep
             unkeyed.resolve_terminally(None, 1);
             value.event_batches.push(unkeyed);
         }
-        assert!(value.request_delete());
+        assert!(value.request_delete("ws_a", 0).unwrap().is_some());
         complete_terminal_cleanup(&mut value);
         let value = create_session(repo, "ws_a", value, vec![]).await;
         assert_eq!(
@@ -1282,7 +1285,7 @@ async fn root_cas_decision_table<R: ManagedSessionRepository>(repo: &R) {
         let id = format!("sesn_cas_{index}");
         let mut initial = session(&id, "initial");
         if matches!(rule, CasRule::Delete | CasRule::DeleteReplay) {
-            assert!(initial.request_delete());
+            assert!(initial.request_delete("ws_a", 0).unwrap().is_some());
             complete_terminal_cleanup(&mut initial);
         }
         let create_payload = SessionMutationPayload::Replace(initial.clone());
@@ -1296,7 +1299,7 @@ async fn root_cas_decision_table<R: ManagedSessionRepository>(repo: &R) {
             awaken_session_contract::SessionCreateResult::Applied({
                 let mut expected = session(&id, "initial");
                 if matches!(rule, CasRule::Delete | CasRule::DeleteReplay) {
-                    assert!(expected.request_delete());
+                    assert!(expected.request_delete("ws_a", 0).unwrap().is_some());
                     complete_terminal_cleanup(&mut expected);
                 }
                 expected.revision = SessionRevision(1);
@@ -1569,7 +1572,7 @@ async fn create_receipt_decision_table<R: ManagedSessionRepository>(repo: &R) {
 
     let tombstoned_id = "sesn_create_receipt_tombstone";
     let mut tombstoned = session(tombstoned_id, "terminal");
-    assert!(tombstoned.request_delete());
+    assert!(tombstoned.request_delete("ws_a", 0).unwrap().is_some());
     complete_terminal_cleanup(&mut tombstoned);
     let tombstone_record = IdempotencyRecord {
         key: "create-receipt-tombstone".into(),
@@ -1723,7 +1726,7 @@ async fn create_receipt_race_decision_table<R: ManagedSessionRepository>(repo: s
 
     let delete_id = "sesn_delete_create_race";
     let mut deletable = session(delete_id, "delete winner");
-    assert!(deletable.request_delete());
+    assert!(deletable.request_delete("ws_a", 0).unwrap().is_some());
     complete_terminal_cleanup(&mut deletable);
     let deletable = create_session(repo.as_ref(), "ws_a", deletable, Vec::new()).await;
     let delete = delete_mutation(&deletable, "delete-create-race");

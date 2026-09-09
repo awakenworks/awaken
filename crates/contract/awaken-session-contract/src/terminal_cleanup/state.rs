@@ -23,6 +23,28 @@ pub(crate) enum SessionCleanupPhase {
     Completed,
 }
 
+/// Unforgeable-in-public-API identity for the one cleanup operation owned by a
+/// Session root. The persisted effect id is derived only when the cleanup owner
+/// consumes this value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SessionCleanupRequestIdentity<'a> {
+    session_id: &'a str,
+}
+
+impl<'a> SessionCleanupRequestIdentity<'a> {
+    pub(crate) const fn new(session_id: &'a str) -> Self {
+        Self { session_id }
+    }
+
+    pub(crate) const fn session_id(&self) -> &str {
+        self.session_id
+    }
+
+    fn effect_id(&self) -> String {
+        cleanup_effect_id(self.session_id)
+    }
+}
+
 /// A durable cleanup operation may advance by exactly one phase. Replays are
 /// handled by the phase-specific methods without rewriting durable authority.
 #[must_use]
@@ -240,9 +262,34 @@ impl SessionCleanupOperation {
 
     /// Commit the stable whole-Session operation before any Runtime effect.
     pub fn request(&mut self, session_id: &str) -> bool {
-        self.advance_to(Self::from_state(SessionCleanupState::Fenced {
-            effect_id: cleanup_effect_id(session_id),
-        }))
+        self.request_exact(session_id, &SessionCleanupRequestIdentity::new(session_id))
+            .unwrap_or(false)
+    }
+
+    /// Consume a root-command plan's canonical cleanup identity. An existing
+    /// operation is an exact stutter only when it belongs to the same Session;
+    /// corrupted or foreign identity can never be rewritten by a retry.
+    pub(crate) fn request_exact(
+        &mut self,
+        session_id: &str,
+        identity: &SessionCleanupRequestIdentity<'_>,
+    ) -> Result<bool, SessionCleanupError> {
+        if identity.session_id() != session_id {
+            return Err(SessionCleanupError::OperationMismatch);
+        }
+        let effect_id = identity.effect_id();
+        match self.effect_id() {
+            Some(existing) if existing == effect_id => Ok(false),
+            Some(_) => Err(SessionCleanupError::OperationMismatch),
+            None => {
+                let advanced =
+                    self.advance_to(Self::from_state(SessionCleanupState::Fenced { effect_id }));
+                if !advanced {
+                    return Err(SessionCleanupError::InvalidPhaseAdvance);
+                }
+                Ok(true)
+            }
+        }
     }
 
     /// Commit an explicit Repository publication intent in the same terminal
