@@ -67,6 +67,18 @@ commit is visible.
    roll back an already committed runtime fact unless the store transaction has
    not committed.
 
+Managed committed reads use the same private candidate reducer and publication
+CAS for warm and cold projections. A source conflict discards the candidate and
+waits 10 ms before rereading; one refresh has a two-second elapsed budget,
+including source I/O. A normal turn can advance more than four Thread/Session
+versions, so a fixed four-attempt cutoff is not a valid availability boundary.
+Unchanged prefixes still complete immediately, dependency errors propagate without
+retry, and timeout cancels the read without publishing a partial candidate or
+replaying any command. A continuously changing source or a source read exceeding
+the budget remains unavailable; this is bounded convergence, not an unbounded
+liveness guarantee. Debug diagnostics identify the conflicting source/CAS fence
+without recording messages or credential material.
+
 Session inbound visibility and processing completion are distinct observations
 of the same retained command. While a User Run is Running, the Session application
 may anchor its exact committed input Message under the existing root CAS. This

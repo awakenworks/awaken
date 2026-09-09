@@ -498,15 +498,13 @@ type checking are valuable executable evidence, but are not formal proofs.
   replies block follow-up until their committed receipt arrives. Two additional
   mutants cover hidden errors and presentation accidentally releasing admission. Within the configured finite prefix domain (`0..3`), it also checks
   that a successful refresh advances the paired result and source checkpoint to
-  the observed committed prefix, while a failed refresh stutters. Browser tests
-  cover the production TypeScript
-  projection and the list status mapping fails closed for unknown states. The
-  separate `ManagedProjectionPublish.tla` model checks two reverse-completing
+  the observed committed prefix, while a failed refresh stutters. Browser tests cover
+  TypeScript projection; list status mapping rejects unknown states.
+  `ManagedProjectionPublish.tla` checks two reverse-completing
   refresh writers over independent Session, root/child Thread, lifecycle, and
   budget source coordinates, including a source advance between the first and
-  second read. It proves mixed reads cannot build a publishable candidate,
-  result/checkpoint pairing, local cache
-  CAS, source non-invention, visible non-regression, failure/rejection
+  second read. It checks mixed-read rejection, result/checkpoint pairing, local
+  cache CAS, source non-invention, visible non-regression, failure/rejection
   stuttering, and that equal source coordinates plus equal rendered content
   change neither cache nor broadcast. Equal legacy coordinates with changed
   rendered content still publish rather than hiding an unversioned source.
@@ -517,19 +515,21 @@ type checking are valuable executable evidence, but are not formal proofs.
   or renaming that child is a regression; adding a zero-version child is a change.
   The input configuration covers stable lagging candidates even when an ordinary
   monotonic read schedule cannot reach the regression branch. Nine semantic
-  mutants and six positive witnesses qualify the exact decision, actual cache
-  increment, result/checkpoint pair and broadcast. The cache oracle binds its
-  recorded receipt to the visible cache revision; a missing actual increment
-  previously survived Safety despite a correctly recorded ghost increment.
+  mutants and six witnesses qualify the decision, actual cache increment, paired
+  result/checkpoint and broadcast. Binding the receipt to the visible cache closes
+  a former gap where Safety accepted a ghost increment without an actual increment.
   The existing Rust decision test now checks 419,904 real HashMap/String calls
   across all four scalar clocks, two child identities, unsigned boundaries,
   cache CAS and content changes. The actual publisher test also requires one
   visible cache increment. These are native cross-checks alongside the bounded
   models, not an unbounded HashMap/serde/mutex or Rust-to-model refinement.
-  Together, the models check bounded pending-reply and publication safety.
-  They do not prove database snapshot
-  isolation, cold reconstruction of pre-anchor legacy history, browser delivery,
-  or lifecycle-supervisor fairness.
+  Reading/built failure preserves the current cache, including a competing
+  publisher's success. Three failure mutants/three witnesses qualify this in
+  a two-writer/one-clock/version-one/cache-two slice. Native full-record frames
+  check read cuts, private-reduction errors, cache exhaustion and budget expiry; coverage
+  records exact cases and actual mutants. The complete async chain remains unrefined.
+  Together these models check bounded pending-reply/publication safety, not SQL
+  snapshot isolation, pre-anchor cold history, browser delivery or supervisor fairness.
   Direct Kani evidence additionally calls the production reply-anchor selector
   over 0..3 lifecycle facts, all seven event kinds, exact/mismatching Thread and
   Run identity classes, and every u64 commit, lifecycle cursor and snapshot

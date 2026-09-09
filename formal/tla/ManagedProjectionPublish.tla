@@ -136,7 +136,10 @@ Publish(writer) ==
 
 RefreshFailure(writer) ==
     /\ writer \in Writers
-    /\ writerPhase[writer] = "built"
+    \* Read errors and private-reduction errors share the same failure owner.
+    \* Frame the CURRENT result/cache, not the writer's earlier observed base:
+    \* another writer may have published successfully while this one awaited IO.
+    /\ writerPhase[writer] \in {"reading", "built"}
     /\ writerPhase' = [writerPhase EXCEPT ![writer] = "idle"]
     /\ previousResultFence' = resultFence
     /\ lastWriter' = writer
@@ -243,6 +246,18 @@ NoZeroChildAddition == ~(lastOutcome = "applied" /\
 NoZeroChildRemovalRejection == ~(lastOutcome = "source_regression" /\
     \E child \in OptionalComponents:
         previousResultFence[child] = 0 /\ candidateFence[lastWriter][child] = Absent)
+
+\* Negative reachability properties used by the failure qualification table.
+\* Each must fail on an actual transition, excluding a vacuous disabled phase.
+NoReadingFailure == [][~(\E writer \in Writers:
+    writerPhase[writer] = "reading" /\ RefreshFailure(writer))]_vars
+NoBuiltFailure == [][~(\E writer \in Writers:
+    writerPhase[writer] = "built" /\ RefreshFailure(writer))]_vars
+NoFailureAfterCompetingPublish ==
+    IF lastWriter \in Writers
+       THEN ~(lastOutcome = "failed" /\
+              observedCacheRevision[lastWriter] < cacheRevision)
+       ELSE TRUE
 
 Safety ==
     /\ TypeOK
