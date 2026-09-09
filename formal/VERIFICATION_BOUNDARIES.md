@@ -584,9 +584,17 @@ type checking are valuable executable evidence, but are not formal proofs.
   three-host/blank model and an 84-case sequence oracle; five model mutations
   are rejected. Native normalization exhausts 16,515 policies with at most two
   one-byte ASCII hosts, while meet crosses 25,281 pairs over twelve representative
-  bytes. Six production mutations, Unicode property tests and SQLite root
-  readback cross-check the implementation. Kani composition has not completed;
-  arbitrary String/Vec refinement, DNS and provider enforcement remain unproved.
+  bytes. Eight production mutations, Unicode property tests and SQLite root
+  readback cross-check the implementation. Five direct Kani partitions jointly
+  prove exact normalization for all 16,515 ASCII policies: None, Unrestricted,
+  and allowlists of zero, one or two hosts. Real String/Vec sort, dedup, retain
+  and Drop run with unwind 3 and default checks, without stubs or proof cuts.
+  The input constructor is independently exhausted; 144 native size/order cases
+  extend collection coverage to 257 hosts using the same bitmap oracle.
+  Collecting before blank filtering preserves input length through sorting;
+  blank-heavy inputs use more temporary slots than early filtering.
+  Intersection composition, arbitrary String/Vec refinement, DNS and provider
+  enforcement remain unproved; the whole obligation retains its abstract grade.
 
 ## Credential effect and MCP delivery evidence
 
