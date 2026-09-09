@@ -65,7 +65,9 @@ if ! rustc +"$PUBLIC_API_NIGHTLY" --version >/dev/null 2>&1; then
   exit 0
 fi
 
-mkdir -p public-api
+if [ "$bless" = 1 ]; then
+  mkdir -p public-api
+fi
 
 # Workspace member package names (no registry resolution).
 crates=$(cargo metadata --no-deps --format-version 1 \
@@ -79,6 +81,7 @@ crates=$(cargo metadata --no-deps --format-version 1 \
 fail=0
 drifted=()      # crates whose surface changed
 compute_fail=0  # a crate whose surface could not be computed
+compare_fail=0  # a baseline whose comparison could not be observed
 # Omit the compiler-derived impls (blanket, auto-trait, and auto-derived). These are
 # NOT part of the crate's authored surface and their rendering is NIGHTLY-VERSION
 # SENSITIVE (e.g. `impl UnsafeUnpin`, `impl Send/Sync/Unpin` blocks appear or vanish
@@ -93,19 +96,31 @@ for c in $crates; do
   if ! cur=$(cargo +"$PUBLIC_API_NIGHTLY" public-api -p "$c" --simplified $omit_flags 2>/dev/null); then
     echo "✗ failed to compute public API for $c"; fail=1; compute_fail=1; continue
   fi
-  if [ "$bless" = 1 ] || [ ! -f "$snap" ]; then
+  if [ "$bless" = 1 ]; then
     printf '%s\n' "$cur" > "$snap"
     echo "blessed $snap"
+  elif [ ! -f "$snap" ]; then
+    echo "✗ missing public API snapshot for $c"
+    drifted+=("$c")
+    fail=1
   else
-    d=$(diff -u "$snap" <(printf '%s\n' "$cur") || true)
-    if [ -n "$d" ]; then
-      added=$(printf '%s\n' "$d" | grep -cE '^\+[^+]' || true)
-      removed=$(printf '%s\n' "$d" | grep -cE '^-[^-]' || true)
-      echo "✗ public API drift in $c  (+$added / -$removed)"
-      printf '%s\n' "$d" | sed 's/^/    /'
-      drifted+=("$c")
-      fail=1
+    if d=$(diff -u "$snap" <(printf '%s\n' "$cur")); then
+      continue
+    else
+      comparison_status=$?
     fi
+    if [ "$comparison_status" -ne 1 ]; then
+      echo "✗ failed to compare public API for $c (diff status $comparison_status)"
+      fail=1
+      compare_fail=1
+      continue
+    fi
+    added=$(printf '%s\n' "$d" | grep -cE '^\+[^+]' || true)
+    removed=$(printf '%s\n' "$d" | grep -cE '^-[^-]' || true)
+    echo "✗ public API drift in $c  (+$added / -$removed)"
+    printf '%s\n' "$d" | sed 's/^/    /'
+    drifted+=("$c")
+    fail=1
   fi
 done
 
@@ -120,6 +135,9 @@ if [ "$fail" -ne 0 ]; then
     fi
     if [ "$compute_fail" -ne 0 ]; then
       echo "❌ could not compute the public API for some crate (see ✗ lines above)."
+    fi
+    if [ "$compare_fail" -ne 0 ]; then
+      echo "❌ could not compare the public API for some crate (see ✗ lines above)."
     fi
   } >&2
   exit 1
