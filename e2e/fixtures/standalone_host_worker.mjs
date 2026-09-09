@@ -4,7 +4,7 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { cargoExecutable, WORKER_BIN_ENV, requirePrebuiltExecutable } from '../cargo_binary.mjs';
-import { availablePort, hardKillServer, stopServer, waitForValue } from '../harness.mjs';
+import { availablePort, hardKillServer, stopServer, runCleanupSteps, waitForValue } from '../harness.mjs';
 import { withoutControlAuthority } from '../process_environment.mjs';
 import { sqliteRows } from '../sqlite.mjs';
 import { installHostResourceFixture } from './trusted_host_resources.mjs';
@@ -225,8 +225,13 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
     },
     assertCustody,
     async cleanup() {
-      if (worker) await stopServer(worker);
-      if (proxy) await stopTlsProxy(proxy);
+      await runCleanupSteps([
+        () => worker && stopServer(worker, { requireCleanExit: true }),
+        () => proxy && stopTlsProxy(proxy),
+      ]);
+      if (worker) console.log(`Standalone Worker clean shutdown: ${JSON.stringify({
+        worker_id:workerId, generation, exit_code:worker.exitCode, signal:worker.signalCode,
+      })}`);
     },
   };
 }

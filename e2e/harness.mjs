@@ -1326,10 +1326,13 @@ export function spawnServer(mode, port, extraEnv = {}, inheritedEnvironment = pr
 // TCP port is free and the SQLite files are flushed before a restart rebinds.
 /**
  * @param {import('node:child_process').ChildProcess} server
+ * @param {{requireCleanExit?: boolean}} [options]
  * @returns {Promise<void>}
  */
-export function stopServer(server) {
-  return new Promise((resolve) => {
+export async function stopServer(server, { requireCleanExit = false } = {}) {
+  const wasLive = server.exitCode === null && server.signalCode === null;
+  let closed = false;
+  await new Promise((resolve) => {
     // A deliberately crashed child has `exitCode === null` and a non-null
     // `signalCode`. Treat either terminal form as already stopped; otherwise a
     // recovery e2e that SIGKILLs the worker would subscribe after `exit` fired
@@ -1346,14 +1349,18 @@ export function stopServer(server) {
       settled = true;
       clearTimeout(forceTimer);
       clearTimeout(fallbackTimer);
-      server.off('exit', finish);
-      server.off('close', finish);
+      server.off('exit', onExit);
+      server.off('close', onClose);
       server.off('error', finish);
       untrackSpawnedServer(server);
       resolve();
     };
-    server.once('exit', finish);
-    server.once('close', finish);
+    // Strict acceptance also waits for stdio closure: Worker diagnostics must
+    // finish writing before a successful caller deletes the fixture directory.
+    const onExit = () => { if (!requireCleanExit) finish(); };
+    const onClose = () => { closed = true; finish(); };
+    server.once('exit', onExit);
+    server.once('close', onClose);
     server.once('error', finish);
     // Shutdown decision table:
     // | stdin pipe | process terminal | action |
@@ -1373,6 +1380,22 @@ export function stopServer(server) {
       fallbackTimer = setTimeout(finish, 5_000);
     }, 30_000);
   });
+  // A terminal child is valid for idempotent fault cleanup, but cannot prove
+  // that a healthy deployment survived until its requested graceful shutdown.
+  if (requireCleanExit && (!wasLive || !closed || server.exitCode !== 0 || server.signalCode !== null)) {
+    throw new Error(`fixture process failed clean shutdown: live_before=${wasLive}; code=${server.exitCode}; signal=${server.signalCode}; stdio_closed=${closed}`);
+  }
+}
+
+// Cleanup respects dependency order (Worker before Control/transport). Attempt
+// every step even after rejection, preserving original and teardown failures.
+// Destructive evidence deletion belongs AFTER this function succeeds.
+export async function runCleanupSteps(steps, failures = []) {
+  const errors = [...failures];
+  for (const step of steps) {
+    try { await step(); } catch (error) { errors.push(error); }
+  }
+  if (errors.length) throw new AggregateError(errors, 'fixture cleanup failed');
 }
 
 // Shared fault-injection boundary (NOT graceful shutdown). Decision rules:
