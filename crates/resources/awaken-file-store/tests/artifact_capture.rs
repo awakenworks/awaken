@@ -3,6 +3,10 @@
 
 use std::sync::Arc;
 
+#[cfg(feature = "postgres")]
+#[path = "support/postgres.rs"]
+mod postgres_test_support;
+
 use awaken_resource_contract::{
     ArtifactCapture, FileCatalog, FileRecord, ReplaceArtifactCapture,
     ReplaceArtifactCaptureOutcome as Outcome, content_id, harvest_idempotency_key,
@@ -561,9 +565,16 @@ async fn sqlite_v5_upgrade_preserves_files_without_guessing_a_capture() {
 
 #[cfg(feature = "postgres")]
 #[tokio::test]
-#[ignore = "requires an isolated AWAKEN_CAPTURE_TEST_DATABASE_URL"]
 async fn postgres_capture_contract_and_reconnect() {
-    let url = std::env::var("AWAKEN_CAPTURE_TEST_DATABASE_URL").expect("isolated test database");
+    // Gate decision table: G1 no configured database => explicit local skip;
+    // G2 configured database + healthy connection => run R1-R10 and M1-M3;
+    // G3 configured database + connection/schema error => fail, never skip.
+    // The canonical PG runner supplies AWAKEN_TEST_DATABASE_URL and enables
+    // postgres, so G2/G3 are mandatory there without --ignored or a second URL.
+    // Unit and integration tests share the same schema/connection authority.
+    let Some(url) = postgres_test_support::isolated_postgres_url("t_file_capture").await else {
+        return;
+    };
     contract(Arc::new(
         awaken_file_store::postgres::PgFileStore::connect(&url)
             .await
@@ -583,10 +594,6 @@ async fn postgres_capture_contract_and_reconnect() {
     // schema in the same explicitly isolated test database.
     use awaken_file_store::schema::{BUNDLE_ID, NS, file_store_bundle};
     let pool = sqlx::PgPool::connect(&url).await.unwrap();
-    sqlx::query("CREATE SCHEMA capture_migration")
-        .execute(&pool)
-        .await
-        .unwrap();
     for (index, &(revision, ids)) in CORRUPT_CAPTURES.iter().enumerate() {
         let session = format!("corrupt-{index}");
         sqlx::query("INSERT INTO file_store_artifact_capture VALUES ($1,$2,$3,$4)")
@@ -608,7 +615,9 @@ async fn postgres_capture_contract_and_reconnect() {
         assert_eq!(unchanged, (revision, ids.into()), "D1 no rewrite");
     }
     pool.close().await;
-    let migration_url = format!("{url}?options=-c%20search_path%3Dcapture_migration");
+    let migration_url = postgres_test_support::isolated_postgres_url("t_file_capture_migration")
+        .await
+        .expect("G2 database remains configured for migration coverage");
     let pool = sqlx::PgPool::connect(&migration_url).await.unwrap();
     let full = file_store_bundle().unwrap();
     let legacy =

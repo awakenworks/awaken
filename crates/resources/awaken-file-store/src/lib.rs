@@ -606,6 +606,10 @@ pub mod sqlite;
 #[cfg(feature = "object-store")]
 pub mod object;
 
+#[cfg(all(test, feature = "postgres"))]
+#[path = "../tests/support/postgres.rs"]
+mod postgres_test_support;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1088,32 +1092,10 @@ mod tests {
     }
 
     #[cfg(feature = "postgres")]
-    async fn isolated_postgres_url(schema: &'static str) -> Option<String> {
-        use sqlx::Executor;
-
-        let base = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-        });
-        let Ok(admin) = sqlx::PgPool::connect(&base).await else {
-            println!("[skip] no Postgres reachable");
-            return None;
-        };
-        let _ = admin
-            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
-            .await;
-        admin
-            .execute(format!("CREATE SCHEMA {schema}").as_str())
-            .await
-            .expect("create schema");
-        admin.close().await;
-        let separator = if base.contains('?') { '&' } else { '?' };
-        Some(format!(
-            "{base}{separator}options=-c%20search_path%3D{schema}"
-        ))
-    }
+    use crate::postgres_test_support::isolated_postgres_url;
 
     /// Live Postgres round-trip for [`PgFileStore`](crate::postgres::PgFileStore),
-    /// isolated in its own schema. Skips when no Postgres is reachable
+    /// isolated in its own schema. Skips only when no database is configured
     /// (`AWAKEN_TEST_DATABASE_URL`), proving the shared portable bundle renders and
     /// runs on Postgres too.
     #[cfg(feature = "postgres")]
@@ -1150,7 +1132,7 @@ mod tests {
         let schema_pool = sqlx::PgPool::connect(&url).await.unwrap();
         let boolean_column_types: Vec<String> = sqlx::query_scalar(
             "SELECT data_type FROM information_schema.columns \
-             WHERE table_schema='t_file_store' AND table_name='file_store_file' \
+             WHERE table_schema=current_schema() AND table_name='file_store_file' \
                AND column_name IN ('downloadable', 'deleted') ORDER BY column_name",
         )
         .fetch_all(&schema_pool)
