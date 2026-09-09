@@ -74,6 +74,7 @@ pub enum WorkspaceRoleAuthority {
     WorkspaceConfigurationAll,
     WorkspaceApiKeyAll,
     WorkspaceModelSupplyRead,
+    WorkspaceModelSupplyConnect,
     WorkspaceSkillAll,
 }
 
@@ -85,6 +86,7 @@ impl WorkspaceRoleAuthority {
             Self::WorkspaceConfigurationAll => Some("workspace.*"),
             Self::WorkspaceApiKeyAll => Some("apikey.*"),
             Self::WorkspaceModelSupplyRead => Some("model_supply.read"),
+            Self::WorkspaceModelSupplyConnect => Some("model_supply.connect"),
             Self::WorkspaceSkillAll => None,
         }
     }
@@ -96,14 +98,17 @@ impl WorkspaceRoleAuthority {
             Self::WorkspaceSkillAll => Some("skill.*"),
             Self::WorkspaceConfigurationAll
             | Self::WorkspaceApiKeyAll
-            | Self::WorkspaceModelSupplyRead => None,
+            | Self::WorkspaceModelSupplyRead
+            | Self::WorkspaceModelSupplyConnect => None,
         }
     }
 }
 
 /// Complete authority set for the credential-ingress role.
-pub const CREDENTIAL_INGRESS_AUTHORITIES: &[WorkspaceRoleAuthority] =
-    &[WorkspaceRoleAuthority::WorkspaceApiKeyAll];
+pub const CREDENTIAL_INGRESS_AUTHORITIES: &[WorkspaceRoleAuthority] = &[
+    WorkspaceRoleAuthority::WorkspaceApiKeyAll,
+    WorkspaceRoleAuthority::WorkspaceModelSupplyConnect,
+];
 
 /// Complete authority set for the agent-publisher role across both policy
 /// namespaces.
@@ -383,6 +388,31 @@ const fn legacy_resource_authority_mask(role: WorkspaceBindingRole) -> u16 {
 }
 
 const fn canonical_authority_mask(role: WorkspaceBindingRole) -> u16 {
+    if matches!(role, WorkspaceBindingRole::CredentialIngress) {
+        let mut mask = 0;
+        let mut index = 0;
+        while index < CREDENTIAL_INGRESS_AUTHORITIES.len() {
+            mask |= match CREDENTIAL_INGRESS_AUTHORITIES[index] {
+                WorkspaceRoleAuthority::WorkspaceConfigurationAll => {
+                    WorkspaceProfileAuthority::WorkspaceAll.bit()
+                }
+                WorkspaceRoleAuthority::WorkspaceApiKeyAll => {
+                    WorkspaceProfileAuthority::ApiKeyAll.bit()
+                }
+                WorkspaceRoleAuthority::WorkspaceModelSupplyRead => {
+                    WorkspaceProfileAuthority::ModelSupplyRead.bit()
+                }
+                WorkspaceRoleAuthority::WorkspaceModelSupplyConnect => {
+                    WorkspaceProfileAuthority::ModelSupplyConnect.bit()
+                }
+                WorkspaceRoleAuthority::WorkspaceSkillAll => {
+                    WorkspaceProfileAuthority::SkillAll.bit()
+                }
+            };
+            index += 1;
+        }
+        return mask;
+    }
     legacy_management_authority_mask(role) | legacy_resource_authority_mask(role)
 }
 
@@ -473,6 +503,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn credential_ingress_connect_is_exact_and_not_a_legacy_migration_grant() {
+        // C1 current ingress role -> E1 API keys plus exact connect, no wildcard.
+        // C2 legacy management/resource binding presence -> E2 no automatic
+        // upgrade: none of the four legacy combinations includes connect.
+        // An already-canonical binding remains an idempotent fixed point.
+        assert_eq!(
+            CREDENTIAL_INGRESS_AUTHORITIES
+                .iter()
+                .map(|a| a.management_action_pattern())
+                .collect::<Vec<_>>(),
+            [Some("apikey.*"), Some("model_supply.connect")]
+        );
+        for management in [false, true] {
+            for resources in [false, true] {
+                let state = WorkspaceBindingMigrationState::Legacy {
+                    role: WorkspaceBindingRole::CredentialIngress,
+                    has_management_binding: management,
+                    has_resource_binding: resources,
+                };
+                assert_eq!(migrate_workspace_binding_state(state), state);
+                assert_eq!(
+                    legacy_workspace_binding_migration_target(
+                        WorkspaceBindingRole::CredentialIngress,
+                        management,
+                        resources
+                    ),
+                    None
+                );
+            }
+        }
+        let canonical =
+            WorkspaceBindingMigrationState::Canonical(WorkspaceBindingRole::CredentialIngress);
+        assert_eq!(migrate_workspace_binding_state(canonical), canonical);
+    }
+
+    #[test]
     fn action_and_grant_spellings_are_exact() {
         // Cause/effect decision table for the human role contract:
         // Viewer -> read-only authorities; Builder -> Workspace/File/Skill
@@ -551,10 +617,11 @@ mod verification {
     }
 
     fn symbolic_authority() -> WorkspaceRoleAuthority {
-        match kani::any::<u8>() % 4 {
+        match kani::any::<u8>() % 5 {
             0 => WorkspaceRoleAuthority::WorkspaceConfigurationAll,
             1 => WorkspaceRoleAuthority::WorkspaceApiKeyAll,
             2 => WorkspaceRoleAuthority::WorkspaceModelSupplyRead,
+            3 => WorkspaceRoleAuthority::WorkspaceModelSupplyConnect,
             _ => WorkspaceRoleAuthority::WorkspaceSkillAll,
         }
     }
@@ -632,11 +699,15 @@ mod verification {
     }
 
     #[kani::proof]
-    fn credential_ingress_role_contains_only_workspace_apikey_authority() {
+    fn credential_ingress_role_contains_only_apikey_and_provider_connect_authority() {
         let authority = symbolic_authority();
         assert_eq!(
             credential_ingress_role_contains(authority),
-            authority == WorkspaceRoleAuthority::WorkspaceApiKeyAll
+            matches!(
+                authority,
+                WorkspaceRoleAuthority::WorkspaceApiKeyAll
+                    | WorkspaceRoleAuthority::WorkspaceModelSupplyConnect
+            )
         );
     }
 

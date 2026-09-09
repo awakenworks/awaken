@@ -752,3 +752,34 @@ operator-authored endpoints stay shared. No Cloud-side policy, credential store
 or Profile compiler is introduced. Cloud still supplies exact managed routes;
 Awaken compiles the authored ordered Profile and delegates brokered candidates
 through the existing model-publication port.
+
+## Amendment (2026-09-09): credential ingress admits exact provider connection
+
+The existing `credential_ingress` role now owns `model_supply.connect` in
+addition to `apikey.*`. Provider connection is the canonical credential ingress
+command that seals authentication and discovers its Workspace-owned supply;
+requiring a human administrator role for the product workload would conflate
+independent caller identities. The role still cannot write arbitrary model
+supply, publish Agents, run Agents, or access another Workspace. Publisher-only
+bindings remain read-only for supply and cannot connect providers.
+
+Static ownership is unchanged: the authorization contract defines the finite
+role set, Control compiles the one Workspace profile, and the hosting platform
+binds the existing service role at an exact execution Workspace. No Cloud-owned
+grant matrix, second Vault, connection route, or new role is added. Only this
+existing contract/profile and their tests change.
+
+The product first checks its human caller's credential-write authority, then
+calls the existing provider connection API as its service principal. Awaken's
+PEP requires the exact connection action and Workspace binding before the
+existing idempotent connection service may mutate the Vault or catalog. Retries
+reuse that command's idempotency identity; denial creates no connection.
+
+The release must activate the exact compiled profile before live connection
+acceptance. The legacy split-profile credential role remains API-key-only:
+automatic legacy migration must reject an authority-expanding replacement,
+leaving explicit host reconciliation responsible for the new authority. Tests
+cover the exact role set, unique deterministic grants, foreign Workspace denial,
+publisher isolation, and authority-preserving migration. This amendment
+supersedes the earlier API-key-only description of the canonical ingress role,
+not the historical legacy profile or its migration source authority.
