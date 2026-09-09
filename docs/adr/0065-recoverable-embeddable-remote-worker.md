@@ -130,6 +130,21 @@ provider computation or billing stopped. Cancellation retains the physical veto
 even after the local executor returns; it does not permit an exact ACK. Hard
 process loss likewise leaves the physical slot occupied.
 
+Targeted crash recovery closes Registry authority through
+`WorkerDirectory::expire_incarnation(identity, now_ms)`, not a read followed by
+unconditional deregistration. The existing registry transaction checks the exact
+incarnation and the current deadline using the same half-open lifetime as
+heartbeat and replacement. A renewed live Worker is unchanged; an expired exact
+Worker becomes Dead. Exact closed records acknowledge retries without mutation,
+and a replacement cannot be affected by the predecessor's late request. The
+unused broad expiry scan is removed rather than retained as another path.
+Memory, SQLite and PostgreSQL reuse their existing mutation boundary and one
+contract decision kernel; no schema, extra epoch, timer or recovery queue is
+added. Kani covers the complete scalar decision, Loom races renewal/expiry/
+replacement, and shared adapter traces include independent database connections.
+This closes execution authority only: provider stop, remote-participant evidence
+and Dispatch retirement still require their separate checks and composition.
+
 Aborting or dropping the outer executor Future is not an ACK. The physical slot
 remains occupied until the Future explicitly returns, and uncertain external
 tool cancellation vetoes the ACK even after local return. No timeout or destructor
