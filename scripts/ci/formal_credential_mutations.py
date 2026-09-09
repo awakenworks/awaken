@@ -8,7 +8,8 @@ from formal_model_mutation_runner import ROOT, check_tlc_model_mutations
 
 def check_acp_projection_model_mutants(tlc_jar: Path) -> None:
     # P1 omit the post-probe equality; P2 accept another CLI at the same revision;
-    # P3 omit the consumer gate; P4 cancel without releasing it. Each must fail
+    # P3 omit the consumer gate; P4 cancel without releasing it; P5 accept a
+    # foreign-backend probe despite an unchanged projection. Each must fail
     # its exact named invariant. Reachability witnesses require successful use,
     # a real revoke-during-probe denial and a succeeding peer after cancellation.
     source = (ROOT / "formal/tla/AcpProjectedBindingUse.tla").read_text()
@@ -16,18 +17,19 @@ def check_acp_projection_model_mutants(tlc_jar: Path) -> None:
     header = "SPECIFICATION Spec\nCHECK_DEADLOCK FALSE\n"
     mutations = []
     for anchor, replacement, invariant in (
-        (r'before[i] = "active" /\ file = before[i]', r'before[i] = "active"', "ExactPostProbeEvidence"),
+        (r'file = before[i]', r'TRUE', "ExactPostProbeEvidence"),
         (r'file = before[i] THEN', r'file \in {"active", "otherCli"} THEN', "ExactPostProbeEvidence"),
+        (r'before[i] = "active" /\ probeMatches[i]', r'before[i] = "active"', "ProbeReplyIsBackendScoped"),
         (r'phase[i] = "idle" /\ gate = 0', r'phase[i] = "idle"', "OneConsumer"),
         (r'![i] = "cancelled"] /\ gate' + "' = 0", r'![i] = "cancelled"] /\ gate' + "' = gate", "CancelledReleasesGate"),
     ):
         if source.count(anchor) != 1:
             raise SystemExit(f"ACP projection mutation anchor drifted: {invariant}")
         mutations.append((source.replace(anchor, replacement), header + f"INVARIANTS {invariant}\n", invariant))
-    for witness in ("NoUsefulGrant", "NoRevokedDenial", "NoConsumerAfterCancellation"):
+    for witness in ("NoUsefulGrant", "NoRevokedDenial", "NoConsumerAfterCancellation", "NoForeignProbeDenial"):
         mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
     check_tlc_model_mutations(tlc_jar, "AcpProjectedBindingUse", source, config, mutations)
-    print("ACP projected bindings: 4/4 mutants killed; 3/3 positive witnesses reachable")
+    print("ACP projected bindings: 5/5 mutants killed; 4/4 positive witnesses reachable")
 
 def check_acp_binding_model_mutants(tlc_jar: Path) -> None:
     # B1 reject after publishing a prefix; B2 check outside the retained lock;
@@ -91,8 +93,9 @@ def check_acp_binding_model_mutants(tlc_jar: Path) -> None:
 def check_acp_observation_model_mutants(tlc_jar: Path) -> None:
     # C1 preserve a previous refresh's probe; C2 repeat one host probe for each
     # Workspace; C3 let credential cardinality decide protocol cardinality;
-    # C4 lend one active source's login to a disabled reference. All must fail
-    # the named independent invariant, not parsing/timeout. Four witnesses guard
+    # C4 lend one active source's login to a disabled reference;
+    # C5-C7 admit a foreign-backend credential, cached host, or fallback host.
+    # All fail the named independent invariant, not parsing/timeout. Witnesses guard
     # against inert projections, mandatory-login coupling and unreachable refresh.
     source = (ROOT / "formal/tla/AcpObservationRefresh.tla").read_text()
     config = (ROOT / "formal/tla/AcpObservationRefresh.cfg").read_text()
@@ -104,15 +107,22 @@ def check_acp_observation_model_mutants(tlc_jar: Path) -> None:
         ("rows' = IF selected THEN 1 ELSE 0", "rows' = IF selected THEN Cardinality(batchEnabled) ELSE 0",
          "OneCapabilityRowPerSelectedBackend"),
         ("THEN batchEnabled ELSE {}", "THEN References ELSE {}", "CredentialProjectionNeverWidens"),
+        (r"IF installed /\ login /\ replyMatches THEN", r"IF installed /\ login THEN",
+         "CredentialEvidenceIsBackendScoped"),
+        (r"cacheInstalled' = (installed /\ replyMatches)", "cacheInstalled' = installed",
+         "CapabilityEvidenceIsBackendScoped"),
+        (r"THEN (installed /\ replyMatches) ELSE cacheInstalled", "THEN installed ELSE cacheInstalled",
+         "CapabilityEvidenceIsBackendScoped"),
     ):
         if source.count(anchor) != 1:
             raise SystemExit(f"ACP observation mutation anchor drifted: {invariant}")
         mutations.append((source.replace(anchor, replacement), header + f"INVARIANTS {invariant}\n", invariant))
     for witness in ("NoSharedActiveProjection", "NoProtocolWithoutBindings", "NoUnselectedBackend",
-                    "NoSecondRefreshMissingCli"):
+                    "NoSecondRefreshMissingCli", "NoRejectedForeignCredential",
+                    "NoRejectedForeignCachedCapability", "NoRejectedForeignFallbackCapability"):
         mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
     check_tlc_model_mutations(tlc_jar, "AcpObservationRefresh", source, config, mutations)
-    print("ACP observation refresh: 4/4 mutants killed; 4/4 positive witnesses reachable")
+    print("ACP observation refresh: 7/7 mutants killed; 7/7 positive witnesses reachable")
 
 
 def check_mcp_credential_model_mutants(tlc_jar: Path) -> None:

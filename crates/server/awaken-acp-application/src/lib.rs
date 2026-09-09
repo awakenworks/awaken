@@ -496,17 +496,29 @@ mod tests {
         //    with zero active bindings (Provider-owned ACP needs no host login).
         // R4 failed negotiation -> one failed row, not an earlier verified row.
         // R5 another refresh -> fresh login evidence; no permanent probe cache.
+        // C6 Codex's adapter replies with Claude's identity; R6 neither login
+        // nor capability may borrow that backend evidence, including the zero-
+        // active-binding fallback. Cross C6 with every existing rule. Flip C6
+        // on refresh 2 to cover both recovery and loss after a verified batch;
+        // Claude remains independent. This expands this matrix's authority.
         // This is per-batch de-duplication, not cross-request coalescing or an
         // exactly-once external-probe claim. WorkerObservationCache remains the
         // sole serialized publication/expiry boundary. AcpObservationRefresh.tla
         // covers the two-reference/two-refresh abstraction of this projection.
         use std::sync::atomic::{AtomicUsize, Ordering};
-        struct CountingDiscovery(AtomicUsize);
+        struct CountingDiscovery {
+            calls: AtomicUsize,
+            wrong_backend: std::sync::atomic::AtomicBool,
+        }
         #[async_trait]
         impl AcpDiscovery for CountingDiscovery {
             async fn discover(&self, cli: &AcpCli) -> AcpHostObservation {
-                self.0.fetch_add(1, Ordering::SeqCst);
-                AvailableDiscovery.discover(cli).await
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                let mut observed = AvailableDiscovery.discover(cli).await;
+                if cli.id == "codex" && self.wrong_backend.load(Ordering::SeqCst) {
+                    observed.cli_id = "claude".into();
+                }
+                observed
             }
         }
         let repo = InMemoryCredentialRepo::new();
@@ -523,82 +535,100 @@ mod tests {
                 .unwrap(),
             );
         }
-        for mask in 0..=8 {
-            for success in [true, false] {
-                let discovery = Arc::new(CountingDiscovery(AtomicUsize::new(0)));
-                let negotiator = Arc::new(CapabilityFixture {
-                    success,
-                    calls: AtomicUsize::new(0),
-                });
-                let selected = if mask == 8 {
-                    Vec::new()
-                } else {
-                    sources
-                        .iter()
-                        .enumerate()
-                        .map(|(index, source)| {
-                            let mut source = source.clone();
-                            if mask & (1 << index) == 0 {
-                                source.status = CredentialStatus::Disabled;
-                            }
-                            source
-                        })
-                        .collect()
-                };
-                let resolver = resolver_from_sources(discovery.clone(), selected.clone())
-                    .unwrap()
-                    .with_capability_observations(
-                        negotiator.clone(),
-                        [
-                            ("codex".into(), vec!["codex-acp".into()]),
-                            ("claude".into(), vec!["claude-acp".into()]),
-                        ]
-                        .into_iter()
-                        .collect(),
-                        PathBuf::from("."),
-                    );
-                for refresh in 1..=2 {
-                    let credentials = observed_bindings(&resolver).await;
-                    assert_eq!(credentials.len(), selected.len(), "R1 mask={mask}");
-                    for source in &selected {
+        for initially_wrong in [false, true] {
+            for mask in 0..=8 {
+                for success in [true, false] {
+                    let discovery = Arc::new(CountingDiscovery {
+                        calls: AtomicUsize::new(0),
+                        wrong_backend: std::sync::atomic::AtomicBool::new(initially_wrong),
+                    });
+                    let negotiator = Arc::new(CapabilityFixture {
+                        success,
+                        calls: AtomicUsize::new(0),
+                    });
+                    let selected = if mask == 8 {
+                        Vec::new()
+                    } else {
+                        sources
+                            .iter()
+                            .enumerate()
+                            .map(|(index, source)| {
+                                let mut source = source.clone();
+                                if mask & (1 << index) == 0 {
+                                    source.status = CredentialStatus::Disabled;
+                                }
+                                source
+                            })
+                            .collect()
+                    };
+                    let resolver = resolver_from_sources(discovery.clone(), selected.clone())
+                        .unwrap()
+                        .with_capability_observations(
+                            negotiator.clone(),
+                            [
+                                ("codex".into(), vec!["codex-acp".into()]),
+                                ("claude".into(), vec!["claude-acp".into()]),
+                            ]
+                            .into_iter()
+                            .collect(),
+                            PathBuf::from("."),
+                        );
+                    let mut expected_negotiations = 0;
+                    for refresh in 1..=2 {
+                        let wrong_backend = initially_wrong == (refresh == 1);
+                        discovery
+                            .wrong_backend
+                            .store(wrong_backend, Ordering::SeqCst);
+                        let credentials = observed_bindings(&resolver).await;
+                        assert_eq!(credentials.len(), selected.len(), "R1 mask={mask}");
+                        for source in &selected {
+                            assert_eq!(
+                                credentials[&CredentialRef {
+                                    id: source.id.0.clone(),
+                                    revision: 1
+                                }],
+                                if source.status == CredentialStatus::Active {
+                                    if wrong_backend
+                                        && source.worker_local_binding.as_ref().unwrap().driver_id
+                                            == "acp:codex"
+                                    {
+                                        CredentialObservationState::ProbeFailed
+                                    } else {
+                                        CredentialObservationState::Available
+                                    }
+                                } else {
+                                    CredentialObservationState::Disabled
+                                },
+                                "R1/R2/R6 mask={mask} wrong_backend={wrong_backend}"
+                            );
+                        }
+                        let capabilities = resolver.capability_observations().await.unwrap();
                         assert_eq!(
-                            credentials[&CredentialRef {
-                                id: source.id.0.clone(),
-                                revision: 1
-                            }],
-                            if source.status == CredentialStatus::Active {
-                                CredentialObservationState::Available
-                            } else {
-                                CredentialObservationState::Disabled
-                            },
-                            "R1/R2 mask={mask}"
+                            capabilities
+                                .iter()
+                                .map(|row| row.backend_ref())
+                                .collect::<Vec<_>>(),
+                            ["acp:claude", "acp:codex"],
+                            "R3 mask={mask}"
+                        );
+                        assert!(
+                            capabilities.iter().all(|row| row.negotiated().is_some()
+                                == (success
+                                    && (!wrong_backend || row.backend_ref() != "acp:codex"))),
+                            "R4/R6 capability evidence is backend scoped"
+                        );
+                        expected_negotiations += if wrong_backend { 1 } else { 2 };
+                        assert_eq!(
+                            negotiator.calls.load(Ordering::SeqCst),
+                            expected_negotiations,
+                            "R3/R5 mask={mask}"
+                        );
+                        assert_eq!(
+                            discovery.calls.load(Ordering::SeqCst),
+                            refresh * 2,
+                            "R2/R5 mask={mask}"
                         );
                     }
-                    let capabilities = resolver.capability_observations().await.unwrap();
-                    assert_eq!(
-                        capabilities
-                            .iter()
-                            .map(|row| row.backend_ref())
-                            .collect::<Vec<_>>(),
-                        ["acp:claude", "acp:codex"],
-                        "R3 mask={mask}"
-                    );
-                    assert!(
-                        capabilities
-                            .iter()
-                            .all(|row| row.negotiated().is_some() == success),
-                        "R4"
-                    );
-                    assert_eq!(
-                        negotiator.calls.load(Ordering::SeqCst),
-                        refresh * 2,
-                        "R3/R5 mask={mask}"
-                    );
-                    assert_eq!(
-                        discovery.0.load(Ordering::SeqCst),
-                        refresh * 2,
-                        "R2/R5 mask={mask}"
-                    );
                 }
             }
         }
