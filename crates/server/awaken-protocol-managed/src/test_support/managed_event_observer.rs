@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::state::constants::COMMITTED_PREFIX_READ_CONFLICT;
+use crate::state::COMMITTED_PREFIX_READ_CONFLICT;
 
 /// Observe one optionally receipt-anchored Managed Event projection without
 /// becoming a second lifecycle driver. The caller supplies the HTTP GET adapter;

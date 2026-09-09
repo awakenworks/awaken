@@ -67,6 +67,8 @@ pub(crate) mod work_session_access;
 pub use error::StateError;
 pub use managed_state::ManagedState;
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use constants::COMMITTED_PREFIX_READ_CONFLICT;
 pub(crate) use constants::{DEFAULT_SCOPE, LEGACY_UNRECORDED_AT, MEMORY_CREATE_ONLY};
 pub(crate) use helpers::{
     content_text, durable_inbound_event_id, is_transient_event_id, lifecycle_fact, rubric_text,
