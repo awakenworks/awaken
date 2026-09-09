@@ -273,7 +273,26 @@ TerminalClearsOperation ==
            /\ durableTask = NoTask
            /\ acceptedOperation = "NoOperation"
 
-StableReplayIdentity == sentMessageIds \subseteq {"Execute", "Resume"}
+\* Count events as well as identities: a set alone erases duplicate sends.
+EachOperationIsSentAtMostOnce == sends = Cardinality(sentMessageIds)
+
+\* R1 fresh/resume sends consume their exact already-committed Prepared
+\* identity. R2 a crash before OR after send freezes the unknown operation;
+\* zero sends before the crash does not authorize a later first send.
+\* Accepted recovery may GET, and a new Resume operation may send once.
+EverySendHasFreshPreparedAuthority == [][sends' > sends =>
+    /\ phase \in {"FreshPrepared", "ResumePrepared"}
+    /\ preparedOperation = IF phase = "FreshPrepared" THEN "Execute" ELSE "Resume"
+    /\ preparedOperation \in MessageIds \ sentMessageIds
+    /\ durableEndpoint # NoEndpoint /\ durableTask = NoTask
+    /\ acceptedOperation = "NoOperation"
+    /\ sends' = sends + 1
+    /\ sentMessageIds' = sentMessageIds \cup {preparedOperation}]_vars
+
+UnconfirmedNeverRearmsOrProducesOutbound == [][phase = "Unconfirmed" =>
+    /\ phase' \in {"Unconfirmed", "FailedClosed"}
+    /\ UNCHANGED <<preparedOperation, acceptedOperation, durableTask,
+                    sentMessageIds, sends, reads, cancels>>]_vars
 
 EndpointMismatchFailsClosed ==
     phase = "FailedClosed" => configuredEndpoint # durableEndpoint
@@ -293,9 +312,20 @@ Safety ==
     /\ ResumePreparedRetainsOnlyPredecessorCoordinate
     /\ UnconfirmedCannotClaimAcceptedTask
     /\ TerminalClearsOperation
-    /\ StableReplayIdentity
+    /\ EachOperationIsSentAtMostOnce
     /\ EndpointMismatchFailsClosed
     /\ MismatchNeverProducesOutbound
     /\ CancellationTargetsOnlyAcceptedTask
+
+\* False reachability oracles: both sides of each crash window and legal
+\* Accepted recovery/new-operation progress must remain reachable.
+NoFreshPreSendCrash == ~(phase = "Unconfirmed" /\ preparedOperation = "Execute" /\ sends = 0)
+NoFreshPostSendCrash == ~(phase = "Unconfirmed" /\ preparedOperation = "Execute" /\ sends = 1)
+NoResumePreSendCrash == ~(phase = "Unconfirmed" /\ preparedOperation = "Resume" /\ sends = 1)
+NoResumePostSendCrash == ~(phase = "Unconfirmed" /\ preparedOperation = "Resume" /\ sends = 2)
+NoAcceptedRecovery == ~(phase = "Running" /\ reads > 0 /\ acceptedOperation = "Execute")
+NoDistinctResumeSend == ~(phase = "ResumeSent" /\ sends = 2 /\ sentMessageIds = MessageIds)
+\* An earlier Execute GET must not masquerade as a resumed-task GET witness.
+NoResumedAcceptedRecovery == [][~(reads' > reads /\ acceptedOperation = "Resume")]_vars
 
 =============================================================================
