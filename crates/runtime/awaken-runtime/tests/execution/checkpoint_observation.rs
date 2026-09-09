@@ -471,13 +471,27 @@ async fn early_cancellation_preserves_recovered_model_uncertainty() {
 async fn control_completion_never_supplies_predecessor_stop_evidence() {
     use awaken_runtime_contract::model_operation::ModelExecutionEvidence::{Terminated, Unknown};
     // C1 cancel Run / cancel activation / budget stop; C2 absent/terminated/
-    // unknown journal. Nine rules C1 x C2: keep the requested logical outcome,
-    // no model entry or new ordinal; only Unknown vetoes physical return.
+    // unknown journal; C3 single record / followed by a different completed
+    // invocation. Eighteen rules C1 x C2 x C3: preserve the logical outcome and
+    // all journal writes; a later completion cannot erase the Unknown veto.
     for entry in ["cancel-run", "cancel-activation", "stop"] {
-        for evidence in [None, Some(Terminated), Some(Unknown)] {
+        for (evidence, later_completed) in [None, Some(Terminated), Some(Unknown)]
+            .into_iter()
+            .flat_map(|evidence| [false, true].map(|later| (evidence, later)))
+        {
             let durable = Arc::new(MemoryCommitCoordinator::new());
             if let Some(evidence) = evidence {
                 commit_model_evidence(&durable, evidence).await;
+            }
+            if later_completed {
+                let previous = model_operations(&durable).last().cloned();
+                let mut later = awaken_runtime_contract::model_operation::ModelOperation::next(
+                    previous.as_ref(),
+                    ModelBinding::new("p", "m", "b"),
+                )
+                .unwrap();
+                later.execution = Terminated;
+                commit_model_operations(&durable, [later]).await;
             }
             let before = model_operations(&durable);
             let context = RuntimeRunContext::new()

@@ -1403,39 +1403,49 @@ async fn resuming_a_delegation_done_folds_the_reply_and_completes() {
 async fn unknown_parent_model_evidence_blocks_child_resume_before_external_effect() {
     use awaken_runtime_contract::model_operation::{ActiveModelOperation, ModelOperation};
     use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
-    // C1 durable awaiting child; C2 parent model evidence is Unknown.
+    // C1 durable awaiting child; C2 parent model evidence is Unknown alone or
+    // hidden by a later distinct completed invocation. Both histories must veto.
     // R1 C1+C2 => Indeterminate and physical veto before child resume. The
     // adjacent RD2 positive control proves the same child can resume normally.
-    let executor = Arc::new(MockRunDelegationService::new(
-        Step::Awaiting(serde_json::json!({"task":"remote-42"})),
-        Step::Done("unexpected".into(), 0),
-    ));
-    let (runtime, commit) = await_on_delegation(executor.clone()).await;
-    let prior = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
-    commit
-        .commit(ThreadCommit::assemble(
-            ThreadId("thread-1".into()),
-            RunDisposition::awaiting(commit.resume_ticket_for(&RunId("run-1".into())).unwrap()),
-            true,
-            Vec::new(),
-            vec![ActiveModelOperation::write(&Some(prior))],
-            Vec::new(),
-        ))
-        .await
-        .unwrap();
-    let context = RuntimeRunContext::new()
-        .with_commit(commit.clone())
-        .with_reader(commit.clone());
-    let quiescence = context.physical_quiescence.clone();
-    assert_eq!(
-        runtime
-            .resume(resume_command("continue"), commit.as_ref(), context)
+    for shadowed in [false, true] {
+        let executor = Arc::new(MockRunDelegationService::new(
+            Step::Awaiting(serde_json::json!({"task":"remote-42"})),
+            Step::Done("unexpected".into(), 0),
+        ));
+        let (runtime, commit) = await_on_delegation(executor.clone()).await;
+        let prior = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
+        let mut later = ModelOperation::next(Some(&prior), prior.binding.clone()).unwrap();
+        later.execution =
+            awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated;
+        let mut commands = vec![ActiveModelOperation::write(&Some(prior))];
+        if shadowed {
+            commands.push(ActiveModelOperation::write(&Some(later)));
+        }
+        commit
+            .commit(ThreadCommit::assemble(
+                ThreadId("thread-1".into()),
+                RunDisposition::awaiting(commit.resume_ticket_for(&RunId("run-1".into())).unwrap()),
+                true,
+                Vec::new(),
+                commands,
+                Vec::new(),
+            ))
             .await
-            .unwrap(),
-        RunState::Ended(EndCause::Indeterminate)
-    );
-    assert!(executor.resumed_with.lock().unwrap().is_empty());
-    assert!(!quiescence.can_acknowledge_return());
+            .unwrap();
+        let context = RuntimeRunContext::new()
+            .with_commit(commit.clone())
+            .with_reader(commit.clone());
+        let quiescence = context.physical_quiescence.clone();
+        assert_eq!(
+            runtime
+                .resume(resume_command("continue"), commit.as_ref(), context)
+                .await
+                .unwrap(),
+            RunState::Ended(EndCause::Indeterminate)
+        );
+        assert!(executor.resumed_with.lock().unwrap().is_empty());
+        assert!(!quiescence.can_acknowledge_return());
+    }
 }
 
 #[tokio::test]

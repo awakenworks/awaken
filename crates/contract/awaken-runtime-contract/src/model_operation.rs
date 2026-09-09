@@ -169,6 +169,41 @@ impl StateKey for ActiveModelOperation {
 }
 
 impl ActiveModelOperation {
+    /// Reconstruct recorded invocations from an already frozen committed view.
+    /// The caller owns prefix selection; this does not invent commit cursors or
+    /// certify complete enrollment. Both Native recovery and historical protocol
+    /// observation use this one decoder/fold instead of the latest-value cell.
+    pub fn recorded<'a>(
+        state: impl IntoIterator<Item = &'a awaken_agent_contract::agent::state::Command>,
+        run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<Vec<ModelOperation>, awaken_agent_contract::agent::state::StateError> {
+        use awaken_agent_contract::agent::state::Store;
+        let mut recorded = Vec::new();
+        for command in state {
+            if !Self::records_run(command, run_id) {
+                continue;
+            }
+            if command.merge != Self::MERGE {
+                return Err(invalid_history(
+                    "model evidence has an incompatible merge policy",
+                ));
+            }
+            // Decode EACH write through the existing typed cell. Folding first
+            // would hide malformed/removed history behind a later valid Set.
+            let mut store = Store::new();
+            store.apply(command);
+            let operation = Self::load(&store)?.ok_or_else(|| {
+                invalid_history("model evidence cannot erase recorded invocations")
+            })?;
+            if !fold_recorded_operation(&mut recorded, operation) {
+                return Err(invalid_history(
+                    "model invocation ordinal changed its binding",
+                ));
+            }
+        }
+        Ok(recorded)
+    }
+
     /// Read every recorded invocation of the exact Run at one committed prefix.
     /// Later ordinals cannot erase an earlier Unknown; updates to one ordinal
     /// must preserve its binding. Results are ordered by ordinal and reconstruct
@@ -182,46 +217,50 @@ impl ActiveModelOperation {
         run_id: &awaken_agent_contract::agent::run::Id,
         through: u64,
     ) -> Result<Vec<ModelOperation>, awaken_agent_contract::agent::state::StateError> {
-        use awaken_agent_contract::agent::state::{StateError, Store};
-        let belongs = |command: &&awaken_agent_contract::agent::state::Command| {
-            command.scope == Self::SCOPE
-                && command.key.0 == Self::KEY
-                && command.run_id.as_ref() == Some(run_id)
-        };
-        if !state.iter().any(|command| belongs(&command)) {
+        if !state
+            .iter()
+            .any(|command| Self::records_run(command, run_id))
+        {
             return Ok(Vec::new());
         }
-        let invalid = |detail: &str| StateError {
-            key: Self::KEY.into(),
-            scope: Self::SCOPE,
-            detail: detail.into(),
-        };
         if state.len() != cursors.len() {
-            return Err(invalid("model evidence has no aligned commit coordinates"));
+            return Err(invalid_history(
+                "model evidence has no aligned commit coordinates",
+            ));
         }
-        let mut recorded = Vec::new();
         let mut previous_cursor = 0;
-        for (command, cursor) in state.iter().zip(cursors) {
+        for cursor in cursors {
             if *cursor == 0 || *cursor < previous_cursor {
-                return Err(invalid("model evidence commit coordinates are not ordered"));
+                return Err(invalid_history(
+                    "model evidence commit coordinates are not ordered",
+                ));
             }
             previous_cursor = *cursor;
-            if belongs(&command) && *cursor <= through {
-                if command.merge != Self::MERGE {
-                    return Err(invalid("model evidence has an incompatible merge policy"));
-                }
-                // Decode EACH write through the existing typed cell. Folding
-                // first would hide malformed/removed history behind a later Set.
-                let mut store = Store::new();
-                store.apply(command);
-                let operation = Self::load(&store)?
-                    .ok_or_else(|| invalid("model evidence cannot erase recorded invocations"))?;
-                if !fold_recorded_operation(&mut recorded, operation) {
-                    return Err(invalid("model invocation ordinal changed its binding"));
-                }
-            }
         }
-        Ok(recorded)
+        Self::recorded(
+            state
+                .iter()
+                .zip(cursors)
+                .filter_map(|(command, cursor)| (*cursor <= through).then_some(command)),
+            run_id,
+        )
+    }
+
+    fn records_run(
+        command: &awaken_agent_contract::agent::state::Command,
+        run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> bool {
+        command.scope == Self::SCOPE
+            && command.key.0 == Self::KEY
+            && command.run_id.as_ref() == Some(run_id)
+    }
+}
+
+fn invalid_history(detail: &str) -> awaken_agent_contract::agent::state::StateError {
+    awaken_agent_contract::agent::state::StateError {
+        key: ActiveModelOperation::KEY.into(),
+        scope: ActiveModelOperation::SCOPE,
+        detail: detail.into(),
     }
 }
 
@@ -356,6 +395,16 @@ fn model_operation_history_preserves_distinct_subjects() {
         assert_eq!(recorded[1 - first_index], incoming);
         assert!(recorded[0].ordinal < recorded[1].ordinal);
     }
+    // R4 Native restoration uses EVERY recorded subject, not the last write:
+    // only a same-subject accepted receipt can clear the original Unknown.
+    // R5 a late lower-ordinal receipt cannot rewind the next invocation key.
+    assert_eq!(
+        recorded
+            .iter()
+            .all(|operation| operation.execution.permits_reentry()),
+        first == second && same_binding && evidence.permits_reentry(),
+    );
+    assert_eq!(recorded.last().unwrap().ordinal.get(), first.max(second));
 }
 
 #[cfg(test)]
@@ -520,6 +569,16 @@ mod tests {
                 through,
             )
             .unwrap();
+            // R6 the current committed-view entry and historical prefix entry
+            // must select exactly the same invocations. No synthesized cursors.
+            let prefix = commands
+                .iter()
+                .zip([1, 2, 2, 2, 3, 4, 5, 6])
+                .filter_map(|(command, cursor)| (cursor <= through).then_some(command));
+            assert_eq!(
+                ActiveModelOperation::recorded(prefix, &run).unwrap(),
+                recorded
+            );
             assert_eq!(
                 recorded.len(),
                 usize::from(through >= 1) + usize::from(through >= 3) + usize::from(through >= 5)

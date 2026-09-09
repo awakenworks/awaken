@@ -721,6 +721,7 @@ pub awaken_runtime_contract::model_operation::ModelOperationPhase::Returned
 pub awaken_runtime_contract::model_operation::ModelOperationPhase::TimedOut
 pub struct awaken_runtime_contract::model_operation::ActiveModelOperation
 impl awaken_runtime_contract::model_operation::ActiveModelOperation
+pub fn awaken_runtime_contract::model_operation::ActiveModelOperation::recorded<'a>(impl core::iter::traits::collect::IntoIterator<Item = &'a awaken_agent_contract::agent::state::Command>, &awaken_agent_contract::agent::run::Id) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::model_operation::ModelOperation>, awaken_agent_contract::agent::state::StateError>
 pub fn awaken_runtime_contract::model_operation::ActiveModelOperation::recorded_at_commit(&[awaken_agent_contract::agent::state::Command], &[u64], &awaken_agent_contract::agent::run::Id, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::model_operation::ModelOperation>, awaken_agent_contract::agent::state::StateError>
 impl awaken_agent_contract::agent::state::StateKey for awaken_runtime_contract::model_operation::ActiveModelOperation
 pub type awaken_runtime_contract::model_operation::ActiveModelOperation::Value = core::option::Option<awaken_runtime_contract::model_operation::ModelOperation>
