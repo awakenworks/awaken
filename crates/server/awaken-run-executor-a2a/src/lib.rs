@@ -147,6 +147,7 @@ mod tests {
     pub(super) struct ScriptedTransport {
         replies: Mutex<std::collections::VecDeque<std::result::Result<Response, String>>>,
         pub(super) seen: Mutex<Vec<(String, String, Option<String>)>>,
+        before_request: Option<Arc<send_windows::RequestObserver>>,
     }
 
     impl ScriptedTransport {
@@ -154,6 +155,7 @@ mod tests {
             Self {
                 replies: Mutex::new(replies.into()),
                 seen: Mutex::new(Vec::new()),
+                before_request: None,
             }
         }
     }
@@ -166,6 +168,9 @@ mod tests {
             path: &str,
             body: Option<Vec<u8>>,
         ) -> std::result::Result<Response, String> {
+            if let Some(observe) = &self.before_request {
+                observe(path, body.as_deref());
+            }
             self.seen.lock().unwrap().push((
                 method.to_string(),
                 path.to_string(),
@@ -1622,6 +1627,7 @@ mod tests {
     }
 
     mod operation_state;
+    mod send_windows;
 
     fn resume_command(activation: &RunActivation) -> ResumeCommand {
         ResumeCommand {
