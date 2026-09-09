@@ -386,6 +386,7 @@ pub(super) async fn resume_delegation(
     reader: &dyn CommittedThreadView,
     context: &RuntimeRunContext,
     resume_checkpoint: Option<StreamCheckpoint>,
+    mut store: Store,
 ) -> Result<RunState> {
     let (call_id, pending) = ticket.tool_call().ok_or_else(|| {
         Error::Execution("awaiting delegation is missing its pending tool".to_string())
@@ -423,7 +424,6 @@ pub(super) async fn resume_delegation(
         )
         .await;
     }
-    let mut store = store_from_run_commands(reader.committed_state(thread_id), run_id);
     let step = match derive_delegation_origin(
         ticket.delegation_origin.as_ref(),
         &resolved.agent_id.0,
@@ -550,6 +550,7 @@ pub(super) async fn resume_delegation(
         context,
         ResumeContinuation::NativeLoop,
         resume_checkpoint,
+        store,
     )
     .await
 }

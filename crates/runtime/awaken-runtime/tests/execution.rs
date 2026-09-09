@@ -68,27 +68,35 @@ async fn commit_model_evidence(
     durable: &MemoryCommitCoordinator,
     evidence: awaken_runtime_contract::model_operation::ModelExecutionEvidence,
 ) {
-    use awaken_runtime_contract::model_operation::{
-        ActiveModelOperation, ModelOperation, ModelOperationPhase,
-    };
+    use awaken_runtime_contract::model_operation::{ModelOperation, ModelOperationPhase};
     // Persist the selected predecessor fact through the real state log. A local
     // Returned phase alone cannot turn Unknown into permission to replay.
     let mut prior = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
     prior.phase = ModelOperationPhase::Returned;
     prior.execution = evidence;
-    awaken_runtime_contract::CommitCoordinator::commit(
-        durable,
-        awaken_runtime_contract::ThreadCommit::assemble(
-            ThreadId("thread-1".into()),
-            awaken_runtime_contract::RunDisposition::running(RunId("run-1".into())),
-            true,
-            Vec::new(),
-            vec![ActiveModelOperation::write(&Some(prior))],
-            Vec::new(),
-        ),
-    )
-    .await
-    .unwrap();
+    commit_model_operations(durable, [prior]).await;
+}
+
+async fn commit_model_operations(
+    durable: &MemoryCommitCoordinator,
+    operations: impl IntoIterator<Item = awaken_runtime_contract::model_operation::ModelOperation>,
+) {
+    use awaken_runtime_contract::model_operation::ActiveModelOperation;
+    for operation in operations {
+        awaken_runtime_contract::CommitCoordinator::commit(
+            durable,
+            awaken_runtime_contract::ThreadCommit::assemble(
+                ThreadId("thread-1".into()),
+                awaken_runtime_contract::RunDisposition::running(RunId("run-1".into())),
+                true,
+                Vec::new(),
+                vec![ActiveModelOperation::write(&Some(operation))],
+                Vec::new(),
+            ),
+        )
+        .await
+        .unwrap();
+    }
 }
 
 fn committed_model_requests(store: &MemoryCommitCoordinator) -> Vec<ModelRequestObservation> {
@@ -340,6 +348,128 @@ async fn cancellation_drains_model_evidence_commit_before_terminalizing() {
                 .count(),
             1
         );
+    }
+}
+
+#[tokio::test]
+async fn restored_model_history_cannot_hide_an_older_unknown_invocation() {
+    use awaken_runtime_contract::model_operation::{ModelExecutionEvidence, ModelOperation};
+    // Cause/effect table: C1 older invocation Unknown/Terminated; C2 its
+    // terminal receipt absent/present after a newer invocation completed.
+    // R1 Unknown+absent => Indeterminate, zero model calls, physical ACK veto.
+    // R2 Terminated+absent and R3 Unknown+present => normal execution, ordinal
+    // strictly above EVERY retained invocation (a late receipt is not a rewind).
+    // The same real committed log feeds Native and the protocol projection;
+    // these historical inputs do not authorize creating overlapping new calls.
+    for (older_stopped, late_receipt) in [(false, false), (true, false), (false, true)] {
+        let durable = Arc::new(MemoryCommitCoordinator::new());
+        let mut older = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
+        if older_stopped {
+            older.execution = ModelExecutionEvidence::Terminated;
+        }
+        let mut newer = ModelOperation::next(Some(&older), older.binding.clone()).unwrap();
+        newer.execution = ModelExecutionEvidence::Terminated;
+        let mut operations = vec![older.clone(), newer];
+        if late_receipt {
+            older.execution = ModelExecutionEvidence::Terminated;
+            operations.push(older);
+        }
+        commit_model_operations(&durable, operations).await;
+        let model = Arc::new(MaxTokensThenTextLlm(AtomicUsize::new(0)));
+        let context = RuntimeRunContext::new()
+            .with_commit(durable.clone())
+            .with_reader(durable.clone());
+        let quiescence = context.physical_quiescence.clone();
+        let result = Runtime::new()
+            .with_llm(model.clone())
+            .execute(activation("catalog-a"), context)
+            .await
+            .unwrap();
+        if older_stopped || late_receipt {
+            assert_eq!(result, RunState::Ended(EndCause::NaturalEnd));
+            assert_eq!(model.0.load(Ordering::SeqCst), 2);
+            assert_eq!(model_operations(&durable).last().unwrap().ordinal.get(), 4);
+            assert!(quiescence.can_acknowledge_return());
+        } else {
+            assert_eq!(result, RunState::Ended(EndCause::Indeterminate));
+            assert_eq!(model.0.load(Ordering::SeqCst), 0);
+            assert!(!quiescence.can_acknowledge_return());
+        }
+    }
+}
+
+#[tokio::test]
+async fn restored_model_history_rejects_damage_hidden_by_a_valid_latest_value() {
+    use awaken_agent_contract::agent::state::Action;
+    use awaken_runtime_contract::model_operation::{
+        ActiveModelOperation, ModelExecutionEvidence, ModelOperation,
+    };
+    use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
+    // D1 malformed/zero/null/Remove/rebinding followed by a valid latest value;
+    // D2 damage owned by this Run or another Run. R1 owned => Commit error,
+    // no model entry and sticky physical veto; R2 foreign => ordinary execution.
+    // Cross all five damage kinds with D2. Contract tests additionally cover
+    // every binding field, merge mode and historical commit-prefix coordinate.
+    for foreign in [false, true] {
+        for damage in 0..5 {
+            let durable = Arc::new(MemoryCommitCoordinator::new());
+            let mut first = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
+            first.execution = ModelExecutionEvidence::Terminated;
+            let mut broken = ActiveModelOperation::write(&Some(first.clone()));
+            match damage {
+                0 => broken.action = Action::Set(serde_json::json!("malformed")),
+                1 => {
+                    let Action::Set(value) = &mut broken.action else {
+                        unreachable!()
+                    };
+                    value["ordinal"] = 0.into();
+                }
+                2 => broken.action = Action::Set(serde_json::Value::Null),
+                3 => broken.action = Action::Remove,
+                _ => {
+                    let mut changed = first.clone();
+                    changed.binding.model_ref.push('x');
+                    broken = ActiveModelOperation::write(&Some(changed));
+                }
+            }
+            for command in [
+                ActiveModelOperation::write(&Some(first.clone())),
+                broken,
+                ActiveModelOperation::write(&Some(first)),
+            ] {
+                durable
+                    .commit(ThreadCommit::assemble(
+                        ThreadId("thread-1".into()),
+                        RunDisposition::running(RunId(
+                            if foreign { "foreign" } else { "run-1" }.into(),
+                        )),
+                        true,
+                        Vec::new(),
+                        vec![command],
+                        Vec::new(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+            let model = Arc::new(MaxTokensThenTextLlm(AtomicUsize::new(0)));
+            let context = RuntimeRunContext::new()
+                .with_commit(durable.clone())
+                .with_reader(durable);
+            let quiescence = context.physical_quiescence.clone();
+            let result = Runtime::new()
+                .with_llm(model.clone())
+                .execute(activation("catalog-a"), context)
+                .await;
+            if foreign {
+                assert_eq!(result.unwrap(), RunState::Ended(EndCause::NaturalEnd));
+                assert_eq!(model.0.load(Ordering::SeqCst), 2);
+                assert!(quiescence.can_acknowledge_return());
+            } else {
+                assert!(matches!(result, Err(Error::Commit(_))), "damage {damage}");
+                assert_eq!(model.0.load(Ordering::SeqCst), 0);
+                assert!(!quiescence.can_acknowledge_return());
+            }
+        }
     }
 }
 

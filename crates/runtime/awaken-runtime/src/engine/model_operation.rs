@@ -44,7 +44,44 @@ pub(super) enum RecoveryObservation {
 /// Observe recovery once before initial/resumed effects, not after permission
 /// approval or delegation. Pass the validated partial into the Native loop;
 /// model-free handoffs share this gate without needing a model executor.
+/// Return the rebuilt state even on an observation error: control commands may
+/// still seal logical tool state, but the uncertainty latch forbids physical ACK.
+/// Owning the input here prevents callers pairing evidence with another view
+/// and avoids retaining a duplicate full state log throughout model execution.
 pub(super) async fn recover_checkpoint(
+    committed_state: Vec<awaken_agent_contract::agent::state::Command>,
+    context: &RuntimeRunContext,
+    run_id: &RunId,
+    thread_id: &ThreadId,
+) -> (Store, Result<RecoveryObservation>) {
+    // Inspect the SAME frozen prefix used to rebuild this execution view, never
+    // context.reader again (resume may have a different authoritative reader).
+    // A later completion cannot erase an older Unknown. A late receipt for an
+    // older ordinal may resolve that invocation, but cannot rewind allocation.
+    let recorded = ActiveModelOperation::recorded(&committed_state, run_id).map_err(|error| {
+        context.physical_quiescence.mark_uncertain();
+        Error::Commit(format!("model operation evidence unavailable: {error}"))
+    });
+    let mut store = store_from_run_commands(committed_state, run_id);
+    let observation = match recorded {
+        Ok(recorded) => {
+            if recorded
+                .iter()
+                .any(|operation| !operation.execution.permits_reentry())
+            {
+                context.physical_quiescence.mark_uncertain();
+            }
+            if let Some(latest) = recorded.last() {
+                store.apply(&ActiveModelOperation::write(&Some(latest.clone())));
+            }
+            observe_checkpoint(&store, context, run_id, thread_id).await
+        }
+        Err(error) => Err(error),
+    };
+    (store, observation)
+}
+
+async fn observe_checkpoint(
     store: &Store,
     context: &RuntimeRunContext,
     run_id: &RunId,

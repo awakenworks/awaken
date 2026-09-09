@@ -10,30 +10,28 @@ pub(crate) async fn run_agent_loop(
 ) -> Result<RunState> {
     let run_id = activation.run_id.clone();
     let thread_id = activation.thread_id.clone();
-    let store = store_from_run_commands(
-        context
-            .reader
-            .as_ref()
-            .map(|reader| reader.committed_state(&thread_id))
-            .unwrap_or_default(),
-        &run_id,
-    );
-    let resume_checkpoint =
-        match model_operation::recover_checkpoint(&store, &context, &run_id, &thread_id).await? {
-            model_operation::RecoveryObservation::Ready(checkpoint) => checkpoint,
-            model_operation::RecoveryObservation::End(cause) => {
-                let (_, fresh_input) =
-                    committed_history_and_fresh_input(&context, &thread_id, activation.input);
-                return finish(
-                    runtime,
-                    &context,
-                    &thread_id,
-                    run_id.clone(),
-                    RunStepResult::ended_with_messages(run_id, cause, fresh_input),
-                )
-                .await;
-            }
-        };
+    let committed_state = context
+        .reader
+        .as_ref()
+        .map(|reader| reader.committed_state(&thread_id))
+        .unwrap_or_default();
+    let (store, recovery) =
+        model_operation::recover_checkpoint(committed_state, &context, &run_id, &thread_id).await;
+    let resume_checkpoint = match recovery? {
+        model_operation::RecoveryObservation::Ready(checkpoint) => checkpoint,
+        model_operation::RecoveryObservation::End(cause) => {
+            let (_, fresh_input) =
+                committed_history_and_fresh_input(&context, &thread_id, activation.input);
+            return finish(
+                runtime,
+                &context,
+                &thread_id,
+                run_id.clone(),
+                RunStepResult::ended_with_messages(run_id, cause, fresh_input),
+            )
+            .await;
+        }
+    };
     let mut resolved = runtime
         .resolve(&activation.snapshot)
         .map_err(map_resolver_error)?;
