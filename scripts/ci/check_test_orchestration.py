@@ -338,10 +338,14 @@ def k8s_container_gate_errors(gate: str) -> list[str]:
     """Require the canonical live K8s runner to execute its control-path case."""
 
     errors: list[str] = []
-    if 'CONTROL_IMAGE="${AWAKEN_K8S_CONTROL_IMAGE:-}"' not in gate or not re.search(
-        r'CONTROL_IMAGE.*@sha256:\[0-9a-f\]\{64\}', gate
-    ):
+    if 'CONTROL_IMAGE="${AWAKEN_K8S_CONTROL_IMAGE:-}"' not in gate or 'k3d_validate_image_digest "$CONTROL_IMAGE"' not in gate:
         errors.append("Kubernetes gate does not require an exact control-image digest")
+    if 'CONTROL_IMAGE=$(k3d_image_digest "$SESSION_IMAGE")' not in gate or (
+        'build.sh" "$SESSION_IMAGE" ""' not in gate
+    ):
+        errors.append("Kubernetes gate cannot qualify the current source without an external image override")
+    if 'k3d_create_cluster "$CLUSTER" 0 128Mi' not in gate:
+        errors.append("Kubernetes gate must use the nested-node reserve with shared capacity admission")
     if 'k3d_import_storage_images "$CLUSTER" "$FIXTURE_IMAGE" "$SESSION_IMAGE" "$CONTROL_IMAGE"' not in gate:
         errors.append("Kubernetes gate does not import the exact control image")
     if not re.search(
@@ -910,13 +914,18 @@ def self_test() -> None:
 
     # Kubernetes-control gate decision table: C12 an exact operator digest is
     # admitted; C13 that image enters the shared importer; C14 both live-test
-    # gates are set on the one canonical k8s_e2e invocation. K1 all true => the
-    # helper/marker path executes. K2 any false => reject orchestration before a
-    # successful Rust skip can count as release evidence.
+    # gates are set on the one canonical k8s_e2e invocation; C15 absent override
+    # builds current source and resolves a manifest (not config) digest; C16 the
+    # nested node uses the shared absolute reserve and actual capacity preflight.
+    # K1 all true => helper/marker executes. K2 any false => reject orchestration
+    # before a skipped test, stale image or host-size-driven eviction can qualify.
     k8s_gate = (ROOT / K8S_CONTAINER_GATE).read_text(encoding="utf-8")
     assert not k8s_container_gate_errors(k8s_gate), "K1 required control roundtrip"
     for mutation in (
-        k8s_gate.replace('@sha256:[0-9a-f]{64}', ':latest', 1),
+        k8s_gate.replace('k3d_validate_image_digest "$CONTROL_IMAGE"', 'true', 1),
+        k8s_gate.replace('CONTROL_IMAGE=$(k3d_image_digest "$SESSION_IMAGE")', 'CONTROL_IMAGE=old:tag', 1),
+        k8s_gate.replace('build.sh" "$SESSION_IMAGE" ""', 'build.sh" --ensure-hand "$SESSION_IMAGE" ""', 1),
+        k8s_gate.replace('k3d_create_cluster "$CLUSTER" 0 128Mi', 'k3d_create_cluster "$CLUSTER" 0 2', 1),
         k8s_gate.replace(' "$CONTROL_IMAGE"\n', '\n', 1),
         k8s_gate.replace('AWAKEN_K8S_CONTROL_E2E=1', 'AWAKEN_K8S_CONTROL_E2E=0', 1),
     ):

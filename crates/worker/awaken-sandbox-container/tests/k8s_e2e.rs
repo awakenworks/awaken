@@ -42,6 +42,7 @@ use k8s_common::{
     container_environment, container_id, disposal_authorization, effect_fence, fixture_image,
     spec_with_command,
 };
+use pc::test_support::EffectAuthority;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Default)]
@@ -925,8 +926,8 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
      * C1 a fenced create produced the exact Session Pod plus durable V2 handle;
      * C2 recovery presents that handle with the byte-identical frozen creation
      * spec and same live effect; C3 the separately owned live Managed File
-     * manifest changes from path/value A to path/value B; C4 this direct
-     * provider test has no external Session authority callback. C1+C2+C3+C4
+     * manifest changes from path/value A to path/value B; C4 the shared
+     * EffectAuthority fixture admits the exact current create fence. C1+C2+C3+C4
      * => E1 adopt
      * reuses the same Pod without a create/re-fingerprint path, E2 the canonical
      * live projection port removes A and projects B, E3 no per-file ConfigMap
@@ -954,7 +955,7 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
         &provider,
         &first_spec,
         Some(&create_fence),
-        None,
+        Some(&EffectAuthority::new(&create_fence)),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -970,7 +971,7 @@ async fn managed_manifest_recovery_reuses_the_pod_and_removes_obsolete_files() {
         &provider,
         ContainerEnvironmentAdoption::new(&first_spec, &handle),
         Some(&create_fence),
-        None,
+        Some(&EffectAuthority::new(&create_fence)),
     )
     .await
     .expect("recover the stable Pod from its frozen spec and exact V2 handle");
@@ -1133,7 +1134,8 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
     // C0=the accepted production Session image carries the canonical
     // `awaken-sandbox read-tree-nofollow` helper; C1=two authoritative snapshots;
     // C2=RW Agent volume; C3=RO Agent volume; C4=unbound parent path; C5=create
-    // and terminal effects are durable and exact. R1 C0+C1+C2+C5 => E1 seeded
+    // and terminal effects are durable and exact, with current authority from
+    // the same EffectAuthority fixture as the lifecycle suite. R1 C0+C1+C2+C5 => E1 seeded
     // read, mutation and harvested durable update; R2 C0+C1+C3+C5 => E2 seeded
     // read, kernel rejects mutation and durable head stays unchanged; R3
     // C0+C1+C4+C5 => E3 sealed parent rejects an unowned path; R4 R1+R2+C5 =>
@@ -1164,7 +1166,7 @@ async fn multiple_memory_stores_round_trip_with_exact_access_in_a_live_pod() {
         &provider,
         &memory_spec,
         Some(&create_fence),
-        None,
+        Some(&EffectAuthority::new(&create_fence)),
         ContainerRealizationIntent::Create,
     )
     .await
