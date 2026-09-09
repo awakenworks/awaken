@@ -325,14 +325,21 @@ type checking are valuable executable evidence, but are not formal proofs.
 - ACP WorkerLocal binding extension validates the complete input batch and
   publishes it under the same resolver mutex. Rejection cannot leak a prefix
   insertion or status update. `AcpLocalBindingBatch.tla` covers two writers,
-  three keys, two revisions and present/absent initial bindings; three semantic
-  mutants detect rejected-prefix publication, check/commit lock splitting and
-  incomplete success. Three positive witnesses cover compatible union,
-  conflicting writers and status updates. Rust decision-table tests include
-  malformed input, conflict position/order, unchanged rejection, retry and real
-  OS-thread races. This is bounded model linkage, not Rust/Mutex refinement;
-  remote binding delivery, revision rotation and asynchronous login-probe
-  freshness remain separate obligations. No second credential store is added.
+  three keys, two revisions, independent Active/Disabled updates and one reader.
+  Per-key writes occur inside the retained lock; each successful commit is
+  complete, rejection stutters and observations match a committed serial prefix.
+  An accepted later status update may replace an earlier accepted value. Six
+  semantic mutants check these boundaries; six witnesses require both writer
+  orders, legal status replacement and an observation between commits.
+  Native threads and Loom execute the same production constructor/add_bindings
+  methods with 24 meaningful writer/status/initial-state combinations plus four
+  malformed-input races. The complete map, both results, observer and consecutive
+  replays must agree with one serial order. Only the mutex is instrumented;
+  no preemption, permutation or duration truncation is allowed. This is bounded
+  Rust schedule evidence, not Kani or universal Rust/Mutex refinement. Arbitrary
+  input sizes, external projection replacement, delivery, revision rotation,
+  panic/poison recovery and asynchronous login freshness remain outside it.
+  No second credential store or transition implementation is added.
   The Worker-owned implementation now resides in
   `awaken-run-executor-acp::host`; Coordinator registration translates its
   Control rows into the same exact binding DTO.

@@ -1880,6 +1880,7 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-runtime-contract",
  "libc",
+ "loom",
  "serde",
  "serde_json",
  "tempfile",

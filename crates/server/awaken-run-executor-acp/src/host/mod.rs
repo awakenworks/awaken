@@ -1,11 +1,17 @@
 //! Host-side ACP preparation and liveness adapters. No Control repository or secret store.
 
 #[cfg(test)]
+mod binding_batch_tests;
+#[cfg(test)]
 mod tests;
 
+#[cfg(all(test, feature = "loom"))]
+use loom::sync::Mutex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(not(all(test, feature = "loom")))]
+use std::sync::Mutex;
 
 use crate::{AcpCli, acp_cli};
 use async_trait::async_trait;
@@ -412,10 +418,7 @@ impl AcpLocalCredentialResolver {
     }
 
     async fn observe(&self, binding: &LocalBinding) -> CredentialObservation {
-        let observed_at_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as u64)
-            .unwrap_or_default();
+        let observed_at_ms = wall_clock_ms();
         if !binding.enabled {
             return CredentialObservation {
                 credential: binding.credential.clone(),
