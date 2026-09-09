@@ -486,17 +486,22 @@ impl ManagedState {
                 .events
                 .iter()
                 .all(|event| matches!(event, InboundEvent::UserInterrupt { .. }));
-        if interruption_only {
-            self.ensure_session_for_frozen_control(session_id).await?;
+        let recovery = if interruption_only {
+            self.ensure_session_for_frozen_control(session_id).await
         } else {
             // Recover before resolving the agent so a normal resume continues
             // the awaiting run instead of creating a second execution (ADR-0039).
-            self.ensure_session(session_id).await?;
-        }
-        let accepted = if let Some(batch) = classify_retry().await? {
+            self.ensure_session(session_id).await
+        };
+        // Recovery is part of admission: a concurrent root winner can arrive
+        // after the first absent read even when this dependency later fails.
+        // The SAME final retry observation below classifies every failure.
+        let admission = if let Err(error) = recovery {
+            Err(error)
+        } else if let Some(batch) = classify_retry().await? {
             return Ok(receipt_response(&batch));
         } else {
-            let admission = async {
+            async {
                 // An archived session is terminal and read-only: refuse every inbound write
                 // (message, resume, interrupt, outcome) with a 409, before touching the
                 // runtime — the contract makes an archived session read-only.
@@ -561,15 +566,15 @@ impl ManagedState {
                         }
                     })
             }
-            .await;
-            match admission {
-                Ok(Some(batch)) => batch,
-                Ok(None) => return Ok(SendEventsResponse { data: Vec::new() }),
-                Err(error) => match classify_retry().await? {
-                    Some(batch) => return Ok(receipt_response(&batch)),
-                    None => return Err(error),
-                },
-            }
+            .await
+        };
+        let accepted = match admission {
+            Ok(Some(batch)) => batch,
+            Ok(None) => return Ok(SendEventsResponse { data: Vec::new() }),
+            Err(error) => match classify_retry().await? {
+                Some(batch) => return Ok(receipt_response(&batch)),
+                None => return Err(error),
+            },
         };
 
         // Retryable dependency failure after the root CAS cannot revoke an
