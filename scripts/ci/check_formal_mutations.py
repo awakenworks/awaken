@@ -335,7 +335,7 @@ class MutationOracleTests(unittest.TestCase):
             "background-completion-model-mutant", "sandbox-control-model-mutants",
             "audit-commit-model-mutants", "effect-retirement-model-mutant",
             "credential-creation-model-mutants", "verified-admission-model-mutants",
-            "session-network-model-mutant", "session-observation-model-mutants",
+            "session-network-model-mutant", "work-queue-stop-model-mutants", "session-observation-model-mutants",
             "cowork-lifecycle-model-mutants", "local-process-model-mutant",
             "local-recovery-model-mutants", "checkpoint-recovery-model-mutants",
             "mcp-credential-model-mutants", "credential-effect-model-mutants",
@@ -557,6 +557,7 @@ def main() -> None:
         "credential-creation-model-mutants": check_credential_creation_model_mutants,
         "verified-admission-model-mutants": check_verified_admission_model_mutants,
         "session-network-model-mutant": check_session_network_model_mutant,
+        "work-queue-stop-model-mutants": check_work_queue_stop_model_mutants,
         "session-observation-model-mutants": check_session_observation_model_mutants,
         "cowork-lifecycle-model-mutants": check_cowork_lifecycle_model_mutants,
         "local-process-model-mutant": check_local_process_model_mutants,
@@ -1195,6 +1196,44 @@ def check_credential_creation_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "ManagedCredentialCreation", source, config,
                              mutations, heap_mb=1024, timeout_seconds=120)
     print("Credential creation: 3/3 semantic mutants killed; legacy takeover/repeated takeover/abort and fresh publication witnesses reachable")
+
+
+def check_work_queue_stop_model_mutants(tlc_jar: Path) -> None:
+    # S1 exact request -> addressed authority clears; S2 wrong owner and S3
+    # wrong epoch -> no Stop effect. General queue Safety cannot qualify these
+    # guards, so both mutants must fail the precise request action property.
+    source = (ROOT / "formal/tla/WorkQueueKernel.tla").read_text()
+    config = (ROOT / "formal/tla/WorkQueue.cfg").read_text()
+    beginning = "Stop(worker, item, expectedEpoch) ==\n"
+    ending = "\\* Request/effect oracle for the existing Stop action"
+    if source.count(beginning) != 1 or source.count(ending) != 1:
+        raise SystemExit("WorkQueue Stop mutation boundary drifted")
+    start = source.index(beginning)
+    stop = source[start:source.index(ending, start)]
+    # Isolate the request action oracle: otherwise the owner mutant first
+    # trips StoppedHasNoStopEffect and never qualifies request binding itself.
+    # The full unchanged CFG is still checked by strict CI and the witness run.
+    guard_config = config.split("INVARIANTS\n", 1)[0] + "PROPERTIES StopRequestsAreBound\nCHECK_DEADLOCK FALSE\n"
+    mutations = []
+    for guard in (r"    /\ kOwner[item] = worker", r"    /\ kEpoch[item] = expectedEpoch"):
+        if stop.count(guard) != 1:
+            raise SystemExit("WorkQueue Stop request guard drifted")
+        mutated = source.replace(stop, stop.replace(guard, r"    /\ TRUE", 1), 1)
+        mutations.append((mutated, guard_config, "action:StopRequestsAreBound"))
+    check_tlc_model_mutations(tlc_jar, "WorkQueueKernel", source, guard_config, mutations)
+    # S4 nonvacuity: a legal Stop must reach Stopped, where the unchanged base
+    # checks both disabled repeated Stop and ENABLED UNCHANGED kVars. Spec's
+    # unlabeled stutter has no request or bool result; it does not prove the
+    # stores' successful Stopped/same-epoch replay response.
+    boundary = "============================================================================="
+    if source.count(boundary) != 1:
+        raise SystemExit("WorkQueue kernel module boundary drifted")
+    witness = source.replace(boundary, r"NoStoppedWorkReached == \A item \in WorkItems: kState[item] # " + '"Stopped"\n' + boundary)
+    check_tlc_model_mutations(
+        tlc_jar, "WorkQueueKernel", witness, config,
+        [(witness, config + "\nINVARIANT NoStoppedWorkReached\n", "NoStoppedWorkReached")],
+    )
+    print("WorkQueue Stop: 2/2 exact-request guard mutants killed; legal Stop and unlabeled Stopped stutter qualified")
 
 
 def check_session_network_model_mutant(tlc_jar: Path) -> None:

@@ -42,5 +42,8 @@ ActiveHasOneOwner == Kernel!ActiveHasOneOwner
 ActiveEpochIsPositive == Kernel!ActiveEpochIsPositive
 TerminalHasNoLeaseAuthority == Kernel!TerminalHasNoLeaseAuthority
 Safety == Kernel!Safety
+StopRequestsAreBound == Kernel!StopRequestsAreBound
+StoppedHasNoStopEffect == Kernel!StoppedHasNoStopEffect
+StoppedPermitsStateStutter == Kernel!StoppedPermitsStateStutter
 
 =============================================================================
