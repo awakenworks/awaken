@@ -563,7 +563,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --cbmc-args --unwindset memcmp.0:16
   run_kani awaken-protocol-managed \
     --harness projection_publish_decision_is_total_exact_and_fail_closed \
+    --harness runtime_tool_projection_phase_is_total_distinct_and_fail_closed \
     --harness canonical_event_order_never_depends_on_wall_time \
+    --harness historical_pending_order_precedes_every_admitted_terminal \
     --solver kissat \
     --harness organization_bucket_refill_is_exact_and_bounded \
     --harness organization_bucket_saturated_refill_is_canonical_and_bounded \

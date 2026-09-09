@@ -199,12 +199,15 @@ impl ManagedState {
                 candidate.projected_event_id = projected_event_id;
             }
         }
-        let retained_replies =
-            Self::retained_tool_reply_identities(&persisted_session, &candidates);
+        let tool_reply_phases = Self::tool_reply_projection_phases(&persisted_session, &candidates);
         let mut unresolved = candidates
             .iter()
             .map(|candidate| candidate.key.clone())
-            .filter(|key| !retained_replies.contains(key))
+            .filter(|key| {
+                tool_reply_phases
+                    .get(key)
+                    .is_none_or(|phase| phase.is_pending())
+            })
             .collect::<std::collections::HashSet<_>>();
         let budget_cap_reached = !persisted_session.budget.can_admit_model_request();
         // A pending committed tool reply is the stronger aggregate state. With

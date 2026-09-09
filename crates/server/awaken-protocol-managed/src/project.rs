@@ -431,11 +431,38 @@ pub(crate) struct AdvisorConsultationBlocks {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CommittedToolDisposition {
-    Resolved,
+pub(crate) enum RuntimeToolProjectionPhase {
+    Processed,
     PendingClient,
     PendingBuiltin,
+    Resolving,
     Unclassified,
+}
+
+impl RuntimeToolProjectionPhase {
+    pub(crate) const fn from_pending(client_executed: bool) -> Self {
+        if client_executed {
+            Self::PendingClient
+        } else {
+            Self::PendingBuiltin
+        }
+    }
+
+    pub(crate) const fn from_retained_reply(processed: bool) -> Self {
+        if processed {
+            Self::Processed
+        } else {
+            Self::Resolving
+        }
+    }
+
+    pub(crate) const fn is_pending(self) -> bool {
+        matches!(self, Self::PendingClient | Self::PendingBuiltin)
+    }
+
+    const fn is_transcript_visible(self) -> bool {
+        !matches!(self, Self::Unclassified)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -451,7 +478,7 @@ pub(crate) struct CommittedToolOccurrence {
 /// occurrences that were already emitted during an earlier partial refresh.
 pub(crate) struct CommittedTranscriptEvidence {
     advisor_blocks: AdvisorConsultationBlocks,
-    dispositions: std::collections::HashMap<CommittedToolOccurrence, CommittedToolDisposition>,
+    dispositions: std::collections::HashMap<CommittedToolOccurrence, RuntimeToolProjectionPhase>,
 }
 
 pub(crate) struct CommittedMessageProjection {
@@ -508,29 +535,22 @@ impl CommittedTranscriptEvidence {
                     .dispositions
                     .get(&key)
                     .copied()
-                    .unwrap_or(CommittedToolDisposition::Unclassified);
+                    .unwrap_or(RuntimeToolProjectionPhase::Unclassified);
                 // A closed wait remains committed classification evidence even
                 // when failure/cancellation removed its current ResumeTicket.
                 // The caller has scoped history to this Thread/Run/message;
                 // preserve unmatched sibling intents as Unclassified.
-                if disposition == CommittedToolDisposition::Unclassified
+                if disposition == RuntimeToolProjectionPhase::Unclassified
                     && let Some(historical) = pending_history.iter().find(|pending| {
                         pending.tool_use_id == *id
                             && pending.name == *name
                             && pending.input == *input
                     })
                 {
-                    disposition = if historical.client_executed {
-                        CommittedToolDisposition::PendingClient
-                    } else {
-                        CommittedToolDisposition::PendingBuiltin
-                    };
+                    disposition =
+                        RuntimeToolProjectionPhase::from_pending(historical.client_executed);
                 }
-                let is_pending = matches!(
-                    disposition,
-                    CommittedToolDisposition::PendingClient
-                        | CommittedToolDisposition::PendingBuiltin
-                );
+                let is_pending = disposition.is_pending();
                 pending_occurrence |= is_pending;
                 let already_projected = projected_tool_sources
                     .contains(&(message.id.0.clone(), id.clone()))
@@ -541,16 +561,20 @@ impl CommittedTranscriptEvidence {
                 if already_projected {
                     return None;
                 }
+                if !disposition.is_transcript_visible() {
+                    fully_classified = false;
+                    return None;
+                }
                 match disposition {
-                    CommittedToolDisposition::Resolved => Some(block.clone()),
-                    CommittedToolDisposition::PendingClient
-                    | CommittedToolDisposition::PendingBuiltin => {
+                    RuntimeToolProjectionPhase::PendingClient
+                    | RuntimeToolProjectionPhase::PendingBuiltin => {
                         retained_pending_occurrence = true;
                         Some(block.clone())
                     }
-                    CommittedToolDisposition::Unclassified => {
-                        fully_classified = false;
-                        None
+                    RuntimeToolProjectionPhase::Processed
+                    | RuntimeToolProjectionPhase::Resolving => Some(block.clone()),
+                    RuntimeToolProjectionPhase::Unclassified => {
+                        unreachable!("transcript visibility checked above")
                     }
                 }
             })
@@ -580,7 +604,7 @@ pub(crate) fn committed_transcript_evidence(
     struct Occurrence {
         key: CommittedToolOccurrence,
         advisor: bool,
-        classification: CommittedToolDisposition,
+        classification: RuntimeToolProjectionPhase,
     }
 
     let mut occurrences = Vec::<Occurrence>::new();
@@ -611,7 +635,7 @@ pub(crate) fn committed_transcript_evidence(
                             call_id: id.clone(),
                         },
                         advisor,
-                        classification: CommittedToolDisposition::Unclassified,
+                        classification: RuntimeToolProjectionPhase::Unclassified,
                     });
                     unmatched.entry(id.clone()).or_default().push_back(index);
                 }
@@ -632,7 +656,7 @@ pub(crate) fn committed_transcript_evidence(
                             .results
                             .insert((message.id.0.clone(), block_ordinal));
                     } else {
-                        occurrences[index].classification = CommittedToolDisposition::Resolved;
+                        occurrences[index].classification = RuntimeToolProjectionPhase::Processed;
                     }
                 }
             }
@@ -647,11 +671,8 @@ pub(crate) fn committed_transcript_evidence(
             .copied()
             .find(|index| !occurrences[*index].advisor)
     {
-        occurrences[index].classification = if pending.client_executed {
-            CommittedToolDisposition::PendingClient
-        } else {
-            CommittedToolDisposition::PendingBuiltin
-        };
+        occurrences[index].classification =
+            RuntimeToolProjectionPhase::from_pending(pending.client_executed);
     }
     let dispositions = occurrences
         .into_iter()
@@ -662,6 +683,45 @@ pub(crate) fn committed_transcript_evidence(
         advisor_blocks,
         dispositions,
     }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn runtime_tool_projection_phase_is_total_distinct_and_fail_closed() {
+    // Causes: C1 a current ticket is client/builtin; C2 an exact retained reply
+    // exists; C3 that reply is processed. Effects: E1 !C2 stays Pending with
+    // exact family; E2 C2+!C3 is Resolving; E3 C2+C3 is Processed; E4 missing
+    // evidence is Unclassified and transcript-invisible. All eight C1-C3 rows
+    // call the same production constructors/predicates used by projection and
+    // admission; durable identity matching and snapshot reads remain TCB.
+    let client_executed: bool = kani::any();
+    let retained: bool = kani::any();
+    let processed: bool = kani::any();
+    let phase = if retained {
+        RuntimeToolProjectionPhase::from_retained_reply(processed)
+    } else {
+        RuntimeToolProjectionPhase::from_pending(client_executed)
+    };
+
+    assert_eq!(phase.is_pending(), !retained);
+    assert_eq!(
+        phase == RuntimeToolProjectionPhase::PendingClient,
+        !retained && client_executed
+    );
+    assert_eq!(
+        phase == RuntimeToolProjectionPhase::PendingBuiltin,
+        !retained && !client_executed
+    );
+    assert_eq!(
+        phase == RuntimeToolProjectionPhase::Resolving,
+        retained && !processed
+    );
+    assert_eq!(
+        phase == RuntimeToolProjectionPhase::Processed,
+        retained && processed
+    );
+    assert!(phase.is_transcript_visible());
+    assert!(!RuntimeToolProjectionPhase::Unclassified.is_transcript_visible());
 }
 
 pub(crate) fn advisor_consultation_blocks(
@@ -839,6 +899,43 @@ pub(crate) fn terminal_stop_reason(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_tool_projection_phase_decision_table() {
+        // Causes: C1 current ticket is builtin/client; C2 an exact retained
+        // reply exists; C3 its root entry is processed. Effects: P1 !C2 stays
+        // Pending in the exact family and blocks follow-up; P2 C2+!C3 is
+        // Resolving; P3 C2+C3 is Processed; P4 missing disposition evidence is
+        // Unclassified and withheld. Rules cover all C1-C3 combinations; the
+        // exact identity adapter is exercised by Managed event recovery tests.
+        for client_executed in [false, true] {
+            for retained in [false, true] {
+                for processed in [false, true] {
+                    let phase = if retained {
+                        RuntimeToolProjectionPhase::from_retained_reply(processed)
+                    } else {
+                        RuntimeToolProjectionPhase::from_pending(client_executed)
+                    };
+                    assert_eq!(phase.is_pending(), !retained, "P1-P3");
+                    assert_eq!(
+                        phase == RuntimeToolProjectionPhase::Resolving,
+                        retained && !processed,
+                        "P2"
+                    );
+                    assert_eq!(
+                        phase == RuntimeToolProjectionPhase::Processed,
+                        retained && processed,
+                        "P3"
+                    );
+                    assert!(phase.is_transcript_visible(), "P1-P3");
+                }
+            }
+        }
+        assert!(
+            !RuntimeToolProjectionPhase::Unclassified.is_transcript_visible(),
+            "P4"
+        );
+    }
 
     #[test]
     fn managed_tool_event_identity_is_stable_qualified_and_reversible() {
