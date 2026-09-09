@@ -320,6 +320,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness failed_resource_replacement_never_promotes_the_pending_manifest \
     --harness resource_retry_reuses_exact_pending_revision \
     --harness terminal_execution_never_reopens \
+    --harness activity_next_epoch_inserts_exact_checked_successor \
+    --harness activity_exact_epoch_inserts_only_fresh_positive_member \
     --harness realization_renewal_never_widens_owner_epoch_or_expiry_authority \
     --harness session_realization_assignment_never_shares_a_live_foreign_owner_or_reuses_an_epoch \
     --harness runtime_intervals_open_once_and_never_close_before_start \
