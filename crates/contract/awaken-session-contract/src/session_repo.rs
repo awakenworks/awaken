@@ -59,23 +59,10 @@ pub struct VisibleMcpServer {
 mod mutation_tests {
     use super::*;
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug)]
     enum PayloadKind {
         Replace,
         Delete,
-    }
-
-    #[derive(Clone)]
-    struct Rule {
-        id: &'static str,
-        payload: PayloadKind,
-        key_nonempty: bool,
-        hash_nonempty: bool,
-        session_id_nonempty: bool,
-        revision_available: bool,
-        payload_revision_exact: bool,
-        lifecycle_session_exact: bool,
-        expected: Result<SessionRevision, SessionMutationValidationError>,
     }
 
     pub(super) fn session(id: &str, revision: SessionRevision) -> PersistedSession {
@@ -1608,171 +1595,134 @@ mod mutation_tests {
     /// Session revision or partially accepts lifecycle facts.
     #[test]
     fn mutation_validation_tests_are_generated_from_the_decision_table() {
-        let rules = [
-            Rule {
-                id: "R1",
-                payload: PayloadKind::Replace,
-                key_nonempty: true,
-                hash_nonempty: true,
-                session_id_nonempty: true,
-                revision_available: true,
-                payload_revision_exact: true,
-                lifecycle_session_exact: true,
-                expected: Ok(SessionRevision(8)),
-            },
-            Rule {
-                id: "R2",
-                payload: PayloadKind::Delete,
-                key_nonempty: true,
-                hash_nonempty: true,
-                session_id_nonempty: true,
-                revision_available: true,
-                payload_revision_exact: true,
-                lifecycle_session_exact: true,
-                expected: Ok(SessionRevision(8)),
-            },
-            Rule {
-                id: "R3",
-                payload: PayloadKind::Replace,
-                key_nonempty: false,
-                hash_nonempty: true,
-                session_id_nonempty: true,
-                revision_available: true,
-                payload_revision_exact: true,
-                lifecycle_session_exact: true,
-                expected: Err(SessionMutationValidationError::EmptyIdempotencyKey),
-            },
-            Rule {
-                id: "R4",
-                payload: PayloadKind::Replace,
-                key_nonempty: true,
-                hash_nonempty: false,
-                session_id_nonempty: true,
-                revision_available: true,
-                payload_revision_exact: true,
-                lifecycle_session_exact: true,
-                expected: Err(SessionMutationValidationError::EmptyPayloadHash),
-            },
-            Rule {
-                id: "R5",
-                payload: PayloadKind::Replace,
-                key_nonempty: true,
-                hash_nonempty: true,
-                session_id_nonempty: false,
-                revision_available: true,
-                payload_revision_exact: true,
-                lifecycle_session_exact: true,
-                expected: Err(SessionMutationValidationError::EmptySessionId),
-            },
-            Rule {
-                id: "R6",
-                payload: PayloadKind::Replace,
-                key_nonempty: true,
-                hash_nonempty: true,
-                session_id_nonempty: true,
-                revision_available: false,
-                payload_revision_exact: true,
-                lifecycle_session_exact: true,
-                expected: Err(SessionMutationValidationError::RevisionExhausted),
-            },
-            Rule {
-                id: "R7",
-                payload: PayloadKind::Replace,
-                key_nonempty: true,
-                hash_nonempty: true,
-                session_id_nonempty: true,
-                revision_available: true,
-                payload_revision_exact: false,
-                lifecycle_session_exact: true,
-                expected: Err(SessionMutationValidationError::ReplacementRevisionMismatch),
-            },
-            Rule {
-                id: "R8",
-                payload: PayloadKind::Delete,
-                key_nonempty: true,
-                hash_nonempty: true,
-                session_id_nonempty: true,
-                revision_available: true,
-                payload_revision_exact: false,
-                lifecycle_session_exact: true,
-                expected: Err(SessionMutationValidationError::TombstoneRevisionMismatch),
-            },
-            Rule {
-                id: "R9",
-                payload: PayloadKind::Replace,
-                key_nonempty: true,
-                hash_nonempty: true,
-                session_id_nonempty: true,
-                revision_available: true,
-                payload_revision_exact: true,
-                lifecycle_session_exact: false,
-                expected: Err(SessionMutationValidationError::LifecycleSessionMismatch),
-            },
-        ];
-
-        for rule in rules {
-            let expected_revision = if rule.revision_available {
-                SessionRevision(7)
-            } else {
-                SessionRevision(u64::MAX)
-            };
-            let session_id = if rule.session_id_nonempty {
-                "session-1"
-            } else {
-                ""
-            };
-            let next = expected_revision.0.checked_add(1).unwrap_or_default();
-            let payload = match rule.payload {
-                PayloadKind::Replace => SessionMutationPayload::Replace(session(
-                    session_id,
-                    if rule.payload_revision_exact {
-                        expected_revision
-                    } else {
-                        SessionRevision(expected_revision.0.saturating_sub(1))
-                    },
-                )),
-                PayloadKind::Delete => SessionMutationPayload::Delete(SessionTombstone {
-                    session_id: session_id.into(),
-                    deleted_revision: if rule.payload_revision_exact {
-                        SessionRevision(next)
-                    } else {
-                        expected_revision
-                    },
-                    deleted_at: "2026-07-25T00:00:00Z".into(),
-                }),
-            };
-            let mutation = SessionMutation {
-                expected_revision,
-                idempotency: IdempotencyRecord {
-                    key: if rule.key_nonempty { "request-1" } else { "" }.into(),
-                    payload_hash: if rule.hash_nonempty {
-                        "sha256:payload"
-                    } else {
-                        ""
-                    }
-                    .into(),
+        // Enumerate all 2 payload kinds x 64 cause combinations. The first
+        // failed cause selects the decision-table row even when later causes
+        // also fail. This covers each "either" row for Delete as well as Replace;
+        // the former repeated input table covered those failures only for Replace.
+        // Runtime interval/activity validity is held true here and covered by
+        // the adjacent aggregate/fact table, so it cannot mask these six causes.
+        // Mutation targets: bypassing Delete key/hash/id/fact checks, or letting
+        // an invalid hash overtake an invalid key, must fail this same table.
+        let mut rules = Vec::new();
+        for payload in [PayloadKind::Replace, PayloadKind::Delete] {
+            let failures = [
+                ("R3", SessionMutationValidationError::EmptyIdempotencyKey),
+                ("R4", SessionMutationValidationError::EmptyPayloadHash),
+                ("R5", SessionMutationValidationError::EmptySessionId),
+                ("R6", SessionMutationValidationError::RevisionExhausted),
+                match payload {
+                    PayloadKind::Replace => (
+                        "R7",
+                        SessionMutationValidationError::ReplacementRevisionMismatch,
+                    ),
+                    PayloadKind::Delete => (
+                        "R8",
+                        SessionMutationValidationError::TombstoneRevisionMismatch,
+                    ),
                 },
-                payload,
-                lifecycle_facts: vec![ManagedLifecycleFact {
-                    id: "fact-1".into(),
-                    object_id: if rule.lifecycle_session_exact {
-                        session_id
-                    } else {
-                        "another-session"
+                (
+                    "R9",
+                    SessionMutationValidationError::LifecycleSessionMismatch,
+                ),
+            ];
+            for mask in 0_u8..64 {
+                let causes: [bool; 6] = std::array::from_fn(|bit| mask & (1 << bit) != 0);
+                let (id, expected) = match causes.iter().position(|valid| !valid) {
+                    Some(first_failure) => {
+                        let (id, error) = &failures[first_failure];
+                        (*id, Err(error.clone()))
                     }
-                    .into(),
-                    workspace_id: Some("workspace".into()),
-                    event_type: "session.updated".into(),
-                    timestamp: 1,
-                    runtime_interval: None,
-                }],
-            };
-            assert_eq!(
-                mutation.validate(),
-                rule.expected,
-                "decision rule {}",
-                rule.id
-            );
+                    None => (
+                        match payload {
+                            PayloadKind::Replace => "R1",
+                            PayloadKind::Delete => "R2",
+                        },
+                        Ok(SessionRevision(8)),
+                    ),
+                };
+                rules.push((id, payload, causes, expected));
+            }
+        }
+        assert_eq!(
+            rules.len(),
+            128,
+            "all payload/cause combinations are executed"
+        );
+
+        // Empty, ASCII whitespace and Unicode whitespace all belong to the
+        // same rejected text class; positive coordinates stay nonempty.
+        for (id, kind, causes, expected) in rules {
+            let [
+                key_nonempty,
+                hash_nonempty,
+                session_id_nonempty,
+                revision_available,
+                payload_revision_exact,
+                lifecycle_session_exact,
+            ] = causes;
+            for blank in ["", " \t\n", "\u{2003}"] {
+                let expected_revision = if revision_available {
+                    SessionRevision(7)
+                } else {
+                    SessionRevision(u64::MAX)
+                };
+                let session_id = if session_id_nonempty {
+                    "session-1"
+                } else {
+                    blank
+                };
+                let next = expected_revision.0.checked_add(1).unwrap_or_default();
+                let payload = match kind {
+                    PayloadKind::Replace => SessionMutationPayload::Replace(session(
+                        session_id,
+                        if payload_revision_exact {
+                            expected_revision
+                        } else {
+                            SessionRevision(expected_revision.0.saturating_sub(1))
+                        },
+                    )),
+                    PayloadKind::Delete => SessionMutationPayload::Delete(SessionTombstone {
+                        session_id: session_id.into(),
+                        deleted_revision: if payload_revision_exact {
+                            SessionRevision(next)
+                        } else {
+                            expected_revision
+                        },
+                        deleted_at: "2026-07-25T00:00:00Z".into(),
+                    }),
+                };
+                let mutation = SessionMutation {
+                    expected_revision,
+                    idempotency: IdempotencyRecord {
+                        key: if key_nonempty { "request-1" } else { blank }.into(),
+                        payload_hash: if hash_nonempty {
+                            "sha256:payload"
+                        } else {
+                            blank
+                        }
+                        .into(),
+                    },
+                    payload,
+                    lifecycle_facts: vec![ManagedLifecycleFact {
+                        id: "fact-1".into(),
+                        object_id: if lifecycle_session_exact {
+                            session_id
+                        } else {
+                            "another-session"
+                        }
+                        .into(),
+                        workspace_id: Some("workspace".into()),
+                        event_type: "session.updated".into(),
+                        timestamp: 1,
+                        runtime_interval: None,
+                    }],
+                };
+                assert_eq!(
+                    mutation.validate(),
+                    expected,
+                    "decision {id}: {kind:?} {causes:?}; blank={blank:?}"
+                );
+            }
         }
     }
 
