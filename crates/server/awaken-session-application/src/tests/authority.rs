@@ -1509,12 +1509,18 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
     };
 
     let inserted = app
-        .create_session_root("workspace", original.clone(), record.clone(), Vec::new())
+        .create_session_root(
+            "workspace",
+            crate::creation::CompleteSessionRoot::from_fresh(original.clone()).unwrap(),
+            record.clone(),
+            Vec::new(),
+        )
         .await
         .expect("C1");
-    let awaken_session_contract::SessionCreateResult::Applied(inserted) = inserted else {
+    let crate::creation::CompleteSessionCreateResult::Applied(inserted) = inserted else {
         panic!("C1 must apply")
     };
+    let inserted = inserted.into_session();
     assert_eq!(
         inserted.revision,
         awaken_session_contract::SessionRevision(1),
@@ -1529,12 +1535,18 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
     let mut lowered_again = original.clone();
     lowered_again.title = Some("new-lowering-must-not-win".into());
     let replayed = app
-        .create_session_root("workspace", lowered_again, record.clone(), Vec::new())
+        .create_session_root(
+            "workspace",
+            crate::creation::CompleteSessionRoot::from_fresh(lowered_again).unwrap(),
+            record.clone(),
+            Vec::new(),
+        )
         .await
         .expect("C2");
-    let awaken_session_contract::SessionCreateResult::Replayed(replayed) = replayed else {
+    let crate::creation::CompleteSessionCreateResult::Replayed(replayed) = replayed else {
         panic!("C2 must replay")
     };
+    let replayed = replayed.into_session();
     assert_eq!(replayed, durable, "C2");
 
     let mut changed = original.clone();
@@ -1543,7 +1555,7 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
         matches!(
             app.create_session_root(
                 "workspace",
-                changed,
+                crate::creation::CompleteSessionRoot::from_fresh(changed).unwrap(),
                 awaken_session_contract::IdempotencyRecord {
                     key: record.key,
                     payload_hash: "changed-hash".into(),
@@ -1559,7 +1571,7 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
         matches!(
             app.create_session_root(
                 "workspace",
-                original,
+                crate::creation::CompleteSessionRoot::from_fresh(original).unwrap(),
                 awaken_session_contract::IdempotencyRecord {
                     key: "create-root:another".into(),
                     payload_hash: "another-hash".into(),

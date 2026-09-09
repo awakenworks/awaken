@@ -345,6 +345,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness bounded_runtime_capability_iterator_uses_exact_member_projection \
     --harness runtime_capability_member_projection_is_total_exact_and_bounded \
     --harness terminal_environment_receipt_is_admitted_only_during_the_fenced_join \
+    --harness initial_realization_recovery_is_exact_for_every_execution_state \
     --harness skill_execution_pin_requires_exact_workspace_revision_and_hash \
     --harness every_skill_execution_pin_axis_is_binding \
     --harness frozen_worker_agent_publication_is_exact_or_fails_closed \

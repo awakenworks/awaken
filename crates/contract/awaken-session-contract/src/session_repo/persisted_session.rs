@@ -976,8 +976,14 @@ impl PersistedSession {
     /// convergence driver. Keeping the union here prevents SQLite, Postgres,
     /// and future repositories from growing different recovery scans.
     #[must_use]
+    pub fn needs_initial_realization_recovery(&self) -> bool {
+        self.frozen_baseline().is_some() && self.execution.requires_initial_realization_recovery()
+    }
+
+    #[must_use]
     pub fn needs_reconciliation(&self) -> bool {
-        self.needs_event_reconciliation()
+        self.needs_initial_realization_recovery()
+            || self.needs_event_reconciliation()
             || self.needs_outcome_reconciliation()
             || self.needs_resource_reconciliation()
             || self.resources.has_references()

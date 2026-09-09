@@ -2,12 +2,15 @@
 
 use super::*;
 use awaken_session_contract::{
-    IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionCreateResult,
-    SessionMutation, SessionMutationPayload, SessionMutationResult, SessionRepositoryConflict,
+    IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionMutation,
+    SessionMutationPayload, SessionMutationResult, SessionRepositoryConflict,
     SessionRepositoryError, SessionRevision,
 };
 
-use crate::creation::{SessionCreationCompletion, validated_create_replay};
+use crate::creation::{
+    CompleteSessionCreateResult, CompleteSessionRoot, DurableSessionRoot,
+    SessionCreationCompletion, validated_create_replay,
+};
 
 pub(crate) fn repository_failure(error: SessionRepositoryError) -> SessionMutationError {
     match error {
@@ -120,29 +123,49 @@ impl SessionApplication {
 
     /// Insert one newly compiled Session root. Exact replays return the durable
     /// aggregate; a different command targeting the same identity conflicts.
-    pub async fn create_session_root(
+    pub(crate) async fn create_session_root(
         &self,
         owner_scope: &str,
-        mut session: PersistedSession,
+        mut root: CompleteSessionRoot,
         idempotency: IdempotencyRecord,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<SessionCreateResult, SessionCreationError> {
+    ) -> Result<CompleteSessionCreateResult, SessionCreationError> {
         // Receipt identity was compiled before this server-owned observation.
         // A repository replay returns the first committed times unchanged.
         let now = self.now_unix_ms();
-        session.created_at_unix_ms = Some(now);
-        session
-            .resources
-            .active
-            .observe_input_times(&Default::default(), now);
-        if let Some(pending) = &mut session.resources.pending {
-            pending.observe_input_times(&Default::default(), now);
+        {
+            let session = root.as_session_mut();
+            session.created_at_unix_ms = Some(now);
+            session
+                .resources
+                .active
+                .observe_input_times(&Default::default(), now);
+            if let Some(pending) = &mut session.resources.pending {
+                pending.observe_input_times(&Default::default(), now);
+            }
+            session.updated_at_unix_ms = Some(now);
         }
-        session.updated_at_unix_ms = Some(now);
-        self.sessions_repo
-            .create(owner_scope, session, idempotency, lifecycle_facts)
+        let result = self
+            .sessions_repo
+            .create(
+                owner_scope,
+                root.into_session(),
+                idempotency,
+                lifecycle_facts,
+            )
             .await
-            .map_err(SessionCreationError::repository)
+            .map_err(SessionCreationError::repository)?;
+        match result {
+            awaken_session_contract::SessionCreateResult::Applied(session) => Ok(
+                CompleteSessionCreateResult::Applied(DurableSessionRoot::from_applied(session)?),
+            ),
+            awaken_session_contract::SessionCreateResult::Replayed(session) => {
+                Ok(CompleteSessionCreateResult::Replayed(
+                    DurableSessionRoot::from_recovery(session)
+                        .map_err(|message| SessionCreationError::Internal(message.into()))?,
+                ))
+            }
+        }
     }
 
     /// Atomically inspect the repository's create receipt and identity. This is
