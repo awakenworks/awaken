@@ -738,14 +738,7 @@ impl BrokeredCandidateExecutor {
                     "brokered inference requires the exact model operation context".into(),
                 )
             })?;
-        self.ownership
-            .as_ref()
-            .ok_or_else(|| {
-                LlmError::Binding("brokered inference has no attempt ownership fence".into())
-            })?
-            .verify_current()
-            .await
-            .map_err(|error| LlmError::Binding(error.to_string()))?;
+        self.verify_ownership().await?;
         let idempotency_fingerprint = awaken_runtime_contract::content_fingerprint(&(
             operation.operation_id(),
             &self.provider,
@@ -753,7 +746,8 @@ impl BrokeredCandidateExecutor {
             &self.native_protocol,
         ))
         .map_err(|error| LlmError::Binding(error.to_string()))?;
-        self.client
+        let lease = self
+            .client
             .create_grant(BrokeredInferenceRequest {
                 provider: self.provider.clone(),
                 original_model_id: self.model.clone(),
@@ -762,7 +756,24 @@ impl BrokeredCandidateExecutor {
                 idempotency_key: format!("awaken-{idempotency_fingerprint}"),
             })
             .await
-            .map_err(BrokeredInferenceError::into_llm)
+            .map_err(BrokeredInferenceError::into_llm)?;
+        // Grant issuance is asynchronous control I/O, not an execution permit.
+        // A current pre-grant observation cannot authorize the later native
+        // send if authority was lost while waiting for the grant response.
+        if let Err(error) = self.verify_ownership().await {
+            self.close(&lease).await;
+            return Err(error);
+        }
+        Ok(lease)
+    }
+
+    async fn verify_ownership(&self) -> Result<(), LlmError> {
+        let ownership = self.ownership.as_deref().ok_or_else(|| {
+            LlmError::Binding("brokered inference has no attempt ownership fence".into())
+        })?;
+        awaken_runtime_contract::execution::verify_attempt_ownership(Some(ownership))
+            .await
+            .map_err(|error| LlmError::Binding(error.to_string()))
     }
 
     fn executor(&self, lease: &BrokeredInferenceLease) -> Result<Arc<dyn LlmExecutor>, LlmError> {
@@ -1015,6 +1026,10 @@ mod tests {
     #[derive(Default)]
     struct RecordingClient {
         requests: Mutex<Vec<BrokeredInferenceRequest>>,
+        grant_gate: Option<Arc<tokio::sync::Barrier>>,
+        gateway_base_url: Option<String>,
+        closed: Mutex<Vec<String>>,
+        fail_close: bool,
     }
 
     #[tokio::test]
@@ -1104,16 +1119,28 @@ mod tests {
             request: BrokeredInferenceRequest,
         ) -> Result<BrokeredInferenceLease, BrokeredInferenceError> {
             self.requests.lock().unwrap().push(request);
+            if let Some(gate) = &self.grant_gate {
+                gate.wait().await;
+                gate.wait().await;
+            }
             Ok(BrokeredInferenceLease {
                 grant_id: "grant-1".into(),
-                gateway_base_url: "https://gateway.invalid/v1".into(),
+                gateway_base_url: self
+                    .gateway_base_url
+                    .clone()
+                    .unwrap_or_else(|| "https://gateway.invalid/v1".into()),
                 capability: RedactedString::new("lease-token"),
                 grant_expires_at: 1_800_000_000,
             })
         }
 
-        async fn close_grant(&self, _grant_id: &str) -> Result<(), BrokeredInferenceError> {
-            Ok(())
+        async fn close_grant(&self, grant_id: &str) -> Result<(), BrokeredInferenceError> {
+            self.closed.lock().unwrap().push(grant_id.to_owned());
+            if self.fail_close {
+                Err(BrokeredInferenceError::TemporarilyUnavailable)
+            } else {
+                Ok(())
+            }
         }
 
         async fn renew_grant(
@@ -1279,6 +1306,132 @@ mod tests {
             );
         }
         assert!(client.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn ownership_change_during_grant_wait_cannot_start_native_inference() {
+        // Cause graph: C1 authority is current before grant I/O; C2 changes
+        // while the grant is blocked; C3 grant close succeeds/fails; C4 either
+        // model port. C1 -> grant acquired; C2 -> fresh ownership observation
+        // denies model send; C3 cannot replace that failure or upgrade evidence.
+        // Decision table (each row x streaming/nonstreaming):
+        // | rule | after grant | close | effects |
+        // | F1 | Lost | success | zero native sends, exact close, NotDispatched |
+        // | F2 | Unavailable | success | same, no fallback |
+        // | F3 | Lost | failure | same, original binding error retained |
+        // | F4 | Unavailable | failure | same |
+        // | F5 | Current | success | one native send and exact close |
+        // F5's upstream rejects the request: close is NOT termination evidence.
+        // The barrier fixes the crash cut without timing sleeps. This tests a
+        // fresh observation, not atomic fencing of an arbitrary remote server.
+        use awaken_runtime_contract::model_operation::{
+            ModelExecutionEvidence, with_model_operation_context,
+        };
+        use awaken_runtime_contract::{AttemptOwnershipError, AttemptOwnershipVerifier};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::AsyncWriteExt;
+
+        struct MutableOwnership(Mutex<Result<(), AttemptOwnershipError>>);
+        #[async_trait]
+        impl AttemptOwnershipVerifier for MutableOwnership {
+            async fn verify_current(&self) -> Result<(), AttemptOwnershipError> {
+                self.0.lock().unwrap().clone()
+            }
+        }
+        struct Sink;
+        #[async_trait]
+        impl DeltaSink for Sink {
+            async fn on_text(&self, _: &str) {}
+        }
+
+        for (rule, after_grant, fail_close) in [
+            ("F1", Err(AttemptOwnershipError::Lost), false),
+            (
+                "F2",
+                Err(AttemptOwnershipError::Unavailable("offline".into())),
+                false,
+            ),
+            ("F3", Err(AttemptOwnershipError::Lost), true),
+            (
+                "F4",
+                Err(AttemptOwnershipError::Unavailable("offline".into())),
+                true,
+            ),
+            ("F5", Ok(()), false),
+        ] {
+            for streaming in [false, true] {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+                let sends = Arc::new(AtomicUsize::new(0));
+                let observed = sends.clone();
+                let server = tokio::spawn(async move {
+                    loop {
+                        let (mut socket, _) = listener.accept().await.unwrap();
+                        observed.fetch_add(1, Ordering::SeqCst);
+                        let _ = socket.write_all(b"HTTP/1.1 400 Bad Request\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}").await;
+                    }
+                });
+                let gate = Arc::new(tokio::sync::Barrier::new(2));
+                let client = Arc::new(RecordingClient {
+                    grant_gate: Some(gate.clone()),
+                    gateway_base_url: Some(endpoint),
+                    fail_close,
+                    ..Default::default()
+                });
+                let ownership = Arc::new(MutableOwnership(Mutex::new(Ok(()))));
+                let model = executor(client.clone(), Some(ownership.clone()));
+                let operation = model_operation(1);
+                let request = ChatRequest {
+                    model_binding: operation.binding().clone(),
+                    inference: Default::default(),
+                    messages: Vec::new(),
+                    tools: Vec::new(),
+                };
+                let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    tokio::join!(
+                        with_model_operation_context(Some(operation), async {
+                            if streaming {
+                                model.infer_streaming(request, &Sink).await
+                            } else {
+                                model.infer(request).await
+                            }
+                        }),
+                        async {
+                            gate.wait().await;
+                            *ownership.0.lock().unwrap() = after_grant.clone();
+                            gate.wait().await;
+                        }
+                    )
+                    .0
+                })
+                .await;
+                server.abort();
+                let _ = server.await;
+                let error = outcome.expect(rule).unwrap_err();
+                if after_grant.is_err() {
+                    assert_eq!(
+                        sends.load(Ordering::SeqCst),
+                        0,
+                        "{rule}: stale native entry"
+                    );
+                    assert_eq!(error.code(), "binding_rejected", "{rule}");
+                    assert_eq!(
+                        error.execution_evidence(),
+                        ModelExecutionEvidence::NotDispatched,
+                        "{rule}"
+                    );
+                } else {
+                    assert_eq!(sends.load(Ordering::SeqCst), 1, "{rule}: healthy path");
+                    assert_eq!(
+                        error.execution_evidence(),
+                        ModelExecutionEvidence::Unknown,
+                        "{rule}: close is not a stop receipt"
+                    );
+                }
+                assert_eq!(client.requests.lock().unwrap().len(), 1, "{rule}");
+                assert_eq!(*client.closed.lock().unwrap(), ["grant-1"], "{rule}");
+            }
+        }
     }
 
     #[tokio::test]
