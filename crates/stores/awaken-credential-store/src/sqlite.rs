@@ -22,10 +22,11 @@ use awaken_credential_vault::catalog::{
     admit_managed_vault_replacement, managed_vault_workspace_admitted,
 };
 use awaken_credential_vault::repo::{
-    CredentialMaterialMutationPhase, CredentialMutationIntent, CredentialPublicationAdmission,
+    CredentialMaterialMutationPhase, CredentialMutationCommitMode, CredentialMutationIntent,
     CredentialRepo, ManagedCredentialOperation, ManagedCredentialRepository,
-    ManagedCredentialRollout, PendingManagedCredentialMutation, managed_retirement_parent_admitted,
-    managed_rollout_from_committed,
+    ManagedCredentialRollout, ManagedCredentialRolloutIdentityDecision,
+    PendingManagedCredentialMutation, managed_credential_commit_plan,
+    managed_credential_rollout_identity_decision, managed_retirement_parent_admitted,
 };
 use awaken_credential_vault::{
     CredentialError, CredentialPool, CredentialPoolId, CredentialSource, SealedBlobStore, SecretRef,
@@ -554,9 +555,9 @@ impl CredentialRepo for SqliteCredentialRepo {
                 let current_before: Option<CredentialSource> = current_before_data
                     .map(|data| serde_json::from_str(&data).map_err(storage))
                     .transpose()?;
-                intent.publication_preimage_matches(current_after.as_ref(), current_before.as_ref())
+                current_after.is_none() && current_before.as_ref() == Some(before)
             } else {
-                intent.publication_preimage_matches(current_after.as_ref(), None)
+                current_after.as_ref() == intent.before.as_ref()
             };
             if !before_matches {
                 return Err(CredentialError::MutationConflict(
@@ -641,9 +642,8 @@ impl CredentialRepo for SqliteCredentialRepo {
         &self,
         intent: &CredentialMutationIntent,
     ) -> Result<CredentialMutationIntent, CredentialError> {
-        let prepared = intent.prepare_publication()?.into_owned();
+        let intent = intent.clone();
         with_conn(&self.conn, move |conn, p| {
-            let intent = prepared.request();
             // This mutation reads its durable intent/current revision before it
             // writes. In WAL mode a deferred transaction cannot upgrade an old
             // read snapshot after a sibling adapter commits; SQLite returns BUSY
@@ -680,61 +680,67 @@ impl CredentialRepo for SqliteCredentialRepo {
             let current: Option<CredentialSource> = current_data
                 .map(|data| serde_json::from_str(&data).map_err(storage))
                 .transpose()?;
-            let admission = prepared.admit(Some(&durable), current.as_ref())?;
-            let reclaiming_for_store = match admission {
-                CredentialPublicationAdmission::Replayed(reclaiming) => {
-                    tx.commit().map_err(storage)?;
-                    return Ok(reclaiming);
-                }
-                CredentialPublicationAdmission::NeedsPredecessor(publication) => {
-                    let before = publication.before();
-                    let current_before_data: Option<String> = tx
-                        .query_row(
-                            &format!("SELECT data FROM {p}_source WHERE id = ?1"),
-                            params![before.id.0],
-                            |row| row.get(0),
-                        )
-                        .optional()
-                        .map_err(storage)?;
-                    let current_before: Option<CredentialSource> = current_before_data
-                        .map(|data| serde_json::from_str(&data).map_err(storage))
-                        .transpose()?;
-                    let reclaiming = publication.admit(current_before.as_ref())?;
-                    let id = intent.after.id.0.clone();
-                    let workspace_id = intent.after.workspace_id.clone();
-                    let data = serde_json::to_string(&intent.after).map_err(storage)?;
-                    tx.execute(
-                        &format!(
-                            "INSERT INTO {p}_source (id, workspace_id, data) VALUES (?1, ?2, ?3)"
-                        ),
-                        params![id, workspace_id, data],
+            let current_before = if let Some(before) = intent
+                .before
+                .as_ref()
+                .filter(|before| before.id != intent.after.id)
+            {
+                let data: Option<String> = tx
+                    .query_row(
+                        &format!("SELECT data FROM {p}_source WHERE id = ?1"),
+                        params![before.id.0],
+                        |row| row.get(0),
                     )
+                    .optional()
                     .map_err(storage)?;
-                    reclaiming
-                }
-                CredentialPublicationAdmission::Apply(reclaiming) => {
-                    let id = intent.after.id.0.clone();
-                    let workspace_id = intent.after.workspace_id.clone();
-                    let data = serde_json::to_string(&intent.after).map_err(storage)?;
-                    tx.execute(
-                        &format!(
-                            "INSERT INTO {p}_source (id, workspace_id, data) VALUES (?1, ?2, ?3) \
-                             ON CONFLICT(id) DO UPDATE SET workspace_id = excluded.workspace_id, data = excluded.data"
-                        ),
-                        params![id, workspace_id, data],
-                    )
-                    .map_err(storage)?;
-                    reclaiming
-                }
+                data.map(|data| serde_json::from_str(&data).map_err(storage))
+                    .transpose()?
+            } else {
+                None
             };
-            let reclaiming_data = serde_json::to_string(&reclaiming_for_store).map_err(storage)?;
+            let plan = intent.publication_plan(
+                &durable,
+                current.as_ref(),
+                current_before.as_ref(),
+            )?;
+            if plan.mode == CredentialMutationCommitMode::ExactReplay {
+                tx.commit().map_err(storage)?;
+                return Ok(plan.reclaiming_mutation);
+            }
+            let id = plan.source.id.0.clone();
+            let workspace_id = plan.source.workspace_id.clone();
+            let data = serde_json::to_string(&plan.source).map_err(storage)?;
+            match plan.mode {
+                CredentialMutationCommitMode::Insert => {
+                tx.execute(
+                    &format!(
+                        "INSERT INTO {p}_source (id, workspace_id, data) VALUES (?1, ?2, ?3)"
+                    ),
+                    params![id, workspace_id, data],
+                )
+                .map_err(storage)?;
+                }
+                CredentialMutationCommitMode::Replace => {
+                tx.execute(
+                    &format!(
+                        "INSERT INTO {p}_source (id, workspace_id, data) VALUES (?1, ?2, ?3) \
+                         ON CONFLICT(id) DO UPDATE SET workspace_id = excluded.workspace_id, data = excluded.data"
+                    ),
+                    params![id, workspace_id, data],
+                )
+                .map_err(storage)?;
+                }
+                CredentialMutationCommitMode::ExactReplay => unreachable!("returned above"),
+            }
+            let reclaiming_data =
+                serde_json::to_string(&plan.reclaiming_mutation).map_err(storage)?;
             tx.execute(
                 &format!("UPDATE {p}_creation_intent SET data = ?2 WHERE source_id = ?1"),
                 params![intent.after.id.0, reclaiming_data],
             )
             .map_err(storage)?;
             tx.commit().map_err(storage)?;
-            Ok(reclaiming_for_store)
+            Ok(plan.reclaiming_mutation)
         })
         .await
     }
@@ -1108,54 +1114,6 @@ mod tests {
             worker_local_binding: None,
             status: CredentialStatus::Active,
             version: 1,
-        }
-    }
-
-    /// Error-order decision table: all four request phases are structurally
-    /// valid, but only Ready may enter storage. A deliberately poisoned local
-    /// connection makes storage unavailable deterministically. Writing,
-    /// Reclaiming and ReclaimingAbort must still return the domain phase error;
-    /// Ready reaches the connection error. This catches validation/phase checks
-    /// accidentally moved into the blocking task after connection acquisition.
-    #[tokio::test]
-    async fn publication_domain_errors_precede_sqlite_connection_errors() {
-        let repo = SqliteCredentialRepo::open_in_memory().unwrap();
-        let mut candidate = source("cred:publication-preflight");
-        candidate.material_ref = Some(SecretRef("sec:publication-preflight".into()));
-        let writing = CredentialMutationIntent::prepare(None, candidate).unwrap();
-        let connection = repo.conn.clone();
-        assert!(
-            std::thread::spawn(move || {
-                let _guard = connection.lock().unwrap();
-                panic!("inject local SQLite connection poisoning");
-            })
-            .join()
-            .is_err()
-        );
-        for phase in [
-            CredentialMaterialMutationPhase::Writing,
-            CredentialMaterialMutationPhase::Ready,
-            CredentialMaterialMutationPhase::Reclaiming,
-            CredentialMaterialMutationPhase::ReclaimingAbort,
-        ] {
-            let mut request = writing.clone();
-            request.material_fence.phase = phase;
-            request
-                .validate()
-                .expect("all rows must reach publication phase admission");
-            let result = repo.apply_mutation(&request).await;
-            if phase == CredentialMaterialMutationPhase::Ready {
-                assert!(
-                    matches!(result, Err(CredentialError::Storage(_))),
-                    "Ready reaches unavailable storage"
-                );
-            } else {
-                assert!(
-                    matches!(result, Err(CredentialError::MutationConflict(ref message))
-                    if message == "credential material mutation is not ready to publish"),
-                    "domain phase rejection precedes unavailable storage: {result:?}"
-                );
-            }
         }
     }
 

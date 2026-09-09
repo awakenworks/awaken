@@ -279,6 +279,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-environment-contract \
     --harness environment_registration_intent_is_exact_idempotent_and_recoverable
   run_kani awaken-session-contract \
+    --harness terminal_resource_projection_retains_the_exact_desired_generation \
     --harness initial_event_plan_is_installed_only_on_the_complete_fresh_root \
     --harness session_run_reservation_binds_exactly_one_nonzero_activity_receipt \
     --harness session_network_intersection_two_by_two_ascii_hosts_partition \
@@ -326,6 +327,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness only_active_work_accepts_lease_extension \
     --harness stop_is_absorbing_for_every_work_state \
     --harness work_lease_mutation_requires_present_exact_authority_and_matching_condition \
+    --harness session_work_release_requires_exact_owner_and_epoch \
     --harness first_heartbeat_is_authorized_exactly_once \
     --harness matching_heartbeat_rejects_every_other_receipt \
     --harness resolved_environment_snapshot_accepts_only_exact_positive_identity_and_revision \
@@ -429,8 +431,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness managed_mutation_operation_shape_is_closed_and_delete_is_absorbing \
     --harness credential_material_attempt_requires_owner_and_exact_physical_namespace \
     --harness credential_inventory_never_orphans_committed_pending_or_foreign_material \
+    --harness source_mutation_publication_is_exact_revision_cas \
     --harness managed_rollout_projection_preserves_committed_identity \
-    --harness managed_rollout_ack_requires_converged_progress
+    --harness managed_rollout_ack_requires_converged_progress \
+    --harness managed_rollout_delivery_acknowledges_only_exact_convergence
   # Two-slot material collections do not need the string comparison's loop
   # budget. Keep every unwinding assertion; only builtin memcmp gets 16.
   # The owned predecessor-set iterator uses the bundled MiniSAT backend.
@@ -450,6 +454,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness brokered_and_direct_model_readiness_require_their_exact_access_evidence \
     --harness agent_input_revision_decision_is_exact_non_wrapping_and_replay_first
   run_kani awaken-work-store \
+    --harness work_lease_authority_transition_is_complete_and_fenced \
     --harness work_lease_epoch_is_exact_nonnegative_and_nonwrapping \
     --harness work_reclaim_cutoff_is_exact_and_underflow_free \
     --harness work_lease_deadlines_clamp_without_wrapping
@@ -474,9 +479,13 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness worker_reference_revalidation_accepts_only_exact_available_state \
     --harness worker_plaintext_holder_projection_is_exact_and_non_widening
   run_kani awaken-run-executor-acp \
+    --harness host_observation_projection_is_exactly_backend_scoped \
+    --harness local_binding_batch_publication_is_complete_or_stutters \
+    --harness projected_binding_use_rechecks_the_exact_projection_after_probe \
     --harness mcp_client_credential_admission_has_no_gateway_or_adapter_fallback
   run_kani awaken-dispatch-contract \
     --harness claim_credential_operation_is_total_and_terminal_dominates \
+    --harness claim_credential_binding_revalidation_rejects_missing_widened_reordered_or_stale_wire \
     --harness only_awaiting_or_already_superseded_is_replacement_safe \
     --harness stale_dispatch_claim_cannot_modify_authoritative_state \
     --harness exact_dispatch_settlement_is_terminal_or_awaiting_only \
@@ -493,6 +502,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness thread_physical_peer_vetoes_begin_and_handoff \
     --harness physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair
   run_kani awaken-dispatch --no-default-features \
+    --harness maintenance_schedule_exists_only_for_the_owning_adapter \
     --harness recovery_snapshot_admission_requires_exact_claim_identity \
     --harness acknowledged_projection_is_exact_monotonic_or_a_noop \
     --harness claimed_snapshot_execution_requires_exact_identity \
@@ -604,6 +614,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-runtime-contract --solver kissat \
     --harness created_tool_handle_validation_never_invents_termination
   run_kani awaken-runtime-contract \
+    --harness credential_realization_receipt_requires_every_exact_binding_coordinate \
     --harness model_operation_ordinal_never_wraps_or_reuses_a_coordinate \
     --harness model_execution_reentry_requires_positive_evidence \
     --harness claim_bound_external_effect_admits_only_current_ownership \
@@ -679,6 +690,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness projection_revision_admission_is_monotonic_and_exact \
     --harness durable_projection_identity_is_exact_or_a_same_physical_owner_stutter \
     --harness committed_candidate_retains_effect_kind_and_rejects_identity_relabeling \
+    --harness closed_environment_recovery_consumes_only_rebuildable_owner_classes \
     --harness terminal_quiescence_rejects_only_unstarted_reservations \
     --harness unsettled_running_is_always_rejected_and_settled_kinds_never_interchange \
     --harness settled_step_projection_cannot_invent_pending_or_observations
@@ -711,6 +723,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness rejected_requests_never_enter_the_host \
     --harness cancellation_never_produces_a_success_result
   run_kani awaken-run-executor-a2a \
+    --harness remote_operation_sequence_admits_only_prepared_before_send_and_accept_commit \
     --harness remote_operation_route_is_total_and_fail_closed \
     --harness terminal_remote_operation_command_is_exact_run_scoped_removal \
     --harness task_reference_admission_requires_complete_fields_and_required_identity_matches \

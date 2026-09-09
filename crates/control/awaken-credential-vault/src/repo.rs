@@ -5,7 +5,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-pub use awaken_credential_contract::{ManagedCredentialOperation, ManagedCredentialRollout};
+pub use awaken_credential_contract::{
+    ManagedCredentialOperation, ManagedCredentialRollout, ManagedCredentialRolloutIdentityDecision,
+    managed_credential_rollout_identity_decision,
+};
 
 /// Local adoption progress. The cross-service HTTP adapter maps these two
 /// states directly to 204 and 202, while command receipts serialize this same
@@ -78,6 +81,54 @@ pub enum ManagedCredentialAdoptionError {
     Unavailable(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManagedCredentialRolloutDeliveryDecision {
+    RetainPending,
+    AcknowledgeExact,
+}
+
+#[must_use]
+fn managed_credential_rollout_delivery_decision(
+    outcome: &Result<ManagedCredentialAdoptionProgress, ManagedCredentialAdoptionError>,
+) -> ManagedCredentialRolloutDeliveryDecision {
+    match outcome {
+        Ok(ManagedCredentialAdoptionProgress::Converged) => {
+            ManagedCredentialRolloutDeliveryDecision::AcknowledgeExact
+        }
+        Ok(ManagedCredentialAdoptionProgress::Pending) | Err(_) => {
+            ManagedCredentialRolloutDeliveryDecision::RetainPending
+        }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(4)]
+fn managed_rollout_delivery_acknowledges_only_exact_convergence() {
+    // Causes: C1 Converged; C2 explicit Pending (including a busy Session);
+    // C3-C6 every closed target failure. Effects: only C1 acknowledges; all
+    // other outcomes retain the existing outbox event. The live reconciler
+    // consumes this decision after awaiting the target. Target correctness,
+    // executor liveness and database acknowledgement remain outside the proof.
+    let case = kani::any::<u8>() % 6;
+    let outcome = match case {
+        0 => Ok(ManagedCredentialAdoptionProgress::Converged),
+        1 => Ok(ManagedCredentialAdoptionProgress::Pending),
+        2 => Err(ManagedCredentialAdoptionError::InvalidEvent("e".into())),
+        3 => Err(ManagedCredentialAdoptionError::IdentityCollision),
+        4 => Err(ManagedCredentialAdoptionError::Unauthorized),
+        _ => Err(ManagedCredentialAdoptionError::Unavailable("u".into())),
+    };
+    assert_eq!(
+        managed_credential_rollout_delivery_decision(&outcome),
+        if case == 0 {
+            ManagedCredentialRolloutDeliveryDecision::AcknowledgeExact
+        } else {
+            ManagedCredentialRolloutDeliveryDecision::RetainPending
+        }
+    );
+}
+
 #[cfg(any(test, feature = "test-support"))]
 use crate::catalog::admit_managed_credential_insert;
 use crate::catalog::{
@@ -108,8 +159,8 @@ pub use material_mutation::{
     CredentialMaterialMutationPhase,
 };
 use material_mutation::{
-    CredentialMaterialRecoveryAction, credential_material_now_unix_ms,
-    credential_material_recovery_action, fence_material_writes,
+    CredentialMaterialRecoveryPlan, CredentialMaterialRecoverySignal,
+    credential_material_now_unix_ms, credential_material_recovery_plan, fence_material_writes,
     idempotent_credential_source_matches, logical_credential_source_matches,
     logical_material_ref_matches, namespace_new_material_refs, new_material_refs,
 };
@@ -127,6 +178,43 @@ pub struct CredentialMutationIntent {
     pub before: Option<CredentialSource>,
     #[serde(alias = "source")]
     pub after: CredentialSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CredentialMutationPublicationDecision {
+    ExactReplay,
+    Insert,
+    Replace,
+    Conflict,
+}
+
+#[must_use]
+fn credential_mutation_publication_decision(
+    intent: &CredentialMutationIntent,
+    reclaiming: &CredentialMutationIntent,
+    durable: &CredentialMutationIntent,
+    current_after: Option<&CredentialSource>,
+    current_before: Option<&CredentialSource>,
+) -> CredentialMutationPublicationDecision {
+    if durable == reclaiming && current_after == Some(&intent.after) {
+        CredentialMutationPublicationDecision::ExactReplay
+    } else if durable != intent {
+        CredentialMutationPublicationDecision::Conflict
+    } else if intent.is_distinct_replacement() {
+        if current_after.is_none() && current_before == intent.before.as_ref() {
+            CredentialMutationPublicationDecision::Insert
+        } else {
+            CredentialMutationPublicationDecision::Conflict
+        }
+    } else if current_after == intent.before.as_ref() {
+        if intent.before.is_some() {
+            CredentialMutationPublicationDecision::Replace
+        } else {
+            CredentialMutationPublicationDecision::Insert
+        }
+    } else {
+        CredentialMutationPublicationDecision::Conflict
+    }
 }
 
 impl CredentialMutationIntent {
@@ -282,6 +370,63 @@ impl CredentialMutationIntent {
         reclaiming.validate()?;
         Ok(reclaiming)
     }
+
+    /// Decide one source-row publication while the adapter holds its existing
+    /// lock/transaction. Full decoded-row equality is the CAS authority; SQL
+    /// predicates and map operations only execute this shared plan.
+    pub fn publication_plan(
+        &self,
+        durable: &Self,
+        current_after: Option<&CredentialSource>,
+        current_before: Option<&CredentialSource>,
+    ) -> Result<CredentialMutationCommitPlan, CredentialError> {
+        self.validate()?;
+        if self.material_fence.phase != CredentialMaterialMutationPhase::Ready {
+            return Err(CredentialError::MutationConflict(
+                "credential material mutation is not ready to publish".into(),
+            ));
+        }
+        let reclaiming = self.with_material_reclaiming()?;
+        let mode = match credential_mutation_publication_decision(
+            self,
+            &reclaiming,
+            durable,
+            current_after,
+            current_before,
+        ) {
+            CredentialMutationPublicationDecision::ExactReplay => {
+                CredentialMutationCommitMode::ExactReplay
+            }
+            CredentialMutationPublicationDecision::Insert => CredentialMutationCommitMode::Insert,
+            CredentialMutationPublicationDecision::Replace => CredentialMutationCommitMode::Replace,
+            CredentialMutationPublicationDecision::Conflict => {
+                return Err(CredentialError::MutationConflict(
+                    "credential mutation publication CAS changed".into(),
+                ));
+            }
+        };
+        Ok(CredentialMutationCommitPlan {
+            mode,
+            source: self.after.clone(),
+            reclaiming_mutation: reclaiming,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialMutationCommitMode {
+    ExactReplay,
+    Insert,
+    Replace,
+}
+
+/// Complete source-only value plan consumed by each repository adapter's one
+/// physical publication boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialMutationCommitPlan {
+    pub mode: CredentialMutationCommitMode,
+    pub source: CredentialSource,
+    pub reclaiming_mutation: CredentialMutationIntent,
 }
 
 /// Parent-aggregate fence for terminal child commands. A Vault deletion may
@@ -365,6 +510,35 @@ pub fn managed_rollout_from_committed(
         source_version: u64::try_from(pending.after_source.version).unwrap_or_default(),
         credential_revision: pending.after_credential.revision,
         operation: pending.operation,
+    })
+}
+
+/// Complete value plan consumed by one Managed Credential commit boundary.
+///
+/// Repository adapters retain ownership of their lock/transaction and affected-
+/// row checks. This plan prevents them from independently deciding which
+/// Source, child, cleanup fact, or rollout belongs to the accepted mutation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedCredentialCommitPlan {
+    pub source: CredentialSource,
+    pub credential: ManagedVaultCredential,
+    pub reclaiming_mutation: PendingManagedCredentialMutation,
+    pub rollout: Option<ManagedCredentialRollout>,
+}
+
+/// Project an already validated and admitted `Ready` mutation into every value
+/// that must be published by the repository's one physical commit boundary.
+pub fn managed_credential_commit_plan(
+    pending: &PendingManagedCredentialMutation,
+) -> Result<ManagedCredentialCommitPlan, ManagedCredentialMutationError> {
+    let reclaiming_mutation = pending
+        .with_material_reclaiming()
+        .map_err(ManagedCredentialMutationError::Store)?;
+    Ok(ManagedCredentialCommitPlan {
+        source: pending.after_source.clone(),
+        credential: pending.after_credential.clone(),
+        reclaiming_mutation,
+        rollout: managed_rollout_from_committed(pending),
     })
 }
 
@@ -457,8 +631,9 @@ mod publication_proofs {
         // C1 all four operations; C2 full signed source revision; C3 full
         // unsigned child revision. R1 Create => no event; R2 other operations
         // => exactly the committed identity/payload, with the existing zero
-        // fallback for invalid signed revisions. Distinct fixed identity
-        // strings detect crossed fields; arbitrary strings and transaction
+        // fallback for invalid signed revisions. The shared commit plan must
+        // carry the same distinct Source/child coordinates and advance only
+        // the material phase. Arbitrary strings and transaction-engine
         // atomicity are not inferred from this value-constructor proof.
         let mut pending = pending();
         pending.operation = match kani::any::<u8>() % 4 {
@@ -469,7 +644,26 @@ mod publication_proofs {
         };
         pending.after_source.version = kani::any();
         pending.after_credential.revision = kani::any();
-        let event = managed_rollout_from_committed(&pending);
+        let plan = managed_credential_commit_plan(&pending).expect("Ready has one commit plan");
+        assert_eq!(plan.source.id.0, "s");
+        assert_eq!(plan.source.workspace_id, "w");
+        assert_eq!(plan.source.version, pending.after_source.version);
+        assert_eq!(plan.credential.id, "c");
+        assert_eq!(plan.credential.vault_id, "v");
+        assert_eq!(plan.credential.workspace_id, "w");
+        assert_eq!(plan.credential.source_id.0, "s");
+        assert_eq!(plan.credential.revision, pending.after_credential.revision);
+        assert_eq!(
+            plan.reclaiming_mutation.material_fence.phase,
+            CredentialMaterialMutationPhase::Reclaiming
+        );
+        assert_eq!(plan.reclaiming_mutation.operation_id, pending.operation_id);
+        assert_eq!(plan.reclaiming_mutation.operation, pending.operation);
+        assert!(plan.reclaiming_mutation.before_source.is_none());
+        assert!(plan.reclaiming_mutation.before_credential.is_none());
+        assert_eq!(plan.reclaiming_mutation.after_source.id.0, "s");
+        assert_eq!(plan.reclaiming_mutation.after_credential.id, "c");
+        let event = plan.rollout;
         assert_eq!(
             event.is_none(),
             pending.operation == ManagedCredentialOperation::Create
@@ -487,6 +681,82 @@ mod publication_proofs {
             } else {
                 assert_eq!(event.source_version, 0);
             }
+        }
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn source_mutation_publication_is_exact_revision_cas() {
+        // Causes: C1 full valid predecessor revision; C2 exact Ready WAL and
+        // exact predecessor row; C3 stale predecessor row; C4 exact committed
+        // row plus Reclaiming WAL replay; C5 foreign WAL. Effects: E1 C2 emits
+        // one Replace plan at revision+1; E2 C3/C5 conflict; E3 C4 is an exact
+        // replay. The production plan is consumed under every adapter's lock or
+        // transaction. SQL/map execution and database isolation remain TCB.
+        let before_version = kani::any::<i64>();
+        kani::assume(before_version > 0 && before_version < i64::MAX - 1);
+        let mut before = source();
+        before.version = before_version;
+        let mut after = before.clone();
+        after.version = before_version + 1;
+        let ready = CredentialMutationIntent {
+            material_fence: CredentialMaterialMutationFence {
+                format_version: 1,
+                phase: CredentialMaterialMutationPhase::Ready,
+                ..Default::default()
+            },
+            before: Some(before.clone()),
+            after: after.clone(),
+        };
+        let mut reclaiming = ready.clone();
+        reclaiming.material_fence.phase = CredentialMaterialMutationPhase::Reclaiming;
+        let case = kani::any::<u8>() % 4;
+        let mut stale = before.clone();
+        stale.version = before_version + 2;
+        let mut foreign = ready.clone();
+        foreign.after.version = before_version + 2;
+        let decision = match case {
+            0 => credential_mutation_publication_decision(
+                &ready,
+                &reclaiming,
+                &ready,
+                Some(&before),
+                None,
+            ),
+            1 => credential_mutation_publication_decision(
+                &ready,
+                &reclaiming,
+                &ready,
+                Some(&stale),
+                None,
+            ),
+            2 => credential_mutation_publication_decision(
+                &ready,
+                &reclaiming,
+                &reclaiming,
+                Some(&after),
+                None,
+            ),
+            _ => credential_mutation_publication_decision(
+                &ready,
+                &reclaiming,
+                &foreign,
+                Some(&before),
+                None,
+            ),
+        };
+        match case {
+            0 => {
+                assert_eq!(decision, CredentialMutationPublicationDecision::Replace);
+                assert_eq!(ready.after.id.0, "s");
+                assert_eq!(ready.after.version, before_version + 1);
+            }
+            2 => {
+                assert_eq!(decision, CredentialMutationPublicationDecision::ExactReplay);
+                assert_eq!(ready.after.version, before_version + 1);
+            }
+            _ => assert_eq!(decision, CredentialMutationPublicationDecision::Conflict),
         }
     }
 }
@@ -974,29 +1244,30 @@ pub async fn reconcile_managed_credential_rollout(
     repo: &dyn ManagedCredentialRepository,
     target: &dyn ManagedCredentialRolloutTarget,
 ) -> Result<ManagedCredentialAdoptionProgress, CredentialError> {
-    let progress = match target.rollout(event).await {
-        Ok(progress) => progress,
-        Err(error) => {
-            // Error payloads belong to external participants and may contain
-            // credentials. Only the closed port variant is diagnostic data.
-            let failure = match error {
-                ManagedCredentialAdoptionError::InvalidEvent(_) => "invalid_event",
-                ManagedCredentialAdoptionError::IdentityCollision => "identity_collision",
-                ManagedCredentialAdoptionError::Unauthorized => "unauthorized",
-                ManagedCredentialAdoptionError::Unavailable(_) => "unavailable",
-            };
-            tracing::warn!(
-                rollout_id = %event.id, workspace_id = %event.workspace_id,
-                source_id = %event.source_id.0, source_version = event.source_version,
-                phase = "delivery", failure, "Managed credential rollout remains pending"
-            );
-            return Ok(ManagedCredentialAdoptionProgress::Pending);
-        }
-    };
-    if progress.is_converged() {
+    let outcome = target.rollout(event).await;
+    let decision = managed_credential_rollout_delivery_decision(&outcome);
+    if let Err(error) = &outcome {
+        // Error payloads belong to external participants and may contain
+        // credentials. Only the closed port variant is diagnostic data.
+        let failure = match error {
+            ManagedCredentialAdoptionError::InvalidEvent(_) => "invalid_event",
+            ManagedCredentialAdoptionError::IdentityCollision => "identity_collision",
+            ManagedCredentialAdoptionError::Unauthorized => "unauthorized",
+            ManagedCredentialAdoptionError::Unavailable(_) => "unavailable",
+        };
+        tracing::warn!(
+            rollout_id = %event.id, workspace_id = %event.workspace_id,
+            source_id = %event.source_id.0, source_version = event.source_version,
+            phase = "delivery", failure, "Managed credential rollout remains pending"
+        );
+    }
+    if decision == ManagedCredentialRolloutDeliveryDecision::AcknowledgeExact {
         repo.complete_managed_rollout(event).await?;
     }
-    Ok(progress)
+    match outcome {
+        Ok(progress) => Ok(progress),
+        Err(_) => Ok(ManagedCredentialAdoptionProgress::Pending),
+    }
 }
 
 /// Resume one durable Vault-root deletion. Child retirement reuses the exact

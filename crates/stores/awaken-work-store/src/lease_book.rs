@@ -12,6 +12,10 @@ use loom::sync::Mutex;
 #[cfg(not(all(test, feature = "loom")))]
 use std::sync::Mutex;
 
+use crate::mutation::{
+    LeaseAuthorityCommand, LeaseAuthorityDecision, LeaseAuthorityTuple, lease_authority_transition,
+};
+
 /// The lease window used by the reference backend.
 pub const LEASE_TTL_MS: u64 = 60_000;
 /// A worker counts as polling while its last poll is within this window.
@@ -35,6 +39,13 @@ struct LeaseAuthority {
 struct LeaseWindow {
     refreshed_at_ms: u64,
     expires_at_ms: u64,
+}
+
+/// One coherent read of the process-local lease authority tuple.
+pub(crate) struct LeaseAuthoritySnapshot {
+    pub(crate) owner: Option<String>,
+    pub(crate) epoch: Option<u64>,
+    pub(crate) lease_present: bool,
 }
 
 impl LeaseBook {
@@ -81,20 +92,40 @@ impl LeaseBook {
         ttl_ms: u64,
     ) -> Result<u64, &'static str> {
         let mut authority = self.authority.lock().unwrap();
-        let epoch = authority.epochs.entry(work_id.to_string()).or_default();
-        *epoch = epoch.checked_add(1).ok_or("work lease epoch exhausted")?;
-        let epoch = *epoch;
+        let current = LeaseAuthorityTuple {
+            owner: authority.owners.get(work_id).cloned(),
+            epoch: authority.epochs.get(work_id).copied().unwrap_or_default(),
+            refreshed_at: authority
+                .leases
+                .get(work_id)
+                .map(|lease| lease.refreshed_at_ms),
+            expires_at: authority
+                .leases
+                .get(work_id)
+                .map(|lease| lease.expires_at_ms),
+        };
+        let LeaseAuthorityDecision::Apply(next) = lease_authority_transition(
+            current,
+            LeaseAuthorityCommand::Claim {
+                owner: worker_id.to_string(),
+                refreshed_at: now_ms,
+                expires_at: now_ms.saturating_add(ttl_ms),
+            },
+        ) else {
+            return Err("work lease epoch exhausted");
+        };
+        authority.epochs.insert(work_id.to_string(), next.epoch);
         authority
             .owners
-            .insert(work_id.to_string(), worker_id.to_string());
+            .insert(work_id.to_string(), next.owner.expect("claim owner"));
         authority.leases.insert(
             work_id.to_string(),
             LeaseWindow {
-                refreshed_at_ms: now_ms,
-                expires_at_ms: now_ms.saturating_add(ttl_ms),
+                refreshed_at_ms: next.refreshed_at.expect("claim refresh"),
+                expires_at_ms: next.expires_at.expect("claim expiry"),
             },
         );
-        Ok(epoch)
+        Ok(next.epoch)
     }
 
     pub fn is_owned_by(&self, work_id: &str, worker_id: &str) -> bool {
@@ -115,11 +146,13 @@ impl LeaseBook {
             && authority.epochs.get(work_id).copied() == Some(expected_epoch)
     }
 
-    pub fn is_released_at_epoch(&self, work_id: &str, expected_epoch: u64) -> bool {
+    pub(crate) fn snapshot(&self, work_id: &str) -> LeaseAuthoritySnapshot {
         let authority = self.authority.lock().unwrap();
-        !authority.owners.contains_key(work_id)
-            && !authority.leases.contains_key(work_id)
-            && authority.epochs.get(work_id).copied() == Some(expected_epoch)
+        LeaseAuthoritySnapshot {
+            owner: authority.owners.get(work_id).cloned(),
+            epoch: authority.epochs.get(work_id).copied(),
+            lease_present: authority.leases.contains_key(work_id),
+        }
     }
 
     pub fn authority(&self, work_id: &str, now_ms: u64) -> Option<(String, u64, u64)> {
@@ -134,17 +167,80 @@ impl LeaseBook {
     }
 
     pub fn lease_for(&self, work_id: &str, now_ms: u64, ttl_ms: u64) {
-        self.authority.lock().unwrap().leases.insert(
-            work_id.to_string(),
-            LeaseWindow {
-                refreshed_at_ms: now_ms,
-                expires_at_ms: now_ms.saturating_add(ttl_ms),
+        let mut authority = self.authority.lock().unwrap();
+        let current = LeaseAuthorityTuple {
+            owner: authority.owners.get(work_id).cloned(),
+            epoch: authority.epochs.get(work_id).copied().unwrap_or_default(),
+            refreshed_at: authority
+                .leases
+                .get(work_id)
+                .map(|lease| lease.refreshed_at_ms),
+            expires_at: authority
+                .leases
+                .get(work_id)
+                .map(|lease| lease.expires_at_ms),
+        };
+        let Some(owner) = current.owner.clone() else {
+            // `lease()` is the legacy unowned liveness clock used by the
+            // property surface. It is not an owner mutation; owned renewals
+            // below must consume the complete authority transition.
+            authority.leases.insert(
+                work_id.to_string(),
+                LeaseWindow {
+                    refreshed_at_ms: now_ms,
+                    expires_at_ms: now_ms.saturating_add(ttl_ms),
+                },
+            );
+            return;
+        };
+        if let LeaseAuthorityDecision::Apply(next) = lease_authority_transition(
+            current,
+            LeaseAuthorityCommand::Renew {
+                owner,
+                expected_epoch: None,
+                refreshed_at: now_ms,
+                expires_at: now_ms.saturating_add(ttl_ms),
             },
-        );
+        ) {
+            authority.leases.insert(
+                work_id.to_string(),
+                LeaseWindow {
+                    refreshed_at_ms: next.refreshed_at.expect("renew refresh"),
+                    expires_at_ms: next.expires_at.expect("renew expiry"),
+                },
+            );
+        }
     }
 
     pub fn release(&self, work_id: &str) {
         let mut authority = self.authority.lock().unwrap();
+        let current = LeaseAuthorityTuple {
+            owner: authority.owners.get(work_id).cloned(),
+            epoch: authority.epochs.get(work_id).copied().unwrap_or_default(),
+            refreshed_at: authority
+                .leases
+                .get(work_id)
+                .map(|lease| lease.refreshed_at_ms),
+            expires_at: authority
+                .leases
+                .get(work_id)
+                .map(|lease| lease.expires_at_ms),
+        };
+        let command = current
+            .owner
+            .clone()
+            .map(|owner| LeaseAuthorityCommand::Release {
+                owner,
+                expected_epoch: current.epoch,
+            })
+            .unwrap_or(LeaseAuthorityCommand::Reclaim);
+        let LeaseAuthorityDecision::Apply(next) = lease_authority_transition(current, command)
+        else {
+            unreachable!("reclaim always clears the tuple")
+        };
+        debug_assert!(next.owner.is_none());
+        debug_assert!(next.refreshed_at.is_none());
+        debug_assert!(next.expires_at.is_none());
         authority.leases.remove(work_id);
         authority.owners.remove(work_id);
     }

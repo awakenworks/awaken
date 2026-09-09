@@ -15,8 +15,9 @@ use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
 use awaken_session_contract::work_queue::{
     ClaimedWork, HeartbeatResult, LeaseHeartbeat, LeaseReceipt, OBJECT_AT, QueueStats,
-    SessionWorkLease, WorkItem, WorkLeaseMutationAdmission, WorkMutationResult, WorkPayload,
-    WorkQueue, WorkQueueError, WorkSessionAccess, WorkState, work_lease_mutation_admission,
+    SessionWorkLease, SessionWorkReleaseAdmission, WorkItem, WorkLeaseMutationAdmission,
+    WorkMutationResult, WorkPayload, WorkQueue, WorkQueueError, WorkSessionAccess, WorkState,
+    session_work_release_admission, work_lease_mutation_admission,
 };
 
 use super::session_access::issue_session_token;
@@ -665,20 +666,20 @@ impl WorkQueue for InMemoryWorkQueue {
         let Some(work) = works.get_mut(&lease.work_id) else {
             return Ok(false);
         };
-        if work.environment_id != lease.environment_id
-            || !matches!(&work.data, WorkPayload::Session { id } if id == &lease.session_id)
-        {
-            return Ok(false);
-        }
-        if work.state == WorkState::Stopped
-            && book.is_released_at_epoch(&lease.work_id, lease.epoch)
-        {
-            return Ok(true);
-        }
-        if work.state != WorkState::Active
-            || !book.is_owned_at_epoch(&lease.work_id, &lease.owner, lease.epoch)
-        {
-            return Ok(false);
+        let authority = book.snapshot(&lease.work_id);
+        let admission = session_work_release_admission(
+            work.environment_id == lease.environment_id
+                && matches!(&work.data, WorkPayload::Session { id } if id == &lease.session_id),
+            work.state == WorkState::Active,
+            work.state == WorkState::Stopped,
+            authority.owner.as_deref() == Some(lease.owner.as_str()),
+            authority.epoch == Some(lease.epoch),
+            authority.owner.is_none() && !authority.lease_present,
+        );
+        match admission {
+            SessionWorkReleaseAdmission::AlreadyReleased => return Ok(true),
+            SessionWorkReleaseAdmission::Reject => return Ok(false),
+            SessionWorkReleaseAdmission::Apply => {}
         }
         work.stop_requested_at = Some(OBJECT_AT.to_string());
         work.stopped_at = Some(OBJECT_AT.to_string());

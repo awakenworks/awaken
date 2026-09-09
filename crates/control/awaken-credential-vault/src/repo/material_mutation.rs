@@ -15,14 +15,36 @@ pub enum CredentialMaterialMutationPhase {
     ReclaimingAbort,
 }
 
-/// Sole phase-to-recovery action classifier for both publication envelopes.
+/// Observation supplied to the one material-recovery planner. The command
+/// owner and the supervisor use the same vocabulary, so a failed/unknown
+/// external effect cannot be reinterpreted as successful cleanup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CredentialMaterialRecoveryAction {
-    SkipLiveWriting,
-    AbortExpiredWriting,
+pub(super) enum CredentialMaterialRecoverySignal {
+    SupervisorTick,
+    OwnerWritesComplete,
+    OwnerWriteFailed,
+    UnpublishedConflict,
+    ReadyMaterialComplete,
+    ReadyMaterialIncomplete,
+    ReadyMaterialUnknown,
+    CleanupConfirmedAbsent,
+    CleanupUnknown,
+}
+
+/// Sole phase/effect-to-next-work plan for source-only and Managed envelopes.
+/// `RetainResponsibility` is an intentional durable outcome, not successful
+/// completion: only `RetireIntent` permits removal of the WAL row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CredentialMaterialRecoveryPlan {
+    RetainResponsibility,
+    MarkReady,
+    InspectReadyMaterial,
+    ClaimExpiredWriterForAbort,
     PublishReady,
+    AbortUnpublished,
     CleanupPublished,
     CleanupAborted,
+    RetireIntent,
 }
 
 /// A material writer has this long to finish its external write before a
@@ -277,26 +299,38 @@ impl CredentialMaterialMutationFence {
 }
 
 #[must_use]
-pub(super) const fn credential_material_recovery_action(
+pub(super) const fn credential_material_recovery_plan(
     fence: &CredentialMaterialMutationFence,
     now_unix_ms: u64,
-) -> CredentialMaterialRecoveryAction {
+    signal: CredentialMaterialRecoverySignal,
+) -> CredentialMaterialRecoveryPlan {
+    use CredentialMaterialRecoveryPlan::*;
+    use CredentialMaterialRecoverySignal::*;
     match fence.phase {
-        CredentialMaterialMutationPhase::Writing
-            if fence.writer_lease_expires_at_unix_ms > now_unix_ms =>
-        {
-            CredentialMaterialRecoveryAction::SkipLiveWriting
-        }
-        CredentialMaterialMutationPhase::Writing => {
-            CredentialMaterialRecoveryAction::AbortExpiredWriting
-        }
-        CredentialMaterialMutationPhase::Ready => CredentialMaterialRecoveryAction::PublishReady,
-        CredentialMaterialMutationPhase::Reclaiming => {
-            CredentialMaterialRecoveryAction::CleanupPublished
-        }
-        CredentialMaterialMutationPhase::ReclaimingAbort => {
-            CredentialMaterialRecoveryAction::CleanupAborted
-        }
+        CredentialMaterialMutationPhase::Writing => match signal {
+            OwnerWritesComplete => MarkReady,
+            OwnerWriteFailed | UnpublishedConflict => AbortUnpublished,
+            SupervisorTick if fence.writer_lease_expires_at_unix_ms <= now_unix_ms => {
+                ClaimExpiredWriterForAbort
+            }
+            _ => RetainResponsibility,
+        },
+        CredentialMaterialMutationPhase::Ready => match signal {
+            SupervisorTick => InspectReadyMaterial,
+            OwnerWritesComplete | ReadyMaterialComplete => PublishReady,
+            OwnerWriteFailed | UnpublishedConflict | ReadyMaterialIncomplete => AbortUnpublished,
+            _ => RetainResponsibility,
+        },
+        CredentialMaterialMutationPhase::Reclaiming => match signal {
+            CleanupConfirmedAbsent => RetireIntent,
+            CleanupUnknown => RetainResponsibility,
+            _ => CleanupPublished,
+        },
+        CredentialMaterialMutationPhase::ReclaimingAbort => match signal {
+            CleanupConfirmedAbsent => RetireIntent,
+            CleanupUnknown => RetainResponsibility,
+            _ => CleanupAborted,
+        },
     }
 }
 
@@ -658,37 +692,72 @@ mod tests {
     }
 
     #[test]
-    fn recovery_action_decision_table_is_shared_by_both_envelopes() {
-        /* Cause/effect table: C1=phase, C2=Writing lease live. Effects are the
-         * sole external action. R1 Writing+live=>skip; R2 Writing+expired=>abort;
-         * R3 Ready=>publish; R4 Reclaiming=>published cleanup; R5
-         * ReclaimingAbort=>unpublished cleanup. Source and Managed recovery call
-         * this classifier, so one table covers both publication envelopes. */
+    fn recovery_plan_decision_table_is_shared_by_both_envelopes() {
+        /* Causes: C1 phase; C2 Writing lease live; C3 command/supervisor
+         * observation. Effects: R1 live Writing tick retains its WAL; R2 expired
+         * Writing is claimed for abort; R3 successful owner writes mark Ready;
+         * R4 only confirmed-complete Ready publishes; R5 incomplete Ready
+         * aborts; R6 unknown Ready retains; R7 terminal phases clean; R8 only
+         * confirmed absence retires the WAL. Both envelope services consume
+         * this table; SecretStore/SQL truth remains outside the classifier. */
         let now = 10;
         let cases = [
             (
                 fence(CredentialMaterialMutationPhase::Writing, now + 1),
-                CredentialMaterialRecoveryAction::SkipLiveWriting,
+                CredentialMaterialRecoverySignal::SupervisorTick,
+                CredentialMaterialRecoveryPlan::RetainResponsibility,
             ),
             (
                 fence(CredentialMaterialMutationPhase::Writing, now),
-                CredentialMaterialRecoveryAction::AbortExpiredWriting,
+                CredentialMaterialRecoverySignal::SupervisorTick,
+                CredentialMaterialRecoveryPlan::ClaimExpiredWriterForAbort,
+            ),
+            (
+                fence(CredentialMaterialMutationPhase::Writing, now + 1),
+                CredentialMaterialRecoverySignal::OwnerWritesComplete,
+                CredentialMaterialRecoveryPlan::MarkReady,
             ),
             (
                 fence(CredentialMaterialMutationPhase::Ready, 0),
-                CredentialMaterialRecoveryAction::PublishReady,
+                CredentialMaterialRecoverySignal::ReadyMaterialComplete,
+                CredentialMaterialRecoveryPlan::PublishReady,
+            ),
+            (
+                fence(CredentialMaterialMutationPhase::Ready, 0),
+                CredentialMaterialRecoverySignal::ReadyMaterialIncomplete,
+                CredentialMaterialRecoveryPlan::AbortUnpublished,
+            ),
+            (
+                fence(CredentialMaterialMutationPhase::Ready, 0),
+                CredentialMaterialRecoverySignal::ReadyMaterialUnknown,
+                CredentialMaterialRecoveryPlan::RetainResponsibility,
             ),
             (
                 fence(CredentialMaterialMutationPhase::Reclaiming, 0),
-                CredentialMaterialRecoveryAction::CleanupPublished,
+                CredentialMaterialRecoverySignal::SupervisorTick,
+                CredentialMaterialRecoveryPlan::CleanupPublished,
             ),
             (
                 fence(CredentialMaterialMutationPhase::ReclaimingAbort, 0),
-                CredentialMaterialRecoveryAction::CleanupAborted,
+                CredentialMaterialRecoverySignal::SupervisorTick,
+                CredentialMaterialRecoveryPlan::CleanupAborted,
+            ),
+            (
+                fence(CredentialMaterialMutationPhase::ReclaimingAbort, 0),
+                CredentialMaterialRecoverySignal::CleanupConfirmedAbsent,
+                CredentialMaterialRecoveryPlan::RetireIntent,
+            ),
+            (
+                fence(CredentialMaterialMutationPhase::Reclaiming, 0),
+                CredentialMaterialRecoverySignal::CleanupUnknown,
+                CredentialMaterialRecoveryPlan::RetainResponsibility,
             ),
         ];
-        for (fence, expected) in cases {
-            assert_eq!(credential_material_recovery_action(&fence, now), expected);
+        for (fence, signal, expected) in cases {
+            assert_eq!(
+                credential_material_recovery_plan(&fence, now, signal),
+                expected
+            );
         }
     }
 
@@ -905,30 +974,107 @@ mod phase_proofs {
 
     #[kani::proof]
     fn credential_material_recovery_action_is_total_and_expiry_exact() {
-        // C1 all four durable phases; C2 arbitrary full-width now/deadline,
-        // including zero and MAX. R1 only live Writing is skipped; R2 at or
-        // after expiry Writing aborts; R3 Ready publishes; R4/R5 terminal
-        // phases select their own cleanup. Empty owner fields deliberately
-        // avoid assuming envelope validation: this is dispatch, not admission.
+        // Causes: C1 all four durable phases; C2 all eight signals; C3 arbitrary
+        // full-width now/deadline. Effects: only confirmed Ready material may
+        // publish; owner failure/incomplete material aborts; unknown retains;
+        // terminal cleanup remains tracked until confirmed absence; only then
+        // may the WAL retire. Empty owner fields deliberately avoid assuming
+        // envelope validation: this is planning, not repository/SecretStore IO.
         use CredentialMaterialMutationPhase::*;
-        use CredentialMaterialRecoveryAction::*;
+        use CredentialMaterialRecoveryPlan::*;
+        use CredentialMaterialRecoverySignal::*;
         let input = CredentialMaterialMutationFence {
             phase: phase(),
             writer_lease_expires_at_unix_ms: kani::any(),
             ..Default::default()
         };
         let now = kani::any::<u64>();
-        let action = credential_material_recovery_action(&input, now);
-        assert_eq!(action == PublishReady, input.phase == Ready);
-        assert_eq!(action == CleanupPublished, input.phase == Reclaiming);
-        assert_eq!(action == CleanupAborted, input.phase == ReclaimingAbort);
+        let signal = match kani::any::<u8>() % 9 {
+            0 => SupervisorTick,
+            1 => OwnerWritesComplete,
+            2 => OwnerWriteFailed,
+            3 => UnpublishedConflict,
+            4 => ReadyMaterialComplete,
+            5 => ReadyMaterialIncomplete,
+            6 => ReadyMaterialUnknown,
+            7 => CleanupConfirmedAbsent,
+            _ => CleanupUnknown,
+        };
+        let plan = credential_material_recovery_plan(&input, now, signal);
         assert_eq!(
-            action == SkipLiveWriting,
-            input.phase == Writing && now < input.writer_lease_expires_at_unix_ms
+            plan == PublishReady,
+            input.phase == Ready && matches!(signal, OwnerWritesComplete | ReadyMaterialComplete)
         );
         assert_eq!(
-            action == AbortExpiredWriting,
-            input.phase == Writing && now >= input.writer_lease_expires_at_unix_ms
+            plan == RetireIntent,
+            matches!(input.phase, Reclaiming | ReclaimingAbort) && signal == CleanupConfirmedAbsent
         );
+        if matches!(signal, ReadyMaterialUnknown | CleanupUnknown) {
+            assert_ne!(plan, PublishReady);
+            assert_ne!(plan, RetireIntent);
+        }
+        if signal == OwnerWriteFailed {
+            assert_eq!(
+                plan == AbortUnpublished,
+                matches!(input.phase, Writing | Ready)
+            );
+        }
+        check_recovery_plan_conditionally_reaches_cleanup();
+    }
+
+    fn check_recovery_plan_conditionally_reaches_cleanup() {
+        // Causes: C1 every durable material phase; C2 the Writing lease is at
+        // or past expiry; C3 each selected repository/external action returns
+        // success. Effects: E1 expired Writing advances only to abort cleanup;
+        // E2 Ready advances only to published cleanup; E3 both cleanup phases
+        // are terminal recovery actions. The phase rules are exhaustive, so
+        // under C2+C3 every non-cleanup phase reaches cleanup in one transition.
+        // SQL CAS, SecretStore completion and scheduler fairness remain TCB;
+        // this proves only the production decision and phase methods they call.
+        use CredentialMaterialMutationPhase::*;
+        use CredentialMaterialRecoveryPlan::*;
+        use CredentialMaterialRecoverySignal::*;
+
+        let phase = phase();
+        let now = kani::any::<u64>();
+        let input = CredentialMaterialMutationFence {
+            format_version: CREDENTIAL_MATERIAL_MUTATION_FORMAT_VERSION,
+            phase,
+            attempt_id: "a".into(),
+            writer_token: "a".into(),
+            writer_epoch: 1,
+            writer_lease_expires_at_unix_ms: now,
+        };
+        let action = credential_material_recovery_plan(&input, now, SupervisorTick);
+        assert_ne!(
+            action, RetainResponsibility,
+            "C2 excludes the only stutter action"
+        );
+        match action {
+            ClaimExpiredWriterForAbort => {
+                let next = input.reclaiming_abort().expect("expired Writing aborts");
+                assert_eq!(
+                    credential_material_recovery_plan(&next, now, SupervisorTick),
+                    CleanupAborted,
+                    "E1"
+                );
+            }
+            InspectReadyMaterial => {
+                assert_eq!(
+                    credential_material_recovery_plan(&input, now, ReadyMaterialComplete),
+                    PublishReady
+                );
+                let next = input.reclaiming().expect("complete Ready publishes");
+                assert_eq!(
+                    credential_material_recovery_plan(&next, now, SupervisorTick),
+                    CleanupPublished,
+                    "E2"
+                );
+            }
+            CleanupPublished | CleanupAborted => {
+                assert!(matches!(phase, Reclaiming | ReclaimingAbort), "E3")
+            }
+            _ => unreachable!("the expired supervisor plan is closed"),
+        }
     }
 }

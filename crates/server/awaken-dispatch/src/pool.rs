@@ -34,7 +34,9 @@ use awaken_runtime_contract::activation::RunActivation;
 use crate::Error;
 use crate::clock::Clock;
 use crate::dispatch::{Claimed, Dispatch, PendingInput};
-use crate::service::DispatchServiceConfig;
+use crate::service::{
+    DispatchServiceConfig, LocalMaintenanceSchedule, wait_for_terminal_reconciliation,
+};
 use crate::wake::{LocalWakeSignal, WakeSignal, publish_dispatch_hint};
 use crate::worker::{DispatchWorker, renew_claim_while_active};
 use awaken_dispatch_contract::RunDispatch;
@@ -984,9 +986,13 @@ async fn reconciliation_loop<S: Dispatch + 'static>(context: ReconciliationConte
     // The same pool also drives database-less Workers. Their upstream already
     // owns maintenance; do not poll unsupported server verbs or a second scan.
     // Claim/renewal/retry-exhaustion stay in the independent ordinary drainers.
-    if !context.store.owns_local_maintenance() {
+    let Some(maintenance) = LocalMaintenanceSchedule::for_adapter(
+        context.store.owns_local_maintenance(),
+        context.config.dead_letter_ttl.is_some(),
+        context.config.terminal_reconciliation_interval.is_some(),
+    ) else {
         return;
-    }
+    };
     let ReconciliationContext {
         store,
         clock,
@@ -997,13 +1003,18 @@ async fn reconciliation_loop<S: Dispatch + 'static>(context: ReconciliationConte
         resolver,
         completion,
     } = context;
-    let mut next_terminal_reconciliation = tokio::time::Instant::now();
+    let mut next_terminal_reconciliation = maintenance
+        .reconciles_terminals()
+        .then(tokio::time::Instant::now);
     loop {
         if shutdown.is_cancelled() {
             break;
         }
         let now = clock.now_ms();
-        if let Some(ttl) = config.dead_letter_ttl {
+        if maintenance.purges_dead_letters() {
+            let ttl = config
+                .dead_letter_ttl
+                .expect("the maintenance schedule retained its GC interval");
             let cutoff = now.saturating_sub(ttl.as_millis() as u64);
             if let Err(error) = store.purge_dead_letters_before(cutoff).await {
                 tracing::warn!(%error, "dispatch dead-letter purge failed; retrying");
@@ -1027,8 +1038,8 @@ async fn reconciliation_loop<S: Dispatch + 'static>(context: ReconciliationConte
         if shutdown.is_cancelled() {
             break;
         }
-        if let Some(interval) = config.terminal_reconciliation_interval
-            && tokio::time::Instant::now() >= next_terminal_reconciliation
+        if let Some(deadline) = next_terminal_reconciliation
+            && tokio::time::Instant::now() >= deadline
         {
             match resolver
                 .reconcile_committed_terminals(clock.clone(), 256)
@@ -1045,13 +1056,15 @@ async fn reconciliation_loop<S: Dispatch + 'static>(context: ReconciliationConte
                     tracing::warn!(%error, "terminal dispatch reconciliation failed; retrying")
                 }
             }
-            next_terminal_reconciliation = tokio::time::Instant::now() + interval;
+            let interval = config
+                .terminal_reconciliation_interval
+                .expect("the maintenance schedule retained its scan interval");
+            next_terminal_reconciliation = Some(tokio::time::Instant::now() + interval);
         }
         tokio::select! {
             _ = shutdown.cancelled() => break,
             _ = reconciliation_wake.wait() => {},
-            _ = tokio::time::sleep_until(next_terminal_reconciliation),
-                if config.terminal_reconciliation_interval.is_some() => {},
+            _ = wait_for_terminal_reconciliation(next_terminal_reconciliation) => {},
             _ = tokio::time::sleep(config.poll_interval) => {}
         }
     }
