@@ -1,6 +1,49 @@
 // HTTP adapter and cross-scope integration tests for Config Service.
 
 #[tokio::test]
+async fn list_configs_publication_index_is_revision_exact_and_scope_bound() {
+    let plane = static_plane(None);
+    let scope = ScopeId::from(DEFAULT_SCOPE);
+    let foreign = ScopeId::from("other-workspace");
+    for id in ["published", "edited", "draft", "foreign-only"] {
+        plane.put(&scope, &agent_config(id)).await.unwrap();
+    }
+    for id in ["published", "edited"] {
+        plane.publish(&scope, id).await.unwrap();
+    }
+    let mut edited = agent_config("edited");
+    edited.instructions = "New unpublished instructions".into();
+    plane.put(&scope, &edited).await.unwrap();
+    plane
+        .put(&foreign, &agent_config("foreign-only"))
+        .await
+        .unwrap();
+    plane.publish(&foreign, "foreign-only").await.unwrap();
+
+    let (status, Json(body)) =
+        crate::config_routes::list_configs(State(plane), default_workspace(), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = body["data"].as_array().unwrap();
+    assert_eq!(rows.len(), 4);
+    for row in rows {
+        assert_eq!(row["published"], row["id"] == "published");
+    }
+    let edited = rows.iter().find(|row| row["id"] == "edited").unwrap();
+    assert_eq!(edited["system"], "New unpublished instructions");
+}
+
+#[tokio::test]
+async fn list_configs_store_failure_is_not_an_empty_workspace() {
+    let (status, _) = crate::config_routes::list_configs(
+        State(failing_scoped_plane()),
+        default_workspace(),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
 async fn get_config_handler_returns_500_on_store_error() {
     // Structural extraction rationale: C1 the adapter calls the unchanged public
     // ConfigService method after it moved to its authoring owner; E1 the existing

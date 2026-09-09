@@ -816,7 +816,10 @@ impl SessionError {
                 ("mcp_authentication_failed_error", RetryStatus::Terminal)
             }
             "rate_limited" => ("model_rate_limited_error", RetryStatus::Exhausted),
-            "context_overflow" | "unauthorized" => {
+            // These are model-owned, non-retryable failures. In particular,
+            // billing exhaustion must not lose its model origin or look like
+            // ordinary retry exhaustion at the Managed boundary.
+            "context_overflow" | "unauthorized" | "usage_limit" | "login_required" => {
                 ("model_request_failed_error", RetryStatus::Terminal)
             }
             "activation_failed" => ("unknown_error", RetryStatus::Terminal),

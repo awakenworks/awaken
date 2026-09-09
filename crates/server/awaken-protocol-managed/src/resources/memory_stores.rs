@@ -22,12 +22,13 @@ use awaken_resource_contract::{
 };
 use axum::Extension;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
+use crate::common::headers::parse_idempotency_key_header;
 use crate::common::scope::RequiredWorkspaceScope;
 use crate::routes::{ManagedJson, ManagedQuery};
 use crate::types::memory::{
@@ -488,21 +489,27 @@ async fn active_store_exists(
 async fn create_store(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
+    headers: HeaderMap,
     ManagedJson(body): ManagedJson<MemoryStoreCreateParams>,
 ) -> impl IntoResponse {
-    let definition = match state
-        .stores
-        .create(CreateMemoryStoreCommand {
-            workspace_id: workspace,
-            id: None,
-            name: body.name,
-            description: body.description.unwrap_or_default(),
-            metadata: body.metadata,
-            initial_state: ResourceState::Active,
-            retention_policy: Default::default(),
-        })
-        .await
-    {
+    let request_key = match parse_idempotency_key_header(&headers) {
+        Ok(key) => key,
+        Err(message) => return err(StatusCode::BAD_REQUEST, message),
+    };
+    let command = CreateMemoryStoreCommand {
+        workspace_id: workspace,
+        id: None,
+        name: body.name,
+        description: body.description.unwrap_or_default(),
+        metadata: body.metadata,
+        initial_state: ResourceState::Active,
+        retention_policy: Default::default(),
+    };
+    let result = match request_key {
+        Some(key) => state.stores.create_idempotent(command, &key).await,
+        None => state.stores.create(command).await,
+    };
+    let definition = match result {
         Ok(definition) => definition,
         Err(error) => return application_error(error),
     };

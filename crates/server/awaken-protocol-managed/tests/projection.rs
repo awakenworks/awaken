@@ -639,8 +639,10 @@ async fn a_terminal_run_fault_projects_session_error_before_idle() {
 
 /// A classified fault `code` selects the richer SDK error variant + retry status
 /// instead of always collapsing to `unknown_error`/`exhausted`: a `rate_limited`
-/// code projects `model_rate_limited_error`, and a `context_overflow` code is
-/// `model_request_failed_error` with a `terminal` retry status.
+/// code projects `model_rate_limited_error`; hard model faults (context,
+/// authorization, expired login and exhausted billing) project
+/// `model_request_failed_error` with a `terminal` retry status. An internal
+/// failure mentioning HTTP 402 does not become a model billing diagnosis.
 /// Causes: C1 a root User Event is retained; C2 the same primary Run has a
 /// committed terminal failure prefix; C3 its stable failure code is either
 /// `rate_limited` or `context_overflow`. Effects: E1 the failure is emitted once;
@@ -654,12 +656,46 @@ async fn a_classified_fault_projects_the_matching_sdk_error_variant() {
     // Coverage rationale: `a classified fault` is one independent branch selecting `projects the
     // matching sdk error variant`; a multi-row decision table is not applicable, and sibling tests
     // own alternate causes.
-    for (code, kind, retry) in [
-        ("rate_limited", "model_rate_limited_error", "exhausted"),
-        ("context_overflow", "model_request_failed_error", "terminal"),
+    for (code, kind, retry, message) in [
+        (
+            "rate_limited",
+            "model_rate_limited_error",
+            "exhausted",
+            "HTTP 429 Too Many Requests",
+        ),
+        (
+            "context_overflow",
+            "model_request_failed_error",
+            "terminal",
+            "Context length exceeded",
+        ),
+        (
+            "usage_limit",
+            "model_request_failed_error",
+            "terminal",
+            r#"402 Payment Required: {"error":{"message":"Insufficient Balance","type":"unknown_error","code":"invalid_request_error"}}"#,
+        ),
+        (
+            "login_required",
+            "model_request_failed_error",
+            "terminal",
+            "token has expired",
+        ),
+        (
+            "unauthorized",
+            "model_request_failed_error",
+            "terminal",
+            "401 Unauthorized",
+        ),
+        (
+            "internal",
+            "unknown_error",
+            "exhausted",
+            "HTTP 402: tool service requires payment",
+        ),
     ] {
         let (state, app) = app_with_runtime(
-            ScriptFake::new(move || failed(vec![assistant_text("a", "partial")], code, "boom"))
+            ScriptFake::new(move || failed(vec![assistant_text("a", "partial")], code, message))
                 .with_committed_evidence(CommittedEvidence::Terminal),
         );
         let id = create(&app).await;
@@ -677,7 +713,7 @@ async fn a_classified_fault_projects_the_matching_sdk_error_variant() {
             err["error"]["retry_status"]["type"], retry,
             "code {code} → retry"
         );
-        assert_eq!(err["error"]["message"], "boom");
+        assert_eq!(err["error"]["message"], message);
     }
 }
 

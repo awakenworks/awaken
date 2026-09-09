@@ -327,6 +327,7 @@ pub(super) async fn prepare_control_routers(
             awaken_coordinator::control_service_boundary::router_with_authenticator(
                 component.management_audit.clone(),
                 component.vault_state.clone(),
+                component.repository_credentials.clone(),
                 webhook_delivery,
                 component.data_subject_resolver.clone(),
                 component.organization_privacy.clone(),

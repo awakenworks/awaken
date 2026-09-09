@@ -22,6 +22,9 @@ fn mounted(files: Arc<dyn FileApplicationService>) -> Router {
     let resources = support::resources::ephemeral_resources();
     let authorities = resources.authorities();
     resources_router(ResourcesRouterInput {
+        repositories: resources.repositories(Arc::new(
+            awaken_resource_contract::UnavailableRepositoryCredentialValidator,
+        )),
         files,
         memories: authorities.memory_repository(),
         memory_stores: resources.memory_stores(),

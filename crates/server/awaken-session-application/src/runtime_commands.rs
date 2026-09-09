@@ -21,8 +21,7 @@ use crate::{
     SessionParticipantProvenance,
 };
 
-const SESSION_REPOSITORY_OWNER_KIND: &str = "awaken.session_repository.owner_kind";
-const SESSION_REPOSITORY_OWNER_SESSION: &str = "awaken.session_repository.session_id";
+use awaken_resource_contract::{SESSION_REPOSITORY_OWNER_KIND, SESSION_REPOSITORY_OWNER_SESSION};
 
 /// Closed owner namespace for a Repository definition created exclusively for
 /// one Session. Platform and Agent-default Repository definitions never carry

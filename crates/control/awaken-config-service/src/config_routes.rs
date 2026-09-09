@@ -276,7 +276,7 @@ async fn export_publication(
     }
 }
 
-async fn list_configs(
+pub(crate) async fn list_configs(
     State(plane): State<ConfigPlane>,
     scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
     execution: Option<Extension<ExecutionWorkspace>>,
@@ -288,6 +288,15 @@ async fn list_configs(
     match plane.list(&scope).await {
         Ok(configs) => {
             let _execution_workspace = execution.unwrap_or(scope.as_str());
+            let published_revisions = match plane.published_revisions(&scope).await {
+                Ok(revisions) => revisions,
+                Err(error) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": error })),
+                    );
+                }
+            };
             let mut data = Vec::with_capacity(configs.len());
             for config in configs {
                 let versioned = match plane.get_versioned(&scope, &config.id).await {
@@ -300,19 +309,8 @@ async fn list_configs(
                         );
                     }
                 };
-                let published = match plane
-                    .has_published_revision(&scope, &config.id, versioned.revision)
-                    .await
-                {
-                    Ok(published) => published,
-                    Err(error) => {
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(json!({ "error": error })),
-                        );
-                    }
-                };
-                data.push(managed_from_agent_config(&config, published));
+                let published = published_revisions.contains(&(config.id, versioned.revision));
+                data.push(managed_from_agent_config(&versioned.config, published));
             }
             (StatusCode::OK, Json(json!({ "data": data })))
         }

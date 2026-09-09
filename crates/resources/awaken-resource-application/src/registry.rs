@@ -185,9 +185,56 @@ impl ResourceInventory for RegistryApplication {
                 .flatten()
         }))
     }
+
+    fn list_repositories(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<RepositoryDefinition>, ResourceRegistryError> {
+        let mut definitions = self
+            .repository
+            .list_repositories(workspace_id)
+            .map_err(registry_error)?
+            .into_iter()
+            .filter_map(|stored| {
+                (stored.aggregate.definition().workspace_id == workspace_id
+                    && stored.aggregate.definition().state != ResourceState::Deleted)
+                    .then(|| stored.aggregate.into_definition())
+            })
+            .collect::<Vec<_>>();
+        definitions.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(definitions)
+    }
 }
 
 impl ResourceAdministration for RegistryApplication {
+    fn register_memory_store_idempotent(
+        &self,
+        command: RegisterMemoryStore,
+    ) -> Result<MemoryStoreDefinition, ResourceRegistryError> {
+        let candidate =
+            MemoryStoreAggregate::register_idempotent(command.definition, command.initial_config)?;
+        match self
+            .repository
+            .insert_memory_store(&candidate)
+            .map_err(registry_error)?
+        {
+            InsertOutcome::Inserted => Ok(candidate.into_definition()),
+            InsertOutcome::AlreadyRegistered => {
+                let id = candidate.definition().id.as_str();
+                let stored = self
+                    .memory(id)?
+                    .ok_or_else(|| ResourceRegistryError::NotFound(id.into()))?;
+                if !stored.aggregate.is_creation_replay_of(&candidate) {
+                    return Err(ResourceRegistryError::AlreadyRegistered(id.into()));
+                }
+                stored
+                    .aggregate
+                    .resolve_for_execution(&candidate.definition().workspace_id)?;
+                Ok(stored.aggregate.into_definition())
+            }
+        }
+    }
+
     fn register_memory_store(
         &self,
         command: RegisterMemoryStore,
@@ -272,6 +319,34 @@ impl ResourceAdministration for RegistryApplication {
             InsertOutcome::AlreadyRegistered => Err(ResourceRegistryError::AlreadyRegistered(
                 aggregate.definition().id.to_string(),
             )),
+        }
+    }
+
+    fn register_repository_idempotent(
+        &self,
+        command: RegisterRepository,
+    ) -> Result<RepositoryDefinition, ResourceRegistryError> {
+        let candidate =
+            RepositoryAggregate::register_idempotent(command.definition, command.initial_config)?;
+        match self
+            .repository
+            .insert_repository(&candidate)
+            .map_err(registry_error)?
+        {
+            InsertOutcome::Inserted => Ok(candidate.into_definition()),
+            InsertOutcome::AlreadyRegistered => {
+                let id = candidate.definition().id.as_str();
+                let stored = self
+                    .repository(id)?
+                    .ok_or_else(|| ResourceRegistryError::NotFound(id.into()))?;
+                if !stored.aggregate.is_creation_replay_of(&candidate) {
+                    return Err(ResourceRegistryError::AlreadyRegistered(id.into()));
+                }
+                stored
+                    .aggregate
+                    .resolve_for_execution(&candidate.definition().workspace_id)?;
+                Ok(stored.aggregate.into_definition())
+            }
         }
     }
 

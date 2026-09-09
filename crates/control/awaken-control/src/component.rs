@@ -136,6 +136,7 @@ pub struct ControlComponent {
     pub registration_supervisor: Arc<crate::StaticRegistrationSupervisor>,
     pub admin_tools: Vec<Arc<dyn RawTool>>,
     pub vault_state: Arc<VaultState>,
+    pub repository_credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
     /// The same Control-owned consent source exposed locally to AllInOne. A
     /// split Coordinator consumes its authenticated HTTP projection instead.
     pub data_subject_consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
@@ -223,11 +224,11 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         RESERVED_ADMIN_SCOPE,
         awaken_admin_assistant::admin_tool_descriptors(),
     ));
+    let credential_validator =
+        Arc::new(crate::CredentialRevisionValidator::new(credentials.clone()));
     let mut config_service =
         ConfigService::new(model_publication_resolver, executable_agent_registrar)
-            .with_credential_reference_validator(Arc::new(crate::CredentialRevisionValidator::new(
-                credentials.clone(),
-            )))
+            .with_credential_reference_validator(credential_validator.clone())
             .with_resources(resource_store.clone());
     for resolver in plugin_publication_resolvers {
         config_service = config_service.with_plugin_publication_resolver(resolver);
@@ -377,6 +378,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
     ));
 
     ControlComponent {
+        repository_credentials: credential_validator,
         router,
         management_audit: config_plane.management_audit_plane(),
         publication_reconciler,
