@@ -27,7 +27,7 @@ use awaken_runtime_contract::snapshot::{
 };
 use awaken_runtime_contract::tool::{
     RawTool, ToolError, ToolExecutionTarget, ToolExecutor, ToolOutput, ToolOutputSpiller,
-    ToolTaskHandle, ToolTaskPoll,
+    ToolTaskHandle, ToolTaskPoll, ToolTaskStart,
 };
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
 
@@ -998,6 +998,7 @@ enum ObservedToolReturn {
     Failure,
     Unknown,
     Pending,
+    CreatedTask(u8),
 }
 
 struct ObservedTool {
@@ -1018,7 +1019,38 @@ impl RawTool for ObservedTool {
             ObservedToolReturn::Failure => Err(ToolError::Execution("returned failure".into())),
             ObservedToolReturn::Unknown => Err(ToolError::Indeterminate("lost outcome".into())),
             ObservedToolReturn::Pending => std::future::pending().await,
+            ObservedToolReturn::CreatedTask(_) => panic!("created-task fixture requires start"),
         }
+    }
+
+    async fn start_task(&self, call: ToolCall) -> Result<ToolTaskStart, ToolError> {
+        let ObservedToolReturn::CreatedTask(case) = self.mode else {
+            return self.invoke(call).await.map(ToolTaskStart::Completed);
+        };
+        self.entered.fetch_add(1, Ordering::SeqCst);
+        let mut handle = ToolTaskHandle {
+            owner: "fixture".into(),
+            binding: "echo".into(),
+            task_id: "accepted-remote-task".into(),
+            poll_interval_ms: None,
+        };
+        match case {
+            0 => {}
+            1 => handle.owner.clear(),
+            2 => handle.owner = " \t".into(),
+            3 => handle.binding.clear(),
+            4 => handle.binding = " \t".into(),
+            5 => handle.task_id.clear(),
+            6 => handle.task_id = " \t".into(),
+            7 => handle.poll_interval_ms = Some(0),
+            8 => handle.poll_interval_ms = Some(1),
+            9 => handle.poll_interval_ms = Some(u64::MAX),
+            10 => handle.owner = "\u{a0}".into(),
+            11 => handle.binding = "\u{a0}".into(),
+            12 => handle.task_id = "\u{a0}".into(),
+            _ => unreachable!(),
+        }
+        Ok(ToolTaskStart::Pending(handle))
     }
 
     async fn poll_task(
@@ -1035,6 +1067,78 @@ impl RawTool for ObservedTool {
         task: &ToolTaskHandle,
     ) -> Result<ToolTaskPoll, ToolError> {
         self.poll_task(call, task).await
+    }
+}
+
+#[tokio::test]
+async fn malformed_created_task_coordinates_veto_ack_and_repeated_creation() {
+    // Causes: C1 start already accepted by the adapter; C2 owner/binding/task
+    // identity is empty or whitespace; C3 poll delay is zero, absent or positive.
+    // Effects: E1 valid Pending retains the exact handle and ordinary return;
+    // E2 invalid post-dispatch coordinates => typed Indeterminate and monotonic
+    // ACK veto; E3 another start in the same attempt cannot repeat the effect.
+    // Rules H1=C1+!C2+valid C3=>E1; H2=C1+(C2|zero C3)=>E2+E3.
+    // Shape validation remains the existing ToolTaskHandle authority. Unlike a
+    // malformed *input*, this returned handle describes possibly live work;
+    // neither a normal error nor local return proves that work terminated.
+    for case in 0..=12 {
+        let entered = Arc::new(AtomicUsize::new(0));
+        let runtime = Arc::new(
+            Runtime::new()
+                .with_tool(Arc::new(ObservedTool {
+                    mode: ObservedToolReturn::CreatedTask(case),
+                    entered: entered.clone(),
+                }))
+                .with_gate(Arc::new(ConstGate(GateOutcome::Allow))),
+        );
+        let context = RuntimeRunContext::new();
+        let latch = context.physical_quiescence.clone();
+        let activation = activation();
+        let prepared = PreparedToolExecutor::new(runtime, &activation.snapshot, context).unwrap();
+        let call = ToolCall {
+            call_id: "created".into(),
+            tool_id: "echo".into(),
+            arguments: serde_json::json!({}),
+        };
+        let state = Store::new();
+        let start = || {
+            prepared.start_task(
+                &activation.run_id,
+                &activation.thread_id,
+                "created".into(),
+                &call,
+                &state,
+            )
+        };
+        let result = start().await;
+        let valid = matches!(case, 0 | 8 | 9);
+        assert_eq!(latch.can_acknowledge_return(), valid, "H1/H2 case {case}");
+        if valid {
+            let ToolTaskStart::Pending(handle) = result.expect("H1") else {
+                panic!("H1 pending task cannot become a completed result");
+            };
+            assert_eq!(handle.owner, "fixture");
+            assert_eq!(handle.binding, "echo");
+            assert_eq!(handle.task_id, "accepted-remote-task");
+            assert_eq!(
+                handle.poll_interval_ms,
+                match case {
+                    0 => None,
+                    8 => Some(1),
+                    _ => Some(u64::MAX),
+                }
+            );
+        } else {
+            assert!(
+                matches!(result, Err(DetachedToolError::Indeterminate)),
+                "H2 {case}"
+            );
+            assert!(
+                matches!(start().await, Err(DetachedToolError::Indeterminate)),
+                "H2 reentry {case}"
+            );
+        }
+        assert_eq!(entered.load(Ordering::SeqCst), 1, "H1/H2 one creation");
     }
 }
 

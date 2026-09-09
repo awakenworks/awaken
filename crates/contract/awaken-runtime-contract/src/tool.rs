@@ -415,21 +415,65 @@ pub struct ToolTaskHandle {
 }
 
 impl ToolTaskHandle {
+    /// Validate coordinates returned after a task was created. Invalid output
+    /// cannot establish that its remote work stopped or permit another start.
+    /// Input validation before dispatch retains the ordinary `validate` error.
+    pub fn validate_created(&self) -> Result<(), ToolError> {
+        self.validate_coordinates()
+            .map_err(|message| ToolError::Indeterminate(message.into()))
+    }
+
     /// Reject incomplete recovery coordinates before they can cross a durable
     /// wait boundary.
     pub fn validate(&self) -> Result<(), ToolError> {
+        self.validate_coordinates()
+            .map_err(|message| ToolError::Execution(message.into()))
+    }
+
+    // One shape authority; each caller allocates only its final error instead
+    // of formatting and reallocating an intermediate ToolError.
+    fn validate_coordinates(&self) -> Result<(), &'static str> {
         if self.owner.trim().is_empty()
             || self.binding.trim().is_empty()
             || self.task_id.trim().is_empty()
             || self.poll_interval_ms == Some(0)
         {
-            Err(ToolError::Execution(
-                "durable tool task requires owner, binding, task id, and a positive poll interval"
-                    .into(),
-            ))
+            Err("durable tool task requires owner, binding, task id, and a positive poll interval")
         } else {
             Ok(())
         }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(4)]
+fn created_tool_handle_validation_never_invents_termination() {
+    // H1 three complete coordinates + absent/positive delay => unchanged Ok.
+    // H2 each empty/whitespace coordinate or zero delay => Indeterminate after
+    // creation. Exact production validation is called for all 27 coordinate
+    // partitions and every Option<u64> delay. The oracle uses input selectors,
+    // not another invocation of the same validator or string comparisons.
+    // String shapes are bounded; adapter honesty, async latch wiring, Unicode
+    // exhaustiveness and actual remote termination are not proved here.
+    fn coordinate(kind: u8) -> String {
+        kani::assume(kind < 3);
+        ["", " ", "x"][usize::from(kind)].into()
+    }
+    let owner: u8 = kani::any();
+    let binding: u8 = kani::any();
+    let task: u8 = kani::any();
+    let handle = ToolTaskHandle {
+        owner: coordinate(owner),
+        binding: coordinate(binding),
+        task_id: coordinate(task),
+        poll_interval_ms: kani::any(),
+    };
+    let valid = owner == 2 && binding == 2 && task == 2 && handle.poll_interval_ms != Some(0);
+    match handle.validate_created() {
+        Ok(()) => assert!(valid),
+        Err(ToolError::Indeterminate(_)) => assert!(!valid),
+        Err(_) => panic!("created-task validation cannot imply a definitive return"),
     }
 }
 

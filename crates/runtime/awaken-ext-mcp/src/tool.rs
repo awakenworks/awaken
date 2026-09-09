@@ -82,14 +82,13 @@ impl McpRawTool {
     }
 
     fn task_handle(&self, task: McpTask) -> Result<ToolTaskHandle, ToolError> {
-        validate_remote_task(&task, None)?;
         let handle = ToolTaskHandle {
             owner: MCP_TASK_OWNER.to_string(),
             binding: self.id.clone(),
             task_id: task.task_id,
             poll_interval_ms: task.poll_interval,
         };
-        handle.validate()?;
+        handle.validate_created()?;
         Ok(handle)
     }
 
@@ -119,7 +118,7 @@ impl McpRawTool {
         expected_task_id: &str,
         task: McpTask,
     ) -> Result<ToolTaskPoll, ToolError> {
-        validate_remote_task(&task, Some(expected_task_id))?;
+        validate_task_observation(&task, expected_task_id)?;
         match task.status {
             TaskStatus::Working => Ok(ToolTaskPoll::Pending {
                 poll_interval_ms: task.poll_interval,
@@ -247,11 +246,11 @@ fn result_to_output(call_id: &str, result: awaken_mcp_wire::CallToolResult) -> T
     }
 }
 
-fn validate_remote_task(task: &McpTask, expected_id: Option<&str>) -> Result<(), ToolError> {
-    if task.task_id.trim().is_empty()
-        || task.poll_interval == Some(0)
-        || expected_id.is_some_and(|expected| expected != task.task_id.as_str())
-    {
+fn validate_task_observation(task: &McpTask, expected_id: &str) -> Result<(), ToolError> {
+    // The input handle was validated before dispatch. A response must preserve
+    // that exact identity and supply a valid updated delay; creation uses the
+    // shared ToolTaskHandle validator instead of this observation-only rule.
+    if task.poll_interval == Some(0) || expected_id != task.task_id {
         return Err(ToolError::Indeterminate(
             "MCP server returned invalid or mismatched task coordinates".into(),
         ));
@@ -455,7 +454,11 @@ mod tests {
                 created_at: "2026-08-30T00:00:00Z".to_string(),
                 last_updated_at: "2026-08-30T00:00:01Z".to_string(),
                 ttl: Some(60_000),
-                poll_interval: Some(25),
+                poll_interval: if self.fault == Some("zero_delay") {
+                    Some(0)
+                } else {
+                    Some(25)
+                },
             }
         }
     }
@@ -645,13 +648,20 @@ mod tests {
     #[tokio::test]
     async fn task_failures_distinguish_effects_from_existing_handle_observation() {
         // Causes: operation=start/poll/result/cancel; failure=response loss or
-        // malformed creation handle; an exact handle is already durable except
+        // malformed creation identity/delay; an exact handle is already durable except
         // during start. Effects: T1 start/cancel loss or malformed coordinates
         // -> Indeterminate (no creation replay); T2 poll/result loss -> ordinary
         // observation failure, allowing only reads of the same existing handle.
         // Task completion/status positives and foreign local handle rejection
         // are owned by the adjacent lifecycle tests, not a second task model.
-        for fault in ["start", "cancel", "poll", "result", "malformed"] {
+        for fault in [
+            "start",
+            "cancel",
+            "poll",
+            "result",
+            "malformed",
+            "zero_delay",
+        ] {
             let transport = Arc::new(TaskTransport {
                 negotiated: true,
                 cancel: true,
@@ -671,7 +681,7 @@ mod tests {
                 poll_interval_ms: Some(25),
             };
             let error = match fault {
-                "start" | "malformed" => tool.start_task(call()).await.unwrap_err(),
+                "start" | "malformed" | "zero_delay" => tool.start_task(call()).await.unwrap_err(),
                 "cancel" => tool.cancel_task(&call(), &handle).await.unwrap_err(),
                 _ => tool.poll_task(&call(), &handle).await.unwrap_err(),
             };
@@ -821,7 +831,9 @@ mod tests {
         // diagnostic; C3=cancel was not negotiated; C4=server returns another
         // task id or zero poll interval. Effects E1=InputRequired keeps its
         // status metadata; E2=Failed keeps the diagnostic; E3=cancel errors
-        // before transport I/O; E4=malformed task evidence is rejected. Rules
+        // before transport I/O; E4=malformed task evidence is Indeterminate.
+        // C4 partitions include foreign, empty and whitespace-only identities.
+        // Rules
         // S1=C1=>E1; S2=C2=>E2; S3=C3=>E3; S4=C4=>E4.
         let transport = Arc::new(TaskTransport {
             negotiated: true,
@@ -878,19 +890,25 @@ mod tests {
         );
 
         input_required.status = TaskStatus::Working;
-        input_required.task_id = "other".into();
-        assert!(
-            tool.map_task_status(&call(), "remote-1", input_required.clone())
-                .await
-                .is_err(),
-            "S4/E4 mismatched id"
-        );
+        for returned_id in ["other", "", " ", "\u{a0}"] {
+            input_required.task_id = returned_id.into();
+            assert!(
+                matches!(
+                    tool.map_task_status(&call(), "remote-1", input_required.clone())
+                        .await,
+                    Err(ToolError::Indeterminate(_))
+                ),
+                "S4/E4 mismatched id"
+            );
+        }
         input_required.task_id = "remote-1".into();
         input_required.poll_interval = Some(0);
         assert!(
-            tool.map_task_status(&call(), "remote-1", input_required)
-                .await
-                .is_err(),
+            matches!(
+                tool.map_task_status(&call(), "remote-1", input_required)
+                    .await,
+                Err(ToolError::Indeterminate(_))
+            ),
             "S4/E4 zero interval"
         );
     }
