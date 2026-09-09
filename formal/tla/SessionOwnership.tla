@@ -1,52 +1,46 @@
 ------------------------ MODULE SessionOwnership ------------------------
-EXTENDS Naturals, FiniteSets, TLC
+EXTENDS SessionRootKernel
 
-CONSTANT Sessions, Owners, NoOwner, MaxGeneration
+\* One arbitrarily selected Session identity; other identities stutter here.
+\* This wrapper observes the canonical root, never a second write protocol.
+\* readCompleted is an observation pulse, not persisted Session state. It makes
+\* a read returning an unchanged/wrong empty tuple testable instead of stutter.
+VARIABLES readSnapshot, readCompleted
 
 NoRow == [present |-> FALSE, owner |-> NoOwner, generation |-> 0]
+RootRow == IF kExistence = "Live"
+           THEN [present |-> TRUE, owner |-> kOwner, generation |-> kRevision]
+           ELSE NoRow
+OwnershipVars == <<kVars, readSnapshot, readCompleted>>
+OwnershipInit == /\ Init
+                 /\ readSnapshot = NoRow
+                 /\ readCompleted = FALSE
+Read == /\ readSnapshot' = RootRow
+        /\ readCompleted' = ~readCompleted
+        /\ UNCHANGED kVars
+OwnershipNext == (Next /\ UNCHANGED <<readSnapshot, readCompleted>>) \/ Read
+OwnershipSpec == OwnershipInit /\ [][OwnershipNext]_OwnershipVars
 
-VARIABLE rows, reads
+RowIsOwned(row) ==
+    /\ row \in [present : BOOLEAN, owner : Owners \cup {NoOwner},
+                generation : 0..MaxRevision]
+    /\ (row.present => row.owner \in Owners)
+    /\ (row.present <=> row.generation > 0)
+VisibleRowAlwaysHasOwner == RowIsOwned(RootRow)
+ReadSnapshotIsCoherent == RowIsOwned(readSnapshot)
+OwnershipSafety == /\ Safety
+                   /\ readCompleted \in BOOLEAN
+                   /\ VisibleRowAlwaysHasOwner
+                   /\ ReadSnapshotIsCoherent
 
-vars == <<rows, reads>>
-
-Init == /\ rows = [s \in Sessions |-> NoRow]
-        /\ reads = [s \in Sessions |-> NoRow]
-
-SaveOwned(s, o) ==
-    /\ s \in Sessions
-    /\ o \in Owners
-    /\ rows[s].generation < MaxGeneration
-    /\ rows' = [rows EXCEPT ![s] =
-         [present |-> TRUE, owner |-> o,
-          generation |-> @.generation + 1]]
-    /\ UNCHANGED reads
-
-Read(s) == /\ s \in Sessions
-           /\ reads' = [reads EXCEPT ![s] = rows[s]]
-           /\ UNCHANGED rows
-
-Crash == UNCHANGED vars
-
-Next == (\E s \in Sessions, o \in Owners: SaveOwned(s, o))
-     \/ (\E s \in Sessions: Read(s))
-     \/ Crash
-
-TypeOK ==
-    /\ rows \in [Sessions -> [present : BOOLEAN,
-                               owner : Owners \cup {NoOwner},
-                               generation : 0..MaxGeneration]]
-    /\ reads \in [Sessions -> [present : BOOLEAN,
-                                owner : Owners \cup {NoOwner},
-                                generation : 0..MaxGeneration]]
-
-VisibleRowAlwaysHasOwner ==
-    \A s \in Sessions: rows[s].present => rows[s].owner \in Owners
-
-ReadSnapshotIsCoherent ==
-    \A s \in Sessions: reads[s].present => reads[s].owner \in Owners
-
-OwnerAndGenerationAreOneFact ==
-    \A s \in Sessions: rows[s].present <=> rows[s].generation > 0
-
-Spec == Init /\ [][Next]_vars
+\* Historical snapshots may survive later writes/deletion. Each new observation
+\* must capture owner and revision from the same current root.
+ReadCapturesOneRootFact ==
+    [][readCompleted' # readCompleted => readSnapshot' = RootRow]_OwnershipVars
+OwnerNeverRebinds == [][kExistence # "Absent" => kOwner' = kOwner]_OwnershipVars
+NoOwnedReadReached == ~readSnapshot.present
+NoHistoricalReadAfterTombstone ==
+    ~(kExistence = "Tombstoned" /\ readSnapshot.present)
+NoConflictingReadReached ==
+    ~(kLastCreateOutcome = "Conflict" /\ readSnapshot.present)
 =============================================================================

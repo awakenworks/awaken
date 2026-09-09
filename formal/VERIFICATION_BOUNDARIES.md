@@ -24,6 +24,17 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Architecture slices implemented at this checkpoint
 
+- Session ownership now observes the sole `SessionRootKernel`; the independent
+  `SaveOwned` model that could overwrite an owner is removed. The wrapper adds
+  only a read snapshot and observation pulse, not another write protocol.
+  `SessionOwnershipProof` reuses the root theorem and proves exact read capture,
+  coherent visible owner/revision pairs and immutable owner binding over
+  unbounded traces for arbitrary permitted kernel parameters. Historical reads
+  may remain after deletion. TLC checks concrete lifecycle/read witnesses and
+  semantic mutations. One selected identity abstracts unrelated operations as
+  stutters; SQL transaction execution, multi-identity concurrency and universal
+  implementation refinement remain outside this abstract theorem.
+
 - Session root time remains attached to the existing application CAS. Its
   production observation kernel is directly checked over every `Option<u64>`
   previous observation and `u64` clock, including zero, equal/backwards samples
