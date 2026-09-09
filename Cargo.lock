@@ -712,6 +712,7 @@ dependencies = [
  "awaken-resource-worker-http",
  "awaken-run-executor-a2a",
  "awaken-run-executor-acp",
+ "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-sandbox-local",
  "awaken-sandbox-memoryd",

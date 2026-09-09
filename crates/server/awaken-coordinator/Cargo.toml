@@ -159,6 +159,7 @@ container-podman = ["awaken-session-executor/container-podman"]
 container-k8s = ["awaken-session-executor/container-k8s"]
 
 [dev-dependencies]
+awaken-runtime.workspace = true
 awaken-dispatch-testkit.workspace = true
 awaken-service-lifecycle = { workspace = true, features = ["test-support"] }
 awaken-control.workspace = true
@@ -177,7 +178,7 @@ awaken-provider-genai.workspace = true
 awaken-session-store = { workspace = true, features = ["test-support"] }
 awaken-resource-store = { workspace = true, features = ["test-support"] }
 awaken-scenario-host = { workspace = true }
-awaken-dispatch = { workspace = true }
+awaken-dispatch = { workspace = true, features = ["test-support"] }
 awaken-store-inmem.workspace = true
 http-body-util = "0.1"
 awaken-agent-contract = { workspace = true }
