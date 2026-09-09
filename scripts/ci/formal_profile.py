@@ -15,6 +15,13 @@ PROOF_GRADES = frozenset({
 })
 DIRECT_GRADES = frozenset({"production_kernel_proved", "implementation_refined"})
 GUARDRAIL_ID = re.compile(r"G[1-9][0-9]*")
+STALE_DIRECT_GRADE_CLAIM = re.compile(
+    r"\b(?:the\s+)?(?:whole\s+)?(?:row|obligation)\b[^.]{0,160}(?:"
+    r"\b(?:remains?|retains?|is)\b[^.]{0,80}"
+    r"\b(?:abstract[-_ ]model(?:[-_ ]checked)?|model[-_ ]linked)\b"
+    r"|\bis\s+not\s+upgraded\b)",
+    re.IGNORECASE,
+)
 
 
 def validate_proof_grade(row: dict) -> None:
@@ -30,6 +37,14 @@ def validate_proof_grade(row: dict) -> None:
         raise ValueError(f"{key} production-kernel grade has no Kani harness")
     if grade in DIRECT_GRADES and not row.get("production_entrypoints"):
         raise ValueError(f"{key} direct production grade has no production entrypoint")
+    if grade in DIRECT_GRADES and any(
+        STALE_DIRECT_GRADE_CLAIM.search(bound)
+        for bound in row.get("bounds", [])
+        if isinstance(bound, str)
+    ):
+        raise ValueError(
+            f"{key} direct production grade contradicts an obsolete abstract/model row claim"
+        )
 
 
 def resolve_obligations(requirement: dict, rows: dict, owner: str) -> set[str]:
