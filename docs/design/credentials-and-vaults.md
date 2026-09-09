@@ -252,6 +252,19 @@ commit writes its exact-revision rollout outbox event in that same transaction;
 create has no rollout event. Periodic reconciliation publishes `Ready`, aborts
 expired `Writing`, and completes `Reclaiming`/`ReclaimingAbort` cleanup work.
 
+Source-only publication admission belongs to `CredentialMutationIntent`.
+All three adapters reuse its complete Source preimage comparison at begin and
+its prepared publication decision at apply. An exact derived `Reclaiming` WAL
+plus the complete published Source permits replay; otherwise only the exact
+`Ready` WAL and full preimage permit publication. A typed continuation checks
+a distinct replacement's predecessor only for first publication, preserving
+replay after the predecessor changes without acquiring an extra predecessor
+lock. Adapters retain their original transaction, row-lock, insertion-conflict
+and affected-row responsibilities; the decision is not a second stored state.
+The application rotation command still owns expected-version validation and
+checked successor arithmetic. Repository publication compares supplied complete
+images; it does not independently invent a version-successor policy.
+
 Both envelopes own abort and completion admission in the Credential repository
 domain's `cleanup` module. In-memory, SQLite and PostgreSQL read the complete
 durable intent and current Source/child under one lock or transaction, then
