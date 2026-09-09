@@ -372,6 +372,18 @@ def validate_observation_rule(name: str, step: dict[str, Any]) -> None:
         snapshot = {"revision": "uint", "fingerprint": "text", "binding": "text"}
         state = {"exists": "bool", **snapshot}
         validate_observation_schema(step, {"rule": "text", "before": state, "incoming": snapshot, "after": state, "admitted": "bool"}, name)
+    elif name == "event-batch-recovery-retry":
+        frame = {"root": "text", "outbox": "text", "reads": "uint"}
+        observation = {"present": "bool", "closed": "bool", "fingerprint": "text", "requested": "text",
+            "body_changed": "bool", "subject_changed": "bool", "result": ("exact", "conflict", "closed", "unavailable"),
+            "receipt": "text", "expected_receipt": "text", "error": "text", "failure": "text",
+            "before": frame, "after": frame, "cache_unchanged": "bool"}
+        validate_observation_schema(step, {"rule": "text", "observation": observation}, name)
+        o = step["observation"]
+        if (o["present"] != (rule != "absent") or o["closed"] != (rule == "closed")
+                or o["body_changed"] != (rule == "changed-body") or o["subject_changed"] != (rule == "changed-subject")
+                or (o["fingerprint"] == o["requested"]) != (rule in {"exact", "closed"})):
+            raise ValueError("event batch observation rule conditions drift")
     elif name == "delete-retry-lifecycle":
         state = {"disposition": ("active", "archived", "deleting", "tombstoned"),
             "terminal": "bool", "phase": ("not_requested", "fenced", "requested", "completed"),

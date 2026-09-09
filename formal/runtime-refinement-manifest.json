@@ -140,7 +140,8 @@
       "Continuous HTTP traces retain execution sequence/Session, durable root revision/times/lease, attachment active/ACK sets, complete generation coordinates in root claims/directives/completed calls/reports, and stage/publish/drain ordering. Target credentials, process scheduling between checkpoints and provider internals are erased; this checks only recorded paths through the canonical driver, not every implementation execution.",
       "Environment installation observations retain the actual slot receipt revision/digest, cached binding, and installation Result across independent Hosts. Digests erase aggregate payload contents; this is executed Dispatch-entry trace checking, not universal async refinement or provider-side recovery proof.",
       "Maintenance observations retain actual ownership/topology/timer settings, port begin/return ordering, ordinary claim attempts, and shutdown Pending/release/join events. Empty-memory-store effects, Tokio task/waker internals and physical termination are not projected; returning injected I/O is an explicit premise, not a proof of universal async fairness. The existing session-observations container includes this Coordinator domain without introducing a second trace pipeline.",
-      "Deletion observations retain exact serialized root, cleanup operation and pending outbox bytes for retry-frame equality; phase/effect/revision and the pending deleted-fact count are projected from those durable reads. Actual returned owner/root are retained and compared to durable truth; typed absence must expose owner-scoped retained tombstone revision/admissions through the existing repository port. SessionDeletion separately retains the historical committed fact count and models acknowledgement, so pending delivery is never confused with whether the fact was committed. Archived cleanup uses the same kernel before DELETE; the finite executed traces do not prove arbitrary SQL schedules, hash correctness, or provider internals."
+      "Deletion observations retain exact serialized root, cleanup operation and pending outbox bytes for retry-frame equality; phase/effect/revision and the pending deleted-fact count are projected from those durable reads. Actual returned owner/root are retained and compared to durable truth; typed absence must expose owner-scoped retained tombstone revision/admissions through the existing repository port. SessionDeletion separately retains the historical committed fact count and models acknowledgement, so pending delivery is never confused with whether the fact was committed. Archived cleanup uses the same kernel before DELETE; the finite executed traces do not prove arbitrary SQL schedules, hash correctness, or provider internals.",
+      "Event-batch retry observations retain the actual SQLite root/outbox before and after recovery failure, returned full wire receipt or typed error, Runtime snapshot-read count, and the canonical complete cache-content/publication comparison. Another actual root append/close occurs while the original Runtime read is paused; pre-winner I/O is expected. Fingerprints remain opaque production hashes and the five controlled schedules do not prove arbitrary SQL/async executions or hash collision resistance."
     ],
     "families": {
       "root": {
@@ -246,6 +247,15 @@
         "dependencies": [
           "SessionCleanupKernel"
         ]
+      },
+      "event-batch-retry": {
+        "model": "ToolResultProtocol",
+        "config": "ToolResultProtocol",
+        "operator": "BatchRetryObservation",
+        "arguments": [
+          "observation"
+        ],
+        "dependencies": []
       }
     },
     "required_scenarios": {
@@ -470,6 +480,17 @@
           "archived-completed-true-first",
           "archived-completed-true-completed",
           "archived-completed-true-tombstone"
+        ]
+      },
+      "event-batch-recovery-retry": {
+        "family": "event-batch-retry",
+        "source": "crates/server/awaken-protocol-managed/src/state/events/tests.rs",
+        "rules": [
+          "exact",
+          "changed-body",
+          "changed-subject",
+          "closed",
+          "absent"
         ]
       }
     }

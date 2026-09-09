@@ -1,0 +1,86 @@
+"""Qualify the existing ToolResultProtocol batch actions and actual retry trace."""
+from copy import deepcopy
+import json
+from pathlib import Path
+import tempfile
+
+from formal_model_mutation_runner import check_tlc_model_mutations
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def check_event_batch_model_mutants(tlc_jar: Path) -> None:
+    source = (ROOT / "formal/tla/ToolResultProtocol.tla").read_text()
+    # Keep the same protocol and every batch outcome. Smaller unrelated tool
+    # domains avoid multiplying the independent ToolReply state space per mutant.
+    config = """SPECIFICATION Spec
+CHECK_DEADLOCK FALSE
+CONSTANTS Calls = {call1} PendingCommits = {commit1} Operations = {op1}
+ Keys = {key1} Fingerprints = {fingerprint1, fingerprint2} None = no_operation
+ MaxRejected = 1 MaxConflicts = 1
+INVARIANTS EveryBatchKeyAppendsAtMostOnce
+"""
+    append = source[source.index("AppendBatch(key, fingerprint) =="):source.index("\\* One retry decision")]
+    replay = source[source.index("ReplayBatch(key, fingerprint) =="):source.index("\\* Final non-admission")]
+    conflict = source[source.index("ConflictBatch(key, fingerprint) =="):source.index("End ==")]
+    variables = [name.strip() for name in source.split("vars == <<", 1)[1].split(">>", 1)[0].replace("\n", "").split(",")]
+    rewritten = replay.replace("    /\\ UNCHANGED vars", "    /\\ batchFingerprint' = [batchFingerprint EXCEPT ![key] = None]\n    /\\ UNCHANGED <<" + ", ".join(name for name in variables if name != "batchFingerprint") + ">>")
+    appended = conflict.replace("    /\\ batchConflicts'", "    /\\ batchAppends' = [batchAppends EXCEPT ![key] = @ + 1]\n    /\\ batchConflicts'", 1).replace("batchFingerprint, batchAppends>>", "batchFingerprint>>", 1)
+    mutants = [
+        (source.replace(append, append.replace("    /\\ batchFingerprint[key] = None", "    /\\ TRUE", 1), 1), config, "EveryBatchKeyAppendsAtMostOnce"),
+        (source.replace(replay, rewritten, 1), config + "PROPERTIES BatchFingerprintNeverChanges\n", "action:BatchFingerprintNeverChanges"),
+        (source.replace(conflict, appended, 1), config, "EveryBatchKeyAppendsAtMostOnce"),
+    ]
+    check_tlc_model_mutations(tlc_jar, "ToolResultProtocol", source, config, mutants)
+    # Both kinds of retained identity must be reachable: closing all requests
+    # or accepting all requests cannot make the retry claims pass vacuously.
+    witnesses = []
+    for name, condition in [("NoAcceptedBatch", "batchAppends[key1] = 0"), ("NoClosedBatch", "~BatchIsClosed(key1)")]:
+        # key1 is a configuration model value, so quantify over the source Keys.
+        condition = condition.replace("key1", "key")
+        witness = source.replace("Spec == Init", f"{name} == \\A key \\in Keys: {condition}\n\nSpec == Init", 1)
+        witnesses.append((witness, config.replace("EveryBatchKeyAppendsAtMostOnce", name), name))
+    check_tlc_model_mutations(tlc_jar, "ToolResultProtocol", source, config, witnesses)
+    print("Event batch: 3 model mutants and 2 retained-outcome witnesses qualified")
+
+
+def check_event_batch_observation_mutants(tlc_jar: Path, trace_dir: Path) -> None:
+    from render_runtime_refinement_traces import render_observations, module_name
+    manifest = json.loads((ROOT / "formal/runtime-refinement-manifest.json").read_text())
+    name = "event-batch-recovery-retry"
+    document = json.loads((trace_dir / f"{name}.json").read_text())
+    # One measured effect is corrupted per cause row; all input classifications
+    # and retained evidence stay intact. The same relation must reject all.
+    cases = [
+        ("exact", ("result",), "unavailable"),
+        ("exact", ("receipt",), "wrong-receipt"),
+        ("changed-body", ("result",), "exact"),
+        ("changed-subject", ("result",), "exact"),
+        ("closed", ("result",), "exact"),
+        ("absent", ("error",), "replacement-error"),
+        ("exact", ("after", "root"), "changed-root"),
+        ("changed-body", ("after", "outbox"), "new-fact"),
+        ("exact", ("after", "reads"), 999),
+        ("exact", ("cache_unchanged",), False),
+    ]
+    with tempfile.TemporaryDirectory(prefix="awaken-event-batch-trace-") as temp:
+        raw, rendered = Path(temp) / "raw", Path(temp) / "rendered"
+        raw.mkdir()
+        path = raw / f"{name}.json"
+        path.write_text(json.dumps(document))
+        render_observations(raw, rendered, ROOT, manifest, False)
+        module = module_name(name)
+        baseline = (rendered / f"{module}.tla").read_text()
+        config = (rendered / f"{module}.cfg").read_text()
+        mutants = []
+        for rule, fields, value in cases:
+            mutant = deepcopy(document)
+            target = next(step for step in mutant["steps"] if step["rule"] == rule)["observation"]
+            for field in fields[:-1]: target = target[field]
+            assert target[fields[-1]] != value
+            target[fields[-1]] = value
+            path.write_text(json.dumps(mutant))
+            render_observations(raw, rendered, ROOT, manifest, False)
+            mutants.append(((rendered / f"{module}.tla").read_text(), config, "constant:TraceRefines"))
+        check_tlc_model_mutations(tlc_jar, module, baseline, config, mutants, dependencies=("ToolResultProtocol",))
+    print("Event batch: 10 actual-observation mutants qualified")

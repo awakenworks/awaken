@@ -21,6 +21,7 @@ import unittest
 from unittest.mock import patch
 
 from formal_model_mutation_runner import check_tlc_model_mutations
+from formal_event_batch_mutations import check_event_batch_model_mutants, check_event_batch_observation_mutants
 from formal_session_deletion_mutations import (check_session_deletion_model_mutants, check_deletion_observation_mutants)
 from formal_local_process_mutations import (
     check_local_process_model_mutants, check_local_recovery_model_mutants,
@@ -544,6 +545,7 @@ def main() -> None:
         "agent-input-model-mutant": check_agent_input_model_mutant,
         "resource-preparation-model-mutant": check_resource_preparation_model_mutant,
         "terminal-resource-model-mutants": check_terminal_resource_model_mutants,
+        "event-batch-model-mutants": check_event_batch_model_mutants,
         "session-deletion-model-mutants": check_session_deletion_model_mutants,
         "remote-attempt-model-mutants": check_remote_attempt_model_mutants,
         "unmaterialized-cleanup-model-mutant": check_unmaterialized_cleanup_model_mutant,
@@ -1514,7 +1516,8 @@ def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:
     check_realization_trace_mutants(tlc_jar, trace_dir, manifest)
     check_maintenance_observation_mutants(tlc_jar, trace_dir)
     check_deletion_observation_mutants(tlc_jar, trace_dir)
-    print("Production observation trace mutation score: 5/5 base families plus maintenance and deletion controls killed")
+    check_event_batch_observation_mutants(tlc_jar, trace_dir)
+    print("Production observation trace mutation score: 5/5 base families plus maintenance, deletion and event-batch controls killed")
 
 def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
     # Worker fault matrix W1 registry-only renewal; W2 evidence-only renewal;
@@ -1648,7 +1651,7 @@ def check_observation_rule_mutants(trace_dir: Path, manifest: dict) -> None:
                         if not any(text in str(error) for text in ["empty observation", "rule coverage drift"]): raise
                         killed += 1
                     else: raise SystemExit(f"coverage mutant survived: {name}/{index}/{fault}")
-            if name in {"publication-cardinality-renewal", "binding-clock-cases", "store-torn-prefix", "realization-http-crashes", "delete-retry-lifecycle"}:
+            if name in {"publication-cardinality-renewal", "binding-clock-cases", "store-torn-prefix", "realization-http-crashes", "delete-retry-lifecycle", "event-batch-recovery-retry"}:
                 for index in range(len(original["steps"])):
                     doc = deepcopy(original)
                     doc["steps"][index] = deepcopy(original["steps"][(index + 1) % len(original["steps"])])
