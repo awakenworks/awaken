@@ -1599,6 +1599,25 @@ def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:
     check_realization_capacity_observation_mutants(tlc_jar, trace_dir)
     print("Production observation trace mutation score: 5/5 base families plus maintenance, deletion and event-batch controls killed")
 
+def check_acp_boundary_model_mutants(tlc_jar: Path) -> None:
+    # One baseline and mutation owner for the strict Cowork gate and focused
+    # checks: observer drop, fabricated ACK, duplex deadlock, failed-TERM
+    # escalation veto, and a reachable error-then-KILL witness.
+    source = (ROOT / "formal/tla/AcpBoundary.tla").read_text()
+    config = (ROOT / "formal/tla/AcpBoundary.cfg").read_text()
+    timeout = source[source.index("CleanupTimeout =="):source.index("ObserveExit(code) ==")]
+    mutant_timeout = timeout.replace("killSent, observing, ack", "killSent, ack") + "  /\\ observing' = FALSE\n"
+    check_tlc_model_mutations(tlc_jar, "AcpBoundary", source, config, [
+        (source.replace(timeout, mutant_timeout), config.replace("INVARIANTS Safety", "INVARIANTS CleanupObserverRetained Safety"), "CleanupObserverRetained"),
+        (source.replace("/\\ exitCode # 0 /\\ observing /\\ ~ack", "/\\ termSent /\\ observing /\\ ~ack"), config.replace("INVARIANTS Safety", "INVARIANTS NoFabricatedQuiescence Safety"), "NoFabricatedQuiescence"),
+        (source.replace('/\\ wireOutcome = "Active" /\\ downlink > 0', '/\\ wireOutcome = "Active" /\\ downlink > 0 /\\ hostLeft = 0'), config.replace("INVARIANTS Safety", "INVARIANTS WireCanAdvance Safety"), "WireCanAdvance"),
+        (source.replace("/\\ termSent /\\ ~killSent /\\ exitCode = 0",
+                        "/\\ termSent /\\ ~termFailed /\\ ~killSent /\\ exitCode = 0", 1),
+         config.replace("INVARIANTS Safety", "INVARIANTS TermFailureAllowsEscalation Safety"), "TermFailureAllowsEscalation"),
+        (source, config.replace("INVARIANTS Safety", "INVARIANTS NoFailedTermEscalationReached Safety"),
+         "NoFailedTermEscalationReached"),
+    ])
+
 def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
     # Worker fault matrix W1 registry-only renewal; W2 evidence-only renewal;
     # W3 delayed probe success. Removing either expiry lane or erasing request
@@ -1644,15 +1663,7 @@ def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
     # C1 restore timeout-as-observer-drop; C2 TERM-as-ACK; C3 crash-as-ACK;
     # C4 first-target-as-complete-fanout. Each mutant must fail its independent
     # invariant after a green baseline, never a syntax/build/infrastructure error.
-    source = (ROOT / "formal/tla/AcpBoundary.tla").read_text()
-    config = (ROOT / "formal/tla/AcpBoundary.cfg").read_text()
-    timeout = source[source.index("CleanupTimeout =="):source.index("ObserveExit(code) ==")]
-    mutant_timeout = timeout.replace("killSent, observing, ack", "killSent, ack") + "  /\\ observing' = FALSE\n"
-    check_tlc_model_mutations(tlc_jar, "AcpBoundary", source, config, [
-        (source.replace(timeout, mutant_timeout), config.replace("INVARIANTS Safety", "INVARIANTS CleanupObserverRetained Safety"), "CleanupObserverRetained"),
-        (source.replace("/\\ exitCode # 0 /\\ observing /\\ ~ack", "/\\ termSent /\\ observing /\\ ~ack"), config.replace("INVARIANTS Safety", "INVARIANTS NoFabricatedQuiescence Safety"), "NoFabricatedQuiescence"),
-        (source.replace('/\\ wireOutcome = "Active" /\\ downlink > 0', '/\\ wireOutcome = "Active" /\\ downlink > 0 /\\ hostLeft = 0'), config.replace("INVARIANTS Safety", "INVARIANTS WireCanAdvance Safety"), "WireCanAdvance"),
-    ])
+    check_acp_boundary_model_mutants(tlc_jar)
     source = (ROOT / "formal/tla/SessionThreadToolComposition.tla").read_text()
     config = (ROOT / "formal/tla/SessionThreadToolComposition.cfg").read_text()
     crash = source[source.index("CrashChild(run) =="):source.index("ObserveProcessQuiescence(run) ==")]

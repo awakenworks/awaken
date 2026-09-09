@@ -106,14 +106,22 @@ async fn cleanup_drains_trailing_output_but_never_infers_exit_from_eof() {
 
 #[tokio::test]
 async fn signal_errors_require_later_exit_evidence_within_the_same_reap_budget() {
-    // D10 TERM fails + a later poll proves exit => success without KILL.
-    // D11 TERM fails + no exit => error, no fabricated receipt or escalation.
-    // D12 TERM succeeds, KILL fails + wait proves exit => success.
-    // D13 KILL fails + wait hangs/errors => bounded error. A successful signal
-    // alone is never evidence. Both terminal and cancellation cleanup reuse
-    // this ladder; no backend-specific ESRCH text is interpreted as success.
+    // Causes: C1 exit already observed; C2 TERM succeeds/fails; C3 a grace poll
+    // observes exit; C4 KILL succeeds/fails; C5 wait observes exit/errors/hangs;
+    // C6 a signal RPC hangs; C7 terminal/cancellation entry. C1 and C3 are
+    // exclusive evidence classes. Decision rules: D10=C1 -> no signals, success;
+    // D11=!C1+C3 -> TERM only, success independent of C2;
+    // D12=!C1+!C3+exit-at-wait -> TERM/KILL, success independent of C2/C4;
+    // D13=!C1+!C3+wait-error/hang -> TERM/KILL, bounded failure;
+    // D14=C6 -> total deadline, failure, no invented exit. A failed TERM must
+    // not suppress the authorized KILL stage for that same process. Conversely
+    // no signal result, channel EOF, or deadline can manufacture an ACK.
+    // Cross both entries, four TERM/KILL result pairs and seven evidence/RPC
+    // classes: 56 cases. Irrelevant later failures remain configured in early
+    // exit cases to detect accidental escalation. No provider error text is
+    // interpreted as successful termination.
     struct SignalRace {
-        failure: pc::Signal,
+        failures: u8,
         evidence: &'static str,
         polls: std::sync::atomic::AtomicUsize,
         signals: std::sync::Mutex<Vec<pc::Signal>>,
@@ -125,9 +133,10 @@ async fn signal_errors_require_later_exit_evidence_within_the_same_reap_budget()
         }
         async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
             let signalled = !self.signals.lock().unwrap().is_empty();
-            let ready = signalled
-                && self.evidence == "poll"
-                && self.polls.fetch_add(1, Ordering::SeqCst) >= 2;
+            let ready = self.evidence == "initial"
+                || (signalled
+                    && self.evidence == "poll"
+                    && self.polls.fetch_add(1, Ordering::SeqCst) >= 2);
             Ok(ready.then_some(pc::ExitStatus {
                 code: Some(0),
                 signaled: false,
@@ -145,40 +154,66 @@ async fn signal_errors_require_later_exit_evidence_within_the_same_reap_budget()
         }
         async fn signal(&self, signal: pc::Signal) -> Result<(), pc::SandboxError> {
             self.signals.lock().unwrap().push(signal);
-            if signal == self.failure {
+            if (signal == pc::Signal::Term && self.evidence == "term-hang")
+                || (signal == pc::Signal::Kill && self.evidence == "kill-hang")
+            {
+                return std::future::pending().await;
+            }
+            let bit = if signal == pc::Signal::Term { 1 } else { 2 };
+            if self.failures & bit != 0 {
                 Err(pc::SandboxError::new("signal failed"))
             } else {
                 Ok(())
             }
         }
     }
-    for (failure, evidence, expected) in [
-        (pc::Signal::Term, "poll", Some(false)),
-        (pc::Signal::Term, "none", None),
-        (pc::Signal::Kill, "wait", Some(true)),
-        (pc::Signal::Kill, "none", None),
-        (pc::Signal::Kill, "error", None),
-    ] {
+    for ((terminal, failures), evidence) in [false, true]
+        .into_iter()
+        .flat_map(|terminal| (0..4).map(move |failures| (terminal, failures)))
+        .flat_map(|case| {
+            [
+                "initial",
+                "poll",
+                "wait",
+                "none",
+                "error",
+                "term-hang",
+                "kill-hang",
+            ]
+            .map(|evidence| (case, evidence))
+        })
+    {
         let process = SignalRace {
-            failure,
+            failures,
             evidence,
             polls: Default::default(),
             signals: Default::default(),
         };
-        let result = tokio::time::timeout(
-            Duration::from_secs(1),
-            Supervisor::reap(&process, Duration::from_millis(20)),
-        )
+        let result = tokio::time::timeout(Duration::from_secs(1), async {
+            let grace = Duration::from_millis(20);
+            if terminal {
+                let (mut channel, _peer) = tokio::io::duplex(64);
+                Supervisor::reap_after_terminal(&mut channel, &process, grace).await
+            } else {
+                Supervisor::reap(&process, grace).await
+            }
+        })
         .await
-        .expect("D10-D13 remain bounded");
-        assert_eq!(result.ok(), expected, "{failure:?}/{evidence}");
+        .expect("D10-D14 remain bounded");
+        let expected = match evidence {
+            "initial" | "poll" => Some(false),
+            "wait" => Some(true),
+            _ => None,
+        };
+        assert_eq!(result.ok(), expected, "{terminal}/{failures}/{evidence}");
         assert_eq!(
             *process.signals.lock().unwrap(),
-            if failure == pc::Signal::Term {
-                vec![pc::Signal::Term]
-            } else {
-                vec![pc::Signal::Term, pc::Signal::Kill]
-            }
+            match evidence {
+                "initial" => vec![],
+                "poll" | "term-hang" => vec![pc::Signal::Term],
+                _ => vec![pc::Signal::Term, pc::Signal::Kill],
+            },
+            "{terminal}/{failures}/{evidence}"
         );
     }
 }

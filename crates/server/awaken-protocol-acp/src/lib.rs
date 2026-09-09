@@ -781,7 +781,7 @@ impl Supervisor {
         // A provider may lose the signal-vs-exit race before its outer handle
         // observes the exit. Only that same handle can supply the evidence;
         // signal errors must not skip the existing bounded observation window.
-        let term = process.signal(pc::Signal::Term).await;
+        let term_error = process.signal(pc::Signal::Term).await.err();
         const STEPS: u32 = 5;
         let step = grace / STEPS;
         for _ in 0..STEPS {
@@ -790,7 +790,9 @@ impl Supervisor {
             }
             tokio::time::sleep(step).await;
         }
-        term.map_err(io)?;
+        // A failed TERM request supplies neither an exit receipt nor a reason
+        // to abandon the existing KILL stage. Both signals address this same
+        // owned handle; success still requires its later exit observation.
         let kill_error = process.signal(pc::Signal::Kill).await.err();
         // Wait through the provider boundary so lifecycle hooks (notably durable
         // credential-file write-back) run before the turn is considered finished.
@@ -802,6 +804,7 @@ impl Supervisor {
         .await
         .map_err(|_| {
             kill_error
+                .or(term_error)
                 .map(io)
                 .unwrap_or_else(|| AcpError::Io("process did not report exit after SIGKILL".into()))
         })?
