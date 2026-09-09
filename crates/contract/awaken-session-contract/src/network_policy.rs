@@ -29,13 +29,15 @@ impl SessionNetworkPolicy {
                 let mut hosts = hosts
                     .iter()
                     .map(|host| host.trim().to_ascii_lowercase())
-                    .filter(|host| !host.is_empty())
                     .collect::<Vec<_>>();
-                // BTreeSet::from_iter already sorts a temporary Vec before
-                // building a tree. Keep that canonical Vec directly instead
-                // of constructing and consuming an intermediate tree.
-                hosts.sort();
+                // Equal keys are identical String values and will be deduplicated.
+                // Their original order carries no authority; keep canonical byte
+                // order without stable sorting's auxiliary allocation.
+                hosts.sort_unstable();
                 hosts.dedup();
+                // Filtering the canonical list preserves order and uniqueness.
+                // Collecting before filtering preserves the input length through sorting.
+                hosts.retain(|host| !host.is_empty());
                 Self::from_canonical_hosts(hosts)
             }
         }
@@ -72,7 +74,7 @@ impl SessionNetworkPolicy {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, kani))]
 mod collection_tests;
 
 #[cfg(test)]

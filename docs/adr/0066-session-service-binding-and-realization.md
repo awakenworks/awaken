@@ -35,8 +35,8 @@ both local and remote adapters.
 ## Durable structure
 
 Frozen network restrictions use `SessionNetworkPolicy` as their single algebra
-owner. `normalized` trims and ASCII-folds host names, removes blanks, then sorts
-and deduplicates the returned Vec. `safe_intersection` filters the canonical
+owner. `normalized` trims and ASCII-folds host names, collects, sorts and
+deduplicates, then removes blanks. `safe_intersection` filters the canonical
 left list; both paths share the empty-list-to-`None` constructor. Two blank-only
 allowlists therefore freeze `None`. The public enum and wire format are unchanged.
 Profiled admission meets Environment and request restrictions before layout

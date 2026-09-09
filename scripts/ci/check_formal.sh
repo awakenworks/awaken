@@ -247,6 +247,11 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness environment_image_build_claim_is_exact_non_wrapping_and_blocked_is_inert \
     --harness environment_image_build_mutation_requires_exact_claim_and_admissible_command
   run_kani awaken-session-contract \
+    --harness session_network_normalization_none_partition \
+    --harness session_network_normalization_unrestricted_partition \
+    --harness session_network_normalization_empty_partition \
+    --harness session_network_normalization_one_ascii_host_partition \
+    --harness session_network_normalization_two_ascii_hosts_partition \
     --harness session_root_replacement_preserves_creation_and_monotonic_update_observations \
     --harness public_millisecond_projection_is_exact_bounded_and_nonwrapping \
     --harness session_utc_projection_domain_is_total_exact_and_idempotent \
