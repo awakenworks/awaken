@@ -818,6 +818,15 @@ struct ResolvedToolReply {
 /// public receipt and no durable command, matching the existing no-op policy.
 struct ValidatedEventBatch {
     inputs: Vec<SessionEventInput>,
+    drive: ValidatedEventBatchDrive,
+}
+
+/// Request-local execution policy only. Durable ordering and retry remain
+/// owned by the existing Session Event lifecycle selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValidatedEventBatchDrive {
+    PreferredBatch,
+    LifecycleQueue,
 }
 
 mod admission;

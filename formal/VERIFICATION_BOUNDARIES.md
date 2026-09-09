@@ -492,10 +492,9 @@ type checking are valuable executable evidence, but are not formal proofs.
   evidence; the obligation retains its abstract-theorem grade.
 - The committed-event Runtime projection has one closed pending-tool reducer.
   `SessionRuntimeProjection.tla` checks replacement, accepted-but-unprocessed
-  reply classification, per-id processing, terminal clearing, and error
-  evidence. Its aggregate/event composition keeps current errors visible under
-  active aggregate authority without admitting messages; accepted-but-unprocessed
-  replies block follow-up until their committed receipt arrives. Two additional
+  reply classification, per-id processing, terminal clearing, and error evidence.
+  Active aggregate authority and accepted-but-unprocessed replies block the client
+  send control; server admission may retain behind the sole lifecycle selector. Two additional
   mutants cover hidden errors and presentation accidentally releasing admission. Within the configured finite prefix domain (`0..3`), it also checks
   that a successful refresh advances the paired result and source checkpoint to
   the observed committed prefix, while a failed refresh stutters. Browser tests cover
@@ -537,8 +536,9 @@ type checking are valuable executable evidence, but are not formal proofs.
   within the fence, or the exact retryable Unavailable error. Native cause tables
   cover competing order, duplicate commits, missing owners, and both numeric
   boundaries. This selector proof does not prove arbitrary identity codecs,
-  unbounded history, async prefix collection, SQL snapshots or durable reply
-  admission; the combined pending/resolving/processed obligation remains abstract.
+  unbounded history, async prefix collection, SQL snapshots or durable reply admission.
+  The production kernel maps Pending/unknown to rejection, Resolving to durable queuing
+  without request-local drive, and Processed to ready; browser send blocks Pending/Resolving.
   `SessionRuntimeProjection.tla` also checks opening identity with the bounded
   `SessionRuntimeProjectionOpening.cfg`: one retained opening, up to three
   source commits and one later interval, arbitrary live reads, terminal

@@ -1645,14 +1645,14 @@ def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
     # error presentation nor a resolving tool reply can authorize new input.
     source = (ROOT / "formal/tla/SessionRuntimeProjection.tla").read_text()
     config = (ROOT / "formal/tla/SessionRuntimeProjection.cfg").read_text().replace(
-        "    Safety", "    ErrorIsVisibleWithoutRelease\n    ActiveAggregateNeverAdmits\n    Safety")
+        "    Safety", "    ErrorIsVisibleWithoutRelease\n    ActiveAggregateNeverPresentsSend\n    Safety")
     check_tlc_model_mutations(tlc_jar, "SessionRuntimeProjection", source, config, [
         (source.replace('ELSE IF phase = "error" THEN "error"',
                         'ELSE IF phase = "error" THEN aggregate', 1),
          config, "ErrorIsVisibleWithoutRelease"),
-        (source.replace('CanSend == aggregate = "idle" /\\ phase',
-                        'CanSend == phase', 1),
-         config, "ActiveAggregateNeverAdmits"),
+        (source.replace('ClientPresentedCanSend ==\n    aggregate = "idle" /\\ phase',
+                        'ClientPresentedCanSend == phase', 1),
+         config, "ActiveAggregateNeverPresentsSend"),
     ])
     # O1 later Running checkpoints followed by a close must not change the
     # opening already observed by a warm client. The cold max-at-terminal

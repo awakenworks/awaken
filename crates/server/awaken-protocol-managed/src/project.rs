@@ -439,6 +439,16 @@ pub(crate) enum RuntimeToolProjectionPhase {
     Unclassified,
 }
 
+/// Server admission effect derived from the same phase that owns transcript
+/// visibility. The queue variant delegates to the existing durable Session
+/// Event selector; it is not a second scheduler or pending registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeToolFollowupAdmission {
+    Reject,
+    Queue,
+    Ready,
+}
+
 impl RuntimeToolProjectionPhase {
     pub(crate) const fn from_pending(client_executed: bool) -> Self {
         if client_executed {
@@ -458,6 +468,16 @@ impl RuntimeToolProjectionPhase {
 
     pub(crate) const fn is_pending(self) -> bool {
         matches!(self, Self::PendingClient | Self::PendingBuiltin)
+    }
+
+    pub(crate) const fn followup_admission(self) -> RuntimeToolFollowupAdmission {
+        match self {
+            Self::PendingClient | Self::PendingBuiltin | Self::Unclassified => {
+                RuntimeToolFollowupAdmission::Reject
+            }
+            Self::Resolving => RuntimeToolFollowupAdmission::Queue,
+            Self::Processed => RuntimeToolFollowupAdmission::Ready,
+        }
     }
 
     const fn is_transcript_visible(self) -> bool {
@@ -691,9 +711,11 @@ fn runtime_tool_projection_phase_is_total_distinct_and_fail_closed() {
     // Causes: C1 a current ticket is client/builtin; C2 an exact retained reply
     // exists; C3 that reply is processed. Effects: E1 !C2 stays Pending with
     // exact family; E2 C2+!C3 is Resolving; E3 C2+C3 is Processed; E4 missing
-    // evidence is Unclassified and transcript-invisible. All eight C1-C3 rows
-    // call the same production constructors/predicates used by projection and
-    // admission; durable identity matching and snapshot reads remain TCB.
+    // evidence is Unclassified, transcript-invisible, and rejected by server
+    // admission. E5 Resolving durably queues behind the retained reply; E6
+    // Processed is ready. All eight C1-C3 rows call the same production
+    // constructors/predicates consumed by projection and admission; durable
+    // identity matching, queue persistence and snapshot reads remain TCB.
     let client_executed: bool = kani::any();
     let retained: bool = kani::any();
     let processed: bool = kani::any();
@@ -722,6 +744,20 @@ fn runtime_tool_projection_phase_is_total_distinct_and_fail_closed() {
     );
     assert!(phase.is_transcript_visible());
     assert!(!RuntimeToolProjectionPhase::Unclassified.is_transcript_visible());
+    assert_eq!(
+        phase.followup_admission(),
+        if !retained {
+            RuntimeToolFollowupAdmission::Reject
+        } else if processed {
+            RuntimeToolFollowupAdmission::Ready
+        } else {
+            RuntimeToolFollowupAdmission::Queue
+        }
+    );
+    assert_eq!(
+        RuntimeToolProjectionPhase::Unclassified.followup_admission(),
+        RuntimeToolFollowupAdmission::Reject
+    );
 }
 
 pub(crate) fn advisor_consultation_blocks(
@@ -906,8 +942,10 @@ mod tests {
         // reply exists; C3 its root entry is processed. Effects: P1 !C2 stays
         // Pending in the exact family and blocks follow-up; P2 C2+!C3 is
         // Resolving; P3 C2+C3 is Processed; P4 missing disposition evidence is
-        // Unclassified and withheld. Rules cover all C1-C3 combinations; the
-        // exact identity adapter is exercised by Managed event recovery tests.
+        // Unclassified, withheld and rejected. P5 Resolving queues through the
+        // durable selector; P6 Processed is ready. Rules cover all C1-C3
+        // combinations; the exact identity adapter and production queue effect
+        // are exercised by Managed event recovery tests.
         for client_executed in [false, true] {
             for retained in [false, true] {
                 for processed in [false, true] {
@@ -928,11 +966,27 @@ mod tests {
                         "P3"
                     );
                     assert!(phase.is_transcript_visible(), "P1-P3");
+                    assert_eq!(
+                        phase.followup_admission(),
+                        if !retained {
+                            RuntimeToolFollowupAdmission::Reject
+                        } else if processed {
+                            RuntimeToolFollowupAdmission::Ready
+                        } else {
+                            RuntimeToolFollowupAdmission::Queue
+                        },
+                        "P1/P5/P6"
+                    );
                 }
             }
         }
         assert!(
             !RuntimeToolProjectionPhase::Unclassified.is_transcript_visible(),
+            "P4"
+        );
+        assert_eq!(
+            RuntimeToolProjectionPhase::Unclassified.followup_admission(),
+            RuntimeToolFollowupAdmission::Reject,
             "P4"
         );
     }
