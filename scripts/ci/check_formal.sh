@@ -280,10 +280,11 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness environment_image_build_mutation_requires_exact_claim_and_admissible_command
   run_kani awaken-environment-contract \
     --harness environment_registration_intent_is_exact_idempotent_and_recoverable
-  # Empty retained inventories exercise the actual deleted resolver, complete
-  # revision/source frame and replay. This does not cover retained receipts.
+  # The actual deleted resolver covers empty-inventory replay and one legacy
+  # error/frame/Drop call. Nonempty inventories and legacy replay remain open.
   run_kani awaken-session-contract -Z unstable-options \
     --harness deleted_admission_resolver_preserves_empty \
+    --harness deleted_admission_resolver_preserves_legacy_error_and_frame \
     --cbmc-args --unwindset memcmp.0:64
   run_kani awaken-session-contract \
     --harness session_event_batch_admission_resolution_is_total_closed_and_append_once \
