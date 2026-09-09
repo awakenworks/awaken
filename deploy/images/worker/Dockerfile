@@ -10,7 +10,7 @@ RUN apt-get update \
     && chown -R worker:worker /var/lib/awaken /workspace /outputs
 
 ARG BIN=awaken-worker
-COPY ${BIN} /usr/local/bin/awaken-worker
+COPY --chmod=0755 ${BIN} /usr/local/bin/awaken-worker
 
 USER 10001
 WORKDIR /workspace

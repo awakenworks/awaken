@@ -79,7 +79,7 @@ RUN chmod 0755 /usr/local/bin/awaken-verify-acp-runtimes \
 # publisher, and the nofollow terminal tree reader validated by `build.sh`
 # before an image is accepted.
 ARG BIN=deploy/images/sandbox/.awaken-sandbox.bin
-COPY ${BIN} /usr/local/bin/awaken-sandbox
+COPY --chmod=0755 ${BIN} /usr/local/bin/awaken-sandbox
 
 # Non-root; the workspace + outputs are tmpfs mounts the pod spec provides.
 RUN useradd -u 10001 -m agent \

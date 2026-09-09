@@ -10,7 +10,7 @@ RUN apt-get update \
     && chown -R awaken:awaken /var/lib/awaken
 
 ARG BIN=awaken-coordinator
-COPY ${BIN} /usr/local/bin/awaken-coordinator
+COPY --chmod=0755 ${BIN} /usr/local/bin/awaken-coordinator
 
 USER 10001
 WORKDIR /var/lib/awaken

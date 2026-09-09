@@ -159,6 +159,23 @@ k3d_docker_build --load -q -t "$IMAGE" \
   -f "$DEPLOY_DIR/Dockerfile" "$DEPLOY_DIR" >/dev/null
 IMAGE_ID=$(docker image inspect "$IMAGE" --format '{{.Id}}')
 echo "using immutable test image $IMAGE_ID"
+# Permission decision table P1: host umask 077/022 can yield 0700/0755 inputs;
+# root-owned COPY + non-root Worker must produce the same executable behavior.
+# P2 every role artifact => mode 0755, unchanged bytes, executable by the deployed
+# UID; production CLIs also execute --help. The scenario host has no help command
+# and its actual startup is checked by the rollout below. The image owns normalization; do not chmod host inputs or
+# relax the Pod identity to hide a packaging regression before cluster startup.
+for executable in awaken-control awaken-coordinator awaken-worker awaken-server; do
+  expected_hash=$(sha256sum "$DEPLOY_DIR/$executable" | cut -d ' ' -f 1)
+  docker run --rm --network none --read-only --cap-drop ALL --user 10001:10001 \
+    --entrypoint /bin/sh "$IMAGE_ID" -ec \
+    'test "$(stat -c %a "/usr/local/bin/$1")" = 755
+     test "$(sha256sum "/usr/local/bin/$1" | cut -d " " -f 1)" = "$2"
+     test -x "/usr/local/bin/$1"
+     if [ "$1" != awaken-server ]; then "/usr/local/bin/$1" --help >/dev/null; fi' \
+    awaken-image-permission-probe "$executable" "$expected_hash"
+done
+ok "all role artifacts execute as UID 10001 with normalized mode and unchanged bytes"
 # An absolute threshold keeps this nested K3d qualification independent of the
 # host volume's total size. Imported role images live in each Docker-backed K3s
 # node's small writable layer, so reserve 128 MiB there; the host runner owns

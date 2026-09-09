@@ -14,12 +14,12 @@ RUN apt-get update \
     && mkdir -p /var/lib/awaken/control /var/lib/awaken/coordinator /workspace /outputs
 
 # Deterministic scenario HTTP surface used by the focused durability fixtures.
-COPY awaken-server /usr/local/bin/awaken-server
+COPY --chmod=0755 awaken-server /usr/local/bin/awaken-server
 # Scenario-specific auxiliary executable. Callers that override the default
 # must provide a same-named host-built file in the build context.
 ARG AUXILIARY_EXECUTABLE=awaken-control
-COPY ${AUXILIARY_EXECUTABLE} /usr/local/bin/${AUXILIARY_EXECUTABLE}
-COPY awaken-coordinator /usr/local/bin/awaken-coordinator
-COPY awaken-worker /usr/local/bin/awaken-worker
+COPY --chmod=0755 ${AUXILIARY_EXECUTABLE} /usr/local/bin/${AUXILIARY_EXECUTABLE}
+COPY --chmod=0755 awaken-coordinator /usr/local/bin/awaken-coordinator
+COPY --chmod=0755 awaken-worker /usr/local/bin/awaken-worker
 
 ENTRYPOINT ["/usr/local/bin/awaken-server"]

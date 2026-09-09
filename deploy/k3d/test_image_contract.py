@@ -12,7 +12,7 @@ def main() -> None:
     # roots and OpenSSL; E2 both mount points exist before either shipped binary is
     # copied. Rules: I1 C1+C2+C3 => E1; I2 C1+C4 => E2.
     dockerfile = (Path(__file__).parent / "Dockerfile").read_text()
-    install = dockerfile.split("COPY awaken-server", 1)[0]
+    install = dockerfile.split("COPY --chmod=0755 awaken-server", 1)[0]
     for package in ("bubblewrap", "ca-certificates", "libssl3", "python3"):
         assert package in install, f"K3D product image is missing runtime package: {package}"
     mkdir = next(line for line in install.splitlines() if "mkdir -p" in line)
@@ -24,9 +24,26 @@ def main() -> None:
     # Control Pod intentionally uses the scenario adapter asserted by I4 below so
     # only its model-publication dependency is deterministic.
     assert "ARG AUXILIARY_EXECUTABLE=awaken-control" in dockerfile
-    assert "COPY ${AUXILIARY_EXECUTABLE} /usr/local/bin/${AUXILIARY_EXECUTABLE}" in dockerfile
-    assert "COPY awaken-coordinator /usr/local/bin/awaken-coordinator" in dockerfile
-    assert "COPY awaken-worker /usr/local/bin/awaken-worker" in dockerfile
+    assert "COPY --chmod=0755 ${AUXILIARY_EXECUTABLE} /usr/local/bin/${AUXILIARY_EXECUTABLE}" in dockerfile
+    assert "COPY --chmod=0755 awaken-coordinator /usr/local/bin/awaken-coordinator" in dockerfile
+    assert "COPY --chmod=0755 awaken-worker /usr/local/bin/awaken-worker" in dockerfile
+    # Image-permission cause/effect table: C1 host artifacts are 0700 under
+    # umask 077 or 0755 under 022; C2 COPY installs root-owned executables;
+    # C3 a role runs as UID 10001. P1 C1+C2+C3 => execution must remain allowed;
+    # P2 either input mode => runtime bytes unchanged and no group/other write.
+    # Each image owns the executable mode at COPY, independently of build-host
+    # policy. Static coverage locks every shared/production entry path; the live
+    # container probe supplies restrictive inputs and executes as UID 10001.
+    image_paths = [Path(__file__).parent / "Dockerfile.server"] + [
+        Path(__file__).parent.parent / "images" / role / "Dockerfile"
+        for role in ("worker", "control", "coordinator", "sandbox")
+    ]
+    for image_path in image_paths:
+        copies = [line for line in image_path.read_text().splitlines()
+                  if line.startswith("COPY ") and " /usr/local/bin/awaken-" in line
+                  and ("${BIN}" in line or "awaken-server " in line)]
+        assert len(copies) == 1, image_path
+        assert copies[0].startswith("COPY --chmod=0755 "), image_path
     resources = (Path(__file__).parent / "distributed-control" / "resources.yaml").read_text()
     policy_graph = (
         Path(__file__).parent / "bases" / "sandbox-network-policy" / "resources.yaml"
@@ -123,7 +140,7 @@ def main() -> None:
     ).read_text()
     # I4 the standalone production image owns only the Worker artifact, runs as
     # the fixed non-root identity, and carries the Namespace sandbox runtime.
-    assert "COPY ${BIN} /usr/local/bin/awaken-worker" in worker_image
+    assert "COPY --chmod=0755 ${BIN} /usr/local/bin/awaken-worker" in worker_image
     assert 'ENTRYPOINT ["/usr/local/bin/awaken-worker"]' in worker_image
     assert "USER 10001" in worker_image
     assert "bubblewrap" in worker_image
@@ -135,7 +152,7 @@ def main() -> None:
         role_image = (
             Path(__file__).parent.parent / "images" / role / "Dockerfile"
         ).read_text()
-        assert f"COPY ${{BIN}} /usr/local/bin/awaken-{role}" in role_image
+        assert f"COPY --chmod=0755 ${{BIN}} /usr/local/bin/awaken-{role}" in role_image
         assert f'ENTRYPOINT ["/usr/local/bin/awaken-{role}"]' in role_image
         assert "USER 10001" in role_image
         assert " /usr/local/bin/awaken\n" not in role_image

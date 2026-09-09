@@ -6,6 +6,6 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY awaken-server /usr/local/bin/awaken-server
+COPY --chmod=0755 awaken-server /usr/local/bin/awaken-server
 
 ENTRYPOINT ["/usr/local/bin/awaken-server"]
