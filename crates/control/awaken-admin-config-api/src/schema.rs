@@ -19,10 +19,13 @@ pub const BUNDLE_ID: &str = "awaken.admin";
 
 /// Sole append point after the compact and expanded published histories reach
 /// their terminal active schema.
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 pub(crate) const CONVERGED_BUNDLE_ID: &str = "awaken.admin.converged";
 
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 const EXPANDED_V1_CHECKSUM: &str =
     "a96581cecf572657f5503a0064d76b9b4c6653785d9ff74dd4821752735c604d";
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 const EXPANDED_V9_ALIAS: &str = "987ffe8ea131956d8b11c59ec8283d880ed97ce89cf02e9e652f61fbc4478131";
 
 /// The embedded migration files, in apply order. Each entry is
@@ -34,6 +37,7 @@ const FILES: &[(&str, &str)] = &[(
     include_str!("migrations/V0001__control_admin.sql"),
 )];
 
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 const EXPANDED_FILES: &[(&str, &str)] = &[
     (
         "V0001__inference_profile.sql",
@@ -80,8 +84,10 @@ const EXPANDED_FILES: &[(&str, &str)] = &[
         include_str!("migrations/expanded/V0011__webhook_mutation_intent.sql"),
     ),
 ];
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 const PUBLISHED_LEGACY_MIGRATION_COUNT: usize = 11;
 
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 const EXPANDED_CHECKSUMS: &[&str] = &[
     EXPANDED_V1_CHECKSUM,
     "1b8affd53b8a63c79159f038054a6cbe8f8481750ab418197a86fa16c71f2361",
@@ -97,6 +103,7 @@ const EXPANDED_CHECKSUMS: &[&str] = &[
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 enum PublishedAdminStream {
     Compact,
     Expanded,
@@ -138,6 +145,7 @@ pub fn admin_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 fn expanded_admin_bundle() -> Result<MigrationBundle, MigrationError> {
     assert_eq!(EXPANDED_FILES.len(), PUBLISHED_LEGACY_MIGRATION_COUNT);
     assert_eq!(EXPANDED_CHECKSUMS.len(), PUBLISHED_LEGACY_MIGRATION_COUNT);
@@ -167,6 +175,7 @@ fn expanded_admin_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 fn published_admin_stream(v1_checksum: Option<&str>) -> PublishedAdminStream {
     if v1_checksum == Some(EXPANDED_V1_CHECKSUM) {
         PublishedAdminStream::Expanded
@@ -175,6 +184,7 @@ fn published_admin_stream(v1_checksum: Option<&str>) -> PublishedAdminStream {
     }
 }
 
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 pub(crate) fn selected_admin_bundle(
     v1_checksum: Option<&str>,
 ) -> Result<MigrationBundle, MigrationError> {
@@ -184,6 +194,7 @@ pub(crate) fn selected_admin_bundle(
     }
 }
 
+#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
 pub(crate) fn converged_admin_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         CONVERGED_BUNDLE_ID,

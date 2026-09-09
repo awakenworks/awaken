@@ -683,6 +683,102 @@ mod tests {
 
     #[cfg(feature = "brokered")]
     #[tokio::test]
+    async fn pinned_materialization_preserves_journal_identity_in_both_model_modes() {
+        use crate::brokered_inference::{
+            BrokeredInferenceClient, BrokeredInferenceError, BrokeredInferenceLease,
+            BrokeredInferenceRequest,
+        };
+        use awaken_runtime_contract::model_operation::{
+            ModelOperation, ModelOperationContext, with_model_operation_context,
+        };
+        // P1 each pinned model-port call rematerializes the candidate. P2 both
+        // streaming and nonstreaming paths retain the ambient journal scope.
+        // P3 a grant response is lost: repeating its same invocation keeps the
+        // key; the next recorded invocation must differ. The fake broker records
+        // the real grant request then refuses it, so no model/credential IO is
+        // hidden in this cross-adapter regression.
+        #[derive(Default)]
+        struct LostGrant(std::sync::Mutex<Vec<BrokeredInferenceRequest>>);
+        #[async_trait]
+        impl BrokeredInferenceClient for LostGrant {
+            async fn create_grant(
+                &self,
+                request: BrokeredInferenceRequest,
+            ) -> Result<BrokeredInferenceLease, BrokeredInferenceError> {
+                self.0.lock().unwrap().push(request);
+                tokio::task::yield_now().await;
+                Err(BrokeredInferenceError::TemporarilyUnavailable)
+            }
+            async fn close_grant(&self, _: &str) -> Result<(), BrokeredInferenceError> {
+                panic!("no grant receipt exists")
+            }
+            async fn renew_grant(
+                &self,
+                _: &str,
+            ) -> Result<BrokeredInferenceLease, BrokeredInferenceError> {
+                panic!("no grant receipt exists")
+            }
+        }
+        struct Sink;
+        #[async_trait]
+        impl DeltaSink for Sink {
+            async fn on_text(&self, _: &str) {}
+        }
+        let client = Arc::new(LostGrant::default());
+        let materializer = CredentialInferenceMaterializer::new(
+            Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
+            Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+        )
+        .with_brokered_client(client.clone());
+        let candidate = brokered_candidate("model-a");
+        let router = PinnedCandidateExecutor {
+            materializer,
+            candidates: vec![candidate.clone()],
+            realization: None,
+            ownership: Some(Arc::new(CurrentOwnership)),
+            local_run_correlation: Some("run-a".into()),
+        };
+        let request = ChatRequest {
+            model_binding: candidate.binding().clone(),
+            inference: Default::default(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+        };
+        for ordinal in [1, 1, 2] {
+            let mut record = ModelOperation::next(None, candidate.binding().clone()).unwrap();
+            record.ordinal = std::num::NonZeroU64::new(ordinal).unwrap();
+            let operation = ModelOperationContext::from_operation(
+                &awaken_agent_contract::agent::thread::Id("thread-a".into()),
+                &awaken_agent_contract::agent::run::Id("run-a".into()),
+                &record,
+            );
+            for streaming in [false, true] {
+                let error = with_model_operation_context(Some(operation.clone()), async {
+                    if streaming {
+                        router.infer_streaming(request.clone(), &Sink).await
+                    } else {
+                        router.infer(request.clone()).await
+                    }
+                })
+                .await
+                .unwrap_err();
+                assert_eq!(
+                    error.execution_evidence(),
+                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched
+                );
+            }
+        }
+        let requests = client.0.lock().unwrap();
+        assert_eq!(requests.len(), 6);
+        for row in 0..4 {
+            assert_eq!(requests[0].idempotency_key, requests[row].idempotency_key);
+        }
+        assert_ne!(requests[0].idempotency_key, requests[4].idempotency_key);
+        assert_eq!(requests[4].idempotency_key, requests[5].idempotency_key);
+    }
+
+    #[cfg(feature = "brokered")]
+    #[tokio::test]
     async fn brokered_mode_and_candidate_routing_share_one_decision_table() {
         // Causes: C1 brokered supply is enabled; C2 an authenticated client is
         // installed; C3 the requested binding is in the publication-pinned set;
