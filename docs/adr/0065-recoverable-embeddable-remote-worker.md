@@ -302,6 +302,23 @@ matrix crosses Registry adapters and old-response races; production CLI tests
 exercise the assembled stop source against a mock Kubernetes API. Neither is
 the Native hard-crash k3d acceptance test.
 
+The gated CLI live test additionally composes the actual Kubernetes API's
+Pod-bound TokenRequest/TokenReview, production Worker HTTP clients, and SQLite
+Registry/Dispatch. Wrong audiences and copied tokens under another Pod UID
+reject. Different process nonces retain the same authenticated incarnation.
+After binding admission, the test stops its HTTP server, drops the store and
+provider instances, removes the old token file, and reopens the same databases
+with a newly assembled Coordinator adapter. The successor's ordinary blocked
+admission closes the expired predecessor and requests its exact Pod stop.
+Independent observation then returns the frozen local-process subject, while
+Dispatch remains occupied because no remote-operation evidence was supplied.
+This qualifies durable identity and independent stop composition; the Pod runs
+a sleep fixture, not the Native Runtime, and server restart is a task restart,
+not an OS process crash. The separate container live test injects actual CRI
+SIGKILL and checks partial-domain exit, name reuse and stale deletion. Both tests
+use the existing isolated k3d harness; neither proves remote termination or
+complete Native crash takeover.
+
 Configuration is explicit and role-owned:
 
 - A server-mode Coordinator compiled with `container-k8s` accepts the
