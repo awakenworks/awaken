@@ -760,6 +760,13 @@ async fn provider_evidence_drift_drains_the_incarnation() {
         result.to_string().contains("supervisor restart required"),
         "E3"
     );
+    // P3 is sandbox evidence loss while registry transport still works: the
+    // terminal diagnostic must name execution authority, not blame registry I/O.
+    assert!(
+        result
+            .to_string()
+            .contains("worker lost execution authority")
+    );
     let sequences = upstream.heartbeat_sequences();
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(upstream.heartbeat_sequences(), sequences, "E2");

@@ -68,13 +68,21 @@ pub(super) async fn monitor<Probe, ProbeFuture, Error>(
             timing.proof_window(),
         ) {
             awaken_observability::record_worker_authority_loss("environment_evidence_expired");
-            tracing::error!("worker sandbox evidence expired; draining locally");
+            tracing::error!(
+                proof_age_ms = started.saturating_duration_since(last_proof).as_millis(),
+                proof_window_ms = timing.proof_window().as_millis(),
+                "worker sandbox evidence expired; draining locally"
+            );
             return;
         }
         let result =
             tokio::time::timeout_at((started + timing.request_timeout()).min(deadline), probe())
                 .await;
-        let elapsed = tokio::time::Instant::now().saturating_duration_since(last_proof);
+        let finished = tokio::time::Instant::now();
+        let elapsed = finished.saturating_duration_since(last_proof);
+        let probe_elapsed_ms = finished.saturating_duration_since(started).as_millis();
+        let proof_age_ms = elapsed.as_millis();
+        let remaining_proof_ms = timing.remaining_proof_after(elapsed).as_millis();
         let observation = match &result {
             Ok(Ok(())) => ProbeObservation::Proven,
             Ok(Err(_)) => ProbeObservation::Lost,
@@ -96,18 +104,29 @@ pub(super) async fn monitor<Probe, ProbeFuture, Error>(
                     unreachable!("CloseLost is derived only from a provider rejection")
                 };
                 awaken_observability::record_worker_authority_loss("environment_evidence_lost");
-                tracing::error!(error = %error, "worker sandbox evidence no longer holds; draining locally");
+                tracing::error!(error = %error, probe_elapsed_ms, proof_age_ms,
+                    remaining_proof_ms, "worker sandbox evidence no longer holds; draining locally");
                 return;
             }
             EvidenceAction::RetryWithinCurrentProof => {
                 tracing::warn!(
+                    probe_elapsed_ms,
+                    proof_age_ms,
+                    remaining_proof_ms,
+                    request_budget_ms = timing.request_timeout().as_millis(),
                     "worker sandbox evidence probe timed out; retrying within existing proof"
                 );
                 next_attempt = tokio::time::Instant::now() + timing.retry_delay();
             }
             EvidenceAction::CloseExpired => {
                 awaken_observability::record_worker_authority_loss("environment_evidence_expired");
-                tracing::error!("worker sandbox evidence expired during probe; draining locally");
+                tracing::error!(
+                    probe_elapsed_ms,
+                    proof_age_ms,
+                    remaining_proof_ms,
+                    request_budget_ms = timing.request_timeout().as_millis(),
+                    "worker sandbox evidence expired during probe; draining locally"
+                );
                 return;
             }
             EvidenceAction::StartProbe => {
