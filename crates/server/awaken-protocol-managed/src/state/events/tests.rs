@@ -10171,11 +10171,12 @@ async fn closed_remote_wait_projects_its_answerable_event_before_terminal_histor
     // Cause C2: cancellation closes the same Run before Managed first observes
     // either lifecycle fact. Effect E1: cold projection reconstructs one
     // source-qualified `agent_input` before the historical RequiresAction idle;
-    // E2: the later cancellation still closes the interval as EndTurn.
+    // E2: the later cancellation still closes the interval as EndTurn; E3 a
+    // cache loss rebuilds the same complete order and identities.
     //
     // | Rule | Awaiting observed first | later terminal | ToolUse message | Effect |
     // |---|---|---|---|---|
-    // | H1 | no | yes | no | E1+E2 |
+    // | H1 | no | yes | no | E1+E2+E3 |
     // | H2 | yes | any | no | existing synthetic-pending test |
     let runtime = LifecycleRuntime::default();
     let state = ManagedState::new(runtime.clone()).with_config_source(Arc::new(
@@ -10252,34 +10253,54 @@ async fn closed_remote_wait_projects_its_answerable_event_before_terminal_histor
         .list_events(&session.id, None, None, false)
         .unwrap()
         .data;
-    let tool = events
+    let tool_position = events
         .iter()
-        .find(|event| {
+        .position(|event| {
             matches!(
                 &event.kind,
                 OutboundKind::AgentCustomToolUse { name, .. } if name == "agent_input"
             )
         })
         .expect("H1/E1 historical answerable event");
+    let tool_id = events[tool_position].id.clone();
+    let awaiting_position = events
+        .iter()
+        .position(|event| {
+            matches!(
+                &event.kind,
+                OutboundKind::SessionThreadStatusIdle {
+                    stop_reason: StopReason::RequiresAction { event_ids },
+                    ..
+                } if event_ids == std::slice::from_ref(&tool_id)
+            )
+        })
+        .expect("H1/E1 historical Awaiting refers to the qualified event");
+    let terminal_position = events
+        .iter()
+        .position(|event| {
+            matches!(
+                event.kind,
+                OutboundKind::SessionThreadStatusIdle {
+                    stop_reason: StopReason::EndTurn,
+                    ..
+                }
+            )
+        })
+        .expect("H1/E2 terminal interval closes");
     assert!(
-        events.iter().any(|event| matches!(
-            &event.kind,
-            OutboundKind::SessionThreadStatusIdle {
-                stop_reason: StopReason::RequiresAction { event_ids },
-                ..
-            } if event_ids == std::slice::from_ref(&tool.id)
-        )),
-        "H1/E1 historical Awaiting refers to the qualified event"
+        tool_position < awaiting_position && awaiting_position < terminal_position,
+        "H1/E1-E2 causal order"
     );
-    assert!(
-        events.iter().any(|event| matches!(
-            event.kind,
-            OutboundKind::SessionThreadStatusIdle {
-                stop_reason: StopReason::EndTurn,
-                ..
-            }
-        )),
-        "H1/E2 terminal interval closes"
+
+    state.sessions.lock().unwrap().remove(&session.id);
+    state.refresh_committed_events(&session.id).await.unwrap();
+    assert_eq!(
+        state
+            .list_events(&session.id, None, None, false)
+            .unwrap()
+            .data,
+        events,
+        "H1/E3 cold rebuild"
     );
 }
 
