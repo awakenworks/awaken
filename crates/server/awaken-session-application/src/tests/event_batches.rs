@@ -1269,6 +1269,7 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
         )
         .await
         .expect("I1/E1");
+    let accepted_revision = repository.get("event-idempotency").await.unwrap().revision;
     let replay = app
         .append_session_event_batch_idempotent(
             "event-idempotency",
@@ -1280,16 +1281,9 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
         .await
         .expect("I2/E2 warm replay");
     assert_eq!(replay, first, "I2/E2");
-    assert_eq!(
-        repository
-            .get("event-idempotency")
-            .await
-            .unwrap()
-            .event_batches
-            .len(),
-        1,
-        "I2/E2"
-    );
+    let warm_replay = repository.get("event-idempotency").await.unwrap();
+    assert_eq!(warm_replay.revision, accepted_revision, "I2/E2 stutters");
+    assert_eq!(warm_replay.event_batches.len(), 1, "I2/E2");
 
     let restarted = application_with_runtime(
         Arc::new(EventBatchRuntime::default()),
@@ -1304,6 +1298,20 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
         SessionEventBatchIdempotency::Exact(first.clone()),
         "I2/E2 restart replay"
     );
+    let cold_replay = restarted
+        .append_session_event_batch_idempotent(
+            "event-idempotency",
+            input.clone(),
+            None,
+            None,
+            Some(("key-1".into(), "fingerprint-1".into())),
+        )
+        .await
+        .expect("I2/E2 cold retry");
+    assert_eq!(cold_replay, first, "I2/E2 cold retry receipt");
+    let cold_snapshot = repository.get("event-idempotency").await.unwrap();
+    assert_eq!(cold_snapshot.revision, accepted_revision, "I2/E2 stutters");
+    assert_eq!(cold_snapshot.event_batches.len(), 1, "I2/E2 appends once");
     let conflict = restarted
         .append_session_event_batch_idempotent(
             "event-idempotency",
@@ -1327,6 +1335,45 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
         .await
         .expect("I4/E4");
     assert_ne!(later.batch_id, first.batch_id, "I4/E4");
+}
+
+#[tokio::test]
+async fn event_batch_lost_cas_ack_reloads_the_retained_admission_plan() {
+    // Cause/effect decision table: C1 the sole root CAS commits an absent key;
+    // C2 its acknowledgement is reported as Conflict; C3 retry reload sees the
+    // exact accepted receipt. R1 C1+C2+C3=>return the retained batch, keep one
+    // append, and advance the root exactly once. This exercises the production
+    // retry loop; database atomicity/durability remains repository TCB.
+    let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("lost acknowledgement repository"),
+    );
+    create(durable.as_ref(), persisted("event-lost-ack", false, "idle")).await;
+    let before = durable.get("event-lost-ack").await.unwrap().revision;
+    let faulting = Arc::new(FaultingSessionRepository::new(durable.clone()));
+    faulting.commit_then_conflict_once("append-event-batch");
+    let app = application_with_runtime(
+        Arc::new(EventBatchRuntime::default()),
+        faulting,
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    let admitted = app
+        .append_session_event_batch_idempotent(
+            "event-lost-ack",
+            vec![SessionEventInput::UserMessage {
+                content: vec![ContentBlock::text("one intent")],
+            }],
+            None,
+            None,
+            Some(("key".into(), "fingerprint".into())),
+        )
+        .await
+        .expect("R1 reloads the committed winner");
+
+    let retained = durable.get("event-lost-ack").await.unwrap();
+    assert_eq!(retained.event_batches, vec![admitted], "R1 one append");
+    assert_eq!(retained.revision.0, before.0 + 1, "R1 one root advance");
 }
 
 #[tokio::test]

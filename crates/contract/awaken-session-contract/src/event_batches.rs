@@ -350,6 +350,12 @@ pub use dispatch_settlement::{
     SessionEventDispatchSettlementPlan, SessionEventDispatchSettlementReceipt,
     session_event_dispatch_settlement_plan,
 };
+mod admission;
+pub use admission::{
+    SessionEventBatchAdmissionAction, SessionEventBatchAdmissionClass,
+    SessionEventBatchAdmissionPlan, classify_session_event_batch_admission,
+    resolve_session_event_batch_admission,
+};
 
 impl SessionEventCommand {
     #[must_use]
@@ -484,12 +490,10 @@ impl SessionEventBatch {
     /// A final non-admission receipt can be observed but cannot be replayed as
     /// accepted input. Both application and wire preflight use this same gate.
     pub fn require_accepted(&self) -> Result<(), crate::RunError> {
-        if self.admission_closed {
-            return Err(crate::RunError {
-                message: "Session Event batch admission was permanently closed".into(),
-                kind: crate::RunErrorKind::BadRequest,
-                code: "event_admission_closed".into(),
-            });
+        if classify_session_event_batch_admission(true, true, self.admission_closed)
+            == SessionEventBatchAdmissionClass::Closed
+        {
+            return Err(crate::event_admission_closed());
         }
         Ok(())
     }

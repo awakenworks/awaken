@@ -87,6 +87,14 @@ pub fn event_admission_conflict() -> crate::RunError {
     }
 }
 
+pub fn event_admission_closed() -> crate::RunError {
+    crate::RunError {
+        message: "Session Event batch admission was permanently closed".into(),
+        kind: crate::RunErrorKind::BadRequest,
+        code: "event_admission_closed".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
