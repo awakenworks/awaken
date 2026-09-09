@@ -517,6 +517,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-runtime \
     --harness circuit_admission_is_capacity_bounded_nonwrapping_and_rejection_stutters \
     --harness circuit_completion_requires_exact_phase_and_generation_for_every_outcome
+  run_kani awaken-runtime-contract --solver kissat \
+    --harness created_tool_handle_validation_never_invents_termination
   run_kani awaken-runtime-contract \
     --harness model_operation_ordinal_never_wraps_or_reuses_a_coordinate \
     --harness model_execution_reentry_requires_positive_evidence \

@@ -130,10 +130,13 @@ mod tests {
         // executor returns typed unknown after one entry => one exact-fence
         // Indeterminate candidate. No poll retry, second start, or subsequent
         // cancel-as-proof. Committed task state remains the only durable owner.
-        for boundary in 0..3 {
+        // U4 start returns Pending with malformed coordinates: use the same
+        // Indeterminate branch, never normal Failed or a fabricated wait handle.
+        for (boundary, malformed) in [(0, false), (1, false), (2, false), (0, true)] {
             let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker"));
             let tool = Arc::new(RemoteTaskTool {
-                uncertain_action: Some(boundary),
+                uncertain_action: (!malformed).then_some(boundary),
+                malformed_created_handle: malformed,
                 ..Default::default()
             });
             let runtime = Arc::new(Runtime::new().with_tool(tool.clone()).with_plugin(Arc::new(
@@ -171,6 +174,16 @@ mod tests {
                 completion.end,
                 BackgroundTaskEnd::Indeterminate { .. }
             ));
+            assert!(
+                supervisor.wait_candidate(&task.id).is_none(),
+                "U1..U4 no wait"
+            );
+            if boundary == 0 {
+                observer.launch(task.clone()).await;
+            } else {
+                observer.launch_remote(task.clone()).await;
+            }
+            assert!(background.drain(Duration::from_secs(2)).await);
             assert_eq!(
                 tool.starts.load(Ordering::SeqCst),
                 usize::from(boundary == 0)

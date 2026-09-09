@@ -1701,6 +1701,7 @@ pub awaken_runtime_contract::tool::ToolTaskHandle::poll_interval_ms: core::optio
 pub awaken_runtime_contract::tool::ToolTaskHandle::task_id: alloc::string::String
 impl awaken_runtime_contract::tool::ToolTaskHandle
 pub fn awaken_runtime_contract::tool::ToolTaskHandle::validate(&self) -> core::result::Result<(), awaken_runtime_contract::tool::ToolError>
+pub fn awaken_runtime_contract::tool::ToolTaskHandle::validate_created(&self) -> core::result::Result<(), awaken_runtime_contract::tool::ToolError>
 pub trait awaken_runtime_contract::tool::RawTool: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::tool::RawTool::cancel_task<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall, &'life2 awaken_runtime_contract::tool::ToolTaskHandle) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolTaskPoll, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_runtime_contract::tool::RawTool::concurrency(&self, &serde_json::value::Value) -> awaken_runtime_contract::tool::ToolConcurrency
@@ -2597,6 +2598,7 @@ pub awaken_runtime_contract::ToolTaskHandle::poll_interval_ms: core::option::Opt
 pub awaken_runtime_contract::ToolTaskHandle::task_id: alloc::string::String
 impl awaken_runtime_contract::tool::ToolTaskHandle
 pub fn awaken_runtime_contract::tool::ToolTaskHandle::validate(&self) -> core::result::Result<(), awaken_runtime_contract::tool::ToolError>
+pub fn awaken_runtime_contract::tool::ToolTaskHandle::validate_created(&self) -> core::result::Result<(), awaken_runtime_contract::tool::ToolError>
 pub struct awaken_runtime_contract::ToolWait
 pub awaken_runtime_contract::ToolWait::correlation_id: alloc::string::String
 pub awaken_runtime_contract::ToolWait::kind: awaken_runtime_contract::tool_batch::ToolWaitKind

@@ -1492,6 +1492,7 @@ mod tests {
         pub(super) effect_gate: Option<Arc<tokio::sync::Semaphore>>,
         pub(super) effect_entered: tokio::sync::Notify,
         pub(super) uncertain_action: Option<usize>,
+        pub(super) malformed_created_handle: bool,
     }
 
     impl RemoteTaskTool {
@@ -1534,7 +1535,11 @@ mod tests {
             self.before_effect().await;
             self.starts.fetch_add(1, Ordering::SeqCst);
             self.observed(0)?;
-            Ok(ToolTaskStart::Pending(Self::handle()))
+            let mut handle = Self::handle();
+            if self.malformed_created_handle {
+                handle.owner.clear();
+            }
+            Ok(ToolTaskStart::Pending(handle))
         }
 
         async fn poll_task(

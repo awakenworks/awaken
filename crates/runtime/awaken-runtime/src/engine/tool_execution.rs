@@ -528,15 +528,17 @@ async fn execute_tool_action(
                 call.tool_id
             ))),
         };
-    // Preserve uncertainty before another await or any result normalization.
-    // Replay capability says nothing about physical termination or locality.
-    if matches!(outcome, Err(ToolError::Indeterminate(_))) {
-        context.physical_quiescence.mark_uncertain();
-    }
     if let Ok(ToolExecutorOutcome::Started(ToolTaskStart::Pending(handle))) = &outcome {
         outcome = handle
-            .validate()
+            .validate_created()
             .map(|()| ToolExecutorOutcome::Started(ToolTaskStart::Pending(handle.clone())));
+    }
+    // Include post-creation validation before recording the one monotonic veto.
+    // A malformed returned handle still names possibly live external work.
+    // No await or result normalization may erase this uncertainty, and replay
+    // capability says nothing about physical termination or locality.
+    if matches!(outcome, Err(ToolError::Indeterminate(_))) {
+        context.physical_quiescence.mark_uncertain();
     }
     if let Some(bound) = state_bound {
         let invalid_command = match &outcome {
