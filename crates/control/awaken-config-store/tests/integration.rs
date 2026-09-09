@@ -109,9 +109,31 @@ async fn sqlite_audit_identity_legacy_replay_and_cross_connection_begin() {
 
 #[tokio::test]
 async fn sqlite_config_cas_missing_row_and_revision_decision_table() {
-    let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
-    revision_cas::decision_table(store.as_ref()).await;
-    revision_cas::concurrent_writers(store).await;
+    // R6 uses separate file-backed SQLite connections; a shared store mutex
+    // cannot substitute for database arbitration. Reopen verifies durability.
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "awaken-config-cas-race-{}-{nonce}.db",
+        std::process::id()
+    ));
+    let first = Arc::new(SqliteConfigStore::open(path.to_str().unwrap()).unwrap());
+    let second = Arc::new(SqliteConfigStore::open(path.to_str().unwrap()).unwrap());
+    revision_cas::decision_table(first.as_ref()).await;
+    revision_cas::concurrent_writers(&[first.clone(), second.clone()]).await;
+    let scope = ScopeId::from("cas-concurrent");
+    let before_reopen = revision_cas::frame(first.as_ref(), &scope, "race").await;
+    drop((first, second));
+    let reopened = SqliteConfigStore::open(path.to_str().unwrap()).unwrap();
+    assert_eq!(
+        revision_cas::frame(&reopened, &scope, "race").await,
+        before_reopen,
+        "R6 reopen preserves complete winner and history"
+    );
+    drop(reopened);
+    std::fs::remove_file(path).unwrap();
 }
 
 #[tokio::test]
@@ -146,6 +168,26 @@ async fn sqlite_config_cas_exhaustion_preserves_reopenable_truth() {
     assert_eq!(row.revision, i64::MAX as u64);
     assert_eq!(row.config, config);
     drop(reopened);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[tokio::test]
+async fn sqlite_config_history_insert_failure_rolls_back_all_write_paths() {
+    // R8 inject only history generation 2; migration and seed generation 1 stay
+    // real. The sole shared suite checks all three write/transaction callers.
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "awaken-config-history-fault-{}-{nonce}.db",
+        std::process::id()
+    ));
+    let store = SqliteConfigStore::open(path.to_str().unwrap()).unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("CREATE TRIGGER inject_history_failure BEFORE INSERT ON config_agent_revision WHEN NEW.generation = 2 BEGIN SELECT RAISE(ABORT, 'injected config history failure'); END").unwrap();
+    revision_cas::history_failure_rolls_back(&store).await;
+    drop((conn, store));
     std::fs::remove_file(path).unwrap();
 }
 

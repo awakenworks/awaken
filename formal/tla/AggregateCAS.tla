@@ -4,10 +4,10 @@ EXTENDS Naturals, TLC
 CONSTANT Writers, MaxGeneration, NoWriter
 
 VARIABLE generation, value, expected, result, resultExpected, resultGeneration,
-         lastApplied, lastBefore, lastAfter
+         lastApplied, lastBefore, lastAfter, lastValueBefore, lastValueAfter
 
 vars == <<generation, value, expected, result, resultExpected, resultGeneration,
-          lastApplied, lastBefore, lastAfter>>
+          lastApplied, lastBefore, lastAfter, lastValueBefore, lastValueAfter>>
 
 Init == /\ generation = 0
         /\ value = NoWriter
@@ -18,12 +18,14 @@ Init == /\ generation = 0
         /\ lastApplied = FALSE
         /\ lastBefore = 0
         /\ lastAfter = 0
+        /\ lastValueBefore = NoWriter
+        /\ lastValueAfter = NoWriter
 
 Read(w) == /\ w \in Writers
            /\ expected' = [expected EXCEPT ![w] = generation]
            /\ UNCHANGED <<generation, value, result,
                            resultExpected, resultGeneration, lastApplied,
-                           lastBefore, lastAfter>>
+                           lastBefore, lastAfter, lastValueBefore, lastValueAfter>>
 
 \* Client revisions need not originate in this row's history. In particular,
 \* a positive revision can target an absent row (wrong scope or stale client).
@@ -35,7 +37,7 @@ Propose(w, revision) ==
     /\ revision \in 0..MaxGeneration
     /\ expected' = [expected EXCEPT ![w] = revision]
     /\ UNCHANGED <<generation, value, result, resultExpected, resultGeneration,
-                    lastApplied, lastBefore, lastAfter>>
+                    lastApplied, lastBefore, lastAfter, lastValueBefore, lastValueAfter>>
 
 Write(w) ==
     /\ w \in Writers
@@ -55,6 +57,9 @@ Write(w) ==
                /\ lastApplied' = FALSE
                /\ lastBefore' = generation
                /\ lastAfter' = generation
+    \* Witnesses observe the actual pre/post value, including rejected writes.
+    /\ lastValueBefore' = value
+    /\ lastValueAfter' = value'
     /\ UNCHANGED expected
 
 Next == (\E w \in Writers: Read(w)) \/ (\E w \in Writers: Write(w))
@@ -69,13 +74,22 @@ TypeOK == /\ generation \in 0..MaxGeneration
           /\ lastApplied \in BOOLEAN
           /\ lastBefore \in 0..MaxGeneration
           /\ lastAfter \in 0..MaxGeneration
+          /\ lastValueBefore \in Writers \cup {NoWriter}
+          /\ lastValueAfter \in Writers \cup {NoWriter}
 
 GenerationZeroHasNoValue == (generation = 0) <=> (value = NoWriter)
 AppliedMatchedGeneration ==
     \A w \in Writers:
         result[w] = "applied" => resultGeneration[w] = resultExpected[w] + 1
 LastWriteIsAtomicCAS ==
-    IF lastApplied THEN lastAfter = lastBefore + 1 ELSE lastAfter = lastBefore
+    /\ generation = lastAfter
+    /\ value = lastValueAfter
+    /\ IF lastApplied THEN lastAfter = lastBefore + 1 ELSE lastAfter = lastBefore
+
+\* R4/R5 rejection must preserve both fields. A mutant may leave generation
+\* unchanged while overwriting a present row's value; numeric CAS invariants
+\* alone do not detect that lost update.
+RejectedWritePreservesValue == ~lastApplied => lastValueAfter = lastValueBefore
 
 Spec == Init /\ [][Next]_vars
 =============================================================================

@@ -132,14 +132,18 @@ pub async fn decision_table(store: &dyn ScopedConfigRegistry, config: &AgentConf
         .unwrap();
     let mut retry = config.clone();
     retry.instructions.push_str("must not be written");
-    assert_eq!(
-        store
-            .put_config_with_audit_scoped(&scope, &retry, 0, &records[0])
-            .await
-            .unwrap(),
-        AuditedConfigWrite::Replayed,
-        "I4"
-    );
+    // I4 committed identity replays before revision planning: stale, exhausted
+    // and out-of-storage-range caller tokens cannot reopen the business write.
+    for expected in [0, i64::MAX as u64, i64::MAX as u64 + 1, u64::MAX] {
+        assert_eq!(
+            store
+                .put_config_with_audit_scoped(&scope, &retry, expected, &records[0])
+                .await
+                .unwrap(),
+            AuditedConfigWrite::Replayed,
+            "I4 replay precedes revision planning"
+        );
+    }
     let after = store
         .get_config_revision_scoped(&scope, &config.id)
         .await
