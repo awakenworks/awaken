@@ -1322,7 +1322,12 @@ async fn root_mutation_cause_effect_decision_table() {
     // existing key is reused with another hash. Effects: E1 apply once and
     // advance revision; E2 replay current truth without another advance; E3
     // conflict; E4 idempotency mismatch. No interface adapter owns a second
-    // CAS or retry algorithm.
+    // CAS or retry algorithm. Additional causes: C5 durable root advanced after
+    // the original receipt; C6 replay reload is NotFound. E5 returns the whole
+    // current root (including its later time/payload), never the candidate or
+    // historical receipt revision; E6 propagates absence without fallback.
+    // C2 takes precedence over stale revision/time; neither C5 nor C6 permits
+    // another durable mutation or lifecycle outbox append.
     //
     // | Rule | C1 | C2 | C3 | C4 | Effect |
     // |---|---|---|---|---|---|
@@ -1330,6 +1335,9 @@ async fn root_mutation_cause_effect_decision_table() {
     // | M2 | no | yes | no | no | E2 replayed |
     // | M3 | no | no | yes | no | E3 conflict |
     // | M4 | no | no | no | yes | E4 mismatch |
+    // M5: C2+C3+C5+!C6 => E5; M6: C2+C3+C5+C6 => E6.
+    // A lower-time candidate and a nonempty replay-only fact make a
+    // candidate fallback, repeated write, or outbox append observable.
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
@@ -1371,6 +1379,82 @@ async fn root_mutation_cause_effect_decision_table() {
         .expect("M2");
     assert!(!changed, "M2");
     assert_eq!(replayed.revision, applied.revision, "M2");
+
+    let mut later = applied.clone();
+    later.title = Some("later durable root".into());
+    later.metadata.insert("later".into(), "authority".into());
+    later.updated_at_unix_ms = Some(u64::MAX);
+    let later = app
+        .commit_session_snapshot("workspace", later, "later", Vec::new())
+        .await
+        .expect("M5 advance durable root");
+    assert!(later.revision > applied.revision);
+    let facts_before = repo.pending_lifecycle().await.expect("M5 outbox before");
+    let replay_fact = awaken_session_contract::ManagedLifecycleFact {
+        id: "must-not-append-on-replay".into(),
+        object_id: "mutation".into(),
+        workspace_id: Some("workspace".into()),
+        event_type: "session.updated".into(),
+        timestamp: 1,
+        runtime_interval: None,
+    };
+    let (current, changed) = app
+        .commit_session_snapshot_with_record(
+            "workspace",
+            candidate.clone(),
+            record.clone(),
+            vec![replay_fact.clone()],
+        )
+        .await
+        .expect("M5 old receipt reloads current root");
+    assert!(!changed, "M5");
+    assert_eq!(
+        current, later,
+        "M5 exact current aggregate, not receipt revision"
+    );
+    assert_eq!(
+        repo.get("mutation").await.unwrap(),
+        later,
+        "M5 no extra CAS"
+    );
+    assert_eq!(
+        repo.pending_lifecycle().await.unwrap(),
+        facts_before,
+        "M5 no extra fact"
+    );
+
+    let faulting = Arc::new(FaultingSessionRepository::new(repo.clone()));
+    let replay_app = application(
+        faulting.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    faulting.get_not_found_once.store(true, Ordering::SeqCst);
+    assert_eq!(
+        replay_app
+            .commit_session_snapshot_with_record(
+                "workspace",
+                candidate.clone(),
+                record.clone(),
+                vec![replay_fact],
+            )
+            .await,
+        Err(SessionMutationError::NotFound),
+        "M6 reload failure cannot publish a candidate",
+    );
+    assert!(
+        !faulting.get_not_found_once.load(Ordering::SeqCst),
+        "M6 actually reloaded"
+    );
+    assert_eq!(
+        repo.get("mutation").await.unwrap(),
+        later,
+        "M6 durable root unchanged"
+    );
+    assert_eq!(
+        repo.pending_lifecycle().await.unwrap(),
+        facts_before,
+        "M6 outbox unchanged"
+    );
 
     let stale = app
         .commit_session_snapshot("workspace", candidate.clone(), "stale", Vec::new())
