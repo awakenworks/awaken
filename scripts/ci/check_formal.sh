@@ -279,6 +279,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-environment-contract \
     --harness environment_registration_intent_is_exact_idempotent_and_recoverable
   run_kani awaken-session-contract \
+    --harness session_agent_boundary_requires_a_visible_committed_target \
     --harness user_event_processing_requires_exact_applied_dispatch_and_activity_settlement \
     --harness terminal_resource_projection_retains_the_exact_desired_generation \
     --harness initial_event_plan_is_installed_only_on_the_complete_fresh_root \

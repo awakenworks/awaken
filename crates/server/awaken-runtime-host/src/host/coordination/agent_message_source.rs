@@ -8,7 +8,7 @@ use awaken_session_contract::SessionAgentTarget;
 pub(super) fn validate(
     snapshot: &RunRecoverySnapshot,
     command: &SessionAgentMessageCommand,
-) -> Result<(), HostError> {
+) -> Result<SessionAgentMessageCommand, HostError> {
     if snapshot.thread_id != command.source_thread_id
         || snapshot.claimed_run_id != command.source_run_id
     {
@@ -42,24 +42,125 @@ pub(super) fn validate(
     }
     let args: SendMessageArgs = serde_json::from_value(call.call.arguments.clone())
         .map_err(|_| HostError::bad_request("Agent message source arguments are invalid"))?;
-    let target = args.normalized_target().map_err(HostError::bad_request)?;
-    let target_matches = match (&target, &command.target) {
-        (
-            AgentMessageTarget::Spawn { agent_id },
-            SessionAgentTarget::Spawn { agent_id: expected },
-        ) => agent_id == expected,
-        (
-            AgentMessageTarget::ExistingThread { session_thread_id },
-            SessionAgentTarget::ExistingThread { thread_id },
-        ) => session_thread_id == &thread_id.0,
-        _ => false,
+    let target = match args.normalized_target().map_err(HostError::bad_request)? {
+        AgentMessageTarget::Spawn { agent_id } => SessionAgentTarget::Spawn { agent_id },
+        AgentMessageTarget::ExistingThread { session_thread_id } => {
+            SessionAgentTarget::ExistingThread {
+                thread_id: ThreadId(session_thread_id),
+            }
+        }
     };
-    if !target_matches || args.message != command.message {
+    let committed = SessionAgentMessageCommand {
+        session_id: snapshot.thread_id.0.clone(),
+        source_thread_id: snapshot.thread_id.clone(),
+        source_run_id: batch.run_id().clone(),
+        source_call_id: call.call.call_id.clone(),
+        operation_id: batch.operation_id(&call.call.call_id),
+        target,
+        message: args.message,
+    };
+    refine_committed_command(committed, command)
+}
+
+fn refine_committed_command(
+    committed: SessionAgentMessageCommand,
+    requested: &SessionAgentMessageCommand,
+) -> Result<SessionAgentMessageCommand, HostError> {
+    if !agent_message_operation_matches(
+        agent_message_operation(&committed),
+        agent_message_operation(requested),
+    ) {
         return Err(HostError::bad_request(
-            "Agent message target or payload differs from its committed tool call",
+            "Agent message command differs from its committed tool call",
         ));
     }
-    Ok(())
+    Ok(committed)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AgentMessageTargetRef<'a, T: ?Sized> {
+    Spawn(&'a T),
+    ExistingThread(&'a T),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AgentMessageOperationRef<'a, T: ?Sized> {
+    session_id: &'a T,
+    source_thread_id: &'a T,
+    source_run_id: &'a T,
+    source_call_id: &'a T,
+    operation_id: &'a T,
+    target: AgentMessageTargetRef<'a, T>,
+    message: &'a T,
+}
+
+fn agent_message_operation(
+    command: &SessionAgentMessageCommand,
+) -> AgentMessageOperationRef<'_, str> {
+    AgentMessageOperationRef {
+        session_id: &command.session_id,
+        source_thread_id: &command.source_thread_id.0,
+        source_run_id: &command.source_run_id.0,
+        source_call_id: &command.source_call_id,
+        operation_id: &command.operation_id,
+        target: match &command.target {
+            SessionAgentTarget::Spawn { agent_id } => AgentMessageTargetRef::Spawn(agent_id),
+            SessionAgentTarget::ExistingThread { thread_id } => {
+                AgentMessageTargetRef::ExistingThread(&thread_id.0)
+            }
+        },
+        message: &command.message,
+    }
+}
+
+fn agent_message_operation_matches<T: Eq + ?Sized>(
+    committed: AgentMessageOperationRef<'_, T>,
+    requested: AgentMessageOperationRef<'_, T>,
+) -> bool {
+    committed == requested
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn session_agent_message_admission_requires_every_committed_field() {
+    // Causes: C1 the production extractor has reconstructed one complete typed
+    // command from the committed prefix; C2 each of its seven identity/payload
+    // fields equals the requested command. Effects: E1 only the complete C1+C2
+    // row returns the committed value consumed by Session admission; E2 every
+    // single changed field rejects. This calls the production operation-view
+    // comparator, not caller-supplied booleans. Store rebuild,
+    // ActiveToolBatch/JSON extraction and String equality remain adapter TCB.
+    let changed_axis = kani::any::<u8>();
+    kani::assume(changed_axis < 8);
+    let exact = [0_u8];
+    let changed = [1_u8];
+    let committed = AgentMessageOperationRef {
+        session_id: &exact,
+        source_thread_id: &exact,
+        source_run_id: &exact,
+        source_call_id: &exact,
+        operation_id: &exact,
+        target: AgentMessageTargetRef::Spawn(&exact),
+        message: &exact,
+    };
+    let requested = AgentMessageOperationRef {
+        session_id: if changed_axis == 1 { &changed } else { &exact },
+        source_thread_id: if changed_axis == 2 { &changed } else { &exact },
+        source_run_id: if changed_axis == 3 { &changed } else { &exact },
+        source_call_id: if changed_axis == 4 { &changed } else { &exact },
+        operation_id: if changed_axis == 5 { &changed } else { &exact },
+        target: if changed_axis == 6 {
+            AgentMessageTargetRef::ExistingThread(&exact)
+        } else {
+            AgentMessageTargetRef::Spawn(&exact)
+        },
+        message: if changed_axis == 7 { &changed } else { &exact },
+    };
+
+    assert_eq!(
+        agent_message_operation_matches(committed, requested),
+        changed_axis == 0
+    );
 }
 
 #[cfg(test)]
@@ -140,12 +241,13 @@ mod tests {
             message: "investigate".into(),
         };
 
-        assert!(
+        assert_eq!(
             validate(
                 &snapshot(awaken_ext_builtin_tools::SEND_MESSAGE, true),
                 &exact,
             )
-            .is_ok(),
+            .expect("V1 committed command"),
+            exact,
             "V1/E1"
         );
         let mut changed_payload = exact.clone();

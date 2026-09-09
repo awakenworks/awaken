@@ -7,15 +7,16 @@
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::{RunLifecycleEventKind, classify_run_lifecycle_event};
 use awaken_session_contract::{
     CoordinatedRunCommand, CoordinatedRunIntent, Pending, RunError, RunResume,
-    SessionAgentBoundaryCommand, SessionAgentCoordination, SessionAgentMessageCommand,
-    SessionAgentMessageReceipt, SessionAgentReportContinuation, SessionAgentRosterEntry,
-    SessionAgentTarget, SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
-    SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyCommand,
-    SessionThreadToolReplyDelivery, StepOutcome, coordinated_thread_failed,
-    session_agent_report_text, session_run_activity_operation_id,
+    SessionAgentBoundaryAction, SessionAgentBoundaryCommand, SessionAgentBoundaryRole,
+    SessionAgentBoundaryVisibility, SessionAgentCommittedReport, SessionAgentCoordination,
+    SessionAgentMessageCommand, SessionAgentMessageReceipt, SessionAgentReportContinuation,
+    SessionAgentRosterEntry, SessionAgentTarget, SessionRunActivityAdmission,
+    SessionRunActivityAdmissionMode, SessionThreadTarget, SessionThreadToolReply,
+    SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery, StepOutcome,
+    coordinated_thread_failed, session_agent_boundary_action, session_agent_report_text,
+    session_agent_run_boundary, session_run_activity_operation_id,
 };
 
 use crate::SessionApplication;
@@ -29,28 +30,6 @@ struct ResolvedRosterMember {
 // coordinated children therefore own the remaining 24 slots; Advisor
 // consultations are explicitly capacity-exempt at the dispatch boundary.
 const MAX_UNARCHIVED_AGENT_CHILD_THREADS: usize = 24;
-
-#[derive(Debug, Clone, PartialEq)]
-enum CoordinatedBoundary {
-    Awaiting,
-    Completed,
-    Failed,
-    Cancelled,
-}
-
-fn coordinated_boundary(state: &RunState) -> Result<CoordinatedBoundary, RunError> {
-    match classify_run_lifecycle_event(state, None) {
-        RunLifecycleEventKind::Awaiting => Ok(CoordinatedBoundary::Awaiting),
-        RunLifecycleEventKind::Completed => Ok(CoordinatedBoundary::Completed),
-        RunLifecycleEventKind::Failed => Ok(CoordinatedBoundary::Failed),
-        RunLifecycleEventKind::Cancelled => Ok(CoordinatedBoundary::Cancelled),
-        RunLifecycleEventKind::Running
-        | RunLifecycleEventKind::Resumed
-        | RunLifecycleEventKind::Rescheduled => Err(RunError::bad_request(
-            "Agent settlement does not identify a committed child boundary",
-        )),
-    }
-}
 
 impl SessionApplication {
     async fn settle_definitive_coordination_rejection<T>(
@@ -99,8 +78,8 @@ impl SessionApplication {
     ) -> Result<
         (
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
-            CoordinatedBoundary,
-            awaken_session_contract::SessionRuntimeIntervalObservation,
+            RunState,
+            Option<awaken_session_contract::SessionRuntimeIntervalObservation>,
         ),
         RunError,
     > {
@@ -117,26 +96,24 @@ impl SessionApplication {
             .runs
             .iter()
             .find(|run| run.id == command.source_run_id)
-            .map(|run| &run.state)
+            .map(|run| run.state.clone())
             .ok_or_else(|| RunError::bad_request("settled Agent Run is absent from its Thread"))?;
-        let boundary = coordinated_boundary(state)?;
+        if session_agent_run_boundary(&state).is_none() {
+            return Err(RunError::bad_request(
+                "Agent settlement does not identify a committed child boundary",
+            ));
+        }
         let observation = self
             .runtime_interval_observation(
                 &command.session_id,
                 command.session_activity_epoch,
                 &command.source_thread_id,
                 &command.source_run_id,
-                state,
+                &state,
                 Some(snapshot.store_cursor),
             )
-            .await?
-            .ok_or_else(|| {
-                self.wake_lifecycle_supervisor();
-                RunError::unavailable(
-                    "committed Agent boundary is not yet visible in the lifecycle feed",
-                )
-            })?;
-        Ok((snapshot, boundary, observation))
+            .await?;
+        Ok((snapshot, state, observation))
     }
 
     async fn validate_coordinated_thread(
@@ -583,7 +560,8 @@ impl SessionAgentCoordination for SessionApplication {
                 "Agent coordination requires a message and Runtime operation identity",
             ));
         }
-        self.runtime()
+        let command = self
+            .runtime()
             .validate_session_agent_message_source(&command)
             .await?;
         let (owner, session) = self.coordination_session(&command.session_id).await?;
@@ -723,7 +701,11 @@ impl SessionAgentCoordination for SessionApplication {
                 "Agent settlement does not identify a committed Session activity",
             ));
         }
-        let primary_continuation = command.source_thread_id.0 == command.session_id;
+        let role = if command.source_thread_id.0 == command.session_id {
+            SessionAgentBoundaryRole::PrimaryContinuation
+        } else {
+            SessionAgentBoundaryRole::Child
+        };
         let current = self
             .session(&command.session_id)
             .await
@@ -737,31 +719,53 @@ impl SessionAgentCoordination for SessionApplication {
         // legitimately be latest. Recovery therefore validates the exact
         // committed source below instead of creating a second, time-relative
         // identity fence from the Thread's latest projection.
-        let (snapshot, boundary, observation) = self.committed_agent_boundary(&command).await?;
-        // Failure is absorbing for an ordinary coordinated Thread. Record
-        // cancellation on any already-admitted later dispatch before settling
-        // this activity; Dispatch remains the sole queued-work authority and
-        // the latest failed Run remains the sole durable admission fence.
-        if !primary_continuation && boundary == CoordinatedBoundary::Failed {
-            self.runtime()
-                .interrupt_session_thread(&command.session_id, &command.source_thread_id)
-                .await?;
-        }
-        // Awaiting, Failed, Cancelled, cancellation-requested children, the
-        // deterministic primary report Run, and a Completed child without a
-        // committed non-empty report are true activity boundaries with no
-        // automatic report continuation. Only a normally Completed child whose
-        // exact snapshot contains a classifier-selected reply follows the
-        // transfer path below and keeps that epoch active until its report Run
-        // reaches this same observer. Cancellation provenance comes from the
-        // claimed dispatch, never from transcript text or an overloaded cause.
-        let child_report = (!primary_continuation
-            && boundary == CoordinatedBoundary::Completed
-            && !command.cancellation_requested)
+        let (snapshot, state, observation) = self.committed_agent_boundary(&command).await?;
+        let child_report = (role == SessionAgentBoundaryRole::Child)
             .then(|| session_agent_report_text(&snapshot.messages, &command.source_run_id))
             .filter(|report| !report.is_empty());
+        let action = session_agent_boundary_action(
+            role,
+            &state,
+            if observation.is_some() {
+                SessionAgentBoundaryVisibility::Visible
+            } else {
+                SessionAgentBoundaryVisibility::Missing
+            },
+            command.cancellation_requested,
+            if child_report.is_some() {
+                SessionAgentCommittedReport::Present
+            } else {
+                SessionAgentCommittedReport::Absent
+            },
+        );
+        match action {
+            SessionAgentBoundaryAction::RejectNonBoundary => {
+                return Err(RunError::bad_request(
+                    "Agent settlement does not identify a committed child boundary",
+                ));
+            }
+            SessionAgentBoundaryAction::RetryMissingProjection => {
+                // The committed Run is authoritative but its lifecycle projection
+                // is not visible yet. Wake the sole supervisor and return before
+                // any root mutation; Pool relinquishes this exact claim for retry.
+                self.wake_lifecycle_supervisor();
+                return Err(RunError::unavailable(
+                    "committed Agent boundary is not yet visible in the lifecycle feed",
+                ));
+            }
+            SessionAgentBoundaryAction::InterruptThenSettle => {
+                // Failure is absorbing for an ordinary coordinated Thread. The
+                // existing Dispatch interrupt precedes direct settlement.
+                self.runtime()
+                    .interrupt_session_thread(&command.session_id, &command.source_thread_id)
+                    .await?;
+            }
+            SessionAgentBoundaryAction::Settle => {}
+            SessionAgentBoundaryAction::ContinueReport => {}
+        }
+        let observation = observation.expect("visible action requires a lifecycle observation");
         let mut retained_user_event = false;
-        if primary_continuation {
+        if role == SessionAgentBoundaryRole::PrimaryContinuation {
             for batch in &current.event_batches {
                 retained_user_event |= batch
                     .user_run_operation_id(&command.source_run_id)
@@ -769,7 +773,7 @@ impl SessionAgentCoordination for SessionApplication {
                     .is_some();
             }
         }
-        if child_report.is_none() {
+        if action != SessionAgentBoundaryAction::ContinueReport {
             // Keep the activity fence active until usage/budget reconciliation
             // has also committed. If that dependency is unavailable the queue
             // retains the boundary and Session remains Running for exact retry.
@@ -809,7 +813,7 @@ impl SessionAgentCoordination for SessionApplication {
             .ok_or_else(|| {
                 RunError::bad_request("settled child Agent is not in the frozen Session roster")
             })?;
-        let child_report = child_report.expect("normal Completed child has a committed report");
+        let child_report = child_report.expect("continue action requires a committed child report");
         let report = format!(
             "Message from agent {} (thread {}):\n{}",
             member.entry.name, command.source_thread_id.0, child_report
@@ -867,6 +871,12 @@ impl SessionAgentCoordination for SessionApplication {
             return Ok(());
         }
         let (_, _, observation) = self.committed_agent_boundary(&command).await?;
+        let observation = observation.ok_or_else(|| {
+            self.wake_lifecycle_supervisor();
+            RunError::unavailable(
+                "committed Agent boundary is not yet visible in the lifecycle feed",
+            )
+        })?;
         self.settle_user_event_dispatch_observed(
             &command.session_id,
             command.session_activity_epoch,
@@ -928,26 +938,29 @@ mod boundary_tests {
         // | B4 | Ended(Cancelled) | E3 Cancelled |
         // | B5 | Running | E4 |
         assert_eq!(
-            coordinated_boundary(&RunState::Awaiting).expect("B1"),
-            CoordinatedBoundary::Awaiting,
+            session_agent_run_boundary(&RunState::Awaiting).expect("B1"),
+            awaken_session_contract::SessionAgentRunBoundary::Awaiting,
             "B1/E1"
         );
         assert_eq!(
-            coordinated_boundary(&RunState::Ended(EndCause::NaturalEnd,)).expect("B2"),
-            CoordinatedBoundary::Completed,
+            session_agent_run_boundary(&RunState::Ended(EndCause::NaturalEnd,)).expect("B2"),
+            awaken_session_contract::SessionAgentRunBoundary::Completed,
             "B2/E2"
         );
         assert_eq!(
-            coordinated_boundary(&RunState::Ended(EndCause::Error(Failure::StateConflict,)))
+            session_agent_run_boundary(&RunState::Ended(EndCause::Error(Failure::StateConflict,)))
                 .expect("B3"),
-            CoordinatedBoundary::Failed,
+            awaken_session_contract::SessionAgentRunBoundary::Failed,
             "B3/E3"
         );
         assert_eq!(
-            coordinated_boundary(&RunState::Ended(EndCause::Cancelled)).expect("B4"),
-            CoordinatedBoundary::Cancelled,
+            session_agent_run_boundary(&RunState::Ended(EndCause::Cancelled)).expect("B4"),
+            awaken_session_contract::SessionAgentRunBoundary::Cancelled,
             "B4/E3"
         );
-        assert!(coordinated_boundary(&RunState::Running).is_err(), "B5/E4");
+        assert!(
+            session_agent_run_boundary(&RunState::Running).is_none(),
+            "B5/E4"
+        );
     }
 }

@@ -975,7 +975,7 @@ impl SharedHost {
     pub(crate) async fn validate_session_agent_message_source(
         &self,
         command: &SessionAgentMessageCommand,
-    ) -> Result<(), HostError> {
+    ) -> Result<SessionAgentMessageCommand, HostError> {
         let snapshot = self
             .session_thread_run_recovery_snapshot(
                 &command.session_id,

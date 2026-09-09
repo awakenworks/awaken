@@ -862,12 +862,15 @@ pub trait SessionRuntime: Send + Sync {
     /// committed `ActiveToolBatch`. Implementations must use the same atomic
     /// Thread recovery prefix as ordinary crash recovery; a process-local tool
     /// context or authenticated Worker claim alone is not sufficient proof of
-    /// call identity or payload. The fail-closed default keeps lightweight
-    /// runtimes from silently becoming a second trusted command source.
+    /// call identity or payload. Success returns the command reconstructed from
+    /// that committed prefix; Session policy consumes that value instead of
+    /// trusting a second copy supplied by the caller. The fail-closed default
+    /// keeps lightweight runtimes from silently becoming a second trusted
+    /// command source.
     async fn validate_session_agent_message_source(
         &self,
         _command: &crate::SessionAgentMessageCommand,
-    ) -> Result<(), RunError> {
+    ) -> Result<crate::SessionAgentMessageCommand, RunError> {
         Err(RunError::unavailable(
             "durable Agent message source validation is unsupported",
         ))

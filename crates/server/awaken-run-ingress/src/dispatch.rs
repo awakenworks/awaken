@@ -242,6 +242,136 @@ pub(crate) enum RunIdentityDecision {
     Replay,
 }
 
+/// Incoming identity views compared with one permanent completion tombstone.
+/// The generic value is the exact canonical byte/fingerprint value selected by
+/// [`RunDispatch`]; storage adapters never supply a precomputed match bit.
+#[cfg(any(feature = "durable", test, feature = "test-support", kani))]
+enum CompletedIncomingIdentity<'a, T: ?Sized> {
+    SessionCommand {
+        current: Option<&'a T>,
+        legacy: &'a T,
+    },
+    FullDispatch(&'a T),
+}
+
+/// One completed-row replay decision shared by memory, SQLite and PostgreSQL.
+/// A missing tombstone fingerprint or any changed exact identity conflicts.
+#[cfg(any(feature = "durable", test, feature = "test-support", kani))]
+fn completed_run_identity_replays<T: Eq + ?Sized>(
+    stored: Option<&T>,
+    incoming: CompletedIncomingIdentity<'_, T>,
+) -> bool {
+    let Some(stored) = stored else {
+        return false;
+    };
+    match incoming {
+        CompletedIncomingIdentity::SessionCommand { current, legacy } => {
+            current.is_some_and(|current| stored == current || stored == legacy)
+        }
+        CompletedIncomingIdentity::FullDispatch(canonical) => stored == canonical,
+    }
+}
+
+#[cfg(test)]
+mod completed_identity_tests {
+    use super::{CompletedIncomingIdentity, completed_run_identity_replays};
+
+    #[test]
+    fn completion_tombstone_exact_identity_table_is_closed() {
+        // Causes: C1 the permanent completion row has/has-not a fingerprint;
+        // C2 a full child dispatch has exact/changed canonical identity; C3 a
+        // Session command has a current exact/changed fingerprint or only
+        // legacy bytes. Effects: E1 exact full/current/legacy retry reuses the
+        // tombstone; E2 missing, changed, or unverifiable identity conflicts and
+        // cannot insert work. The adapters consume this owner under their
+        // existing transaction; this test adds no parallel receipt.
+        //
+        // | Rule | Stored | Incoming scope/identity | Effect |
+        // |---|---|---|---|
+        // | T1 | exact | full exact | E1 replay |
+        // | T2 | exact | full changed | E2 conflict |
+        // | T3 | exact | current exact | E1 replay |
+        // | T4 | legacy | current present + legacy exact | E1 replay |
+        // | T5 | exact | current absent | E2 conflict |
+        // | T6 | absent | any | E2 conflict |
+        let exact = b"exact".as_slice();
+        let changed = b"changed".as_slice();
+        assert!(completed_run_identity_replays(
+            Some(exact),
+            CompletedIncomingIdentity::FullDispatch(exact),
+        ));
+        assert!(!completed_run_identity_replays(
+            Some(exact),
+            CompletedIncomingIdentity::FullDispatch(changed),
+        ));
+        assert!(completed_run_identity_replays(
+            Some(exact),
+            CompletedIncomingIdentity::SessionCommand {
+                current: Some(exact),
+                legacy: changed,
+            },
+        ));
+        assert!(completed_run_identity_replays(
+            Some(exact),
+            CompletedIncomingIdentity::SessionCommand {
+                current: Some(changed),
+                legacy: exact,
+            },
+        ));
+        assert!(!completed_run_identity_replays(
+            Some(exact),
+            CompletedIncomingIdentity::SessionCommand {
+                current: None,
+                legacy: exact,
+            },
+        ));
+        assert!(!completed_run_identity_replays(
+            None,
+            CompletedIncomingIdentity::FullDispatch(exact),
+        ));
+    }
+}
+
+#[cfg(kani)]
+mod completed_identity_proofs {
+    use super::{CompletedIncomingIdentity, completed_run_identity_replays};
+
+    #[kani::proof]
+    fn agent_message_completed_tombstone_replays_only_exact_dispatch_identity() {
+        // Kani exhausts two-byte exact identity values, tombstone presence, the
+        // actual full-dispatch versus Session-command identity variants, and
+        // current-fingerprint presence. The production helper compares values,
+        // not caller-supplied match Booleans. Exact completed replay is the only
+        // successful child path; changed or unverifiable payload stutters the
+        // store through the surrounding conflict result. Hash/serialization and
+        // adapter transactions remain explicit TCB, not claims of this harness.
+        let stored = [kani::any::<u8>(), kani::any::<u8>()];
+        let canonical = [kani::any::<u8>(), kani::any::<u8>()];
+        let current = [kani::any::<u8>(), kani::any::<u8>()];
+        let legacy = [kani::any::<u8>(), kani::any::<u8>()];
+        let stored_present = kani::any::<bool>();
+        let current_present = kani::any::<bool>();
+        let session_command = kani::any::<bool>();
+        let stored_ref = stored_present.then_some(&stored);
+        let incoming = if session_command {
+            CompletedIncomingIdentity::SessionCommand {
+                current: current_present.then_some(&current),
+                legacy: &legacy,
+            }
+        } else {
+            CompletedIncomingIdentity::FullDispatch(&canonical)
+        };
+        let replay = completed_run_identity_replays(stored_ref, incoming);
+        let expected = stored_present
+            && if session_command {
+                current_present && (stored == current || stored == legacy)
+            } else {
+                stored == canonical
+            };
+        assert_eq!(replay, expected);
+    }
+}
+
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 pub(crate) fn decide_run_identity(
     stored: StoredRunIdentity<'_>,
@@ -250,19 +380,29 @@ pub(crate) fn decide_run_identity(
     let replay = match stored {
         StoredRunIdentity::Absent => return Ok(RunIdentityDecision::New),
         StoredRunIdentity::Live(existing) => existing.same_admission_dispatch(incoming),
-        StoredRunIdentity::Completed(Some(existing)) => match incoming.identity_scope {
-            DispatchIdentityScope::SessionCommand => incoming
-                .session_command_fingerprint
-                .as_ref()
-                .filter(|fingerprint| fingerprint.is_current())
-                .is_some_and(|fingerprint| {
-                    existing == fingerprint.as_str()
-                        || (existing.starts_with("sha256:")
-                            && existing == incoming.legacy_session_reservation_fingerprint())
-                }),
-            DispatchIdentityScope::FullDispatch => existing == incoming.canonical_fingerprint(),
+        StoredRunIdentity::Completed(existing) => match incoming.identity_scope {
+            DispatchIdentityScope::SessionCommand => {
+                let legacy = incoming.legacy_session_reservation_fingerprint();
+                completed_run_identity_replays(
+                    existing,
+                    CompletedIncomingIdentity::SessionCommand {
+                        current: incoming
+                            .session_command_fingerprint
+                            .as_ref()
+                            .filter(|fingerprint| fingerprint.is_current())
+                            .map(|fingerprint| fingerprint.as_str()),
+                        legacy: legacy.as_str(),
+                    },
+                )
+            }
+            DispatchIdentityScope::FullDispatch => {
+                let canonical = incoming.canonical_fingerprint();
+                completed_run_identity_replays(
+                    existing,
+                    CompletedIncomingIdentity::FullDispatch(canonical.as_str()),
+                )
+            }
         },
-        StoredRunIdentity::Completed(None) => false,
     };
     if replay {
         Ok(RunIdentityDecision::Replay)

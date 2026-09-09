@@ -77,13 +77,15 @@ pub use budget::{
 };
 pub use coordination::{
     CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadLink, CoordinatedThreadTarget,
-    SessionAgentBoundaryCommand, SessionAgentCoordination, SessionAgentMessageCommand,
-    SessionAgentMessageReceipt, SessionAgentReportContinuation, SessionAgentRosterEntry,
-    SessionAgentTarget, SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
-    SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyCommand,
-    SessionThreadToolReplyDelivery, SessionThreadToolReplyFence, coordinated_thread_failed,
-    coordinated_thread_id, session_agent_report_messages, session_agent_report_text,
-    session_run_activity_operation_id,
+    SessionAgentBoundaryAction, SessionAgentBoundaryCommand, SessionAgentBoundaryRole,
+    SessionAgentBoundaryVisibility, SessionAgentCommittedReport, SessionAgentCoordination,
+    SessionAgentMessageCommand, SessionAgentMessageReceipt, SessionAgentReportContinuation,
+    SessionAgentRosterEntry, SessionAgentRunBoundary, SessionAgentTarget,
+    SessionRunActivityAdmission, SessionRunActivityAdmissionMode, SessionThreadTarget,
+    SessionThreadToolReply, SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery,
+    SessionThreadToolReplyFence, coordinated_thread_failed, coordinated_thread_id,
+    session_agent_boundary_action, session_agent_report_messages, session_agent_report_text,
+    session_agent_run_boundary, session_run_activity_operation_id,
 };
 pub use network_policy::SessionNetworkPolicy;
 
