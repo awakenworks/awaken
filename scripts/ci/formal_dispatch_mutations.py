@@ -263,3 +263,54 @@ def check_managed_projection_model_mutants(tlc_jar: Path) -> None:
         cases.append((source, header + f"INVARIANTS {witness}\n", witness))
     check_tlc_model_mutations(tlc_jar, "ManagedProjectionPublish", source, config, cases)
     print("Managed projection publication: 9/9 semantic mutants killed; 6/6 decision/topology witnesses reachable")
+    check_managed_projection_refresh_failure_mutants(tlc_jar)
+
+
+def check_managed_projection_refresh_failure_mutants(tlc_jar: Path) -> None:
+    # Failure cause/effect table on the existing concurrent publication model:
+    # R1 reading error; R2 built/private-reduction error; R3 another publisher
+    # advances CURRENT cache while the failing writer retains its observed base.
+    # All three must be reachable. R1/R2/R3 preserve current paired contents,
+    # actual cache token and no-broadcast; they do not roll back another writer.
+    # Qualification slice: 2 writers, 1 source clock in 0..1, cache in 0..2.
+    # Original full concurrency/topology CI configurations remain unchanged.
+    source = (ROOT / "formal/tla/ManagedProjectionPublish.tla").read_text()
+    config = (ROOT / "formal/tla/ManagedProjectionPublish.cfg").read_text()
+    for anchor, replacement in (
+        ('Writers = {"writer-a", "writer-b"}', 'Writers = {"writer-a", "writer-b"}'),
+        ('Components = {"session", "root-thread", "other-source"}', 'Components = {"session"}'),
+        ("OptionalComponents = {}", "OptionalComponents = {}"),
+        ("MaxSourceVersion = 2", "MaxSourceVersion = 1"),
+        ("MaxCacheRevision = 4", "MaxCacheRevision = 2"),
+    ):
+        if config.count(anchor) != 1:
+            raise SystemExit(f"Managed refresh qualification bound drifted: {anchor}")
+        config = config.replace(anchor, replacement)
+    header = config[:config.index("INVARIANTS")]
+    start, end = source.index("RefreshFailure(writer) =="), source.index("\nNext ==")
+    original = source[start:end]
+    cases = []
+    # Mutate the actual failure action, leaving both the competing publisher
+    # and independent frame invariants intact. Parser/tool failures never count.
+    for anchor, replacement, invariant in (
+        ("UNCHANGED <<source, cacheRevision, resultFence, checkpointFence,",
+         "cacheRevision' = observedCacheRevision[writer]\n"
+         "    /\\ UNCHANGED <<source, resultFence, checkpointFence,",
+         "CacheReceiptMatchesVisible"),
+        ("UNCHANGED <<source, cacheRevision, resultFence, checkpointFence,",
+         "resultFence' = candidateFence[writer]\n"
+         "    /\\ checkpointFence' = candidateFence[writer]\n"
+         "    /\\ UNCHANGED <<source, cacheRevision,",
+         "FailureAndRejectionStutter"),
+        ("lastBroadcast' = FALSE", "lastBroadcast' = TRUE", "BroadcastIffPublished"),
+    ):
+        if original.count(anchor) != 1:
+            raise SystemExit(f"Managed refresh failure mutation anchor drifted: {anchor}")
+        cases.append((source[:start] + original.replace(anchor, replacement) + source[end:],
+                      header + f"INVARIANTS {invariant}\n", invariant))
+    for witness in ("NoReadingFailure", "NoBuiltFailure"):
+        cases.append((source, header + f"PROPERTIES {witness}\n", f"action:{witness}"))
+    witness = "NoFailureAfterCompetingPublish"
+    cases.append((source, header + f"INVARIANTS {witness}\n", witness))
+    check_tlc_model_mutations(tlc_jar, "ManagedProjectionPublish", source, config, cases)
+    print("Managed refresh failure: 3 current-frame mutants killed; reading/built/competing-publish witnesses reached")

@@ -1,4 +1,5 @@
 mod cancelled_model;
+mod refresh_failure;
 
 use super::committed_projection::{
     budget_reach_close_cursor, budget_reach_projection_close_cursor,
@@ -1177,8 +1178,6 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for AdvisorP
     }
 }
 
-type RecoveryPause = (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);
-
 #[derive(Clone, Default)]
 struct LifecycleRuntime {
     messages: Arc<Mutex<Vec<Message>>>,
@@ -1197,12 +1196,10 @@ struct LifecycleRuntime {
     /// root-snapshot reads without manufacturing a partial transaction.
     outcome_commit_on_read: Arc<Mutex<Vec<(awaken_agent_contract::agent::state::Command, u64)>>>,
     include_runs_in_snapshot: Arc<AtomicBool>,
-    fail_recovery_snapshot: Arc<AtomicBool>,
     /// Pause one existing Runtime read so a real root CAS can win while the
     /// original transport has already begun cold recovery. No receipt is faked.
-    recovery_pause: Arc<Mutex<Option<RecoveryPause>>>,
+    reads: crate::state::test_support::ReadControl,
     pending: Arc<Mutex<Option<Pending>>>,
-    snapshot_reads: Arc<AtomicUsize>,
     /// Advance only the committed Thread coordinate for a finite/infinite burst
     /// at the existing snapshot port; zero preserves every ordinary fixture.
     projection_version_changes: Arc<AtomicUsize>,
@@ -1308,17 +1305,11 @@ impl SessionRuntime for LifecycleRuntime {
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
-        let read_index = self.snapshot_reads.fetch_add(1, Ordering::SeqCst);
-        let pause = self.recovery_pause.lock().unwrap().take();
-        if let Some((entered, release)) = pause {
-            entered.notify_one();
-            release.notified().await;
-        }
-        if self.fail_recovery_snapshot.load(Ordering::SeqCst) {
-            return Err(RunError::unavailable(
-                "scripted cold recovery snapshot failure",
-            ));
-        }
+        let read_index = self
+            .reads
+            .on_read("recovery")
+            .await
+            .map_err(|_| RunError::unavailable("scripted cold recovery snapshot failure"))?;
         let lifecycle = self.lifecycle.lock().unwrap().clone();
         let Some(run_id) = lifecycle
             .iter()
@@ -1555,8 +1546,8 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
     };
 
     state.sessions.lock().unwrap().remove(&session.id);
-    runtime.fail_recovery_snapshot.store(true, Ordering::SeqCst);
-    let reads_before = runtime.snapshot_reads.load(Ordering::SeqCst);
+    runtime.reads.fail("recovery", true);
+    let reads_before = runtime.reads.count("recovery");
     let replay = state
         .send_events_attributed(
             &session.id,
@@ -1572,7 +1563,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
         "IR1/E1 exact receipt"
     );
     assert_eq!(
-        runtime.snapshot_reads.load(Ordering::SeqCst),
+        runtime.reads.count("recovery"),
         reads_before,
         "IR1/E1 no cold Runtime read"
     );
@@ -1606,7 +1597,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
         "IR2/E2"
     );
     assert_eq!(
-        runtime.snapshot_reads.load(Ordering::SeqCst),
+        runtime.reads.count("recovery"),
         reads_before,
         "IR2/E2 conflict also precedes cold recovery"
     );
@@ -1649,9 +1640,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
             }],
         };
         let subject = Some("original-subject".to_string());
-        let entered = Arc::new(tokio::sync::Notify::new());
-        let release = Arc::new(tokio::sync::Notify::new());
-        *runtime.recovery_pause.lock().unwrap() = Some((entered.clone(), release.clone()));
+        let (entered, release) = runtime.reads.pause_next("recovery");
         let pending = {
             let state = state.clone();
             let id = session.id.clone();
@@ -1721,9 +1710,9 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
         let root_before = repository.get(&session.id).await.unwrap();
         let outbox_before = repository.pending_lifecycle().await.unwrap();
         let cache_before = state.sessions.lock().unwrap().get(&session.id).cloned();
-        let reads_before = runtime.snapshot_reads.load(Ordering::SeqCst);
+        let reads_before = runtime.reads.count("recovery");
         assert!(reads_before > 0, "IR3 pre-win recovery I/O is real");
-        runtime.fail_recovery_snapshot.store(true, Ordering::SeqCst);
+        runtime.reads.fail("recovery", true);
         release.notify_one();
         let actual = tokio::time::timeout(std::time::Duration::from_secs(10), pending)
             .await
@@ -1803,7 +1792,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
             "IR3-IR7 complete cache content and publication frame"
         );
         assert_eq!(
-            runtime.snapshot_reads.load(Ordering::SeqCst),
+            runtime.reads.count("recovery"),
             reads_before,
             "IR3-IR7 no post-win Runtime read or drive"
         );
@@ -1828,7 +1817,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
             "expected_receipt": serde_json::to_string(&expected_receipt).unwrap(),
             "error": error, "failure": "Unavailable:unavailable:scripted cold recovery snapshot failure",
             "before": frame(&root_before, &outbox_before, reads_before),
-            "after": frame(&repository.get(&session.id).await.unwrap(), &repository.pending_lifecycle().await.unwrap(), runtime.snapshot_reads.load(Ordering::SeqCst)),
+            "after": frame(&repository.get(&session.id).await.unwrap(), &repository.pending_lifecycle().await.unwrap(), runtime.reads.count("recovery")),
             "cache_unchanged": cache_unchanged,
         }}));
     }
@@ -2499,7 +2488,7 @@ async fn root_projection_and_reply_admission_share_one_recovery_prefix() {
         runtime.split_message_reads.load(Ordering::SeqCst),
         runtime.split_pending_reads.load(Ordering::SeqCst),
     );
-    let snapshots_before = runtime.snapshot_reads.load(Ordering::SeqCst);
+    let snapshots_before = runtime.reads.count("recovery");
     state.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(
         (
@@ -2509,10 +2498,7 @@ async fn root_projection_and_reply_admission_share_one_recovery_prefix() {
         split_before,
         "S1/E2"
     );
-    assert!(
-        runtime.snapshot_reads.load(Ordering::SeqCst) > snapshots_before,
-        "S1/E1"
-    );
+    assert!(runtime.reads.count("recovery") > snapshots_before, "S1/E1");
     let public_event_id = state
         .list_events(&session.id, None, None, false)
         .unwrap()
@@ -2526,7 +2512,7 @@ async fn root_projection_and_reply_admission_share_one_recovery_prefix() {
         runtime.split_message_reads.load(Ordering::SeqCst),
         runtime.split_pending_reads.load(Ordering::SeqCst),
     );
-    let snapshots_before = runtime.snapshot_reads.load(Ordering::SeqCst);
+    let snapshots_before = runtime.reads.count("recovery");
     let validated = state
         .validate_event_batch(
             &session.id,
@@ -2555,10 +2541,7 @@ async fn root_projection_and_reply_admission_share_one_recovery_prefix() {
         split_before,
         "S2/E2"
     );
-    assert!(
-        runtime.snapshot_reads.load(Ordering::SeqCst) > snapshots_before,
-        "S2/E1"
-    );
+    assert!(runtime.reads.count("recovery") > snapshots_before, "S2/E1");
 }
 
 #[test]
@@ -3723,7 +3706,8 @@ async fn projection_read_budget_handles_commit_bursts_and_bounds_nonconvergence(
             .get(&session.id)
             .unwrap()
             .clone();
-        runtime.snapshot_reads.store(0, Ordering::SeqCst);
+        let (_, mut live) = state.stream_subscribe(&session.id).unwrap();
+        runtime.reads.reset();
         runtime.projection_version_changes.store(
             match case {
                 "burst" => 12,
@@ -3732,14 +3716,9 @@ async fn projection_read_budget_handles_commit_bursts_and_bounds_nonconvergence(
             },
             Ordering::SeqCst,
         );
-        runtime
-            .fail_recovery_snapshot
-            .store(case == "error", Ordering::SeqCst);
+        runtime.reads.fail("recovery", case == "error");
         if case == "stall" {
-            *runtime.recovery_pause.lock().unwrap() = Some((
-                Arc::new(tokio::sync::Notify::new()),
-                Arc::new(tokio::sync::Notify::new()),
-            ));
+            runtime.reads.pause_next("recovery");
         }
         let captured = awaken_reliability_testkit::events::CapturedEvents::default();
         let result = tokio::time::timeout(
@@ -3757,13 +3736,24 @@ async fn projection_read_budget_handles_commit_bursts_and_bounds_nonconvergence(
             .get(&session.id)
             .unwrap()
             .clone();
-        let reads = runtime.snapshot_reads.load(Ordering::SeqCst);
+        let reads = runtime.reads.count("recovery");
         let diagnostics = captured.snapshot();
+        // R1/R3/R4/R5 reuse the complete frame oracle; the subscription
+        // independently detects forbidden publication side effects. R2/R6
+        // retain the committed burst/cold-success expectations below.
+        if case != "burst" {
+            assert!(
+                matches!(
+                    live.try_recv(),
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                ),
+                "{case}: unchanged/failed refresh must not broadcast"
+            );
+        }
         match case {
             "stable" => {
                 result.unwrap();
-                assert!(after.same_projected_content(&before).unwrap());
-                assert_eq!(after.cache_revision, before.cache_revision);
+                refresh_failure::assert_record_frame_eq(&after, &before);
                 assert!(diagnostics.is_empty(), "R1 no conflict diagnostics");
             }
             "burst" => {
@@ -3795,7 +3785,7 @@ async fn projection_read_budget_handles_commit_bursts_and_bounds_nonconvergence(
                     serde_json::to_value(&recovered.events).unwrap(),
                     expected_events
                 );
-                assert!(runtime.snapshot_reads.load(Ordering::SeqCst) - reads > 8);
+                assert!(runtime.reads.count("recovery") - reads > 8);
             }
             "error" => {
                 assert!(
@@ -3805,16 +3795,14 @@ async fn projection_read_budget_handles_commit_bursts_and_bounds_nonconvergence(
                         .contains("scripted cold recovery snapshot failure")
                 );
                 assert_eq!(reads, 1, "R4 infrastructure errors are not retried");
-                assert!(after.same_projected_content(&before).unwrap());
-                assert_eq!(after.cache_revision, before.cache_revision);
+                refresh_failure::assert_record_frame_eq(&after, &before);
             }
             _ => {
                 assert!(
                     result.is_err(),
                     "R3/R5 never accept an unstable/stalled read"
                 );
-                assert!(after.same_projected_content(&before).unwrap());
-                assert_eq!(after.cache_revision, before.cache_revision);
+                refresh_failure::assert_record_frame_eq(&after, &before);
                 assert!(diagnostics.iter().any(|fields| {
                     fields.get("message").is_some_and(|message| {
                         message == "Managed projection read budget exhausted"
@@ -3945,8 +3933,9 @@ async fn failed_committed_projection_does_not_poison_warm_recovery() {
     // suffix; C3 a later stable prefix inserts the missing ToolUse before that
     // same result; C4 a live subscriber spans both refreshes. Effects: E1 C1+C2
     // returns the existing fail-closed error; E2 no staged Event, cursor, or
-    // message-consumption mutation reaches the warm SessionRecord and C4 sees
-    // no broadcast; E3 C3 recovers in the same process without restart and
+    // message-consumption or other field mutation reaches the warm SessionRecord
+    // (complete frame including the CAS token), and C4 sees no broadcast;
+    // E3 C3 recovers in the same process without restart and
     // emits the valid text/call/result exactly once; E4 replay is idempotent.
     // Constraint: durable Session, lifecycle, and transcript stores remain the
     // only authorities; the process cache is replaced only after the complete
@@ -3997,6 +3986,13 @@ async fn failed_committed_projection_does_not_poison_warm_recovery() {
     );
     runtime.replace_committed_messages(vec![(2, visible.clone()), (3, result.clone())]);
     let (_, mut live) = state.stream_subscribe(&session.id).unwrap();
+    let before = state
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&session.id)
+        .unwrap()
+        .clone();
 
     let error = state
         .refresh_committed_events(&session.id)
@@ -4008,28 +4004,9 @@ async fn failed_committed_projection_does_not_poison_warm_recovery() {
             .contains("call-atomic-projection` has no preceding tool-use identity"),
         "A1/E1 preserves the actionable correlation failure: {error}"
     );
-    assert!(
-        state
-            .list_events(&session.id, None, None, false)
-            .unwrap()
-            .data
-            .is_empty(),
-        "A1/E2 no partial Event projection survives"
-    );
-    assert_eq!(
-        state.lifecycle_cursor(&session.id).unwrap(),
-        RunLifecycleCursor::default(),
-        "A1/E2 no cursor mutation survives"
-    );
-    assert!(
-        !state
-            .sessions
-            .lock()
-            .unwrap()
-            .get(&session.id)
-            .unwrap()
-            .message_was_projected(&session.id, &visible.id.0),
-        "A1/E2 no message-consumption mutation survives"
+    refresh_failure::assert_record_frame_eq(
+        state.sessions.lock().unwrap().get(&session.id).unwrap(),
+        &before,
     );
     assert!(
         matches!(

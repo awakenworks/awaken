@@ -1,4 +1,5 @@
 use super::*;
+use crate::state::test_support::{ConflictInjectingRepo, ReadControl};
 use awaken_runtime_contract::tool_batch::ToolBatch;
 
 struct RecordingProjectionRefresh {
@@ -307,130 +308,6 @@ async fn immediate_environment_binding_sink_is_durable_and_idempotent() {
     assert_eq!(replay.environment, first.environment);
 }
 
-struct ConflictInjectingRepo {
-    inner: Arc<SqliteManagedSessionRepository>,
-    conflicts: AtomicU64,
-}
-
-#[async_trait]
-impl ManagedSessionRepository for ConflictInjectingRepo {
-    async fn create(
-        &self,
-        owner_scope: &str,
-        session: PersistedSession,
-        idempotency: awaken_session_contract::IdempotencyRecord,
-        facts: Vec<awaken_session_contract::ManagedLifecycleFact>,
-    ) -> Result<
-        awaken_session_contract::SessionCreateResult,
-        awaken_session_contract::SessionRepositoryError,
-    > {
-        self.inner
-            .create(owner_scope, session, idempotency, facts)
-            .await
-    }
-
-    async fn replay_create(
-        &self,
-        owner_scope: &str,
-        session_id: &str,
-        idempotency: &awaken_session_contract::IdempotencyRecord,
-    ) -> Result<Option<PersistedSession>, awaken_session_contract::SessionRepositoryError> {
-        self.inner
-            .replay_create(owner_scope, session_id, idempotency)
-            .await
-    }
-
-    async fn commit_mutation(
-        &self,
-        owner_scope: &str,
-        mutation: awaken_session_contract::SessionMutation,
-    ) -> Result<
-        awaken_session_contract::SessionMutationResult,
-        awaken_session_contract::SessionRepositoryError,
-    > {
-        if self
-            .conflicts
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
-                count.checked_sub(1)
-            })
-            .is_ok()
-        {
-            return Ok(awaken_session_contract::SessionMutationResult::Conflict {
-                current_revision: mutation.expected_revision,
-            });
-        }
-        self.inner.commit_mutation(owner_scope, mutation).await
-    }
-
-    async fn append_lifecycle(
-        &self,
-        fact: awaken_session_contract::ManagedLifecycleFact,
-    ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
-        self.inner.append_lifecycle(fact).await
-    }
-
-    async fn pending_lifecycle(
-        &self,
-    ) -> Result<
-        Vec<awaken_session_contract::ManagedLifecycleFact>,
-        awaken_session_contract::SessionRepositoryError,
-    > {
-        self.inner.pending_lifecycle().await
-    }
-
-    async fn complete_lifecycle(
-        &self,
-        fact_id: &str,
-    ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
-        self.inner.complete_lifecycle(fact_id).await
-    }
-
-    async fn get(
-        &self,
-        session_id: &str,
-    ) -> Result<PersistedSession, awaken_session_contract::SessionRepositoryError> {
-        self.inner.get(session_id).await
-    }
-
-    async fn reconcilable_sessions_page(
-        &self,
-        after: Option<&awaken_session_contract::SessionRecoveryCursor>,
-    ) -> Result<
-        awaken_session_contract::SessionRecoveryScan,
-        awaken_session_contract::SessionRepositoryError,
-    > {
-        self.inner.reconcilable_sessions_page(after).await
-    }
-
-    async fn sessions_referencing_credential_source(
-        &self,
-        workspace_id: &str,
-        source_id: &awaken_credential_contract::CredentialSourceId,
-    ) -> Result<Vec<PersistedSession>, awaken_session_contract::SessionRepositoryError> {
-        self.inner
-            .sessions_referencing_credential_source(workspace_id, source_id)
-            .await
-    }
-
-    async fn idempotency_receipt(
-        &self,
-        session_id: &str,
-        key: &str,
-    ) -> Result<
-        Option<awaken_session_contract::SessionIdempotencyReceipt>,
-        awaken_session_contract::SessionRepositoryError,
-    > {
-        self.inner.idempotency_receipt(session_id, key).await
-    }
-
-    async fn owner(
-        &self,
-        session_id: &str,
-    ) -> Result<String, awaken_session_contract::SessionRepositoryError> {
-        self.inner.owner(session_id).await
-    }
-}
-
 fn persisted_with_mcp_source(
     session_id: &str,
     source_id: &str,
@@ -696,10 +573,11 @@ async fn immediate_binding_cas_retries_once_then_fails_closed_at_the_bound() {
             sample_persisted(&format!("binding-{conflicts}")),
         )
         .await;
-        let repo = Arc::new(ConflictInjectingRepo {
-            inner: inner.clone(),
-            conflicts: AtomicU64::new(conflicts),
-        });
+        let repo = Arc::new(ConflictInjectingRepo::new(
+            inner.clone(),
+            conflicts,
+            ReadControl::default(),
+        ));
         let sink = awaken_session_application::RepositoryEnvironmentBindingSink::new(repo);
         let receipt = awaken_session_contract::SessionEnvironmentReceipt::new(
             format!("binding-{conflicts}"),
