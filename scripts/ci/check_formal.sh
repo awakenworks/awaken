@@ -16,6 +16,8 @@ source scripts/ci/_deadline.sh
 kani_cache_root="${AWAKEN_KANI_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/awaken-kani}"
 kani_source_dir="${AWAKEN_KANI_SOURCE_DIR:-$kani_cache_root/current}"
 if [ -x "$kani_source_dir/scripts/cargo-kani" ]; then
+  # Freeze this invocation's selection before another bootstrap moves current.
+  kani_source_dir="$(cd "$kani_source_dir" && pwd -P)"
   kani_backend_dir="${AWAKEN_KANI_BACKEND_DIR:-}"
   if [ -z "$kani_backend_dir" ]; then
     kani_backend_dir="$HOME/.kani/kani-0.67.0/bin"
@@ -105,6 +107,7 @@ python3 scripts/ci/check_feature_coverage.py --require-complete
 python3 scripts/ci/check_formal_coverage.py --require-complete
 python3 scripts/ci/test_formal_profile.py
 python3 scripts/ci/test_formal_run_evidence.py
+python3 scripts/ci/test_bootstrap_kani.py
 python3 scripts/release/verification_manifest.py self-test
 python3 scripts/ci/test_formal_surface.py
 python3 scripts/ci/check_formal_surface.py --require-complete
@@ -187,6 +190,12 @@ python3 scripts/ci/render_runtime_refinement_traces.py \
 AWAKEN_SESSION_EVIDENCE_DIR="$formal_artifact_dir/session-observations" scripts/ci/check-reliability.sh --session-observations
 
 if command -v cargo-kani >/dev/null 2>&1; then
+  scripts/ci/bootstrap_kani.sh --verify-source "$kani_source_dir" \
+    > "$formal_artifact_dir/kani-source-build.txt"
+  # A matching version string cannot establish full-width enum code generation.
+  run_with_deadline "$kani_batch_timeout_seconds" kani \
+    scripts/ci/fixtures/kani_wide_niche.rs \
+    --target-dir "$formal_tmp_root/kani-toolchain" --output-format terse
   # Kani compiles every selected package once and verifies its named harnesses
   # with a bounded worker pool. The old one-process-per-harness path rebuilt the
   # same package 54 times. Two jobs is the conservative default because CBMC is
