@@ -466,6 +466,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness consent_upsert_leaves_exactly_one_row_for_the_incoming_purpose \
     --harness erasure_withdrawal_is_absorbing_and_idempotent \
     --harness revision_advance_is_strict_or_explicitly_exhausted
+  run_kani awaken-data-subject-application --checked-loop-profile erasure-progress-selection-v1 \
+    --harness erasure_progress_selects_exact_first_pending_target
+  run_kani awaken-data-subject-application --checked-loop-profile erasure-progress-count-v1 \
+    --harness erasure_progress_counts_selected_target_once_or_preserves_overflow
   run_kani awaken-credential-vault \
     --harness credential_material_phase_transitions_preserve_exact_writer_fence \
     --harness credential_material_recovery_action_is_total_and_expiry_exact \
@@ -683,6 +687,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-runtime \
     --harness circuit_admission_is_capacity_bounded_nonwrapping_and_rejection_stutters \
     --harness circuit_completion_requires_exact_phase_and_generation_for_every_outcome
+  run_kani awaken-runtime-contract --checked-loop-profile resume-validator-empty-object-v1 \
+    --harness resume_validator_preserves_complete_binding_decision_table
   run_kani awaken-runtime-contract --solver kissat \
     --harness created_tool_handle_validation_never_invents_termination \
     --harness model_operation_history_preserves_distinct_subjects
