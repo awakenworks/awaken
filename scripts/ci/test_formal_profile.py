@@ -160,6 +160,35 @@ class ProfileTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 profile_result(features, coverage)
 
+    def test_direct_grade_rejects_stale_whole_row_abstract_claims(self):
+        # Causes: C1 direct/non-direct grade; C2 bounds describe either the
+        # whole row as still abstract/model-linked or only an explicit residual
+        # subsystem boundary. Effects: R1 direct+C2-whole rejects contradictory
+        # authority; R2 direct+C2-residual remains valid; R3 a model grade may
+        # accurately retain its abstract description. This lint changes no
+        # proof result and does not infer scope from ordinary words such as
+        # "abstract state" or from a named external limitation.
+        features, coverage = fixture()
+        row = coverage["obligations"][0]
+        for obsolete in (
+            "The whole obligation remains abstract-model checked.",
+            "The whole obligation is not upgraded.",
+        ):
+            row["bounds"] = [obsolete]
+            with self.subTest(obsolete=obsolete), self.assertRaisesRegex(
+                ValueError, "contradicts"
+            ):
+                profile_result(features, coverage)
+
+        row["bounds"] = [
+            "Fair scheduling and external termination remain abstract or external evidence."
+        ]
+        self.assertTrue(profile_result(features, coverage)["eligible"])
+
+        row["proof_grade"] = "abstract_model_checked"
+        row["bounds"] = ["The row remains abstract_model_checked."]
+        self.assertFalse(profile_result(features, coverage)["eligible"])
+
     def test_prefix_does_not_capture_similar_names_or_external_assumptions(self):
         # C1 exact dotted prefix; C2 lexical neighbor; C3 external member.
         # Only formalizable C1 is selected; explicit identities remain exact.
