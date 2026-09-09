@@ -286,8 +286,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness deleted_admission_resolver_preserves_empty \
     --harness deleted_admission_resolver_preserves_legacy_error_and_frame \
     --cbmc-args --unwindset memcmp.0:64
-  # One retained receipt with no operation ids: all eight key/fingerprint/
-  # closed combinations, complete frame and two-live-output replay/Drop.
+  # All 24 None/empty/one-ID cases plus two-ID Absent 24/28/30 and Closed31;
+  # full source frame and two-live-output replay/Drop (two-ID output stays open).
   run_kani awaken-session-contract -Z unstable-options \
     --harness deleted_admission_one_retained_absent_none_00 \
     --harness deleted_admission_one_retained_absent_none_02 \
@@ -295,11 +295,31 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness deleted_admission_one_retained_absent_none_04 \
     --harness deleted_admission_one_retained_absent_none_06 \
     --harness deleted_admission_one_retained_closed_none_07 \
+    --harness deleted_admission_one_retained_absent_empty_08 \
+    --harness deleted_admission_one_retained_absent_empty_10 \
+    --harness deleted_admission_one_retained_accepted_empty_11 \
+    --harness deleted_admission_one_retained_absent_empty_12 \
+    --harness deleted_admission_one_retained_absent_empty_14 \
+    --harness deleted_admission_one_retained_closed_empty_15 \
+    --harness deleted_admission_one_retained_absent_one_16 \
+    --harness deleted_admission_one_retained_absent_one_18 \
+    --harness deleted_admission_one_retained_accepted_one_19 \
+    --harness deleted_admission_one_retained_absent_one_20 \
+    --harness deleted_admission_one_retained_absent_one_22 \
+    --harness deleted_admission_one_retained_closed_one_23 \
+    --harness deleted_admission_one_retained_absent_two_24 \
+    --harness deleted_admission_one_retained_absent_two_28 \
+    --harness deleted_admission_one_retained_absent_two_30 \
+    --harness deleted_admission_one_retained_closed_two_31 \
     --cbmc-args --unwindset memcmp.0:2
   # The complete 64-byte conflict message also needs its loop-exit check.
   run_kani awaken-session-contract -Z unstable-options \
     --harness deleted_admission_one_retained_conflict_none_01 \
     --harness deleted_admission_one_retained_conflict_none_05 \
+    --harness deleted_admission_one_retained_conflict_empty_09 \
+    --harness deleted_admission_one_retained_conflict_empty_13 \
+    --harness deleted_admission_one_retained_conflict_one_17 \
+    --harness deleted_admission_one_retained_conflict_one_21 \
     --cbmc-args --unwindset memcmp.0:65
   run_kani awaken-session-contract \
     --harness session_event_batch_admission_resolution_is_total_closed_and_append_once \
