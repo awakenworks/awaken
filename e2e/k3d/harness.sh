@@ -3,7 +3,7 @@
 #
 # Scenario scripts own topology, assertions, and fault timing. This harness owns
 # only the repeated infrastructure mechanics: tool admission, cluster lifecycle,
-# host-built executable resolution, single-platform image import, and CoreDNS
+# host-built executable resolution, identity-preserving image import, and CoreDNS
 # refresh. Keeping those mechanics here prevents subtly different offline-image
 # and kubelet policies from becoming parallel test environments.
 
@@ -18,6 +18,31 @@ K3D_DIAGNOSTIC_TIMEOUT_SECONDS="${AWAKEN_K3D_DIAGNOSTIC_TIMEOUT_SECONDS:-20}"
 
 k3d_validate_deadline() {
   [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
+
+k3d_validate_image_digest() {
+  [[ "$1" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]]
+}
+
+# Resolve the manifest identity of the image just built by the canonical image
+# builder. Docker's config ID is not a registry/OCI manifest digest. Never
+# synthesize a digest from a tag or substitute another published release.
+k3d_image_digest() {
+  local image="$1" digest
+  k3d_validate_deadline "$K3D_DIAGNOSTIC_TIMEOUT_SECONDS" || return 2
+  digest=$(run_with_deadline "$K3D_DIAGNOSTIC_TIMEOUT_SECONDS" \
+    docker image inspect --format '{{json .RepoDigests}}' -- "$image" | python3 -c '
+import json, sys
+values = json.load(sys.stdin)
+if not isinstance(values, list) or not values or not all(isinstance(v, str) for v in values):
+    raise SystemExit("built image has no manifest digest; use a Docker containerd image store or supply AWAKEN_K8S_CONTROL_IMAGE")
+print(sorted(set(values))[0])
+') || return "$?"
+  k3d_validate_image_digest "$digest" || {
+    echo "Docker returned an invalid immutable image reference" >&2
+    return 2
+  }
+  printf '%s\n' "$digest"
 }
 
 k3d_capacity_preflight() {
@@ -351,6 +376,11 @@ k3d_archive_name() {
   printf '%s' "$value"
 }
 
+k3d_export_image() {
+  python3 "$(dirname "${BASH_SOURCE[0]}")/image_archive.py" \
+    --platform "$K3D_PLATFORM" --output "$2" "$1"
+}
+
 # Return the first IPv4 loopback port available at or above the preferred port.
 # This avoids false E2E failures when a previous kubectl tunnel left the same
 # static port in TIME_WAIT.
@@ -427,7 +457,7 @@ k3d_import_images() {
   local archives=() status=0
   for image in "${unique[@]}"; do
     local archive="$archive_dir/$(k3d_archive_name "$image").tar"
-    docker save --platform "$K3D_PLATFORM" -o "$archive" "$image" \
+    k3d_export_image "$image" "$archive" \
       || { status=$?; break; }
     archives+=("$archive")
   done
@@ -457,6 +487,33 @@ resolve_cargo_executable() {
 
 k3d_harness_selftest() (
   python3 "$(dirname "${BASH_SOURCE[0]}")/capacity.py" --self-test
+  python3 "$(dirname "${BASH_SOURCE[0]}")/test_image_archive.py"
+  # Digest cause/effect table: C1 inspected image has real RepoDigests;
+  # C2 Docker observation succeeds; C3 reference has an exact SHA-256 shape.
+  # I1 C1+C2+C3 => immutable manifest reference, stable under alias order;
+  # I2 !C1 => fail (config Id is never a fallback); I3 !C2 even with valid
+  # stdout => fail; I4 !C3 => reject. No build/import occurs in this observer;
+  # the live gate imports and executes the resulting image itself.
+  (
+    local document result=0
+    local digest="registry.test/sandbox@sha256:$(printf 'a%.0s' {1..64})"
+    docker() {
+      [[ "$*" = 'image inspect --format {{json .RepoDigests}} -- exact:built' ]] || return 99
+      printf '%s' "$document"
+      return "$result"
+    }
+    # The shared deadline process cannot call a shell fixture function; its
+    # process termination tests remain in the existing deadline owner.
+    run_with_deadline() { shift; "$@"; }
+    document="[\"$digest\",\"z-$digest\",\"$digest\"]"
+    [[ "$(k3d_image_digest exact:built)" = "$digest" ]]
+    result=7
+    ! k3d_image_digest exact:built >/dev/null 2>&1
+    result=0
+    for document in '[]' 'null' '{}' 'invalid-json' '[null]' '["tag:latest"]' '["repo@sha256:short"]'; do
+      ! k3d_image_digest exact:built >/dev/null 2>&1
+    done
+  )
   # Cause/effect decision table:
   # H1 canonical name/count/percentage -> one delete + create with server and agent
   # thresholds; H2 zero agents -> no agent threshold; H3 option-shaped name or
@@ -808,12 +865,13 @@ print(json.dumps(value))
       printf '%s\n' server agent
     elif [[ "$1 $2" = "image inspect" ]]; then
       return 0
-    elif [[ "$1" = save ]]; then
-      docker_saves+=("$*")
     elif [[ "$1 $2" = "build --network" || "$1" = build ]]; then
       docker_builds+=("$*")
     fi
   }
+  # The actual exporter subprocess matrix owns save flags and OCI preservation.
+  # Here the real shared import function must route each image through that owner.
+  k3d_export_image() { docker_saves+=("$1"); }
   kubectl() {
     if [[ "$*" = *"get deploy coredns"* ]]; then
       printf '%s' 'rancher/mirrored-coredns-coredns:1.10.1'
@@ -822,7 +880,7 @@ print(json.dumps(value))
   k3d_calls=()
   k3d_import_images "awaken-test" app:latest app:latest postgres:16
   (( ${#docker_saves[@]} == 4 ))
-  [[ "${docker_saves[*]}" = *"--platform $K3D_PLATFORM"* ]]
+  [[ "${docker_saves[*]}" = *"app:latest postgres:16"* ]]
   [[ "${k3d_calls[0]}" = image\ import* ]]
   [[ "${docker_execs[${#docker_execs[@]} - 1]}" = "exec k3d-awaken-test-server-0 find /k3d/images -mindepth 1 -maxdepth 1 -type f -delete" ]]
 

@@ -22,7 +22,7 @@ export AWAKEN_K8S_FIXTURE_IMAGE="$FIXTURE_IMAGE"
 SESSION_IMAGE="${AWAKEN_K8S_SESSION_IMAGE:-awaken-sandbox:local}"
 export AWAKEN_K8S_SESSION_IMAGE="$SESSION_IMAGE"
 CONTROL_IMAGE="${AWAKEN_K8S_CONTROL_IMAGE:-}"
-if [[ ! "$CONTROL_IMAGE" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]]; then
+if [[ -n "$CONTROL_IMAGE" ]] && ! k3d_validate_image_digest "$CONTROL_IMAGE"; then
   echo "AWAKEN_K8S_CONTROL_IMAGE must name the digest-pinned operator image used by the control E2E" >&2
   exit 2
 fi
@@ -58,10 +58,23 @@ fi
 docker run --name "$FIXTURE_CONTAINER" --platform "$K3D_PLATFORM" busybox:1.36 true >/dev/null
 docker commit "$FIXTURE_CONTAINER" "$FIXTURE_IMAGE" >/dev/null
 docker rm -f "$FIXTURE_CONTAINER" >/dev/null
-"$(dirname "$0")/../../deploy/images/sandbox/build.sh" --ensure-hand "$SESSION_IMAGE" ""
+# KQ0 no operator override => build this checkout through the existing image
+# owner, resolve its real manifest digest, then run the mandatory control test.
+# KQ1 an explicit digest remains supported; malformed input fails above.
+# Rebuilding current source (Cargo/Docker retain caches) prevents an old
+# hand-capable tag from qualifying newly changed control code.
+"$(dirname "$0")/../../deploy/images/sandbox/build.sh" "$SESSION_IMAGE" ""
+if [[ -z "$CONTROL_IMAGE" ]]; then
+  CONTROL_IMAGE=$(k3d_image_digest "$SESSION_IMAGE")
+fi
+export AWAKEN_K8S_CONTROL_IMAGE="$CONTROL_IMAGE"
 
 log "creating k3d cluster ${CLUSTER}"
-k3d_create_cluster "$CLUSTER" 0 2
+# The nested node sees the host filesystem's total size. On a 3.8 TB host,
+# a 2% threshold rejects 23 GB of usable space and strands CoreDNS after import.
+# Reuse the distributed fixture's absolute reserve; the shared capacity preflight
+# separately requires enough actual bytes/inodes for the node and image copies.
+k3d_create_cluster "$CLUSTER" 0 128Mi
 k3d kubeconfig merge "${CLUSTER}" --output "$KUBECONFIG_FILE" --overwrite >/dev/null
 if [ "$(uname -s)" = "Darwin" ]; then
   # k3d may emit host.docker.internal on Docker Desktop. That address is for
