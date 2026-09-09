@@ -1662,148 +1662,266 @@ async fn concurrent_event_batch_idempotency_converges_under_root_cas() {
 
 #[tokio::test]
 async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects() {
-    // Cause/effect graph: C1 an old writer left a terminal Session with one
-    // accepted unprocessed command; C2 terminal cleanup is Fenced, Requested
-    // with a cursor, or a legacy Requested row with the cursor field absent;
-    // C3 the fence later freezes an exact Runtime cursor. Effects: E1 the
-    // canonical batch supervisor executes no Runtime effect; E2 Fenced remains
-    // incomplete; E3 Requested/Completed resolves under root CAS; E4 an exact
-    // cursor becomes the projection anchor while legacy Requested+None remains
-    // the explicit processed/no-anchor prefix. Rules T1=C1+Fenced=>E1+E2;
-    // T2=C1+Requested(Some)=>E1+E3+E4; T3=C1+legacy Requested(None)=>E1+E3+E4;
-    // T4=T1+C3=>E1+E3+E4. No migration store or second scheduler exists.
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .expect("terminal batch repository"),
-    );
-    for (session_id, cursor) in [
-        ("terminal-batch-anchor", Some(17)),
-        ("terminal-batch-legacy", None),
-    ] {
-        let mut session = planned_session(
-            session_id,
-            vec![SessionEventInput::UserMessage {
-                content: vec![ContentBlock::text("accepted before terminal")],
-            }],
-        );
-        session
-            .transition_execution(awaken_session_contract::SessionExecutionState::Terminated)
-            .expect("legacy writer reached a valid terminal aggregate");
-        assert!(session.terminal_cleanup.request(session_id));
-        if let Some(cursor) = cursor {
-            session
-                .terminal_cleanup
-                .freeze_targets(session_id, [], 0, cursor)
-                .expect("freeze terminal visibility cursor");
-        } else {
-            let mut legacy = serde_json::to_value(&session).unwrap();
-            legacy["terminal_cleanup"]["state"] = serde_json::Value::String("requested".into());
-            session = serde_json::from_value(legacy)
-                .expect("aggregate codec reads legacy Requested cleanup without runtime cursor");
-        }
-        create(repository.as_ref(), session).await;
-    }
-    let mut fenced = planned_session(
-        "terminal-batch-fenced",
-        vec![SessionEventInput::UserMessage {
-            content: vec![ContentBlock::text("accepted before quiescence")],
-        }],
-    );
-    fenced
-        .transition_execution(awaken_session_contract::SessionExecutionState::Terminated)
-        .expect("terminal fence starts from a valid terminal aggregate");
-    assert!(fenced.terminal_cleanup.request("terminal-batch-fenced"));
-    create(repository.as_ref(), fenced).await;
-    let runtime = Arc::new(EventBatchRuntime::default());
-    let app = application_with_runtime(
-        runtime.clone(),
-        repository.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-
-    let report = app.reconcile_event_batches().await;
-    assert!(
-        report.failures.is_empty(),
-        "T1/T2 root CAS succeeds: {:?}",
-        report.failures
-    );
-    assert_eq!(report.settled, 2, "T2/T3/E3");
-    for (session_id, cursor) in [
-        ("terminal-batch-anchor", Some(17)),
-        ("terminal-batch-legacy", None),
-    ] {
-        let session = repository.get(session_id).await.expect("resolved terminal");
-        let entry = &session.event_batches[0].events[0];
-        assert!(entry.processed, "{session_id}/E2");
-        assert_eq!(
-            entry
-                .projection_anchor
-                .map(|anchor| anchor.source_commit_cursor),
-            cursor,
-            "{session_id}/E3"
-        );
-    }
-    assert!(
-        !repository
-            .get("terminal-batch-fenced")
-            .await
-            .unwrap()
-            .event_batches[0]
-            .events[0]
-            .processed,
-        "T1/E2 Fenced is not legacy"
-    );
-
-    let mut frozen = repository.get("terminal-batch-fenced").await.unwrap();
-    frozen
-        .terminal_cleanup
-        .freeze_targets("terminal-batch-fenced", [], 0, 23)
-        .expect("T4/C3 freeze exact terminal visibility");
-    let expected_revision = frozen.revision;
-    let payload = awaken_session_contract::SessionMutationPayload::Replace(frozen);
-    let payload_hash = payload.stable_hash();
-    assert!(matches!(
-        repository
-            .commit_mutation(
-                "workspace",
-                awaken_session_contract::SessionMutation {
-                    expected_revision,
-                    idempotency: awaken_session_contract::IdempotencyRecord {
-                        key: "freeze:terminal-batch-fenced".into(),
-                        payload_hash,
+    // Cause/effect graph: C1 a terminal root retains three ordered entries:
+    // processed(time=50, input anchor=7, Dispatch commit anchor=11),
+    // pending(anchor=9), pending(no anchor). The first receipt is constructed
+    // by the real aggregate settlement after opening its exact activity; this
+    // fixture represents an applied Dispatch fact, not an actual Dispatch CAS.
+    // C2 cleanup is Requested(Some(17)), legacy Requested(None), or Fenced
+    // followed by a real freeze CAS(Some(23)). C3 resolution CAS succeeds,
+    // fails Unavailable before SQL, or commits in SQL then reports Conflict.
+    // C4 a reconstructed application over the same SQLite connection retries
+    // at a later clock (not a process crash or disk reopen). T1 Fenced => complete
+    // root/outbox stutter and no Runtime effect. T2 Requested + success/lost
+    // acknowledgement => exactly one root revision, only pending entries gain
+    // first time; prior anchors and every other aggregate field are retained.
+    // T3 precommit failure => complete stutter; later retry establishes the
+    // first observation at its own clock. T4 all resolved + C4 => complete
+    // root/outbox stutter even on direct drive (not merely an empty scan).
+    // The 3 cleanup paths x 3 CAS outcomes reuse the existing SQLite decorator,
+    // application clock, aggregate constructor and supervisor. Expected frames
+    // are explicit field deltas, never computed with resolve_terminally itself.
+    use awaken_agent_contract::clock::ManualClock;
+    use awaken_session_contract::SessionEventProjectionAnchor;
+    for cleanup in ["requested", "legacy", "fenced"] {
+        for fault in ["none", "unavailable", "lost_ack"] {
+            let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            );
+            let faulting = Arc::new(FaultingSessionRepository::new(repository.clone()));
+            let session_id = format!("terminal-batch-{cleanup}-{fault}");
+            let mut session = planned_session(
+                &session_id,
+                [
+                    "already observed",
+                    "input anchored",
+                    "awaiting terminal anchor",
+                ]
+                .into_iter()
+                .map(|text| SessionEventInput::UserMessage {
+                    content: vec![ContentBlock::text(text)],
+                })
+                .collect(),
+            );
+            let batch = &mut session.event_batches[0];
+            let first = batch.events[0].event.operation_id().to_owned();
+            let first_run = match &batch.events[0].event {
+                SessionEventCommand::UserMessage { run_id, .. } => run_id.clone(),
+                _ => unreachable!("the fixture compiles a User command"),
+            };
+            let second = batch.events[1].event.operation_id().to_owned();
+            batch
+                .anchor_committed_input(
+                    &first,
+                    SessionEventProjectionAnchor {
+                        source_commit_cursor: 7,
                     },
-                    payload,
-                    lifecycle_facts: Vec::new(),
-                },
+                )
+                .unwrap();
+            batch
+                .anchor_committed_input(
+                    &second,
+                    SessionEventProjectionAnchor {
+                        source_commit_cursor: 9,
+                    },
+                )
+                .unwrap();
+            let epoch = session.begin_activity_epoch().unwrap();
+            assert!(matches!(
+                session
+                    .settle_user_event_dispatch(
+                        &first_run,
+                        epoch,
+                        SessionEventProjectionAnchor {
+                            source_commit_cursor: 11
+                        },
+                        50,
+                    )
+                    .unwrap(),
+                awaken_session_contract::SessionEventDispatchSettlementEffect::Applied {
+                    fully_settled: false
+                }
+            ));
+            assert!(
+                session.event_batches[0].events[0]
+                    .dispatch_settlement
+                    .is_some()
+            );
+            session
+                .transition_execution(awaken_session_contract::SessionExecutionState::Terminated)
+                .unwrap();
+            assert!(session.terminal_cleanup.request(&session_id));
+            if cleanup == "requested" {
+                session
+                    .terminal_cleanup
+                    .freeze_targets(&session_id, [], 0, 17)
+                    .unwrap();
+            } else if cleanup == "legacy" {
+                let mut legacy = serde_json::to_value(&session).unwrap();
+                legacy["terminal_cleanup"]["state"] = serde_json::Value::String("requested".into());
+                session = serde_json::from_value(legacy).unwrap();
+            }
+            create(repository.as_ref(), session).await;
+            let runtime = Arc::new(EventBatchRuntime::default());
+            let clock = Arc::new(ManualClock::new(100));
+            let app = application_with_runtime(
+                runtime.clone(),
+                faulting.clone(),
+                Arc::new(RecordingEnvironmentSource::default()),
             )
-            .await
-            .unwrap(),
-        awaken_session_contract::SessionMutationResult::Applied { .. }
-    ));
-    let report = app.reconcile_event_batches().await;
-    assert!(report.failures.is_empty(), "T4 root CAS succeeds");
-    let frozen = repository.get("terminal-batch-fenced").await.unwrap();
-    assert!(frozen.event_batches[0].events[0].processed, "T4/E3");
-    assert_eq!(
-        frozen.event_batches[0].events[0]
-            .projection_anchor
-            .map(|anchor| anchor.source_commit_cursor),
-        Some(23),
-        "T4/E4"
-    );
-    assert!(runtime.trace.lock().unwrap().is_empty(), "T1/T2/E1");
-    assert!(runtime.reserved.lock().unwrap().is_empty(), "T1/T2/E1");
-    assert!(runtime.outcomes.lock().unwrap().is_empty(), "T1/T2/E1");
-    assert_eq!(
-        runtime.tool_reply_calls.load(Ordering::SeqCst),
-        0,
-        "T1/T2/E1"
-    );
-    assert_eq!(
-        runtime.primary_interrupt_calls.load(Ordering::SeqCst),
-        0,
-        "T1/T2/E1"
-    );
+            .with_clock(clock.clone());
+            let initial = repository.get(&session_id).await.unwrap();
+            let outbox =
+                serde_json::to_value(repository.pending_lifecycle().await.unwrap()).unwrap();
+            if cleanup == "fenced" {
+                let report = app.reconcile_event_batches().await;
+                assert!(report.failures.is_empty(), "T1/{fault}");
+                assert_eq!(report.settled, 0, "T1/{fault}");
+                assert_eq!(
+                    repository.get(&session_id).await.unwrap(),
+                    initial,
+                    "T1 complete fenced frame"
+                );
+                let mut frozen = initial.clone();
+                frozen
+                    .terminal_cleanup
+                    .freeze_targets(&session_id, [], 0, 23)
+                    .unwrap();
+                let expected_revision = frozen.revision;
+                let payload = awaken_session_contract::SessionMutationPayload::Replace(frozen);
+                let payload_hash = payload.stable_hash();
+                assert!(matches!(
+                    repository
+                        .commit_mutation(
+                            "workspace",
+                            awaken_session_contract::SessionMutation {
+                                expected_revision,
+                                idempotency: awaken_session_contract::IdempotencyRecord {
+                                    key: format!("freeze:{session_id}"),
+                                    payload_hash
+                                },
+                                payload,
+                                lifecycle_facts: Vec::new(),
+                            }
+                        )
+                        .await
+                        .unwrap(),
+                    awaken_session_contract::SessionMutationResult::Applied { .. }
+                ));
+            }
+            let before = repository.get(&session_id).await.unwrap();
+            match fault {
+                "unavailable" => faulting.fail_once("resolve-terminal-event-batches"),
+                "lost_ack" => faulting.commit_then_conflict_once("resolve-terminal-event-batches"),
+                _ => {}
+            }
+            let report = app.reconcile_event_batches().await;
+            let first_time = if fault == "unavailable" {
+                assert_eq!(report.failures.len(), 1, "T3 exact failed root CAS");
+                assert!(
+                    report.failures[0].1.contains("injected root-CAS outage"),
+                    "T3 original infrastructure error"
+                );
+                assert_eq!(report.settled, 0, "T3 no success before commit");
+                assert_eq!(
+                    repository.get(&session_id).await.unwrap(),
+                    before,
+                    "T3 complete failed frame"
+                );
+                assert_eq!(
+                    serde_json::to_value(repository.pending_lifecycle().await.unwrap()).unwrap(),
+                    outbox,
+                    "T3 outbox frame"
+                );
+                clock.set(200);
+                let retry = app.reconcile_event_batches().await;
+                assert!(
+                    retry.failures.is_empty(),
+                    "T3 recovery: {:?}",
+                    retry.failures
+                );
+                assert_eq!(retry.settled, 1, "T3 one recovery");
+                200
+            } else {
+                assert!(
+                    report.failures.is_empty(),
+                    "T2/{cleanup}/{fault}: {:?}",
+                    report.failures
+                );
+                assert_eq!(report.settled, 1, "T2 one resolution");
+                100
+            };
+            let mut expected = before;
+            expected.revision.0 += 1;
+            expected.updated_at_unix_ms = Some(first_time);
+            expected.event_batches[0].events[1].processed = true;
+            expected.event_batches[0].events[1].processed_at_unix_ms = Some(first_time);
+            expected.event_batches[0].events[2].processed = true;
+            expected.event_batches[0].events[2].processed_at_unix_ms = Some(first_time);
+            expected.event_batches[0].events[2].projection_anchor = match cleanup {
+                "requested" => Some(SessionEventProjectionAnchor {
+                    source_commit_cursor: 17,
+                }),
+                "fenced" => Some(SessionEventProjectionAnchor {
+                    source_commit_cursor: 23,
+                }),
+                _ => None,
+            };
+            assert_eq!(
+                repository.get(&session_id).await.unwrap(),
+                expected,
+                "T2/T3 complete committed frame {cleanup}/{fault}"
+            );
+            let cold = application_with_runtime(
+                runtime.clone(),
+                repository.clone(),
+                Arc::new(RecordingEnvironmentSource::default()),
+            )
+            .with_clock(Arc::new(ManualClock::new(900)));
+            let replay = cold.reconcile_event_batches().await;
+            assert!(replay.failures.is_empty(), "T4 cold scan");
+            assert_eq!(replay.settled, 0, "T4 no unfinished batch");
+            cold.drive_session_event_batches(&session_id, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                repository.get(&session_id).await.unwrap(),
+                expected,
+                "T4 complete replay frame {cleanup}/{fault}"
+            );
+            assert_eq!(
+                serde_json::to_value(repository.pending_lifecycle().await.unwrap()).unwrap(),
+                outbox,
+                "T1-T4 outbox frame"
+            );
+            assert!(
+                runtime.trace.lock().unwrap().is_empty(),
+                "T1-T4 no Runtime effect"
+            );
+            assert!(
+                runtime.reserved.lock().unwrap().is_empty(),
+                "T1-T4 no reservation"
+            );
+            assert!(
+                runtime.activated.lock().unwrap().is_empty(),
+                "T1-T4 no activation"
+            );
+            assert!(
+                runtime.outcomes.lock().unwrap().is_empty(),
+                "T1-T4 no Outcome"
+            );
+            assert_eq!(
+                runtime.tool_reply_calls.load(Ordering::SeqCst),
+                0,
+                "T1-T4 no tool reply"
+            );
+            assert_eq!(
+                runtime.primary_interrupt_calls.load(Ordering::SeqCst),
+                0,
+                "T1-T4 no interrupt"
+            );
+        }
+    }
 }
 
 #[test]

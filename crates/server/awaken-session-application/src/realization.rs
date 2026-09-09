@@ -661,7 +661,7 @@ impl SessionApplication {
                         now,
                     )
             });
-            if session.is_terminal() || self.requires_external_realization(&session) {
+            if session.is_terminal() || self.requires_external_realization(session) {
                 continue;
             }
             if !environment_admits_realization_effects(&session.environment) {
