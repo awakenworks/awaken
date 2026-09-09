@@ -234,6 +234,24 @@ mod verification {
         assert!(proof == before);
     }
 
+    // Legacy-inventory cause R1: one actual resolve must return the exact
+    // Unavailable error, preserve the complete source and destroy the owned
+    // error normally. The original replay oracle separately covers two live
+    // outputs in native tests; this helper does not replace that lifetime case.
+    fn check_legacy_error_and_frame(
+        proof: DeletedSessionEventAdmissions,
+        key: &str,
+        fingerprint: &str,
+    ) {
+        assert!(proof.admissions.is_none());
+        let before = proof.clone();
+        let result = proof.resolve(key, fingerprint);
+        check_result(&before, None, fingerprint, &result);
+        assert!(proof == before);
+        drop(result);
+        assert!(proof == before);
+    }
+
     #[cfg(test)]
     #[test]
     fn deleted_admission_decision_table() {
@@ -248,6 +266,16 @@ mod verification {
         // a second real resolve. The first-index table is independent of find.
         let mut cases = 0;
         for revision in [0, 1, u64::MAX] {
+            // R1 cross-checks the exact single-call/Drop proof oracle as well
+            // as the unchanged two-live-output replay table below.
+            check_legacy_error_and_frame(
+                DeletedSessionEventAdmissions {
+                    deleted_revision: SessionRevision(revision),
+                    admissions: None,
+                },
+                "k",
+                "fp",
+            );
             for admissions in [None, Some(vec![])] {
                 check_replay_and_frame(
                     DeletedSessionEventAdmissions {
@@ -347,6 +375,23 @@ mod verification {
             short_str(),
             short_str(),
             None,
+        );
+    }
+    // One real legacy None resolve, all u64 revisions and independent query
+    // classes {empty,a,b,ab,ba}: exact error kind/code/message, complete source
+    // frame and real Drop. Sequential replay and two coexisting error outputs
+    // remain separate unresolved allocator-path proofs, as do nonempty inputs.
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn deleted_admission_resolver_preserves_legacy_error_and_frame() {
+        check_legacy_error_and_frame(
+            DeletedSessionEventAdmissions {
+                deleted_revision: SessionRevision(kani::any()),
+                admissions: None,
+            },
+            short_str(),
+            short_str(),
         );
     }
 }
