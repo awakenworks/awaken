@@ -23,7 +23,7 @@ mod event_admission;
 mod event_batches;
 pub use event_admission::{
     DeletedSessionEventAdmissions, RetainedEventAdmission, SessionEventAdmission,
-    event_admission_conflict,
+    event_admission_closed, event_admission_conflict,
 };
 mod lifecycle;
 mod mcp_attachment;
@@ -77,13 +77,15 @@ pub use budget::{
 };
 pub use coordination::{
     CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadLink, CoordinatedThreadTarget,
-    SessionAgentBoundaryCommand, SessionAgentCoordination, SessionAgentMessageCommand,
-    SessionAgentMessageReceipt, SessionAgentReportContinuation, SessionAgentRosterEntry,
-    SessionAgentTarget, SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
-    SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyCommand,
-    SessionThreadToolReplyDelivery, SessionThreadToolReplyFence, coordinated_thread_failed,
-    coordinated_thread_id, session_agent_report_messages, session_agent_report_text,
-    session_run_activity_operation_id,
+    SessionAgentBoundaryAction, SessionAgentBoundaryCommand, SessionAgentBoundaryRole,
+    SessionAgentBoundaryVisibility, SessionAgentCommittedReport, SessionAgentCoordination,
+    SessionAgentMessageCommand, SessionAgentMessageReceipt, SessionAgentReportContinuation,
+    SessionAgentRosterEntry, SessionAgentRunBoundary, SessionAgentTarget,
+    SessionRunActivityAdmission, SessionRunActivityAdmissionMode, SessionThreadTarget,
+    SessionThreadToolReply, SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery,
+    SessionThreadToolReplyFence, coordinated_thread_failed, coordinated_thread_id,
+    session_agent_boundary_action, session_agent_report_messages, session_agent_report_text,
+    session_agent_run_boundary, session_run_activity_operation_id,
 };
 pub use network_policy::SessionNetworkPolicy;
 
@@ -123,13 +125,17 @@ pub use environment::{
     checkpoint_source_disposal_authorized, checkpoint_source_preparation_authorized,
 };
 pub use event_batches::{
-    MAX_SESSION_INITIAL_EVENTS, OUTCOME_BUSY_CODE, SessionEventBatch, SessionEventBatchError,
-    SessionEventBatchOperation, SessionEventCommand, SessionEventEntry, SessionEventInput,
-    SessionEventInterrupt, SessionEventProjectionAnchor, SessionEventToolReply,
-    SessionEventToolReplyKind, SessionInitialEventPlan, SessionOutcomeRubric,
-    SessionUserRunCommand, SessionUserRunSystemInput, decode_session_event_batch_operation,
-    session_event_batch_id, session_event_batch_operation, session_event_outcome_id,
-    session_event_user_run_id, session_outcome_convenience_id,
+    MAX_SESSION_INITIAL_EVENTS, OUTCOME_BUSY_CODE, SessionEventBatch,
+    SessionEventBatchAdmissionAction, SessionEventBatchAdmissionClass,
+    SessionEventBatchAdmissionPlan, SessionEventBatchError, SessionEventBatchOperation,
+    SessionEventCommand, SessionEventDispatchSettlementPlan, SessionEventDispatchSettlementReceipt,
+    SessionEventEntry, SessionEventInput, SessionEventInterrupt, SessionEventProjectionAnchor,
+    SessionEventToolReply, SessionEventToolReplyKind, SessionInitialEventPlan,
+    SessionOutcomeRubric, SessionUserRunCommand, SessionUserRunSystemInput,
+    classify_session_event_batch_admission, decode_session_event_batch_operation,
+    resolve_session_event_batch_admission, session_event_batch_id, session_event_batch_operation,
+    session_event_dispatch_settlement_plan, session_event_outcome_id, session_event_user_run_id,
+    session_outcome_convenience_id,
 };
 pub use lifecycle::{
     CompositeLifecycleFactDelivery, LifecycleFactDelivery, LifecycleFactNotifier,

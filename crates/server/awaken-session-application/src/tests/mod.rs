@@ -128,6 +128,7 @@ struct RecordingAgentAdmissionRuntime {
     interruptions: Mutex<Vec<(String, awaken_agent_contract::agent::thread::Id)>>,
     boundaries: RecordingBoundaries,
     generic_recovery_available: AtomicBool,
+    lifecycle_visible: AtomicBool,
     source_valid: AtomicBool,
 }
 
@@ -312,6 +313,7 @@ impl RecordingAgentAdmissionRuntime {
             interruptions: Mutex::new(Vec::new()),
             boundaries: RecordingBoundaries::default(),
             generic_recovery_available: AtomicBool::new(true),
+            lifecycle_visible: AtomicBool::new(true),
             source_valid: AtomicBool::new(true),
         }
     }
@@ -329,6 +331,10 @@ impl RecordingAgentAdmissionRuntime {
             .lock()
             .unwrap()
             .insert((session_id.to_string(), thread_id.0.clone()));
+    }
+
+    fn set_lifecycle_visible(&self, visible: bool) {
+        self.lifecycle_visible.store(visible, Ordering::SeqCst);
     }
 }
 
@@ -963,12 +969,12 @@ impl SessionRuntime for RecordingAgentAdmissionRuntime {
 
     async fn validate_session_agent_message_source(
         &self,
-        _command: &awaken_session_contract::SessionAgentMessageCommand,
-    ) -> Result<(), RunError> {
+        command: &awaken_session_contract::SessionAgentMessageCommand,
+    ) -> Result<awaken_session_contract::SessionAgentMessageCommand, RunError> {
         if self.source_valid.load(Ordering::SeqCst) {
             // These application tests exercise policy after the Runtime-owned
             // provenance boundary. ManagedHost owns the production refinement.
-            Ok(())
+            Ok(command.clone())
         } else {
             Err(RunError::bad_request(
                 "test source does not match committed ActiveToolBatch",
@@ -1064,6 +1070,12 @@ impl SessionRuntime for RecordingAgentAdmissionRuntime {
         cursor: awaken_agent_contract::RunLifecycleCursor,
         limit: usize,
     ) -> Result<awaken_agent_contract::RunLifecyclePage, RunError> {
+        if !self.lifecycle_visible.load(Ordering::SeqCst) {
+            return Ok(awaken_agent_contract::RunLifecyclePage {
+                events: Vec::new(),
+                next_cursor: cursor,
+            });
+        }
         Ok(self.boundaries.lifecycle_page(session_id, cursor, limit))
     }
 

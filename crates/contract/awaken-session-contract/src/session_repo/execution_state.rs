@@ -59,6 +59,14 @@ impl SessionExecutionState {
         matches!(self, Self::Idle | Self::Running)
     }
 
+    /// Whether the complete root still requires the initial realization driver.
+    /// This classification is also the durable recovery-index cause: accepting
+    /// revision 1 must never depend on a process-local Job or wake notification.
+    #[must_use]
+    pub const fn requires_initial_realization_recovery(self) -> bool {
+        matches!(self, Self::Preparing | Self::Activating)
+    }
+
     /// Whether the canonical Session state machine admits `next`.
     ///
     /// Replays are idempotent. Terminal states fail closed, and every
@@ -86,6 +94,57 @@ impl SessionExecutionState {
             Self::Rescheduling => matches!(self, Self::Idle | Self::Running),
             Self::Preparing => false,
         }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn initial_realization_recovery_is_exact_for_every_execution_state() {
+    // Causes: C1 is each closed SessionExecutionState variant. Effects: E1 the
+    // complete root remains in the repository reconciliation index; E2 it does
+    // not gain initial-realization work. R1 Preparing/Activating => E1 because
+    // creation or activation can be resumed after process loss. R2 every other
+    // state => E2 because it is terminal, already realized, or owns a different
+    // reconciliation cause. This is the production predicate consumed by
+    // PersistedSession::needs_reconciliation and both durable stores.
+    let state = match kani::any::<u8>() % 7 {
+        0 => SessionExecutionState::Preparing,
+        1 => SessionExecutionState::Activating,
+        2 => SessionExecutionState::ActivationFailed,
+        3 => SessionExecutionState::Running,
+        4 => SessionExecutionState::Rescheduling,
+        5 => SessionExecutionState::Idle,
+        _ => SessionExecutionState::Terminated,
+    };
+    assert_eq!(
+        state.requires_initial_realization_recovery(),
+        matches!(
+            state,
+            SessionExecutionState::Preparing | SessionExecutionState::Activating
+        )
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn initial_realization_recovery_decision_table_is_closed() {
+    // Cause/effect table mirrors the Kani proof with concrete named rows. Only
+    // Preparing and Activating retain the initial realization obligation; all
+    // five complementary states rely on their own durable lifecycle causes.
+    for (rule, state, expected) in [
+        ("R1a", SessionExecutionState::Preparing, true),
+        ("R1b", SessionExecutionState::Activating, true),
+        ("R2a", SessionExecutionState::ActivationFailed, false),
+        ("R2b", SessionExecutionState::Running, false),
+        ("R2c", SessionExecutionState::Rescheduling, false),
+        ("R2d", SessionExecutionState::Idle, false),
+        ("R2e", SessionExecutionState::Terminated, false),
+    ] {
+        assert_eq!(
+            state.requires_initial_realization_recovery(),
+            expected,
+            "{rule}"
+        );
     }
 }
 

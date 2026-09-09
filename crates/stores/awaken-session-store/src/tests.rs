@@ -12,6 +12,67 @@ use awaken_session_contract::{
 use super::*;
 use std::time::Duration;
 
+#[test]
+fn transactional_identity_and_create_shape_decision_table_is_closed() {
+    // Causes: C1 zero/one/multiple identity rows; C2 live/tombstone/unknown
+    // kind; C3 owner absent/blank/non-empty; C4 revision and aggregate shape;
+    // C5 every create coordinate valid/invalid. Effects: R1 only one complete
+    // owned live row decodes Live; R2 the corresponding aggregate-free row is
+    // Tombstone; R3 every partial/duplicate row fails closed; R4 create is the
+    // conjunction of all owner/id/receipt/revision/lifecycle facts. Kani
+    // exhausts C2-C5; adapter conformance supplies the transactional row query.
+    let live = || RawSessionIdentity {
+        kind: 0,
+        owner_scope: Some("ws-a".into()),
+        revision: Some(1),
+        aggregate_json: Some("{}".into()),
+    };
+    assert!(matches!(
+        transactional_session_identity(vec![live()]),
+        Ok(TransactionalSessionIdentity::Live { owner_scope, .. }) if owner_scope == "ws-a"
+    ));
+    assert!(matches!(
+        transactional_session_identity(vec![RawSessionIdentity {
+            kind: 1,
+            owner_scope: Some("ws-a".into()),
+            revision: Some(2),
+            aggregate_json: None,
+        }]),
+        Ok(TransactionalSessionIdentity::Tombstone { owner_scope, revision })
+            if owner_scope == "ws-a" && revision == SessionRevision(2)
+    ));
+    for invalid in [
+        RawSessionIdentity {
+            owner_scope: Some(" ".into()),
+            ..live()
+        },
+        RawSessionIdentity {
+            owner_scope: None,
+            ..live()
+        },
+        RawSessionIdentity {
+            aggregate_json: None,
+            ..live()
+        },
+    ] {
+        assert!(transactional_session_identity(vec![invalid]).is_err(), "R3");
+    }
+    assert!(
+        transactional_session_identity(vec![live(), live()]).is_err(),
+        "R3 duplicate"
+    );
+    assert!(session_create_shape_is_valid(
+        true, true, true, true, true, true
+    ));
+    for invalid_axis in 0..6 {
+        let mut facts = [true; 6];
+        facts[invalid_axis] = false;
+        assert!(!session_create_shape_is_valid(
+            facts[0], facts[1], facts[2], facts[3], facts[4], facts[5]
+        ));
+    }
+}
+
 /// Session-recovery scheduler-isolation cause/effect graph: C1 one synchronous
 /// SQLite owner holds the canonical Session connection; C2 forty recovery scans
 /// become runnable on a two-worker Tokio runtime, matching the observed hosted

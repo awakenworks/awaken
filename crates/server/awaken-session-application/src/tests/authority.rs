@@ -1509,12 +1509,18 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
     };
 
     let inserted = app
-        .create_session_root("workspace", original.clone(), record.clone(), Vec::new())
+        .create_session_root(
+            "workspace",
+            crate::creation::CompleteSessionRoot::from_fresh(original.clone()).unwrap(),
+            record.clone(),
+            Vec::new(),
+        )
         .await
         .expect("C1");
-    let awaken_session_contract::SessionCreateResult::Applied(inserted) = inserted else {
+    let crate::creation::CompleteSessionCreateResult::Applied(inserted) = inserted else {
         panic!("C1 must apply")
     };
+    let inserted = inserted.into_session();
     assert_eq!(
         inserted.revision,
         awaken_session_contract::SessionRevision(1),
@@ -1529,12 +1535,18 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
     let mut lowered_again = original.clone();
     lowered_again.title = Some("new-lowering-must-not-win".into());
     let replayed = app
-        .create_session_root("workspace", lowered_again, record.clone(), Vec::new())
+        .create_session_root(
+            "workspace",
+            crate::creation::CompleteSessionRoot::from_fresh(lowered_again).unwrap(),
+            record.clone(),
+            Vec::new(),
+        )
         .await
         .expect("C2");
-    let awaken_session_contract::SessionCreateResult::Replayed(replayed) = replayed else {
+    let crate::creation::CompleteSessionCreateResult::Replayed(replayed) = replayed else {
         panic!("C2 must replay")
     };
+    let replayed = replayed.into_session();
     assert_eq!(replayed, durable, "C2");
 
     let mut changed = original.clone();
@@ -1543,7 +1555,7 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
         matches!(
             app.create_session_root(
                 "workspace",
-                changed,
+                crate::creation::CompleteSessionRoot::from_fresh(changed).unwrap(),
                 awaken_session_contract::IdempotencyRecord {
                     key: record.key,
                     payload_hash: "changed-hash".into(),
@@ -1559,7 +1571,7 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
         matches!(
             app.create_session_root(
                 "workspace",
-                original,
+                crate::creation::CompleteSessionRoot::from_fresh(original).unwrap(),
                 awaken_session_contract::IdempotencyRecord {
                     key: "create-root:another".into(),
                     payload_hash: "another-hash".into(),
@@ -4366,14 +4378,16 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
     // Cause/effect graph: C1 boundary is Awaiting/Ended/Running; C2 Session is
     // live/terminal; C3 roster/runtime continuation dependencies are absent;
     // C4 trusted dispatch provenance marks/does not mark cancellation; C5 a
-    // child commits Failed while a later continuation may already be queued.
+    // child commits Failed while a later continuation may already be queued;
+    // C6 the exact Run is durable but its lifecycle projection is not visible.
     // Effects: E1 live Awaiting durably settles the exact activity and never
     // calls the primary continuation; E2 terminal Session accepts late exact or
     // unknown completion as a no-op without reopening publication dependencies;
     // E3 Running is rejected before activity mutation; E4 a cancelled terminal
     // child settles directly and emits no primary continuation; E5 Failed first
     // interrupts the Thread's existing Dispatch queue, then settles directly
-    // without manufacturing a successful primary report. Normal Completed
+    // without manufacturing a successful primary report; E6 missing lifecycle
+    // returns retryable failure without settling activity or emitting effects. Normal Completed
     // report admission remains covered by S6 in the admission decision table.
     //
     // | Rule | Boundary | Session | Dependencies | Effect |
@@ -4382,6 +4396,7 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
     // | B3 | Running | live | absent | E3 |
     // | B4 | Ended + cancelled | live | absent | E4 |
     // | B5 | Failed | live | interrupt port | E5 |
+    // | B6 | Ended | live, lifecycle missing | absent | E6 |
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("boundary repository"),
@@ -4399,6 +4414,11 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
     )
     .await;
     create(repo.as_ref(), persisted("boundary-failed", false, "idle")).await;
+    create(
+        repo.as_ref(),
+        persisted("boundary-unprojected", false, "idle"),
+    )
+    .await;
     let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([]));
     let app = application_with_runtime(
         runtime.clone(),
@@ -4554,6 +4574,43 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
         "B5/E5 one existing Dispatch cancellation path"
     );
     assert!(runtime.continuations.lock().unwrap().is_empty(), "B5/E5");
+
+    let (_, unprojected_epoch) = app
+        .begin_activity_for_operation("boundary-unprojected", "boundary-op")
+        .await
+        .expect("B6 activity");
+    runtime.commit_boundary(
+        "boundary-unprojected",
+        &ThreadId("boundary-unprojected-child".into()),
+        &RunId("boundary-unprojected-run".into()),
+        RunState::Ended(EndCause::NaturalEnd),
+        "must remain pending until projected",
+    );
+    runtime.set_lifecycle_visible(false);
+    let unavailable =
+        awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+            &app,
+            awaken_session_contract::SessionAgentBoundaryCommand {
+                session_id: "boundary-unprojected".into(),
+                source_thread_id: ThreadId("boundary-unprojected-child".into()),
+                source_run_id: RunId("boundary-unprojected-run".into()),
+                source_agent_id: "unused-unprojected-agent".into(),
+                session_activity_epoch: unprojected_epoch,
+                cancellation_requested: false,
+            },
+        )
+        .await
+        .expect_err("B6 missing lifecycle must retry");
+    assert_eq!(unavailable.code, "unavailable", "B6/E6");
+    let unprojected = repo.get("boundary-unprojected").await.expect("B6 state");
+    assert!(
+        unprojected
+            .active_activity_epochs
+            .contains(&unprojected_epoch),
+        "B6/E6"
+    );
+    assert!(runtime.continuations.lock().unwrap().is_empty(), "B6/E6");
+    assert_eq!(runtime.interruptions.lock().unwrap().len(), 1, "B6/E6");
 }
 
 #[tokio::test]

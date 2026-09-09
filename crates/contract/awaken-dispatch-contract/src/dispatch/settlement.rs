@@ -42,4 +42,17 @@ pub trait DispatchSettlementObserver: Send + Sync {
         committed_state: &RunState,
         cancellation_requested: bool,
     ) -> Result<(), DispatchSettlementError>;
+
+    /// Observe the successful Dispatch CAS. Non-Session observers need no
+    /// second effect; the Session adapter overrides this to publish the typed
+    /// receipt that gates User Event processing and final activity closure.
+    async fn after_settle(
+        &self,
+        _dispatch: &RunDispatch,
+        _claim: &RunClaim,
+        _committed_state: &RunState,
+        _cancellation_requested: bool,
+    ) -> Result<(), DispatchSettlementError> {
+        Ok(())
+    }
 }

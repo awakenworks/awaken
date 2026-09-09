@@ -1143,7 +1143,7 @@ impl SessionRuntime for ManagedHost {
     async fn validate_session_agent_message_source(
         &self,
         command: &awaken_session_contract::SessionAgentMessageCommand,
-    ) -> Result<(), RunError> {
+    ) -> Result<awaken_session_contract::SessionAgentMessageCommand, RunError> {
         self.host
             .validate_session_agent_message_source(command)
             .await

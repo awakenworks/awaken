@@ -1414,7 +1414,7 @@ async fn create_receipt_decision_table<R: ManagedSessionRepository>(repo: &R) {
     // new root is Applied once; E2 exact replay returns the current durable
     // aggregate, never the caller's newly lowered candidate; E3 wrong owner or
     // another key conflicts; E4 hash reuse mismatches; E5 tombstone is terminal;
-    // E6 invalid owner is rejected before writes.
+    // E6 absent/whitespace owner is rejected before writes.
     //
     // | Rule | Receipt | Identity | Owner | Hash | Effect |
     // |---|---|---|---|---|---|
@@ -1423,7 +1423,7 @@ async fn create_receipt_decision_table<R: ManagedSessionRepository>(repo: &R) {
     // | C3 | exact/absent | live | foreign/exact | exact/other key | E3 |
     // | C4 | present | live | exact | mismatch | E4 |
     // | C5 | exact | tombstone | exact | exact | E5 |
-    // | C6 | any | any | empty | any | E6 |
+    // | C6 | any | any | empty/space | any | E6 |
     let id = "sesn_create_receipt_table";
     let candidate = session(id, "original lowering");
     let create_record = IdempotencyRecord {
@@ -1520,24 +1520,26 @@ async fn create_receipt_decision_table<R: ManagedSessionRepository>(repo: &R) {
         )),
         "C5/E5"
     );
-    assert!(matches!(
-        repo.create(
-            "",
-            session("sesn_empty_owner", "invalid"),
-            IdempotencyRecord {
-                key: "invalid-owner".into(),
-                payload_hash: "invalid-owner".into(),
-            },
-            Vec::new(),
-        )
-        .await,
-        Err(SessionRepositoryError::InvalidMutation(_))
-    ));
-    assert_eq!(
-        repo.get("sesn_empty_owner").await,
-        Err(SessionRepositoryError::NotFound),
-        "C6/E6"
-    );
+    for (owner, invalid_id) in [("", "sesn_empty_owner"), (" \t", "sesn_whitespace_owner")] {
+        assert!(matches!(
+            repo.create(
+                owner,
+                session(invalid_id, "invalid"),
+                IdempotencyRecord {
+                    key: "invalid-owner".into(),
+                    payload_hash: "invalid-owner".into(),
+                },
+                Vec::new(),
+            )
+            .await,
+            Err(SessionRepositoryError::InvalidMutation(_))
+        ));
+        assert_eq!(
+            repo.get(invalid_id).await,
+            Err(SessionRepositoryError::NotFound),
+            "C6/E6"
+        );
+    }
 }
 
 async fn create_receipt_race_decision_table<R: ManagedSessionRepository>(repo: std::sync::Arc<R>) {

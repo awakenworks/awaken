@@ -1156,10 +1156,16 @@ async fn settle(
         } else {
             None
         };
+        let coordinated_dispatch = guard.request().session_activity_epoch.is_some()
+            && service.session_coordination.is_some()
+            && service.recovery.is_some();
         // Save the exact guarded prefix once. Terminal publication and foreground
         // completion must not perform a second, post-settle recovery read that can
         // cross a lease epoch or lose the child Thread's physical Session owner.
-        let committed_state = if terminal_observer.is_some() || service.completion.is_some() {
+        let committed_state = if terminal_observer.is_some()
+            || service.completion.is_some()
+            || coordinated_dispatch
+        {
             if let Some(recovery) = service.recovery.as_ref() {
                 match recovery
                     .recovery_snapshot_in_session(&session_thread_id, &thread_id, &claim.run_id)
@@ -1243,6 +1249,42 @@ async fn settle(
         // both owners. Only exact claim-guarded Ended truth permits this closure.
         let committed_terminal = request.outcome == awaken_dispatch::DispatchOutcome::Done
             && matches!(committed_state.as_ref(), Some(RunState::Ended(_)));
+        let session_boundary = if coordinated_dispatch {
+            if let Some(session_activity_epoch) = guard.request().session_activity_epoch {
+                let state = committed_state.as_ref().ok_or_else(|| {
+                    RealizationHttpError::from(HostError::bad_request(
+                        "coordinated settlement has no matching committed Run",
+                    ))
+                })?;
+                let state_matches = matches!(
+                    (request.outcome, state),
+                    (
+                        awaken_dispatch::DispatchOutcome::Awaiting,
+                        RunState::Awaiting
+                    ) | (
+                        awaken_dispatch::DispatchOutcome::Done,
+                        RunState::Ended(_)
+                    )
+                );
+                if !state_matches || session_activity_epoch == 0 {
+                    return Err(RealizationHttpError::from(HostError::bad_request(
+                        "coordinated settlement does not match committed Session activity truth",
+                    )));
+                }
+                Some(awaken_session_contract::SessionAgentBoundaryCommand {
+                    session_id: session_thread_id.0.clone(),
+                    source_thread_id: thread_id.clone(),
+                    source_run_id: claim.run_id.clone(),
+                    source_agent_id: guard.request().activation.snapshot.root_agent_id.0.clone(),
+                    session_activity_epoch,
+                    cancellation_requested: guard.cancellation_requested(),
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         drop(guard);
         // Cause graph: a Work item is the Environment's single active ownership
         // fence, not a permanent reservation for every idle Session. Keeping a
@@ -1313,6 +1355,17 @@ async fn settle(
             && let Some(state) = committed_state.as_ref()
         {
             completion.settled(&claim.run_id, state);
+        }
+        if outcome.applied()
+            && let (Some(command), Some(coordination)) =
+                (session_boundary, service.session_coordination.as_ref())
+        {
+            coordination
+                .finalize_session_agent_boundary(command)
+                .await
+                .map_err(|error| {
+                    RealizationHttpError::from(HostError::unavailable(error.to_string()))
+                })?;
         }
         Ok(json!({ "settled": outcome.applied() }))
     }

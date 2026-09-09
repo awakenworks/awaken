@@ -1,6 +1,18 @@
 //! The durable Managed Session aggregate and its root-owned projections.
 
 use super::*;
+use crate::event_batches::{
+    SessionEventBatch, SessionEventBatchError, SessionEventDispatchSettlementPlan,
+    SessionEventDispatchSettlementReceipt, SessionEventProjectionAnchor,
+    session_event_execution_may_close,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionEventDispatchSettlementEffect {
+    NotEvent,
+    Applied { fully_settled: bool },
+    Replayed,
+}
 
 /// A terminal aggregate admits an already-started Environment receipt only
 /// while its cleanup fence is still joining in-flight work. Once the target set
@@ -336,6 +348,68 @@ impl PersistedSession {
             epoch: &mut self.activity_epoch,
             active: &mut self.active_activity_epochs,
             execution: &mut self.execution,
+        }
+    }
+
+    /// Join one successfully applied Dispatch settlement to its exact retained
+    /// User Event and activity receipt. The caller commits the returned root;
+    /// therefore activity removal, receipt publication and processed visibility
+    /// cannot be split across repository revisions.
+    pub fn settle_user_event_dispatch(
+        &mut self,
+        run_id: &awaken_agent_contract::agent::run::Id,
+        expected_epoch: u64,
+        projection_anchor: SessionEventProjectionAnchor,
+        processed_at_unix_ms: u64,
+    ) -> Result<SessionEventDispatchSettlementEffect, SessionEventBatchError> {
+        let mut coordinate = None;
+        for (batch_index, batch) in self.event_batches.iter().enumerate() {
+            if let Some(operation_id) = batch.user_run_operation_id(run_id)? {
+                if coordinate.is_some() {
+                    return Err(SessionEventBatchError::ProgressMismatch);
+                }
+                coordinate = Some((batch_index, operation_id.to_string()));
+            }
+        }
+        let Some((batch_index, operation_id)) = coordinate else {
+            return Ok(SessionEventDispatchSettlementEffect::NotEvent);
+        };
+        let active = self.active_activity_epochs.contains(&expected_epoch);
+        let receipt = SessionEventDispatchSettlementReceipt {
+            session_activity_epoch: expected_epoch,
+            commit_observation_anchor: projection_anchor,
+        };
+        let plan = self.event_batches[batch_index].record_user_run_dispatch_settlement(
+            &operation_id,
+            run_id,
+            active,
+            receipt,
+            processed_at_unix_ms,
+        )?;
+        match plan {
+            SessionEventDispatchSettlementPlan::Apply => {
+                let last_active = self
+                    .settle_activity_epoch(expected_epoch)
+                    .ok_or(SessionEventBatchError::ProgressMismatch)?;
+                let all_events_processed = self
+                    .event_batches
+                    .iter()
+                    .all(SessionEventBatch::is_complete);
+                Ok(SessionEventDispatchSettlementEffect::Applied {
+                    fully_settled: session_event_execution_may_close(
+                        plan,
+                        true,
+                        last_active,
+                        all_events_processed,
+                    ),
+                })
+            }
+            SessionEventDispatchSettlementPlan::Replay => {
+                Ok(SessionEventDispatchSettlementEffect::Replayed)
+            }
+            SessionEventDispatchSettlementPlan::Reject => {
+                Err(SessionEventBatchError::ProgressMismatch)
+            }
         }
     }
 
@@ -902,8 +976,14 @@ impl PersistedSession {
     /// convergence driver. Keeping the union here prevents SQLite, Postgres,
     /// and future repositories from growing different recovery scans.
     #[must_use]
+    pub fn needs_initial_realization_recovery(&self) -> bool {
+        self.frozen_baseline().is_some() && self.execution.requires_initial_realization_recovery()
+    }
+
+    #[must_use]
     pub fn needs_reconciliation(&self) -> bool {
-        self.needs_event_reconciliation()
+        self.needs_initial_realization_recovery()
+            || self.needs_event_reconciliation()
             || self.needs_outcome_reconciliation()
             || self.needs_resource_reconciliation()
             || self.resources.has_references()

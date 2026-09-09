@@ -6,11 +6,136 @@
 
 use awaken_session_contract::{
     CompiledSessionCreation, IdempotencyRecord, PersistedSession, RunError, SessionBudgetState,
-    SessionCreateResult, SessionCreationIntent, SessionExecutionState, SessionMcpAttachmentSet,
-    SessionMutationPayload, SessionRealizationControlDisposition, SessionToolConfiguration,
+    SessionCreationIntent, SessionExecutionState, SessionMcpAttachmentSet, SessionMutationPayload,
+    SessionRealizationControlDisposition, SessionToolConfiguration,
 };
 
 use super::{SessionApplication, SessionMutationError, SessionRealizationError};
+
+/// The only value admitted to the Session root-insert boundary.
+///
+/// Construction consumes the finalized creation graph and verifies the exact
+/// fresh-root shape. Keeping the field private prevents protocol adapters and
+/// later mutation paths from persisting an unconsumed authoring intent through
+/// the application create path.
+pub(crate) struct CompleteSessionRoot(PersistedSession);
+
+fn root_has_consumed_creation_intent(session: &PersistedSession) -> bool {
+    session.frozen_baseline().is_some()
+}
+
+impl CompleteSessionRoot {
+    fn compile(
+        session_id: String,
+        title: Option<String>,
+        metadata: std::collections::BTreeMap<String, String>,
+        tools: SessionToolConfiguration,
+        budget: SessionBudgetState,
+        compiled: CompiledSessionCreation,
+        initial_events: Option<awaken_session_contract::SessionInitialEventPlan>,
+    ) -> Result<Self, SessionCreationError> {
+        let holder = compiled
+            .baseline
+            .environment
+            .credential_realization
+            .mcp_holder
+            .clone();
+        let mut resources = awaken_session_contract::SessionResourceState::default();
+        resources
+            .prepare(&session_id, compiled.initial_resources)
+            .map_err(|error| SessionCreationError::Unavailable(error.to_string()))?;
+        let mcp = SessionMcpAttachmentSet::from_initial(compiled.initial_mcp, Some(holder))
+            .map_err(|error| SessionCreationError::Unavailable(error.to_string()))?;
+        let mut session = PersistedSession::frozen_with_budget(
+            session_id,
+            compiled.baseline,
+            resources,
+            mcp,
+            title,
+            metadata,
+            tools,
+            budget,
+        );
+        if let Some(initial_events) = initial_events {
+            session
+                .install_initial_event_plan(initial_events)
+                .map_err(|error| {
+                    SessionCreationError::Rejected(RunError::bad_request(error.to_string()))
+                })?;
+        }
+        Self::from_fresh(session)
+    }
+
+    pub(super) fn from_fresh(session: PersistedSession) -> Result<Self, SessionCreationError> {
+        if session.revision != awaken_session_contract::SessionRevision(0)
+            || !root_has_consumed_creation_intent(&session)
+            || session.execution != SessionExecutionState::Preparing
+            || !session.needs_initial_realization_recovery()
+        {
+            return Err(SessionCreationError::Internal(
+                "compiled Session root is incomplete or not recoverable".into(),
+            ));
+        }
+        Ok(Self(session))
+    }
+
+    pub(super) fn as_session(&self) -> &PersistedSession {
+        &self.0
+    }
+
+    pub(super) fn as_session_mut(&mut self) -> &mut PersistedSession {
+        &mut self.0
+    }
+
+    pub(super) fn into_session(self) -> PersistedSession {
+        self.0
+    }
+}
+
+pub(crate) struct DurableSessionRoot(PersistedSession);
+
+impl DurableSessionRoot {
+    pub(super) fn from_applied(session: PersistedSession) -> Result<Self, SessionCreationError> {
+        if session.revision != awaken_session_contract::SessionRevision(1)
+            || session.created_at_unix_ms.is_none()
+            || session.updated_at_unix_ms.is_none()
+            || session.execution != SessionExecutionState::Preparing
+            || !session.needs_initial_realization_recovery()
+            || !root_has_consumed_creation_intent(&session)
+        {
+            return Err(SessionCreationError::Internal(
+                "repository returned an incomplete applied Session root".into(),
+            ));
+        }
+        Ok(Self(session))
+    }
+
+    pub(super) fn from_recovery(session: PersistedSession) -> Result<Self, &'static str> {
+        if session.revision == awaken_session_contract::SessionRevision(0)
+            || !root_has_consumed_creation_intent(&session)
+        {
+            return Err("recovery loaded an incomplete Session root");
+        }
+        Ok(Self(session))
+    }
+
+    pub(super) fn as_session(&self) -> &PersistedSession {
+        &self.0
+    }
+
+    pub(super) fn into_session(self) -> PersistedSession {
+        self.0
+    }
+}
+
+/// Applied create receipts are revalidated as a complete durable root before
+/// the caller may accept or realize them. Replays intentionally retain the
+/// repository's current aggregate because it may already have advanced beyond
+/// the initial creation state.
+pub(crate) enum CompleteSessionCreateResult {
+    Applied(DurableSessionRoot),
+    Replayed(DurableSessionRoot),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SessionCreationCompletion {
@@ -211,6 +336,9 @@ pub(super) fn validated_create_replay(
     session: PersistedSession,
     completion: SessionCreationCompletion,
 ) -> Result<PersistedSession, SessionCreationError> {
+    let session = DurableSessionRoot::from_recovery(session)
+        .map_err(|message| SessionCreationError::Internal(message.into()))?
+        .into_session();
     match session_create_replay_plan(session.execution, completion) {
         SessionCreateReplayPlan::ReturnDurableRoot => Ok(session),
         SessionCreateReplayPlan::RejectTerminalOccupation => Err(SessionCreationError::Tombstoned),
@@ -308,29 +436,17 @@ impl SessionApplication {
         tools: SessionToolConfiguration,
         budget: SessionBudgetState,
         compiled: CompiledSessionCreation,
-    ) -> Result<PersistedSession, SessionCreationError> {
-        let holder = compiled
-            .baseline
-            .environment
-            .credential_realization
-            .mcp_holder
-            .clone();
-        let mut resources = awaken_session_contract::SessionResourceState::default();
-        resources
-            .prepare(&session_id, compiled.initial_resources)
-            .map_err(|error| SessionCreationError::Unavailable(error.to_string()))?;
-        let mcp = SessionMcpAttachmentSet::from_initial(compiled.initial_mcp, Some(holder))
-            .map_err(|error| SessionCreationError::Unavailable(error.to_string()))?;
-        Ok(PersistedSession::frozen_with_budget(
+        initial_events: Option<awaken_session_contract::SessionInitialEventPlan>,
+    ) -> Result<CompleteSessionRoot, SessionCreationError> {
+        CompleteSessionRoot::compile(
             session_id,
-            compiled.baseline,
-            resources,
-            mcp,
             title,
             metadata,
             tools,
             budget,
-        ))
+            compiled,
+            initial_events,
+        )
     }
 
     /// Create one Session through the only durable creation protocol.
@@ -424,15 +540,16 @@ impl SessionApplication {
             }
             return Err(first);
         }
-        let mut persisted = match Self::compile_session_root(
+        let compiled_root = match Self::compile_session_root(
             session_id.clone(),
             title,
             metadata,
             tools,
             budget,
             compiled,
+            initial_events,
         ) {
-            Ok(persisted) => persisted,
+            Ok(root) => root,
             Err(first) => {
                 if !self
                     .abort_unadopted_session_repositories(&repository_configurations)
@@ -446,29 +563,14 @@ impl SessionApplication {
                 return Err(first);
             }
         };
-        if let Some(initial_events) = initial_events
-            && let Err(error) = persisted.install_initial_event_plan(initial_events)
-        {
-            let first = SessionCreationError::Rejected(RunError::bad_request(error.to_string()));
-            if !self
-                .abort_unadopted_session_repositories(&repository_configurations)
-                .await
-            {
-                tracing::warn!(
-                    session = %session_id,
-                    "Session Repository compensation remains pending after Event-plan rejection"
-                );
-            }
-            return Err(first);
-        }
-        let payload = SessionMutationPayload::Replace(persisted.clone());
+        let payload = SessionMutationPayload::Replace(compiled_root.as_session().clone());
         let payload_hash = payload.stable_hash();
         let idempotency = idempotency.unwrap_or_else(|| IdempotencyRecord {
             key: format!("session:create:{session_id}:{payload_hash}"),
             payload_hash,
         });
         let create_result = match self
-            .create_session_root(&owner_scope, persisted, idempotency.clone(), Vec::new())
+            .create_session_root(&owner_scope, compiled_root, idempotency.clone(), Vec::new())
             .await
         {
             Ok(result) => result,
@@ -515,14 +617,12 @@ impl SessionApplication {
                 return Err(first);
             }
         };
-        let receipt = match create_result {
-            SessionCreateResult::Applied(session) => {
-                persisted = session;
-                SessionCreateReceiptKind::Applied
+        let (receipt, mut persisted) = match create_result {
+            CompleteSessionCreateResult::Applied(root) => {
+                (SessionCreateReceiptKind::Applied, root.into_session())
             }
-            SessionCreateResult::Replayed(session) => {
-                persisted = session;
-                SessionCreateReceiptKind::Replayed
+            CompleteSessionCreateResult::Replayed(root) => {
+                (SessionCreateReceiptKind::Replayed, root.into_session())
             }
         };
         match session_create_effect_plan(receipt, completion) {
