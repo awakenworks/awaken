@@ -90,6 +90,7 @@ run static "e2e runner unit" npm --prefix e2e run test:runner
 run static "command deadline tests" python3 scripts/ci/test_deadline.py
 run static "postgres harness self-test" scripts/ci/pg_tests.sh --self-test
 run static "k3d harness self-test" e2e/k3d/harness.sh --self-test
+run static "NATS wake runner self-test" e2e/k3d/nats_wake_e2e.sh --self-test
 run static "k3d-product-image-contract" python3 deploy/k3d/test_image_contract.py
 run static "secrets self-test" python3 scripts/ci/check_secrets.py --self-test
 run static "secrets" python3 scripts/ci/check_secrets.py
