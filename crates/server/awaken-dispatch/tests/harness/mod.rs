@@ -18,6 +18,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_dispatch::DEFAULT_LEASE_MS;
 use awaken_dispatch_testkit::{ConformanceClock, LEASE_MS};
 use awaken_runtime::Runtime;
 #[cfg(feature = "test-support")]
@@ -2275,9 +2276,10 @@ pub async fn assert_relinquish_claim<S: awaken_dispatch::Dispatch>(store: &S) {
 /// same aggregate replaces the slot atomically rather than creating a side lock.
 /// A9 advances the selected backend's authority clock past D's lease before E
 /// claims; assigning the logical timestamp alone is insufficient for a backend
-/// whose durable database owns time. All live-claim rules use the testkit's
-/// single cross-backend lease duration: a shorter scheduler-sized lease makes
-/// `claim -> begin_attempt` expire under load before the reducer is exercised.
+/// whose durable database owns time. Claims that must expire use the testkit's
+/// short cross-backend lease; replacement claims that must remain current use
+/// the production Worker lease. This separates the expiry cause from scheduler
+/// latency instead of weakening any owner, epoch, or physical-slot assertion.
 pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
@@ -2348,7 +2350,12 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
     );
 
     let second = store
-        .claim("owner-b", LEASE_MS, after_expiry, &Default::default())
+        .claim(
+            "owner-b",
+            DEFAULT_LEASE_MS,
+            after_expiry,
+            &Default::default(),
+        )
         .await
         .expect("B reclaim query")
         .expect("B reclaims after expiry");
@@ -2374,7 +2381,12 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
     );
     assert!(retained[0].physical_attempt_active, "A5 slot retained");
     let third = store
-        .claim("owner-c", LEASE_MS, after_expiry, &Default::default())
+        .claim(
+            "owner-c",
+            DEFAULT_LEASE_MS,
+            after_expiry,
+            &Default::default(),
+        )
         .await
         .expect("C reclaim query")
         .expect("C reclaims released mutation lease");
@@ -2463,7 +2475,12 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
     clock.set(replacement_now);
     clock.advance_past(predecessor.lease.expires_ms).await;
     let replacement = store
-        .claim("owner-e", LEASE_MS, replacement_now, &Default::default())
+        .claim(
+            "owner-e",
+            DEFAULT_LEASE_MS,
+            replacement_now,
+            &Default::default(),
+        )
         .await
         .expect("E claim query")
         .expect("E replacement claim");
@@ -2532,7 +2549,7 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
         .claim_run(
             &RunId("peer-a".into()),
             "peer-owner-a",
-            LEASE_MS,
+            DEFAULT_LEASE_MS,
             now,
             &Default::default(),
         )
@@ -2549,7 +2566,7 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
         .claim_run(
             &RunId("peer-b".into()),
             "peer-owner-b",
-            LEASE_MS,
+            DEFAULT_LEASE_MS,
             now,
             &Default::default(),
         )
@@ -2571,7 +2588,7 @@ pub async fn assert_physical_attempt_admission<S: awaken_dispatch::Dispatch>(
         .claim_run(
             &RunId("peer-other".into()),
             "peer-owner-other",
-            LEASE_MS,
+            DEFAULT_LEASE_MS,
             now,
             &Default::default(),
         )
@@ -3309,10 +3326,12 @@ pub async fn assert_wake_suppressed_while_thread_running<S: awaken_dispatch::Dis
     assert_eq!(claimed.pending[0].message_id, "m-wake");
 }
 
-/// G5-T6 (cause-effect graphing): two workers RACE to recover the SAME expired lease.
-/// Exactly one wins the epoch bump; the other finds nothing runnable — never double
-/// ownership. The in-memory store serializes via its mutex, sqlite/postgres via row
-/// locking, so the single-winner invariant holds on every backend.
+/// G5-T6 cause/effect rule: C1 A's short lease is expired; C2 B and C race for
+/// the same row; C3 each contender requests the production Worker lease.
+/// C1+C2+C3 => E1 exactly one epoch-2 claim is returned and E2 the other sees no
+/// runnable work. C3 prevents a slow database scheduler from turning a serialized
+/// second query into a *later* valid recovery after the first winner expires; it
+/// does not relax row locking, epoch fencing, or the single-winner assertion.
 pub async fn assert_concurrent_recovery_yields_one_winner<S>(
     store: Arc<S>,
     clock: &dyn ConformanceClock,
@@ -3339,12 +3358,22 @@ pub async fn assert_concurrent_recovery_yields_one_winner<S>(
     let s2 = store.clone();
     let (r1, r2) = tokio::join!(
         tokio::spawn(async move {
-            s1.claim("owner-b", 100, recovery_now, &Default::default())
-                .await
+            s1.claim(
+                "owner-b",
+                DEFAULT_LEASE_MS,
+                recovery_now,
+                &Default::default(),
+            )
+            .await
         }),
         tokio::spawn(async move {
-            s2.claim("owner-c", 100, recovery_now, &Default::default())
-                .await
+            s2.claim(
+                "owner-c",
+                DEFAULT_LEASE_MS,
+                recovery_now,
+                &Default::default(),
+            )
+            .await
         }),
     );
     let winners: Vec<_> = [r1.unwrap().expect("claim b"), r2.unwrap().expect("claim c")]
@@ -3362,8 +3391,10 @@ pub async fn assert_concurrent_recovery_yields_one_winner<S>(
     );
 }
 
-/// Shared spec: a `Awaiting` settle is fenced the same way — a stale owner cannot
-/// re-await (and reset the crash-retry budget / clear the lease) behind a reclaimer.
+/// Shared cause/effect rule: C1 A expires; C2 B reclaims with a production-sized
+/// live lease; C3 stale A settles `Awaiting`; C4 C probes before B's persisted
+/// deadline. C1+C2+C3+C4 => E1 A is fenced, E2 C cannot reclaim, and E3 B can
+/// settle. The long B lease isolates those fencing effects from host scheduling.
 pub async fn assert_awaiting_settle_fences_stale_epoch<S: awaken_dispatch::Dispatch>(
     store: &S,
     clock: &dyn ConformanceClock,
@@ -3384,7 +3415,7 @@ pub async fn assert_awaiting_settle_fences_stale_epoch<S: awaken_dispatch::Dispa
     let b = store
         .claim(
             "owner-b",
-            100,
+            DEFAULT_LEASE_MS,
             a.lease.expires_ms.saturating_add(1),
             &Default::default(),
         )
@@ -3406,7 +3437,7 @@ pub async fn assert_awaiting_settle_fences_stale_epoch<S: awaken_dispatch::Dispa
         store
             .claim(
                 "owner-c",
-                100,
+                DEFAULT_LEASE_MS,
                 b.lease.expires_ms.saturating_sub(1),
                 &Default::default(),
             )
