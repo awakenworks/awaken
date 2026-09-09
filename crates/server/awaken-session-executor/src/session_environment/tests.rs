@@ -256,10 +256,7 @@ impl awaken_sandbox_container::ContainerEnvironment for FakeContainer {
         command: pc::Command,
     ) -> Result<awaken_sandbox_container::RuntimeAgentProcess, pc::SandboxError> {
         let (ours, theirs) = tokio::io::duplex(64 * 1024);
-        let repository_export = command
-            .argv
-            .iter()
-            .any(|part| part == "bundle" || part.contains("bundle create"));
+        let repository_export = command.argv.iter().any(|part| part == "awaken-repo-push");
         if command.argv.iter().any(|part| part == "--stdio") {
             // P7 Container already exposes /mnt: preserve its deployed Hand
             // CLI rather than requiring the new local projection option. All
@@ -395,7 +392,7 @@ impl pc::Sandbox for FakeContainer {
                 .unwrap()
                 .insert("marker".into(), b"shared-container-state".to_vec());
         }
-        let repository_import = command.argv.iter().any(|part| part == "awaken-repo-import");
+        let repository_import = command.argv.iter().any(|part| part == "awaken-repo-clone");
         let exit_code = if repository_import
             && self
                 .shared
@@ -2672,7 +2669,7 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
     assert!(
         import_error
             .to_string()
-            .contains("container repository import exited Some(23)")
+            .contains("container Repository clone exited Some(23)")
     );
 
     {
@@ -2694,13 +2691,19 @@ async fn container_repository_transfer_reports_import_and_export_failures() {
         commit: "0000000000000000000000000000000000000000".into(),
         expected_prior_commit: None,
     };
-    let export_error = container_repositories::push(&container, &plan, &expectation, None)
-        .await
-        .expect_err("a failed container export is not pushed");
+    let export_error = container_repositories::push(
+        &container,
+        "/opt/custom/awaken-sandbox",
+        &plan,
+        &expectation,
+        None,
+    )
+    .await
+    .expect_err("a failed container push is not published");
     assert!(
         export_error
             .to_string()
-            .contains("container repository export exited Some(19)")
+            .contains("container Repository push exited Some(19)")
     );
 }
 

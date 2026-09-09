@@ -172,10 +172,15 @@ pub(crate) fn session_sandbox_projection(
     has_repository: bool,
     opaque_process: bool,
 ) -> (pc::SandboxSpec, pc::SandboxRequirements) {
+    let mut effective_spec = spec.clone();
+    if has_repository {
+        effective_spec
+            .control_services
+            .insert(awaken_sandbox_container::SandboxControlServiceKind::RepositoryGitCredential);
+    }
     let requires_path_fidelity =
         has_repository || opaque_process || spec.isolation >= pc::IsolationClass::Namespace;
-    let requirements = pc::SandboxRequirements::from_spec(spec, requires_path_fidelity);
-    let mut effective_spec = spec.clone();
+    let requirements = pc::SandboxRequirements::from_spec(&effective_spec, requires_path_fidelity);
     // Copy the contract-owned isolation decision into the provider-visible
     // physical spec; do not reconstruct the Namespace upgrade in the Host.
     effective_spec.isolation = requirements.isolation;
@@ -775,7 +780,7 @@ impl SharedHost {
     }
 
     /// Materialize only the credential required by this Git effect. A direct
-    /// Worker-held pin repeats exact source revision, Workspace, descriptor
+    /// Sandbox-held pin repeats exact source revision, Workspace, descriptor
     /// expiry/target/material, holder, and Repository id/version binding checks.
     /// A Platform-held pin refreshes its short Gateway capability and cannot
     /// downgrade to direct material. The returned owned value is dropped after
@@ -895,6 +900,11 @@ impl SharedHost {
         };
         match pin.selected_plaintext_holder.boundary {
             awaken_runtime_contract::PlaintextBoundary::Worker => {
+                Err(crate::host::HostError::internal(
+                    "Runtime Host or Worker cannot hold a Repository transport credential",
+                ))
+            }
+            awaken_runtime_contract::PlaintextBoundary::Workload => {
                 if publication_transport.as_ref().is_some_and(|transport| {
                     !matches!(
                         transport,
@@ -902,7 +912,7 @@ impl SharedHost {
                     )
                 }) {
                     return Err(crate::host::HostError::internal(
-                        "Worker-held Repository credential cannot use a mediated transport",
+                        "Sandbox-held Repository credential cannot use a mediated transport",
                     ));
                 }
                 if repository.plan.transport_url != remote_url {
@@ -920,7 +930,7 @@ impl SharedHost {
                     .resolve_for_workspace(
                         &pin.access,
                         &pin.selected_plaintext_holder,
-                        awaken_runtime_contract::CredentialRealizationKind::WorkerRelay,
+                        awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField,
                         &workspace,
                         &(&repository.plan.repository_id, config_version),
                     )
@@ -983,11 +993,6 @@ impl SharedHost {
                         ))
                     }
                 }
-            }
-            awaken_runtime_contract::PlaintextBoundary::Workload => {
-                Err(crate::host::HostError::internal(
-                    "Repository credential selected an unsupported plaintext holder",
-                ))
             }
         }
     }
