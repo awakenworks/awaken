@@ -97,7 +97,10 @@ impl ManagedState {
                 && persisted_session.execution == SessionExecutionState::Idle
                 && !has_awaiting_run
             {
-                return Ok(ValidatedEventBatch { inputs: Vec::new() });
+                return Ok(ValidatedEventBatch {
+                    inputs: Vec::new(),
+                    drive: ValidatedEventBatchDrive::PreferredBatch,
+                });
             }
             let inputs = events
                 .iter()
@@ -119,7 +122,10 @@ impl ManagedState {
                     }))
                 })
                 .collect::<Result<Vec<_>, StateError>>()?;
-            return Ok(ValidatedEventBatch { inputs });
+            return Ok(ValidatedEventBatch {
+                inputs,
+                drive: ValidatedEventBatchDrive::PreferredBatch,
+            });
         }
         let lifecycle_events = self.committed_lifecycle_prefix(session_id).await?;
         let mut candidates = Vec::new();
@@ -200,15 +206,31 @@ impl ManagedState {
             }
         }
         let tool_reply_phases = Self::tool_reply_projection_phases(&persisted_session, &candidates);
-        let mut unresolved = candidates
-            .iter()
-            .map(|candidate| candidate.key.clone())
-            .filter(|key| {
-                tool_reply_phases
-                    .get(key)
-                    .is_none_or(|phase| phase.is_pending())
-            })
-            .collect::<std::collections::HashSet<_>>();
+        // Cause/effect table over the one shared phase authority:
+        // PendingClient/PendingBuiltin/Unclassified => reject follow-up;
+        // Resolving => accept durably but leave execution to the lifecycle
+        // selector; Processed => accept and preserve request-local driving.
+        // A reply supplied by this batch removes its pending key and retains
+        // the established preferred-batch path, which already binds an adjacent
+        // System message to that exact reply. No second queue or phase is kept.
+        let mut unresolved = std::collections::HashSet::new();
+        let mut retained_reply_requires_queue = false;
+        for candidate in &candidates {
+            match tool_reply_phases
+                .get(&candidate.key)
+                .copied()
+                .unwrap_or(project::RuntimeToolProjectionPhase::Unclassified)
+                .followup_admission()
+            {
+                project::RuntimeToolFollowupAdmission::Reject => {
+                    unresolved.insert(candidate.key.clone());
+                }
+                project::RuntimeToolFollowupAdmission::Queue => {
+                    retained_reply_requires_queue = true;
+                }
+                project::RuntimeToolFollowupAdmission::Ready => {}
+            }
+        }
         let budget_cap_reached = !persisted_session.budget.can_admit_model_request();
         // A pending committed tool reply is the stronger aggregate state. With
         // no pending reply, a reached shared cap makes interrupt an accepted
@@ -217,6 +239,7 @@ impl ManagedState {
             && persisted_session.execution == SessionExecutionState::Idle
             && candidates.is_empty();
         let mut inputs = Vec::with_capacity(events.len());
+        let mut drive = ValidatedEventBatchDrive::PreferredBatch;
         for event in events {
             let resolution = match event {
                 InboundEvent::UserToolConfirmation {
@@ -344,11 +367,17 @@ impl ManagedState {
                     )));
                 }
                 InboundEvent::UserMessage { content } => {
+                    if retained_reply_requires_queue {
+                        drive = ValidatedEventBatchDrive::LifecycleQueue;
+                    }
                     inputs.push(SessionEventInput::UserMessage {
                         content: content.clone(),
                     });
                 }
                 InboundEvent::SystemMessage { content } => {
+                    if retained_reply_requires_queue {
+                        drive = ValidatedEventBatchDrive::LifecycleQueue;
+                    }
                     inputs.push(SessionEventInput::SystemMessage {
                         content: content.clone(),
                     });
@@ -379,7 +408,7 @@ impl ManagedState {
                 }
             }
         }
-        Ok(ValidatedEventBatch { inputs })
+        Ok(ValidatedEventBatch { inputs, drive })
     }
 
     pub async fn send_events(
@@ -551,6 +580,7 @@ impl ManagedState {
                 if validated.inputs.is_empty() {
                     return Ok(None);
                 }
+                let drive = validated.drive;
                 self.application
                     .append_session_event_batch_idempotent(
                         session_id,
@@ -560,7 +590,7 @@ impl ManagedState {
                         idempotency_key.clone().zip(request_fingerprint.clone()),
                     )
                     .await
-                    .map(Some)
+                    .map(|batch| Some((batch, drive)))
                     .map_err(|error| {
                         if error.code == "idempotency_conflict" {
                             StateError::IdempotencyMismatch
@@ -571,8 +601,8 @@ impl ManagedState {
             }
             .await
         };
-        let accepted = match admission {
-            Ok(Some(batch)) => batch,
+        let (accepted, drive) = match admission {
+            Ok(Some(accepted)) => accepted,
             Ok(None) => return Ok(SendEventsResponse { data: Vec::new() }),
             Err(error) => match classify_retry().await? {
                 Some(batch) => return Ok(receipt_response(&batch)),
@@ -585,17 +615,19 @@ impl ManagedState {
         // this best-effort drive considers only reply/interrupt commands in the
         // just-admitted batch. It cannot race an older DefineOutcome and block
         // this request behind that Outcome's external execution.
-        if let Err(error) = self
-            .application
-            .drive_session_event_batches(session_id, Some(&accepted.batch_id))
-            .await
-        {
-            tracing::warn!(
-                %session_id,
-                batch_id = %accepted.batch_id,
-                %error,
-                "accepted Session Event batch remains queued for lifecycle recovery"
-            );
+        if drive == ValidatedEventBatchDrive::PreferredBatch {
+            if let Err(error) = self
+                .application
+                .drive_session_event_batches(session_id, Some(&accepted.batch_id))
+                .await
+            {
+                tracing::warn!(
+                    %session_id,
+                    batch_id = %accepted.batch_id,
+                    %error,
+                    "accepted Session Event batch remains queued for lifecycle recovery"
+                );
+            }
         }
         let persisted = self
             .application

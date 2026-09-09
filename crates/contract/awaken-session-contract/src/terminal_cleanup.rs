@@ -31,6 +31,7 @@ pub use repository_publication::{
     SessionRepositoryPublicationRejection,
 };
 pub use state::SessionCleanupOperation;
+pub(crate) use state::SessionCleanupRequestIdentity;
 pub(crate) use state::deserialize_persisted_operation;
 #[cfg(kani)]
 use state::{SessionCleanupPhase, session_cleanup_phase_advance_admitted};
@@ -173,6 +174,45 @@ mod tests {
                 expected_prior_commit: None,
             },
         }
+    }
+
+    #[test]
+    fn cleanup_request_exact_identity_is_apply_stutter_or_reject() {
+        // Cause/effect table: R1 canonical request + NotRequested => install one
+        // Fenced identity; R2 same request + existing identity => exact stutter;
+        // R3 foreign asserted identity => reject without mutation; R4 canonical
+        // request for another Session => reject without rewriting R1. These are
+        // the identity effects consumed by the aggregate Delete plan; later
+        // cleanup phases retain the same identity through their own owner.
+        let mut cleanup = SessionCleanupOperation::default();
+        let exact = SessionCleanupRequestIdentity::new("session-1");
+        assert_eq!(
+            cleanup.request_exact("session-1", &exact),
+            Ok(true),
+            "R1 apply"
+        );
+        let installed = cleanup.clone();
+        assert_eq!(
+            cleanup.request_exact("session-1", &exact),
+            Ok(false),
+            "R2 stutter"
+        );
+        assert_eq!(cleanup, installed, "R2 retained identity");
+        assert_eq!(
+            cleanup.request_exact("session-1", &SessionCleanupRequestIdentity::new("foreign"),),
+            Err(SessionCleanupError::OperationMismatch),
+            "R3 reject foreign identity"
+        );
+        assert_eq!(cleanup, installed, "R3 no mutation");
+        assert_eq!(
+            cleanup.request_exact(
+                "session-2",
+                &SessionCleanupRequestIdentity::new("session-2"),
+            ),
+            Err(SessionCleanupError::OperationMismatch),
+            "R4 reject foreign Session"
+        );
+        assert_eq!(cleanup, installed, "R4 no rewrite");
     }
 
     fn memory_input(

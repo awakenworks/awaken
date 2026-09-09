@@ -117,6 +117,24 @@ fn terminal_driver_failure(
     }
 }
 
+/// Classify a domain authorization rejection at the application boundary.
+/// A command that was exact when projected but is no longer pending means the
+/// aggregate advanced concurrently; every other malformed command remains a
+/// fail-closed invalid projection.
+pub(super) fn terminal_cleanup_authorization_failure(
+    error: awaken_session_contract::SessionCleanupError,
+) -> SessionRealizationControlFailure {
+    match error {
+        awaken_session_contract::SessionCleanupError::RealizationMismatch => {
+            SessionRealizationControlFailure::StaleOwnership
+        }
+        awaken_session_contract::SessionCleanupError::CommandNotPending => {
+            SessionRealizationControlFailure::NotReady
+        }
+        error => SessionRealizationControlFailure::Invalid(error.to_string()),
+    }
+}
+
 async fn supervise_local_terminal_cleanup_lease<Drive, Renew, RenewFuture, Clock>(
     session_id: &str,
     initial_assignment: &SessionTerminalCleanupAssignment,
@@ -481,6 +499,42 @@ mod tests {
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     };
+
+    #[test]
+    fn cleanup_authorization_failure_distinguishes_concurrent_advance_from_invalidity() {
+        // Causes: C1 the exact command ceased to be pending after projection;
+        // C2 its realization generation was replaced; C3 any other domain
+        // mismatch. Effects: E1 re-observe without executing; E2 reject stale
+        // ownership; E3 reject an invalid projection. Decision rules cover all
+        // three disjoint classes through the one production classifier.
+        assert!(
+            matches!(
+                terminal_cleanup_authorization_failure(
+                    awaken_session_contract::SessionCleanupError::CommandNotPending
+                ),
+                SessionRealizationControlFailure::NotReady
+            ),
+            "C1/E1"
+        );
+        assert!(
+            matches!(
+                terminal_cleanup_authorization_failure(
+                    awaken_session_contract::SessionCleanupError::RealizationMismatch
+                ),
+                SessionRealizationControlFailure::StaleOwnership
+            ),
+            "C2/E2"
+        );
+        assert!(
+            matches!(
+                terminal_cleanup_authorization_failure(
+                    awaken_session_contract::SessionCleanupError::OperationMismatch
+                ),
+                SessionRealizationControlFailure::Invalid(_)
+            ),
+            "C3/E3"
+        );
+    }
 
     struct DriveDropGuard(Arc<AtomicBool>);
 
