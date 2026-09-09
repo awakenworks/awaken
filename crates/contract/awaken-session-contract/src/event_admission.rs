@@ -480,14 +480,65 @@ mod verification {
         }
     }
 
-    // Only this occupied partition currently has direct proof: one matching
-    // closed receipt, no operation ids, fixed one-byte strings and every u64
-    // revision. The other 31 literal cases and all two-receipt cases remain
-    // native-only. Bound 2 retains default unwinding and memory-safety checks.
+    // Qualified occupied cases exhaust key/fingerprint/closed combinations
+    // for one receipt with no operation ids, fixed one-byte strings and every
+    // u64 revision. The 24 Some(ids) literals and all two-receipt cases remain
+    // native-only. Bound 2 includes one-entry loop exit; default checks remain.
+    // Conflict's complete 64-byte message needs memcmp bound 65 for loop exit;
+    // the bound-64 qualification failed its unwinding assertion, not silently
+    // truncating the error comparison. Nonerror calls use memcmp bound 2.
     #[cfg(kani)]
     #[kani::proof]
     #[kani::unwind(2)]
     fn deleted_admission_one_retained_closed_none_07() {
         check_single_retained_literal::<7>(kani::any());
+    }
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn deleted_admission_one_retained_absent_none_00() {
+        check_single_retained_literal::<0>(kani::any());
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn deleted_admission_one_retained_conflict_none_01() {
+        check_single_retained_literal::<1>(kani::any());
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn deleted_admission_one_retained_absent_none_02() {
+        check_single_retained_literal::<2>(kani::any());
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn deleted_admission_one_retained_accepted_none_03() {
+        check_single_retained_literal::<3>(kani::any());
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn deleted_admission_one_retained_absent_none_04() {
+        check_single_retained_literal::<4>(kani::any());
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn deleted_admission_one_retained_conflict_none_05() {
+        check_single_retained_literal::<5>(kani::any());
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn deleted_admission_one_retained_absent_none_06() {
+        check_single_retained_literal::<6>(kani::any());
     }
 }
