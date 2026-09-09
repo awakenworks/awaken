@@ -501,7 +501,8 @@ impl SessionEventBatch {
     /// Verify the final-close invariant at the durable codec boundary. Legacy
     /// accepted batches omit `admission_closed` and retain their old meaning.
     pub fn verify_admission(&self) -> Result<(), SessionEventBatchError> {
-        if self.admission_closed
+        let admission = classify_session_event_batch_admission(true, true, self.admission_closed);
+        if admission == SessionEventBatchAdmissionClass::Closed
             && (!self.events.is_empty()
                 || self.admitted_revision.0 == 0
                 || self.batch_id.is_empty()
@@ -519,7 +520,7 @@ impl SessionEventBatch {
         {
             return Err(SessionEventBatchError::InvalidClosedAdmission);
         }
-        if !self.admission_closed
+        if admission == SessionEventBatchAdmissionClass::Accepted
             && (self.events.is_empty()
                 || self.admitted_revision.0 == 0
                 || self.batch_id.is_empty()

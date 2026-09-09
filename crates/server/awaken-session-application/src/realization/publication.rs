@@ -22,10 +22,7 @@ pub(super) fn publication_generations(
     attachments
         .iter()
         .filter(|attachment| {
-            realization_publication_selects(
-                attachment.state,
-                attachment.publication_acknowledged,
-            )
+            realization_publication_selects(attachment.state, attachment.publication_acknowledged)
         })
         .map(|attachment| {
             projection::mcp_generation_ref(session_id, attachment).map_err(unavailable)

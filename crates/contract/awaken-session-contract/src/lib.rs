@@ -205,9 +205,9 @@ pub use session_realization::{
 pub use session_repo::{
     IdempotencyRecord, ManagedSessionRepository, PersistedSession, ScopedPersistedSession,
     SessionArchiveWithRepositoryPublicationError, SessionCreateResult, SessionDisposition,
-    SessionDispositionTransitionError, SessionExecutionState, SessionExecutionStateError,
-    SessionExecutionTransitionError, SessionIdempotencyReceipt, SessionMutation,
-    SessionMutationPayload, SessionMutationResult, SessionMutationValidationError,
+    SessionDispositionTransitionError, SessionEventDispatchSettlementEffect, SessionExecutionState,
+    SessionExecutionStateError, SessionExecutionTransitionError, SessionIdempotencyReceipt,
+    SessionMutation, SessionMutationPayload, SessionMutationResult, SessionMutationValidationError,
     SessionRealizationLease, SessionRecoveryCursor, SessionRecoveryQuarantine, SessionRecoveryScan,
     SessionRepositoryConflict, SessionRepositoryError, SessionRepositoryRecoveryAction,
     SessionRevision, SessionTombstone, VisibleMcpServer,
