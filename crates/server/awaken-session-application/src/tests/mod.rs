@@ -1,4 +1,5 @@
 mod observation_refinement;
+mod observed_commit;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{
     Arc, Mutex,
