@@ -431,4 +431,11 @@ Safety ==
     /\ AcceptedResponseIsDurableRoot
     /\ AcceptedFailureRemainsQueryable
 
+\* Positive qualification witnesses negate reachable causes of each guarantee.
+\* They are selected only by the shared mutation gate, never claimed invariant.
+NoAcceptedPreparingRoot == ~(acceptedResponse /\ execution = "Preparing")
+NoAcceptedFailure == ~(acceptedResponse /\ execution = "ActivationFailed")
+NoWorkProjection == ~workRowPresent
+NoDispatchProjection == ~dispatchExists
+
 =============================================================================

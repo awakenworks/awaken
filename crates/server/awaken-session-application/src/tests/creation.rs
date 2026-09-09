@@ -827,58 +827,250 @@ async fn self_hosted_work_dispatch_is_durable_but_not_a_fabricated_readiness_ack
 
 #[tokio::test]
 async fn accepted_create_is_recovered_from_the_same_preparing_root() {
-    // Cause/effect graph: C1 completion policy awaits realization/accepts the
-    // durable root; C2 physical realization is not started/then reconciled; C3
-    // the process survives/restarts. Effects: E1 accept returns Preparing before
-    // any Runtime effect; E2 the repository contains the complete same root; E3
-    // the canonical realization reconciler advances it to Idle, reasserting the
-    // one complete projection at the Stage and terminal directives while
-    // preparing physical state exactly once; E4 no Job row or alternate state
-    // machine participates. Rules: Q1 accept+not-started=>E1+E2+E4; Q2 accepted
-    // root+reconcile=>E3+E4.
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .expect("accepted create repository"),
-    );
-    let runtime = Arc::new(RecordingCreateRuntime::default());
-    let application = SessionApplication::new(
-        runtime.clone(),
-        Arc::new(NoopMcpRealizer),
-        repository.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-
-    let accepted = application
-        .accept_session(creation_command("accepted-create"))
-        .await
-        .expect("Q1/E1");
-    assert_eq!(
-        accepted.execution,
-        awaken_session_contract::SessionExecutionState::Preparing,
-        "Q1/E1"
-    );
-    assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 0, "Q1/E1");
-    assert_eq!(runtime.preparations.load(Ordering::SeqCst), 0, "Q1/E1");
-    assert_eq!(
-        repository.get("accepted-create").await.unwrap(),
-        accepted,
-        "Q1/E2"
-    );
-
-    let recovery = application.reconcile_session_realizations().await;
-    assert!(
-        recovery.failures.is_empty(),
-        "Q2/E3: {:?}",
-        recovery.failures
-    );
-    let ready = repository.get("accepted-create").await.unwrap();
-    assert_eq!(
-        ready.execution,
-        awaken_session_contract::SessionExecutionState::Idle,
-        "Q2/E3"
-    );
-    assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 2, "Q2/E3");
-    assert_eq!(runtime.preparations.load(Ordering::SeqCst), 1, "Q2/E3");
+    // Causes: C1 no initial batch / two ordered initial events; C2 the first
+    // cold recovery scan succeeds / fails before returning authoritative rows.
+    // Every row accepts a local root, drops all first-process repository and
+    // Application handles, then opens a fresh file-SQLite connection and a new
+    // Application. The existing time-assurance SIGKILL test owns crash-at-commit;
+    // this table owns acceptance followed by cold supervisor-only recovery.
+    // Effects: E1 acceptance returns the complete Preparing root before Runtime
+    // effects; E2 full serialized root, owner and exact create receipt survive
+    // reopen; E3 failed scan leaves root/outbox/runtime unchanged; E4 retry
+    // recovers that root to Idle without a batch or Running with its same batch;
+    // E5 repeated scan/replayed create do not repeat preparation or author events.
+    // Rules: Q1=each C1=>E1+E2; Q2=C2 failure=>E3 then E4; Q3=success=>E4;
+    // Q4=all recovered rows=>E5. SQLite and application provider-port calls
+    // execute here; provider internals are simulated. This is not universal
+    // Rust/SQL refinement or proof of arbitrary crash schedules.
+    for initial_batch in [false, true] {
+        for failed_scan in [false, true] {
+            let directory = tempfile::tempdir().expect("accepted root directory");
+            let path = directory.path().join("accepted.sqlite");
+            let path = path.to_str().expect("test database path");
+            let id = format!("accepted-create-{initial_batch}-{failed_scan}");
+            let record = awaken_session_contract::IdempotencyRecord {
+                key: format!("accept:{id}"),
+                payload_hash: "complete-create-request".into(),
+            };
+            let make_command = || {
+                let mut command = creation_command(&id);
+                command.title = Some("cold acceptance".into());
+                command.metadata.insert("first".into(), "retained".into());
+                command
+                    .metadata
+                    .insert("second".into(), "independent".into());
+                command.idempotency = Some(record.clone());
+                if initial_batch {
+                    command.initial_events = Some(
+                        awaken_session_contract::SessionInitialEventPlan::compile(
+                            &id,
+                            format!("initial:{id}"),
+                            ["first", "second"].into_iter().map(|text| {
+                                awaken_session_contract::SessionEventInput::UserMessage {
+                                    content: vec![awaken_agent_contract::agent::content::ContentBlock::text(text)],
+                                }
+                            }).collect(),
+                        ).expect("complete initial plan"),
+                    );
+                }
+                command
+            };
+            let accepted = {
+                let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+                    awaken_session_store::SqliteManagedSessionRepository::open(path)
+                        .expect("open original authority"),
+                );
+                let runtime = Arc::new(RecordingCreateRuntime::default());
+                let application = SessionApplication::new(
+                    runtime.clone(),
+                    Arc::new(NoopMcpRealizer),
+                    repository.clone(),
+                    Arc::new(RecordingEnvironmentSource::default()),
+                );
+                let accepted = application
+                    .accept_session(make_command())
+                    .await
+                    .expect("Q1 accept");
+                assert_eq!(
+                    accepted.execution,
+                    awaken_session_contract::SessionExecutionState::Preparing,
+                    "Q1/E1"
+                );
+                assert_eq!(
+                    accepted.event_batches.len(),
+                    usize::from(initial_batch),
+                    "Q1 complete initial batch"
+                );
+                if let Some(plan) = make_command().initial_events {
+                    let batch = &accepted.event_batches[0];
+                    assert_eq!(
+                        batch.batch_id, plan.batch.batch_id,
+                        "Q1 stable batch identity"
+                    );
+                    assert_eq!(
+                        batch.events, plan.batch.events,
+                        "Q1 two original ordered events"
+                    );
+                    let wake = batch.wake_activity_epoch.expect("Q1 create wake receipt");
+                    assert!(
+                        accepted.active_activity_epochs.contains(&wake),
+                        "Q1 wake is active"
+                    );
+                    assert_eq!(
+                        accepted.active_activity_epochs.len(),
+                        1,
+                        "Q1 only initial wake"
+                    );
+                } else {
+                    assert!(
+                        accepted.active_activity_epochs.is_empty(),
+                        "Q1 no fabricated wake"
+                    );
+                }
+                assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 0, "Q1/E1");
+                assert_eq!(runtime.preparations.load(Ordering::SeqCst), 0, "Q1/E1");
+                assert_eq!(
+                    serde_json::to_value(repository.get(&id).await.unwrap()).unwrap(),
+                    serde_json::to_value(&accepted).unwrap(),
+                    "Q1/E2 complete committed response"
+                );
+                assert!(
+                    repository.pending_lifecycle().await.unwrap().is_empty(),
+                    "Q1 no fabricated readiness"
+                );
+                accepted
+            };
+            let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open(path)
+                    .expect("reopen fresh authority connection"),
+            );
+            let frozen = serde_json::to_value(&accepted).unwrap();
+            assert_eq!(
+                serde_json::to_value(repository.get(&id).await.unwrap()).unwrap(),
+                frozen,
+                "Q1/E2 reopened complete root"
+            );
+            assert_eq!(
+                repository.owner(&id).await.unwrap(),
+                "workspace",
+                "Q1/E2 owner"
+            );
+            assert_eq!(
+                repository
+                    .replay_create("workspace", &id, &record)
+                    .await
+                    .unwrap(),
+                Some(accepted.clone()),
+                "Q1/E2 retained exact receipt"
+            );
+            let outbox =
+                serde_json::to_value(repository.pending_lifecycle().await.unwrap()).unwrap();
+            let faulting = Arc::new(FaultingSessionRepository::new(repository.clone()));
+            let runtime = Arc::new(RecordingCreateRuntime::default());
+            let application = SessionApplication::new(
+                runtime.clone(),
+                Arc::new(NoopMcpRealizer),
+                faulting.clone(),
+                Arc::new(RecordingEnvironmentSource::default()),
+            );
+            if failed_scan {
+                faulting.fail_recovery_scan_once();
+                let failed = application.reconcile_session_realizations().await;
+                assert_eq!(failed.failures.len(), 1, "Q2/E3 exact failed scan");
+                assert_eq!(
+                    serde_json::to_value(repository.get(&id).await.unwrap()).unwrap(),
+                    frozen,
+                    "Q2/E3 full root stutter"
+                );
+                assert_eq!(
+                    serde_json::to_value(repository.pending_lifecycle().await.unwrap()).unwrap(),
+                    outbox,
+                    "Q2/E3 outbox stutter"
+                );
+                assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 0, "Q2/E3");
+                assert_eq!(runtime.preparations.load(Ordering::SeqCst), 0, "Q2/E3");
+            }
+            let recovery = application.reconcile_session_realizations().await;
+            assert!(
+                recovery.failures.is_empty(),
+                "Q3/E4: {:?}",
+                recovery.failures
+            );
+            let ready = repository.get(&id).await.unwrap();
+            assert_eq!(
+                ready.execution,
+                if initial_batch {
+                    awaken_session_contract::SessionExecutionState::Running
+                } else {
+                    awaken_session_contract::SessionExecutionState::Idle
+                },
+                "Q3/E4"
+            );
+            assert_eq!(
+                ready.frozen_baseline(),
+                accepted.frozen_baseline(),
+                "Q3 original baseline"
+            );
+            assert_eq!(ready.title, accepted.title, "Q3 title");
+            assert_eq!(ready.metadata, accepted.metadata, "Q3 metadata");
+            assert_eq!(
+                ready.event_batches, accepted.event_batches,
+                "Q3 full initial event identity/order"
+            );
+            assert_eq!(
+                ready.active_activity_epochs, accepted.active_activity_epochs,
+                "Q3 original wake receipts"
+            );
+            assert_eq!(
+                ready.activity_epoch, accepted.activity_epoch,
+                "Q3 wake high-water"
+            );
+            assert_eq!(
+                runtime.baseline_installs.load(Ordering::SeqCst),
+                2,
+                "Q3 stage/final projection"
+            );
+            assert_eq!(
+                runtime.preparations.load(Ordering::SeqCst),
+                1,
+                "Q3 one preparation"
+            );
+            let ready_json = serde_json::to_value(&ready).unwrap();
+            let ready_outbox =
+                serde_json::to_value(repository.pending_lifecycle().await.unwrap()).unwrap();
+            let repeated = application.reconcile_session_realizations().await;
+            assert!(repeated.failures.is_empty(), "Q4 repeated scan");
+            let replay = application
+                .accept_session(make_command())
+                .await
+                .expect("Q4 exact replay");
+            assert_eq!(
+                serde_json::to_value(replay).unwrap(),
+                ready_json,
+                "Q4 complete replay receipt"
+            );
+            assert_eq!(
+                serde_json::to_value(repository.get(&id).await.unwrap()).unwrap(),
+                ready_json,
+                "Q4 complete root frame"
+            );
+            assert_eq!(
+                serde_json::to_value(repository.pending_lifecycle().await.unwrap()).unwrap(),
+                ready_outbox,
+                "Q4 outbox frame"
+            );
+            assert_eq!(
+                runtime.baseline_installs.load(Ordering::SeqCst),
+                2,
+                "Q4 no extra projection"
+            );
+            assert_eq!(
+                runtime.preparations.load(Ordering::SeqCst),
+                1,
+                "Q4 no extra preparation"
+            );
+        }
+    }
 }
 
 #[tokio::test]
