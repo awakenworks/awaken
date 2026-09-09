@@ -830,26 +830,26 @@ Bootstrap the repository-pinned Kani toolchain, install TLAPS, Z3 4.8.9 and Java
 obtain `tla2tools.jar`, then run:
 
 ```sh
-scripts/ci/bootstrap_kani.sh
+PATH="/path/to/z3/bin:$PATH" scripts/ci/bootstrap_kani.sh
 TLA2TOOLS_JAR=/path/to/tla2tools.jar \
 TLAPM_BIN=/path/to/tlapm \
 PATH="/path/to/z3/bin:$PATH" \
 scripts/ci/check_formal.sh --require-tools
 ```
 
-Z3 is used for the full-width Memory timestamp caller proof; the other Kani
-selections retain their existing solvers. The TLAPS installation bundles the
-pinned Z3 executable under `lib/tlapm/backends/bin`; adding that directory to
-`PATH` reuses it. The gate checks its version and binds it in the existing
-execution receipt.
+Z3 is used for the full-width Memory timestamp caller proof; the other Kani selections retain their existing solvers. TLAPS bundles pinned Z3 under `lib/tlapm/backends/bin`; add it to `PATH` to reuse it.
+The gate checks its version and binds it in the existing execution receipt.
 
-The pinned Kani source uses Rust 1.97 nightly: the published bundle's Rust 1.93
-cannot meet the workspace's Rust 1.96 floor. Cargo's `rust-version` remains enforced.
-A SHA-256-pinned compiler patch preserves full `u128` niche offsets; a high-offset
-`Option` regression qualifies bootstrap and formal runs. Receipts bind revision
-and patch digest. Bootstrap rejects unrelated edits and preserves the old cache.
-`AWAKEN_KANI_CACHE_DIR`, `AWAKEN_KANI_SOURCE_DIR`, and `AWAKEN_KANI_BACKEND_DIR`
-allow an equivalent prebuilt cache; subsequent runs discover the source build.
+The pinned Kani source uses Rust 1.97 nightly because the published bundle's Rust 1.93 cannot meet the workspace's Rust 1.96 floor; Cargo's `rust-version` remains enforced.
+A SHA-256-pinned patch preserves full `u128` niche offsets; a high-offset `Option` regression qualifies bootstrap and formal runs. Receipts bind revision and patch digest; bootstrap rejects unrelated edits and preserves the old cache.
+The same bootstrap owns a fresh CBMC build with the reviewed SMT type/model patch.
+It requires CMake, Ninja, a C++ compiler, Flex, Bison and M4, and fetches the pinned CBMC source and its CaDiCaL dependency.
+It qualifies fixed build options with upstream unit/Z3/native tests, two intentional counterexamples and the actual Kani fixture.
+Matching GOTO tools reuse the existing Kani setup installation trust; no independent release-archive verification is claimed.
+Immutable receipts bind the three actual tool paths/bytes, configuration, qualification contract/fixtures and Z3 identity.
+`AWAKEN_KANI_CACHE_DIR` selects the shared cache; `AWAKEN_KANI_SOURCE_DIR` and `AWAKEN_KANI_BACKEND_DIR` select already qualified compiler and backend (`bin`) directories.
+The gate freezes physical paths using bootstrap `--paths`, then calls its `--verify-source`; sealed artifacts retain the same runtime identity.
+Tool qualification checks Boolean/scalar results, not a complete lambda-array model interpreter or concrete playback. It does not establish business properties whose proofs timed out or did not run.
 
 The script names every Kani harness and uses isolated TLC state directories so
 fast sequential models cannot collide on TLC's timestamp-based default path. It
