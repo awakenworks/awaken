@@ -116,6 +116,7 @@ python3 scripts/ci/check_formal_mutations.py
 # actual owner and frozen SQLite root alongside its TLAPS/TLC checks below.
 cargo test -p awaken-session-contract --lib network_policy::tests
 cargo test -p awaken-session-application --lib profiled_session_creation_enforces_publication_and_upfront_inputs
+cargo test -p awaken-session-application --lib realization::publication::collection_tests
 
 # Explore the production in-memory worker registry's lock interleavings. This
 # feature swaps only its mutex for Loom's instrumented mutex; the transition
