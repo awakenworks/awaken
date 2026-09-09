@@ -456,12 +456,67 @@ pub async fn create_managed_credential(
 /// process crashes, `ReclaimingAbort` remains available to recovery.
 async fn abort_managed_mutation_before_cleanup(
     pending: &PendingManagedCredentialMutation,
+    signal: CredentialMaterialRecoverySignal,
     store: &dyn SecretStore,
     repo: &dyn ManagedCredentialRepository,
 ) -> Result<(), CredentialError> {
+    if credential_material_recovery_plan(&pending.material_fence, 0, signal)
+        != CredentialMaterialRecoveryPlan::AbortUnpublished
+    {
+        return Err(CredentialError::MutationConflict(
+            "Managed credential cleanup plan does not admit abort".into(),
+        ));
+    }
     let reclaiming = repo.abort_managed_mutation(pending).await?;
-    reclaiming.reclaim_material(store).await?;
-    repo.complete_managed_mutation(&reclaiming).await
+    reclaim_and_complete_managed_mutation(&reclaiming, store, repo).await
+}
+
+async fn reclaim_and_complete_managed_mutation(
+    pending: &PendingManagedCredentialMutation,
+    store: &dyn SecretStore,
+    repo: &dyn ManagedCredentialRepository,
+) -> Result<(), CredentialError> {
+    if !matches!(
+        credential_material_recovery_plan(
+            &pending.material_fence,
+            0,
+            CredentialMaterialRecoverySignal::SupervisorTick,
+        ),
+        CredentialMaterialRecoveryPlan::CleanupPublished
+            | CredentialMaterialRecoveryPlan::CleanupAborted
+    ) {
+        return Err(CredentialError::MutationConflict(
+            "Managed credential cleanup plan is not terminal".into(),
+        ));
+    }
+    match pending.reclaim_material(store).await {
+        Ok(()) => {
+            match credential_material_recovery_plan(
+                &pending.material_fence,
+                0,
+                CredentialMaterialRecoverySignal::CleanupConfirmedAbsent,
+            ) {
+                CredentialMaterialRecoveryPlan::RetireIntent => {
+                    repo.complete_managed_mutation(pending).await
+                }
+                _ => Err(CredentialError::MutationConflict(
+                    "Managed credential cleanup plan retained confirmed absence".into(),
+                )),
+            }
+        }
+        Err(error) => {
+            match credential_material_recovery_plan(
+                &pending.material_fence,
+                0,
+                CredentialMaterialRecoverySignal::CleanupUnknown,
+            ) {
+                CredentialMaterialRecoveryPlan::RetainResponsibility => Err(error),
+                _ => Err(CredentialError::MutationConflict(
+                    "Managed credential cleanup plan lost unknown responsibility".into(),
+                )),
+            }
+        }
+    }
 }
 
 /// Reconcile interrupted Managed creation after every possible crash prefix.
@@ -513,9 +568,13 @@ async fn recover_managed_credential_mutation(
 ) -> Result<bool, ManagedCredentialCreationError> {
     let mutation = pending.clone();
     mutation.validate()?;
-    match credential_material_recovery_action(&mutation.material_fence, now_unix_ms) {
-        CredentialMaterialRecoveryAction::SkipLiveWriting => return Ok(false),
-        CredentialMaterialRecoveryAction::AbortExpiredWriting => {
+    match credential_material_recovery_plan(
+        &mutation.material_fence,
+        now_unix_ms,
+        CredentialMaterialRecoverySignal::SupervisorTick,
+    ) {
+        CredentialMaterialRecoveryPlan::RetainResponsibility => return Ok(false),
+        CredentialMaterialRecoveryPlan::ClaimExpiredWriterForAbort => {
             let lease_expires_at_unix_ms = now_unix_ms
                 .checked_add(CREDENTIAL_MATERIAL_WRITER_LEASE_MS)
                 .ok_or_else(|| {
@@ -529,36 +588,77 @@ async fn recover_managed_credential_mutation(
             else {
                 return Ok(false);
             };
-            abort_managed_mutation_before_cleanup(&claimed, store, repo).await?;
+            abort_managed_mutation_before_cleanup(
+                &claimed,
+                CredentialMaterialRecoverySignal::UnpublishedConflict,
+                store,
+                repo,
+            )
+            .await?;
             return Ok(true);
         }
-        CredentialMaterialRecoveryAction::CleanupPublished
-        | CredentialMaterialRecoveryAction::CleanupAborted => {
-            mutation.reclaim_material(store).await?;
-            repo.complete_managed_mutation(&mutation).await?;
+        CredentialMaterialRecoveryPlan::CleanupPublished
+        | CredentialMaterialRecoveryPlan::CleanupAborted => {
+            reclaim_and_complete_managed_mutation(&mutation, store, repo).await?;
             return Ok(true);
         }
-        CredentialMaterialRecoveryAction::PublishReady => {}
+        CredentialMaterialRecoveryPlan::InspectReadyMaterial => {}
+        CredentialMaterialRecoveryPlan::MarkReady
+        | CredentialMaterialRecoveryPlan::PublishReady
+        | CredentialMaterialRecoveryPlan::AbortUnpublished
+        | CredentialMaterialRecoveryPlan::RetireIntent => {
+            unreachable!("supervisor plan is closed over the durable phase")
+        }
     }
-    let material_complete = cleanup::candidate_material_complete(
+    let material_complete = match cleanup::candidate_material_complete(
         mutation.before_source.as_ref(),
         &mutation.after_source,
         store,
     )
-    .await?;
-    if material_complete {
-        match repo.commit_managed_mutation(&mutation).await {
-            Ok(reclaiming) => {
-                reclaiming.reclaim_material(store).await?;
-                repo.complete_managed_mutation(&reclaiming).await?;
-            }
-            Err(ManagedCredentialMutationError::Store(error)) => return Err(error.into()),
-            Err(_) => {
-                abort_managed_mutation_before_cleanup(&mutation, store, repo).await?;
+    .await
+    {
+        Ok(complete) => complete,
+        Err(error) => {
+            return match credential_material_recovery_plan(
+                &mutation.material_fence,
+                now_unix_ms,
+                CredentialMaterialRecoverySignal::ReadyMaterialUnknown,
+            ) {
+                CredentialMaterialRecoveryPlan::RetainResponsibility => Err(error.into()),
+                _ => Err(CredentialError::MutationConflict(
+                    "Managed credential recovery plan lost unknown material responsibility".into(),
+                )
+                .into()),
+            };
+        }
+    };
+    let observation = if material_complete {
+        CredentialMaterialRecoverySignal::ReadyMaterialComplete
+    } else {
+        CredentialMaterialRecoverySignal::ReadyMaterialIncomplete
+    };
+    match credential_material_recovery_plan(&mutation.material_fence, now_unix_ms, observation) {
+        CredentialMaterialRecoveryPlan::PublishReady => {
+            match repo.commit_managed_mutation(&mutation).await {
+                Ok(reclaiming) => {
+                    reclaim_and_complete_managed_mutation(&reclaiming, store, repo).await?;
+                }
+                Err(ManagedCredentialMutationError::Store(error)) => return Err(error.into()),
+                Err(_) => {
+                    abort_managed_mutation_before_cleanup(
+                        &mutation,
+                        CredentialMaterialRecoverySignal::UnpublishedConflict,
+                        store,
+                        repo,
+                    )
+                    .await?;
+                }
             }
         }
-    } else {
-        abort_managed_mutation_before_cleanup(&mutation, store, repo).await?;
+        CredentialMaterialRecoveryPlan::AbortUnpublished => {
+            abort_managed_mutation_before_cleanup(&mutation, observation, store, repo).await?;
+        }
+        _ => unreachable!("a Ready material observation has one publication plan"),
     }
     Ok(true)
 }
@@ -589,7 +689,13 @@ async fn execute_managed_mutation(
     }
     for (reference, material) in materials {
         if let Err(error) = persist_material_exact(store, &reference, material).await {
-            if let Err(cleanup) = abort_managed_mutation_before_cleanup(&pending, store, repo).await
+            if let Err(cleanup) = abort_managed_mutation_before_cleanup(
+                &pending,
+                CredentialMaterialRecoverySignal::OwnerWriteFailed,
+                store,
+                repo,
+            )
+            .await
             {
                 return Err(ManagedCredentialMutationError::Compensation {
                     primary: error.to_string(),
@@ -599,14 +705,28 @@ async fn execute_managed_mutation(
             return Err(error.into());
         }
     }
-    if pending.material_fence.phase == CredentialMaterialMutationPhase::Writing {
-        pending = repo.mark_managed_mutation_ready(&pending).await?;
+    match credential_material_recovery_plan(
+        &pending.material_fence,
+        0,
+        CredentialMaterialRecoverySignal::OwnerWritesComplete,
+    ) {
+        CredentialMaterialRecoveryPlan::MarkReady => {
+            pending = repo.mark_managed_mutation_ready(&pending).await?;
+        }
+        CredentialMaterialRecoveryPlan::PublishReady => {}
+        _ => unreachable!("an owned command writes only from Writing or material-free Ready"),
     }
     let reclaiming = match repo.commit_managed_mutation(&pending).await {
         Ok(reclaiming) => reclaiming,
         Err(error @ ManagedCredentialMutationError::Store(_)) => return Err(error),
         Err(error) => {
-            if let Err(cleanup) = abort_managed_mutation_before_cleanup(&pending, store, repo).await
+            if let Err(cleanup) = abort_managed_mutation_before_cleanup(
+                &pending,
+                CredentialMaterialRecoverySignal::UnpublishedConflict,
+                store,
+                repo,
+            )
+            .await
             {
                 return Err(ManagedCredentialMutationError::Compensation {
                     primary: error.to_string(),
@@ -620,9 +740,7 @@ async fn execute_managed_mutation(
     // retryable after-commit obligation: surfacing its failure to the command
     // caller would invite a duplicate logical mutation. Leave `Reclaiming`
     // durable for the supervisor and report the committed command as success.
-    if reclaiming.reclaim_material(store).await.is_ok() {
-        let _completion = repo.complete_managed_mutation(&reclaiming).await;
-    }
+    let _cleanup = reclaim_and_complete_managed_mutation(&reclaiming, store, repo).await;
     Ok(reclaiming)
 }
 
@@ -919,16 +1037,26 @@ async fn execute_source_mutation(
             // after exact repository CAS has made ReclaimingAbort durable. If
             // fencing or cleanup fails, retain the WAL and attempt-owned refs
             // for supervised recovery.
-            if let Ok(abort) = repo.abort_mutation(&intent).await
-                && abort.reclaim_material(store).await.is_ok()
-            {
-                let _completion = repo.complete_mutation(&abort).await;
-            }
+            let _cleanup = abort_source_mutation_before_cleanup(
+                &intent,
+                CredentialMaterialRecoverySignal::OwnerWriteFailed,
+                store,
+                repo,
+            )
+            .await;
             return Err(error);
         }
     }
-    if intent.material_fence.phase == CredentialMaterialMutationPhase::Writing {
-        intent = repo.mark_mutation_ready(&intent).await?;
+    match credential_material_recovery_plan(
+        &intent.material_fence,
+        0,
+        CredentialMaterialRecoverySignal::OwnerWritesComplete,
+    ) {
+        CredentialMaterialRecoveryPlan::MarkReady => {
+            intent = repo.mark_mutation_ready(&intent).await?;
+        }
+        CredentialMaterialRecoveryPlan::PublishReady => {}
+        _ => unreachable!("an owned command writes only from Writing or material-free Ready"),
     }
 
     // Any apply error keeps the exact WAL and candidate material. Publication
@@ -938,9 +1066,7 @@ async fn execute_source_mutation(
     // Publication already committed. Cleanup is a retryable terminal phase;
     // returning an error would invite a duplicate logical command.
     if let Some(store) = store {
-        if reclaiming.reclaim_material(store).await.is_ok() {
-            let _completion = repo.complete_mutation(&reclaiming).await;
-        }
+        let _cleanup = reclaim_and_complete_source_mutation(&reclaiming, store, repo).await;
     } else {
         let _completion = repo.complete_mutation(&reclaiming).await;
     }
@@ -1397,6 +1523,71 @@ pub async fn recover_credential_mutations(
     recover_credential_mutations_at(store, repo, credential_material_now_unix_ms()?).await
 }
 
+async fn abort_source_mutation_before_cleanup(
+    pending: &CredentialMutationIntent,
+    signal: CredentialMaterialRecoverySignal,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<(), CredentialError> {
+    if credential_material_recovery_plan(&pending.material_fence, 0, signal)
+        != CredentialMaterialRecoveryPlan::AbortUnpublished
+    {
+        return Err(CredentialError::MutationConflict(
+            "credential cleanup plan does not admit abort".into(),
+        ));
+    }
+    let abort = repo.abort_mutation(pending).await?;
+    reclaim_and_complete_source_mutation(&abort, store, repo).await
+}
+
+async fn reclaim_and_complete_source_mutation(
+    pending: &CredentialMutationIntent,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<(), CredentialError> {
+    if !matches!(
+        credential_material_recovery_plan(
+            &pending.material_fence,
+            0,
+            CredentialMaterialRecoverySignal::SupervisorTick,
+        ),
+        CredentialMaterialRecoveryPlan::CleanupPublished
+            | CredentialMaterialRecoveryPlan::CleanupAborted
+    ) {
+        return Err(CredentialError::MutationConflict(
+            "credential cleanup plan is not terminal".into(),
+        ));
+    }
+    match pending.reclaim_material(store).await {
+        Ok(()) => {
+            match credential_material_recovery_plan(
+                &pending.material_fence,
+                0,
+                CredentialMaterialRecoverySignal::CleanupConfirmedAbsent,
+            ) {
+                CredentialMaterialRecoveryPlan::RetireIntent => {
+                    repo.complete_mutation(pending).await
+                }
+                _ => Err(CredentialError::MutationConflict(
+                    "credential cleanup plan retained confirmed absence".into(),
+                )),
+            }
+        }
+        Err(error) => {
+            match credential_material_recovery_plan(
+                &pending.material_fence,
+                0,
+                CredentialMaterialRecoverySignal::CleanupUnknown,
+            ) {
+                CredentialMaterialRecoveryPlan::RetainResponsibility => Err(error),
+                _ => Err(CredentialError::MutationConflict(
+                    "credential cleanup plan lost unknown responsibility".into(),
+                )),
+            }
+        }
+    }
+}
+
 async fn recover_credential_mutations_at(
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
@@ -1423,9 +1614,13 @@ async fn recover_credential_mutation(
     now_unix_ms: u64,
 ) -> Result<bool, CredentialError> {
     pending.validate()?;
-    let mutation = match credential_material_recovery_action(&pending.material_fence, now_unix_ms) {
-        CredentialMaterialRecoveryAction::SkipLiveWriting => return Ok(false),
-        CredentialMaterialRecoveryAction::AbortExpiredWriting => {
+    let mutation = match credential_material_recovery_plan(
+        &pending.material_fence,
+        now_unix_ms,
+        CredentialMaterialRecoverySignal::SupervisorTick,
+    ) {
+        CredentialMaterialRecoveryPlan::RetainResponsibility => return Ok(false),
+        CredentialMaterialRecoveryPlan::ClaimExpiredWriterForAbort => {
             let lease_expires_at_unix_ms = now_unix_ms
                 .checked_add(CREDENTIAL_MATERIAL_WRITER_LEASE_MS)
                 .ok_or_else(|| {
@@ -1439,47 +1634,83 @@ async fn recover_credential_mutation(
             else {
                 return Ok(false);
             };
-            let abort = repo.abort_mutation(&claimed).await?;
-            abort.reclaim_material(store).await?;
-            repo.complete_mutation(&abort).await?;
+            abort_source_mutation_before_cleanup(
+                &claimed,
+                CredentialMaterialRecoverySignal::UnpublishedConflict,
+                store,
+                repo,
+            )
+            .await?;
             return Ok(true);
         }
-        CredentialMaterialRecoveryAction::PublishReady => pending.clone(),
-        CredentialMaterialRecoveryAction::CleanupPublished
-        | CredentialMaterialRecoveryAction::CleanupAborted => {
-            pending.reclaim_material(store).await?;
-            repo.complete_mutation(pending).await?;
+        CredentialMaterialRecoveryPlan::InspectReadyMaterial => pending.clone(),
+        CredentialMaterialRecoveryPlan::CleanupPublished
+        | CredentialMaterialRecoveryPlan::CleanupAborted => {
+            reclaim_and_complete_source_mutation(pending, store, repo).await?;
             return Ok(true);
+        }
+        CredentialMaterialRecoveryPlan::MarkReady
+        | CredentialMaterialRecoveryPlan::PublishReady
+        | CredentialMaterialRecoveryPlan::AbortUnpublished
+        | CredentialMaterialRecoveryPlan::RetireIntent => {
+            unreachable!("supervisor plan is closed over the durable phase")
         }
     };
 
-    let material_complete =
-        cleanup::candidate_material_complete(mutation.before.as_ref(), &mutation.after, store)
-            .await?;
-    if !material_complete {
-        let abort = repo.abort_mutation(&mutation).await?;
-        abort.reclaim_material(store).await?;
-        repo.complete_mutation(&abort).await?;
-        return Ok(true);
-    }
+    let material_complete = match cleanup::candidate_material_complete(
+        mutation.before.as_ref(),
+        &mutation.after,
+        store,
+    )
+    .await
+    {
+        Ok(complete) => complete,
+        Err(error) => {
+            return match credential_material_recovery_plan(
+                &mutation.material_fence,
+                now_unix_ms,
+                CredentialMaterialRecoverySignal::ReadyMaterialUnknown,
+            ) {
+                CredentialMaterialRecoveryPlan::RetainResponsibility => Err(error),
+                _ => Err(CredentialError::MutationConflict(
+                    "credential recovery plan lost unknown material responsibility".into(),
+                )),
+            };
+        }
+    };
+    let observation = if material_complete {
+        CredentialMaterialRecoverySignal::ReadyMaterialComplete
+    } else {
+        CredentialMaterialRecoverySignal::ReadyMaterialIncomplete
+    };
 
-    match repo.apply_mutation(&mutation).await {
-        Ok(reclaiming) => {
-            reclaiming.reclaim_material(store).await?;
-            repo.complete_mutation(&reclaiming).await?;
-            Ok(true)
+    match credential_material_recovery_plan(&mutation.material_fence, now_unix_ms, observation) {
+        CredentialMaterialRecoveryPlan::AbortUnpublished => {
+            abort_source_mutation_before_cleanup(&mutation, observation, store, repo).await?;
         }
-        Err(CredentialError::MutationConflict(_)) => {
-            // Exact abort CAS distinguishes an unpublished deterministic
-            // conflict from a foreign row. A foreign row rejects this
-            // transition, retaining both WAL and attempt-owned material.
-            let abort = repo.abort_mutation(&mutation).await?;
-            abort.reclaim_material(store).await?;
-            repo.complete_mutation(&abort).await?;
-            Ok(true)
+        CredentialMaterialRecoveryPlan::PublishReady => {
+            match repo.apply_mutation(&mutation).await {
+                Ok(reclaiming) => {
+                    reclaim_and_complete_source_mutation(&reclaiming, store, repo).await?;
+                }
+                Err(CredentialError::MutationConflict(_)) => {
+                    // Exact abort CAS distinguishes an unpublished deterministic
+                    // conflict from a foreign row. A foreign row rejects this
+                    // transition, retaining both WAL and attempt-owned material.
+                    abort_source_mutation_before_cleanup(
+                        &mutation,
+                        CredentialMaterialRecoverySignal::UnpublishedConflict,
+                        store,
+                        repo,
+                    )
+                    .await?;
+                }
+                Err(error) => return Err(error),
+            }
         }
-        Err(error) => Err(error),
+        _ => unreachable!("a Ready material observation has one publication plan"),
     }
+    Ok(true)
 }
 
 #[cfg(test)]

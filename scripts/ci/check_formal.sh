@@ -431,8 +431,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness managed_mutation_operation_shape_is_closed_and_delete_is_absorbing \
     --harness credential_material_attempt_requires_owner_and_exact_physical_namespace \
     --harness credential_inventory_never_orphans_committed_pending_or_foreign_material \
+    --harness source_mutation_publication_is_exact_revision_cas \
     --harness managed_rollout_projection_preserves_committed_identity \
-    --harness managed_rollout_ack_requires_converged_progress
+    --harness managed_rollout_ack_requires_converged_progress \
+    --harness managed_rollout_delivery_acknowledges_only_exact_convergence
   # Two-slot material collections do not need the string comparison's loop
   # budget. Keep every unwinding assertion; only builtin memcmp gets 16.
   # The owned predecessor-set iterator uses the bundled MiniSAT backend.

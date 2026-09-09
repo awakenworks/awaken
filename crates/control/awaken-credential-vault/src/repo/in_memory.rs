@@ -93,13 +93,15 @@ impl CredentialRepo for InMemoryCredentialRepo {
             };
         }
         let current_after = state.rows.get(&intent.after.id.0);
-        let predecessor = intent.before.as_ref().and_then(|before| {
-            intent
-                .is_distinct_replacement()
-                .then(|| state.rows.get(&before.id.0))
-                .flatten()
-        });
-        let before_matches = intent.publication_preimage_matches(current_after, predecessor);
+        let before_matches = if intent.is_distinct_replacement() {
+            current_after.is_none()
+                && intent
+                    .before
+                    .as_ref()
+                    .is_some_and(|before| state.rows.get(&before.id.0) == Some(before))
+        } else {
+            current_after == intent.before.as_ref()
+        };
         if !before_matches {
             return Err(CredentialError::MutationConflict(
                 "credential changed before its material mutation was prepared".into(),
@@ -134,26 +136,27 @@ impl CredentialRepo for InMemoryCredentialRepo {
         &self,
         intent: &CredentialMutationIntent,
     ) -> Result<CredentialMutationIntent, CredentialError> {
-        let prepared = intent.prepare_publication()?;
         let mut state = self.state.lock().expect("credential repo");
-        let reclaiming = match prepared.admit(
-            state.intents.get(&intent.after.id.0),
-            state.rows.get(&intent.after.id.0),
-        )? {
-            CredentialPublicationAdmission::Replayed(reclaiming) => return Ok(reclaiming),
-            CredentialPublicationAdmission::Apply(reclaiming) => reclaiming,
-            CredentialPublicationAdmission::NeedsPredecessor(publication) => {
-                let current = state.rows.get(&publication.before().id.0);
-                publication.admit(current)?
-            }
-        };
-        state
-            .rows
-            .insert(intent.after.id.0.clone(), intent.after.clone());
+        let current_after = state.rows.get(&intent.after.id.0);
+        let current_before = intent
+            .before
+            .as_ref()
+            .filter(|before| before.id != intent.after.id)
+            .and_then(|before| state.rows.get(&before.id.0));
+        let durable = state.intents.get(&intent.after.id.0).ok_or_else(|| {
+            CredentialError::MutationConflict(
+                "credential mutation has no matching durable intent".into(),
+            )
+        })?;
+        let plan = intent.publication_plan(durable, current_after, current_before)?;
+        if plan.mode == CredentialMutationCommitMode::ExactReplay {
+            return Ok(plan.reclaiming_mutation);
+        }
+        state.rows.insert(plan.source.id.0.clone(), plan.source);
         state
             .intents
-            .insert(intent.after.id.0.clone(), reclaiming.clone());
-        Ok(reclaiming)
+            .insert(intent.after.id.0.clone(), plan.reclaiming_mutation.clone());
+        Ok(plan.reclaiming_mutation)
     }
 
     async fn pending_mutations(&self) -> Result<Vec<CredentialMutationIntent>, CredentialError> {
