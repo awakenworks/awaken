@@ -1,5 +1,5 @@
 //! Shared executable decision-table oracles for the production checkpoint owner.
-use super::{ErasureProgress, ErasureTarget};
+use super::{ErasureAction, ErasureProgress, ErasureTarget};
 
 fn checkpoint(
     completed: [Option<ErasureTarget>; 2],
@@ -125,6 +125,7 @@ fn erasure_progress_selection_and_count_decision_table() {
                         (1, usize::MAX),
                     ] {
                         check_selection([first, second], enabled, revision, count, flags);
+                        check_action([first, second], enabled, revision, count, flags);
                         check_selected_count(
                             [first, second],
                             enabled,
@@ -169,6 +170,70 @@ fn erasure_progress_counts_selected_target_once_or_preserves_overflow() {
     check_selected_count(
         [arbitrary_target(), arbitrary_target()],
         kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+    );
+}
+
+fn check_action(
+    completed: [Option<ErasureTarget>; 2],
+    enabled: [bool; 2],
+    revision: u64,
+    count: usize,
+    flags: [bool; 2],
+) {
+    use ErasureTarget::{Coordinator, Resources};
+    // Causes: C1 complete, C2 stamped, C3 any currently bound target missing.
+    // Decision table: R1=C1&&!C2 OR (C1||C2)&&C3 -> invalid/stutter before any
+    // replay/effect. R2=valid&&C1 -> Replay; R3=valid&&!C1&&C3 -> first missing
+    // target with exact adapter; R4=valid&&!C1&&!C3&&!C2 -> Stamp;
+    // R5=valid&&!C1&&!C3&&C2 -> Complete. No assumptions remove corrupt inputs:
+    // all flags, duplicate/reversed/empty 0..2-row lists and bindings are covered.
+    // Every decision preserves the entire checkpoint. Adapter tokens are borrowed
+    // bytes; async effects, CAS and persisted/physical truth remain separate.
+    let progress = checkpoint(completed, revision, count, flags);
+    let before = progress.clone();
+    let adapters = [11_u8, 29_u8];
+    let actual = progress.next_action([
+        (Coordinator, enabled[0].then_some(&adapters[0])),
+        (Resources, enabled[1].then_some(&adapters[1])),
+    ]);
+    let missing = [
+        enabled[0] && completed[0] != Some(Coordinator) && completed[1] != Some(Coordinator),
+        enabled[1] && completed[0] != Some(Resources) && completed[1] != Some(Resources),
+    ];
+    let stamped = flags[0];
+    let complete = flags[1];
+    let any_missing = missing[0] || missing[1];
+    let expected = match (complete, stamped, any_missing) {
+        (true, false, _) | (_, true, true) => ErasureAction::InvalidCheckpoint,
+        (true, true, false) => ErasureAction::Replay,
+        (false, false, true) if missing[0] => ErasureAction::Erase(Coordinator, &adapters[0]),
+        (false, false, true) => ErasureAction::Erase(Resources, &adapters[1]),
+        (false, false, false) => ErasureAction::Stamp,
+        (false, true, false) => ErasureAction::Complete,
+    };
+    assert_eq!(actual, expected);
+    assert_eq!(progress, before);
+    if matches!(
+        actual,
+        ErasureAction::Stamp | ErasureAction::Complete | ErasureAction::Replay
+    ) {
+        assert!(!any_missing);
+    }
+    if matches!(actual, ErasureAction::Complete | ErasureAction::Replay) {
+        assert!(stamped);
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(32)]
+fn erasure_checkpoint_action_requires_all_targets_and_accountability() {
+    check_action(
+        [arbitrary_target(), arbitrary_target()],
         kani::any(),
         kani::any(),
         kani::any(),

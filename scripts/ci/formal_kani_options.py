@@ -90,7 +90,7 @@ PROFILES = {
     ),
     'erasure-progress-selection-v1': (
         "awaken-data-subject-application",
-        frozenset({'erasure_progress_selects_exact_first_pending_target'}),
+        frozenset({'erasure_progress_selects_exact_first_pending_target', 'erasure_checkpoint_action_requires_all_targets_and_accountability'}),
         ERASURE_PROGRESS_LOOPS + (
             # index_range.rs:167: first-match scan of two adapter references, plus exit.
             ('_RINvXs_NtNtCsjxLPRqQEPX2_4core3ops11index_rangeNtB5_10IndexRangeNtNtNtNtB9_4iter6traits8iterator8Iterator8try_folduNCINvMs6_NtNtNtB9_5array4iter10iter_innerINtB1Y_15PolymorphicIterSINtNtNtB9_3mem12maybe_uninit11MaybeUninitTNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetINtNtB9_6option6OptionRhEEEE8try_folduNCINvNvB10_4find5checkB3y_NCINvMs0_B3B_NtB3B_15ErasureProgress14pending_targetB4X_E0E0INtNtB7_12control_flow11ControlFlowB3y_EE0B6B_EB3B_.0', 3),
