@@ -13,6 +13,39 @@ const fn terminal_environment_receipt_admitted(
     !session_is_terminal || terminal_cleanup_is_fenced
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InitialEventInstallationPlan {
+    Reject,
+    Install {
+        admitted_revision: SessionRevision,
+        wake_activity_epoch: u64,
+    },
+}
+
+/// Decide the complete create-only Event coordinates before mutating the root.
+/// Initial input is valid only on the untouched aggregate produced by
+/// `frozen_with_budget`; both coordinates become the same first root revision.
+#[must_use]
+const fn initial_event_installation_plan(
+    root_revision: SessionRevision,
+    activity_epoch: u64,
+    event_batches_empty: bool,
+    active_activities_empty: bool,
+) -> InitialEventInstallationPlan {
+    if root_revision.0 != 0
+        || activity_epoch != 0
+        || !event_batches_empty
+        || !active_activities_empty
+    {
+        InitialEventInstallationPlan::Reject
+    } else {
+        InitialEventInstallationPlan::Install {
+            admitted_revision: SessionRevision(1),
+            wake_activity_epoch: 1,
+        }
+    }
+}
+
 #[cfg(kani)]
 #[kani::proof]
 fn terminal_environment_receipt_is_admitted_only_during_the_fenced_join() {
@@ -27,6 +60,60 @@ fn terminal_environment_receipt_is_admitted_only_during_the_fenced_join() {
         terminal_environment_receipt_admitted(terminal, fenced),
         !terminal || fenced
     );
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn initial_event_plan_is_installed_only_on_the_complete_fresh_root() {
+    // Cause/effect table covers arbitrary revision/epoch plus both collection
+    // emptiness facts. R1: rev=epoch=0 and both empty => one Install whose
+    // admitted revision and wake epoch are exactly 1. Every complementary row
+    // is R2 Reject. Effect: no accepted plan can split batch and activity
+    // coordinates before the repository performs its one root insert.
+    let revision = SessionRevision(kani::any());
+    let epoch = kani::any();
+    let batches_empty = kani::any();
+    let activities_empty = kani::any();
+    let plan = initial_event_installation_plan(revision, epoch, batches_empty, activities_empty);
+    let eligible = revision.0 == 0 && epoch == 0 && batches_empty && activities_empty;
+    assert_eq!(
+        matches!(plan, InitialEventInstallationPlan::Install { .. }),
+        eligible
+    );
+    if let InitialEventInstallationPlan::Install {
+        admitted_revision,
+        wake_activity_epoch,
+    } = plan
+    {
+        assert_eq!(admitted_revision, SessionRevision(1));
+        assert_eq!(wake_activity_epoch, admitted_revision.0);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn initial_event_installation_decision_table_is_closed() {
+    // Causes: root revision, activity epoch, retained batches and active
+    // activities are fresh/stale. Effects: only the all-fresh row installs
+    // batch revision 1 plus the same wake epoch; every one-axis stale row
+    // rejects. This native table is the boundary companion to the exhaustive
+    // Kani proof and the application create/replay integration cases.
+    let fresh = initial_event_installation_plan(SessionRevision(0), 0, true, true);
+    assert_eq!(
+        fresh,
+        InitialEventInstallationPlan::Install {
+            admitted_revision: SessionRevision(1),
+            wake_activity_epoch: 1,
+        }
+    );
+    for rejected in [
+        initial_event_installation_plan(SessionRevision(1), 0, true, true),
+        initial_event_installation_plan(SessionRevision(0), 1, true, true),
+        initial_event_installation_plan(SessionRevision(0), 0, false, true),
+        initial_event_installation_plan(SessionRevision(0), 0, true, false),
+    ] {
+        assert_eq!(rejected, InitialEventInstallationPlan::Reject);
+    }
 }
 
 /// The durable, adapter-side configuration of one Managed session, keyed by its
@@ -179,23 +266,29 @@ impl PersistedSession {
         &mut self,
         mut plan: crate::SessionInitialEventPlan,
     ) -> Result<(), crate::SessionEventBatchError> {
-        if !self.event_batches.is_empty() {
+        let InitialEventInstallationPlan::Install {
+            admitted_revision,
+            wake_activity_epoch,
+        } = initial_event_installation_plan(
+            self.revision,
+            self.activity_epoch,
+            self.event_batches.is_empty(),
+            self.active_activity_epochs.is_empty(),
+        )
+        else {
             return Err(crate::SessionEventBatchError::ProgressMismatch);
-        }
-        let activity_epoch = self
-            .begin_activity_epoch()
-            .ok_or(crate::SessionEventBatchError::ProgressMismatch)?;
-        plan.batch.admitted_revision = SessionRevision(
-            self.revision
-                .0
-                .checked_add(1)
-                .ok_or(crate::SessionEventBatchError::ProgressMismatch)?,
-        );
+        };
+        // Complete and validate the detached batch before changing any root
+        // field. A malformed public plan cannot leave a partial activity epoch.
+        plan.batch.admitted_revision = admitted_revision;
         plan.batch
             .anchor_admission_projection(crate::SessionEventProjectionAnchor {
                 source_commit_cursor: 0,
             })?;
-        plan.batch.wake_activity_epoch = Some(activity_epoch);
+        plan.batch.wake_activity_epoch = Some(wake_activity_epoch);
+        self.activity_epoch = wake_activity_epoch;
+        let inserted = self.active_activity_epochs.insert(wake_activity_epoch);
+        debug_assert!(inserted, "fresh initial activity epoch is unique");
         self.event_batches.push(plan.batch);
         Ok(())
     }
