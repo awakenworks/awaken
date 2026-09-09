@@ -430,7 +430,8 @@ async fn applied_remote_dispatch_invokes_one_exact_post_settlement_callback() {
     assert_eq!(status, StatusCode::OK, "R1: {applied}");
     assert_eq!(applied["settled"], true, "R1");
     {
-        // Finish the R1 observation before the R2 HTTP replay can lock it.
+        // Inspect R1 under a lexical lock scope; replay must never carry a
+        // synchronous fixture guard into the next awaited transport operation.
         let finalized = coordination.finalized.lock().unwrap();
         assert_eq!(finalized.len(), 1, "R1");
         assert_eq!(finalized[0].session_id, session_id.0, "R1 exact Session");
