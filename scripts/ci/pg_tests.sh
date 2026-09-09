@@ -120,6 +120,17 @@ self_test() {
     echo "Postgres gate must run the complete ingress suite with test-support" >&2
     return 1
   }
+  # P11 WorkQueue parity uses one generic suite for all three backends. Its
+  # required test-support feature must be enabled by the live database gate.
+  grep -Fxq 'pg_test cargo test -p awaken-work-store --features test-support || record_failure "$?"' "$0" || {
+    echo "Postgres gate must run WorkQueue conformance with test-support" >&2
+    return 1
+  }
+  # P12 initialization-only socket readiness must not qualify TCP clients.
+  grep -Fxq '    docker exec "$NAME" pg_isready -h 127.0.0.1 -U postgres -d "$DB" >/dev/null 2>&1; then ready=1; break; fi' "$0" || {
+    echo "Postgres gate must wait for the final TCP server" >&2
+    return 1
+  }
   # P8 the claim/commit guard lives in durable_postgres and its HTTP receipt
   # boundary in active_active_postgres. The removed RuntimeHost filter matched
   # zero tests; it is not a compatibility route or additional test coverage.
@@ -289,12 +300,14 @@ if [ -z "$REQUESTED_PORT" ]; then
   echo "-> Docker published ephemeral Postgres on :$PORT"
 fi
 
-# Wait until the server accepts connections (bounded; fail loud if it never does).
+# Wait on TCP: the image first starts a temporary Unix-socket-only server for
+# initialization and then restarts it. Socket readiness can falsely greenlight
+# clients before the externally reachable server exists (bounded; fail loud).
 ready=0
 ready_deadline=$((SECONDS + PG_READY_TIMEOUT_SECONDS))
 while (( SECONDS < ready_deadline )); do
   if pg_run_with_deadline postgres-ready "$PG_OPERATION_TIMEOUT_SECONDS" \
-    docker exec "$NAME" pg_isready -U postgres -d "$DB" >/dev/null 2>&1; then ready=1; break; fi
+    docker exec "$NAME" pg_isready -h 127.0.0.1 -U postgres -d "$DB" >/dev/null 2>&1; then ready=1; break; fi
   sleep 1
 done
 if [ "$ready" -ne 1 ]; then
@@ -448,7 +461,7 @@ pg_test cargo test -p awaken-executable-environment-catalog || record_failure "$
 pg_test cargo test -p awaken-environment-image-build \
   postgres::tests::concurrent_postgres_claim_reclaim_and_restart_preserve_one_exact_authority \
   -- --exact --test-threads=1 || record_failure "$?"
-pg_test cargo test -p awaken-work-store || record_failure "$?"
+pg_test cargo test -p awaken-work-store --features test-support || record_failure "$?"
 
 # The same live PostgreSQL and object-store substrates finish with a physical
 # point-in-time restore. This is a recovery drill, not another repository or
