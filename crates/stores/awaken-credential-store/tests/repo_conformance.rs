@@ -1596,6 +1596,263 @@ async fn managed_material_mutation_begin_and_phases_conform(
     );
     repo.complete_managed_rollout(&event).await.unwrap();
 
+    // R6-R8 cross independent source/child transactions, a shared event key,
+    // and left-first/right-first/concurrent scheduling. Each candidate is
+    // valid against its OWN unchanged before-pair: only the outbox key can
+    // cause rejection. Exactly one pair and Reclaiming WAL publish; the loser
+    // retains its complete before-pair and Ready WAL. A third committed event
+    // is a spectator for every commit and ACK (frame, not just cardinality).
+    // R9 losing-payload ACK rejects while the winner exists; after exact ACK
+    // it is an absent-key no-op. R10 retries of the winner preserve its WAL
+    // and event. These are native transaction witnesses, not schedule-complete
+    // Rust/SQL refinement; join! overlaps yielding SQL calls, while synchronous
+    // adapters serialize at their existing command lock.
+    for schedule in ["left-first", "right-first", "concurrent"] {
+        let shared_id = format!("rollout-race:{schedule}");
+        let mut candidates = Vec::new();
+        for index in 0..3 {
+            let mut initial_source = owner.after_source.clone();
+            initial_source.id = CredentialSourceId(format!("cred:rollout:{schedule}:{index}"));
+            // Distinct vaults avoid serializing PostgreSQL contenders at the
+            // parent row lock before they reach the shared outbox unique key.
+            let mut candidate_vault = repo
+                .get_vault("ws", &owner.after_credential.vault_id)
+                .await
+                .unwrap()
+                .unwrap();
+            candidate_vault.id = format!("vault:rollout:{schedule}:{index}");
+            repo.insert_vault("ws", candidate_vault.clone())
+                .await
+                .unwrap();
+            let mut initial_child = owner.after_credential.clone();
+            initial_child.vault_id = candidate_vault.id;
+            initial_child.id = format!("child:rollout:{schedule}:{index}");
+            initial_child.source_id = initial_source.id.clone();
+            let create = PendingManagedCredentialMutation::create(
+                initial_source.clone(),
+                initial_child.clone(),
+            )
+            .unwrap();
+            assert!(repo.begin_managed_mutation(create.clone()).await.unwrap());
+            let ready = repo.mark_managed_mutation_ready(&create).await.unwrap();
+            let committed = repo.commit_managed_mutation(&ready).await.unwrap();
+            repo.complete_managed_mutation(&committed).await.unwrap();
+            // Create namespaces material references to its real attempt; use
+            // the committed pair as the next command's before-image.
+            let initial_source = committed.after_source.clone();
+            let mut after_source = initial_source.clone();
+            after_source.version += 1;
+            let mut after_child = initial_child.clone();
+            after_child.revision += 1;
+            after_child.display_name = Some(format!("published-{schedule}-{index}"));
+            let candidate = PendingManagedCredentialMutation::change(
+                if index == 2 {
+                    format!("spectator:{schedule}")
+                } else {
+                    shared_id.clone()
+                },
+                ManagedCredentialOperation::Update,
+                initial_source,
+                after_source,
+                initial_child,
+                after_child,
+                false,
+            )
+            .unwrap();
+            assert!(
+                repo.begin_managed_mutation(candidate.clone())
+                    .await
+                    .unwrap()
+            );
+            candidates.push(candidate);
+        }
+        let spectator_wal = repo.commit_managed_mutation(&candidates[2]).await.unwrap();
+        let spectator = repo
+            .managed_rollout(&candidates[2].operation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let (left, right) = match schedule {
+            "left-first" => (
+                repo.commit_managed_mutation(&candidates[0]).await,
+                repo.commit_managed_mutation(&candidates[1]).await,
+            ),
+            "right-first" => {
+                let right = repo.commit_managed_mutation(&candidates[1]).await;
+                (repo.commit_managed_mutation(&candidates[0]).await, right)
+            }
+            "concurrent" => tokio::join!(
+                repo.commit_managed_mutation(&candidates[0]),
+                repo.commit_managed_mutation(&candidates[1]),
+            ),
+            _ => unreachable!(),
+        };
+        let (winner, winner_wal, rejected) = match (left, right) {
+            (Ok(wal), Err(error)) => (0, wal, error),
+            (Err(error), Ok(wal)) => (1, wal, error),
+            outcomes => panic!("R6 one atomic winner: {schedule}: {outcomes:?}"),
+        };
+        assert!(
+            matches!(
+                rejected,
+                awaken_credential_vault::catalog::ManagedCredentialMutationError::RevisionConflict
+            ),
+            "R6 exact event collision: {schedule}"
+        );
+        if schedule != "concurrent" {
+            assert_eq!(
+                winner,
+                usize::from(schedule == "right-first"),
+                "R7 both serial winners"
+            );
+        }
+        let loser = 1 - winner;
+        let event = repo.managed_rollout(&shared_id).await.unwrap().unwrap();
+        // Independent event oracle: expected identities/revisions come from
+        // the requested winning pair, never from the production constructor.
+        assert_eq!(event.id, shared_id);
+        assert_eq!(event.workspace_id, "ws");
+        assert_eq!(event.vault_id, candidates[winner].after_credential.vault_id);
+        assert_eq!(event.credential_id, candidates[winner].after_credential.id);
+        assert_eq!(event.source_id, candidates[winner].after_source.id);
+        assert_eq!(event.source_version, 2);
+        assert_eq!(event.credential_revision, 2);
+        assert_eq!(event.operation, ManagedCredentialOperation::Update);
+        let mut expected_events = vec![event.clone(), spectator.clone()];
+        expected_events.sort_by(|left, right| left.id.cmp(&right.id));
+        let mut durable_events = repo.pending_managed_rollouts().await.unwrap();
+        durable_events.sort_by(|left, right| left.id.cmp(&right.id));
+        assert_eq!(durable_events, expected_events, "R8 outbox frame");
+        assert_eq!(
+            repo.commit_managed_mutation(&candidates[winner])
+                .await
+                .unwrap(),
+            winner_wal,
+            "R10"
+        );
+        let mut colliding_ack = event.clone();
+        colliding_ack.vault_id = candidates[loser].after_credential.vault_id.clone();
+        colliding_ack.credential_id = candidates[loser].after_credential.id.clone();
+        colliding_ack.source_id = candidates[loser].after_source.id.clone();
+        assert!(
+            matches!(
+                repo.complete_managed_rollout(&colliding_ack).await,
+                Err(CredentialError::MutationConflict(_))
+            ),
+            "R9 losing ACK"
+        );
+        let mut durable_events = repo.pending_managed_rollouts().await.unwrap();
+        durable_events.sort_by(|left, right| left.id.cmp(&right.id));
+        assert_eq!(durable_events, expected_events, "R9 outbox frame");
+        for (index, candidate) in candidates.iter().enumerate() {
+            let (expected_source, expected_child) = if index == loser {
+                (
+                    candidate.before_source.as_ref().unwrap(),
+                    candidate.before_credential.as_ref().unwrap(),
+                )
+            } else {
+                (&candidate.after_source, &candidate.after_credential)
+            };
+            assert_eq!(
+                &repo.get(&candidate.after_source.id).await.unwrap(),
+                expected_source,
+                "R8 source frame"
+            );
+            assert_eq!(
+                repo.get_vault_credential("ws", &candidate.after_credential.id)
+                    .await
+                    .unwrap()
+                    .as_ref(),
+                Some(expected_child),
+                "R8 child frame"
+            );
+        }
+        let mut expected_wals = vec![
+            winner_wal.clone(),
+            candidates[loser].clone(),
+            spectator_wal.clone(),
+        ];
+        expected_wals.sort_by(|left, right| left.after_source.id.0.cmp(&right.after_source.id.0));
+        let mut durable_wals = repo.pending_managed_mutations().await.unwrap();
+        durable_wals.sort_by(|left, right| left.after_source.id.0.cmp(&right.after_source.id.0));
+        assert_eq!(durable_wals, expected_wals, "R8 complete WAL frame");
+        repo.complete_managed_rollout(&event).await.unwrap();
+        repo.complete_managed_rollout(&colliding_ack).await.unwrap();
+        repo.complete_managed_rollout(&event).await.unwrap();
+        assert_eq!(
+            repo.pending_managed_rollouts().await.unwrap(),
+            vec![spectator.clone()],
+            "R9 absent replay preserves spectator"
+        );
+        // R11 the key becomes available only after exact removal. The same
+        // previously rejected Ready transaction can now publish its own pair.
+        // Delayed ACK of the OLD payload must reject, even though the id is
+        // identical. This crosses key reuse with payload comparison (ABA),
+        // without inventing a second event-insertion path or a permanent id
+        // tombstone that the production contract does not have.
+        let successor_wal = repo
+            .commit_managed_mutation(&candidates[loser])
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.managed_rollout(&shared_id).await.unwrap(),
+            Some(colliding_ack.clone()),
+            "R11 exact successor event"
+        );
+        assert!(
+            matches!(
+                repo.complete_managed_rollout(&event).await,
+                Err(CredentialError::MutationConflict(_))
+            ),
+            "R11 delayed old ACK"
+        );
+        assert_eq!(
+            repo.commit_managed_mutation(&candidates[winner])
+                .await
+                .unwrap(),
+            winner_wal,
+            "R11 old commit replay"
+        );
+        let mut durable_events = repo.pending_managed_rollouts().await.unwrap();
+        durable_events.sort_by(|left, right| left.id.cmp(&right.id));
+        let mut successor_events = vec![colliding_ack.clone(), spectator.clone()];
+        successor_events.sort_by(|left, right| left.id.cmp(&right.id));
+        assert_eq!(
+            durable_events, successor_events,
+            "R11 replay preserves successor and spectator"
+        );
+        for candidate in &candidates {
+            assert_eq!(
+                repo.get(&candidate.after_source.id).await.unwrap(),
+                candidate.after_source,
+                "R11 committed source frame"
+            );
+            assert_eq!(
+                repo.get_vault_credential("ws", &candidate.after_credential.id)
+                    .await
+                    .unwrap(),
+                Some(candidate.after_credential.clone()),
+                "R11 committed child frame"
+            );
+        }
+        let mut durable_wals = repo.pending_managed_mutations().await.unwrap();
+        durable_wals.sort_by(|left, right| left.after_source.id.0.cmp(&right.after_source.id.0));
+        let mut completed_wals = vec![
+            winner_wal.clone(),
+            successor_wal.clone(),
+            spectator_wal.clone(),
+        ];
+        completed_wals.sort_by(|left, right| left.after_source.id.0.cmp(&right.after_source.id.0));
+        assert_eq!(durable_wals, completed_wals, "R11 WAL frame");
+        repo.complete_managed_rollout(&colliding_ack).await.unwrap();
+        for finished in [&winner_wal, &successor_wal, &spectator_wal] {
+            repo.complete_managed_mutation(finished).await.unwrap();
+        }
+        repo.complete_managed_rollout(&spectator).await.unwrap();
+        assert!(repo.pending_managed_mutations().await.unwrap().is_empty());
+        assert!(repo.pending_managed_rollouts().await.unwrap().is_empty());
+    }
+
     for source_exists in [false, true] {
         for child_exists in [false, true] {
             let mut source = owner.after_source.clone();

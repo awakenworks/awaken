@@ -735,7 +735,25 @@ absent-key no-op, exact acknowledgement and repeated acknowledgement while
 checking the committed pair and outbox after rejected acknowledgements. A
 subsequent valid mutation reuses that pending event id with a new child
 revision; all three adapters reject publication and retain the original pair,
-outbox and unapplied WAL before exact abort cleanup.
+outbox and unapplied WAL before exact abort cleanup. The same suite also runs
+left-first, right-first and concurrent-join schedules for two valid transactions
+with distinct source/child/vault identities and one event id. Both source and
+child revisions change, making partial pair publication observable. It checks
+the winning Reclaiming WAL, rejected Ready WAL and unrelated event/pair/WAL
+frames. Once the winner is exactly acknowledged, the rejected transaction can
+publish under the released id; a delayed old-payload ACK rejects and exact old
+commit replay preserves the successor event. PostgreSQL uses distinct parent
+rows, so the two contenders do not first serialize at the vault lock; this is
+still an executable witness, not exhaustive SQL scheduling. Native production
+guard mutations qualify collision rejection, delayed-ACK rejection and SQL
+rollback against these new rules, independently of the earlier sequential cases.
+
+A direct Kani probe of the actual InMemory `complete_managed_rollout` Future,
+with its existing Mutex/HashMap/String/Drop and no stubs, fails even for an
+absent key: Mutex unlock reaches unsupported libc `syscall` through
+`futex_wake_all`. The rejected probe is not a qualified proof harness and adds
+no implementation-composition coverage. A tool-supported treatment of the real
+synchronization and storage paths is still required before that boundary closes.
 This adds bounded production equality evidence; arbitrary strings, JSON
 projection, insert-collision rollback and transaction composition remain outside
 the kernel proof. The complete event replay/ack obligation therefore keeps its
