@@ -1378,6 +1378,113 @@ async fn model_request_gate_fences_every_logical_request_but_not_provider_retrie
 }
 
 #[tokio::test]
+async fn model_preparation_and_quota_pause_cannot_mask_a_participant_veto() {
+    // P0 clean preparation/admission -> ordinary Admit or BudgetReached pause.
+    // P1 a participant veto appears during content preparation -> no quota
+    // admission, no model intent or provider entry, Indeterminate.
+    // P2 veto appears during quota admission -> neither Admit nor Pause can
+    // hide it; no intent/provider entry and Indeterminate. Both awaits return
+    // normally: their response is not evidence for the independent participant.
+    struct Boundary {
+        at: u8,
+        pause: bool,
+        evidence: awaken_runtime_contract::runtime_context::AttemptQuiescence,
+        admissions: AtomicUsize,
+        inferences: AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::llm::ModelContentMaterializer for Boundary {
+        async fn materialize(
+            &self,
+            request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatRequest> {
+            if self.at == 1 {
+                tokio::task::yield_now().await;
+                self.evidence.mark_uncertain();
+            }
+            Ok(request)
+        }
+    }
+    #[async_trait::async_trait]
+    impl ModelRequestGate for Boundary {
+        async fn admit_model_request(
+            &self,
+            _: ModelRequestAdmissionRequest,
+        ) -> Result<ModelRequestAdmission, String> {
+            self.admissions.fetch_add(1, Ordering::SeqCst);
+            if self.at == 2 {
+                tokio::task::yield_now().await;
+                self.evidence.mark_uncertain();
+            }
+            Ok(if self.pause {
+                ModelRequestAdmission::Pause(
+                    awaken_agent_contract::agent::awaiting::PauseReason::BudgetReached,
+                )
+            } else {
+                ModelRequestAdmission::Admit
+            })
+        }
+    }
+    #[async_trait::async_trait]
+    impl LlmExecutor for Boundary {
+        async fn infer(
+            &self,
+            request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            self.inferences.fetch_add(1, Ordering::SeqCst);
+            TextLlm("done").infer(request).await
+        }
+    }
+    for at in 0..=2 {
+        for pause in [false, true] {
+            let commit = Arc::new(MemoryCommitCoordinator::new());
+            let mut context = RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_reader(commit.clone());
+            let boundary = Arc::new(Boundary {
+                at,
+                pause,
+                evidence: context.physical_quiescence.clone(),
+                admissions: AtomicUsize::new(0),
+                inferences: AtomicUsize::new(0),
+            });
+            context.model_content_materializer = Some(boundary.clone());
+            context.model_request_gate = Some(boundary.clone());
+            let result = Runtime::new()
+                .with_llm(boundary.clone())
+                .execute(activation("catalog-a"), context)
+                .await
+                .unwrap();
+            assert_eq!(
+                result,
+                if at != 0 {
+                    RunState::Ended(EndCause::Indeterminate)
+                } else if pause {
+                    RunState::Awaiting
+                } else {
+                    RunState::Ended(EndCause::NaturalEnd)
+                },
+                "P{at} pause={pause}"
+            );
+            assert_eq!(
+                boundary.admissions.load(Ordering::SeqCst),
+                usize::from(at != 1),
+                "P{at} pause={pause}"
+            );
+            assert_eq!(
+                boundary.inferences.load(Ordering::SeqCst),
+                usize::from(at == 0 && !pause),
+                "P{at} pause={pause}"
+            );
+            assert_eq!(boundary.evidence.can_acknowledge_return(), at == 0);
+            if at != 0 || pause {
+                assert!(model_operations(&commit).is_empty());
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn execution_fails_closed_on_fingerprint_mismatch() {
     let runtime = Runtime::new().with_llm(Arc::new(TextLlm("hi")));
     let mut activation = activation("catalog-a");

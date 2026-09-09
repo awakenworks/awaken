@@ -24,10 +24,12 @@ fn verify_reentry(
             "model operation evidence unavailable: {error}"
         ))
     })?;
-    if !ModelOperation::permits_reentry(previous.as_ref(), recovering_checkpoint) {
+    if !context.physical_quiescence.can_acknowledge_return()
+        || !ModelOperation::permits_reentry(previous.as_ref(), recovering_checkpoint)
+    {
         context.physical_quiescence.mark_uncertain();
         return Err(awaken_runtime_contract::llm::Error::Provider(
-            "previous model invocation has no termination evidence".into(),
+            "attempt participants or previous model invocation lack termination evidence".into(),
         ));
     }
     Ok(previous)
