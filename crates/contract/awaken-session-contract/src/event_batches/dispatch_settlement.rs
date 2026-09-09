@@ -71,7 +71,10 @@ pub const fn session_event_dispatch_settlement_plan(
             SessionEventDispatchSettlementPlan::Replay
         }
         Some(_) => SessionEventDispatchSettlementPlan::Reject,
-        None if !processed && active_activity_epoch => SessionEventDispatchSettlementPlan::Apply,
+        // Legacy User Events can already be processed without this newer
+        // receipt field. The incoming applied Dispatch plus exact active epoch
+        // authorizes the FIRST receipt; the old public marker is not rewritten.
+        None if active_activity_epoch => SessionEventDispatchSettlementPlan::Apply,
         None => SessionEventDispatchSettlementPlan::Reject,
     }
 }
@@ -160,7 +163,8 @@ impl SessionEventBatch {
 fn user_event_processing_requires_exact_applied_dispatch_and_activity_settlement() {
     // Cause/effect table exhausts command identity, processed/activity state,
     // optional prior receipt, and arbitrary u64 epoch/anchor coordinates. R1:
-    // matching pending command + active non-zero epoch + no receipt => Apply;
+    // matching command + active non-zero epoch + no receipt => Apply, including
+    // a processed legacy Event whose supported stored format omits the receipt;
     // R2 processed + newly active greater epoch + non-regressing commit => Apply;
     // R3 exact receipt + processed + inactive => Replay; every incomplete,
     // stale, zero, or partially applied combination rejects. R4 Running
@@ -191,7 +195,7 @@ fn user_event_processing_requires_exact_applied_dispatch_and_activity_settlement
     let valid = command_matches
         && incoming.session_activity_epoch != 0
         && incoming.commit_observation_anchor.source_commit_cursor != 0;
-    let first = existing.is_none() && !processed && active;
+    let first = existing.is_none() && active;
     let resumed = existing.is_some_and(|recorded| {
         processed
             && active
@@ -258,6 +262,18 @@ mod tests {
             session_event_dispatch_settlement_plan(true, true, false, Some(receipt), receipt,),
             SessionEventDispatchSettlementPlan::Replay
         );
+        // L1 supported legacy input already processed + no receipt + exact new
+        // active epoch -> establish the first receipt. L2 no active epoch ->
+        // reject: a historical processed marker alone grants no closing power.
+        assert_eq!(
+            session_event_dispatch_settlement_plan(true, true, true, None, receipt),
+            SessionEventDispatchSettlementPlan::Apply
+        );
+        assert_eq!(
+            session_event_dispatch_settlement_plan(true, true, false, None, receipt),
+            SessionEventDispatchSettlementPlan::Reject
+        );
+
         for rejected in [
             session_event_dispatch_settlement_plan(false, false, true, None, receipt),
             session_event_dispatch_settlement_plan(
