@@ -29,9 +29,9 @@ use awaken_credential_vault::catalog::{
     admit_managed_vault_replacement, managed_vault_workspace_admitted,
 };
 use awaken_credential_vault::repo::{
-    CredentialMaterialMutationPhase, CredentialMutationIntent, CredentialRepo,
-    ManagedCredentialOperation, ManagedCredentialRepository, ManagedCredentialRollout,
-    PendingManagedCredentialMutation, managed_retirement_parent_admitted,
+    CredentialMaterialMutationPhase, CredentialMutationIntent, CredentialPublicationAdmission,
+    CredentialRepo, ManagedCredentialOperation, ManagedCredentialRepository,
+    ManagedCredentialRollout, PendingManagedCredentialMutation, managed_retirement_parent_admitted,
     managed_rollout_from_committed,
 };
 use awaken_credential_vault::{
@@ -1231,9 +1231,9 @@ impl CredentialRepo for PostgresCredentialRepo {
                 Ok(source)
             })
             .transpose()?;
-            current_after.is_none() && current_before.as_ref() == Some(before)
+            intent.publication_preimage_matches(current_after.as_ref(), current_before.as_ref())
         } else {
-            current_after.as_ref() == intent.before.as_ref()
+            intent.publication_preimage_matches(current_after.as_ref(), None)
         };
         if !before_matches {
             return Err(CredentialError::MutationConflict(
@@ -1313,8 +1313,7 @@ impl CredentialRepo for PostgresCredentialRepo {
         &self,
         intent: &CredentialMutationIntent,
     ) -> Result<CredentialMutationIntent, CredentialError> {
-        intent.validate()?;
-        let reclaiming = intent.with_material_reclaiming()?;
+        let prepared = intent.prepare_publication()?;
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let row = sqlx::query(&format!(
             "SELECT data FROM {NS}_creation_intent WHERE source_id = $1 FOR UPDATE"
@@ -1341,82 +1340,31 @@ impl CredentialRepo for PostgresCredentialRepo {
             Ok(source)
         })
         .transpose()?;
-        if durable == reclaiming && current.as_ref() == Some(&intent.after) {
-            tx.commit().await.map_err(storage)?;
-            return Ok(reclaiming);
-        }
-        if durable != *intent {
-            return Err(CredentialError::MutationConflict(
-                "credential mutation does not match durable Ready intent".into(),
-            ));
-        }
-        if intent.is_distinct_replacement() {
-            if current.is_some() {
-                return Err(CredentialError::MutationConflict(
-                    "credential replacement id is already occupied".into(),
-                ));
+        let admission = prepared.admit(Some(&durable), current.as_ref())?;
+        let reclaiming = match admission {
+            CredentialPublicationAdmission::Replayed(reclaiming) => {
+                tx.commit().await.map_err(storage)?;
+                return Ok(reclaiming);
             }
-            let before = intent.before.as_ref().ok_or_else(|| {
-                CredentialError::InvalidSource(
-                    "distinct replacement requires an exact predecessor".into(),
-                )
-            })?;
-            let current_before = sqlx::query(&format!(
-                "SELECT data FROM {NS}_source WHERE id = $1 FOR UPDATE"
-            ))
-            .bind(&before.id.0)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(storage)?
-            .map(|row| {
-                let Json(source): Json<CredentialSource> = row.try_get("data").map_err(storage)?;
-                Ok(source)
-            })
-            .transpose()?;
-            if current_before.as_ref() != Some(before) {
-                return Err(CredentialError::MutationConflict(
-                    "credential replacement precondition changed during mutation".into(),
-                ));
-            }
-            let inserted = sqlx::query(&format!(
-                "INSERT INTO {NS}_source (id, workspace_id, data) VALUES ($1, $2, $3) \
-                 ON CONFLICT (id) DO NOTHING"
-            ))
-            .bind(&intent.after.id.0)
-            .bind(&intent.after.workspace_id)
-            .bind(Json(&intent.after))
-            .execute(&mut *tx)
-            .await
-            .map_err(storage)?
-            .rows_affected();
-            if inserted != 1 {
-                return Err(CredentialError::MutationConflict(
-                    "credential replacement id changed during mutation".into(),
-                ));
-            }
-        } else {
-            if current != intent.before {
-                return Err(CredentialError::MutationConflict(
-                    "credential revision changed during mutation".into(),
-                ));
-            }
-            let changed = if let Some(before) = intent.before.as_ref() {
-                sqlx::query(&format!(
-                    "UPDATE {NS}_source SET workspace_id = $1, data = $2 \
-                     WHERE id = $3 AND workspace_id = $4"
+            CredentialPublicationAdmission::NeedsPredecessor(publication) => {
+                let before = publication.before();
+                let current_before = sqlx::query(&format!(
+                    "SELECT data FROM {NS}_source WHERE id = $1 FOR UPDATE"
                 ))
-                .bind(&intent.after.workspace_id)
-                .bind(Json(&intent.after))
-                .bind(&intent.after.id.0)
-                .bind(&before.workspace_id)
-                .execute(&mut *tx)
+                .bind(&before.id.0)
+                .fetch_optional(&mut *tx)
                 .await
                 .map_err(storage)?
-                .rows_affected()
-            } else {
-                sqlx::query(&format!(
+                .map(|row| {
+                    let Json(source): Json<CredentialSource> =
+                        row.try_get("data").map_err(storage)?;
+                    Ok(source)
+                })
+                .transpose()?;
+                let reclaiming = publication.admit(current_before.as_ref())?;
+                let inserted = sqlx::query(&format!(
                     "INSERT INTO {NS}_source (id, workspace_id, data) VALUES ($1, $2, $3) \
-                     ON CONFLICT (id) DO NOTHING"
+                 ON CONFLICT (id) DO NOTHING"
                 ))
                 .bind(&intent.after.id.0)
                 .bind(&intent.after.workspace_id)
@@ -1424,14 +1372,49 @@ impl CredentialRepo for PostgresCredentialRepo {
                 .execute(&mut *tx)
                 .await
                 .map_err(storage)?
-                .rows_affected()
-            };
-            if changed != 1 {
-                return Err(CredentialError::MutationConflict(
-                    "credential revision changed during mutation".into(),
-                ));
+                .rows_affected();
+                if inserted != 1 {
+                    return Err(CredentialError::MutationConflict(
+                        "credential replacement id changed during mutation".into(),
+                    ));
+                }
+                reclaiming
             }
-        }
+            CredentialPublicationAdmission::Apply(reclaiming) => {
+                let changed = if let Some(before) = intent.before.as_ref() {
+                    sqlx::query(&format!(
+                        "UPDATE {NS}_source SET workspace_id = $1, data = $2 \
+                     WHERE id = $3 AND workspace_id = $4"
+                    ))
+                    .bind(&intent.after.workspace_id)
+                    .bind(Json(&intent.after))
+                    .bind(&intent.after.id.0)
+                    .bind(&before.workspace_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(storage)?
+                    .rows_affected()
+                } else {
+                    sqlx::query(&format!(
+                        "INSERT INTO {NS}_source (id, workspace_id, data) VALUES ($1, $2, $3) \
+                     ON CONFLICT (id) DO NOTHING"
+                    ))
+                    .bind(&intent.after.id.0)
+                    .bind(&intent.after.workspace_id)
+                    .bind(Json(&intent.after))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(storage)?
+                    .rows_affected()
+                };
+                if changed != 1 {
+                    return Err(CredentialError::MutationConflict(
+                        "credential revision changed during mutation".into(),
+                    ));
+                }
+                reclaiming
+            }
+        };
         sqlx::query(&format!(
             "UPDATE {NS}_creation_intent SET data = $2 WHERE source_id = $1"
         ))

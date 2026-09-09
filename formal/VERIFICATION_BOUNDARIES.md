@@ -724,6 +724,17 @@ all-reject fixture. The obsolete proof-only child predicate was removed.
 These are bounded admission-kernel proofs, not arbitrary String/URL proofs or
 universal refinement of SQL concurrency, sibling uniqueness and child-ID CAS.
 
+Source-only publication shares complete Source/WAL admission on
+`CredentialMutationIntent` across three adapters. SQL, locks and affected-row
+checks remain adapter-owned; distinct replay does not lock its predecessor.
+Native qualification checks 3,392 snapshot cells, 65 Source/stage cells and
+16 WAL/phase cells, including live PostgreSQL. Five policy mutants fail on all
+adapters; three phase-write mutants break replay; one catches late phase checks.
+pre-Cow complete-method Kani probe (fixed identities/material-free, full i64,
+real heap/Drop/default checks) hit the 600-second guard; no PASS is registered.
+Arbitrary heap/SQL/SecretStore refinement and application successor arithmetic
+remain outside these witnesses; the whole row stays `abstract_model_checked`.
+
 Managed begin/commit and cleanup use the same typed `is_unpublished_at`
 comparison under each adapter's existing transaction. Its creation-presence
 Kani harness covers all four present/absent pairs; shared adapter rule M6
