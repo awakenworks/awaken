@@ -239,6 +239,15 @@ type checking are valuable executable evidence, but are not formal proofs.
   This proves the numeric clock rules, not SQL predicate evaluation, the
   separate age-reclaim/claim transaction sequence, clock behavior, or complete
   WorkQueue refinement. The exact-boundary obligation keeps its abstract grade.
+  The test-support in-memory reference queue additionally owns Work rows,
+  token digests and its existing LeaseBook under one aggregate mutex. Four
+  actual-port Loom scenarios cover release/wake/reacquire, token authentication
+  against reclaim, owner teardown against reclaim, and renewal against reclaim;
+  each uses two competing threads with at most two preemptions. The original
+  release and token-authentication implementations both fail these scenarios.
+  These bounded reference-adapter checks do not prove SQLite/PostgreSQL isolation,
+  arbitrary schedules or token entropy, and neither atomicity/release ledger row
+  is promoted beyond its existing abstract theorem grade.
 - Config CAS uses one statement owner per SQL adapter for both ordinary and
   audited writes: expected zero inserts only, positive revisions update only,
   and the returned revision is the stored `RETURNING` value. Existing `StoredU64`
