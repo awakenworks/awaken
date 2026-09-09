@@ -1,6 +1,11 @@
 //! A delegated A2A Agent uses the same publication, child Run, attempt registry,
 //! credential admission and commit path as a directly admitted remote Run.
 
+#[path = "a2a_loopback/authenticated.rs"]
+mod authenticated;
+#[path = "a2a_loopback/cancellation.rs"]
+mod cancellation;
+
 use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
@@ -349,21 +354,6 @@ fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
     });
 }
 
-async fn require_remote_bearer(
-    request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    if request
-        .headers()
-        .get("authorization")
-        .and_then(|value| value.to_str().ok())
-        != Some("Bearer remote-secret")
-    {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-    next.run(request).await
-}
-
 #[test]
 fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
     // Causes:
@@ -383,82 +373,14 @@ fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
     // fingerprint drift are the fail-closed rules in `a2a_remote` and
     // `PinnedA2aTransportResolver`; anonymous U1/U2 are covered above.
     run_composed_async_test(|| async {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind authenticated A2A peer");
-        let endpoint = format!("http://{}", listener.local_addr().expect("peer address"));
-        let mut card = awaken_protocol_a2a::agent_card("remote");
-        card.url = format!("{endpoint}/v1/a2a");
-        card.security_schemes.insert(
-            "bearer".into(),
-            serde_json::from_value(serde_json::json!({
-                "type": "http",
-                "scheme": "Bearer"
-            }))
-            .expect("valid HTTP Bearer security scheme"),
-        );
-        card.security = serde_json::from_value(serde_json::json!([{"bearer": []}]))
-            .expect("valid security requirement");
-        let security_fingerprint =
-            awaken_runtime_contract::content_fingerprint(&(&card.security_schemes, &card.security))
-                .map(|fingerprint| format!("sha256:{fingerprint}"))
-                .expect("fingerprint card security");
-        let card_router = Router::new().route(
-            awaken_protocol_a2a::client::AGENT_CARD_PATH,
-            get({
-                let card = card.clone();
-                move || {
-                    let card = card.clone();
-                    async move { axum::Json(card) }
-                }
-            }),
-        );
-        let authenticated_peer = build_router(Arc::new(EchoModel), "remote")
-            .layer(axum::middleware::from_fn(require_remote_bearer));
-        let peer = card_router.fallback_service(authenticated_peer);
-        let peer_task = tokio::spawn(async move {
-            axum::serve(listener, peer)
-                .await
-                .expect("serve authenticated A2A peer");
-        });
-
-        let credentials = Arc::new(InMemoryCredentialRepo::new());
-        let secrets = Arc::new(InMemorySecretStore::new());
-        let entered = enter_credential(
-            CredentialCreateParams {
-                workspace_id: "default".into(),
-                kind: CredentialKind::Vault,
-                provider_id: Some(endpoint.clone()),
-                env_key: None,
-                secret: Some(RedactedString::new("remote-secret")),
-                oauth_command: None,
-            },
-            secrets.as_ref(),
-            credentials.as_ref(),
-        )
-        .await
-        .expect("enter origin credential");
-        let access = CredentialAccess::new(
-            CredentialRef {
-                id: entered.id.0,
-                revision: u64::try_from(entered.version).expect("positive credential revision"),
-            },
-            CredentialMaterialSource::ControlPlaneReference,
-            CredentialUsage::HttpHeader {
-                name: "authorization".into(),
-                scheme: Some("Bearer".into()),
-            },
-            CredentialExecutionPolicy::self_hosted_provider(),
-        )
-        .with_target(CredentialTarget::new(
-            CredentialPurpose::RemoteAgentAuthorization,
-            endpoint.clone(),
-        ));
+        let peer =
+            authenticated::AuthenticatedPeer::start(build_router(Arc::new(EchoModel), "remote"))
+                .await;
         let host = published_delegating_host(
-            &endpoint,
-            access,
-            security_fingerprint,
-            awaken_credential_materializer::PinnedCredentialMaterializer::new(credentials, secrets),
+            &peer.endpoint,
+            peer.access.clone(),
+            peer.security_fingerprint.clone(),
+            peer.materializer(),
         );
 
         host.run(
@@ -469,6 +391,12 @@ fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
         .await
         .expect("origin credential authenticates the delegated A2A child");
         assert_committed_child_report(&host, "authenticated-thread").await;
-        peer_task.abort();
+        assert!(
+            peer.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(_, _, authorized)| *authorized)
+        );
     });
 }
