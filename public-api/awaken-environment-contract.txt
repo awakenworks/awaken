@@ -111,6 +111,7 @@ pub awaken_environment_contract::EnvironmentRegistrationIntent::operation: awake
 pub awaken_environment_contract::EnvironmentRegistrationIntent::revision: awaken_environment_contract::EnvironmentRevision
 impl awaken_environment_contract::EnvironmentRegistrationIntent
 pub fn awaken_environment_contract::EnvironmentRegistrationIntent::for_item(&awaken_environment_contract::EnvItem) -> Self
+pub const fn awaken_environment_contract::EnvironmentRegistrationIntent::requires_delivery(&self, bool) -> bool
 pub struct awaken_environment_contract::EnvironmentRevision(pub u64)
 pub struct awaken_environment_contract::EnvironmentSandboxPolicyRef
 pub awaken_environment_contract::EnvironmentSandboxPolicyRef::policy_id: alloc::string::String

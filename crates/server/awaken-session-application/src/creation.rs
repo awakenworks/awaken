@@ -37,6 +37,25 @@ enum SessionCreateControlFailurePlan {
     FailTerminal,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionCreateReplayPlan {
+    ReturnDurableRoot,
+    RejectTerminalOccupation,
+}
+
+const fn session_create_replay_plan(
+    execution: SessionExecutionState,
+    completion: SessionCreationCompletion,
+) -> SessionCreateReplayPlan {
+    if matches!(completion, SessionCreationCompletion::AwaitRealization)
+        && matches!(execution, SessionExecutionState::ActivationFailed)
+    {
+        SessionCreateReplayPlan::RejectTerminalOccupation
+    } else {
+        SessionCreateReplayPlan::ReturnDurableRoot
+    }
+}
+
 /// Reuse the contract-owned disposition instead of teaching create another
 /// list of retryable control variants.
 #[must_use]
@@ -132,6 +151,56 @@ mod create_effect_gate_verification {
             disposition != SessionRealizationControlDisposition::Terminal
         );
     }
+
+    #[kani::proof]
+    fn create_replay_conflict_and_terminal_occupation_are_exact_and_closed() {
+        // Cause/effect table: C1 crosses every durable execution state; C2 the
+        // caller awaits realization or accepts the already durable root; C3 is
+        // each repository identity conflict. E1 only Await+ActivationFailed is
+        // the historical terminal occupation; E2 every other exact replay
+        // returns durable truth; E3 each conflict maps to one distinct error
+        // and no branch can fall through to create effects.
+        let execution = match kani::any::<u8>() % 7 {
+            0 => SessionExecutionState::Preparing,
+            1 => SessionExecutionState::Activating,
+            2 => SessionExecutionState::ActivationFailed,
+            3 => SessionExecutionState::Running,
+            4 => SessionExecutionState::Rescheduling,
+            5 => SessionExecutionState::Idle,
+            _ => SessionExecutionState::Terminated,
+        };
+        let completion = if kani::any::<bool>() {
+            SessionCreationCompletion::AwaitRealization
+        } else {
+            SessionCreationCompletion::AcceptDurableRoot
+        };
+        assert_eq!(
+            session_create_replay_plan(execution, completion)
+                == SessionCreateReplayPlan::RejectTerminalOccupation,
+            execution == SessionExecutionState::ActivationFailed
+                && completion == SessionCreationCompletion::AwaitRealization
+        );
+
+        let conflict = match kani::any::<u8>() % 3 {
+            0 => awaken_session_contract::SessionRepositoryConflict::AlreadyExists,
+            1 => awaken_session_contract::SessionRepositoryConflict::Tombstoned,
+            _ => awaken_session_contract::SessionRepositoryConflict::IdempotencyMismatch,
+        };
+        let error = SessionCreationError::repository(
+            awaken_session_contract::SessionRepositoryError::Conflict(conflict.clone()),
+        );
+        assert!(match conflict {
+            awaken_session_contract::SessionRepositoryConflict::AlreadyExists => {
+                matches!(error, SessionCreationError::Conflict)
+            }
+            awaken_session_contract::SessionRepositoryConflict::Tombstoned => {
+                matches!(error, SessionCreationError::Tombstoned)
+            }
+            awaken_session_contract::SessionRepositoryConflict::IdempotencyMismatch => {
+                matches!(error, SessionCreationError::IdempotencyMismatch)
+            }
+        });
+    }
 }
 
 /// Classify the repository-owned durable result at both create-replay entry
@@ -142,12 +211,10 @@ pub(super) fn validated_create_replay(
     session: PersistedSession,
     completion: SessionCreationCompletion,
 ) -> Result<PersistedSession, SessionCreationError> {
-    if completion == SessionCreationCompletion::AwaitRealization
-        && session.execution == SessionExecutionState::ActivationFailed
-    {
-        return Err(SessionCreationError::Tombstoned);
+    match session_create_replay_plan(session.execution, completion) {
+        SessionCreateReplayPlan::ReturnDurableRoot => Ok(session),
+        SessionCreateReplayPlan::RejectTerminalOccupation => Err(SessionCreationError::Tombstoned),
     }
-    Ok(session)
 }
 
 /// Protocol-neutral command accepted by the one durable Session creation driver.
@@ -195,11 +262,11 @@ impl SessionCreationError {
                 Self::Internal("newly created Session disappeared".into())
             }
             awaken_session_contract::SessionRepositoryError::Conflict(conflict) => match conflict {
+                awaken_session_contract::SessionRepositoryConflict::AlreadyExists => Self::Conflict,
+                awaken_session_contract::SessionRepositoryConflict::Tombstoned => Self::Tombstoned,
                 awaken_session_contract::SessionRepositoryConflict::IdempotencyMismatch => {
                     Self::IdempotencyMismatch
                 }
-                awaken_session_contract::SessionRepositoryConflict::Tombstoned => Self::Tombstoned,
-                awaken_session_contract::SessionRepositoryConflict::AlreadyExists => Self::Conflict,
             },
             awaken_session_contract::SessionRepositoryError::Unavailable(message) => {
                 Self::Unavailable(message)

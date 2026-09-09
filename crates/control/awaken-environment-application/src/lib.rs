@@ -127,7 +127,7 @@ impl EnvironmentApplication {
         intent: EnvironmentRegistrationIntent,
         replay_delivered: bool,
     ) -> Result<(), EnvironmentApplicationError> {
-        if intent.delivered && !replay_delivered {
+        if !intent.requires_delivery(replay_delivered) {
             return Ok(());
         }
         match intent.operation {

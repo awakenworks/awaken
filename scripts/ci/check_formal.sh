@@ -276,6 +276,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-environment-realization-contract \
     --harness environment_image_build_claim_is_exact_non_wrapping_and_blocked_is_inert \
     --harness environment_image_build_mutation_requires_exact_claim_and_admissible_command
+  run_kani awaken-environment-contract \
+    --harness environment_registration_intent_is_exact_idempotent_and_recoverable
   run_kani awaken-session-contract \
     --harness session_network_intersection_two_by_two_ascii_hosts_partition \
     --harness session_network_intersection_none_by_none_partition \
@@ -370,7 +372,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness session_root_observation_is_total_monotonic_and_idempotent \
     --harness session_root_receipt_selects_candidate_only_for_applied_revision \
     --harness environment_owner_topology_is_exact_and_frozen \
+    --harness work_projection_is_derived_only_from_durable_session_truth \
     --harness only_an_applied_awaited_create_may_enter_post_create_effects \
+    --harness create_replay_conflict_and_terminal_occupation_are_exact_and_closed \
     --harness nonterminal_control_failures_only_replay_the_durable_create_root \
     --harness session_recovery_backoff_is_bounded_monotonic_and_saturating \
     --harness terminal_session_never_enters_ordinary_resource_reconciliation \

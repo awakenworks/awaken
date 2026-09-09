@@ -28,6 +28,16 @@ pub const fn environment_requires_external_owner(frozen: SessionRuntimePlacement
     }
 }
 
+/// Decide whether the disposable WorkQueue projection must be present from the
+/// authoritative Session root. Absence, local execution, and terminal cleanup
+/// all stutter; only a frozen nonterminal self-hosted Session is projected.
+const fn session_work_projection_required(
+    frozen_self_hosted: Option<bool>,
+    terminal: bool,
+) -> bool {
+    matches!(frozen_self_hosted, Some(true)) && !terminal
+}
+
 /// Reject a frozen topology whose idle policy would require Coordinator-local
 /// continuation effects against a Worker-owned Environment. External Workers
 /// have one realization/terminal-cleanup claim path, but no claim-fenced
@@ -77,6 +87,24 @@ mod environment_owner_kani_proof {
         assert!(environment_requires_external_owner(
             SessionRuntimePlacement::Worker
         ));
+    }
+
+    #[kani::proof]
+    fn work_projection_is_derived_only_from_durable_session_truth() {
+        // Cause/effect table: C1 root has no frozen baseline / local / external;
+        // C2 root is nonterminal/terminal. E1 enqueue iff external+nonterminal;
+        // E2 every other row stutters. Both the create fast path and recovery
+        // scan call the same production function that consumes this decision.
+        let frozen_self_hosted = match kani::any::<u8>() % 3 {
+            0 => None,
+            1 => Some(false),
+            _ => Some(true),
+        };
+        let terminal = kani::any::<bool>();
+        assert_eq!(
+            super::session_work_projection_required(frozen_self_hosted, terminal),
+            frozen_self_hosted == Some(true) && !terminal
+        );
     }
 }
 
@@ -835,18 +863,27 @@ async fn dispatch_session_work(
     environments: &dyn SessionEnvironmentSource,
     session: &PersistedSession,
 ) -> Result<bool, awaken_session_contract::work_queue::WorkQueueError> {
-    let Some(baseline) = session.frozen_baseline() else {
+    if session.is_terminal() {
+        // Keep the externally auditable terminal guard at the effect boundary.
+        // The shared plan below repeats the same immutable fact so recovery and
+        // create-time callers cannot acquire a second projection policy.
+        return Ok(false);
+    }
+    let baseline = session.frozen_baseline();
+    if !session_work_projection_required(
+        baseline.map(|baseline| baseline.environment.self_hosted),
+        session.is_terminal(),
+    ) {
+        return Ok(false);
+    }
+    let Some(baseline) = baseline else {
+        // The closed production decision above cannot admit this state. Keep
+        // the adapter fail-closed if the representation is ever extended.
         return Ok(false);
     };
-    if !baseline.environment.self_hosted {
-        return Ok(false);
-    }
-    if session.is_terminal() {
-        // Terminal Work retirement belongs exclusively to the recoverable
-        // resource cleanup driver. A second reconciler would duplicate the
-        // external attempt and obscure its durable completion boundary.
-        return Ok(false);
-    }
+    // Terminal Work retirement belongs exclusively to the recoverable resource
+    // cleanup driver. A second reconciler would duplicate the external attempt
+    // and obscure its durable completion boundary.
     environments
         .enqueue_session_work(&baseline.environment.environment_id, &session.session_id)
         .await?;
