@@ -160,9 +160,10 @@ pub use resource_activation::{
     SessionResourceState,
 };
 pub use run_admission::{
-    AdmitSessionRun, AdmittedSessionRun, SessionRunActivation, SessionRunCommandFingerprint,
-    SessionRunDelivery, SessionRunExecutionRequirements, SessionRunReplacement,
-    SessionRunReservation, session_run_id,
+    AdmitSessionRun, AdmittedSessionRun, SessionRunActivation, SessionRunActivityReceiptPlan,
+    SessionRunCommandFingerprint, SessionRunDelivery, SessionRunExecutionRequirements,
+    SessionRunReplacement, SessionRunReservation, session_run_activity_receipt_plan,
+    session_run_id,
 };
 pub use run_application::{
     CursorParams, EventForwardingSink, HistoryPage, RunApplication, RunApplicationError, RunResume,

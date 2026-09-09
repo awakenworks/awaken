@@ -49,6 +49,243 @@ pub enum SessionActivityError {
     Unavailable(String),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionActivityOpenPlan {
+    Open(u64),
+    Terminal,
+    NotReady,
+    BudgetReached,
+    EpochExhausted,
+    Conflict,
+}
+
+/// The sole finite admission decision for the root activity mutation. Runtime
+/// interval and Environment projection remain effects of the accepted plan;
+/// they do not own another readiness or epoch policy.
+#[must_use]
+const fn session_activity_open_plan(
+    execution: SessionExecutionState,
+    current_epoch: u64,
+    exact_epoch: Option<u64>,
+    allow_external_realization: bool,
+    continue_committed_await: bool,
+    budget_admits: bool,
+) -> SessionActivityOpenPlan {
+    if execution.is_terminal() {
+        return SessionActivityOpenPlan::Terminal;
+    }
+    let ready = execution.admits_activity()
+        || (allow_external_realization
+            && matches!(
+                execution,
+                SessionExecutionState::Preparing | SessionExecutionState::Activating
+            ));
+    if !ready {
+        return SessionActivityOpenPlan::NotReady;
+    }
+    if !continue_committed_await && !budget_admits {
+        return SessionActivityOpenPlan::BudgetReached;
+    }
+    match exact_epoch {
+        Some(epoch) if epoch != 0 && epoch > current_epoch => SessionActivityOpenPlan::Open(epoch),
+        Some(_) => SessionActivityOpenPlan::Conflict,
+        None => match current_epoch.checked_add(1) {
+            Some(epoch) => SessionActivityOpenPlan::Open(epoch),
+            None => SessionActivityOpenPlan::EpochExhausted,
+        },
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionActivitySettlementPlan {
+    Stutter,
+    RetainExecution,
+    CloseRunningInterval,
+}
+
+/// Decide the logical effect after the aggregate's exact epoch set has applied
+/// a removal. Only removal of the final current epoch may close Running.
+#[must_use]
+const fn session_activity_settlement_plan(
+    exact_epoch_removed: bool,
+    last_active: bool,
+    execution_running: bool,
+) -> SessionActivitySettlementPlan {
+    if !exact_epoch_removed {
+        SessionActivitySettlementPlan::Stutter
+    } else if last_active && execution_running {
+        SessionActivitySettlementPlan::CloseRunningInterval
+    } else {
+        SessionActivitySettlementPlan::RetainExecution
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn session_activity_open_and_settlement_plans_are_total_exact_and_fail_closed() {
+    // Admission causes: all seven execution states, arbitrary current/exact
+    // epoch, external-realization permission, committed-Awaiting continuation,
+    // and budget admission. Effects: terminal/not-ready/budget/overflow/conflict
+    // reject; Open always carries one non-zero epoch greater than the fence.
+    // Settlement causes cross exact removal, last-active, and Running; only the
+    // exact+last+Running row closes the interval, while unknown/duplicate is a
+    // stutter. SQL CAS and interval persistence remain outside this plan.
+    let execution = match kani::any::<u8>() % 7 {
+        0 => SessionExecutionState::Preparing,
+        1 => SessionExecutionState::Activating,
+        2 => SessionExecutionState::ActivationFailed,
+        3 => SessionExecutionState::Running,
+        4 => SessionExecutionState::Rescheduling,
+        5 => SessionExecutionState::Idle,
+        _ => SessionExecutionState::Terminated,
+    };
+    let current_epoch = kani::any();
+    let exact_epoch = kani::any::<bool>().then_some(kani::any());
+    let allow_external = kani::any();
+    let continue_await = kani::any();
+    let budget_admits = kani::any();
+    let open = session_activity_open_plan(
+        execution,
+        current_epoch,
+        exact_epoch,
+        allow_external,
+        continue_await,
+        budget_admits,
+    );
+    let ready = execution.admits_activity()
+        || (allow_external
+            && matches!(
+                execution,
+                SessionExecutionState::Preparing | SessionExecutionState::Activating
+            ));
+    let policy_admits = !execution.is_terminal() && ready && (continue_await || budget_admits);
+    assert_eq!(
+        open == SessionActivityOpenPlan::Terminal,
+        execution.is_terminal()
+    );
+    assert_eq!(
+        open == SessionActivityOpenPlan::NotReady,
+        !execution.is_terminal() && !ready
+    );
+    assert_eq!(
+        open == SessionActivityOpenPlan::BudgetReached,
+        !execution.is_terminal() && ready && !continue_await && !budget_admits
+    );
+    assert_eq!(
+        open == SessionActivityOpenPlan::Conflict,
+        policy_admits && exact_epoch.is_some_and(|epoch| epoch == 0 || epoch <= current_epoch)
+    );
+    assert_eq!(
+        open == SessionActivityOpenPlan::EpochExhausted,
+        policy_admits && exact_epoch.is_none() && current_epoch == u64::MAX
+    );
+    assert_eq!(
+        matches!(open, SessionActivityOpenPlan::Open(_)),
+        policy_admits
+            && (exact_epoch.is_some_and(|epoch| epoch != 0 && epoch > current_epoch)
+                || (exact_epoch.is_none() && current_epoch != u64::MAX))
+    );
+    if let SessionActivityOpenPlan::Open(epoch) = open {
+        assert_ne!(epoch, 0);
+        assert!(epoch > current_epoch);
+        assert!(!execution.is_terminal());
+        assert!(
+            execution.admits_activity()
+                || (allow_external
+                    && matches!(
+                        execution,
+                        SessionExecutionState::Preparing | SessionExecutionState::Activating
+                    ))
+        );
+        assert!(continue_await || budget_admits);
+    }
+    let removed = kani::any();
+    let last = kani::any();
+    let running = kani::any();
+    let settlement = session_activity_settlement_plan(removed, last, running);
+    assert_eq!(
+        settlement == SessionActivitySettlementPlan::CloseRunningInterval,
+        removed && last && running
+    );
+    assert_eq!(
+        settlement == SessionActivitySettlementPlan::Stutter,
+        !removed
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn session_activity_plan_cause_effect_table_is_closed() {
+    // R1 Idle+budget+fresh -> next epoch; R2 exact greater epoch -> that epoch;
+    // R3 terminal, unready, budget-denied, stale exact and MAX each reject;
+    // S1 exact final Running removal closes; S2 another active retains; S3
+    // duplicate/unknown stutters. Kani supplies arbitrary scalar coverage.
+    assert_eq!(
+        session_activity_open_plan(SessionExecutionState::Idle, 4, None, false, false, true),
+        SessionActivityOpenPlan::Open(5)
+    );
+    assert_eq!(
+        session_activity_open_plan(
+            SessionExecutionState::Running,
+            4,
+            Some(9),
+            false,
+            true,
+            false,
+        ),
+        SessionActivityOpenPlan::Open(9)
+    );
+    for rejected in [
+        session_activity_open_plan(
+            SessionExecutionState::Terminated,
+            0,
+            None,
+            false,
+            false,
+            true,
+        ),
+        session_activity_open_plan(
+            SessionExecutionState::Rescheduling,
+            0,
+            None,
+            false,
+            false,
+            true,
+        ),
+        session_activity_open_plan(SessionExecutionState::Idle, 0, None, false, false, false),
+        session_activity_open_plan(
+            SessionExecutionState::Running,
+            4,
+            Some(4),
+            false,
+            true,
+            true,
+        ),
+        session_activity_open_plan(
+            SessionExecutionState::Running,
+            u64::MAX,
+            None,
+            false,
+            true,
+            true,
+        ),
+    ] {
+        assert!(!matches!(rejected, SessionActivityOpenPlan::Open(_)));
+    }
+    assert_eq!(
+        session_activity_settlement_plan(true, true, true),
+        SessionActivitySettlementPlan::CloseRunningInterval
+    );
+    assert_eq!(
+        session_activity_settlement_plan(true, false, true),
+        SessionActivitySettlementPlan::RetainExecution
+    );
+    assert_eq!(
+        session_activity_settlement_plan(false, true, true),
+        SessionActivitySettlementPlan::Stutter
+    );
+}
+
 impl SessionActivityError {
     fn mutation(error: SessionMutationError) -> Self {
         match error {
@@ -138,26 +375,27 @@ impl SessionApplication {
         allow_external_realization: bool,
         continue_committed_await: bool,
     ) -> Result<u64, SessionActivityError> {
-        if session.is_terminal() {
-            return Err(SessionActivityError::Terminal);
-        }
-        if matches!(
+        let epoch = match session_activity_open_plan(
             session.execution,
-            SessionExecutionState::Preparing | SessionExecutionState::Activating
-        ) && !allow_external_realization
-        {
-            return Err(SessionActivityError::NotReady);
-        }
-        if !continue_committed_await && !session.budget.can_admit_model_request() {
-            return Err(SessionActivityError::BudgetReached);
-        }
-        let epoch = match exact_epoch {
-            Some(epoch) if session.begin_activity_epoch_at(epoch) => epoch,
-            Some(_) => return Err(SessionActivityError::Conflict),
-            None => session
-                .begin_activity_epoch()
-                .ok_or(SessionActivityError::EpochExhausted)?,
+            session.activity_epoch,
+            exact_epoch,
+            allow_external_realization,
+            continue_committed_await,
+            session.budget.can_admit_model_request(),
+        ) {
+            SessionActivityOpenPlan::Open(epoch) => epoch,
+            SessionActivityOpenPlan::Terminal => return Err(SessionActivityError::Terminal),
+            SessionActivityOpenPlan::NotReady => return Err(SessionActivityError::NotReady),
+            SessionActivityOpenPlan::BudgetReached => {
+                return Err(SessionActivityError::BudgetReached);
+            }
+            SessionActivityOpenPlan::EpochExhausted => {
+                return Err(SessionActivityError::EpochExhausted);
+            }
+            SessionActivityOpenPlan::Conflict => return Err(SessionActivityError::Conflict),
         };
+        let inserted = session.begin_activity_epoch_at(epoch);
+        debug_assert!(inserted, "activity plan selected a fresh exact epoch");
         session.environment.mark_active();
         if session.execution == SessionExecutionState::Idle {
             session
@@ -517,9 +755,15 @@ impl SessionApplication {
                     ));
                 }
             }
-            let Some(last_active) = session.settle_activity_epoch(expected_epoch) else {
+            let settlement = session.settle_activity_epoch(expected_epoch);
+            let settlement_plan = session_activity_settlement_plan(
+                settlement.is_some(),
+                settlement == Some(true),
+                session.execution == SessionExecutionState::Running,
+            );
+            if settlement_plan == SessionActivitySettlementPlan::Stutter {
                 return Ok(session);
-            };
+            }
             // Completion order does not grant inverse-transition ownership.
             // Every admitted epoch is removed exactly once; only the removal of
             // the final active epoch may close the one shared Running interval.
@@ -527,7 +771,7 @@ impl SessionApplication {
             // which case settlement records the activity completion without
             // overwriting that stronger execution phase.
             let lifecycle_facts =
-                if last_active && session.execution == SessionExecutionState::Running {
+                if settlement_plan == SessionActivitySettlementPlan::CloseRunningInterval {
                     session
                         .transition_execution(SessionExecutionState::Idle)
                         .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?;

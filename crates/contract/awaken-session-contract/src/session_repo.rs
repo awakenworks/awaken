@@ -218,6 +218,51 @@ mod mutation_tests {
     }
 
     #[test]
+    fn initial_event_installation_rejects_without_partial_root_mutation() {
+        // Causes: C1 untouched root plus valid detached initial plan; C2 the
+        // detached plan carries a conflicting pre-existing projection state.
+        // Effects: R1 C1 installs batch revision and wake epoch together; R2
+        // C2 rejects while every root byte stutters. This covers the production
+        // mutation boundary; the Kani table exhausts its scalar eligibility.
+        let mut root = session("initial-plan", SessionRevision(0));
+        let mut invalid = crate::SessionInitialEventPlan::compile(
+            "initial-plan",
+            "initial:initial-plan",
+            vec![crate::SessionEventInput::UserMessage {
+                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                    "hello",
+                )],
+            }],
+        )
+        .expect("C2 detached plan");
+        invalid.batch.admission_closed = true;
+        let before = root.clone();
+        assert_eq!(
+            root.install_initial_event_plan(invalid),
+            Err(crate::SessionEventBatchError::ProgressMismatch),
+            "R2 rejection"
+        );
+        assert_eq!(root, before, "R2 root stutters atomically");
+
+        let valid = crate::SessionInitialEventPlan::compile(
+            "initial-plan",
+            "initial:initial-plan",
+            vec![crate::SessionEventInput::UserMessage {
+                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                    "hello",
+                )],
+            }],
+        )
+        .expect("C1 detached plan");
+        root.install_initial_event_plan(valid).expect("R1 install");
+        let batch = root.event_batches.first().expect("R1 batch");
+        assert_eq!(batch.admitted_revision, SessionRevision(1), "R1");
+        assert_eq!(batch.wake_activity_epoch, Some(1), "R1");
+        assert_eq!(root.activity_epoch, 1, "R1");
+        assert_eq!(root.active_activity_epochs, BTreeSet::from([1]), "R1");
+    }
+
+    #[test]
     fn terminal_environment_receipt_joins_only_before_cleanup_targets_freeze() {
         // Cause/effect graph: C1 an exact Create receipt was authorized while
         // the Session was active; C2 archive commits terminal cleanup Fenced;

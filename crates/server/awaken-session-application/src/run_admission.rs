@@ -11,8 +11,9 @@ use awaken_session_contract::{
     AdmitSessionRun, AdmittedSessionRun, ControlSessionCreationInputs, McpAttachmentOrigin,
     Pending, RunApplication, RunApplicationError, RunError, RunResume, SessionBaselineState,
     SessionCreationIntent, SessionMcpAuthoringContext, SessionNetworkPolicy,
-    SessionRepositoryError, SessionRunDelivery, SessionRunReservation, SessionToolConfiguration,
-    StepOutcome, session_run_activity_operation_id,
+    SessionRepositoryError, SessionRunActivityReceiptPlan, SessionRunDelivery,
+    SessionToolConfiguration, StepOutcome, session_run_activity_operation_id,
+    session_run_activity_receipt_plan,
 };
 
 use crate::creation::SessionCreationCompletion;
@@ -260,45 +261,43 @@ impl SessionApplication {
                 session_activity_epoch,
             };
 
-            match reservation {
-                SessionRunReservation::Reserved | SessionRunReservation::AlreadyReserved => {
-                    let session_activity_epoch = match existing_activity_epoch {
-                        Some(epoch) => epoch,
-                        None => {
-                            self.begin_activity_for_operation(&session_id, &operation)
-                                .await
-                                .map_err(crate::SessionActivityError::run_error)?
-                                .1
-                        }
-                    };
-                    Ok(match reservation {
-                        SessionRunReservation::Reserved => {
-                            AdmittedSessionRun::Reserved(delivery(session_activity_epoch))
-                        }
-                        SessionRunReservation::AlreadyReserved => {
-                            AdmittedSessionRun::AlreadyReserved(delivery(session_activity_epoch))
-                        }
-                        _ => unreachable!("matched reserved outcomes"),
+            match session_run_activity_receipt_plan(reservation, existing_activity_epoch) {
+                SessionRunActivityReceiptPlan::CommitActivity {
+                    reservation_replayed,
+                } => {
+                    let session_activity_epoch = self
+                        .begin_activity_for_operation(&session_id, &operation)
+                        .await
+                        .map_err(crate::SessionActivityError::run_error)?
+                        .1;
+                    Ok(if reservation_replayed {
+                        AdmittedSessionRun::AlreadyReserved(delivery(session_activity_epoch))
+                    } else {
+                        AdmittedSessionRun::Reserved(delivery(session_activity_epoch))
                     })
                 }
-                SessionRunReservation::AlreadyActivated {
+                SessionRunActivityReceiptPlan::UseReceipt {
                     session_activity_epoch,
-                } => {
-                    if session_activity_epoch == 0 {
-                        return Err(RunError::internal(
-                            "activated Session Run has no activity epoch",
-                        ));
-                    }
-                    Ok(AdmittedSessionRun::AlreadyActivated(delivery(
-                        session_activity_epoch,
-                    )))
-                }
-                SessionRunReservation::RecoveryClaimed => {
+                    reservation_replayed,
+                } => Ok(if reservation_replayed {
+                    AdmittedSessionRun::AlreadyReserved(delivery(session_activity_epoch))
+                } else {
+                    AdmittedSessionRun::Reserved(delivery(session_activity_epoch))
+                }),
+                SessionRunActivityReceiptPlan::UseActivatedReceipt {
+                    session_activity_epoch,
+                } => Ok(AdmittedSessionRun::AlreadyActivated(delivery(
+                    session_activity_epoch,
+                ))),
+                SessionRunActivityReceiptPlan::RecoveryClaimed => {
                     Ok(AdmittedSessionRun::RecoveryClaimed { session_id, run_id })
                 }
-                SessionRunReservation::Completed => {
+                SessionRunActivityReceiptPlan::Completed => {
                     Ok(AdmittedSessionRun::Completed { session_id, run_id })
                 }
+                SessionRunActivityReceiptPlan::RejectInvalidReceipt => Err(RunError::internal(
+                    "reserved or activated Session Run has no activity epoch",
+                )),
             }
         })
     }

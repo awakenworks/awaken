@@ -154,6 +154,152 @@ pub enum SessionRunReservation {
     Completed,
 }
 
+/// The sole reservation-to-Session-activity decision. The Runtime reservation
+/// is already durable when this plan is evaluated; Reserved variants must bind
+/// one exact non-zero root receipt before activation, while an activated row
+/// carries its previously bound receipt and never opens another activity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionRunActivityReceiptPlan {
+    CommitActivity {
+        reservation_replayed: bool,
+    },
+    UseReceipt {
+        session_activity_epoch: u64,
+        reservation_replayed: bool,
+    },
+    UseActivatedReceipt {
+        session_activity_epoch: u64,
+    },
+    RecoveryClaimed,
+    Completed,
+    RejectInvalidReceipt,
+}
+
+#[must_use]
+pub const fn session_run_activity_receipt_plan(
+    reservation: SessionRunReservation,
+    existing_activity_epoch: Option<u64>,
+) -> SessionRunActivityReceiptPlan {
+    match reservation {
+        SessionRunReservation::Reserved | SessionRunReservation::AlreadyReserved => {
+            let reservation_replayed =
+                matches!(reservation, SessionRunReservation::AlreadyReserved);
+            match existing_activity_epoch {
+                Some(0) => SessionRunActivityReceiptPlan::RejectInvalidReceipt,
+                Some(session_activity_epoch) => SessionRunActivityReceiptPlan::UseReceipt {
+                    session_activity_epoch,
+                    reservation_replayed,
+                },
+                None => SessionRunActivityReceiptPlan::CommitActivity {
+                    reservation_replayed,
+                },
+            }
+        }
+        SessionRunReservation::AlreadyActivated {
+            session_activity_epoch: 0,
+        } => SessionRunActivityReceiptPlan::RejectInvalidReceipt,
+        SessionRunReservation::AlreadyActivated {
+            session_activity_epoch,
+        } => SessionRunActivityReceiptPlan::UseActivatedReceipt {
+            session_activity_epoch,
+        },
+        SessionRunReservation::RecoveryClaimed => SessionRunActivityReceiptPlan::RecoveryClaimed,
+        SessionRunReservation::Completed => SessionRunActivityReceiptPlan::Completed,
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn session_run_reservation_binds_exactly_one_nonzero_activity_receipt() {
+    // Cause/effect table exhausts five reservation classes, optional prior
+    // receipt and arbitrary u64 receipt values. Reserved/AlreadyReserved with
+    // no receipt select one commit; a non-zero receipt is reused exactly;
+    // zero fails closed. AlreadyActivated uses only its bound non-zero receipt.
+    // Recovery/Completed never create or reuse an activity. This is the
+    // production decision called only after the Runtime reservation returns.
+    let reservation = match kani::any::<u8>() % 5 {
+        0 => SessionRunReservation::Reserved,
+        1 => SessionRunReservation::AlreadyReserved,
+        2 => SessionRunReservation::RecoveryClaimed,
+        3 => SessionRunReservation::AlreadyActivated {
+            session_activity_epoch: kani::any(),
+        },
+        _ => SessionRunReservation::Completed,
+    };
+    let existing = kani::any::<bool>().then_some(kani::any());
+    let plan = session_run_activity_receipt_plan(reservation, existing);
+    let reserved = matches!(
+        reservation,
+        SessionRunReservation::Reserved | SessionRunReservation::AlreadyReserved
+    );
+    let invalid = (reserved && existing == Some(0))
+        || matches!(
+            reservation,
+            SessionRunReservation::AlreadyActivated {
+                session_activity_epoch: 0
+            }
+        );
+    assert_eq!(
+        plan == SessionRunActivityReceiptPlan::RejectInvalidReceipt,
+        invalid
+    );
+    assert_eq!(
+        matches!(plan, SessionRunActivityReceiptPlan::CommitActivity { .. }),
+        reserved && existing.is_none()
+    );
+    assert_eq!(
+        matches!(plan, SessionRunActivityReceiptPlan::UseReceipt { .. }),
+        reserved && existing.is_some_and(|epoch| epoch != 0)
+    );
+    match (reservation, existing, plan) {
+        (
+            SessionRunReservation::Reserved | SessionRunReservation::AlreadyReserved,
+            None,
+            SessionRunActivityReceiptPlan::CommitActivity {
+                reservation_replayed,
+            },
+        ) => assert_eq!(
+            reservation_replayed,
+            reservation == SessionRunReservation::AlreadyReserved
+        ),
+        (
+            SessionRunReservation::Reserved | SessionRunReservation::AlreadyReserved,
+            Some(epoch),
+            SessionRunActivityReceiptPlan::UseReceipt {
+                session_activity_epoch,
+                reservation_replayed,
+            },
+        ) => {
+            assert_ne!(epoch, 0);
+            assert_eq!(session_activity_epoch, epoch);
+            assert_eq!(
+                reservation_replayed,
+                reservation == SessionRunReservation::AlreadyReserved
+            );
+        }
+        (
+            SessionRunReservation::AlreadyActivated {
+                session_activity_epoch,
+            },
+            _,
+            SessionRunActivityReceiptPlan::UseActivatedReceipt {
+                session_activity_epoch: planned,
+            },
+        ) => {
+            assert_ne!(session_activity_epoch, 0);
+            assert_eq!(planned, session_activity_epoch);
+        }
+        (
+            SessionRunReservation::RecoveryClaimed,
+            _,
+            SessionRunActivityReceiptPlan::RecoveryClaimed,
+        )
+        | (SessionRunReservation::Completed, _, SessionRunActivityReceiptPlan::Completed) => {}
+        (_, _, SessionRunActivityReceiptPlan::RejectInvalidReceipt) => assert!(invalid),
+        _ => panic!("reservation/activity plan violated its closed decision table"),
+    }
+}
+
 /// Bind one already-admitted Session activity to its exact reserved Run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionRunDelivery {
@@ -223,8 +369,9 @@ mod tests {
     use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
 
     use super::{
-        AdmitSessionRun, SessionRunCommandFingerprint, SessionRunExecutionRequirements,
-        SessionRunReplacement, session_run_id,
+        AdmitSessionRun, SessionRunActivityReceiptPlan, SessionRunCommandFingerprint,
+        SessionRunExecutionRequirements, SessionRunReplacement, SessionRunReservation,
+        session_run_activity_receipt_plan, session_run_id,
     };
 
     fn command() -> AdmitSessionRun {
@@ -259,6 +406,51 @@ mod tests {
         assert_eq!(exact, session_run_id("session-1", "operation-1"), "R1/E1");
         assert_ne!(exact, session_run_id("session-2", "operation-1"), "R2/E2");
         assert_ne!(exact, session_run_id("session-1", "operation-2"), "R2/E2");
+    }
+
+    #[test]
+    fn reservation_activity_receipt_decision_table_is_closed() {
+        // Causes: fresh/replayed reservation, missing/exact/zero receipt, or an
+        // already activated/recovery/complete row. Effects: only a reserved row
+        // with no receipt requests one commit; exact non-zero receipts are
+        // reused byte-for-byte; zero rejects; non-reserved terminal/recovery
+        // classes never open activity. The Kani companion exhausts all u64s.
+        assert_eq!(
+            session_run_activity_receipt_plan(SessionRunReservation::Reserved, None),
+            SessionRunActivityReceiptPlan::CommitActivity {
+                reservation_replayed: false,
+            }
+        );
+        assert_eq!(
+            session_run_activity_receipt_plan(SessionRunReservation::AlreadyReserved, Some(7),),
+            SessionRunActivityReceiptPlan::UseReceipt {
+                session_activity_epoch: 7,
+                reservation_replayed: true,
+            }
+        );
+        assert_eq!(
+            session_run_activity_receipt_plan(SessionRunReservation::Reserved, Some(0)),
+            SessionRunActivityReceiptPlan::RejectInvalidReceipt
+        );
+        assert_eq!(
+            session_run_activity_receipt_plan(
+                SessionRunReservation::AlreadyActivated {
+                    session_activity_epoch: 9,
+                },
+                Some(7),
+            ),
+            SessionRunActivityReceiptPlan::UseActivatedReceipt {
+                session_activity_epoch: 9,
+            }
+        );
+        assert_eq!(
+            session_run_activity_receipt_plan(SessionRunReservation::RecoveryClaimed, None),
+            SessionRunActivityReceiptPlan::RecoveryClaimed
+        );
+        assert_eq!(
+            session_run_activity_receipt_plan(SessionRunReservation::Completed, None),
+            SessionRunActivityReceiptPlan::Completed
+        );
     }
 
     #[test]
