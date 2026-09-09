@@ -286,7 +286,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness deleted_admission_resolver_preserves_empty \
     --harness deleted_admission_resolver_preserves_legacy_error_and_frame \
     --cbmc-args --unwindset memcmp.0:64
-  # All 24 None/empty/one-ID cases plus two-ID Absent 24/28/30 and Closed31;
+  # All 24 None/empty/one-ID cases plus all two-ID Absent/Conflict/Closed;
   # full source frame and two-live-output replay/Drop (two-ID output stays open).
   run_kani awaken-session-contract -Z unstable-options \
     --harness deleted_admission_one_retained_absent_none_00 \
@@ -308,6 +308,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness deleted_admission_one_retained_absent_one_22 \
     --harness deleted_admission_one_retained_closed_one_23 \
     --harness deleted_admission_one_retained_absent_two_24 \
+    --harness deleted_admission_one_retained_absent_two_26 \
     --harness deleted_admission_one_retained_absent_two_28 \
     --harness deleted_admission_one_retained_absent_two_30 \
     --harness deleted_admission_one_retained_closed_two_31 \
@@ -320,6 +321,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness deleted_admission_one_retained_conflict_empty_13 \
     --harness deleted_admission_one_retained_conflict_one_17 \
     --harness deleted_admission_one_retained_conflict_one_21 \
+    --harness deleted_admission_one_retained_conflict_two_25 \
+    --harness deleted_admission_one_retained_conflict_two_29 \
     --cbmc-args --unwindset memcmp.0:65
   run_kani awaken-session-contract \
     --harness session_event_batch_admission_resolution_is_total_closed_and_append_once \
