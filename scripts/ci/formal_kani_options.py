@@ -14,25 +14,53 @@ import sys
 # Pinned nightly-2026-05-01 / Kani 0.67 std loop identities. No shell expansion.
 ACTIVITY_HEIGHT_LOOPS = (
     # navigate.rs:465
-    ('_RINvMsj_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree8navigateINtNtB8_4node6HandleINtB11_7NodeRefNtNtB11_6marker5DyingyNtNtB8_7set_val9SetValZSTNtB1z_4LeafENtB1z_4EdgeE17deallocating_nextNtNtBc_5alloc6GlobalECs9zR91oUBBIR_23awaken_session_contract.0', 1),
+    ('_RINvMsj_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree8navigateINtNtB8_4node6HandleINtB11_7NodeRefNtNtB11_6marker5DyingyNtNtB8_7set_val9SetValZSTNtB1z_4LeafENtB1z_4EdgeE17deallocating_nextNtNtBc_5alloc6GlobalECseln4KG8PkwO_23awaken_session_contract.0', 1),
     # search.rs:57
-    ('_RINvMs_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree6searchINtNtB7_4node7NodeRefNtNtBY_6marker3MutyNtNtB7_7set_val9SetValZSTNtB1i_14LeafOrInternalE11search_treeyECs9zR91oUBBIR_23awaken_session_contract.0', 1),
+    ('_RINvMs_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree6searchINtNtB7_4node7NodeRefNtNtBY_6marker3MutyNtNtB7_7set_val9SetValZSTNtB1i_14LeafOrInternalE11search_treeyECseln4KG8PkwO_23awaken_session_contract.0', 1),
     # node.rs:558
-    ('_RINvMsp_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree4nodeINtB6_7NodeRefNtNtB6_6marker3MutyNtNtB8_7set_val9SetValZSTNtB1a_8InternalE30correct_childrens_parent_linksINtNtNtCsjxLPRqQEPX2_4core3ops5range5RangejEECs9zR91oUBBIR_23awaken_session_contract.0', 1),
+    ('_RINvMsp_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree4nodeINtB6_7NodeRefNtNtB6_6marker3MutyNtNtB8_7set_val9SetValZSTNtB1a_8InternalE30correct_childrens_parent_linksINtNtNtCsjxLPRqQEPX2_4core3ops5range5RangejEECseln4KG8PkwO_23awaken_session_contract.0', 1),
     # navigate.rs:518
-    ('_RINvMsj_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree8navigateINtNtB8_4node6HandleINtB11_7NodeRefNtNtB11_6marker5DyingyNtNtB8_7set_val9SetValZSTNtB1z_4LeafENtB1z_4EdgeE16deallocating_endNtNtBc_5alloc6GlobalECs9zR91oUBBIR_23awaken_session_contract.0', 1),
+    ('_RINvMsj_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree8navigateINtNtB8_4node6HandleINtB11_7NodeRefNtNtB11_6marker5DyingyNtNtB8_7set_val9SetValZSTNtB1z_4LeafENtB1z_4EdgeE16deallocating_endNtNtBc_5alloc6GlobalECseln4KG8PkwO_23awaken_session_contract.0', 1),
     # node.rs:558
-    ('_RINvMsp_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree4nodeINtB6_7NodeRefNtNtB6_6marker3MutyNtNtB8_7set_val9SetValZSTNtB1a_8InternalE30correct_childrens_parent_linksINtNtNtCsjxLPRqQEPX2_4core3ops5range14RangeInclusivejEECs9zR91oUBBIR_23awaken_session_contract.0', 1),
+    ('_RINvMsp_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree4nodeINtB6_7NodeRefNtNtB6_6marker3MutyNtNtB8_7set_val9SetValZSTNtB1a_8InternalE30correct_childrens_parent_linksINtNtNtCsjxLPRqQEPX2_4core3ops5range14RangeInclusivejEECseln4KG8PkwO_23awaken_session_contract.0', 1),
     # node.rs:1072
-    ('_RINvMsN_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree4nodeINtB6_6HandleINtB6_7NodeRefNtNtB6_6marker3MutyNtNtB8_7set_val9SetValZSTNtB1n_4LeafENtB1n_4EdgeE16insert_recursingNtNtBc_5alloc6GlobalNCNvMs6_NtNtB8_3map5entryINtB3b_11VacantEntryyB1E_E12insert_entry0ECs9zR91oUBBIR_23awaken_session_contract.0', 1),
+    ('_RINvMsN_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree4nodeINtB6_6HandleINtB6_7NodeRefNtNtB6_6marker3MutyNtNtB8_7set_val9SetValZSTNtB1n_4LeafENtB1n_4EdgeE16insert_recursingNtNtBc_5alloc6GlobalNCNvMs6_NtNtB8_3map5entryINtB3b_11VacantEntryyB1E_E12insert_entry0ECseln4KG8PkwO_23awaken_session_contract.0', 1),
     # navigate.rs:634
-    ('_RNvMsn_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree8navigateINtNtB7_4node7NodeRefNtNtB10_6marker5DyingyNtNtB7_7set_val9SetValZSTNtB1k_14LeafOrInternalE15first_leaf_edgeCs9zR91oUBBIR_23awaken_session_contract.0', 1),
+    ('_RNvMsn_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree8navigateINtNtB7_4node7NodeRefNtNtB10_6marker5DyingyNtNtB7_7set_val9SetValZSTNtB1k_14LeafOrInternalE15first_leaf_edgeCseln4KG8PkwO_23awaken_session_contract.0', 1),
     # search.rs:57
-    ('_RINvMs_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree6searchINtNtB7_4node7NodeRefNtNtBY_6marker5ImmutyNtNtB7_7set_val9SetValZSTNtB1i_14LeafOrInternalE11search_treeyECs9zR91oUBBIR_23awaken_session_contract.0', 1),
+    ('_RINvMs_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree6searchINtNtB7_4node7NodeRefNtNtBY_6marker5ImmutyNtNtB7_7set_val9SetValZSTNtB1i_14LeafOrInternalE11search_treeyECseln4KG8PkwO_23awaken_session_contract.0', 1),
+)
+
+# One pinned UTF-8 loop catalog for the canonical fixed-width encoder. The
+# safe String conversion remains part of both proofs, including unwind checks.
+FINGERPRINT_ENCODING_LOOPS = (
+    "_RNvNtNtCsjxLPRqQEPX2_4core3str11validations19run_utf8_validation.0",
+    "_RNvNtNtCsjxLPRqQEPX2_4core3str11validations19run_utf8_validation.1",
+    "_RNvNtNtCsjxLPRqQEPX2_4core3str11validations19run_utf8_validation.2",
+    "_RNvNvNtCsjxLPRqQEPX2_4core3ptr12align_offset7mod_invCscYh4lW7VexR_21awaken_agent_contract.0",
 )
 
 # Profiles bind solver options to their exact production package and harnesses.
 PROFILES = {
+    "fingerprint-fnv-hex-v1": (
+        "awaken-agent-contract",
+        frozenset({"fnv_hex_output_preserves_every_u64"}),
+        # 24 ASCII wire bytes: at most seven alignment bytes, one 16-byte
+        # block, eight tail bytes; bounds include exit. mod_inv needs <=4
+        # iterations on the pinned 64-bit target. Global unwind remains 18.
+        tuple(zip(FINGERPRINT_ENCODING_LOOPS, (2, 9, 9, 5))),
+        "z3",
+    ),
+    "fingerprint-sha256-hex-v1": (
+        "awaken-agent-contract",
+        frozenset({"sha256_hex_output_preserves_every_digest_byte"}),
+        # 71 ASCII wire bytes: <=7 alignment bytes and four 16-byte blocks;
+        # tail 17 is conservative, outer 9 includes exit. Global unwind 66
+        # retains every one of the 256 unconstrained input bits. CaDiCaL is
+        # independently qualified; the Z3 timeout is not a proof result.
+        tuple(zip(FINGERPRINT_ENCODING_LOOPS, (5, 17, 9, 5))),
+        "cadical",
+    ),
     "activity-admission-height-v1": (
         "awaken-session-contract",
         frozenset({
