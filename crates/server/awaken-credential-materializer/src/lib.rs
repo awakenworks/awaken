@@ -42,7 +42,7 @@ mod material_error;
 #[cfg(feature = "authority")]
 use material_error::classify_secret_store_error;
 
-#[cfg(any(test, feature = "authority"))]
+#[cfg(feature = "authority")]
 use awaken_agent_contract::RedactedString;
 #[cfg(feature = "authority")]
 use awaken_credential_contract::CredentialSourceId;
@@ -269,7 +269,9 @@ impl PinnedCredentialMaterializer {
     /// Catalog lookup, default selection and failover are intentionally absent.
     /// Every mismatch is terminal for this pin; the caller may only try another
     /// complete candidate that was already included in the published snapshot.
-    #[cfg(test)]
+    // Only the authority test module uses this convenience projection. Neutral
+    // tests exercise the same production materialize_provider_for boundary.
+    #[cfg(all(test, feature = "authority"))]
     async fn materialize_provider(
         &self,
         candidate: &ResolvedModelCandidate,
