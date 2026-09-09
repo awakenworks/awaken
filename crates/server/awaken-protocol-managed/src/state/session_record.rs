@@ -71,6 +71,23 @@ pub(super) enum ProjectionPublishDecision {
     RejectSourceRegression,
 }
 
+const fn decide_projection_publish_from_facts(
+    cache_matches: bool,
+    candidate_dominates: bool,
+    source_equal: bool,
+    projection_changed: bool,
+) -> ProjectionPublishDecision {
+    if !cache_matches {
+        ProjectionPublishDecision::RetryStaleCache
+    } else if !candidate_dominates {
+        ProjectionPublishDecision::RejectSourceRegression
+    } else if source_equal && !projection_changed {
+        ProjectionPublishDecision::AlreadyCurrent
+    } else {
+        ProjectionPublishDecision::Apply
+    }
+}
+
 /// Pure publication kernel shared by production and its exhaustive decision
 /// table. Cache CAS is checked first because a concurrent writer may already
 /// have published a strictly newer source than this candidate observed.
@@ -81,15 +98,47 @@ pub(super) fn decide_projection_publish(
     candidate: &ManagedProjectionSourceVersion,
     projection_changed: bool,
 ) -> ProjectionPublishDecision {
-    if expected_cache_revision != current_cache_revision {
+    decide_projection_publish_from_facts(
+        expected_cache_revision == current_cache_revision,
+        candidate.dominates(current),
+        candidate == current,
+        projection_changed,
+    )
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn projection_publish_decision_is_total_exact_and_fail_closed() {
+    // Decision table causes: C1 cache CAS matches; C2 candidate dominates every
+    // source coordinate; C3 source is equal; C4 rendered content changed.
+    // Effects: E1 !C1=>retry; E2 C1+!C2=>reject; E3 C1+C2+C3+!C4=>read-only;
+    // E4 every remaining C1+C2 row=>apply. Kani covers all 16 combinations;
+    // impossible source fact combinations are deliberately fail-closed too.
+    let cache_matches: bool = kani::any();
+    let candidate_dominates: bool = kani::any();
+    let source_equal: bool = kani::any();
+    let projection_changed: bool = kani::any();
+    let actual = decide_projection_publish_from_facts(
+        cache_matches,
+        candidate_dominates,
+        source_equal,
+        projection_changed,
+    );
+    let expected = if !cache_matches {
         ProjectionPublishDecision::RetryStaleCache
-    } else if !candidate.dominates(current) {
+    } else if !candidate_dominates {
         ProjectionPublishDecision::RejectSourceRegression
-    } else if candidate == current && !projection_changed {
+    } else if source_equal && !projection_changed {
         ProjectionPublishDecision::AlreadyCurrent
     } else {
         ProjectionPublishDecision::Apply
-    }
+    };
+    assert_eq!(actual, expected);
+    assert_eq!(
+        actual == ProjectionPublishDecision::AlreadyCurrent,
+        cache_matches && candidate_dominates && source_equal && !projection_changed
+    );
+    assert!(!cache_matches || actual != ProjectionPublishDecision::RetryStaleCache);
 }
 
 #[derive(Clone, Default)]

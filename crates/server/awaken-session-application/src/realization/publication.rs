@@ -5,6 +5,16 @@ use awaken_session_contract::{
     SessionRealizationControlFailure,
 };
 
+/// The one publication-membership predicate used by every realization caller.
+/// Stage and retirement remain MCP aggregate transitions; publication selects
+/// only an unacknowledged Active generation.
+const fn realization_publication_selects(
+    state: McpAttachmentState,
+    publication_acknowledged: bool,
+) -> bool {
+    matches!(state, McpAttachmentState::Active) && !publication_acknowledged
+}
+
 pub(super) fn publication_generations(
     session_id: &str,
     attachments: &[SessionMcpAttachment],
@@ -12,7 +22,10 @@ pub(super) fn publication_generations(
     attachments
         .iter()
         .filter(|attachment| {
-            attachment.state == McpAttachmentState::Active && !attachment.publication_acknowledged
+            realization_publication_selects(
+                attachment.state,
+                attachment.publication_acknowledged,
+            )
         })
         .map(|attachment| {
             projection::mcp_generation_ref(session_id, attachment).map_err(unavailable)
@@ -57,6 +70,31 @@ pub(super) fn publication_action(
     }
     let drain = draining_generations(session_id, attachments)?;
     Ok(SessionRealizationAction::Publish { publish, drain })
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn realization_publication_selects_only_unacknowledged_active_generation() {
+    // Cause/effect decision table: C1 state is Requested, Realizing, Active,
+    // Draining, Removed, or Failed; C2 publication is acknowledged. R1 selects
+    // iff C1=Active and C2=false; every staged, retired, terminal, or already
+    // acknowledged row is excluded. Kani covers all 12 state/acknowledgement
+    // rows against the exact production predicate consumed above.
+    let discriminator: u8 = kani::any();
+    kani::assume(discriminator < 6);
+    let state = match discriminator {
+        0 => McpAttachmentState::Requested,
+        1 => McpAttachmentState::Realizing,
+        2 => McpAttachmentState::Active,
+        3 => McpAttachmentState::Draining,
+        4 => McpAttachmentState::Removed,
+        _ => McpAttachmentState::Failed,
+    };
+    let acknowledged: bool = kani::any();
+    assert_eq!(
+        realization_publication_selects(state, acknowledged),
+        state == McpAttachmentState::Active && !acknowledged
+    );
 }
 
 #[cfg(test)]

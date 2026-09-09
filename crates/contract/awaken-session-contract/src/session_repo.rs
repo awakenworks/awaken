@@ -1919,6 +1919,13 @@ mod verification {
 
     #[kani::proof]
     fn session_delete_request_plan_is_exact_hidden_terminal_and_idempotent() {
+        // Cause/effect table: C1 disposition is Active, Archived, Deleting, or
+        // Deleted; C2 execution is terminal/nonterminal. Effects: E1 Active or
+        // Archived transitions once, requests the canonical cleanup operation,
+        // and terminalizes only when needed; E2 Deleting/Deleted replay without
+        // transition, cleanup request, or execution rewrite. Kani covers all
+        // 4x2 rows. Repository CAS, fact insertion, and async cleanup remain
+        // outside this aggregate-plan proof.
         let disposition_code = kani::any::<u8>();
         kani::assume(disposition_code < 4);
         let disposition = match disposition_code {

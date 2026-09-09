@@ -369,6 +369,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-service-auth-contract \
     --harness service_token_retry_is_enabled_only_for_an_exact_changed_token
   run_kani awaken-session-application \
+    --harness realization_publication_selects_only_unacknowledged_active_generation \
     --harness session_root_observation_is_total_monotonic_and_idempotent \
     --harness session_root_receipt_selects_candidate_only_for_applied_revision \
     --harness environment_owner_topology_is_exact_and_frozen \
@@ -535,6 +536,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness managed_reply_anchor_selects_exact_fenced_commit \
     --cbmc-args --unwindset memcmp.0:16
   run_kani awaken-protocol-managed \
+    --harness projection_publish_decision_is_total_exact_and_fail_closed \
     --harness canonical_event_order_never_depends_on_wall_time \
     --solver kissat \
     --harness organization_bucket_refill_is_exact_and_bounded \
