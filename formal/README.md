@@ -536,8 +536,8 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   same-content retry shortcut. Ordinary API/open-FUSE-fd updates still follow
   their ID. The shared Memory conformance suite covers SQLite/Postgres/volatile
   adapters; real HTTP and live/recovered Copy tests exercise both callers.
-- `AuditCommit.tla` and `ConfigActivation.tla` cover transactional durable audit,
-  replay fencing, and generation-fenced publication installation.
+- `AuditCommit.tla` covers audit/replay fencing; `ConfigActivation.tla` covers ADR-0071 publication CAS,
+  delayed per-Agent registration, exact history and monotonic withdrawal. Neither proves Rust/SQL refinement.
 - `AcpBoundary.tla`, `CredentialEffectBoundary.tla`, and
   `SessionRealizationMutex.tla` cover handshake-before-prompt and conservative
   permission projection, exact-claim materialization/publication, and exclusive

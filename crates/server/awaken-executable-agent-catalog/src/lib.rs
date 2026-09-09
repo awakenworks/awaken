@@ -799,7 +799,7 @@ mod tests {
         // Cause/effect decision table:
         // R1 new rev1 -> current rev1; R2 identical retry -> AlreadyRegistered;
         // R3 same identity/different content -> Conflict/current unchanged;
-        // R4 rev2 -> current rev2; R5 later arrival of distinct older exact
+        // R4 rev3 -> current rev3; R5 later arrival of distinct older exact
         // revision -> retained historically without moving current backwards.
         let catalog = Arc::new(ExecutableAgentCatalog::new());
         let registrar = LocalExecutableAgentRegistrar::new(catalog.clone());
@@ -823,13 +823,29 @@ mod tests {
             ),
             "R3"
         );
-        let rev2 = registration(2, "fp-2");
+        let rev3 = registration(3, "fp-3");
         assert_eq!(
-            registrar.register(rev2.clone()).await.unwrap(),
+            registrar.register(rev3.clone()).await.unwrap(),
             ExecutableAgentRegistrationOutcome::RegisteredCurrent,
             "R4"
         );
-        assert_eq!(catalog.current("workspace-a", "agent-a"), Some(rev2), "R4");
+        assert_eq!(
+            catalog.current("workspace-a", "agent-a"),
+            Some(rev3.clone()),
+            "R4"
+        );
+        let rev2 = registration(2, "fp-2");
+        assert_eq!(
+            registrar.register(rev2.clone()).await.unwrap(),
+            ExecutableAgentRegistrationOutcome::RegisteredHistorical,
+            "R5 actual late arrival"
+        );
+        assert_eq!(catalog.current("workspace-a", "agent-a"), Some(rev3), "R5");
+        assert_eq!(
+            catalog.at_revision("workspace-a", "agent-a", 2),
+            Some(rev2),
+            "R5 full historical registration"
+        );
         assert_eq!(
             catalog.at_revision("workspace-a", "agent-a", 1),
             Some(rev1),
@@ -843,7 +859,8 @@ mod tests {
         // W1 register rev2 -> available; W2 withdraw lifecycle rev3 -> current
         // unavailable but exact rev2/fingerprint retained; W3 identical tombstone
         // -> idempotent; W4 late rev1 registration/withdrawal -> cannot revive or
-        // move the lifecycle pointer; W5 new rev4 publication -> available again.
+        // move the lifecycle pointer; W4e equal unseen rev3 -> history only;
+        // W5 new rev4 publication -> available again.
         let catalog = Arc::new(ExecutableAgentCatalog::new());
         let registrar = LocalExecutableAgentRegistrar::new(catalog.clone());
         let rev2 = registration(2, "fp-2");
@@ -877,6 +894,35 @@ mod tests {
             "W4"
         );
         assert!(catalog.current("workspace-a", "agent-a").is_none(), "W4");
+        assert_eq!(
+            registrar
+                .withdraw(ExecutableAgentWithdrawal {
+                    workspace_id: "workspace-a".into(),
+                    agent_id: "agent-a".into(),
+                    lifecycle_revision: 1,
+                })
+                .await
+                .unwrap(),
+            ExecutableAgentWithdrawalOutcome::HistoricalNoop,
+            "W4 actual older withdrawal"
+        );
+        assert!(catalog.current("workspace-a", "agent-a").is_none(), "W4");
+        assert_eq!(
+            catalog.at_revision("workspace-a", "agent-a", 2),
+            Some(registration(2, "fp-2")),
+            "W4 full exact history retained"
+        );
+        assert_eq!(
+            registrar.register(registration(3, "fp-3")).await.unwrap(),
+            ExecutableAgentRegistrationOutcome::RegisteredHistorical,
+            "W4e an equal revision cannot revive the tombstone"
+        );
+        assert!(catalog.current("workspace-a", "agent-a").is_none(), "W4e");
+        assert_eq!(
+            catalog.at_revision("workspace-a", "agent-a", 3),
+            Some(registration(3, "fp-3")),
+            "W4e equal revision is retained exactly"
+        );
         assert_eq!(
             registrar.register(registration(4, "fp-4")).await.unwrap(),
             ExecutableAgentRegistrationOutcome::RegisteredCurrent,
