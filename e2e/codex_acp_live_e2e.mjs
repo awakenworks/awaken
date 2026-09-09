@@ -45,7 +45,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { waitForVerifiedAcpCapability } from './fixtures/acp_capability.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
-import { availablePort, FAKE_KEY, startUpstream, initializeE2EInstallation, waitForSessionEventReceipt, stopServer as stop, hardKillServer } from './harness.mjs';
+import { availablePort, FAKE_KEY, startUpstream, initializeE2EInstallation, waitForSessionEventReceipt, stopServer as stop, hardKillServer, runCleanupSteps } from './harness.mjs';
 import { installHostResourceFixture, verifyAgentResources } from './fixtures/trusted_host_resources.mjs';
 import { resolveAcpLiveProfile } from './acp_live_profile.mjs';
 import { assertWorkerLocalCredentialCustody } from './fixtures/worker_local_credentials.mjs';
@@ -275,17 +275,20 @@ async function startHostLoginProfile() {
       });
       verifyCredentials();
     }, cleanup: async () => {
-      if (external) await external.cleanup();
-      await stop(child);
-      if (upstream) await upstream.close();
+      await runCleanupSteps([
+        () => external?.cleanup(),
+        () => stop(child),
+        () => upstream?.close(),
+      ]);
       fs.rmSync(temp, { recursive: true, force: true });
     } };
   } catch (error) {
-    if (external) await external.cleanup();
-    if (child) await stop(child);
-    if (upstream) await upstream.close();
-    fs.rmSync(temp, { recursive: true, force: true });
-    throw error;
+    // Preserve startup failure and logs, while still releasing every owner.
+    await runCleanupSteps([
+      () => external?.cleanup(),
+      () => child && stop(child),
+      () => upstream?.close(),
+    ], [error]);
   }
 }
 
