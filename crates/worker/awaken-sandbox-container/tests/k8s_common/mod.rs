@@ -56,20 +56,57 @@ pub(crate) async fn set_test_finalizer<K>(
 ) where
     K: Clone + std::fmt::Debug + serde::de::DeserializeOwned + kube::Resource<DynamicType = ()>,
 {
-    let observed = api.get(name).await.expect("read test barrier object");
-    let mut finalizers = observed.meta().finalizers.clone().unwrap_or_default();
-    finalizers.retain(|value| value != finalizer);
-    if hold {
-        finalizers.push(finalizer.into());
-    }
-    api.patch(
-        name,
-        &kube::api::PatchParams::default(),
-        &kube::api::Patch::Merge(serde_json::json!({"metadata": {
-            "resourceVersion": observed.meta().resource_version,
-            "finalizers": finalizers
-        }})),
-    )
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let mut observed = api.get(name).await.expect("read test barrier object");
+        let uid = observed
+            .meta()
+            .uid
+            .clone()
+            .expect("test barrier object UID");
+        for attempt in 0..8 {
+            assert_eq!(
+                observed.meta().uid.as_ref(),
+                Some(&uid),
+                "test barrier object was replaced"
+            );
+            let version = observed
+                .meta()
+                .resource_version
+                .as_ref()
+                .expect("test barrier object version");
+            let current = observed.meta().finalizers.clone().unwrap_or_default();
+            let mut finalizers = current.clone();
+            finalizers.retain(|value| value != finalizer);
+            if hold {
+                finalizers.push(finalizer.into());
+            }
+            if finalizers == current {
+                return;
+            }
+            match api
+                .patch(
+                    name,
+                    &kube::api::PatchParams::default(),
+                    &kube::api::Patch::Merge(serde_json::json!({"metadata": {
+                        "uid": uid,
+                        "resourceVersion": version,
+                        "finalizers": finalizers
+                    }})),
+                )
+                .await
+            {
+                Ok(_) => return,
+                Err(kube::Error::Api(error)) if error.code == 409 && attempt < 7 => {
+                    // A storage/Pod controller may publish metadata between GET
+                    // and PATCH. Rebase only this barrier onto the same UID;
+                    // neither stale finalizer lists nor name reuse are authority.
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    observed = api.get(name).await.expect("reread test barrier object");
+                }
+                Err(error) => panic!("patch test-owned deletion barrier: {error}"),
+            }
+        }
+    })
     .await
-    .expect("patch test-owned deletion barrier");
+    .expect("test barrier metadata deadline");
 }

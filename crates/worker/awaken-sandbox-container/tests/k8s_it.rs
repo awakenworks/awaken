@@ -8,6 +8,9 @@
 mod common;
 mod k8s_common;
 
+#[path = "k8s_common/finalizer_tests.rs"]
+mod finalizer_tests;
+
 use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
