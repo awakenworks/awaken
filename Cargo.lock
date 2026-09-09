@@ -1757,6 +1757,8 @@ dependencies = [
  "awaken-session-contract",
  "awaken-skill-store",
  "chrono",
+ "rusqlite",
+ "tempfile",
  "tokio",
  "uuid",
  "zip",

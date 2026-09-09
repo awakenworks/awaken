@@ -149,7 +149,8 @@ async fn upload_download_metadata_and_delete_roundtrip() {
     let (status, bytes) = get(&router, &format!("/v1/files/{id}/content")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{:?}", bytes);
 
-    // Delete → receipt; a second delete is a clean 404 (the blob is gone).
+    // Delete -> receipt; replay completes any retained logical cleanup and
+    // returns 404. Physical blob reclamation is independent of this HTTP reply.
     let (status, receipt) = delete(&router, &format!("/v1/files/{id}")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(receipt["type"], "file_deleted");
