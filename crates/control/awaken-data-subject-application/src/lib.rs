@@ -312,6 +312,11 @@ mod verification {
 
     #[kani::proof]
     fn revision_advance_is_strict_or_explicitly_exhausted() {
+        // Cause/effect decision table: C1 current={0..u64::MAX-1,u64::MAX};
+        // E1 a representable successor is exactly current+1 and strictly newer;
+        // E2 exhaustion returns None and cannot create a wrapped or saturated
+        // write candidate. R1=C1(non-max)->E1; R2=C1(max)->E2. Arbitrary u64
+        // selection covers both rules and the complete production scalar domain.
         let current = kani::any::<u64>();
         match next_revision(current) {
             Some(next) => assert!(next > current),
