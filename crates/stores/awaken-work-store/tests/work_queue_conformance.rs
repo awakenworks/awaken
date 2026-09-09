@@ -1,11 +1,11 @@
 //! Trait-generic **conformance suite** for the `WorkQueue` port — the shared behavioural
-//! contract EVERY backend must satisfy, run here against both the in-memory reference and
-//! the SQLite backend (ADR-0059 / ADR-0039-slice-2.6 pattern, mirroring
+//! contract EVERY backend must satisfy, run here against the in-memory reference,
+//! SQLite, and PostgreSQL backends (ADR-0059 / ADR-0039-slice-2.6 pattern, mirroring
 //! `awaken-store-conformance`).
 //!
 //! Why this exists and what it drives: the Phase-1 `proptest` properties fuzz the *one*
 //! in-memory backend. This suite LIFTS the same invariants to the PORT: it asserts the
-//! sqlite backend is observably identical to the reference on the safety-critical
+//! durable backends are observably identical to the reference on the safety-critical
 //! semantics — the single-active-lease cap, reclaim-at-TTL,
 //! environment isolation, stop-frees-next, and remove_env-purges. A divergence here is a
 //! real parity bug (the kind that ships a run twice on one deployment mode but not
@@ -15,7 +15,11 @@
 use awaken_session_contract::work_queue::{
     HeartbeatCondition, HeartbeatResult, LeaseHeartbeat, WorkMutationResult, WorkQueue, WorkState,
 };
-use awaken_work_store::{InMemoryWorkQueue, LEASE_TTL_MS, SqliteWorkQueue};
+use awaken_work_store::{InMemoryWorkQueue, LEASE_TTL_MS, PostgresWorkQueue, SqliteWorkQueue};
+
+mod work_queue_conformance {
+    pub mod session_access;
+}
 
 fn block<F: std::future::Future>(f: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
@@ -484,30 +488,122 @@ async fn graceful_owner_release_is_exact<Q: WorkQueue>(q: &Q) {
     );
 }
 
+async fn reclaim_age_boundary_cases(q: &impl WorkQueue) {
+    // Adapter decision table: live TTL throughout; absent age or age > now
+    // must retain the current lease. age == now selects refresh zero;
+    // after re-claim at time one, age 1000 at time 1001 selects refresh one.
+    // These distinguish None from Some(0), catch an omitted shared cutoff,
+    // and assert the same Work identity survives each accepted re-claim.
+    let environment = "env_reclaim_cutoff";
+    let id = q.enqueue_session(environment, "s1").await.unwrap();
+    assert_eq!(q.claim(environment, "a", 0).await.unwrap().unwrap().id, id);
+    for (now, age, expected) in [
+        (1, None, false),
+        (1, Some(2), false),
+        (1, Some(1), true),
+        (1_001, Some(1_000), true),
+    ] {
+        let actual = q
+            .claim_with_reclaim(environment, "b", "b", now, age)
+            .await
+            .unwrap();
+        assert_eq!(
+            actual.is_some(),
+            expected,
+            "refresh cutoff row {now}/{age:?}"
+        );
+        if let Some(item) = actual {
+            assert_eq!(item.id, id);
+            assert_eq!(item.state, WorkState::Active);
+        }
+    }
+    q.remove_env(environment).await.unwrap();
+}
+
 /// Run the whole contract against a freshly-built backend `Q`.
-async fn run_suite<Q: WorkQueue>(fresh: impl Fn() -> Q) {
-    single_active_cap(&fresh()).await;
-    reclaim_at_ttl(&fresh()).await;
-    requested_reclaim_uses_refresh_clock(&fresh()).await;
-    env_isolation(&fresh()).await;
-    stop_frees_next(&fresh()).await;
-    remove_env_purges(&fresh()).await;
-    session_enqueue_is_idempotent(&fresh()).await;
-    heartbeat_compare_and_extend(&fresh()).await;
-    session_ownership_lifecycle_is_single_and_fenced(&fresh()).await;
-    graceful_owner_release_is_exact(&fresh()).await;
+async fn run_suite<Q: WorkQueue, F: std::future::Future<Output = Q>>(fresh: impl Fn() -> F) {
+    single_active_cap(&fresh().await).await;
+    reclaim_at_ttl(&fresh().await).await;
+    requested_reclaim_uses_refresh_clock(&fresh().await).await;
+    env_isolation(&fresh().await).await;
+    stop_frees_next(&fresh().await).await;
+    remove_env_purges(&fresh().await).await;
+    session_enqueue_is_idempotent(&fresh().await).await;
+    heartbeat_compare_and_extend(&fresh().await).await;
+    session_ownership_lifecycle_is_single_and_fenced(&fresh().await).await;
+    graceful_owner_release_is_exact(&fresh().await).await;
+    reclaim_age_boundary_cases(&fresh().await).await;
+    work_queue_conformance::session_access::capability_and_metadata_contract(&fresh().await).await;
 }
 
 // ── Backend rows: each must pass the identical suite ─────────────────────────────
 
 #[test]
 fn in_memory_backend_conforms() {
-    block(run_suite(InMemoryWorkQueue::new));
+    block(run_suite(async || InMemoryWorkQueue::new()));
 }
 
 #[test]
 fn sqlite_backend_conforms() {
-    block(run_suite(|| {
+    block(run_suite(async || {
         SqliteWorkQueue::open_in_memory().expect("sqlite in-memory queue")
     }));
+}
+
+/// Fixture decision table: absent URL => explicit local skip; supplied URL plus
+/// connection/schema failure => fail; supplied reachable URL => every shared
+/// rule runs with fresh tables. Each schema has a generated unique name, so
+/// simultaneous test processes cannot erase each other's authority or data.
+#[tokio::test]
+async fn postgres_backend_conforms() {
+    use sqlx::Executor;
+    use sqlx::postgres::{PgPool, PgPoolOptions};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+        eprintln!("[skip] postgres_backend_conforms: AWAKEN_TEST_DATABASE_URL absent");
+        return;
+    };
+    let admin = PgPool::connect(&url)
+        .await
+        .expect("explicit PostgreSQL URL must connect");
+    let prefix = format!(
+        "work_conformance_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let sequence = AtomicUsize::new(0);
+    run_suite(async || {
+        let index = sequence.fetch_add(1, Ordering::Relaxed);
+        let schema = format!("{prefix}_{index}");
+        admin
+            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .await
+            .expect("isolated schema");
+        let pool = PgPoolOptions::new()
+            .after_connect(move |connection, _| {
+                let statement = format!("SET search_path = {schema}");
+                Box::pin(async move {
+                    connection.execute(statement.as_str()).await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .expect("schema pool");
+        PostgresWorkQueue::with_pool(pool)
+            .await
+            .expect("queue schema migrations")
+    })
+    .await;
+    for index in 0..sequence.load(Ordering::Relaxed) {
+        admin
+            .execute(format!("DROP SCHEMA {prefix}_{index} CASCADE").as_str())
+            .await
+            .expect("remove owned schema");
+    }
+    admin.close().await;
 }
