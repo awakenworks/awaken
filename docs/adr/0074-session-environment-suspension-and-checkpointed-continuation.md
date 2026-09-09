@@ -577,7 +577,16 @@ The PVC is created and digest-verified before the Pod, carries no Pod or Worker
 owner reference, and is mounted at each canonical writable root through a
 distinct pre-created subpath. A Worker crash therefore leaves Pod and PVC
 running; a terminal-Pod rebuild deletes only the observed Pod incarnation and
-reattaches the same PVC. Explicit fenced Sandbox disposal is the sole
+reattaches the same PVC. Rebuild preparation and activation share the same
+container observation decision. That decision distinguishes the exact terminal
+source from a different physical incarnation just produced by this same effect:
+only an exact reconstructible continuation plus matching effect identity permits
+that result in Creating/Ready to converge or resume. Source identity is never
+rewritten to make the new Pod look like the old source; foreign effects, missing
+continuation, and incompatible fingerprints remain rejected. The live KPV5 and
+distributed node-loss tests cover prepare-to-activate continuity; the bounded
+Rebuild gate proof covers only its finite admission conditions.
+Explicit fenced Sandbox disposal is the sole
 active-volume deletion path. The suspend sequence reaches its physical edge
 only after `Disposing` has durably admitted both verified checkpoint and
 source-release preparation evidence, while terminal Session cleanup must use

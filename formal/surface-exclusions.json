@@ -1,6 +1,7 @@
 {
   "version": 1,
   "exclusions": [
+    {"path":"crates/worker/awaken-sandbox-container/src/runtime/realization_tests/rebuild.rs","boundary":"test_only","reason":"Child of the existing cfg(test) realization_tests module. It owns the source/result decision-table regression cases and reuses the parent test fixtures; production Rebuild admission remains in runtime/realization.rs and the shared existing_realization_decision. This test module is not a production safety implementation.","evidence":["crates/worker/awaken-sandbox-container/src/runtime.rs"]},
     {
       "path": "crates/contract/awaken-session-contract/src/realization_observation.rs",
       "boundary": "test_support_observation_port",
