@@ -22,9 +22,9 @@ use awaken_agent_contract::thread::commit::coordinator::{
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, RunDisposition, ThreadCommit};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_run_ingress::{
-    ClaimedCommitCoordinator, ClaimedRunCommit, DispatchQueue, DispatchTestHarness, DispatchWorker,
-    GuardedRunCommit, Inbox, PendingInput, PostgresDispatchStore, PostgresStreamCheckpointStore,
-    RunClaim, RunDispatch, SubmitOptions,
+    ClaimedCommitCoordinator, ClaimedRunCommit, DEFAULT_LEASE_MS, DispatchQueue,
+    DispatchTestHarness, DispatchWorker, GuardedRunCommit, Inbox, PendingInput,
+    PostgresDispatchStore, PostgresStreamCheckpointStore, RunClaim, RunDispatch, SubmitOptions,
 };
 use awaken_run_ingress_testkit::{AuthoritativeWallClock, ConformanceClock};
 use awaken_runtime_contract::resume::ResumeResult;
@@ -1094,13 +1094,12 @@ async fn postgres_reclaim_after_process_bound_attempt_quiesces_applies_never_rep
     // commit; E4 B remains live while it installs the authoritative snapshot and
     // reaches physical admission. Constraints: every claim installs an
     // authoritative snapshot before policy; only production executor return,
-    // never abort/drop, clears the slot. `B_RECOVERY_LEASE` is a fixture
-    // scheduling budget, not a wait or correctness threshold: renewal and claim
-    // fencing remain the production authorities. The Memory end-to-end and
+    // never abort/drop, clears the slot. The canonical production Worker lease
+    // is also the fixture progress budget; it is not a correctness threshold:
+    // renewal and claim fencing remain the authorities. The Memory end-to-end and
     // shared store conformance own the complementary C1+!C2 Blocked rule.
     // Decision rule: execute C1-C5 and assert E1-E4.
     const A_EXPIRY_LEASE: u64 = 1_000;
-    const B_RECOVERY_LEASE: u64 = 30_000;
     let schema = "t_pg_midflight";
     let Some(pool) = harness::schema_pool(schema).await else {
         return;
@@ -1149,7 +1148,7 @@ async fn postgres_reclaim_after_process_bound_attempt_quiesces_applies_never_rep
     };
 
     // Wait until A is frozen inside the tool.
-    let frozen = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let frozen = tokio::time::timeout(std::time::Duration::from_millis(DEFAULT_LEASE_MS), async {
         while ran.load(Ordering::SeqCst) < 1 {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
@@ -1170,11 +1169,12 @@ async fn postgres_reclaim_after_process_bound_attempt_quiesces_applies_never_rep
     // exits and drops its renewal guard without pretending abort/drop is proof.
     commit_a.set_failing(true);
     release.add_permits(1);
-    let a_error = tokio::time::timeout(std::time::Duration::from_secs(10), a_handle)
-        .await
-        .expect("C2 A drive returns")
-        .expect("C2 A task does not panic")
-        .expect_err("C2 injected commit failure is re-raised");
+    let a_error =
+        tokio::time::timeout(std::time::Duration::from_millis(DEFAULT_LEASE_MS), a_handle)
+            .await
+            .expect("C2 A drive returns")
+            .expect("C2 A task does not panic")
+            .expect_err("C2 injected commit failure is re-raised");
     assert!(
         a_error.to_string().contains("injected commit failure"),
         "C2 exact drive failure is preserved: {a_error}"
@@ -1199,7 +1199,7 @@ async fn postgres_reclaim_after_process_bound_attempt_quiesces_applies_never_rep
     // Owner B's lease-expired reclaim recovers the committed Executing phase and
     // completes the run without entering the non-recoverable tool again.
     let worker_b = DispatchWorker::new(runtime, store.clone(), commit_b.clone(), "owner-b")
-        .with_lease_ms(B_RECOVERY_LEASE);
+        .with_lease_ms(DEFAULT_LEASE_MS);
     let processed = worker_b
         .tick(harness::clock(A_EXPIRY_LEASE + 1))
         .await
