@@ -35,6 +35,63 @@ fn reject_unconfirmed_operation<T>(
     )
 }
 
+async fn commit_send_accept_remote_operation(
+    transport: Arc<dyn Transport>,
+    context: &RuntimeRunContext,
+    activation: &RunActivation,
+    intent: RemoteOperationIntent,
+    text: &str,
+    prepared_messages: Vec<awaken_agent_contract::agent::message::Message>,
+) -> Result<(AcceptedRemoteOperation, awaken_protocol_a2a::Task)> {
+    let mut phase = RemoteOperationSequencePhase::Fresh;
+
+    let next = remote_operation_sequence_step(phase, RemoteOperationSequenceEvent::CommitPrepared)
+        .ok_or_else(|| Error::Execution("A2A Prepared commit is out of sequence".into()))?;
+    verify_attempt_ownership(context.ownership.as_deref()).await?;
+    commit_boundary(
+        context,
+        activation,
+        RunDisposition::running(activation.run_id.clone()),
+        prepared_messages,
+        vec![prepared_operation_state(&intent)?],
+    )
+    .await?;
+    phase = next;
+    task_driver::observe_remote_operation(context, async {
+        let next = remote_operation_sequence_step(phase, RemoteOperationSequenceEvent::Send)
+            .ok_or_else(|| Error::Execution("A2A send is out of sequence".into()))?;
+        verify_attempt_ownership(context.ownership.as_deref()).await?;
+        let task = send_message(
+            transport.as_ref(),
+            None,
+            &intent.context_id,
+            &intent.message_id,
+            text,
+        )
+        .await
+        .map_err(|error| Error::Execution(error.to_string()))?;
+        phase = next;
+
+        let accepted = accept_remote_operation(intent, &task)?;
+        let next =
+            remote_operation_sequence_step(phase, RemoteOperationSequenceEvent::CommitAccepted)
+                .ok_or_else(|| Error::Execution("A2A Accepted commit is out of sequence".into()))?;
+        commit_boundary(
+            context,
+            activation,
+            RunDisposition::running(activation.run_id.clone()),
+            Vec::new(),
+            vec![accepted_operation_state(&accepted)?],
+        )
+        .await?;
+        debug_assert_eq!(next, RemoteOperationSequencePhase::AcceptedCommitted);
+        let task =
+            task_driver::poll_to_boundary(transport, &accepted.reference, task, context).await?;
+        Ok((accepted, task))
+    })
+    .await
+}
+
 #[async_trait]
 impl RunExecutor for A2aRunExecutor {
     fn capabilities(&self) -> ExecutorCapabilities {
@@ -144,44 +201,14 @@ impl RunExecutor for A2aRunExecutor {
                     &message_id,
                     &prompt,
                 )?;
-                verify_attempt_ownership(context.ownership.as_deref()).await?;
-                commit_boundary(
+                commit_send_accept_remote_operation(
+                    transport,
                     &context,
                     &activation,
-                    RunDisposition::running(activation.run_id.clone()),
+                    intent,
+                    &prompt,
                     activation.input.clone(),
-                    vec![prepared_operation_state(&intent)?],
                 )
-                .await?;
-                task_driver::observe_remote_operation(&context, async {
-                    verify_attempt_ownership(context.ownership.as_deref()).await?;
-                    let task = send_message(
-                        transport.as_ref(),
-                        None,
-                        &intent.context_id,
-                        &intent.message_id,
-                        &prompt,
-                    )
-                    .await
-                    .map_err(|error| Error::Execution(error.to_string()))?;
-                    let accepted = accept_remote_operation(intent, &task)?;
-                    commit_boundary(
-                        &context,
-                        &activation,
-                        RunDisposition::running(activation.run_id.clone()),
-                        Vec::new(),
-                        vec![accepted_operation_state(&accepted)?],
-                    )
-                    .await?;
-                    let task = task_driver::poll_to_boundary(
-                        transport,
-                        &accepted.reference,
-                        task,
-                        &context,
-                    )
-                    .await?;
-                    Ok((accepted, task))
-                })
                 .await?
             }
         };
@@ -278,40 +305,14 @@ impl RunAttemptExecutor for A2aRunExecutor {
             &message_id,
             &text,
         )?;
-        verify_attempt_ownership(context.ownership.as_deref()).await?;
-        commit_boundary(
+        let (accepted, task) = commit_send_accept_remote_operation(
+            transport,
             &context,
             &activation,
-            RunDisposition::running(activation.run_id.clone()),
+            intent,
+            &text,
             Vec::new(),
-            vec![prepared_operation_state(&intent)?],
         )
-        .await?;
-        let (accepted, task) = task_driver::observe_remote_operation(&context, async {
-            verify_attempt_ownership(context.ownership.as_deref()).await?;
-            let task = send_message(
-                transport.as_ref(),
-                None,
-                &intent.context_id,
-                &intent.message_id,
-                &text,
-            )
-            .await
-            .map_err(|error| Error::Execution(error.to_string()))?;
-            let accepted = accept_remote_operation(intent, &task)?;
-            commit_boundary(
-                &context,
-                &activation,
-                RunDisposition::running(activation.run_id.clone()),
-                Vec::new(),
-                vec![accepted_operation_state(&accepted)?],
-            )
-            .await?;
-            let task =
-                task_driver::poll_to_boundary(transport, &accepted.reference, task, &context)
-                    .await?;
-            Ok((accepted, task))
-        })
         .await?;
         task_driver::finish_task(&activation, &context, accepted, task).await
     }

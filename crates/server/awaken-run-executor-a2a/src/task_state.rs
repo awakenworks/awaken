@@ -92,6 +92,43 @@ pub(super) enum StoredRemoteOperationKind {
     Accepted,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RemoteOperationSequencePhase {
+    Fresh,
+    PreparedCommitted,
+    SendReturned,
+    AcceptedCommitted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RemoteOperationSequenceEvent {
+    CommitPrepared,
+    Send,
+    CommitAccepted,
+}
+
+/// The sole outbound A2A sequencing plan. The async executor performs each
+/// effect only after this production transition admits its event; initial and
+/// resume sends therefore cannot grow separate ordering policies.
+pub(super) const fn remote_operation_sequence_step(
+    phase: RemoteOperationSequencePhase,
+    event: RemoteOperationSequenceEvent,
+) -> Option<RemoteOperationSequencePhase> {
+    match (phase, event) {
+        (RemoteOperationSequencePhase::Fresh, RemoteOperationSequenceEvent::CommitPrepared) => {
+            Some(RemoteOperationSequencePhase::PreparedCommitted)
+        }
+        (RemoteOperationSequencePhase::PreparedCommitted, RemoteOperationSequenceEvent::Send) => {
+            Some(RemoteOperationSequencePhase::SendReturned)
+        }
+        (
+            RemoteOperationSequencePhase::SendReturned,
+            RemoteOperationSequenceEvent::CommitAccepted,
+        ) => Some(RemoteOperationSequencePhase::AcceptedCommitted),
+        _ => None,
+    }
+}
+
 #[must_use]
 const fn task_reference_admitted(
     endpoint_present: bool,
@@ -474,9 +511,103 @@ pub(super) fn endpoint_of(candidate: &ResolvedModelCandidate) -> Result<String> 
         .ok_or_else(|| Error::Execution("A2A executor received a non-remote backend".to_string()))
 }
 
+#[cfg(test)]
+mod sequencing_tests {
+    use super::*;
+
+    #[test]
+    fn outbound_operation_sequence_has_only_three_ordered_edges() {
+        // Causes: current phase and requested durable/external event. Effects:
+        // R1-R3 advance the unique Prepared-before-send plan; R4 samples the
+        // critical forbidden fresh send and proves it stutters by rejection.
+        //
+        // | Rule | phase | event | result |
+        // |---|---|---|---|
+        // | R1 | Fresh | CommitPrepared | PreparedCommitted |
+        // | R2 | PreparedCommitted | Send | SendReturned |
+        // | R3 | SendReturned | CommitAccepted | AcceptedCommitted |
+        // | R4 | Fresh | Send | reject |
+        let prepared = remote_operation_sequence_step(
+            RemoteOperationSequencePhase::Fresh,
+            RemoteOperationSequenceEvent::CommitPrepared,
+        );
+        assert_eq!(
+            prepared,
+            Some(RemoteOperationSequencePhase::PreparedCommitted),
+            "R1"
+        );
+        let sent =
+            remote_operation_sequence_step(prepared.unwrap(), RemoteOperationSequenceEvent::Send);
+        assert_eq!(sent, Some(RemoteOperationSequencePhase::SendReturned), "R2");
+        assert_eq!(
+            remote_operation_sequence_step(
+                sent.unwrap(),
+                RemoteOperationSequenceEvent::CommitAccepted,
+            ),
+            Some(RemoteOperationSequencePhase::AcceptedCommitted),
+            "R3"
+        );
+        assert!(
+            remote_operation_sequence_step(
+                RemoteOperationSequencePhase::Fresh,
+                RemoteOperationSequenceEvent::Send,
+            )
+            .is_none(),
+            "R4"
+        );
+    }
+}
+
 #[cfg(kani)]
 mod kani_proofs {
     use super::*;
+
+    #[kani::proof]
+    fn remote_operation_sequence_admits_only_prepared_before_send_and_accept_commit() {
+        // Causes: C1 current phase and C2 requested external/durable event.
+        // Effects: E1 advance by exactly one edge or E2 reject. Only the three
+        // listed edges exist; in particular Fresh+Send and replayed Send reject.
+        //
+        // | Rule | phase | event | Effect |
+        // |---|---|---|---|
+        // | R1 | Fresh | CommitPrepared | PreparedCommitted |
+        // | R2 | PreparedCommitted | Send | SendReturned |
+        // | R3 | SendReturned | CommitAccepted | AcceptedCommitted |
+        // | R4 | every other pair | any | reject |
+        let phase = match kani::any::<u8>() % 4 {
+            0 => RemoteOperationSequencePhase::Fresh,
+            1 => RemoteOperationSequencePhase::PreparedCommitted,
+            2 => RemoteOperationSequencePhase::SendReturned,
+            _ => RemoteOperationSequencePhase::AcceptedCommitted,
+        };
+        let event = match kani::any::<u8>() % 3 {
+            0 => RemoteOperationSequenceEvent::CommitPrepared,
+            1 => RemoteOperationSequenceEvent::Send,
+            _ => RemoteOperationSequenceEvent::CommitAccepted,
+        };
+        let next = remote_operation_sequence_step(phase, event);
+        let legal = matches!(
+            (phase, event),
+            (
+                RemoteOperationSequencePhase::Fresh,
+                RemoteOperationSequenceEvent::CommitPrepared
+            ) | (
+                RemoteOperationSequencePhase::PreparedCommitted,
+                RemoteOperationSequenceEvent::Send
+            ) | (
+                RemoteOperationSequencePhase::SendReturned,
+                RemoteOperationSequenceEvent::CommitAccepted
+            )
+        );
+        assert_eq!(next.is_some(), legal);
+        assert!(
+            remote_operation_sequence_step(
+                RemoteOperationSequencePhase::Fresh,
+                RemoteOperationSequenceEvent::Send
+            )
+            .is_none()
+        );
+    }
 
     #[kani::proof]
     fn remote_operation_route_is_total_and_fail_closed() {

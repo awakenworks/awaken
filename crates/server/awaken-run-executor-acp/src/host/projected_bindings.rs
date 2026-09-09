@@ -7,6 +7,47 @@ use tokio::io::AsyncReadExt;
 
 const MAX_BINDING_BYTES: u64 = 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectionRecheckDecision {
+    ReturnObservation,
+    Reject,
+}
+
+/// The single post-probe admission decision used by both batch observation and
+/// exact-reference revalidation. Probe success is deliberately not an input:
+/// its original result is returned only when the complete projection is still
+/// byte-semantically identical.
+const fn projection_recheck_decision(exact_projection: bool) -> ProjectionRecheckDecision {
+    if exact_projection {
+        ProjectionRecheckDecision::ReturnObservation
+    } else {
+        ProjectionRecheckDecision::Reject
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn projected_binding_use_rechecks_the_exact_projection_after_probe() {
+    // Cause C1: the post-probe projection exactly matches the pre-probe
+    // projection. Effects E1/E2: return the original observation outcome or
+    // reject it as unavailable. The two rules are exhaustive.
+    //
+    // | Rule | C1 | Effect |
+    // |---|---|---|
+    // | R1 | yes | E1 return observation |
+    // | R2 | no  | E2 reject |
+    let exact_projection: bool = kani::any();
+    let decision = projection_recheck_decision(exact_projection);
+    assert_eq!(
+        decision == ProjectionRecheckDecision::ReturnObservation,
+        exact_projection
+    );
+    assert_eq!(
+        decision == ProjectionRecheckDecision::Reject,
+        !exact_projection
+    );
+}
+
 /// Secret-free metadata, not a credential value or a login-file location.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -184,10 +225,10 @@ impl CredentialObservationSource for ProjectedAcpCredentials {
                 .map(|row| (row.credential.id.clone(), row))
                 .collect::<BTreeMap<_, _>>()
         };
-        if normalize(before) != normalize(after) {
-            return Err(CredentialMaterialError::Unavailable);
+        match projection_recheck_decision(normalize(before) == normalize(after)) {
+            ProjectionRecheckDecision::ReturnObservation => Ok(observations),
+            ProjectionRecheckDecision::Reject => Err(CredentialMaterialError::Unavailable),
         }
-        Ok(observations)
     }
 }
 
@@ -210,10 +251,10 @@ impl WorkerLocalReferenceRevalidator for ProjectedAcpCredentials {
             .await?
             .into_iter()
             .find(|row| &row.credential == credential);
-        if after.as_ref() != Some(&before) {
-            return Err(CredentialMaterialError::Unavailable);
+        match projection_recheck_decision(after.as_ref() == Some(&before)) {
+            ProjectionRecheckDecision::ReturnObservation => observed,
+            ProjectionRecheckDecision::Reject => Err(CredentialMaterialError::Unavailable),
         }
-        observed
     }
 }
 
@@ -229,6 +270,28 @@ impl AcpCapabilityObservationSource for ProjectedAcpCredentials {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[test]
+    fn post_probe_projection_decision_is_exact_and_fail_closed() {
+        // Causes: C1 the complete projection is unchanged; C2 any coordinate
+        // changed. Effects: E1 return the probe outcome; E2 reject it. These
+        // two rows cover the closed Boolean quotient used by both callers.
+        //
+        // | Rule | exact projection | decision |
+        // |---|---|---|
+        // | R1 | yes | return observation |
+        // | R2 | no  | reject |
+        assert_eq!(
+            projection_recheck_decision(true),
+            ProjectionRecheckDecision::ReturnObservation,
+            "R1/E1"
+        );
+        assert_eq!(
+            projection_recheck_decision(false),
+            ProjectionRecheckDecision::Reject,
+            "R2/E2"
+        );
+    }
 
     struct Discovery {
         calls: AtomicUsize,

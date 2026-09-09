@@ -1,4 +1,22 @@
 use super::*;
+
+#[test]
+fn local_binding_batch_member_admission_is_exact_and_fail_closed() {
+    // Causes: C1 the credential id is absent/present; C2 a present row has the
+    // exact CredentialRef. Effects: E1 the member may enter the later atomic
+    // extend; E2 the entire batch rejects before mutation. R1-R3 cover the
+    // closed quotient; add_bindings evaluates every member under one lock.
+    //
+    // | Rule | existing | exact credential | admitted |
+    // |---|---|---|---|
+    // | R1 | no  | n/a | yes |
+    // | R2 | yes | yes | yes |
+    // | R3 | yes | no  | no  |
+    assert!(local_binding_update_admitted(false, false), "R1/E1");
+    assert!(local_binding_update_admitted(true, true), "R2/E1");
+    assert!(!local_binding_update_admitted(true, false), "R3/E2");
+}
+
 #[test]
 fn wrapper_cache_requires_the_exact_pinned_package_manifest() {
     let directory = tempfile::tempdir().unwrap();

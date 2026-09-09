@@ -279,6 +279,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-environment-contract \
     --harness environment_registration_intent_is_exact_idempotent_and_recoverable
   run_kani awaken-session-contract \
+    --harness terminal_resource_projection_retains_the_exact_desired_generation \
     --harness initial_event_plan_is_installed_only_on_the_complete_fresh_root \
     --harness session_run_reservation_binds_exactly_one_nonzero_activity_receipt \
     --harness session_network_intersection_two_by_two_ascii_hosts_partition \
@@ -474,6 +475,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness worker_reference_revalidation_accepts_only_exact_available_state \
     --harness worker_plaintext_holder_projection_is_exact_and_non_widening
   run_kani awaken-run-executor-acp \
+    --harness host_observation_projection_is_exactly_backend_scoped \
+    --harness local_binding_batch_admits_only_absent_or_exact_existing_identities \
+    --harness projected_binding_use_rechecks_the_exact_projection_after_probe \
     --harness mcp_client_credential_admission_has_no_gateway_or_adapter_fallback
   run_kani awaken-run-ingress-contract \
     --harness claim_credential_operation_is_total_and_terminal_dominates \
@@ -711,6 +715,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness rejected_requests_never_enter_the_host \
     --harness cancellation_never_produces_a_success_result
   run_kani awaken-run-executor-a2a \
+    --harness remote_operation_sequence_admits_only_prepared_before_send_and_accept_commit \
     --harness remote_operation_route_is_total_and_fail_closed \
     --harness terminal_remote_operation_command_is_exact_run_scoped_removal \
     --harness task_reference_admission_requires_complete_fields_and_required_identity_matches \

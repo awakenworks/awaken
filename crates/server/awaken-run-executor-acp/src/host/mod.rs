@@ -318,6 +318,45 @@ impl PreparedHostAcpCapabilities {
     }
 }
 
+const fn host_observation_is_routable(
+    selected_backend: bool,
+    detected: bool,
+    credential_available: bool,
+    capability_verified: bool,
+) -> bool {
+    selected_backend && detected && (!credential_available || capability_verified)
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn host_observation_projection_is_exactly_backend_scoped() {
+    // Causes: C1 backend selected; C2 executable detected; C3 current login is
+    // available; C4 the protocol capability was verified. Effects: E1 project
+    // a routable backend observation or E2 exclude it. When C3 is false, the
+    // route remains visible for execution-time login revalidation.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | Effect |
+    // |---|---|---|---|---|---|
+    // | R1 | no | any | any | any | E2 |
+    // | R2 | yes | no | any | any | E2 |
+    // | R3 | yes | yes | no | any | E1 |
+    // | R4 | yes | yes | yes | no | E2 |
+    // | R5 | yes | yes | yes | yes | E1 |
+    let selected_backend: bool = kani::any();
+    let detected: bool = kani::any();
+    let credential_available: bool = kani::any();
+    let capability_verified: bool = kani::any();
+    assert_eq!(
+        host_observation_is_routable(
+            selected_backend,
+            detected,
+            credential_available,
+            capability_verified,
+        ),
+        selected_backend && detected && (!credential_available || capability_verified)
+    );
+}
+
 fn routable_cli_ids(
     observations: &[AcpHostObservation],
     selected_cli_ids: &BTreeSet<String>,
@@ -325,10 +364,12 @@ fn routable_cli_ids(
     observations
         .iter()
         .filter(|observation| {
-            selected_cli_ids.contains(&observation.cli_id)
-                && observation.detected()
-                && (observation.credential_state != Some(CredentialObservationState::Available)
-                    || observation.capability_state == Some(AcpCapabilityState::Verified))
+            host_observation_is_routable(
+                selected_cli_ids.contains(&observation.cli_id),
+                observation.detected(),
+                observation.credential_state == Some(CredentialObservationState::Available),
+                observation.capability_state == Some(AcpCapabilityState::Verified),
+            )
         })
         .map(|observation| observation.cli_id.clone())
         .collect()
@@ -339,6 +380,33 @@ struct LocalBinding {
     credential: CredentialRef,
     cli: &'static AcpCli,
     enabled: bool,
+}
+
+/// Per-entry admission used while the resolver holds the one publication lock.
+/// The caller evaluates every addition before extending the map, so this closed
+/// decision is the only way an existing identity can admit a batch update.
+const fn local_binding_update_admitted(existing: bool, exact_credential: bool) -> bool {
+    !existing || exact_credential
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn local_binding_batch_admits_only_absent_or_exact_existing_identities() {
+    // Causes: C1 the id already exists; C2 its complete CredentialRef matches.
+    // Effects: E1 admit this member before the all-or-nothing extend; E2 reject
+    // the whole batch while the original map is unchanged.
+    //
+    // | Rule | C1 | C2 | Effect |
+    // |---|---|---|---|
+    // | R1 | no  | any | E1 |
+    // | R2 | yes | yes | E1 |
+    // | R3 | yes | no  | E2 |
+    let existing: bool = kani::any();
+    let exact_credential: bool = kani::any();
+    assert_eq!(
+        local_binding_update_admitted(existing, exact_credential),
+        !existing || exact_credential
+    );
 }
 
 /// Liveness-only resolver for every `acp:*` WorkerLocal source on one Worker.
@@ -392,9 +460,11 @@ impl AcpLocalCredentialResolver {
         // error must not leak its earlier inserts or status-only updates, and
         // another Workspace must not invalidate the check before commit.
         for (id, binding) in &additions {
-            if let Some(existing) = bindings.get(id)
-                && existing.credential != binding.credential
-            {
+            let existing = bindings.get(id);
+            if !local_binding_update_admitted(
+                existing.is_some(),
+                existing.is_none_or(|existing| existing.credential == binding.credential),
+            ) {
                 return Err(format!("conflicting WorkerLocal credential id `{id}`"));
             }
         }

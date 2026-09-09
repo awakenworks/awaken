@@ -116,6 +116,23 @@ enum RetainedResourceGenerationSlot {
     Pending,
 }
 
+/// The single persisted slot that terminal and ordinary projections must use
+/// as the desired Resource generation.  Keeping this selector beside the
+/// aggregate prevents terminal cleanup from reconstructing its own policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DesiredResourceGenerationSlot {
+    Active,
+    Pending,
+}
+
+const fn desired_resource_generation_slot(pending: bool) -> DesiredResourceGenerationSlot {
+    if pending {
+        DesiredResourceGenerationSlot::Pending
+    } else {
+        DesiredResourceGenerationSlot::Active
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResourceManifestSettlementKind {
     Commit,
@@ -214,6 +231,24 @@ fn resource_materialization_selects_only_active_or_pending_root_generation() {
         selects_pending
     );
     assert_eq!(selected.is_some(), selects_active || selects_pending);
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn terminal_resource_projection_retains_the_exact_desired_generation() {
+    // Causes: C1 a pending replacement is retained by the Session root; C2 no
+    // pending replacement exists. Effects: E1 select the pending manifest and
+    // attempted revision; E2 select the installed active manifest and its
+    // committed revision. C1/C2 are exclusive and exhaustive.
+    //
+    // | Rule | pending | selected slot | Effect |
+    // |---|---|---|---|
+    // | R1 | yes | Pending | E1 |
+    // | R2 | no  | Active  | E2 |
+    let pending: bool = kani::any();
+    let selected = desired_resource_generation_slot(pending);
+    assert_eq!(selected == DesiredResourceGenerationSlot::Pending, pending);
+    assert_eq!(selected == DesiredResourceGenerationSlot::Active, !pending);
 }
 
 #[cfg(kani)]
@@ -697,9 +732,14 @@ impl SessionResourceState {
     /// attempt advanced the monotonic watermark.
     #[must_use]
     pub fn desired_generation(&self) -> (u64, &ResolvedSessionResources) {
-        match &self.pending {
-            Some(pending) => (self.revision, pending),
-            None => self.active_generation(),
+        match desired_resource_generation_slot(self.pending.is_some()) {
+            DesiredResourceGenerationSlot::Pending => (
+                self.revision,
+                self.pending
+                    .as_ref()
+                    .expect("the desired-generation selector observed pending"),
+            ),
+            DesiredResourceGenerationSlot::Active => self.active_generation(),
         }
     }
 
@@ -870,6 +910,30 @@ mod tests {
             access: ResourceAccess::ReadOnly,
             instructions: None,
         }
+    }
+
+    #[test]
+    fn desired_generation_uses_the_single_active_or_pending_selector() {
+        // Causes: C1 no replacement is pending; C2 a replacement is pending.
+        // Effects: E1 terminal/ordinary projections retain the installed active
+        // revision+manifest pair; E2 they retain the attempted pending pair.
+        // C1/C2 are exhaustive, so these two rows cover the complete selector.
+        //
+        // | Rule | pending | expected revision/manifest |
+        // |---|---|---|
+        // | R1 | no  | active pair |
+        // | R2 | yes | pending pair |
+        let mut state = SessionResourceState::from_active(manifest("active"));
+        assert_eq!(
+            state.desired_generation(),
+            state.active_generation(),
+            "R1/E1"
+        );
+
+        state.prepare("session", manifest("pending")).unwrap();
+        let (revision, selected) = state.desired_generation();
+        assert_eq!(revision, state.revision, "R2/E2 revision");
+        assert_eq!(selected, state.pending.as_ref().unwrap(), "R2/E2 manifest");
     }
 
     #[test]
