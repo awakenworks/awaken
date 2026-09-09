@@ -397,20 +397,20 @@ impl PersistedSession {
     /// and activation-failed Sessions remain deletable because disposition is an
     /// orthogonal state axis.
     pub fn request_delete(&mut self) -> bool {
-        let plan = session_delete_request_plan(
+        let terminalize_execution = match session_delete_request_plan(
             SessionDeleteDispositionClass::from(&self.disposition),
             self.execution.is_terminal(),
-        );
-        if !plan.transition_to_deleting {
-            return false;
-        }
-        if plan.terminalize_execution {
+        ) {
+            SessionDeleteRequestPlan::Commit {
+                terminalize_execution,
+            } => terminalize_execution,
+            SessionDeleteRequestPlan::Replay => return false,
+        };
+        if terminalize_execution {
             self.execution = SessionExecutionState::Terminated;
         }
         self.active_activity_epochs.clear();
-        if plan.request_cleanup {
-            self.terminal_cleanup.request(&self.session_id);
-        }
+        self.terminal_cleanup.request(&self.session_id);
         self.disposition = SessionDisposition::Deleting;
         true
     }

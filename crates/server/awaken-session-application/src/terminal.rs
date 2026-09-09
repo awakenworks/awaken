@@ -660,10 +660,11 @@ impl SessionApplication {
                 .await
                 .map_err(repository_failure)
                 .map_err(mutation_failure)?;
-            if matches!(
-                session.disposition,
-                SessionDisposition::Deleting | SessionDisposition::Deleted
-            ) {
+            // The aggregate owns the complete Delete admission rule. Calling
+            // it before the pending-batch gate makes a hidden durable replay
+            // absorbing without duplicating disposition interpretation here;
+            // a rejected first request mutates only this detached candidate.
+            if !session.request_delete() {
                 return Ok(SessionDispositionMutation {
                     owner_scope,
                     session,
@@ -674,7 +675,6 @@ impl SessionApplication {
                 self.wake_lifecycle_supervisor();
                 return Err(pending_event_batch_error());
             }
-            session.request_delete();
             let mut facts = session
                 .close_runtime_interval(now_unix_ms())
                 .map(|interval| runtime_interval_fact(&owner_scope, session_id, interval))
