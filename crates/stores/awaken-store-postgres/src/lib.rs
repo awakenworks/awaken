@@ -70,23 +70,53 @@ fn increment_authority(value: u64) -> Result<u64, Error> {
         .map_err(|error| Error::Rejected(error.to_string()))
 }
 
-/// Bundle id for the Postgres-only commit-sequence object. Scoped so it never
+fn dense_commit_sequence_successor(last: i64) -> Result<u64, Error> {
+    let last = StoredU64::try_from(last).map_err(|error| Error::Rejected(error.to_string()))?;
+    last.checked_add(1)
+        .map(StoredU64::domain_value)
+        .map_err(|error| Error::Rejected(error.to_string()))
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn dense_commit_sequence_is_exact_nonnegative_and_nonwrapping() {
+    // Cause/effect table over every stored i64 tail: C1 negative -> reject;
+    // C2 MAX -> reject; C3 0..MAX-1 -> exact positive successor. The separate
+    // i128 equation is the oracle. PostgreSQL table-lock/transaction behavior
+    // remains database TCB; this proves the production allocation decision.
+    let last: i64 = kani::any();
+    match dense_commit_sequence_successor(last) {
+        Ok(next) => {
+            assert!(last >= 0 && last < i64::MAX);
+            assert_eq!(i128::from(next), i128::from(last) + 1);
+        }
+        Err(_) => assert!(last < 0 || last == i64::MAX),
+    }
+}
+
+/// Bundle id for Postgres-only commit-order compatibility. Scoped so it never
 /// collides with the portable commit schema (`awaken.runtime_commit`) or the
 /// dispatch schema in a shared database.
 pub const COMMIT_PG_BUNDLE_ID: &str = "awaken.runtime_commit_pg";
 
-/// The Postgres-only migration for the commit-sequence object, embedded from its
-/// `.sql` file so the DDL lives beside the schema, not in a Rust string.
-const COMMIT_PG_FILES: &[(&str, &str)] = &[(
-    "V0001__commit_sequence.sql",
-    include_str!("migrations/V0001__commit_sequence.sql"),
-)];
+/// Postgres-only commit-order migrations, embedded from their SQL files so the
+/// compatibility history remains explicit and checksum guarded.
+const COMMIT_PG_FILES: &[(&str, &str)] = &[
+    (
+        "V0001__commit_sequence.sql",
+        include_str!("migrations/V0001__commit_sequence.sql"),
+    ),
+    (
+        "V0002__transactional_dense_commit_order.sql",
+        include_str!("migrations/V0002__transactional_dense_commit_order.sql"),
+    ),
+];
 
-/// Build the Postgres-only commit-sequence bundle. Kept separate from the portable
-/// [`commit_bundle`] because a Postgres `SEQUENCE` has no SQLite analogue: the
-/// SQLite backend allocates the commit sequence in-process (single writer), so only
-/// the Postgres path needs a lock-free database-side allocator. Runs after the
-/// portable commit schema, so `{prefix}_commit` exists when the sequence is seeded.
+/// Build the Postgres-only commit-order compatibility bundle. V1 records the
+/// historical sequence allocator; V2 compacts its possible gaps and retires it.
+/// This remains separate from the portable [`commit_bundle`] so existing scoped
+/// receipts keep their checksums and upgrade order. It runs after the portable
+/// schema, where the commit table is the current transactional order authority.
 pub fn commit_pg_bundle()
 -> Result<awaken_scoped_migration::MigrationBundle, awaken_scoped_migration::MigrationError> {
     let migrations = COMMIT_PG_FILES
@@ -664,11 +694,23 @@ async fn append_commit(
         )));
     }
 
-    let next: i64 = sqlx::query_scalar(&format!("SELECT nextval('{p}_commit_seq')"))
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(reject)?;
-    let next = decode_authority(next)?;
+    // One existing authority owns allocation and append: the transaction locks
+    // the commit table, observes its exact tail, then inserts the successor.
+    // A rollback releases both the lock and candidate, so no durable gap can be
+    // created by a failed later write.
+    sqlx::query(&format!(
+        "LOCK TABLE {p}_commit IN SHARE ROW EXCLUSIVE MODE"
+    ))
+    .execute(&mut **tx)
+    .await
+    .map_err(reject)?;
+    let last: i64 = sqlx::query_scalar(&format!(
+        "SELECT COALESCE(MAX(sequence), 0) FROM {p}_commit"
+    ))
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(reject)?;
+    let next = dense_commit_sequence_successor(last)?;
     sqlx::query(&format!(
         "INSERT INTO {p}_commit (sequence, thread_id, run_id, phase) VALUES ($1, $2, $3, $4)"
     ))
@@ -1386,14 +1428,17 @@ mod migration_tests {
 
     #[test]
     fn commit_sequence_creation_uses_the_scoped_receipt_as_its_only_guard() {
-        // Cause/effect decision table: portable commit schema present + V0001
-        // receipt absent => execute the pinned historical create/seed body;
-        // canonical receipt present => apply nothing; edited body or unknown
-        // receipt => construction/planning fails closed. The published constructor
-        // owns compatibility, so adapters never rewrite the migration ledger.
+        // Cause/effect decision table: portable schema + no receipts => run
+        // historical V1 then V2; V1-only database => compact dependent keys and
+        // drop the sequence; both receipts => no-op; edited/unknown receipt =>
+        // fail closed. The published constructor remains the only compatibility
+        // owner, so adapters never rewrite the migration ledger.
         let bundle = commit_pg_bundle().expect("deterministic Postgres bundle");
-        assert_eq!(bundle.migrations().len(), 1);
+        assert_eq!(bundle.migrations().len(), 2);
         assert_eq!(bundle.migrations()[0].version(), 1);
+        assert_eq!(bundle.migrations()[1].version(), 2);
+        assert!(COMMIT_PG_FILES[1].1.contains("ROW_NUMBER()"));
+        assert!(COMMIT_PG_FILES[1].1.contains("DROP SEQUENCE"));
     }
 
     #[test]
