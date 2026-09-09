@@ -427,7 +427,8 @@ impl AcpLocalCredentialResolver {
                 reason_code: Some("worker_local_source_disabled".to_string()),
             };
         }
-        let observation = self.discovery.discover(binding.cli).await;
+        let observation =
+            host_discovery::discover_scoped(self.discovery.as_ref(), binding.cli).await;
         self.last_host_observations
             .lock()
             .expect("ACP host-observation cache poisoned")
@@ -464,7 +465,7 @@ impl AcpCapabilityObservationSource for AcpLocalCredentialResolver {
                 .cloned();
             let host = match cached {
                 Some(observation) => observation,
-                None => self.discovery.discover(cli).await,
+                None => host_discovery::discover_scoped(self.discovery.as_ref(), cli).await,
             };
             if !host.detected() {
                 observations.push(

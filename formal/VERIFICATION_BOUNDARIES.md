@@ -315,13 +315,19 @@ type checking are valuable executable evidence, but are not formal proofs.
   universal implementation refinement.
   `AcpObservationRefresh.tla` separately checks the ACP adapter projection:
   one backend, two references and two serialized refreshes, with mutable host
-  state between steps. Four mutants reject per-Workspace duplicate probes,
-  credential-derived protocol cardinality, cross-reference login borrowing and
-  cross-refresh cached evidence; four witnesses cover useful shared login,
-  protocol without a login binding, unselected routes and a missing CLI on the
-  second refresh. Rust rows cross two CLIs, all three-binding status combinations,
-  negotiation failures and actual cache refresh. This does not prove external
-  revocation, per-use revalidation, concurrent custom consumers or Rust refinement.
+  state and reply-backend identity between steps. Seven mutants reject
+  per-Workspace duplicate probes, credential-derived protocol cardinality,
+  cross-reference login borrowing, cross-refresh cached evidence and foreign
+  backend evidence in credentials, cached capabilities and fallback probes.
+  Seven witnesses retain useful projections and reach each foreign-reply denial.
+  The shared discovery consumer scopes replies before caching or projection;
+  the production process adapter already emits the requested catalog identity.
+  Rust rows cross two CLIs, all three-binding status combinations, negotiation
+  failure and foreign-backend loss/recovery across 72 actual refreshes, including
+  zero bindings. Six isolated production mutants independently qualify identity
+  checks, the three discovery consumers and both post-probe equality fences.
+  This does not prove external revocation, per-use revalidation, concurrent
+  custom consumers or Rust refinement.
 - ACP WorkerLocal binding extension validates the complete input batch and
   publishes it under the same resolver mutex. Rejection cannot leak a prefix
   insertion or status update. `AcpLocalBindingBatch.tla` covers two writers,
@@ -345,12 +351,16 @@ type checking are valuable executable evidence, but are not formal proofs.
   Control rows into the same exact binding DTO.
 - `AcpProjectedBindingUse.tla` checks two consumers under one async gate with
   at most two external file replacements (active, rotated revision, different
-  CLI, disabled, absent, invalid). Four mutants check post-probe comparison,
-  exact CLI identity, serialization and cancellation release; three witnesses
-  require successful use, revoked denial and a peer succeeding after cancel.
-  Executable tables exercise Codex/Claude, all login states, actual bounded
-  file reads/replacements and a paused login probe, both heartbeat and exact
-  use ports, and standalone Worker configuration/assembly. This proves neither
+  CLI, disabled, absent, invalid), with matching or foreign probe replies.
+  Five mutants check post-probe comparison, exact CLI binding, serialization,
+  cancellation release and probe-backend identity; four witnesses require
+  successful use, revoked denial, a peer succeeding after cancel and a foreign
+  probe denied despite an unchanged binding. Executable tables exercise
+  Codex/Claude, all login states, actual bounded file reads/replacements and a
+  paused login probe, both heartbeat and exact use ports, and standalone Worker
+  configuration/assembly. The existing await-barrier table now crosses all seven
+  file changes with both ports and matching, foreign-known and unknown reply
+  backends (42 rows); no second selector or projection store is added. This proves neither
   automatic authenticated projection delivery nor rollback/ABA detection,
   OS IO correctness, the final check-to-launch interval, arbitrary live cloud
   failures or Rust refinement. AllInOne source lifecycle refresh remains a

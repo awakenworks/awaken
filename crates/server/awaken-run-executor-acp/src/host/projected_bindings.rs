@@ -236,6 +236,7 @@ mod tests {
         started: tokio::sync::Notify,
         release: tokio::sync::Notify,
         state: CredentialObservationState,
+        reply_cli: Option<&'static str>,
     }
     impl Discovery {
         fn new(state: CredentialObservationState) -> Self {
@@ -245,6 +246,7 @@ mod tests {
                 started: tokio::sync::Notify::new(),
                 release: tokio::sync::Notify::new(),
                 state,
+                reply_cli: None,
             }
         }
     }
@@ -257,7 +259,7 @@ mod tests {
                 self.release.notified().await;
             }
             AcpHostObservation {
-                cli_id: cli.id.into(),
+                cli_id: self.reply_cli.unwrap_or(cli.id).into(),
                 display_name: cli.id.into(),
                 detection: AcpDetectionState::Detected,
                 version: Some("fixture".into()),
@@ -295,6 +297,40 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    #[tokio::test]
+    async fn discovery_catalog_walk_scopes_each_reply_before_startup_projection() {
+        // Causes: C1 each catalog request; C2 adapter replies with a fixed known
+        // or unknown backend. R1 exact reply retains its evidence; R2 mismatch
+        // becomes a failed observation for the requested backend with no borrowed
+        // version/login/capability fields. The actual default discover_all method
+        // also serves startup and diagnostics, beyond resolver cache/fallback.
+        for reply_cli in ["codex", "unknown"] {
+            let mut discovery = Discovery::new(CredentialObservationState::Available);
+            discovery.reply_cli = Some(reply_cli);
+            let observations = discovery.discover_all().await;
+            assert_eq!(observations.len(), crate::known_acp_clis().len());
+            for (cli, observed) in crate::known_acp_clis().iter().zip(observations) {
+                assert_eq!(observed.cli_id, cli.id, "DS1 catalog request identity");
+                if cli.id == reply_cli {
+                    assert!(observed.detected(), "DS1 exact backend remains useful");
+                } else {
+                    assert_eq!(observed.detection, AcpDetectionState::ProbeFailed, "DS2");
+                    assert_eq!(
+                        observed.reason_code.as_deref(),
+                        Some("acp_discovery_backend_mismatch")
+                    );
+                    assert!(
+                        observed.version.is_none()
+                            && observed.credential_state.is_none()
+                            && observed.capability_state.is_none()
+                            && observed.capability_fingerprint.is_none(),
+                        "DS2 no foreign evidence"
+                    );
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -463,56 +499,81 @@ mod tests {
         // rotates/rebinds/corrupts => old Available evidence cannot escape either
         // port. R9 unrelated row change fences whole heartbeat but not an exact
         // per-use check; R10 semantically identical replacement succeeds.
+        // C4 the awaited adapter returns the requested CLI, another known CLI,
+        // or an unknown CLI. R13 unchanged projections can expose only a
+        // ProbeFailed heartbeat for mismatched replies; per-use never grants.
+        // Cross C4 with every R8-R10 replacement to keep post-probe fencing and
+        // backend scope independent, including unrelated-row per-use success.
         // Notify barriers exercise the actual await, without timing sleeps.
-        for heartbeat in [false, true] {
-            for change in [
-                "disable", "delete", "revision", "cli", "corrupt", "other", "same",
-            ] {
-                let dir = tempfile::tempdir().unwrap();
-                let path = dir.path().join("bindings.json");
-                let discovery = Arc::new(Discovery::new(CredentialObservationState::Available));
-                discovery.pause.store(true, Ordering::SeqCst);
-                let projected = projected(&path, discovery.clone());
-                write(&path, &[row("codex", 1, true)]);
-                let operation = {
-                    let projected = projected.clone();
-                    tokio::spawn(async move {
-                        if heartbeat {
-                            projected.credential_observations().await.map(|_| ())
-                        } else {
-                            projected
-                                .revalidate_worker_reference(&row("codex", 1, true).credential)
-                                .await
-                                .map(|_| ())
+        for reply_cli in [None, Some("claude"), Some("unknown")] {
+            for heartbeat in [false, true] {
+                for change in [
+                    "disable", "delete", "revision", "cli", "corrupt", "other", "same",
+                ] {
+                    let dir = tempfile::tempdir().unwrap();
+                    let path = dir.path().join("bindings.json");
+                    let mut discovery = Discovery::new(CredentialObservationState::Available);
+                    discovery.reply_cli = reply_cli;
+                    let discovery = Arc::new(discovery);
+                    discovery.pause.store(true, Ordering::SeqCst);
+                    let projected = projected(&path, discovery.clone());
+                    write(&path, &[row("codex", 1, true)]);
+                    let operation = {
+                        let projected = projected.clone();
+                        tokio::spawn(async move {
+                            if heartbeat {
+                                projected
+                                    .credential_observations()
+                                    .await
+                                    .map(|rows| rows.into_iter().next().unwrap().state)
+                            } else {
+                                projected
+                                    .revalidate_worker_reference(&row("codex", 1, true).credential)
+                                    .await
+                                    .map(|row| row.state)
+                            }
+                        })
+                    };
+                    discovery.started.notified().await;
+                    match change {
+                        "disable" => write(&path, &[row("codex", 1, false)]),
+                        "delete" => std::fs::remove_file(&path).unwrap(),
+                        "revision" => write(&path, &[row("codex", 2, true)]),
+                        "cli" => write(&path, &[row("claude", 1, true)]),
+                        "corrupt" => std::fs::write(&path, b"broken").unwrap(),
+                        "other" => {
+                            let mut other = row("claude", 1, true);
+                            other.credential.id = "ref-b".into();
+                            write(&path, &[other, row("codex", 1, true)]);
                         }
-                    })
-                };
-                discovery.started.notified().await;
-                match change {
-                    "disable" => write(&path, &[row("codex", 1, false)]),
-                    "delete" => std::fs::remove_file(&path).unwrap(),
-                    "revision" => write(&path, &[row("codex", 2, true)]),
-                    "cli" => write(&path, &[row("claude", 1, true)]),
-                    "corrupt" => std::fs::write(&path, b"broken").unwrap(),
-                    "other" => {
-                        let mut other = row("claude", 1, true);
-                        other.credential.id = "ref-b".into();
-                        write(&path, &[other, row("codex", 1, true)]);
+                        "same" => write(&path, &[row("codex", 1, true)]),
+                        _ => unreachable!(),
                     }
-                    "same" => write(&path, &[row("codex", 1, true)]),
-                    _ => unreachable!(),
+                    discovery.release.notify_one();
+                    let result = operation.await.unwrap();
+                    let unchanged = change == "same" || (!heartbeat && change == "other");
+                    assert_eq!(
+                        result.is_ok(),
+                        unchanged && (heartbeat || reply_cli.is_none()),
+                        "R8-R10/R13 {heartbeat} {change} {reply_cli:?}"
+                    );
+                    if let Ok(state) = result {
+                        assert_eq!(
+                            state,
+                            if reply_cli.is_some() {
+                                CredentialObservationState::ProbeFailed
+                            } else {
+                                CredentialObservationState::Available
+                            },
+                            "R13 response identity {heartbeat} {change} {reply_cli:?}"
+                        );
+                    }
+                    assert_eq!(
+                        discovery.calls.load(Ordering::SeqCst),
+                        1,
+                        "no duplicate login probe"
+                    );
                 }
-                discovery.release.notify_one();
-                assert_eq!(
-                    operation.await.unwrap().is_ok(),
-                    change == "same" || (!heartbeat && change == "other"),
-                    "R8-R10 {heartbeat} {change}"
-                );
-                assert_eq!(
-                    discovery.calls.load(Ordering::SeqCst),
-                    1,
-                    "no duplicate login probe"
-                );
             }
         }
     }
