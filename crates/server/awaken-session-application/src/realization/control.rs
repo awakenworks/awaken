@@ -584,28 +584,13 @@ impl SessionApplication {
         // move it to Draining. Publish only receipts still named by the durable
         // publication set, keeping their actual (possibly older) lease expiry.
         // Obsolete staged receipts belong exclusively to the drain below.
-        let expected_publish = Self::publication_generations(&session)?;
-        let publish = receipt_generations
-            .into_iter()
-            .filter(|receipt| {
-                expected_publish.iter().any(|current| {
-                    awaken_session_contract::realization_generation_authorizes(current, receipt)
-                })
-            })
-            .collect::<Vec<_>>();
-        if !generation_set_authorizes(&expected_publish, &publish) {
-            return Err(SessionRealizationControlFailure::Invalid(
-                "activated publication set has no exact staged receipt set".into(),
-            ));
-        }
-        let drain = Self::draining_generations(&session)?;
-        self.realization_directive(
-            owner_scope,
-            &session,
-            SessionRealizationAction::Publish { publish, drain },
-            false,
-        )
-        .await
+        let action = publication_action(
+            &session.session_id,
+            &session.mcp.attachments,
+            receipt_generations,
+        )?;
+        self.realization_directive(owner_scope, &session, action, false)
+            .await
     }
 
     async fn acknowledge_session_realization_inner(
@@ -614,8 +599,9 @@ impl SessionApplication {
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
         let (owner_scope, mut session) = self.session_for_realization(&command.session_id).await?;
         verify_lease(&session, &command.lease)?;
-        let expected_publish = Self::publication_generations(&session)?;
-        let expected_drain = Self::draining_generations(&session)?;
+        let expected_publish =
+            publication_generations(&session.session_id, &session.mcp.attachments)?;
+        let expected_drain = draining_generations(&session.session_id, &session.mcp.attachments)?;
         let keys = |items: &[McpGenerationRef]| {
             items
                 .iter()
