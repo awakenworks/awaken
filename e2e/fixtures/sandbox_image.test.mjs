@@ -18,7 +18,8 @@ test('canonical image admission verifies selected ACP runtimes on reuse and afte
   const previous = { ...process.env };
   try {
     for (const relative of ['deploy/images/sandbox/build.sh', 'deploy/images/sandbox/stage-binary.sh',
-      'scripts/ci/_deadline.sh', 'scripts/ci/deadline.py']) {
+      'scripts/ci/_deadline.sh', 'scripts/ci/deadline.py',
+      'e2e/cargo_binary.mjs', 'e2e/executable_snapshot.mjs']) {
       const destination = path.join(root, relative);
       await fs.mkdir(path.dirname(destination), { recursive:true });
       await fs.copyFile(new URL('../../' + relative, import.meta.url), destination);
@@ -29,7 +30,8 @@ test('canonical image admission verifies selected ACP runtimes on reuse and afte
     await fs.writeFile(executable, '#!/bin/sh\nexit 0\n', { mode:0o755 });
     await fs.writeFile(path.join(bin, 'cargo'), `#!${process.execPath}
 const args=process.argv.slice(2);
-if(args[0]==='build') console.log(JSON.stringify({reason:'compiler-artifact',target:{name:'awaken-sandbox'},executable:process.env.ADMISSION_BINARY}));
+if(args[0]==='build') console.log(JSON.stringify({reason:'compiler-artifact',target:{name:'awaken-sandbox',kind:['bin']},executable:process.env.ADMISSION_BINARY}));
+else if(args[0]==='metadata') console.log(JSON.stringify({build_directory:process.env.ADMISSION_CACHE}));
 else console.log('{}');
 `, { mode:0o755 });
     await fs.writeFile(path.join(bin, 'docker'), `#!${process.execPath}
@@ -45,7 +47,7 @@ if(args[0]==='image'){
 }else if(!repaired&&((mode==='hand'&&args.includes('hand'))||(mode==='publish'&&args.includes('repository-publish-noreplace'))||(mode==='reader'&&args.includes('read-tree-nofollow'))||(mode==='tools'&&args.includes('/bin/sh'))))process.exit(1);
 `, { mode:0o755 });
     Object.assign(process.env, { PATH:bin + path.delimiter + previous.PATH,
-      ADMISSION_CALLS:calls, ADMISSION_STATE:state, ADMISSION_BINARY:executable });
+      ADMISSION_CALLS:calls, ADMISSION_STATE:state, ADMISSION_BINARY:executable, ADMISSION_CACHE:path.join(root, 'cache') });
     for (const [runtimeIds, mode] of [['','ok'], ['claude','ok'], ['all','ok'], ['claude,codex','ok'], ['', 'runtime'],
       ...['absent','label','hand','publish','reader','tools','runtime','unrepairable'].map(mode=>['claude', mode])]) {
       await fs.writeFile(calls, ''); await fs.rm(state, { force:true });

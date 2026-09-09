@@ -13,6 +13,39 @@ import unittest
 DRILL = Path(__file__).resolve().with_name("postgres_recovery_drill.sh")
 
 
+def write_startup_docker(path):
+    """One fake Docker boundary for real producer startup and cleanup tests."""
+    path.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+mode = os.environ.get("AWAKEN_TEST_STARTUP_FAILURE", "create")
+if report := os.environ.get("AWAKEN_TEST_DOCKER_CALLS"):
+    with open(report, "a") as out:
+        out.write(json.dumps(args) + "\\n")
+if args[0] in ("info", "rm"):
+    sys.exit(0)
+if args[0] == "run":
+    mount = next(value for value in args if value.endswith(":/recovery-base"))
+    base = Path(mount.removesuffix(":/recovery-base"))
+    if report := os.environ.get("AWAKEN_TEST_ALLOCATION"):
+        Path(report).write_text(json.dumps({
+            "root": str(base.parent), "base": base.is_dir(),
+            "wal": (base.parent / "wal").is_dir(),
+        }))
+    sys.exit(73 if mode == "create" else 0)
+if args[0] == "port":
+    print("invalid" if mode == "port" else "127.0.0.1:49152")
+    sys.exit(0)
+if args[0] == "exec":
+    sys.exit(1)
+if args[0] in ("inspect", "logs"):
+    print("fixture " + args[0])
+    sys.exit(79 if mode == "create" else 0)
+sys.exit(73)
+''')
+    path.chmod(0o755)
+
+
 class RecoveryRootTests(unittest.TestCase):
     def test_producer_allocates_and_cleans_only_its_own_directory(self):
         # P1 absolute/trailing-slash/symlink TMPDIR x failed Docker startup:
@@ -32,21 +65,7 @@ class RecoveryRootTests(unittest.TestCase):
             binary.mkdir()
             report = fixture / "allocation.json"
             docker = binary / "docker"
-            docker.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
-from pathlib import Path
-args = sys.argv[1:]
-if args[0] in ("info", "rm"):
-    sys.exit(0)
-if args[0] == "run":
-    mount = next(value for value in args if value.endswith(":/recovery-base"))
-    base = Path(mount.removesuffix(":/recovery-base"))
-    Path(os.environ["AWAKEN_TEST_ALLOCATION"]).write_text(json.dumps({
-        "root": str(base.parent), "base": base.is_dir(),
-        "wal": (base.parent / "wal").is_dir(),
-    }))
-sys.exit(73)
-''')
-            docker.chmod(0o755)
+            write_startup_docker(docker)
             for selected in (parent, f"{parent}///", alias):
                 with self.subTest(rule="P1/P2", parent=str(selected)):
                     report.unlink(missing_ok=True)
@@ -67,6 +86,50 @@ sys.exit(73)
                     self.assertEqual(path.parent, parent)
                     self.assertFalse(path.exists(), "P1 cleanup after failed startup")
                     self.assertEqual((caller / "sentinel").read_bytes(), b"preserved")
+
+    def test_startup_failures_report_phases_and_diagnose_before_cleanup(self):
+        # Cause/effect table: C1 create fails (possibly accepted remotely), C2
+        # port response malformed, C3 final TCP readiness never arrives; C4
+        # diagnostics also fail. Effects: E1 retain original exit 1; E2 trace the
+        # exact failed phase/status even when output was suppressed; E3 inspect
+        # and logs precede cleanup, only for the attempted container; E4 C4 never
+        # masks C1. P13=C1+C4, P14=C2, P15=C3 => E1-E3 (and E4 for P13).
+        # No cargo or real Docker is run; invoke the canonical producer itself.
+        with tempfile.TemporaryDirectory(prefix="awaken-pg-diagnostics-") as tmp:
+            fixture = Path(tmp).resolve()
+            binary = fixture / "bin"
+            binary.mkdir()
+            write_startup_docker(binary / "docker")
+            calls = fixture / "calls.jsonl"
+            for mode, phase, status in (("create", "postgres-create", 73),
+                                        ("port", "postgres-port", 0),
+                                        ("ready", "postgres-ready", 1)):
+                with self.subTest(mode=mode):
+                    calls.unlink(missing_ok=True)
+                    result = subprocess.run(
+                        ["bash", str(DRILL.with_name("pg_tests.sh")), "--require-docker"],
+                        env=dict(os.environ, TMPDIR=str(fixture),
+                                 PATH=f"{binary}{os.pathsep}{os.environ['PATH']}",
+                                 CARGO_TARGET_DIR=str(fixture / "target"),
+                                 AWAKEN_TEST_STARTUP_FAILURE=mode,
+                                 AWAKEN_TEST_DOCKER_CALLS=str(calls),
+                                 AWAKEN_PG_READY_TIMEOUT_SECONDS="1",
+                                 AWAKEN_PG_OPERATION_TIMEOUT_SECONDS="1"),
+                        text=True, capture_output=True, timeout=8,
+                    )
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertIn(f"stage={phase} event=start", result.stderr)
+                    self.assertIn(f"stage={phase} event=finish status={status}", result.stderr)
+                    commands = [json.loads(line) for line in calls.read_text().splitlines()]
+                    verbs = [command[0] for command in commands]
+                    self.assertLess(verbs.index("inspect"), verbs.index("rm"))
+                    self.assertLess(verbs.index("logs"), verbs.index("rm"))
+                    created = next(c[c.index("--name") + 1] for c in commands if c[0] == "run")
+                    for command in commands:
+                        if command[0] in ("inspect", "logs"):
+                            self.assertEqual(command[-1], created, "P13-P15 exact attempted container")
+                    self.assertNotIn("Config.Env", result.stderr)
+                    self.assertFalse(list(fixture.glob("awaken-pg-recovery.*")))
 
     def test_configured_parent_and_exact_owned_leaf_control_admission(self):
         # Causes: C1 the selected TMPDIR (absolute, trailing slash, relative or
