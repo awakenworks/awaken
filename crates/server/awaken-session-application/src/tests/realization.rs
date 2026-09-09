@@ -70,43 +70,125 @@ fn terminal_prepare_commands(
 
 #[tokio::test]
 async fn terminal_assignment_preserves_the_complete_retained_resource_transition() {
-    // Cause/effect table: C1 committed A is empty/nonempty; C2 pending B is
-    // absent/unattempted/attempted. E1 cleanup carries A -> B (or A -> A),
-    // including after a cold read; E2 projection does not activate or settle B.
-    // A Worker may already have staged B before its activation receipt was
-    // committed. Sending A -> A would regress that slot and strand cleanup.
-    // C3 current/expired realization: only current authority may issue the
-    // complete assignment; expiry rejects it without mutating the stored root.
-    for active in [false, true] {
+    // Cause/effect table: C1 legacy empty/File or committed File/Skill/empty;
+    // C2 pending B absent/unattempted/attempted; C3 two failed replacements;
+    // C4 close/reopen SQLite; C5 current/expired realization authority.
+    // Original six rows retain legacy A@0/1 with optional B@1/2. Nine history
+    // rows commit A@1, roll back generations 2 and 3, then optionally prepare
+    // B@4. Empty/Skill A has no input activation record to recover its revision.
+    //
+    // | History | Pending | Previous | Desired | Watermark |
+    // | legacy empty/File | absent | A@0/1 | A@0/1 | 0/1 |
+    // | legacy empty/File | either | A@0/1 | B@1/2 | 1/2 |
+    // | commit + rollback twice | absent | A@1 | A@1 | 3 |
+    // | commit + rollback twice | either | A@1 | B@4 | 4 |
+    // Histories are constructed with the real aggregate commands while Idle,
+    // then the real terminal transition runs before one durable write/reopen.
+    // This does not claim each earlier rollback was separately SQL-committed.
+    // Every row crosses C4/C5: a live assignment retains both exact manifests;
+    // expiry rejects; neither changes the complete persisted root. Expected
+    // pairs come from these historical commands, never the production
+    // active_generation/desired_generation getters also used by projection.
+    // Sending A -> A while B is pending regresses an already-staged Worker;
+    // pairing A with attempted watermark 3 invents an installed generation.
+    let empty = awaken_session_contract::ResolvedSessionResources::default();
+    for (history, active, rollback_twice, active_revision) in [
+        ("legacy-empty", empty.clone(), false, 0),
+        ("legacy-file", file_resources("active"), false, 1),
+        ("committed-file", file_resources("active"), true, 1),
+        ("committed-skill", skill_resources("active"), true, 1),
+        ("committed-empty", empty, true, 1),
+    ] {
         for pending in [None, Some(false), Some(true)] {
-            let repo = Arc::new(
-                awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
-            );
-            let mut session = persisted("terminal-transition", true, "terminated");
+            let directory = tempfile::tempdir().expect("temporary terminal Session authority");
+            let path = directory.path().join("terminal-transition.db");
+            let path = path.to_string_lossy().to_string();
+            let session_id = "terminal-transition";
+            let desired = file_resources("pending");
+            let mut session = persisted(session_id, true, "idle");
             session.realization = Some(awaken_session_contract::SessionRealizationLease {
                 owner: "worker".into(),
                 runtime_incarnation: "incarnation".into(),
                 epoch: 1,
                 expires_at_unix_ms: crate::activity::now_unix_ms() + 60_000,
             });
-            if active {
-                session.resources = awaken_session_contract::SessionResourceState::from_active(
-                    file_resources("active"),
+            if rollback_twice {
+                assert_eq!(
+                    session
+                        .resources
+                        .prepare(session_id, active.clone())
+                        .unwrap(),
+                    1
                 );
-                session.resources.adopt_legacy_active("terminal-transition");
+                session.resources.start_attempt().unwrap();
+                session.resources.commit().unwrap();
+                for revision in [2, 3] {
+                    assert_eq!(
+                        session
+                            .resources
+                            .prepare(session_id, file_resources("failed"))
+                            .unwrap(),
+                        revision,
+                    );
+                    session.resources.start_attempt().unwrap();
+                    session.resources.rollback("replacement failed").unwrap();
+                }
+            } else {
+                session.resources =
+                    awaken_session_contract::SessionResourceState::from_active(active.clone());
+                session.resources.adopt_legacy_active(session_id);
             }
-            if let Some(attempted) = pending {
-                session
-                    .resources
-                    .prepare("terminal-transition", file_resources("pending"))
-                    .unwrap();
+            let watermark = if rollback_twice { 3 } else { active_revision };
+            let desired_revision = if let Some(attempted) = pending {
+                assert_eq!(
+                    session
+                        .resources
+                        .prepare(session_id, desired.clone())
+                        .unwrap(),
+                    watermark + 1,
+                );
                 if attempted {
                     session.resources.start_attempt().unwrap();
                 }
-            }
-            create(repo.as_ref(), session).await;
-            let snapshot = repo.get("terminal-transition").await.unwrap();
-            let expected_resources = snapshot.resources.clone();
+                watermark + 1
+            } else {
+                active_revision
+            };
+            assert_eq!(session.resources.committed_revision, Some(active_revision));
+            let expected_previous = awaken_session_contract::SessionResourceManifest::at_revision(
+                "workspace",
+                active_revision,
+                active.clone(),
+            );
+            let expected_desired = awaken_session_contract::SessionResourceManifest::at_revision(
+                "workspace",
+                desired_revision,
+                if pending.is_some() {
+                    desired
+                } else {
+                    active.clone()
+                },
+            );
+            let resources_before_termination = session.resources.clone();
+            session
+                .transition_execution(awaken_session_contract::SessionExecutionState::Terminated)
+                .expect("terminal transition after Resource history");
+            assert_eq!(
+                session.resources, resources_before_termination,
+                "{history}/{pending:?} termination retains the entire Resource state"
+            );
+            let before_restart = {
+                let repo = awaken_session_store::SqliteManagedSessionRepository::open(&path)
+                    .expect("open terminal Session authority");
+                create(&repo, session).await;
+                repo.get(session_id).await.unwrap()
+            };
+            let repo = Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open(&path)
+                    .expect("reopen terminal Session authority"),
+            );
+            let snapshot = repo.get(session_id).await.unwrap();
+            assert_eq!(snapshot, before_restart, "{history}/{pending:?} cold root");
             let application = application(
                 repo.clone(),
                 Arc::new(RecordingEnvironmentSource::default()),
@@ -121,12 +203,21 @@ async fn terminal_assignment_preserves_the_complete_retained_resource_transition
                     awaken_session_contract::FrozenResourceTransitionUse::ValidateInstalled,
                 )
                 .unwrap();
-            let (active_revision, active_resources) = snapshot.resources.active_generation();
-            let (desired_revision, desired_resources) = snapshot.resources.desired_generation();
-            assert_eq!(transition.previous().revision, active_revision);
-            assert_eq!(&transition.previous().resources, active_resources);
-            assert_eq!(transition.desired().revision, desired_revision);
-            assert_eq!(&transition.desired().resources, desired_resources);
+            assert_eq!(
+                transition.previous(),
+                &expected_previous,
+                "{history}/{pending:?} previous"
+            );
+            assert_eq!(
+                transition.desired(),
+                &expected_desired,
+                "{history}/{pending:?} desired"
+            );
+            assert_eq!(
+                repo.get(session_id).await.unwrap(),
+                snapshot,
+                "{history}/{pending:?} projection must not acknowledge cleanup"
+            );
             let mut expired = snapshot.clone();
             expired.realization.as_mut().unwrap().expires_at_unix_ms = 1;
             assert!(matches!(
@@ -136,9 +227,9 @@ async fn terminal_assignment_preserves_the_complete_retained_resource_transition
                 Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership)
             ));
             assert_eq!(
-                repo.get("terminal-transition").await.unwrap().resources,
-                expected_resources,
-                "projection must not acknowledge physical cleanup"
+                repo.get(session_id).await.unwrap(),
+                snapshot,
+                "{history}/{pending:?} rejection must not mutate the complete root"
             );
         }
     }
