@@ -620,6 +620,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-protocol-managed -Z unstable-options --solver kissat \
     --harness managed_reply_anchor_selects_exact_fenced_commit \
     --cbmc-args --unwindset memcmp.0:16
+  # One production ticket-admission owner; snapshot lookup stays at the edge.
+  run_kani awaken-protocol-managed --solver cadical \
+    --harness managed_ticket_admission_preserves_terminal_and_identity_priority
   run_kani awaken-protocol-managed \
     --harness projection_publish_decision_is_total_exact_and_fail_closed \
     --harness runtime_tool_projection_phase_is_total_distinct_and_fail_closed \
@@ -1162,6 +1165,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/config-activation" \
     -config formal/tla/ConfigActivation.cfg formal/tla/ConfigActivation.tla
+  python3 scripts/ci/check_formal_mutations.py --config-activation-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/inference-access-publication" \
     -config formal/tla/InferenceAccessPublication.cfg \

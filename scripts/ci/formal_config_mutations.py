@@ -1,4 +1,4 @@
-"""Config CAS model mutations using the single strict TLC semantic oracle."""
+"""Config CAS and activation model mutations using the single strict TLC semantic oracle."""
 
 from pathlib import Path
 
@@ -30,3 +30,39 @@ def check_config_cas_model_mutant(tlc_jar: Path) -> None:
          config, "LastWriteIsAtomicCAS"),
     ])
     print("Config CAS mutation score: 5/5 killed (absent, stale, exhaustion, rejected value and actual generation frame)")
+
+
+def check_config_activation_model_mutants(tlc_jar: Path) -> None:
+    # Cause/effect table: P1 deleting source admission must accept a stale
+    # candidate; P2 a rejected durable write must violate its actual frame;
+    # R1 deleting durable-publication admission must admit an unpublished
+    # revision; R3 weakening strict newer comparison revives an equal tombstone;
+    # W1 ignoring the older-withdrawal guard rolls the lifecycle back.
+    # W2 clearing exact history on withdrawal violates the independent history
+    # frame. Five inverse invariants establish reachable positive/negative
+    # witnesses on the ORIGINAL model, not just mutants failing vacuously.
+    source = (ROOT / "formal/tla/ConfigActivation.tla").read_text(encoding="utf-8")
+    config = (ROOT / "formal/tla/ConfigActivation.cfg").read_text(encoding="utf-8")
+    replacements = (
+        ("IF preparedGeneration = authorGeneration", "IF TRUE", "AcceptedPublicationMatchedSource"),
+        ("ELSE /\\ UNCHANGED publications", "ELSE /\\ publications' = publications \\cup {preparedGeneration}",
+         "RejectedPublicationPreservesDurableSet"),
+        ("/\\ revision \\in publications", "/\\ TRUE", "RegisteredHistoryWasDurablyPublished"),
+        ("IF revision > installedGeneration", "IF revision >= installedGeneration",
+         "RegisteredCurrentRequiresStrictlyNewer"),
+        ("IF revision < installedGeneration", "IF FALSE", "ActivationGenerationNeverRollsBack"),
+        ("/\\ UNCHANGED <<authorGeneration, preparedGeneration, publications, registeredRevisions>>",
+         "/\\ registeredRevisions' = {}\n    /\\ UNCHANGED <<authorGeneration, preparedGeneration, publications>>",
+         "ExactHistoryNeverDisappears"),
+    )
+    mutations = []
+    for before, after, invariant in replacements:
+        if source.count(before) != 1:
+            raise SystemExit(f"Config activation mutation anchor drifted: {before}")
+        mutations.append((source.replace(before, after), config, invariant))
+    for witness in ("NoAcceptedPublicationWitness", "NoStaleRejectionWitness",
+                    "NoDelayedCurrentRegistrationWitness", "NoHistoricalRegistrationWitness",
+                    "NoWithdrawalFenceWitness"):
+        mutations.append((source, config + f"    {witness}\n", witness))
+    check_tlc_model_mutations(tlc_jar, "ConfigActivation", source, config, mutations)
+    print("Config activation: 6/6 mutants killed; 5/5 independent reachability witnesses observed")

@@ -189,3 +189,234 @@ fn managed_reply_anchor_selects_exact_fenced_commit() {
     kani::assume(length <= 3);
     check(&inputs[..length], &events[..length], kani::any());
 }
+
+fn selected_run_state(kind: u8) -> Option<awaken_agent_contract::agent::run::RunState> {
+    use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
+    Some(match kind {
+        0 => RunState::Running,
+        1 => RunState::Awaiting,
+        2 => RunState::Ended(EndCause::NaturalEnd),
+        3 => RunState::Ended(EndCause::MaxSteps),
+        4 => RunState::Ended(EndCause::Cancelled),
+        5 => RunState::Ended(EndCause::Stopped(String::new())),
+        6 => RunState::Ended(EndCause::Error(Failure::Inference {
+            code: String::new(),
+            message: String::new(),
+        })),
+        7 => RunState::Ended(EndCause::Error(Failure::CapabilityBound)),
+        8 => RunState::Ended(EndCause::Error(Failure::StateConflict)),
+        9 => RunState::Ended(EndCause::Indeterminate),
+        10 => return None,
+        _ => unreachable!("closed Run state and failure domain"),
+    })
+}
+
+// This fixture belongs to the existing strict pending selector. It introduces
+// no second production lifecycle or candidate-admission rule.
+#[cfg(test)]
+fn check_terminal_ticket_selection(kind: u8, latest: bool, reverse: bool, tickets: u8) {
+    use awaken_agent_contract::agent::awaiting::{
+        AwaitTarget, PendingTool, ResumeTicket, ToolAwaitReason, ToolCallAuthority,
+    };
+    use awaken_agent_contract::agent::run::{Record, RunState};
+    use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunResumeTicket};
+
+    let state = selected_run_state(kind).expect("native snapshot has explicit current Run truth");
+    let current = Record {
+        id: RunId("r".into()),
+        thread_id: ThreadId("t".into()),
+        state,
+    };
+    let old = Record {
+        id: RunId("o".into()),
+        thread_id: ThreadId("t".into()),
+        state: RunState::Awaiting,
+    };
+    let runs = if reverse {
+        vec![old, current]
+    } else {
+        vec![current, old]
+    };
+    let ticket = |id: &str| RunResumeTicket {
+        run_id: RunId(id.into()),
+        ticket: ResumeTicket::new(
+            "c",
+            RunId(id.into()),
+            ThreadId("t".into()),
+            "s",
+            "f",
+            AwaitTarget::ToolCall {
+                reason: ToolAwaitReason::ClientExecution,
+                call_id: "a".into(),
+                tool: PendingTool {
+                    tool_id: "x".into(),
+                    arguments: serde_json::Value::Null,
+                },
+                authority: ToolCallAuthority::RuntimeToolBatch,
+            },
+        ),
+    };
+    let mut resume_tickets = Vec::new();
+    if tickets & 1 != 0 {
+        resume_tickets.push(ticket("r"));
+    }
+    if tickets & 2 != 0 {
+        resume_tickets.push(ticket("o"));
+    }
+    let snapshot = RunRecoverySnapshot {
+        thread_id: ThreadId("t".into()),
+        // A populated latest coordinate must override the older claimed Run.
+        claimed_run_id: RunId(if latest { "o" } else { "r" }.into()),
+        latest_run_id: latest.then(|| RunId("r".into())),
+        runs,
+        resume_tickets,
+        messages: Vec::new(),
+        message_commit_cursors: Vec::new(),
+        commit_timestamps: Default::default(),
+        state: Vec::new(),
+        state_commit_cursors: Vec::new(),
+        events: Vec::new(),
+        thread_version: 2,
+        store_cursor: 2,
+        next_commit_ordinal: 1,
+    };
+    let result = ManagedState::pending_ticket_from_recovery_snapshot(&snapshot);
+    // Independent construction facts, not RunState::is_terminal or a second
+    // copy of the production predicate, select the expected decision-table row.
+    if kind != 1 {
+        assert!(
+            matches!(result, Ok(None)),
+            "R1/R2 no candidate for a closed or running Run"
+        );
+    } else if tickets & 1 == 0 {
+        assert!(
+            result.is_err(),
+            "R3 positive Awaiting without its ticket is damaged authority"
+        );
+    } else {
+        let (run, correlation, pending) = result.expect("R4 healthy wait").expect("R4 candidate");
+        assert_eq!(run.0, "r");
+        assert_eq!(correlation, "c");
+        assert_eq!(pending.tool_use_id, "a");
+        assert_eq!(pending.name, "x");
+        assert!(pending.client_executed);
+        assert_eq!(pending.input, serde_json::Value::Null);
+    }
+}
+
+#[test]
+fn terminal_pending_selection_covers_current_run_and_residual_ticket_table() {
+    // Causes: C1 current Run is Running/Awaiting/one of all eight Ended failure
+    // classes; C2 latest Run overrides an old claimed Awaiting Run, or claimed
+    // is current when latest is absent; C3 current/old tickets are each absent
+    // or present; C4 Run vector order is reversed. Effects: E1 no candidate;
+    // E2 damaged-wait error; E3 exact current candidate. Decision table:
+    // R1 Ended (every cause) + any C2/C3/C4 => E1, even with residual tickets.
+    // R2 Running + any C2/C3/C4 => E1.
+    // R3 Awaiting + current ticket absent => E2 (old ticket cannot substitute).
+    // R4 Awaiting + current ticket present => E3 (positive non-vacuity control).
+    // Exhaust 10*2*2*4 = 160 rows. The immutable snapshot is the read boundary;
+    // async root admission/CAS, executor effects and SQL consistency are not
+    // claimed by this selector test. Exact retained-receipt replay remains
+    // covered by exact_event_batch_replay_precedes_cold_projection_recovery.
+    for kind in 0..10 {
+        for latest in [false, true] {
+            for reverse in [false, true] {
+                for tickets in 0..4 {
+                    check_terminal_ticket_selection(kind, latest, reverse, tickets);
+                }
+            }
+        }
+    }
+}
+
+fn check_ticket_admission(kind: u8, shape: u8, run_matches: bool, thread_matches: bool) {
+    use awaken_agent_contract::agent::awaiting::{
+        AwaitTarget, PendingTool, ResumeTicket, ToolAwaitReason, ToolCallAuthority,
+    };
+    let state = selected_run_state(kind);
+    let run = RunId("r".into());
+    let thread = ThreadId("t".into());
+    let ticket = ResumeTicket::new(
+        "c",
+        RunId(if run_matches { "r" } else { "x" }.into()),
+        ThreadId(if thread_matches { "t" } else { "x" }.into()),
+        "s",
+        "f",
+        AwaitTarget::ToolCall {
+            reason: ToolAwaitReason::ClientExecution,
+            call_id: "a".into(),
+            tool: PendingTool {
+                tool_id: "x".into(),
+                arguments: serde_json::Value::Null,
+            },
+            authority: ToolCallAuthority::RuntimeToolBatch,
+        },
+    );
+    let observation = match shape {
+        0 => PendingTicketObservation::Absent,
+        1 => PendingTicketObservation::Multiple,
+        2 => PendingTicketObservation::One(&ticket),
+        _ => unreachable!("closed ticket observation domain"),
+    };
+    let result = pending_ticket_admission(state.as_ref(), &run, &thread, observation);
+    // Independent fixture indices choose the oracle, not a second RunState
+    // match or the production identity validator's result.
+    let expected = if kind == 0 || (2..=9).contains(&kind) {
+        PendingTicketAdmission::Inactive
+    } else if shape == 0 {
+        PendingTicketAdmission::Missing {
+            positive_awaiting: kind == 1,
+        }
+    } else if shape == 1 {
+        PendingTicketAdmission::Multiple
+    } else if run_matches && thread_matches {
+        PendingTicketAdmission::Admit
+    } else {
+        PendingTicketAdmission::Inconsistent
+    };
+    assert_eq!(result, expected);
+}
+
+#[test]
+fn ticket_admission_covers_all_states_cardinalities_and_identity_classes() {
+    // Causes: C1 eleven lifecycle classes (Running, Awaiting, all eight closed
+    // EndCause/Failure classes, unknown legacy); C2 absent/multiple/one ticket;
+    // C3 Run and Thread identities each exact/foreign. Effects/decision table:
+    // A1 Running or Ended + any C2/C3 => Inactive before every corruption rule.
+    // A2 Awaiting/unknown + absent => Missing, positive_awaiting only for Awaiting.
+    // A3 Awaiting/unknown + multiple => Multiple before identity validation.
+    // A4 Awaiting/unknown + one + both identities exact => Admit (positive control).
+    // A5 Awaiting/unknown + one + either identity foreign => Inconsistent.
+    // Exhaust 11*3*2*2 = 132 classes. The separate 160-row native snapshot table
+    // owns latest/claimed, vector order and old/current ticket selection; the
+    // 16-row send_events test owns new-key rejection and exact-replay effect
+    // frames. Neither adapter boundary is replaced by this local kernel proof.
+    for kind in 0..11 {
+        for shape in 0..3 {
+            for run_matches in [false, true] {
+                for thread_matches in [false, true] {
+                    check_ticket_admission(kind, shape, run_matches, thread_matches);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(16)]
+fn managed_ticket_admission_preserves_terminal_and_identity_priority() {
+    // Same A1..A5 132-class table as native. Total modulo maps every u8 input;
+    // there is no input-pruning assume. Real RunState, owned identity Strings,
+    // a real borrowed ResumeTicket and the existing contract identity validator
+    // remain in this proof. The tool payload is Null and end-detail Strings are
+    // empty. Native snapshot/admission tests, not this kernel, cover lookup,
+    // historical audit decoding, Pending materialization and async root effects.
+    check_ticket_admission(
+        kani::any::<u8>() % 11,
+        kani::any::<u8>() % 3,
+        kani::any(),
+        kani::any(),
+    );
+}

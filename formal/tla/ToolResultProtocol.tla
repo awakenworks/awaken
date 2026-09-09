@@ -232,7 +232,20 @@ OneReceiptNeverNamesTwoCalls ==
 AwaitingTicketHasNoPriorReceipt ==
     awaiting # None => <<awaiting, awaitingCommit>> \notin ConsumedPairs
 
-TerminalRejectsLateResults == terminal => awaiting = None
+TerminalRejectsLateResults == terminal => /\ awaiting = None /\ awaitingCommit = None
+
+\* Cause/effect rule T1: once the Run is terminal, every later delivery,
+\* rejection or exact receipt replay preserves consumption and receipt truth.
+\* Rejected-attempt counters and independent Session batch receipts may advance;
+\* the Run cannot reopen or accept a new result. T2 exact retained replay stays
+\* enabled and stutters, so rejecting new results does not reject response-loss
+\* retries. This action frame observes effects beyond ticket absence alone.
+TerminalConsumptionNeverChanges ==
+    [][terminal => /\ terminal'
+                   /\ UNCHANGED <<completed, receiptCall, receiptCommit, accepted>>]_vars
+
+ExactResultReceiptReplayRemainsEnabled ==
+    \A op \in completed: ENABLED Replay(receiptCall[op], receiptCommit[op], op)
 
 AcceptedBatchHasIdentity ==
     \A key \in Keys: batchAppends[key] = 1 => batchFingerprint[key] # None

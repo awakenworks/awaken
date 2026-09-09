@@ -2057,6 +2057,80 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
         "call-single-ticket",
         "P3/C2 list projection reconstructs without choosing a duplicate ticket"
     );
+
+    // Extraction compatibility table (original strict error precedence):
+    // P4 explicit Ended/Running overrides even duplicate+foreign-owner rows.
+    // P5 unknown legacy state + duplicates => Multiple before owner mismatch.
+    // P6 unknown + one foreign owner => Inconsistent; P7 one exact => candidate.
+    // P8 unknown + absent + historical Awaiting => missing-ticket repair.
+    // P9 unknown + absent + no audit => no candidate, not a fabricated error.
+    // P10 wrong outer row naming current inner Run => Inconsistent before P9.
+    let mut legacy = one.clone();
+    legacy.resume_tickets[0].ticket.thread_id = ThreadId("foreign".into());
+    for state in [RunState::Ended(EndCause::Cancelled), RunState::Running] {
+        legacy
+            .runs
+            .iter_mut()
+            .find(|run| run.id == run_id)
+            .unwrap()
+            .state = state;
+        assert!(
+            matches!(
+                ManagedState::pending_ticket_from_recovery_snapshot(&legacy),
+                Ok(None)
+            ),
+            "P4 terminal priority"
+        );
+    }
+    legacy.runs.clear();
+    assert!(
+        ManagedState::pending_ticket_from_recovery_snapshot(&legacy)
+            .unwrap_err()
+            .to_string()
+            .contains("multiple answerable tickets"),
+        "P5 cardinality before identity"
+    );
+    legacy.resume_tickets.truncate(1);
+    assert!(
+        ManagedState::pending_ticket_from_recovery_snapshot(&legacy)
+            .unwrap_err()
+            .to_string()
+            .contains("inconsistent pending-tool identity"),
+        "P6 identity error"
+    );
+    legacy.resume_tickets[0].ticket.thread_id = legacy.thread_id.clone();
+    assert!(
+        ManagedState::pending_ticket_from_recovery_snapshot(&legacy)
+            .unwrap()
+            .is_some(),
+        "P7 exact legacy ticket"
+    );
+    let mut wrong_outer = legacy.resume_tickets[0].clone();
+    wrong_outer.run_id = RunId("foreign-row".into());
+    legacy.resume_tickets.clear();
+    assert!(
+        ManagedState::pending_ticket_from_recovery_snapshot(&legacy)
+            .unwrap_err()
+            .to_string()
+            .contains("Awaiting Run without its answerable ticket"),
+        "P8 historical positive evidence"
+    );
+    legacy.events.clear();
+    assert!(
+        matches!(
+            ManagedState::pending_ticket_from_recovery_snapshot(&legacy),
+            Ok(None)
+        ),
+        "P9 unknown absence"
+    );
+    legacy.resume_tickets.push(wrong_outer);
+    assert!(
+        ManagedState::pending_ticket_from_recovery_snapshot(&legacy)
+            .unwrap_err()
+            .to_string()
+            .contains("inconsistent pending-tool identity"),
+        "P10 row corruption before absent fallback"
+    );
 }
 
 #[tokio::test]
@@ -2975,6 +3049,139 @@ async fn pending_child_reply_fixture(
         .expect("child pending tool is projected")
         .id;
     (runtime, state, session.id, child_id, public_event_id)
+}
+
+#[tokio::test]
+async fn terminal_tool_reply_rejects_new_admission_but_replays_exact_receipt() {
+    // Cause/effect table: C1 an exact reply to a current Awaiting child passes
+    // strict admission and is retained under one request key; C2 that Run ends
+    // (all eight closed terminal/failure classes); C3 its obsolete ticket is
+    // absent or remains in the recovery fixture; C4 the reply has a new key or
+    // the exact retained key/body. R1 Awaiting => exact positive admission.
+    // R2 Ended + either C3 + new key => reject before a new root batch/Runtime
+    // delivery. R3 Ended + either C3 + exact key/body => original receipt, no
+    // recovery reads or Runtime delivery. For R2/R3 compare durable root,
+    // transcript and recorded executor calls. The existing fixture supplies
+    // committed snapshots; SQL atomicity and concurrent commits are outside
+    // this protocol test (shared store conformance owns the commit fence).
+    use awaken_agent_contract::agent::run::Failure;
+    for cause in [
+        EndCause::NaturalEnd,
+        EndCause::MaxSteps,
+        EndCause::Cancelled,
+        EndCause::Stopped("policy".into()),
+        EndCause::Error(Failure::Inference {
+            code: "fault".into(),
+            message: "failed".into(),
+        }),
+        EndCause::Error(Failure::CapabilityBound),
+        EndCause::Error(Failure::StateConflict),
+        EndCause::Indeterminate,
+    ] {
+        for residual in [false, true] {
+            let (runtime, state, session_id, child_id, public_event_id) =
+                pending_child_reply_fixture("terminal-result", true, false).await;
+            let request = SendEventsRequest {
+                events: vec![InboundEvent::UserToolResult {
+                    tool_use_id: public_event_id,
+                    content: Some(vec![ContentBlock::text("accepted result")]),
+                    is_error: false,
+                }],
+            };
+            let validated = state
+                .validate_event_batch(&session_id, &request.events)
+                .await
+                .expect("R1 exact Awaiting reply is admissible");
+            let fingerprint =
+                awaken_session_contract::stable_fingerprint(&(&request, &None::<String>));
+            let retained = state
+                .application
+                .append_session_event_batch_idempotent(
+                    &session_id,
+                    validated.inputs,
+                    None,
+                    None,
+                    Some(("original".into(), fingerprint)),
+                )
+                .await
+                .expect("R1 retain the exact accepted receipt");
+            let expected = SendEventsResponse {
+                data: accepted_inbound_receipts(&session_id, &retained)
+                    .into_iter()
+                    .map(|projection| projection.event)
+                    .collect(),
+            };
+            let kind = match &cause {
+                EndCause::Cancelled => RunLifecycleEventKind::Cancelled,
+                EndCause::Error(_) | EndCause::Indeterminate => RunLifecycleEventKind::Failed,
+                _ => RunLifecycleEventKind::Completed,
+            };
+            runtime.lifecycle.lock().unwrap().push(lifecycle(
+                3,
+                &child_id,
+                &RunId("run-route-terminal-result".into()),
+                kind,
+                RunState::Ended(cause.clone()),
+            ));
+            if !residual {
+                runtime.pending_by_thread.lock().unwrap().remove(&child_id);
+            }
+            let before =
+                serde_json::to_value(state.application.session(&session_id).await.unwrap())
+                    .unwrap();
+            let transcript = runtime.committed_by_thread.lock().unwrap().clone();
+            let deliveries = runtime.thread_tool_replies.lock().unwrap().clone();
+            assert!(
+                state
+                    .send_events_attributed(
+                        &session_id,
+                        request.clone(),
+                        None,
+                        Some("late-new".into()),
+                    )
+                    .await
+                    .is_err(),
+                "R2 new late result must be rejected"
+            );
+            assert_eq!(
+                serde_json::to_value(state.application.session(&session_id).await.unwrap())
+                    .unwrap(),
+                before,
+                "R2 no root mutation"
+            );
+            let reads = runtime.reads.count("recovery");
+            let replay = state
+                .send_events_attributed(&session_id, request, None, Some("original".into()))
+                .await
+                .expect("R3 exact retained receipt remains replayable");
+            assert_eq!(
+                serde_json::to_value(replay).unwrap(),
+                serde_json::to_value(expected).unwrap(),
+                "R3 original receipt"
+            );
+            assert_eq!(
+                runtime.reads.count("recovery"),
+                reads,
+                "R3 no recovery read"
+            );
+            assert_eq!(
+                serde_json::to_value(state.application.session(&session_id).await.unwrap())
+                    .unwrap(),
+                before,
+                "R3 no root mutation"
+            );
+            assert_eq!(
+                *runtime.committed_by_thread.lock().unwrap(),
+                transcript,
+                "R2/R3 no transcript mutation"
+            );
+            assert_eq!(
+                *runtime.thread_tool_replies.lock().unwrap(),
+                deliveries,
+                "R2/R3 no Runtime delivery"
+            );
+        }
+    }
 }
 
 #[tokio::test]
