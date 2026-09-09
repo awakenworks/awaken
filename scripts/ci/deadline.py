@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -20,15 +21,24 @@ def terminate_group(process: subprocess.Popen[bytes]) -> None:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
         return
-    try:
-        process.wait(timeout=KILL_GRACE_SECONDS)
-        return
-    except subprocess.TimeoutExpired:
-        pass
+    # The leader exiting is not evidence that its descendants have exited.
+    # Reap it while retaining the same group through the complete TERM grace.
+    until = time.monotonic() + KILL_GRACE_SECONDS
+    while True:
+        process.poll()
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            process.wait()
+            return
+        remaining = until - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(remaining, 0.01))
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
-        return
+        pass
     process.wait()
 
 
