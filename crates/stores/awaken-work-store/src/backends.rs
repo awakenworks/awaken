@@ -41,13 +41,20 @@ impl SqliteWorkQueue {
         env_id: &str,
         now_ms: u64,
     ) -> Result<(), WorkQueueError> {
+        let cleared = reclaimed_lease_authority();
         tx.execute(
             "UPDATE work_queue_item \
-             SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, \
-                 lease_refreshed_ms = NULL, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
-             WHERE environment_id = ?1 AND state = 'active' \
-               AND (lease_expires_ms IS NULL OR lease_expires_ms <= ?2)",
-            params![env_id, db_millis(now_ms)],
+             SET state = 'queued', lease_owner = ?1, lease_expires_ms = ?2, \
+                 lease_refreshed_ms = ?3, latest_heartbeat_at = NULL, session_token_sha256 = NULL \
+             WHERE environment_id = ?4 AND state = 'active' \
+               AND (lease_expires_ms IS NULL OR lease_expires_ms <= ?5)",
+            params![
+                cleared.owner,
+                cleared.expires_at,
+                cleared.refreshed_at,
+                env_id,
+                db_millis(now_ms)
+            ],
         )
         .map_err(storage)?;
         Ok(())

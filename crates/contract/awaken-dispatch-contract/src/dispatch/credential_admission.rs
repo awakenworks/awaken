@@ -294,10 +294,60 @@ pub fn verify_claim_credential_bindings(
 ) -> Result<(), DispatchCredentialAdmissionError> {
     let expected =
         compile_claim_credential_bindings(request, installed, claim_epoch, now_unix_ms, operation)?;
-    if claimed != expected {
+    if !claim_credential_bindings_are_exact(&expected, claimed) {
         return Err(DispatchCredentialAdmissionError::ClaimedBindingMismatch);
     }
     Ok(())
+}
+
+/// Ordered, complete equality of the compiler result and persisted claim wire.
+/// No caller may reinterpret the set, ignore order, or accept a subset.
+#[must_use]
+fn claim_credential_bindings_are_exact(
+    expected: &[AttemptCredentialBinding],
+    claimed: &[AttemptCredentialBinding],
+) -> bool {
+    expected == claimed
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(12)]
+fn claim_credential_binding_revalidation_rejects_missing_widened_reordered_or_stale_wire() {
+    // Causes: C1 exact ordered pair; C2 missing entry; C3 extra entry;
+    // C4 reordered pair; C5 one stale coordinate. Effects: E1 only C1 admits;
+    // E2 C2-C5 reject before materialization. The receipt proof independently
+    // covers every field coordinate; this proof owns collection completeness
+    // and order using the production slice comparator.
+    let binding = |identity: &str, epoch| AttemptCredentialBinding {
+        candidate_fingerprint: awaken_runtime_contract::CandidateFingerprint(identity.into()),
+        credential: awaken_runtime_contract::CredentialRef {
+            id: identity.into(),
+            revision: 1,
+        },
+        selected_plaintext_holder: awaken_runtime_contract::PlaintextHolder::new(
+            awaken_runtime_contract::PlaintextBoundary::Worker,
+            identity,
+        ),
+        selected_realization_kind:
+            awaken_runtime_contract::CredentialRealizationKind::WorkerProviderAdapter,
+        claim_epoch: epoch,
+    };
+    let first = binding("first", 7);
+    let second = binding("second", 7);
+    let expected = vec![first.clone(), second.clone()];
+    let case = kani::any::<u8>() % 5;
+    let claimed = match case {
+        0 => expected.clone(),
+        1 => vec![first.clone()],
+        2 => vec![first.clone(), second.clone(), second.clone()],
+        3 => vec![second, first],
+        _ => vec![binding("first", 8), binding("second", 7)],
+    };
+    assert_eq!(
+        claim_credential_bindings_are_exact(&expected, &claimed),
+        case == 0
+    );
 }
 
 /// Recompute the one canonical claim decision and require the persisted wire

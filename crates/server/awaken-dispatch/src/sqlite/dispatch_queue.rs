@@ -1193,18 +1193,21 @@ impl DispatchQueue for SqliteDispatchStore {
                 .map(|value| serde_json::from_str(&value).map_err(json_err))
                 .transpose()?
                 .unwrap_or_default();
-            if let Some(existing) = receipts
+            let existing = receipts
                 .iter()
-                .find(|existing| existing.candidate_fingerprint == receipt.candidate_fingerprint)
-            {
-                if existing != &receipt {
+                .find(|existing| existing.candidate_fingerprint == receipt.candidate_fingerprint);
+            match credential_realization_persistence_decision(existing, &receipt) {
+                CredentialRealizationPersistenceDecision::Collision => {
                     return Err(DispatchError::Rejected(
                         "credential realization receipt conflicts with committed evidence"
                             .to_string(),
                     ));
                 }
-                tx.commit().map_err(store_error)?;
-                return Ok(SettleOutcome::Applied);
+                CredentialRealizationPersistenceDecision::ExactReplay => {
+                    tx.commit().map_err(store_error)?;
+                    return Ok(SettleOutcome::Applied);
+                }
+                CredentialRealizationPersistenceDecision::Insert => {}
             }
             receipts.push(receipt);
             let changed = tx

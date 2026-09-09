@@ -47,7 +47,8 @@ pub use credential::{
     CredentialMaterialBinding, CredentialMaterialCapability, CredentialMaterialError,
     CredentialMaterialRequest, CredentialMaterialResolver, CredentialMaterialSource,
     CredentialObservation, CredentialObservationSource, CredentialObservationState,
-    CredentialRealizationCapabilities, CredentialRealizationKind, CredentialRealizationPlan,
+    CredentialRealizationCapabilities, CredentialRealizationKind,
+    CredentialRealizationPersistenceDecision, CredentialRealizationPlan,
     CredentialRealizationProfile, CredentialRealizationReceipt, CredentialRealizationRecordError,
     CredentialRealizationRecorder, CredentialReceiptError, CredentialRef, CredentialRefreshAccess,
     CredentialTarget, CredentialUsage, CredentialUsageError, HttpEffectPlacement,
@@ -55,7 +56,8 @@ pub use credential::{
     ResolvedCredentialMaterial, SealedCredentialEnvelopeRef, StructuredCredentialMaterial,
     TokenEndpointAuth, TrustDomainRef, WorkerLocalCredentialResolver,
     WorkerLocalReferenceRevalidator, candidate_fingerprint, compile_candidate_credential_bindings,
-    require_exact_available_worker_reference, verify_credential_realization_receipt,
+    credential_realization_persistence_decision, require_exact_available_worker_reference,
+    verify_credential_realization_receipt,
 };
 pub use data_subject::{
     CaptureError, CaptureSink, ContentEraser, DataSubjectConsentSource, DataSubjectId,

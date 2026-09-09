@@ -93,13 +93,15 @@ impl CredentialRepo for InMemoryCredentialRepo {
             };
         }
         let current_after = state.rows.get(&intent.after.id.0);
-        let predecessor = intent.before.as_ref().and_then(|before| {
-            intent
-                .is_distinct_replacement()
-                .then(|| state.rows.get(&before.id.0))
-                .flatten()
-        });
-        let before_matches = intent.publication_preimage_matches(current_after, predecessor);
+        let before_matches = if intent.is_distinct_replacement() {
+            current_after.is_none()
+                && intent
+                    .before
+                    .as_ref()
+                    .is_some_and(|before| state.rows.get(&before.id.0) == Some(before))
+        } else {
+            current_after == intent.before.as_ref()
+        };
         if !before_matches {
             return Err(CredentialError::MutationConflict(
                 "credential changed before its material mutation was prepared".into(),
@@ -134,26 +136,27 @@ impl CredentialRepo for InMemoryCredentialRepo {
         &self,
         intent: &CredentialMutationIntent,
     ) -> Result<CredentialMutationIntent, CredentialError> {
-        let prepared = intent.prepare_publication()?;
         let mut state = self.state.lock().expect("credential repo");
-        let reclaiming = match prepared.admit(
-            state.intents.get(&intent.after.id.0),
-            state.rows.get(&intent.after.id.0),
-        )? {
-            CredentialPublicationAdmission::Replayed(reclaiming) => return Ok(reclaiming),
-            CredentialPublicationAdmission::Apply(reclaiming) => reclaiming,
-            CredentialPublicationAdmission::NeedsPredecessor(publication) => {
-                let current = state.rows.get(&publication.before().id.0);
-                publication.admit(current)?
-            }
-        };
-        state
-            .rows
-            .insert(intent.after.id.0.clone(), intent.after.clone());
+        let current_after = state.rows.get(&intent.after.id.0);
+        let current_before = intent
+            .before
+            .as_ref()
+            .filter(|before| before.id != intent.after.id)
+            .and_then(|before| state.rows.get(&before.id.0));
+        let durable = state.intents.get(&intent.after.id.0).ok_or_else(|| {
+            CredentialError::MutationConflict(
+                "credential mutation has no matching durable intent".into(),
+            )
+        })?;
+        let plan = intent.publication_plan(durable, current_after, current_before)?;
+        if plan.mode == CredentialMutationCommitMode::ExactReplay {
+            return Ok(plan.reclaiming_mutation);
+        }
+        state.rows.insert(plan.source.id.0.clone(), plan.source);
         state
             .intents
-            .insert(intent.after.id.0.clone(), reclaiming.clone());
-        Ok(reclaiming)
+            .insert(intent.after.id.0.clone(), plan.reclaiming_mutation.clone());
+        Ok(plan.reclaiming_mutation)
     }
 
     async fn pending_mutations(&self) -> Result<Vec<CredentialMutationIntent>, CredentialError> {
@@ -303,6 +306,7 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
         pending: &PendingManagedCredentialMutation,
     ) -> Result<PendingManagedCredentialMutation, ManagedCredentialMutationError> {
         pending.validate()?;
+        let plan = managed_credential_commit_plan(pending)?;
         let mut state = self.state.lock().expect("credential repo");
         let durable = state
             .managed_mutations
@@ -315,11 +319,10 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
             })?;
         durable.validate()?;
         if durable.material_fence.phase == CredentialMaterialMutationPhase::Reclaiming {
-            let expected_reclaiming = pending.with_material_reclaiming()?;
-            if durable == expected_reclaiming
-                && state.rows.get(&pending.after_source.id.0) == Some(&pending.after_source)
+            if durable == plan.reclaiming_mutation
+                && state.rows.get(&pending.after_source.id.0) == Some(&plan.source)
                 && state.vault_credentials.get(&pending.after_credential.id)
-                    == Some(&pending.after_credential)
+                    == Some(&plan.credential)
             {
                 return Ok(durable);
             }
@@ -416,36 +419,29 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
                 }
             }
         }
-        let rollout = managed_rollout_from_committed(pending);
-        if rollout.as_ref().is_some_and(|proposed| {
-            state
-                .managed_rollouts
-                .get(&proposed.id)
-                .is_some_and(|durable| durable != proposed)
+        if plan.rollout.as_ref().is_some_and(|proposed| {
+            managed_credential_rollout_identity_decision(
+                state.managed_rollouts.get(&proposed.id),
+                proposed,
+            ) == ManagedCredentialRolloutIdentityDecision::Collision
         }) {
             return Err(ManagedCredentialMutationError::RevisionConflict);
         }
-        state.rows.insert(
-            pending.after_source.id.0.clone(),
-            pending.after_source.clone(),
-        );
-        state.vault_credentials.insert(
-            pending.after_credential.id.clone(),
-            pending.after_credential.clone(),
-        );
-        if let Some(rollout) = rollout {
+        state.rows.insert(plan.source.id.0.clone(), plan.source);
+        state
+            .vault_credentials
+            .insert(plan.credential.id.clone(), plan.credential);
+        if let Some(rollout) = plan.rollout {
             state
                 .managed_rollouts
                 .entry(rollout.id.clone())
                 .or_insert(rollout);
         }
-        let reclaiming = pending
-            .with_material_reclaiming()
-            .map_err(ManagedCredentialMutationError::Store)?;
-        state
-            .managed_mutations
-            .insert(pending.after_source.id.0.clone(), reclaiming.clone());
-        Ok(reclaiming)
+        state.managed_mutations.insert(
+            pending.after_source.id.0.clone(),
+            plan.reclaiming_mutation.clone(),
+        );
+        Ok(plan.reclaiming_mutation)
     }
 
     async fn mark_managed_mutation_ready(
@@ -591,15 +587,20 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
         rollout: &ManagedCredentialRollout,
     ) -> Result<(), CredentialError> {
         let mut state = self.state.lock().expect("credential repo");
-        match state.managed_rollouts.get(&rollout.id) {
-            Some(durable) if durable == rollout => {
+        match managed_credential_rollout_identity_decision(
+            state.managed_rollouts.get(&rollout.id),
+            rollout,
+        ) {
+            ManagedCredentialRolloutIdentityDecision::Exact => {
                 state.managed_rollouts.remove(&rollout.id);
                 Ok(())
             }
-            None => Ok(()),
-            Some(_) => Err(CredentialError::MutationConflict(
-                "Managed credential rollout acknowledgement is stale".into(),
-            )),
+            ManagedCredentialRolloutIdentityDecision::Absent => Ok(()),
+            ManagedCredentialRolloutIdentityDecision::Collision => {
+                Err(CredentialError::MutationConflict(
+                    "Managed credential rollout acknowledgement is stale".into(),
+                ))
+            }
         }
     }
 

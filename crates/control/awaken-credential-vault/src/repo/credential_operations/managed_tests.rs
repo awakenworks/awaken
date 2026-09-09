@@ -1235,9 +1235,14 @@ async fn ambiguous_aborted_delete_keeps_exact_cleanup_fact_for_retry() {
     store.put(&reference, secret.unwrap()).await.unwrap();
 
     assert!(
-        abort_managed_mutation_before_cleanup(&pending, &store, &repo)
-            .await
-            .is_err()
+        abort_managed_mutation_before_cleanup(
+            &pending,
+            CredentialMaterialRecoverySignal::OwnerWriteFailed,
+            &store,
+            &repo,
+        )
+        .await
+        .is_err()
     );
     assert!(store.get(&reference).await.is_err());
     let durable = repo.pending_managed_mutations().await.unwrap();

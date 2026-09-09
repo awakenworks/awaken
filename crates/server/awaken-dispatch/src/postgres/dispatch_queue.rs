@@ -1135,17 +1135,20 @@ impl DispatchQueue for PostgresDispatchStore {
             .map_err(store_error)?
             .map(|value| value.0)
             .unwrap_or_default();
-        if let Some(existing) = receipts
+        let existing = receipts
             .iter()
-            .find(|existing| existing.candidate_fingerprint == receipt.candidate_fingerprint)
-        {
-            if existing != &receipt {
+            .find(|existing| existing.candidate_fingerprint == receipt.candidate_fingerprint);
+        match credential_realization_persistence_decision(existing, &receipt) {
+            CredentialRealizationPersistenceDecision::Collision => {
                 return Err(DispatchError::Rejected(
                     "credential realization receipt conflicts with committed evidence".to_string(),
                 ));
             }
-            tx.commit().await.map_err(store_error)?;
-            return Ok(SettleOutcome::Applied);
+            CredentialRealizationPersistenceDecision::ExactReplay => {
+                tx.commit().await.map_err(store_error)?;
+                return Ok(SettleOutcome::Applied);
+            }
+            CredentialRealizationPersistenceDecision::Insert => {}
         }
         receipts.push(receipt);
         let changed = sqlx::query(&format!(

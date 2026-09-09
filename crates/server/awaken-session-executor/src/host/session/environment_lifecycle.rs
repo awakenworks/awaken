@@ -181,6 +181,78 @@ struct UnavailableEnvironmentRecovery<'a> {
     observation: &'a awaken_provisioning_contract::SandboxObservation,
 }
 
+/// Exact process-local owner selected after closed provider evidence has been
+/// validated. The value itself is the fence consumed by the sole lifecycle
+/// writer; no binding-only or cause-only proxy can authorize recovery.
+enum ClosedEnvironmentRecoveryOwner {
+    Retiring(RetiringSessionEnvironment),
+    Resident(Arc<crate::session_environment::SessionEnvironment>),
+    Pending(BoundSessionEnvironmentIdentity, String),
+    Vacant,
+}
+
+/// Capability minted only after the provider validates this exact closed
+/// observation against the exact handle.
+struct ValidatedClosedEnvironmentObservation<'a>(
+    &'a awaken_provisioning_contract::SandboxObservation,
+);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClosedEnvironmentRecoveryOwnerClass {
+    Revoked,
+    RecoveryDiscard,
+    Resident,
+    Pending,
+    Vacant,
+    ProtectedOrStale,
+}
+
+/// The only closed-observation recovery plan. `Consume` retains the exact
+/// owner fence through the subsequent slot mutation; `Retain` is fail-closed.
+enum ClosedEnvironmentRecoveryPlan<'a> {
+    Consume {
+        observation: ValidatedClosedEnvironmentObservation<'a>,
+        owner: ClosedEnvironmentRecoveryOwner,
+    },
+    Retain,
+}
+
+const fn closed_environment_recovery_admission(
+    policy: SessionEnvironmentUnavailablePolicy,
+    owner: ClosedEnvironmentRecoveryOwnerClass,
+) -> bool {
+    matches!(policy, SessionEnvironmentUnavailablePolicy::Rebuild)
+        && !matches!(owner, ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale)
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn closed_environment_recovery_consumes_only_rebuildable_owner_classes() {
+    // Complete cause/effect table: C1 Reject/Rebuild policy; C2 every owner
+    // class. E1 Consume iff Rebuild and the class is exact and unprotected;
+    // E2 Reject, protected, and stale inputs retain. The production plan then
+    // carries the corresponding exact Rust owner value into the sole writer.
+    let rebuild: bool = kani::any();
+    let tag: u8 = kani::any();
+    let policy = if rebuild {
+        SessionEnvironmentUnavailablePolicy::Rebuild
+    } else {
+        SessionEnvironmentUnavailablePolicy::Reject
+    };
+    let owner = match tag % 6 {
+        0 => ClosedEnvironmentRecoveryOwnerClass::Revoked,
+        1 => ClosedEnvironmentRecoveryOwnerClass::RecoveryDiscard,
+        2 => ClosedEnvironmentRecoveryOwnerClass::Resident,
+        3 => ClosedEnvironmentRecoveryOwnerClass::Pending,
+        4 => ClosedEnvironmentRecoveryOwnerClass::Vacant,
+        _ => ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale,
+    };
+    assert_eq!(
+        closed_environment_recovery_admission(policy, owner),
+        rebuild && owner != ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale
+    );
+}
+
 /// Borrowed inputs for one terminal Environment installation phase. The
 /// aggregate effect fence, provider spec, handle, and optional restore fence
 /// remain their canonical value objects; this context owns no lifecycle fact.
@@ -230,6 +302,104 @@ fn terminal_state_harvests_agent_outputs(
 }
 
 impl SharedHost {
+    fn closed_environment_recovery_plan<'a>(
+        &self,
+        thread: &str,
+        policy: SessionEnvironmentUnavailablePolicy,
+        observation: ValidatedClosedEnvironmentObservation<'a>,
+        revoked: Option<&'a RetiringSessionEnvironment>,
+        resident: Option<&'a Arc<crate::session_environment::SessionEnvironment>>,
+        pending: Option<&'a (BoundSessionEnvironmentIdentity, String)>,
+    ) -> ClosedEnvironmentRecoveryPlan<'a> {
+        let (owner_class, exact_owner) = self
+            .session_slots
+            .read(thread, |slot| {
+                if let Some(expected) = revoked
+                    && expected.cause == SessionEnvironmentRetirementCause::RealizationRevocation
+                    && matches!(
+                        &slot.environment_owner,
+                        SessionEnvironmentOwner::Retiring(current)
+                            if current.exact_matches(expected)
+                    )
+                {
+                    (
+                        ClosedEnvironmentRecoveryOwnerClass::Revoked,
+                        Some(ClosedEnvironmentRecoveryOwner::Retiring(expected.clone())),
+                    )
+                } else if let Some(expected) = resident
+                    && let SessionEnvironmentOwner::Retiring(current) = &slot.environment_owner
+                    && current.cause == SessionEnvironmentRetirementCause::RecoveryDiscard
+                    && Arc::ptr_eq(&current.owned.environment(), expected)
+                    && current.owned.environment().handle() == expected.handle()
+                {
+                    (
+                        ClosedEnvironmentRecoveryOwnerClass::RecoveryDiscard,
+                        Some(ClosedEnvironmentRecoveryOwner::Retiring(current.clone())),
+                    )
+                } else if let Some(expected) = resident
+                    && matches!(
+                        &slot.environment_owner,
+                        SessionEnvironmentOwner::Resident(current)
+                            if Arc::ptr_eq(&current.environment, expected)
+                                && current.environment.handle() == expected.handle()
+                    )
+                {
+                    (
+                        ClosedEnvironmentRecoveryOwnerClass::Resident,
+                        Some(ClosedEnvironmentRecoveryOwner::Resident(expected.clone())),
+                    )
+                } else if let Some((identity, binding)) = pending
+                    && matches!(
+                        &slot.environment_owner,
+                        SessionEnvironmentOwner::Preparing(
+                            SessionEnvironmentPreparation::AwaitingAdoption {
+                                identity: current_identity,
+                                binding: current_binding,
+                            }
+                        ) if current_identity == identity && current_binding == binding
+                    )
+                {
+                    (
+                        ClosedEnvironmentRecoveryOwnerClass::Pending,
+                        Some(ClosedEnvironmentRecoveryOwner::Pending(
+                            identity.clone(),
+                            binding.clone(),
+                        )),
+                    )
+                } else if revoked.is_none()
+                    && resident.is_none()
+                    && pending.is_none()
+                    && matches!(slot.environment_owner, SessionEnvironmentOwner::Vacant)
+                {
+                    (
+                        ClosedEnvironmentRecoveryOwnerClass::Vacant,
+                        Some(ClosedEnvironmentRecoveryOwner::Vacant),
+                    )
+                } else {
+                    (ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale, None)
+                }
+            })
+            .unwrap_or((ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale, None));
+        if !closed_environment_recovery_admission(policy, owner_class) {
+            return ClosedEnvironmentRecoveryPlan::Retain;
+        }
+        match owner_class {
+            ClosedEnvironmentRecoveryOwnerClass::Revoked
+            | ClosedEnvironmentRecoveryOwnerClass::RecoveryDiscard
+            | ClosedEnvironmentRecoveryOwnerClass::Resident
+            | ClosedEnvironmentRecoveryOwnerClass::Pending
+            | ClosedEnvironmentRecoveryOwnerClass::Vacant => {
+                ClosedEnvironmentRecoveryPlan::Consume {
+                    observation,
+                    owner: exact_owner.expect("admitted recovery class retains its exact owner"),
+                }
+            }
+            ClosedEnvironmentRecoveryOwnerClass::ProtectedOrStale => {
+                ClosedEnvironmentRecoveryPlan::Retain
+            }
+        }
+    }
+
     pub(crate) async fn session_environment(
         &self,
         thread: &str,
@@ -946,40 +1116,46 @@ impl SharedHost {
         provider
             .validate_closed_observation(handle, observation)
             .map_err(|error| HostError::internal(error.to_string()))?;
-        match policy {
-            SessionEnvironmentUnavailablePolicy::Reject => Err(HostError::internal(format!(
-                "Session sandbox {} is unavailable or terminal",
+        // Cause/effect decision table: C1 exact provider evidence is closed;
+        // C2 policy is Reject/Rebuild; C3 the current owner is the captured
+        // Revocation, Resident, pending adoption, Vacant, or protected/stale.
+        // R1 Reject => retain/error. R2 Rebuild + exact unprotected owner =>
+        // consume that typed fence and record Rebuild. R3 protected/stale =>
+        // retain/error. Provider validation above owns C1; this plan owns C2/C3.
+        let plan = self.closed_environment_recovery_plan(
+            thread,
+            policy,
+            ValidatedClosedEnvironmentObservation(observation),
+            revoked_durable,
+            resident,
+            pending_adoption.as_ref(),
+        );
+        match plan {
+            ClosedEnvironmentRecoveryPlan::Retain => Err(HostError::internal(format!(
+                "Session sandbox {} is unavailable or terminal, or its exact recovery owner is protected",
                 handle.sandbox_id
             ))),
-            SessionEnvironmentUnavailablePolicy::Rebuild => {
-                // A revoked durable owner already has an exact retirement
-                // fence. Consume that captured fence after closed observation;
-                // do not relabel it as a competing RecoveryDiscard operation.
-                // Terminal takeover or an ABA replacement rejects unchanged.
-                if let Some(retiring) = revoked_durable {
-                    if !self.confirm_terminated_retirement(thread, retiring) {
-                        return Err(HostError::internal(format!(
-                            "lost the revoked sandbox recovery fence for Session {thread}"
-                        )));
+            ClosedEnvironmentRecoveryPlan::Consume { observation, owner } => {
+                let _validated_observation = observation.0;
+                let consumed = match owner {
+                    ClosedEnvironmentRecoveryOwner::Retiring(retiring) => {
+                        self.confirm_terminated_retirement(thread, &retiring)
                     }
-                } else if let Some(environment) = resident
-                    && !self.discard_observed_session_environment(thread, environment)
-                {
-                    return Err(HostError::internal(format!(
-                        "lost the sandbox recovery fence for Session {thread}"
-                    )));
-                }
-                if let Some((identity, pending_binding)) = pending_adoption
-                    && !self
+                    ClosedEnvironmentRecoveryOwner::Resident(environment) => {
+                        self.discard_observed_session_environment(thread, &environment)
+                    }
+                    ClosedEnvironmentRecoveryOwner::Pending(identity, pending_binding) => self
                         .session_slots
                         .modify(thread, |slot| {
                             slot.environment_owner
                                 .discard_closed_pending_adoption(&identity, &pending_binding)
                         })
-                        .unwrap_or(false)
-                {
+                        .unwrap_or(false),
+                    ClosedEnvironmentRecoveryOwner::Vacant => true,
+                };
+                if !consumed {
                     return Err(HostError::internal(format!(
-                        "lost the pending sandbox recovery fence for Session {thread}"
+                        "lost the exact sandbox recovery fence for Session {thread}"
                     )));
                 }
                 self.session_slots.update(thread, |slot| {

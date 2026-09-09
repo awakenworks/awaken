@@ -1,4 +1,51 @@
 use super::*;
+
+#[test]
+fn local_binding_batch_member_admission_is_exact_and_fail_closed() {
+    // Causes: C1 the credential id is absent/present; C2 a present row has the
+    // exact CredentialRef. Effects: E1 the member may enter the later atomic
+    // extend; E2 the entire batch rejects before mutation. R1-R3 cover the
+    // closed quotient; add_bindings evaluates every member under one lock.
+    //
+    // | Rule | existing | exact credential | admitted |
+    // |---|---|---|---|
+    // | R1 | no  | n/a | yes |
+    // | R2 | yes | yes | yes |
+    // | R3 | yes | no  | no  |
+    assert!(local_binding_update_admitted(false, false), "R1/E1");
+    assert!(local_binding_update_admitted(true, true), "R2/E1");
+    assert!(!local_binding_update_admitted(true, false), "R3/E2");
+}
+
+#[test]
+fn local_binding_batch_admission_composes_before_publication() {
+    // Causes: C1 every member is admitted; C2 a conflict occurs at the first,
+    // middle, or last position. Effects: E1 only C1 permits the complete-map
+    // publication value; E2 every C2 position rejects before that value exists.
+    // The production stage borrows the current map immutably and returns an
+    // owned replacement, so the subsequent assignment has no prefix state.
+    //
+    // | Rule | members | publication permitted |
+    // |---|---|---|
+    // | R1 | yes, yes, yes | yes |
+    // | R2 | no, yes, yes | no |
+    // | R3 | yes, no, yes | no |
+    // | R4 | yes, yes, no | no |
+    for (rule, members, expected) in [
+        ("R1/E1", [true, true, true], true),
+        ("R2/E2", [false, true, true], false),
+        ("R3/E2", [true, false, true], false),
+        ("R4/E2", [true, true, false], false),
+    ] {
+        let admission = members
+            .into_iter()
+            .fold(LocalBindingBatchAdmission::empty(), |batch, member| {
+                batch.include(member)
+            });
+        assert_eq!(admission.permits_publication(), expected, "{rule}");
+    }
+}
+
 #[test]
 fn wrapper_cache_requires_the_exact_pinned_package_manifest() {
     let directory = tempfile::tempdir().unwrap();

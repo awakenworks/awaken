@@ -318,6 +318,45 @@ impl PreparedHostAcpCapabilities {
     }
 }
 
+const fn host_observation_is_routable(
+    selected_backend: bool,
+    detected: bool,
+    credential_available: bool,
+    capability_verified: bool,
+) -> bool {
+    selected_backend && detected && (!credential_available || capability_verified)
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn host_observation_projection_is_exactly_backend_scoped() {
+    // Causes: C1 backend selected; C2 executable detected; C3 current login is
+    // available; C4 the protocol capability was verified. Effects: E1 project
+    // a routable backend observation or E2 exclude it. When C3 is false, the
+    // route remains visible for execution-time login revalidation.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | Effect |
+    // |---|---|---|---|---|---|
+    // | R1 | no | any | any | any | E2 |
+    // | R2 | yes | no | any | any | E2 |
+    // | R3 | yes | yes | no | any | E1 |
+    // | R4 | yes | yes | yes | no | E2 |
+    // | R5 | yes | yes | yes | yes | E1 |
+    let selected_backend: bool = kani::any();
+    let detected: bool = kani::any();
+    let credential_available: bool = kani::any();
+    let capability_verified: bool = kani::any();
+    assert_eq!(
+        host_observation_is_routable(
+            selected_backend,
+            detected,
+            credential_available,
+            capability_verified,
+        ),
+        selected_backend && detected && (!credential_available || capability_verified)
+    );
+}
+
 fn routable_cli_ids(
     observations: &[AcpHostObservation],
     selected_cli_ids: &BTreeSet<String>,
@@ -325,10 +364,12 @@ fn routable_cli_ids(
     observations
         .iter()
         .filter(|observation| {
-            selected_cli_ids.contains(&observation.cli_id)
-                && observation.detected()
-                && (observation.credential_state != Some(CredentialObservationState::Available)
-                    || observation.capability_state == Some(AcpCapabilityState::Verified))
+            host_observation_is_routable(
+                selected_cli_ids.contains(&observation.cli_id),
+                observation.detected(),
+                observation.credential_state == Some(CredentialObservationState::Available),
+                observation.capability_state == Some(AcpCapabilityState::Verified),
+            )
         })
         .map(|observation| observation.cli_id.clone())
         .collect()
@@ -339,6 +380,121 @@ struct LocalBinding {
     credential: CredentialRef,
     cli: &'static AcpCli,
     enabled: bool,
+}
+
+/// Per-entry admission used while the resolver holds the one publication lock.
+/// The caller evaluates every addition before extending the map, so this closed
+/// decision is the only way an existing identity can admit a batch update.
+const fn local_binding_update_admitted(existing: bool, exact_credential: bool) -> bool {
+    !existing || exact_credential
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LocalBindingBatchAdmission {
+    every_member_admitted: bool,
+}
+
+impl LocalBindingBatchAdmission {
+    const fn empty() -> Self {
+        Self {
+            every_member_admitted: true,
+        }
+    }
+
+    const fn include(self, member_admitted: bool) -> Self {
+        Self {
+            every_member_admitted: self.every_member_admitted && member_admitted,
+        }
+    }
+
+    const fn permits_publication(self) -> bool {
+        self.every_member_admitted
+    }
+}
+
+/// An accepted batch owns the complete replacement map. The live map remains
+/// immutably borrowed throughout validation and staging; only this value can
+/// cross the later single-assignment publication edge while the mutex is held.
+struct LocalBindingPublication(BTreeMap<String, LocalBinding>);
+
+fn stage_local_binding_batch(
+    current: &BTreeMap<String, LocalBinding>,
+    additions: BTreeMap<String, LocalBinding>,
+) -> Result<LocalBindingPublication, String> {
+    let admission = additions.iter().fold(
+        LocalBindingBatchAdmission::empty(),
+        |admission, (id, binding)| {
+            let existing = current.get(id);
+            admission.include(local_binding_update_admitted(
+                existing.is_some(),
+                existing.is_none_or(|existing| existing.credential == binding.credential),
+            ))
+        },
+    );
+    if !admission.permits_publication() {
+        let conflicting_id = additions
+            .iter()
+            .find_map(|(id, binding)| {
+                current
+                    .get(id)
+                    .is_some_and(|existing| existing.credential != binding.credential)
+                    .then_some(id)
+            })
+            .expect("a rejected binding batch has a conflicting identity");
+        return Err(format!(
+            "conflicting WorkerLocal credential id `{conflicting_id}`"
+        ));
+    }
+
+    let mut publication = current.clone();
+    publication.extend(additions);
+    Ok(LocalBindingPublication(publication))
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn local_binding_batch_publication_is_complete_or_stutters() {
+    // Causes: C1-C3 are the exact admission results for three arbitrary batch
+    // members; C4 is the prior publication bit for each member. Effects: E1 an
+    // accepted batch publishes all three requested bits; E2 any rejected
+    // member preserves all three prior bits. The production staging function
+    // borrows the current map immutably and returns its complete replacement,
+    // so this reducer is the only gate to its single assignment.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // |---|---|---|---|---|
+    // | R1 | yes | yes | yes | E1 complete publication |
+    // | R2 | no  | any | any | E2 exact stutter |
+    // | R3 | any | no  | any | E2 exact stutter |
+    // | R4 | any | any | no  | E2 exact stutter |
+    let existing = [kani::any::<bool>(), kani::any(), kani::any()];
+    let exact = [kani::any::<bool>(), kani::any(), kani::any()];
+    let admitted = [
+        local_binding_update_admitted(existing[0], exact[0]),
+        local_binding_update_admitted(existing[1], exact[1]),
+        local_binding_update_admitted(existing[2], exact[2]),
+    ];
+    let before = [kani::any::<bool>(), kani::any(), kani::any()];
+    let requested = [kani::any::<bool>(), kani::any(), kani::any()];
+    let admission = admitted
+        .into_iter()
+        .fold(LocalBindingBatchAdmission::empty(), |batch, member| {
+            batch.include(member)
+        });
+    assert_eq!(
+        admission.permits_publication(),
+        admitted.into_iter().all(|member| member)
+    );
+    let after = if admission.permits_publication() {
+        requested
+    } else {
+        before
+    };
+    if admission.permits_publication() {
+        assert_eq!(after, requested);
+    } else {
+        assert_eq!(after, before);
+    }
 }
 
 /// Liveness-only resolver for every `acp:*` WorkerLocal source on one Worker.
@@ -388,17 +544,11 @@ impl AcpLocalCredentialResolver {
             .into_inner()
             .expect("new ACP bindings are not poisoned");
         let mut bindings = self.bindings.lock().expect("ACP bindings poisoned");
-        // Validate the entire batch under the same lock as publication: an
-        // error must not leak its earlier inserts or status-only updates, and
-        // another Workspace must not invalidate the check before commit.
-        for (id, binding) in &additions {
-            if let Some(existing) = bindings.get(id)
-                && existing.credential != binding.credential
-            {
-                return Err(format!("conflicting WorkerLocal credential id `{id}`"));
-            }
-        }
-        bindings.extend(additions);
+        // The immutable borrow and owned replacement make partial publication
+        // unrepresentable: rejection drops only the staged value, while success
+        // performs one assignment under the same lock used for validation.
+        let LocalBindingPublication(publication) = stage_local_binding_batch(&bindings, additions)?;
+        *bindings = publication;
         Ok(())
     }
 

@@ -118,6 +118,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         pending: &PendingManagedCredentialMutation,
     ) -> Result<PendingManagedCredentialMutation, ManagedCredentialMutationError> {
         pending.validate()?;
+        let plan = managed_credential_commit_plan(pending)?;
         let pending = pending.clone();
         with_conn_managed_mutation(&self.conn, move |conn, p| {
             let tx = conn
@@ -176,10 +177,9 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                 .map(|data| serde_json::from_str(&data).map_err(storage))
                 .transpose()?;
             if durable.material_fence.phase == CredentialMaterialMutationPhase::Reclaiming {
-                let expected_reclaiming = pending.with_material_reclaiming()?;
-                if durable != expected_reclaiming
-                    || current_source.as_ref() != Some(&pending.after_source)
-                    || current_child.as_ref() != Some(&pending.after_credential)
+                if durable != plan.reclaiming_mutation
+                    || current_source.as_ref() != Some(&plan.source)
+                    || current_child.as_ref() != Some(&plan.credential)
                 {
                     return Err(ManagedCredentialMutationError::RevisionConflict);
                 }
@@ -269,7 +269,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                     params![
                         pending.after_source.id.0,
                         pending.after_source.workspace_id,
-                        serde_json::to_string(&pending.after_source).map_err(storage)?
+                        serde_json::to_string(&plan.source).map_err(storage)?
                     ],
                 )
                 .map_err(storage)?
@@ -283,7 +283,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                              WHERE id = ?3 AND workspace_id = ?4"),
                     params![
                         pending.after_source.workspace_id,
-                        serde_json::to_string(&pending.after_source).map_err(storage)?,
+                        serde_json::to_string(&plan.source).map_err(storage)?,
                         pending.after_source.id.0,
                         before.workspace_id,
                     ],
@@ -302,7 +302,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                         pending.after_credential.vault_id,
                         pending.after_credential.workspace_id,
                         pending.after_credential.source_id.0,
-                        serde_json::to_string(&pending.after_credential).map_err(storage)?
+                        serde_json::to_string(&plan.credential).map_err(storage)?
                     ],
                 )
                 .map_err(storage)?
@@ -319,7 +319,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                         pending.after_credential.vault_id,
                         pending.after_credential.workspace_id,
                         pending.after_credential.source_id.0,
-                        serde_json::to_string(&pending.after_credential).map_err(storage)?,
+                        serde_json::to_string(&plan.credential).map_err(storage)?,
                         pending.after_credential.id,
                         before.vault_id,
                         before.workspace_id,
@@ -331,18 +331,15 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
             if child_changed != 1 {
                 return Err(ManagedCredentialMutationError::RevisionConflict);
             }
-            let reclaiming = pending
-                .with_material_reclaiming()
-                .map_err(ManagedCredentialMutationError::Store)?;
             tx.execute(
                 &format!("UPDATE {p}_managed_credential_mutation SET data = ?1 WHERE source_id = ?2"),
                 params![
-                    serde_json::to_string(&reclaiming).map_err(storage)?,
+                    serde_json::to_string(&plan.reclaiming_mutation).map_err(storage)?,
                     pending.after_source.id.0
                 ],
             )
             .map_err(storage)?;
-            if let Some(rollout) = managed_rollout_from_committed(&pending) {
+            if let Some(rollout) = plan.rollout {
                 tx.execute(
                     &format!("INSERT OR IGNORE INTO {p}_managed_credential_rollout (event_id, data) VALUES (?1, ?2)"),
                     params![rollout.id, serde_json::to_string(&rollout).map_err(storage)?],
@@ -357,12 +354,14 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                     .map_err(storage)?;
                 let durable: ManagedCredentialRollout =
                     serde_json::from_str(&durable).map_err(storage)?;
-                if durable != rollout {
+                if managed_credential_rollout_identity_decision(Some(&durable), &rollout)
+                    == ManagedCredentialRolloutIdentityDecision::Collision
+                {
                     return Err(ManagedCredentialMutationError::RevisionConflict);
                 }
             }
             tx.commit().map_err(storage)?;
-            Ok(reclaiming)
+            Ok(plan.reclaiming_mutation)
         })
         .await
     }
@@ -717,7 +716,9 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
             };
             let durable: ManagedCredentialRollout =
                 serde_json::from_str(&current).map_err(storage)?;
-            if durable != rollout {
+            if managed_credential_rollout_identity_decision(Some(&durable), &rollout)
+                == ManagedCredentialRolloutIdentityDecision::Collision
+            {
                 return Err(CredentialError::MutationConflict(
                     "Managed credential rollout acknowledgement is stale".into(),
                 ));

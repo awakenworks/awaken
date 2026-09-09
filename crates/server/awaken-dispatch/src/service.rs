@@ -53,6 +53,72 @@ impl Default for DispatchServiceConfig {
     }
 }
 
+/// The one immutable schedule for adapter-owned maintenance. `None` means the
+/// upstream Coordinator owns all three operations; ordinary claim execution and
+/// retry exhaustion are intentionally outside this capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LocalMaintenanceSchedule {
+    purge_dead_letters: bool,
+    reconcile_terminals: bool,
+}
+
+impl LocalMaintenanceSchedule {
+    pub(crate) const fn for_adapter(
+        owns_local_maintenance: bool,
+        dead_letter_gc_configured: bool,
+        terminal_reconciliation_configured: bool,
+    ) -> Option<Self> {
+        if owns_local_maintenance {
+            Some(Self {
+                purge_dead_letters: dead_letter_gc_configured,
+                reconcile_terminals: terminal_reconciliation_configured,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub(crate) const fn purges_dead_letters(self) -> bool {
+        self.purge_dead_letters
+    }
+
+    pub(crate) const fn reconciles_terminals(self) -> bool {
+        self.reconcile_terminals
+    }
+}
+
+pub(crate) async fn wait_for_terminal_reconciliation(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn maintenance_schedule_exists_only_for_the_owning_adapter() {
+    // Causes: C1 adapter owns local maintenance; C2 dead-letter GC configured;
+    // C3 terminal reconciliation configured. Effects: E1 !C1 yields no local
+    // schedule or timer; E2 C1 always relays; E3/E4 exactly mirror C2/C3.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // |---|---|---|---|---|
+    // | R1 | no | any | any | E1 no schedule |
+    // | R2 | yes | no | no | E2 relay only |
+    // | R3 | yes | yes | no | E2 + E3 |
+    // | R4 | yes | no | yes | E2 + E4 |
+    // | R5 | yes | yes | yes | E2 + E3 + E4 |
+    let owns: bool = kani::any();
+    let gc: bool = kani::any();
+    let scan: bool = kani::any();
+    let schedule = LocalMaintenanceSchedule::for_adapter(owns, gc, scan);
+    assert_eq!(schedule.is_some(), owns);
+    if let Some(schedule) = schedule {
+        assert_eq!(schedule.purges_dead_letters(), gc);
+        assert_eq!(schedule.reconciles_terminals(), scan);
+    }
+}
+
 /// A running daemon draining one dispatch queue against a runtime.
 pub struct DispatchService<S> {
     worker: Arc<DispatchWorker<S>>,
@@ -141,7 +207,14 @@ async fn run_loop<S: Dispatch + 'static>(
     shutdown: CancellationToken,
     config: DispatchServiceConfig,
 ) {
-    let mut next_terminal_reconciliation = tokio::time::Instant::now();
+    let maintenance = LocalMaintenanceSchedule::for_adapter(
+        worker.store().owns_local_maintenance(),
+        config.dead_letter_ttl.is_some(),
+        config.terminal_reconciliation_interval.is_some(),
+    );
+    let mut next_terminal_reconciliation = maintenance
+        .filter(|schedule| schedule.reconciles_terminals())
+        .map(|_| tokio::time::Instant::now());
     loop {
         if shutdown.is_cancelled() {
             break;
@@ -182,30 +255,33 @@ async fn run_loop<S: Dispatch + 'static>(
         if shutdown.is_cancelled() {
             break;
         }
-        if worker.store().owns_local_maintenance()
-            && let Some(ttl) = config.dead_letter_ttl
-        {
-            let cutoff = now.saturating_sub(ttl.as_millis() as u64);
-            if let Err(error) = worker.store().purge_dead_letters_before(cutoff).await {
-                tracing::warn!(%error, "dispatch dead-letter purge failed; retrying");
+        if let Some(maintenance) = maintenance {
+            if maintenance.purges_dead_letters() {
+                let ttl = config
+                    .dead_letter_ttl
+                    .expect("the maintenance schedule retained its GC interval");
+                let cutoff = now.saturating_sub(ttl.as_millis() as u64);
+                if let Err(error) = worker.store().purge_dead_letters_before(cutoff).await {
+                    tracing::warn!(%error, "dispatch dead-letter purge failed; retrying");
+                }
             }
-        }
-        if worker.store().owns_local_maintenance()
-            && let Err(error) = worker.store().relay().await
-        {
-            tracing::warn!(%error, "dispatch relay failed; retrying");
-        }
-        if worker.store().owns_local_maintenance()
-            && let Some(interval) = config.terminal_reconciliation_interval
-            && tokio::time::Instant::now() >= next_terminal_reconciliation
-        {
-            if let Err(error) = worker
-                .reconcile_committed_terminals(clock.clone(), 256)
-                .await
+            if let Err(error) = worker.store().relay().await {
+                tracing::warn!(%error, "dispatch relay failed; retrying");
+            }
+            if let Some(deadline) = next_terminal_reconciliation
+                && tokio::time::Instant::now() >= deadline
             {
-                tracing::warn!(%error, "terminal dispatch reconciliation failed; retrying");
+                if let Err(error) = worker
+                    .reconcile_committed_terminals(clock.clone(), 256)
+                    .await
+                {
+                    tracing::warn!(%error, "terminal dispatch reconciliation failed; retrying");
+                }
+                let interval = config
+                    .terminal_reconciliation_interval
+                    .expect("the maintenance schedule retained its scan interval");
+                next_terminal_reconciliation = Some(tokio::time::Instant::now() + interval);
             }
-            next_terminal_reconciliation = tokio::time::Instant::now() + interval;
         }
         // Do not enter ordinary execution after a failed terminal commit. The
         // exhausted claim remains leased and is retried through the same command
@@ -239,10 +315,41 @@ async fn run_loop<S: Dispatch + 'static>(
         tokio::select! {
             _ = shutdown.cancelled() => break,
             _ = wake.wait() => {}
-            _ = tokio::time::sleep_until(next_terminal_reconciliation),
-                if worker.store().owns_local_maintenance()
-                    && config.terminal_reconciliation_interval.is_some() => {}
+            _ = wait_for_terminal_reconciliation(next_terminal_reconciliation) => {}
             _ = tokio::time::sleep(config.poll_interval) => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod maintenance_schedule_tests {
+    use super::*;
+
+    #[test]
+    fn adapter_ownership_selects_the_complete_maintenance_schedule() {
+        // Causes: C1 local/upstream ownership; C2 optional GC; C3 optional scan.
+        // Effects: E1 upstream has no local work/timer; E2 local always relays;
+        // E3/E4 GC and scan exactly follow configuration. R1 and the four local
+        // C2/C3 combinations exhaust the schedule used by Service and Pool.
+        //
+        // | Rule | local | GC | scan | expected |
+        // |---|---|---|---|---|
+        // | R1 | no | any | any | no schedule |
+        // | R2 | yes | no | no | relay |
+        // | R3 | yes | yes | no | relay + GC |
+        // | R4 | yes | no | yes | relay + scan |
+        // | R5 | yes | yes | yes | relay + GC + scan |
+        for gc in [false, true] {
+            for scan in [false, true] {
+                assert!(
+                    LocalMaintenanceSchedule::for_adapter(false, gc, scan).is_none(),
+                    "R1/E1"
+                );
+                let schedule = LocalMaintenanceSchedule::for_adapter(true, gc, scan)
+                    .expect("R2-R5 local schedule");
+                assert_eq!(schedule.purges_dead_letters(), gc, "R3-R5/E3");
+                assert_eq!(schedule.reconciles_terminals(), scan, "R4-R5/E4");
+            }
         }
     }
 }
