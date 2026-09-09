@@ -361,8 +361,18 @@ class ProfileTests(unittest.TestCase):
         # P6 the two encoder profiles pin independently qualified solvers and
         # exact UTF-8/align bounds; the generic P2/P3 mutations below must reject
         # every changed bound, missing loop and solver, not just malformed names.
+        # P7 the resume profile binds actual empty-payload loops and recursion
+        # symbols; the same argument mutations must reject any changed pin,
+        # bound, solver, package or harness before invoking Cargo.
+        # P8 Erasure selection/count retain fixed default-equivalent CaDiCaL
+        # and their distinct actual-GOTO payload monomorphizations. The same
+        # P2/P3 matrix rejects cross-owner harnesses, dropped/changed bounds,
+        # missing solver, and fallback to the legacy memcmp-only exception.
         frozen_argv = {
             **activity_argv,
+            "resume-validator-empty-object-v1": '4d0d7c52778ea2a3e569a5af1489e874b3e3b3fc81cc76e9d70c10060974abc0',
+            'erasure-progress-selection-v1': 'e12536580f63a175332732c52846f0d5bc579109dffa763a60d014181f5ce285',
+            'erasure-progress-count-v1': '35f9880ae0c3ae92283dbf1236f5b98e8cb851c16111f01e3b3580e1fe982f45',
             "fingerprint-fnv-hex-v1": "714ec79c46a2150f9229bb0bf5df7335fe0126e40d244aa4bb21755b273f7816",
             "fingerprint-sha256-hex-v1": "b9d1b5eb4b805eb197237899983eba96dc2416216d089d815525d203889e0556",
         }

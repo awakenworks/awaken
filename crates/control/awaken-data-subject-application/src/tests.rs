@@ -675,22 +675,57 @@ async fn erase_fans_out_and_sums_removed_counts() {
         }
     }
 
-    let repo = std::sync::Arc::new(InMemoryDataSubjectRepo::new());
-    repo.create(DataSubject::new(DataSubjectId("dsub_1".into()), "org_1", 0))
-        .await
-        .unwrap();
-    let resolver = RepoDataSubjectResolver::new(repo.clone(), repo)
-        .with_target(
-            ErasureTarget::Coordinator,
-            std::sync::Arc::new(FakeEraser(2)),
-        )
-        .with_target(ErasureTarget::Resources, std::sync::Arc::new(FakeEraser(3)));
-
-    let receipt = resolver
-        .erase(&DataSubjectId("dsub_1".into()))
-        .await
-        .unwrap();
-    assert_eq!(receipt.records_removed, 5, "sums across content stores");
+    // Causes: both targets are bound and succeed; the sum is ordinary, exactly
+    // usize::MAX, or overflowing. R1/R2 -> exact terminal receipt and both
+    // durable target checkpoints. R3 -> exact overflow error, retain only the
+    // first durable count/target, and do not stamp accountability or completion.
+    // This uses the real async resolver/Arc adapters and the existing repository
+    // fixture, complementing the local progress decision table's symbolic inputs.
+    for (first, second, expected) in [
+        (2, 3, Some(5)),
+        (usize::MAX, 0, Some(usize::MAX)),
+        (usize::MAX, 1, None),
+    ] {
+        let repo = std::sync::Arc::new(InMemoryDataSubjectRepo::new());
+        let id = DataSubjectId("dsub_1".into());
+        repo.create(DataSubject::new(id.clone(), "org_1", 0))
+            .await
+            .unwrap();
+        let resolver = RepoDataSubjectResolver::new(repo.clone(), repo.clone())
+            .with_target(
+                ErasureTarget::Coordinator,
+                std::sync::Arc::new(FakeEraser(first)),
+            )
+            .with_target(
+                ErasureTarget::Resources,
+                std::sync::Arc::new(FakeEraser(second)),
+            );
+        let result = resolver.erase(&id).await;
+        let progress = repo.load(&id).await.unwrap().unwrap();
+        if let Some(total) = expected {
+            assert_eq!(result.unwrap().records_removed, total);
+            assert_eq!(progress.records_removed, total);
+            assert_eq!(
+                progress.completed_targets,
+                vec![ErasureTarget::Coordinator, ErasureTarget::Resources]
+            );
+            assert!(progress.accountability_stamped && progress.complete);
+            assert!(repo.get(&id).await.unwrap().erased_at.is_some());
+        } else {
+            assert_eq!(result.unwrap_err().0, "erasure receipt overflow");
+            assert_eq!(
+                progress,
+                ErasureProgress {
+                    revision: 0,
+                    completed_targets: vec![ErasureTarget::Coordinator],
+                    records_removed: first,
+                    accountability_stamped: false,
+                    complete: false,
+                }
+            );
+            assert_eq!(repo.get(&id).await.unwrap().erased_at, None);
+        }
+    }
 }
 
 // E4: the resolver's erase fans the removal out across every eraser (sum),

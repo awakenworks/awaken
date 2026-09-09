@@ -1,4 +1,4 @@
-"""Qualify the existing ToolResultProtocol batch actions and actual retry trace."""
+"""Qualify the existing ToolResultProtocol actions and actual batch retry trace."""
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -42,6 +42,30 @@ INVARIANTS EveryBatchKeyAppendsAtMostOnce
         witnesses.append((witness, config.replace("EveryBatchKeyAppendsAtMostOnce", name), name))
     check_tlc_model_mutations(tlc_jar, "ToolResultProtocol", source, config, witnesses)
     print("Event batch: 3 model mutants and 2 retained-outcome witnesses qualified")
+    # Call/commit decision table: both coordinates exact enables acceptance;
+    # either coordinate foreign disables it. Two values per coordinate expose
+    # each removed guard independently. Observe the PRE-state awaiting call,
+    # otherwise lastAccepted=lastExpected=op masks a missing call guard.
+    call_config = """SPECIFICATION Spec
+CHECK_DEADLOCK FALSE
+CONSTANTS Calls = {call1, call2} PendingCommits = {commit1, commit2} Operations = {op1}
+ Keys = {key1} Fingerprints = {fingerprint1} None = no_operation
+ MaxRejected = 1 MaxConflicts = 1
+INVARIANTS OnlyMatchingResultIsAccepted
+"""
+    deliver = source[source.index("Deliver(call, pendingCommit, op) =="):source.index("\\* A response-loss retry")]
+    call_mutants = []
+    for guard in ("    /\\ awaiting = call", "    /\\ awaitingCommit = pendingCommit"):
+        assert deliver.count(guard) == 1, "production-model guard must have one owner"
+        mutant = source.replace(deliver, deliver.replace(guard, "    /\\ TRUE", 1), 1)
+        call_mutants.append((mutant, call_config, "OnlyMatchingResultIsAccepted"))
+    check_tlc_model_mutations(tlc_jar, "ToolResultProtocol", source, call_config, call_mutants)
+    # Positive witness prevents an always-rejecting Deliver from satisfying the
+    # safety invariant vacuously: an exact call/commit must be reachable.
+    witness = source.replace("Spec == Init", "NoAcceptedCall == lastAcceptedCall = None\n\nSpec == Init", 1)
+    check_tlc_model_mutations(tlc_jar, "ToolResultProtocol", source, call_config,
+                             [(witness, call_config.replace("OnlyMatchingResultIsAccepted", "NoAcceptedCall"), "NoAcceptedCall")])
+    print("Tool result: 2 coordinate-guard mutants and 1 exact-call witness qualified")
 
 
 def check_event_batch_observation_mutants(tlc_jar: Path, trace_dir: Path) -> None:

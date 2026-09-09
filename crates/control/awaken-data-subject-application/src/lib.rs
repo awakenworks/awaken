@@ -352,6 +352,32 @@ pub struct ErasureProgress {
 }
 
 impl ErasureProgress {
+    // The resolver supplies its two stable target/adapter slots in order. Keep
+    // selection here with the checkpoint it observes; adapter calls remain in
+    // the resolver and an absent adapter never becomes a pending effect.
+    fn pending_target<T>(
+        &self,
+        targets: [(ErasureTarget, Option<T>); 2],
+    ) -> Option<(ErasureTarget, Option<T>)> {
+        targets
+            .into_iter()
+            .find(|(target, eraser)| eraser.is_some() && !self.completed_targets.contains(target))
+    }
+
+    // Called only after the selected target's effect succeeds. Overflow leaves
+    // the complete checkpoint unchanged; publication still uses the original CAS.
+    fn record_target(
+        &mut self,
+        target: ErasureTarget,
+        removed: usize,
+    ) -> Result<(), awaken_runtime_contract::ErasureError> {
+        self.records_removed = self.records_removed.checked_add(removed).ok_or_else(|| {
+            awaken_runtime_contract::ErasureError("erasure receipt overflow".into())
+        })?;
+        self.completed_targets.push(target);
+        Ok(())
+    }
+
     /// Repository invariant shared by every adapter: an absent checkpoint starts
     /// at zero; an existing checkpoint advances by exactly one.
     #[must_use]
@@ -1205,22 +1231,12 @@ impl awaken_runtime_contract::DataSubjectResolver for RepoDataSubjectResolver {
                 });
             }
 
-            let pending_target = [
+            let pending_target = progress.pending_target([
                 (ErasureTarget::Coordinator, self.coordinator.as_ref()),
                 (ErasureTarget::Resources, self.resources.as_ref()),
-            ]
-            .into_iter()
-            .find(|(target, eraser)| {
-                eraser.is_some() && !progress.completed_targets.contains(target)
-            });
+            ]);
             if let Some((target, Some(eraser))) = pending_target {
-                progress.records_removed = progress
-                    .records_removed
-                    .checked_add(eraser.erase_subject(subject).await?)
-                    .ok_or_else(|| {
-                        awaken_runtime_contract::ErasureError("erasure receipt overflow".into())
-                    })?;
-                progress.completed_targets.push(target);
+                progress.record_target(target, eraser.erase_subject(subject).await?)?;
                 advance_erasure_progress(&mut progress, expected_revision)?;
                 match self
                     .jobs
@@ -1276,3 +1292,6 @@ impl awaken_runtime_contract::DataSubjectResolver for RepoDataSubjectResolver {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(test, kani))]
+mod erasure_verification;
