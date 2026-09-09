@@ -849,19 +849,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         idempotency: IdempotencyRecord,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<SessionCreateResult, SessionRepositoryError> {
-        if owner_scope.trim().is_empty()
-            || session.session_id.trim().is_empty()
-            || idempotency.key.trim().is_empty()
-            || idempotency.payload_hash.trim().is_empty()
-            || session.revision != SessionRevision(0)
-            || lifecycle_facts
-                .iter()
-                .any(|fact| fact.object_id != session.session_id)
-        {
-            return Err(SessionRepositoryError::InvalidMutation(
-                "invalid Session create command".into(),
-            ));
-        }
+        validate_session_create_command(owner_scope, &session, &idempotency, &lifecycle_facts)?;
         let owner_scope = owner_scope.to_string();
         self.with_connection(move |conn| {
             // Acquire the SQLite writer reservation before reading the expected

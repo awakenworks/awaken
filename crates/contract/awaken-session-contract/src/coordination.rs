@@ -105,6 +105,33 @@ pub enum CoordinatedRunIntent {
     FollowUp,
 }
 
+/// Exact committed lifecycle class consumed by Agent-message settlement.
+///
+/// This is a projection of the ordinary Run lifecycle authority, not another
+/// persisted state. Both follow-up admission and boundary settlement use this
+/// one classifier so they cannot disagree about an absorbing failed Run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionAgentRunBoundary {
+    Awaiting,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+/// Classify only committed states that form an Agent-message activity boundary.
+#[must_use]
+pub fn session_agent_run_boundary(state: &RunState) -> Option<SessionAgentRunBoundary> {
+    match classify_run_lifecycle_event(state, None) {
+        RunLifecycleEventKind::Awaiting => Some(SessionAgentRunBoundary::Awaiting),
+        RunLifecycleEventKind::Completed => Some(SessionAgentRunBoundary::Completed),
+        RunLifecycleEventKind::Failed => Some(SessionAgentRunBoundary::Failed),
+        RunLifecycleEventKind::Cancelled => Some(SessionAgentRunBoundary::Cancelled),
+        RunLifecycleEventKind::Running
+        | RunLifecycleEventKind::Resumed
+        | RunLifecycleEventKind::Rescheduled => None,
+    }
+}
+
 /// Whether the latest committed Run permanently closes an ordinary coordinated
 /// Thread to follow-up input.
 ///
@@ -114,7 +141,70 @@ pub enum CoordinatedRunIntent {
 /// because no later Run may be admitted after it.
 #[must_use]
 pub fn coordinated_thread_failed(state: &RunState) -> bool {
-    classify_run_lifecycle_event(state, None) == RunLifecycleEventKind::Failed
+    session_agent_run_boundary(state) == Some(SessionAgentRunBoundary::Failed)
+}
+
+/// Logical position of the claimed Run inside Agent-message settlement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionAgentBoundaryRole {
+    Child,
+    PrimaryContinuation,
+}
+
+/// Whether the lifecycle feed has published the exact committed Run boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionAgentBoundaryVisibility {
+    Missing,
+    Visible,
+}
+
+/// Whether the committed child snapshot contains the canonical non-empty
+/// report selected by [`session_agent_report_text`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionAgentCommittedReport {
+    Absent,
+    Present,
+}
+
+/// Complete repository-controlled action for one claimed Agent-message Run.
+/// Ports execute the selected effects; this value owns no persistence or queue
+/// state of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionAgentBoundaryAction {
+    RejectNonBoundary,
+    RetryMissingProjection,
+    InterruptThenSettle,
+    Settle,
+    ContinueReport,
+}
+
+/// Select the only legal next action from the existing committed Thread,
+/// lifecycle projection, and immutable claimed-dispatch provenance.
+#[must_use]
+pub fn session_agent_boundary_action(
+    role: SessionAgentBoundaryRole,
+    state: &RunState,
+    visibility: SessionAgentBoundaryVisibility,
+    cancellation_requested: bool,
+    report: SessionAgentCommittedReport,
+) -> SessionAgentBoundaryAction {
+    let Some(boundary) = session_agent_run_boundary(state) else {
+        return SessionAgentBoundaryAction::RejectNonBoundary;
+    };
+    if visibility == SessionAgentBoundaryVisibility::Missing {
+        return SessionAgentBoundaryAction::RetryMissingProjection;
+    }
+    if role == SessionAgentBoundaryRole::Child && boundary == SessionAgentRunBoundary::Failed {
+        return SessionAgentBoundaryAction::InterruptThenSettle;
+    }
+    if role == SessionAgentBoundaryRole::Child
+        && boundary == SessionAgentRunBoundary::Completed
+        && !cancellation_requested
+        && report == SessionAgentCommittedReport::Present
+    {
+        return SessionAgentBoundaryAction::ContinueReport;
+    }
+    SessionAgentBoundaryAction::Settle
 }
 
 /// Durable-dispatch input produced only after Session policy has admitted it.
@@ -219,6 +309,80 @@ pub fn session_agent_report_text(messages: &[Message], run_id: &RunId) -> String
         .filter(|text| !text.is_empty())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn session_agent_boundary_requires_a_visible_committed_target() {
+    use awaken_agent_contract::agent::run::EndCause;
+
+    // Causes: C1 the actual committed Run state is Running/Awaiting/Completed/
+    // Failed/Cancelled; C2 the lifecycle projection is missing/visible; C3 the
+    // claimed dispatch is a child/root continuation and is/is-not cancelled;
+    // C4 the canonical committed report is absent/present. Effects: E1 a
+    // non-boundary rejects; E2 a missing projection retries without settlement;
+    // E3 only a visible normal Completed child with a report continues; E4 a
+    // visible failed child interrupts before settlement; E5 every other visible
+    // boundary settles directly. The source tool receipt is deliberately not an
+    // input: it has no authority to choose any settlement action.
+    let state = match kani::any::<u8>() % 5 {
+        0 => RunState::Running,
+        1 => RunState::Awaiting,
+        2 => RunState::Ended(EndCause::NaturalEnd),
+        3 => RunState::Ended(EndCause::MaxSteps),
+        _ => RunState::Ended(EndCause::Cancelled),
+    };
+    let role = if kani::any() {
+        SessionAgentBoundaryRole::Child
+    } else {
+        SessionAgentBoundaryRole::PrimaryContinuation
+    };
+    let visibility = if kani::any() {
+        SessionAgentBoundaryVisibility::Visible
+    } else {
+        SessionAgentBoundaryVisibility::Missing
+    };
+    let cancellation_requested = kani::any();
+    let report = if kani::any() {
+        SessionAgentCommittedReport::Present
+    } else {
+        SessionAgentCommittedReport::Absent
+    };
+    let action =
+        session_agent_boundary_action(role, &state, visibility, cancellation_requested, report);
+    let boundary = session_agent_run_boundary(&state);
+
+    assert_eq!(
+        action == SessionAgentBoundaryAction::RejectNonBoundary,
+        boundary.is_none()
+    );
+    assert_eq!(
+        action == SessionAgentBoundaryAction::RetryMissingProjection,
+        boundary.is_some() && visibility == SessionAgentBoundaryVisibility::Missing
+    );
+    assert_eq!(
+        action == SessionAgentBoundaryAction::ContinueReport,
+        boundary == Some(SessionAgentRunBoundary::Completed)
+            && visibility == SessionAgentBoundaryVisibility::Visible
+            && role == SessionAgentBoundaryRole::Child
+            && !cancellation_requested
+            && report == SessionAgentCommittedReport::Present
+    );
+    assert_eq!(
+        action == SessionAgentBoundaryAction::InterruptThenSettle,
+        boundary == Some(SessionAgentRunBoundary::Failed)
+            && visibility == SessionAgentBoundaryVisibility::Visible
+            && role == SessionAgentBoundaryRole::Child
+    );
+    assert_eq!(
+        matches!(
+            action,
+            SessionAgentBoundaryAction::Settle
+                | SessionAgentBoundaryAction::InterruptThenSettle
+                | SessionAgentBoundaryAction::ContinueReport
+        ),
+        boundary.is_some() && visibility == SessionAgentBoundaryVisibility::Visible
+    );
 }
 
 /// Canonical logical Thread target for a Session tool reply.
@@ -434,6 +598,101 @@ mod tests {
             RunState::Ended(EndCause::Indeterminate),
         ] {
             assert!(coordinated_thread_failed(&state), "F4/E1: {state:?}");
+        }
+    }
+
+    #[test]
+    fn agent_message_boundary_action_uses_only_visible_target_truth() {
+        use awaken_agent_contract::agent::run::EndCause;
+
+        // Cause/effect graph: C1 committed source is Running or a closed target
+        // boundary; C2 the exact lifecycle projection is missing/visible; C3
+        // the claim is a child/primary continuation; C4 cancellation is set;
+        // C5 the canonical committed report is absent/present. Effects: E1
+        // Running rejects; E2 missing projection retries without settlement;
+        // E3 Failed child interrupts then settles; E4 only normal Completed
+        // child with report continues; E5 all remaining visible boundaries
+        // settle. Source receipt is not a cause and cannot select E3-E5.
+        //
+        // | Rule | State | Projection | Role/cancel/report | Effect |
+        // |---|---|---|---|---|
+        // | P1 | Running | any | any | E1 reject |
+        // | P2 | boundary | missing | any | E2 retry |
+        // | P3 | Failed | visible | child | E3 interrupt+settle |
+        // | P4 | Completed | visible | child/no/present | E4 continue |
+        // | P5 | boundary | visible | every other tuple | E5 settle |
+        assert_eq!(
+            session_agent_boundary_action(
+                SessionAgentBoundaryRole::Child,
+                &RunState::Running,
+                SessionAgentBoundaryVisibility::Visible,
+                false,
+                SessionAgentCommittedReport::Present,
+            ),
+            SessionAgentBoundaryAction::RejectNonBoundary,
+            "P1/E1"
+        );
+        assert_eq!(
+            session_agent_boundary_action(
+                SessionAgentBoundaryRole::Child,
+                &RunState::Awaiting,
+                SessionAgentBoundaryVisibility::Missing,
+                false,
+                SessionAgentCommittedReport::Absent,
+            ),
+            SessionAgentBoundaryAction::RetryMissingProjection,
+            "P2/E2"
+        );
+        assert_eq!(
+            session_agent_boundary_action(
+                SessionAgentBoundaryRole::Child,
+                &RunState::Ended(EndCause::MaxSteps),
+                SessionAgentBoundaryVisibility::Visible,
+                false,
+                SessionAgentCommittedReport::Absent,
+            ),
+            SessionAgentBoundaryAction::InterruptThenSettle,
+            "P3/E3"
+        );
+        assert_eq!(
+            session_agent_boundary_action(
+                SessionAgentBoundaryRole::Child,
+                &RunState::Ended(EndCause::NaturalEnd),
+                SessionAgentBoundaryVisibility::Visible,
+                false,
+                SessionAgentCommittedReport::Present,
+            ),
+            SessionAgentBoundaryAction::ContinueReport,
+            "P4/E4"
+        );
+        for (role, cancelled, report) in [
+            (
+                SessionAgentBoundaryRole::PrimaryContinuation,
+                false,
+                SessionAgentCommittedReport::Present,
+            ),
+            (
+                SessionAgentBoundaryRole::Child,
+                true,
+                SessionAgentCommittedReport::Present,
+            ),
+            (
+                SessionAgentBoundaryRole::Child,
+                false,
+                SessionAgentCommittedReport::Absent,
+            ),
+        ] {
+            assert_eq!(
+                session_agent_boundary_action(
+                    role,
+                    &RunState::Ended(EndCause::NaturalEnd),
+                    SessionAgentBoundaryVisibility::Visible,
+                    cancelled,
+                    report,
+                ),
+                SessionAgentBoundaryAction::Settle,
+                "P5/E5"
+            );
         }
     }
 
@@ -738,6 +997,18 @@ pub trait SessionAgentCoordination: Send + Sync {
         &self,
         command: SessionAgentBoundaryCommand,
     ) -> Result<(), crate::RunError>;
+
+    /// Apply only after the exact Dispatch settlement CAS succeeded. The
+    /// default fails closed so a coordination adapter cannot report full
+    /// Session settlement while omitting the post-Dispatch root receipt.
+    async fn finalize_session_agent_boundary(
+        &self,
+        _command: SessionAgentBoundaryCommand,
+    ) -> Result<(), crate::RunError> {
+        Err(crate::RunError::unavailable(
+            "post-Dispatch Session settlement is unsupported",
+        ))
+    }
 
     async fn interrupt_session_thread(
         &self,

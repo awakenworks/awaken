@@ -4,12 +4,15 @@
 //! log, execute a Run, or retain a completion registry.
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Role};
-use awaken_agent_contract::agent::run::{EndCause, RunState};
+use awaken_agent_contract::agent::run::RunState;
 use awaken_session_contract::{
     AdmitSessionRun, AdmittedSessionRun, OUTCOME_BUSY_CODE, PersistedSession, RunError,
-    SessionAgentCoordination, SessionEventBatch, SessionEventCommand, SessionEventInput,
-    SessionEventProjectionAnchor, SessionRevision, SessionRunActivation, SessionThreadTarget,
-    SessionUserRunCommand, SessionUserRunSystemInput, session_event_batch_id,
+    SessionAgentCoordination, SessionEventBatch, SessionEventBatchAdmissionAction,
+    SessionEventBatchAdmissionClass, SessionEventBatchAdmissionPlan, SessionEventCommand,
+    SessionEventInput, SessionEventProjectionAnchor, SessionRevision, SessionRunActivation,
+    SessionThreadTarget, SessionUserRunCommand, SessionUserRunSystemInput,
+    classify_session_event_batch_admission, resolve_session_event_batch_admission,
+    session_event_batch_id,
 };
 
 use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
@@ -30,8 +33,77 @@ enum EventBatchAdmission {
         inputs: Vec<SessionEventInput>,
         data_subject_id: Option<String>,
         traceparent: Option<String>,
+        idempotency: Option<(String, String)>,
     },
-    Close,
+    Close {
+        key: String,
+        request_fingerprint: String,
+    },
+}
+
+impl EventBatchAdmission {
+    fn action(&self) -> SessionEventBatchAdmissionAction {
+        match self {
+            Self::Accept { .. } => SessionEventBatchAdmissionAction::Accept,
+            Self::Close { .. } => SessionEventBatchAdmissionAction::Close,
+        }
+    }
+
+    fn idempotency(&self) -> Option<(&str, &str)> {
+        match self {
+            Self::Accept { idempotency, .. } => idempotency
+                .as_ref()
+                .map(|(key, fingerprint)| (key.as_str(), fingerprint.as_str())),
+            Self::Close {
+                key,
+                request_fingerprint,
+            } => Some((key, request_fingerprint)),
+        }
+    }
+}
+
+struct RetainedEventBatchAdmission<'a> {
+    batch: Option<&'a SessionEventBatch>,
+    fingerprint_matches: bool,
+    admission_closed: bool,
+}
+
+impl RetainedEventBatchAdmission<'_> {
+    fn classification(&self) -> SessionEventBatchAdmissionClass {
+        classify_session_event_batch_admission(
+            self.batch.is_some(),
+            self.fingerprint_matches,
+            self.admission_closed,
+        )
+    }
+
+    fn resolution(
+        &self,
+        action: SessionEventBatchAdmissionAction,
+    ) -> SessionEventBatchAdmissionPlan {
+        resolve_session_event_batch_admission(
+            self.batch.is_some(),
+            self.fingerprint_matches,
+            self.admission_closed,
+            action,
+        )
+    }
+}
+
+fn retained_event_batch_admission<'a>(
+    batches: &'a [SessionEventBatch],
+    key: &str,
+    request_fingerprint: &str,
+) -> RetainedEventBatchAdmission<'a> {
+    let batch = batches
+        .iter()
+        .find(|batch| batch.idempotency_key.as_deref() == Some(key));
+    RetainedEventBatchAdmission {
+        batch,
+        fingerprint_matches: batch
+            .is_some_and(|batch| batch.request_fingerprint.as_deref() == Some(request_fingerprint)),
+        admission_closed: batch.is_some_and(|batch| batch.admission_closed),
+    }
 }
 
 fn classify_event_batch_idempotency(
@@ -39,16 +111,18 @@ fn classify_event_batch_idempotency(
     key: &str,
     request_fingerprint: &str,
 ) -> SessionEventBatchIdempotency {
-    let Some(batch) = batches
-        .iter()
-        .find(|batch| batch.idempotency_key.as_deref() == Some(key))
-    else {
-        return SessionEventBatchIdempotency::Absent;
-    };
-    if batch.request_fingerprint.as_deref() == Some(request_fingerprint) {
-        SessionEventBatchIdempotency::Exact(batch.clone())
-    } else {
-        SessionEventBatchIdempotency::Conflict
+    let retained = retained_event_batch_admission(batches, key, request_fingerprint);
+    match retained.classification() {
+        SessionEventBatchAdmissionClass::Absent => SessionEventBatchIdempotency::Absent,
+        SessionEventBatchAdmissionClass::Accepted | SessionEventBatchAdmissionClass::Closed => {
+            SessionEventBatchIdempotency::Exact(
+                retained
+                    .batch
+                    .expect("exact classification has a retained batch")
+                    .clone(),
+            )
+        }
+        SessionEventBatchAdmissionClass::Conflict => SessionEventBatchIdempotency::Conflict,
     }
 }
 
@@ -172,38 +246,6 @@ impl SessionApplication {
         run_id: &awaken_agent_contract::agent::run::Id,
         message_id: &MessageId,
     ) -> Result<SessionEventProjectionAnchor, RunError> {
-        self.message_projection_anchor_with_unreplayed_fallback(
-            session_id, thread_id, run_id, message_id, false,
-        )
-        .await
-    }
-
-    /// Anchor an accepted User receipt to its committed Message, or to the exact
-    /// cancelled Run when interruption won before that Message entered the
-    /// transcript, or the exact Indeterminate Run committed by opaque executor
-    /// recovery (ADR-0073). Both forbid replay. The terminal coordinate completes
-    /// the retained command without inventing transcript content or success;
-    /// Runtime retains the original end cause while the existing FIFO advances.
-    async fn user_message_projection_anchor(
-        &self,
-        session_id: &str,
-        run_id: &awaken_agent_contract::agent::run::Id,
-        message_id: &MessageId,
-    ) -> Result<SessionEventProjectionAnchor, RunError> {
-        self.message_projection_anchor_with_unreplayed_fallback(
-            session_id, session_id, run_id, message_id, true,
-        )
-        .await
-    }
-
-    async fn message_projection_anchor_with_unreplayed_fallback(
-        &self,
-        session_id: &str,
-        thread_id: &str,
-        run_id: &awaken_agent_contract::agent::run::Id,
-        message_id: &MessageId,
-        unreplayed_run_may_anchor: bool,
-    ) -> Result<SessionEventProjectionAnchor, RunError> {
         let snapshot = self
             .runtime()
             .session_thread_run_recovery_snapshot(session_id, thread_id, run_id)
@@ -215,19 +257,6 @@ impl SessionApplication {
             })?;
         if let Some((_, anchor)) = committed_message_anchor(&snapshot, message_id)? {
             return Ok(anchor);
-        }
-        if unreplayed_run_may_anchor
-            && snapshot.runs.iter().any(|run| {
-                &run.id == run_id
-                    && matches!(
-                        run.state,
-                        RunState::Ended(EndCause::Cancelled | EndCause::Indeterminate)
-                    )
-            })
-        {
-            return Ok(SessionEventProjectionAnchor {
-                source_commit_cursor: snapshot.store_cursor,
-            });
         }
         Err(RunError::unavailable(
             "committed Session Event message is not yet visible in recovery",
@@ -341,8 +370,8 @@ impl SessionApplication {
                     inputs,
                     data_subject_id,
                     traceparent,
+                    idempotency,
                 },
-                idempotency,
             )
             .await?;
         batch.require_accepted()?;
@@ -382,8 +411,10 @@ impl SessionApplication {
         let result = self
             .resolve_session_event_batch(
                 session_id,
-                EventBatchAdmission::Close,
-                Some((key.clone(), request_fingerprint.clone())),
+                EventBatchAdmission::Close {
+                    key: key.clone(),
+                    request_fingerprint: request_fingerprint.clone(),
+                },
             )
             .await;
         match result {
@@ -409,7 +440,6 @@ impl SessionApplication {
         &self,
         session_id: &str,
         admission: EventBatchAdmission,
-        idempotency: Option<(String, String)>,
     ) -> Result<SessionEventBatch, RunError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner = self.owner(session_id).await.map_err(mutation_run_error)?;
@@ -419,26 +449,38 @@ impl SessionApplication {
                 .await
                 .map_err(repository_failure)
                 .map_err(mutation_run_error)?;
-            if let Some((key, request_fingerprint)) = idempotency.as_ref() {
-                match classify_event_batch_idempotency(
-                    &session.event_batches,
-                    key,
-                    request_fingerprint,
-                ) {
-                    SessionEventBatchIdempotency::Exact(batch) => return Ok(batch),
-                    SessionEventBatchIdempotency::Conflict => {
-                        return Err(awaken_session_contract::event_admission_conflict());
-                    }
-                    SessionEventBatchIdempotency::Absent => {}
+            let retained = admission.idempotency().map(|(key, request_fingerprint)| {
+                retained_event_batch_admission(&session.event_batches, key, request_fingerprint)
+            });
+            let plan = match retained.as_ref() {
+                Some(retained) => retained.resolution(admission.action()),
+                None => SessionEventBatchAdmissionPlan::AppendAccepted,
+            };
+            match plan {
+                SessionEventBatchAdmissionPlan::ReplayAccepted
+                | SessionEventBatchAdmissionPlan::ReplayClosed => {
+                    return Ok(retained
+                        .as_ref()
+                        .and_then(|retained| retained.batch)
+                        .expect("replay admission plan has one retained batch")
+                        .clone());
                 }
+                SessionEventBatchAdmissionPlan::RejectClosed => {
+                    return Err(awaken_session_contract::event_admission_closed());
+                }
+                SessionEventBatchAdmissionPlan::Conflict => {
+                    return Err(awaken_session_contract::event_admission_conflict());
+                }
+                SessionEventBatchAdmissionPlan::AppendAccepted
+                | SessionEventBatchAdmissionPlan::AppendClosed => {}
             }
-            if session.is_terminal() && matches!(admission, EventBatchAdmission::Accept { .. }) {
+            if session.is_terminal() && plan == SessionEventBatchAdmissionPlan::AppendAccepted {
                 return Err(RunError::bad_request(
                     "Session no longer accepts Event batches",
                 ));
             }
             let admission_projection_anchor =
-                if matches!(admission, EventBatchAdmission::Accept { .. }) {
+                if plan == SessionEventBatchAdmissionPlan::AppendAccepted {
                     let source_commit_cursor = self
                         .runtime()
                         .session_thread_recovery_snapshot(session_id, session_id)
@@ -459,29 +501,35 @@ impl SessionApplication {
             );
             let batch_id = session_event_batch_id(session_id, committed_revision)
                 .map_err(|error| RunError::bad_request(error.to_string()))?;
-            let mut batch = match &admission {
-                EventBatchAdmission::Accept {
-                    inputs,
-                    data_subject_id,
-                    traceparent,
-                } => SessionEventBatch::compile_attributed(
+            let mut batch = match (plan, &admission) {
+                (
+                    SessionEventBatchAdmissionPlan::AppendAccepted,
+                    EventBatchAdmission::Accept {
+                        inputs,
+                        data_subject_id,
+                        traceparent,
+                        ..
+                    },
+                ) => SessionEventBatch::compile_attributed(
                     session_id,
                     batch_id,
                     inputs.clone(),
                     data_subject_id.clone(),
                     traceparent.clone(),
                 ),
-                EventBatchAdmission::Close => {
-                    let (key, fingerprint) = idempotency
-                        .as_ref()
-                        .expect("close always supplies an identity");
-                    SessionEventBatch::closed_admission(
-                        batch_id,
-                        committed_revision,
-                        key.clone(),
-                        fingerprint.clone(),
-                    )
-                }
+                (
+                    SessionEventBatchAdmissionPlan::AppendClosed,
+                    EventBatchAdmission::Close {
+                        key,
+                        request_fingerprint,
+                    },
+                ) => SessionEventBatch::closed_admission(
+                    batch_id,
+                    committed_revision,
+                    key.clone(),
+                    request_fingerprint.clone(),
+                ),
+                _ => unreachable!("admission plan is derived from the requested action"),
             }
             .map_err(|error| RunError::bad_request(error.to_string()))?;
             batch.admitted_revision = committed_revision;
@@ -491,10 +539,10 @@ impl SessionApplication {
                     .map_err(|error| RunError::internal(error.to_string()))?;
             }
             if !batch.admission_closed
-                && let Some((key, request_fingerprint)) = idempotency.as_ref()
+                && let Some((key, request_fingerprint)) = admission.idempotency()
             {
                 batch
-                    .bind_idempotency(key.clone(), request_fingerprint.clone())
+                    .bind_idempotency(key.to_owned(), request_fingerprint.to_owned())
                     .map_err(|error| RunError::bad_request(error.to_string()))?;
             }
             session.event_batches.push(batch.clone());
@@ -1112,10 +1160,12 @@ impl SessionApplication {
                 None => None,
             }
         } else {
-            Some(EventObservation::Processed(
-                self.user_message_projection_anchor(&session.session_id, run_id, &message_id)
-                    .await?,
-            ))
+            // Terminal Thread truth alone cannot publish a processed User
+            // receipt. The Dispatch owner invokes the typed post-settlement
+            // callback only after its CAS returns Applied; that callback joins
+            // the commit anchor, exact activity removal and processed marker in
+            // one Session root mutation.
+            None
         };
         self.settle_event_batch_wake(session, batch_id).await?;
         if let Some(observation) = observation {

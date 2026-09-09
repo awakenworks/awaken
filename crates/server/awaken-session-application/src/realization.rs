@@ -25,6 +25,7 @@ pub(super) fn environment_admits_realization_effects(
 use super::{SessionApplication, SessionMutationError};
 use crate::{
     activity::{now_unix_ms, runtime_interval_fact},
+    creation::DurableSessionRoot,
     projection,
 };
 
@@ -631,7 +632,16 @@ impl SessionApplication {
         }
         for candidate in &candidates.sessions {
             let session = match self.session_repository().get(&candidate.session_id).await {
-                Ok(session) => session,
+                Ok(session) => match DurableSessionRoot::from_recovery(session) {
+                    Ok(root) => root,
+                    Err(message) => {
+                        report.failures.push(SessionReconciliationFailure {
+                            session_id: candidate.session_id.clone(),
+                            message: message.into(),
+                        });
+                        continue;
+                    }
+                },
                 Err(awaken_session_contract::SessionRepositoryError::NotFound) => continue,
                 Err(error) => {
                     report.failures.push(SessionReconciliationFailure {
@@ -641,6 +651,7 @@ impl SessionApplication {
                     continue;
                 }
             };
+            let session = session.as_session();
             let now = now_unix_ms();
             let projection_is_current = session.realization.as_ref().is_some_and(|lease| {
                 lease.owner == self.local_realization_owner()

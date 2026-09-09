@@ -279,6 +279,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-environment-contract \
     --harness environment_registration_intent_is_exact_idempotent_and_recoverable
   run_kani awaken-session-contract \
+    --harness session_event_batch_admission_resolution_is_total_closed_and_append_once \
+    --harness session_agent_boundary_requires_a_visible_committed_target \
+    --harness user_event_processing_requires_exact_applied_dispatch_and_activity_settlement \
     --harness terminal_resource_projection_retains_the_exact_desired_generation \
     --harness initial_event_plan_is_installed_only_on_the_complete_fresh_root \
     --harness session_run_reservation_binds_exactly_one_nonzero_activity_receipt \
@@ -344,6 +347,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness bounded_runtime_capability_iterator_uses_exact_member_projection \
     --harness runtime_capability_member_projection_is_total_exact_and_bounded \
     --harness terminal_environment_receipt_is_admitted_only_during_the_fenced_join \
+    --harness initial_realization_recovery_is_exact_for_every_execution_state \
     --harness skill_execution_pin_requires_exact_workspace_revision_and_hash \
     --harness every_skill_execution_pin_axis_is_binding \
     --harness frozen_worker_agent_publication_is_exact_or_fails_closed \
@@ -370,6 +374,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness activity_exact_exact_admissions_preserve_exact_members
   run_kani awaken-session-contract --checked-loop-profile activity-terminal-height-v1 \
     --harness activity_terminal_transition_clears_real_members
+  run_kani awaken-session-store \
+    --harness session_identity_and_create_shapes_require_one_owned_live_row
   run_kani awaken-service-auth-contract \
     --harness service_token_retry_is_enabled_only_for_an_exact_changed_token
   run_kani awaken-session-application \
