@@ -454,6 +454,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness brokered_and_direct_model_readiness_require_their_exact_access_evidence \
     --harness agent_input_revision_decision_is_exact_non_wrapping_and_replay_first
   run_kani awaken-work-store \
+    --harness work_lease_authority_transition_is_complete_and_fenced \
     --harness work_lease_epoch_is_exact_nonnegative_and_nonwrapping \
     --harness work_reclaim_cutoff_is_exact_and_underflow_free \
     --harness work_lease_deadlines_clamp_without_wrapping
