@@ -225,6 +225,29 @@ pub enum RegistryMutation {
     InvalidTransition,
 }
 
+/// Admission of a different incarnation from one atomic Registry history read.
+/// Current-incarnation retries bypass this decision and never extend authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerRegistrationHistoryAdmission {
+    Fresh,
+    HistoricalIncarnation,
+    IncompleteHistory,
+}
+
+#[must_use]
+pub const fn worker_registration_history_admission(
+    incarnation_seen: bool,
+    history_complete: bool,
+) -> WorkerRegistrationHistoryAdmission {
+    if incarnation_seen {
+        WorkerRegistrationHistoryAdmission::HistoricalIncarnation
+    } else if !history_complete {
+        WorkerRegistrationHistoryAdmission::IncompleteHistory
+    } else {
+        WorkerRegistrationHistoryAdmission::Fresh
+    }
+}
+
 /// Whether a durable Worker slot may mint a newer incarnation/generation.
 /// Quiesced and dead records are tombstones that permit replacement; a live
 /// starting/ready/draining incarnation retains the slot until exact expiry.
@@ -368,6 +391,10 @@ pub enum RegistryError {
     InvalidIdentity,
     #[error("worker slot {worker_id} is occupied by generation {generation}")]
     SlotOccupied { worker_id: String, generation: u64 },
+    #[error("worker slot {worker_id} cannot register a historical incarnation again")]
+    HistoricalIncarnation { worker_id: String },
+    #[error("worker slot {worker_id} has incomplete incarnation history; use a new worker id")]
+    IncompleteIncarnationHistory { worker_id: String },
     #[error("an incarnation cannot change its registered manifest")]
     ManifestChanged,
     #[error("worker registry persistence failed: {0}")]
@@ -387,7 +414,10 @@ pub trait WorkerObservationSource: Send + Sync {
 }
 
 /// Worker-directory authority. Implementations must make every mutation atomic;
-/// expired/dead records remain tombstones so late messages cannot resurrect them.
+/// all incarnation records remain in this authority so historical registrations
+/// cannot mint new generations. Current/list expose only the highest generation.
+/// A migrated slot missing generation one cannot safely admit any different
+/// incarnation: use a new Worker id, never manufacture the discarded history.
 #[async_trait]
 pub trait WorkerDirectory: WorkerObservationSource {
     async fn register(
@@ -746,4 +776,52 @@ fn observation_publication_fence_is_success_owned_exact_and_failure_stable() {
         fence.observe(&observed),
         WorkerObservationPublicationAdmission::Coalesce
     );
+}
+
+#[cfg(test)]
+#[test]
+fn registration_history_decision_table() {
+    // H1 unseen + complete -> fresh; H2 unseen + incomplete -> reject upgrade;
+    // H3/H4 seen + either completeness -> reject historical replay. No clock or
+    // current state can override these results; current retries are separately
+    // exercised through the production register path by Registry conformance.
+    use WorkerRegistrationHistoryAdmission::*;
+    for (seen, complete, expected) in [
+        (false, true, Fresh),
+        (false, false, IncompleteHistory),
+        (true, true, HistoricalIncarnation),
+        (true, false, HistoricalIncarnation),
+    ] {
+        assert_eq!(
+            worker_registration_history_admission(seen, complete),
+            expected
+        );
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn worker_registration_never_grants_authority_to_seen_or_unknown_history() {
+    // Scalar production decision only. Storage completeness, transaction
+    // serialization, identity strings and HTTP authentication require the
+    // Registry conformance/migration/transport tests; no whole-chain claim.
+    let seen: bool = kani::any();
+    let complete: bool = kani::any();
+    let decision = worker_registration_history_admission(seen, complete);
+    assert_eq!(
+        matches!(decision, WorkerRegistrationHistoryAdmission::Fresh),
+        !seen && complete
+    );
+    if seen {
+        assert_eq!(
+            decision,
+            WorkerRegistrationHistoryAdmission::HistoricalIncarnation
+        );
+    }
+    if !seen && !complete {
+        assert_eq!(
+            decision,
+            WorkerRegistrationHistoryAdmission::IncompleteHistory
+        );
+    }
 }

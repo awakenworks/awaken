@@ -7,8 +7,16 @@ fn identity_matches(record: &RegisteredWorker, identity: &WorkerIdentity) -> boo
     &record.snapshot.identity == identity
 }
 
+/// Both facts are read under the same slot transaction as `current`.
+#[derive(Clone, Copy)]
+pub(crate) struct RegistrationHistory {
+    pub incarnation_seen: bool,
+    pub complete: bool,
+}
+
 pub(crate) fn register(
     current: Option<&RegisteredWorker>,
+    history: RegistrationHistory,
     registration: WorkerRegistration,
     now_ms: u64,
     ttl_ms: u64,
@@ -25,6 +33,23 @@ pub(crate) fn register(
                 return Err(RegistryError::ManifestChanged);
             }
             return Ok((current.clone(), false));
+        }
+        use awaken_worker_contract::WorkerRegistrationHistoryAdmission;
+        match awaken_worker_contract::worker_registration_history_admission(
+            history.incarnation_seen,
+            history.complete,
+        ) {
+            WorkerRegistrationHistoryAdmission::HistoricalIncarnation => {
+                return Err(RegistryError::HistoricalIncarnation {
+                    worker_id: registration.worker_id,
+                });
+            }
+            WorkerRegistrationHistoryAdmission::IncompleteHistory => {
+                return Err(RegistryError::IncompleteIncarnationHistory {
+                    worker_id: registration.worker_id,
+                });
+            }
+            WorkerRegistrationHistoryAdmission::Fresh => {}
         }
         let replaceable = awaken_worker_contract::worker_slot_is_replaceable(
             current.snapshot.state,
@@ -260,6 +285,11 @@ mod tests {
     use super::*;
     use awaken_worker_contract::WorkerManifest;
 
+    const FRESH: RegistrationHistory = RegistrationHistory {
+        incarnation_seen: false,
+        complete: true,
+    };
+
     fn registration(incarnation: &str) -> WorkerRegistration {
         WorkerRegistration {
             worker_id: "worker-a".to_string(),
@@ -270,30 +300,31 @@ mod tests {
 
     #[test]
     fn live_slot_cannot_be_replaced_but_expired_slot_can() {
-        let (first, _) = register(None, registration("boot-1"), 10, 100).unwrap();
+        let (first, _) = register(None, FRESH, registration("boot-1"), 10, 100).unwrap();
         assert!(matches!(
-            register(Some(&first), registration("boot-2"), 20, 100),
+            register(Some(&first), FRESH, registration("boot-2"), 20, 100),
             Err(RegistryError::SlotOccupied { .. })
         ));
-        let (second, changed) = register(Some(&first), registration("boot-2"), 111, 100).unwrap();
+        let (second, changed) =
+            register(Some(&first), FRESH, registration("boot-2"), 111, 100).unwrap();
         assert!(changed);
         assert_eq!(second.snapshot.identity.generation, 2);
     }
 
     #[test]
     fn exhausted_generation_cannot_be_reused() {
-        let (mut current, _) = register(None, registration("boot-1"), 10, 100).unwrap();
+        let (mut current, _) = register(None, FRESH, registration("boot-1"), 10, 100).unwrap();
         current.snapshot.identity.generation = u64::MAX;
         current.snapshot.expires_at_ms = 10;
         assert!(matches!(
-            register(Some(&current), registration("boot-2"), 11, 100),
+            register(Some(&current), FRESH, registration("boot-2"), 11, 100),
             Err(RegistryError::GenerationExhausted { .. })
         ));
     }
 
     #[test]
     fn drain_is_absorbing_for_heartbeats() {
-        let (first, _) = register(None, registration("boot-1"), 10, 100).unwrap();
+        let (first, _) = register(None, FRESH, registration("boot-1"), 10, 100).unwrap();
         let identity = first.snapshot.identity.clone();
         let (draining, _) = begin_drain(Some(&first), &identity, 80);
         let draining = draining.unwrap();
@@ -321,7 +352,7 @@ mod tests {
         // C2 dispatch and Session stores may reclaim ownership; C3 the old
         // process resumes with a higher heartbeat sequence. Effect: reject C3
         // without mutation so the supervisor must register a new generation.
-        let (first, _) = register(None, registration("boot-1"), 10, 100).unwrap();
+        let (first, _) = register(None, FRESH, registration("boot-1"), 10, 100).unwrap();
         let identity = first.snapshot.identity.clone();
         let late = WorkerHeartbeat {
             sequence: 1,
@@ -342,7 +373,7 @@ mod tests {
 
     #[test]
     fn heartbeat_replaces_the_live_credential_observation_set() {
-        let (first, _) = register(None, registration("boot-1"), 10, 100).unwrap();
+        let (first, _) = register(None, FRESH, registration("boot-1"), 10, 100).unwrap();
         let identity = first.snapshot.identity.clone();
         let credential = awaken_worker_contract::WorkerCredentialRevision {
             id: "cred:worker".into(),
@@ -397,7 +428,7 @@ mod tests {
         // changes. Effect: C1+C2+C3 rejects without returning a rewritten row,
         // preventing an ABA-visible fence rollback. The ordinary fresh and
         // unchanged rules are covered by the sibling credential-observation test.
-        let (mut current, _) = register(None, registration("boot-1"), 10, 100).unwrap();
+        let (mut current, _) = register(None, FRESH, registration("boot-1"), 10, 100).unwrap();
         current.observation_sequence = 9;
         let identity = current.snapshot.identity.clone();
         let observation = awaken_worker_contract::WorkerCredentialObservation::available(
@@ -437,7 +468,7 @@ mod tests {
         // | H1   | 1  | 1  | E1     |
         // | H2   | 1  | 0  | E2     |
         // | H3   | 0  | -  | E2     |
-        let (first, _) = register(None, registration("boot-1"), 10, 100).unwrap();
+        let (first, _) = register(None, FRESH, registration("boot-1"), 10, 100).unwrap();
         let identity = first.snapshot.identity.clone();
         let heartbeat_with = |sequence, values: &[&str]| WorkerHeartbeat {
             sequence,

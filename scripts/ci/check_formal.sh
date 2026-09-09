@@ -804,6 +804,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness dynamic_evidence_can_only_restrict_ready_worker_admission \
     --harness process_readiness_after_startup_is_probe_independent \
     --harness worker_replacement_and_heartbeat_share_one_non_resurrection_boundary \
+    --harness worker_registration_never_grants_authority_to_seen_or_unknown_history \
     --harness changed_worker_observation_always_mints_a_strictly_fresh_fence \
     --harness observation_publication_fence_is_success_owned_exact_and_failure_stable \
     --harness worker_dynamic_observation_requires_exact_fact_and_half_open_lease
@@ -1311,6 +1312,11 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -workers auto \
     -metadir "$tlc_state_root/remote-worker-protocol" \
     -config formal/tla/RemoteWorkerProtocol.cfg formal/tla/RemoteWorkerProtocol.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -workers auto \
+    -metadir "$tlc_state_root/remote-worker-registration" \
+    -config formal/tla/RemoteWorkerProtocolRegistration.cfg formal/tla/RemoteWorkerProtocol.tla
+  python3 scripts/ci/check_formal_mutations.py --worker-registration-model-mutants "$tla_jar"
   for trace_config in "$rendered_trace_dir"/RustTrace*.cfg "$observation_rendered_dir"/RustTrace*.cfg; do
     trace_module="${trace_config%.cfg}.tla"
     trace_name="$(basename "$trace_module" .tla)"
