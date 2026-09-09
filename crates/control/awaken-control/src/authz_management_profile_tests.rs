@@ -45,6 +45,18 @@ fn workspace_profile_is_one_deterministic_workspace_scoped_contract() {
             .all(|rule| rule.allowed_scope_kinds == [ScopeKind::Workspace])
     );
     assert!(!first.document.grants.is_empty());
+    // Multiple authorities per role must compile to distinct durable grant IDs;
+    // repeated construction above proves those IDs are also deterministic.
+    assert_eq!(
+        first
+            .document
+            .grants
+            .iter()
+            .map(|grant| &grant.id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        first.document.grants.len()
+    );
     assert!(first.document.grants.iter().all(|grant| {
         grant.action_pattern.starts_with("awaken.workspace::")
             && matches!(
@@ -97,8 +109,11 @@ fn workspace_profile_is_one_deterministic_workspace_scoped_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         credential_ingress_grants,
-        ["awaken.workspace::apikey.*"],
-        "credential ingress must not inherit any non-credential authority"
+        [
+            "awaken.workspace::apikey.*",
+            "awaken.workspace::model_supply.connect"
+        ],
+        "credential ingress admits exact connection, not general model-supply administration"
     );
 
     let member_grants = first

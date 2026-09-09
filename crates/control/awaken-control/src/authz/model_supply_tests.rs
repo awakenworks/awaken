@@ -320,17 +320,17 @@ fn hosted_workspace_role_grants_exact_byok_actions_without_platform_wildcard() {
 }
 
 #[test]
-fn credential_ingress_is_exact_workspace_and_apikey_only() {
+fn credential_ingress_is_exact_workspace_apikey_and_provider_connect_only() {
     // Cause/effect graph: canonical Workspace profile (C1) + independent
     // credential-ingress binding (C2) + action and target Workspace (C3)
-    // -> credential reads/writes at the bound Workspace (E1), while foreign
-    // Workspace access and every non-credential family remain denied (E2).
+    // -> credential reads/writes and provider connection at the bound Workspace
+    // (E1), while foreign Workspace and general supply administration deny (E2).
     //
     // Decision table:
     // | Action | Bound Workspace | Result |
-    // | apikey.read/write | yes | allow |
-    // | apikey.read/write | no | deny |
-    // | workspace/model_supply action | yes | deny |
+    // | apikey.read/write or model_supply.connect | yes | allow |
+    // | apikey.read/write or model_supply.connect | no | deny |
+    // | workspace action or model_supply.read/write | yes | deny |
     let profiles =
         AuthorizationProfileAdmin::new(Arc::new(awaken_iam_server::InMemoryStore::new()));
     let mut engine = AuthzApi::new();
@@ -362,7 +362,7 @@ fn credential_ingress_is_exact_workspace_and_apikey_only() {
             ))
             .decision
     };
-    for action in ["apikey.read", "apikey.write"] {
+    for action in ["apikey.read", "apikey.write", "model_supply.connect"] {
         assert_eq!(
             decide(action, workspace.clone()),
             AuthorizationDecision::Allow,
@@ -378,7 +378,6 @@ fn credential_ingress_is_exact_workspace_and_apikey_only() {
         "workspace.read",
         "workspace.write",
         "model_supply.read",
-        "model_supply.connect",
         "model_supply.write",
     ] {
         assert_eq!(

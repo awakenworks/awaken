@@ -18,7 +18,8 @@ pub const AWAKEN_WORKSPACE_POLICY_NAMESPACE: &str = "awaken.workspace";
 /// supply, materializes Skills, and publishes Agent configuration.
 pub const AWAKEN_WORKSPACE_PUBLISHER_ROLE: &str = "awaken.workspace:publisher";
 /// Qualified role intended for an external product that ingresses generic
-/// business credentials through the canonical Workspace Credential Vault.
+/// business and provider credentials through the canonical Workspace Vault
+/// and the exact provider connection command, without general supply writes.
 pub const AWAKEN_WORKSPACE_CREDENTIAL_INGRESS_ROLE: &str = "awaken.workspace:credential_ingress";
 /// Hosted tenant administrator: ordinary Workspace/API-key administration and
 /// Resources access plus read-only platform model supply. Cloud binds this role
@@ -191,10 +192,15 @@ pub fn workspace_authorization_profile() -> CreateAuthorizationProfile {
             effect: GrantEffect::Allow,
         });
     }
-    for authority in CREDENTIAL_INGRESS_AUTHORITIES {
+    for (index, authority) in CREDENTIAL_INGRESS_AUTHORITIES.iter().enumerate() {
         let pattern = workspace_action_pattern(*authority);
         grants.push(GrantSnapshot {
-            id: format!("{AWAKEN_WORKSPACE_POLICY_NAMESPACE}:grant:role:credential_ingress"),
+            id: if index == 0 {
+                // Preserve the existing API-key grant identity across releases.
+                format!("{AWAKEN_WORKSPACE_POLICY_NAMESPACE}:grant:role:credential_ingress")
+            } else {
+                format!("{AWAKEN_WORKSPACE_POLICY_NAMESPACE}:grant:role:credential_ingress:{index}")
+            },
             subject: GrantSubjectRef::Role {
                 role_id: AWAKEN_WORKSPACE_CREDENTIAL_INGRESS_ROLE.to_owned(),
             },
