@@ -4,7 +4,8 @@ use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEventKind};
 use awaken_session_contract::{
-    IdempotencyRecord, ManagedLifecycleFact, PersistedSession, RunError, SessionExecutionState,
+    IdempotencyRecord, ManagedLifecycleFact, PersistedSession, RunError,
+    SessionEventDispatchSettlementEffect, SessionEventProjectionAnchor, SessionExecutionState,
     SessionRuntimeInterval, SessionRuntimeIntervalObservation,
 };
 
@@ -685,6 +686,35 @@ impl SessionApplication {
         expected_epoch: u64,
         observation: Option<SessionRuntimeIntervalObservation>,
     ) -> Result<PersistedSession, SessionActivityError> {
+        self.settle_activity_observed_for_event(session_id, expected_epoch, observation, None)
+            .await
+    }
+
+    /// Consume an already-applied Dispatch settlement by joining its exact
+    /// User Event marker and activity removal in the existing Session root CAS.
+    pub(crate) async fn settle_user_event_dispatch_observed(
+        &self,
+        session_id: &str,
+        expected_epoch: u64,
+        observation: SessionRuntimeIntervalObservation,
+        run_id: &RunId,
+    ) -> Result<PersistedSession, SessionActivityError> {
+        self.settle_activity_observed_for_event(
+            session_id,
+            expected_epoch,
+            Some(observation),
+            Some(run_id),
+        )
+        .await
+    }
+
+    async fn settle_activity_observed_for_event(
+        &self,
+        session_id: &str,
+        expected_epoch: u64,
+        observation: Option<SessionRuntimeIntervalObservation>,
+        event_run_id: Option<&RunId>,
+    ) -> Result<PersistedSession, SessionActivityError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self
                 .owner(session_id)
@@ -755,7 +785,33 @@ impl SessionApplication {
                     ));
                 }
             }
-            let settlement = session.settle_activity_epoch(expected_epoch);
+            let settlement = match event_run_id {
+                Some(run_id) => {
+                    let observation = observation.as_ref().ok_or_else(|| {
+                        SessionActivityError::Unavailable(
+                            "User Event Dispatch settlement has no commit observation".into(),
+                        )
+                    })?;
+                    match session
+                        .settle_user_event_dispatch(
+                            run_id,
+                            expected_epoch,
+                            SessionEventProjectionAnchor {
+                                source_commit_cursor: observation.source_commit_cursor,
+                            },
+                            now_unix_ms(),
+                        )
+                        .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?
+                    {
+                        SessionEventDispatchSettlementEffect::NotEvent
+                        | SessionEventDispatchSettlementEffect::Replayed => return Ok(session),
+                        SessionEventDispatchSettlementEffect::Applied { fully_settled } => {
+                            Some(fully_settled)
+                        }
+                    }
+                }
+                None => session.settle_activity_epoch(expected_epoch),
+            };
             let settlement_plan = session_activity_settlement_plan(
                 settlement.is_some(),
                 settlement == Some(true),
@@ -787,7 +843,16 @@ impl SessionApplication {
                 };
             let emitted_runtime_interval = !lifecycle_facts.is_empty();
             match self
-                .commit_session_snapshot(&owner_scope, session, "settle-activity", lifecycle_facts)
+                .commit_session_snapshot(
+                    &owner_scope,
+                    session,
+                    if event_run_id.is_some() {
+                        "settle-event-dispatch"
+                    } else {
+                        "settle-activity"
+                    },
+                    lifecycle_facts,
+                )
                 .await
             {
                 Ok(session) => {

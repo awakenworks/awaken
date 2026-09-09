@@ -344,6 +344,13 @@ pub struct SessionEventProjectionAnchor {
     pub source_commit_cursor: u64,
 }
 
+mod dispatch_settlement;
+pub(crate) use dispatch_settlement::session_event_execution_may_close;
+pub use dispatch_settlement::{
+    SessionEventDispatchSettlementPlan, SessionEventDispatchSettlementReceipt,
+    session_event_dispatch_settlement_plan,
+};
+
 impl SessionEventCommand {
     #[must_use]
     pub fn operation_id(&self) -> &str {
@@ -372,6 +379,10 @@ pub struct SessionEventEntry {
     /// fence, so this later observation cannot relocate an issued Event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projection_anchor: Option<SessionEventProjectionAnchor>,
+    /// Present only for a User Run completed by the post-Dispatch settlement
+    /// path. Legacy/non-Run Events retain `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_settlement: Option<SessionEventDispatchSettlementReceipt>,
 }
 
 /// Ordered Session Event-batch provenance. Identity, Events, order, optional
@@ -512,6 +523,20 @@ impl SessionEventBatch {
         {
             return Err(SessionEventBatchError::InvalidAcceptedAdmission);
         }
+        if admission == SessionEventBatchAdmissionClass::Accepted
+            && self.events.iter().any(|entry| {
+                entry.dispatch_settlement.is_some_and(|receipt| {
+                    !entry.processed
+                        || entry.processed_at_unix_ms.is_none()
+                        || entry.projection_anchor.is_none()
+                        || receipt.session_activity_epoch == 0
+                        || receipt.commit_observation_anchor.source_commit_cursor == 0
+                        || !matches!(entry.event, SessionEventCommand::UserMessage { .. })
+                })
+            })
+        {
+            return Err(SessionEventBatchError::InvalidAcceptedAdmission);
+        }
         Ok(())
     }
 
@@ -577,6 +602,28 @@ impl SessionEventBatch {
     #[must_use]
     pub fn is_complete(&self) -> bool {
         self.events.iter().all(|entry| entry.processed)
+    }
+
+    /// Return the retained User operation for one exact stable Run identity.
+    /// Run ids are derived from the immutable batch/ordinal coordinate, so more
+    /// than one match is a corrupt aggregate rather than another selection rule.
+    pub fn user_run_operation_id(
+        &self,
+        run_id: &RunId,
+    ) -> Result<Option<&str>, SessionEventBatchError> {
+        let mut matches = self.events.iter().filter_map(|entry| match &entry.event {
+            SessionEventCommand::UserMessage {
+                operation_id,
+                run_id: retained,
+                ..
+            } if retained == run_id => Some(operation_id.as_str()),
+            _ => None,
+        });
+        let first = matches.next();
+        if matches.next().is_some() {
+            return Err(SessionEventBatchError::ProgressMismatch);
+        }
+        Ok(first)
     }
 
     /// Retain committed input visibility without completing the command. An
@@ -719,6 +766,7 @@ impl SessionEventBatch {
                         processed: false,
                         processed_at_unix_ms: None,
                         projection_anchor: None,
+                        dispatch_settlement: None,
                     });
                 }
                 SessionEventInput::SystemMessage { content } => {
@@ -733,6 +781,7 @@ impl SessionEventBatch {
                         processed: false,
                         processed_at_unix_ms: None,
                         projection_anchor: None,
+                        dispatch_settlement: None,
                     });
                 }
                 SessionEventInput::DefineOutcome {
@@ -761,6 +810,7 @@ impl SessionEventBatch {
                         processed: false,
                         processed_at_unix_ms: None,
                         projection_anchor: None,
+                        dispatch_settlement: None,
                     });
                 }
                 SessionEventInput::ToolReply(reply) => {
@@ -779,6 +829,7 @@ impl SessionEventBatch {
                         processed: false,
                         processed_at_unix_ms: None,
                         projection_anchor: None,
+                        dispatch_settlement: None,
                     });
                 }
                 SessionEventInput::Interrupt(interrupt) => {
@@ -808,6 +859,7 @@ impl SessionEventBatch {
                         processed: false,
                         processed_at_unix_ms: None,
                         projection_anchor: None,
+                        dispatch_settlement: None,
                     });
                 }
             }

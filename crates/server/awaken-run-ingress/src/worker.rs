@@ -1403,6 +1403,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     ) -> Result<SettleOutcome, Error> {
         let run_id = claimed.request.run_id();
         let claim = RunClaim::from(&claimed.lease);
+        let mut coordinated_committed_state = None;
         let coordinated_claim_is_stale = if claimed.request.session_activity_epoch.is_some()
             && let Some(expected) = expected_committed_state
         {
@@ -1464,6 +1465,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 observed.map_err(|error| {
                     Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
                 })?;
+                coordinated_committed_state = Some(committed);
                 false
             }
         } else if claimed.request.session_activity_epoch.is_some()
@@ -1490,6 +1492,23 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         match settlement {
             Ok(result) => {
                 self.record_settlement_outcome(result, label, started.elapsed());
+                if result == SettleOutcome::Applied
+                    && let Some(committed) = coordinated_committed_state.as_ref()
+                {
+                    self.settlement_observer
+                        .as_ref()
+                        .expect("coordinated settlement installed its observer")
+                        .after_settle(
+                            &claimed.request,
+                            &claim,
+                            committed,
+                            claimed.cancellation_requested,
+                        )
+                        .await
+                        .map_err(|error| {
+                            Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
+                        })?;
+                }
                 Ok(result)
             }
             Err(error) => {

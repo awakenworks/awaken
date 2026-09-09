@@ -220,6 +220,28 @@ impl CoordinationEndpoint {
                 .map_err(|error| DispatchSettlementError(error.to_string())),
         }
     }
+
+    async fn finalize(
+        &self,
+        command: SessionAgentBoundaryCommand,
+    ) -> Result<(), DispatchSettlementError> {
+        match self {
+            Self::Local(application) => application
+                .upgrade()
+                .ok_or_else(|| {
+                    DispatchSettlementError(
+                        "Session coordination application is unavailable".into(),
+                    )
+                })?
+                .finalize_session_agent_boundary(command)
+                .await
+                .map_err(|error| DispatchSettlementError(error.to_string())),
+            // The authoritative Coordinator `/dispatch/settle` handler invokes
+            // finalization after its local Dispatch CAS. A remote Worker cannot
+            // re-authorize the retired claim through a second HTTP request.
+            Self::Remote { .. } => Ok(()),
+        }
+    }
 }
 
 /// Runtime-facing adapter over the already-selected local/remote Session
@@ -355,6 +377,42 @@ impl HostDispatchSettlementObserver {
     pub(crate) fn new(endpoint: CoordinationEndpoint) -> Self {
         Self { endpoint }
     }
+
+    fn boundary_command(
+        dispatch: &RunDispatch,
+        claim: &RunClaim,
+        committed_state: &awaken_agent_contract::agent::run::RunState,
+        cancellation_requested: bool,
+    ) -> Result<Option<SessionAgentBoundaryCommand>, DispatchSettlementError> {
+        let Some(activity_epoch) = dispatch.session_activity_epoch else {
+            return Ok(None);
+        };
+        let session_id = dispatch.session_thread_id.as_ref().ok_or_else(|| {
+            DispatchSettlementError(
+                "coordinated child settlement has no parent Session affinity".into(),
+            )
+        })?;
+        if activity_epoch == 0
+            || dispatch.run_id() != &claim.run_id
+            || !matches!(
+                committed_state,
+                awaken_agent_contract::agent::run::RunState::Awaiting
+                    | awaken_agent_contract::agent::run::RunState::Ended(_)
+            )
+        {
+            return Err(DispatchSettlementError(
+                "coordinated child settlement coordinates are inconsistent".into(),
+            ));
+        }
+        Ok(Some(SessionAgentBoundaryCommand {
+            session_id: session_id.0.clone(),
+            source_thread_id: dispatch.thread_id().clone(),
+            source_run_id: dispatch.run_id().clone(),
+            source_agent_id: dispatch.activation.snapshot.root_agent_id.0.clone(),
+            session_activity_epoch: activity_epoch,
+            cancellation_requested,
+        }))
+    }
 }
 
 #[async_trait::async_trait]
@@ -401,40 +459,27 @@ impl DispatchSettlementObserver for HostDispatchSettlementObserver {
         // The admitted activity epoch classifies either an asynchronous child
         // or its deterministic self-affine primary report continuation; Runs
         // without that epoch remain outside this observer.
-        let Some(activity_epoch) = dispatch.session_activity_epoch else {
+        let Some(command) =
+            Self::boundary_command(dispatch, claim, committed_state, cancellation_requested)?
+        else {
             return Ok(());
         };
-        let session_id = dispatch.session_thread_id.as_ref().ok_or_else(|| {
-            DispatchSettlementError(
-                "coordinated child settlement has no parent Session affinity".into(),
-            )
-        })?;
-        if activity_epoch == 0
-            || dispatch.run_id() != &claim.run_id
-            || !matches!(
-                committed_state,
-                awaken_agent_contract::agent::run::RunState::Awaiting
-                    | awaken_agent_contract::agent::run::RunState::Ended(_)
-            )
-        {
-            return Err(DispatchSettlementError(
-                "coordinated child settlement coordinates are inconsistent".into(),
-            ));
-        }
+        self.endpoint.settle(claim, command).await
+    }
 
-        self.endpoint
-            .settle(
-                claim,
-                SessionAgentBoundaryCommand {
-                    session_id: session_id.0.clone(),
-                    source_thread_id: dispatch.thread_id().clone(),
-                    source_run_id: dispatch.run_id().clone(),
-                    source_agent_id: dispatch.activation.snapshot.root_agent_id.0.clone(),
-                    session_activity_epoch: activity_epoch,
-                    cancellation_requested,
-                },
-            )
-            .await
+    async fn after_settle(
+        &self,
+        dispatch: &RunDispatch,
+        claim: &RunClaim,
+        committed_state: &awaken_agent_contract::agent::run::RunState,
+        cancellation_requested: bool,
+    ) -> Result<(), DispatchSettlementError> {
+        let Some(command) =
+            Self::boundary_command(dispatch, claim, committed_state, cancellation_requested)?
+        else {
+            return Ok(());
+        };
+        self.endpoint.finalize(command).await
     }
 }
 
@@ -490,6 +535,17 @@ impl SessionAgentCoordination for RecordingSessionAgentCoordination {
         command: SessionAgentBoundaryCommand,
     ) -> Result<(), awaken_session_contract::RunError> {
         self.boundaries.lock().unwrap().push(command);
+        Ok(())
+    }
+
+    async fn finalize_session_agent_boundary(
+        &self,
+        _command: SessionAgentBoundaryCommand,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        // This fixture has no retained Session Event aggregate. Its only
+        // reachable root continuation is a child-report Run, for which the
+        // production application also classifies post-Dispatch finalization as
+        // an inert non-Event effect.
         Ok(())
     }
 

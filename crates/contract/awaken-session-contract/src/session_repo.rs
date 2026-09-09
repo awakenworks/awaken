@@ -27,7 +27,7 @@ use disposition::{
     SessionDeleteDispositionClass, SessionDeleteRequestPlan, session_delete_request_plan,
 };
 pub use disposition::{SessionDisposition, SessionDispositionTransitionError};
-pub use persisted_session::PersistedSession;
+pub use persisted_session::{PersistedSession, SessionEventDispatchSettlementEffect};
 pub use recovery::{
     SessionRecoveryCursor, SessionRecoveryQuarantine, SessionRecoveryScan,
     SessionRepositoryRecoveryAction,

@@ -557,6 +557,34 @@ fn planned_session(session_id: &str, inputs: Vec<SessionEventInput>) -> Persiste
     session
 }
 
+async fn finalize_applied_user_dispatch(
+    app: &SessionApplication,
+    runtime: &EventBatchRuntime,
+    session_id: &str,
+    run_id: &RunId,
+) {
+    // Cause/effect boundary fixture: C1 the test Runtime has committed an
+    // Awaiting/Ended User Run and its simulated Dispatch CAS is Applied; E1 the
+    // production post-settlement callback atomically records the receipt,
+    // removes that Run's exact activity and publishes processed. Tests that do
+    // not call this helper intentionally model the pre-Dispatch window.
+    let activity_epoch = runtime.activity_epoch(run_id);
+    app.settle_user_event_dispatch_observed(
+        session_id,
+        activity_epoch,
+        awaken_session_contract::SessionRuntimeIntervalObservation {
+            activity_epoch,
+            thread_id: ThreadId(session_id.into()),
+            run_id: run_id.clone(),
+            lifecycle_cursor: awaken_agent_contract::RunLifecycleCursor(activity_epoch),
+            source_commit_cursor: 1,
+        },
+        run_id,
+    )
+    .await
+    .expect("simulated applied Dispatch finalizes the User Event");
+}
+
 fn tool_reply_input(tool_use_id: &str) -> SessionEventInput {
     tool_reply_input_for_target(tool_use_id, SessionThreadTarget::Primary)
 }
@@ -757,15 +785,18 @@ async fn model_admission_wakes_unanchored_primary_input_without_releasing_fifo()
                 .await
                 .unwrap();
             let ended = repository.get(session_id).await.unwrap();
-            assert!(ended.event_batches[0].events[0].processed);
+            assert!(
+                !ended.event_batches[0].events[0].processed,
+                "terminal truth without an admitted activity/Dispatch receipt stays pending"
+            );
             assert_eq!(
                 ended.event_batches[0].events[0].projection_anchor,
                 entries[0].projection_anchor
             );
             assert_eq!(
                 runtime.activated.lock().unwrap().len(),
-                1,
-                "queued work starts only after the first Run ends"
+                0,
+                "terminal Run truth without Dispatch settlement cannot release FIFO"
             );
         }
     }
@@ -776,26 +807,20 @@ async fn unreplayed_user_run_anchors_its_receipt_without_inventing_a_message() {
     // Cause/effect graph: C1 accepted User command owns exact Run R; C2 R
     // commits Cancelled before input, or Indeterminate after opaque ACP claim
     // recovery (ADR-0073); C3 another terminal cause lacks the input Message.
-    // E1 freeze R's existing terminal cursor and advance the receipt/FIFO;
-    // E2 never invent a Message or replay a prompt; E3 preserve R's end cause,
-    // including unknown outcome; E4 remain pending for unexplained missing input.
-    // Decision table: U1 Cancelled / U2 Indeterminate => E1+E2+E3;
-    // U3 NaturalEnd/MaxSteps/Stopped/Error => E2+E3+E4. Warm and reconstructed
-    // application retries reuse the same root and Runtime; no new outcome store.
-    for (session_id, end, should_complete) in [
-        ("cancelled-user-receipt", EndCause::Cancelled, true),
-        ("indeterminate-user-receipt", EndCause::Indeterminate, true),
-        ("natural-user-receipt", EndCause::NaturalEnd, false),
-        ("maxsteps-user-receipt", EndCause::MaxSteps, false),
-        (
-            "stopped-user-receipt",
-            EndCause::Stopped("budget".into()),
-            false,
-        ),
+    // E1 every terminal class remains pending without the applied Dispatch
+    // receipt; E2 never invent a Message or replay a prompt; E3 preserve R's
+    // end cause, including unknown outcome. U1-U6 each select E1-E3. This
+    // freezes the strengthened boundary: Thread terminality is commit evidence,
+    // not proof that Dispatch and Session activity settlement completed.
+    for (session_id, end) in [
+        ("cancelled-user-receipt", EndCause::Cancelled),
+        ("indeterminate-user-receipt", EndCause::Indeterminate),
+        ("natural-user-receipt", EndCause::NaturalEnd),
+        ("maxsteps-user-receipt", EndCause::MaxSteps),
+        ("stopped-user-receipt", EndCause::Stopped("budget".into())),
         (
             "error-user-receipt",
             EndCause::Error(awaken_agent_contract::agent::run::Failure::CapabilityBound),
-            false,
         ),
     ] {
         let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
@@ -827,29 +852,22 @@ async fn unreplayed_user_run_anchors_its_receipt_without_inventing_a_message() {
         );
 
         let result = app.drive_session_event_batches(session_id, None).await;
-        assert_eq!(result.is_ok(), should_complete, "U1-U3 reconciliation");
+        assert!(result.is_ok(), "U1-U6 reconciliation remains retryable");
         let persisted = repository.get(session_id).await.expect("U1-U3 root");
         let entry = &persisted.event_batches[0].events[0];
-        assert_eq!(entry.processed, should_complete, "U1-U2/E1 or U3/E4");
-        assert_eq!(
-            entry
-                .projection_anchor
-                .map(|anchor| anchor.source_commit_cursor),
-            should_complete.then_some(1),
-            "U1-U2/E1 exact Run cursor; U3/E4 no guessed anchor",
-        );
+        assert!(!entry.processed, "U1-U6/E1");
+        assert!(entry.dispatch_settlement.is_none(), "U1-U6/E1");
         assert!(runtime.committed.lock().unwrap().is_empty(), "U1-U3/E2");
         let recovered = application_with_runtime(
             runtime.clone(),
             repository.clone(),
             Arc::new(RecordingEnvironmentSource::default()),
         );
-        assert_eq!(
+        assert!(
             recovered
                 .drive_session_event_batches(session_id, None)
                 .await
-                .is_ok(),
-            should_complete
+                .is_ok()
         );
         assert_eq!(
             repository.get(session_id).await.unwrap().event_batches,
@@ -1080,11 +1098,11 @@ async fn running_input_anchor_recovers_root_write_faults_without_reexecution() {
             .await
             .unwrap();
         let completed = repository.get(session_id).await.unwrap();
-        assert!(completed.event_batches[0].events[0].processed, "R5");
+        assert!(!completed.event_batches[0].events[0].processed, "R5");
         assert!(
             completed.event_batches[0].events[0]
                 .processed_at_unix_ms
-                .is_some(),
+                .is_none(),
             "R5"
         );
         assert_eq!(
@@ -1101,14 +1119,11 @@ async fn running_input_anchor_recovers_root_write_faults_without_reexecution() {
 
 #[tokio::test]
 async fn unreplayed_receipt_requires_its_exact_terminal_user_run() {
-    // Public reconciliation decision table: A1 exact R Indeterminate and no
-    // Message => User anchors at terminal cursor; A2 another Run Indeterminate
-    // but R Running/Awaiting => User stays pending without its Message;
-    // A3 R Awaiting/Indeterminate with committed input => exact Message cursor
-    // wins over the later store cursor; Running anchors committed input but
-    // stays unprocessed (no FIFO release or completion timestamp). A4 the paired
-    // System Message is absent => System remains pending in every row. This
-    // exercises the public coordinator without widening production visibility.
+    // Public reconciliation decision table: A1 Running with committed input
+    // anchors visibility only; A2 Running without input remains unanchored; A3
+    // Awaiting/Indeterminate with or without input remains unprocessed until an
+    // applied Dispatch callback; A4 paired System remains pending. Thread truth
+    // never substitutes for the post-Dispatch receipt.
     for state in [
         RunState::Running,
         RunState::Awaiting,
@@ -1175,14 +1190,9 @@ async fn unreplayed_receipt_requires_its_exact_terminal_user_run() {
                 Arc::new(RecordingEnvironmentSource::default()),
             );
             let result = app.drive_session_event_batches(session_id, None).await;
-            assert_eq!(
-                result.is_ok(),
-                state != RunState::Awaiting || committed_input,
-                "only Awaiting without its input Message reports missing recovery evidence"
-            );
+            assert!(result.is_ok(), "A1-A4 remain retryable before Dispatch");
             let persisted = repository.get(session_id).await.unwrap();
-            let processed = state != RunState::Running
-                && (committed_input || state == RunState::Ended(EndCause::Indeterminate));
+            let processed = false;
             let entries = &persisted.event_batches[0].events;
             assert_eq!(
                 entries[0].processed, processed,
@@ -1190,8 +1200,8 @@ async fn unreplayed_receipt_requires_its_exact_terminal_user_run() {
             );
             assert_eq!(
                 entries[0].projection_anchor.map(|a| a.source_commit_cursor),
-                (processed || committed_input).then_some(1),
-                "A1/A3 terminal or original Message, never later cursor 2"
+                (state == RunState::Running && committed_input).then_some(1),
+                "A1 original Message only; terminal truth does not publish"
             );
             assert_eq!(
                 entries[0].processed_at_unix_ms.is_some(),
@@ -3405,13 +3415,15 @@ async fn user_system_batch_case() {
     // restarts between any boundaries. Effects E1 one effective reservation and
     // activation per stable Run; E2 one reservation freezes System before User;
     // E3 retained entries wait for authoritative Run/Message truth; E4 cold replay
-    // resumes and settles the original batch epoch without duplicate effects.
+    // resumes and settles the original batch epoch without duplicate effects;
+    // E5 Running is retained between User entries and Idle appears only after
+    // the final User Dispatch atomically settles its paired System input.
     //
     // | Rule | User truth | System truth | Scanners | Effect |
     // | R1 | absent | none | one | reserve -> activity -> activate |
     // | R2 | Ended first User | root intent | one | reserve [System,User], activate |
     // | R3 | Running | committed | two/restart | wait, no second effects |
-    // | R4 | Ended target | committed | cold | advance both and settle |
+    // | R4 | Ended target | committed | cold | advance both, settle, Idle |
     let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("test repository"),
@@ -3466,9 +3478,15 @@ async fn user_system_batch_case() {
     assert!(first.failures.is_empty(), "R1: {:?}", first.failures);
     assert_eq!(runtime.reserved.lock().unwrap().len(), 1, "R1/E1");
     runtime.end(&run_ids[0]);
-    app.settle_activity("initial-user-system", runtime.activity_epoch(&run_ids[0]))
-        .await
-        .expect("ordinary first Run settlement");
+    finalize_applied_user_dispatch(&app, &runtime, "initial-user-system", &run_ids[0]).await;
+    let partially_settled = repository.get("initial-user-system").await.unwrap();
+    assert_eq!(
+        partially_settled.execution,
+        awaken_session_contract::SessionExecutionState::Running,
+        "R1/E4 initial execution cannot become Idle while later Events remain"
+    );
+    assert!(partially_settled.event_batches[0].events[0].processed);
+    assert!(!partially_settled.event_batches[0].events[1].processed);
 
     let second = app.reconcile_event_batches().await;
     assert!(second.failures.is_empty(), "R2: {:?}", second.failures);
@@ -3533,19 +3551,24 @@ async fn user_system_batch_case() {
     assert_eq!(runtime.activated.lock().unwrap().len(), 2, "R3/E1");
 
     runtime.end(&run_ids[1]);
-    restarted
-        .settle_activity("initial-user-system", runtime.activity_epoch(&run_ids[1]))
-        .await
-        .expect("ordinary target Run settlement");
+    finalize_applied_user_dispatch(&restarted, &runtime, "initial-user-system", &run_ids[1]).await;
     let completed = restarted.reconcile_event_batches().await;
     assert!(completed.failures.is_empty(), "R4/E4");
-    assert_eq!(completed.settled, 1, "R4/E4");
+    assert_eq!(
+        completed.settled, 0,
+        "R4/E4 post-Dispatch aggregate CAS already completed the paired System input"
+    );
     let durable = repository
         .get("initial-user-system")
         .await
         .expect("R4 durable root");
     let batch = durable.event_batches.first().expect("R4 batch");
     assert!(batch.is_complete(), "R4/E3");
+    assert_eq!(
+        durable.execution,
+        awaken_session_contract::SessionExecutionState::Idle,
+        "R4/E4 only complete Event and activity settlement reaches Idle"
+    );
     assert!(
         !durable.active_activity_epochs.contains(&batch_epoch),
         "R4/E4"
@@ -4221,11 +4244,12 @@ async fn activity_repair_replays_the_same_complete_system_user_reservation_case(
     );
 
     runtime.end(&run_id);
-    cold.settle_activity("system-reservation-repair", run_epoch)
-        .await
-        .expect("Run activity settlement");
+    finalize_applied_user_dispatch(&cold, &runtime, "system-reservation-repair", &run_id).await;
     let completed = cold.reconcile_event_batches().await;
-    assert_eq!(completed.settled, 1, "C2/E4");
+    assert_eq!(
+        completed.settled, 0,
+        "C2/E4 post-Dispatch aggregate CAS already settled User+System"
+    );
     assert!(
         repository
             .get("system-reservation-repair")
@@ -4521,9 +4545,7 @@ async fn outcome_crosses_awaiting_user_while_next_user_stays_queued_after_restar
     );
 
     runtime.await_run(&first_run);
-    warm.settle_activity("ordinary-eligibility", runtime.activity_epoch(&first_run))
-        .await
-        .expect("Q2 Awaiting settlement");
+    finalize_applied_user_dispatch(&warm, &runtime, "ordinary-eligibility", &first_run).await;
     warm.append_session_event_batch(
         "ordinary-eligibility",
         vec![

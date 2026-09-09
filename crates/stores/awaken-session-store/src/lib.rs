@@ -157,43 +157,148 @@ struct RawSessionIdentity {
     aggregate_json: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TransactionalSessionIdentityRowPlan {
+    Live,
+    Tombstone,
+    Reject,
+}
+
+/// Decode the shape of the one row returned by the transactional identity
+/// UNION. The owner and live aggregate are columns of that same selected row;
+/// absent/blank owners and mixed live/tombstone shapes fail closed.
+#[must_use]
+const fn transactional_session_identity_row_plan(
+    kind: i64,
+    owner_nonempty: bool,
+    revision_present: bool,
+    aggregate_present: bool,
+) -> TransactionalSessionIdentityRowPlan {
+    match (kind, owner_nonempty, revision_present, aggregate_present) {
+        (0, true, true, true) => TransactionalSessionIdentityRowPlan::Live,
+        (1, true, true, false) => TransactionalSessionIdentityRowPlan::Tombstone,
+        _ => TransactionalSessionIdentityRowPlan::Reject,
+    }
+}
+
+#[must_use]
+const fn session_create_shape_is_valid(
+    owner_nonempty: bool,
+    session_id_nonempty: bool,
+    idempotency_key_nonempty: bool,
+    payload_hash_nonempty: bool,
+    fresh_revision: bool,
+    lifecycle_targets_match: bool,
+) -> bool {
+    owner_nonempty
+        && session_id_nonempty
+        && idempotency_key_nonempty
+        && payload_hash_nonempty
+        && fresh_revision
+        && lifecycle_targets_match
+}
+
+fn validate_session_create_command(
+    owner_scope: &str,
+    session: &PersistedSession,
+    idempotency: &IdempotencyRecord,
+    lifecycle_facts: &[ManagedLifecycleFact],
+) -> Result<(), SessionRepositoryError> {
+    if !session_create_shape_is_valid(
+        !owner_scope.trim().is_empty(),
+        !session.session_id.trim().is_empty(),
+        !idempotency.key.trim().is_empty(),
+        !idempotency.payload_hash.trim().is_empty(),
+        session.revision == SessionRevision(0),
+        lifecycle_facts
+            .iter()
+            .all(|fact| fact.object_id == session.session_id),
+    ) {
+        return Err(SessionRepositoryError::InvalidMutation(
+            "invalid Session create command".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn session_identity_and_create_shapes_require_one_owned_live_row() {
+    // Cause/effect tables exhaust row kind/presence and every create command
+    // validity axis. A live identity is admitted only as kind=0 with non-empty
+    // owner, revision and aggregate in the same row; tombstones require the
+    // same owner/revision but no aggregate. Create accepts only the conjunction
+    // of owner, id, idempotency, fresh revision and lifecycle-target facts.
+    let kind = kani::any();
+    let owner = kani::any();
+    let revision = kani::any();
+    let aggregate = kani::any();
+    let row = transactional_session_identity_row_plan(kind, owner, revision, aggregate);
+    assert_eq!(
+        row == TransactionalSessionIdentityRowPlan::Live,
+        kind == 0 && owner && revision && aggregate
+    );
+    assert_eq!(
+        row == TransactionalSessionIdentityRowPlan::Tombstone,
+        kind == 1 && owner && revision && !aggregate
+    );
+    let session_id = kani::any();
+    let key = kani::any();
+    let hash = kani::any();
+    let fresh = kani::any();
+    let lifecycle = kani::any();
+    assert_eq!(
+        session_create_shape_is_valid(owner, session_id, key, hash, fresh, lifecycle),
+        owner && session_id && key && hash && fresh && lifecycle
+    );
+}
+
 fn transactional_session_identity(
     rows: Vec<RawSessionIdentity>,
 ) -> Result<TransactionalSessionIdentity, SessionRepositoryError> {
-    match rows.as_slice() {
-        [] => Ok(TransactionalSessionIdentity::Absent),
-        [
-            RawSessionIdentity {
-                kind: 0,
-                owner_scope: Some(owner_scope),
-                revision: Some(revision),
-                aggregate_json: Some(aggregate_json),
-            },
-        ] => Ok(TransactionalSessionIdentity::Live {
-            owner_scope: owner_scope.clone(),
+    let mut rows = rows.into_iter();
+    let Some(row) = rows.next() else {
+        return Ok(TransactionalSessionIdentity::Absent);
+    };
+    if rows.next().is_some() {
+        return Err(corrupt(
+            "Session identity has both a live aggregate and tombstone",
+        ));
+    }
+    let plan = transactional_session_identity_row_plan(
+        row.kind,
+        row.owner_scope
+            .as_deref()
+            .is_some_and(|owner| !owner.trim().is_empty()),
+        row.revision.is_some(),
+        row.aggregate_json.is_some(),
+    );
+    match (plan, row.owner_scope, row.revision, row.aggregate_json) {
+        (
+            TransactionalSessionIdentityRowPlan::Live,
+            Some(owner_scope),
+            Some(revision),
+            Some(aggregate_json),
+        ) => Ok(TransactionalSessionIdentity::Live {
+            owner_scope,
             row: EncodedSessionRow {
-                aggregate_json: aggregate_json.clone(),
-                revision: *revision,
+                aggregate_json,
+                revision,
             },
         }),
-        [
-            RawSessionIdentity {
-                kind: 1,
-                owner_scope: Some(owner_scope),
-                revision: Some(revision),
-                aggregate_json: None,
-            },
-        ] => Ok(TransactionalSessionIdentity::Tombstone {
-            owner_scope: owner_scope.clone(),
+        (
+            TransactionalSessionIdentityRowPlan::Tombstone,
+            Some(owner_scope),
+            Some(revision),
+            None,
+        ) => Ok(TransactionalSessionIdentity::Tombstone {
+            owner_scope,
             revision: SessionRevision(
-                u64::try_from(*revision)
+                u64::try_from(revision)
                     .map_err(|_| corrupt("negative Session identity revision"))?,
             ),
         }),
-        [_, _, ..] => Err(corrupt(
-            "Session identity has both a live aggregate and tombstone",
-        )),
-        [_] => Err(corrupt("invalid Session identity row")),
+        _ => Err(corrupt("invalid Session identity row")),
     }
 }
 

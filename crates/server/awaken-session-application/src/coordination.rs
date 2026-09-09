@@ -93,6 +93,52 @@ impl SessionApplication {
             })
     }
 
+    async fn committed_agent_boundary(
+        &self,
+        command: &SessionAgentBoundaryCommand,
+    ) -> Result<
+        (
+            awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+            CoordinatedBoundary,
+            awaken_session_contract::SessionRuntimeIntervalObservation,
+        ),
+        RunError,
+    > {
+        let snapshot = self
+            .runtime()
+            .session_thread_run_recovery_snapshot(
+                &command.session_id,
+                &command.source_thread_id.0,
+                &command.source_run_id,
+            )
+            .await?
+            .ok_or_else(|| RunError::bad_request("settled Agent Run was not committed"))?;
+        let state = snapshot
+            .runs
+            .iter()
+            .find(|run| run.id == command.source_run_id)
+            .map(|run| &run.state)
+            .ok_or_else(|| RunError::bad_request("settled Agent Run is absent from its Thread"))?;
+        let boundary = coordinated_boundary(state)?;
+        let observation = self
+            .runtime_interval_observation(
+                &command.session_id,
+                command.session_activity_epoch,
+                &command.source_thread_id,
+                &command.source_run_id,
+                state,
+                Some(snapshot.store_cursor),
+            )
+            .await?
+            .ok_or_else(|| {
+                self.wake_lifecycle_supervisor();
+                RunError::unavailable(
+                    "committed Agent boundary is not yet visible in the lifecycle feed",
+                )
+            })?;
+        Ok((snapshot, boundary, observation))
+    }
+
     async fn validate_coordinated_thread(
         &self,
         session_id: &str,
@@ -685,50 +731,13 @@ impl SessionAgentCoordination for SessionApplication {
         if current.is_terminal() {
             return Ok(());
         }
-        let snapshot = self
-            .runtime()
-            .session_thread_run_recovery_snapshot(
-                &command.session_id,
-                &command.source_thread_id.0,
-                &command.source_run_id,
-            )
-            .await?
-            .ok_or_else(|| RunError::bad_request("settled Agent Run was not committed"))?;
         // The dispatch claim already authenticates the exact frozen source Run.
         // A settlement may be replayed after its Session effect committed but
         // before the queue row reached Done; by then a successor Run can
         // legitimately be latest. Recovery therefore validates the exact
         // committed source below instead of creating a second, time-relative
         // identity fence from the Thread's latest projection.
-        let state = snapshot
-            .runs
-            .iter()
-            .find(|run| run.id == command.source_run_id)
-            .map(|run| &run.state)
-            .ok_or_else(|| RunError::bad_request("settled Agent Run is absent from its Thread"))?;
-        let boundary = coordinated_boundary(state)?;
-        let observation = self
-            .runtime_interval_observation(
-                &command.session_id,
-                command.session_activity_epoch,
-                &command.source_thread_id,
-                &command.source_run_id,
-                state,
-                Some(snapshot.store_cursor),
-            )
-            .await?;
-        let Some(observation) = observation else {
-            // Cause/effect decision table: C1 the Run commit is authoritative;
-            // C2 its lifecycle projection is not visible yet. R1 C1+!C2 wakes
-            // the sole lifecycle supervisor and returns without settling; the
-            // Pool relinquishes this mutation claim and self-retries. Re-entering
-            // Event-batch execution here would wait on this same claimed row and
-            // recreate the 30-second foreground timeout cycle.
-            self.wake_lifecycle_supervisor();
-            return Err(RunError::unavailable(
-                "committed Agent boundary is not yet visible in the lifecycle feed",
-            ));
-        };
+        let (snapshot, boundary, observation) = self.committed_agent_boundary(&command).await?;
         // Failure is absorbing for an ordinary coordinated Thread. Record
         // cancellation on any already-admitted later dispatch before settling
         // this activity; Dispatch remains the sole queued-work authority and
@@ -751,19 +760,30 @@ impl SessionAgentCoordination for SessionApplication {
             && !command.cancellation_requested)
             .then(|| session_agent_report_text(&snapshot.messages, &command.source_run_id))
             .filter(|report| !report.is_empty());
+        let mut retained_user_event = false;
+        if primary_continuation {
+            for batch in &current.event_batches {
+                retained_user_event |= batch
+                    .user_run_operation_id(&command.source_run_id)
+                    .map_err(|error| RunError::internal(error.to_string()))?
+                    .is_some();
+            }
+        }
         if child_report.is_none() {
             // Keep the activity fence active until usage/budget reconciliation
             // has also committed. If that dependency is unavailable the queue
             // retains the boundary and Session remains Running for exact retry.
             self.reconcile_coordination_boundary_usage(current, &command.source_thread_id)
                 .await?;
-            self.settle_activity_observed(
-                &command.session_id,
-                command.session_activity_epoch,
-                Some(observation),
-            )
-            .await
-            .map_err(crate::SessionActivityError::run_error)?;
+            if !retained_user_event {
+                self.settle_activity_observed(
+                    &command.session_id,
+                    command.session_activity_epoch,
+                    Some(observation),
+                )
+                .await
+                .map_err(crate::SessionActivityError::run_error)?;
+            }
             self.wake_lifecycle_supervisor();
             return Ok(());
         }
@@ -815,6 +835,48 @@ impl SessionAgentCoordination for SessionApplication {
         )
         .await?;
         continued
+    }
+
+    async fn finalize_session_agent_boundary(
+        &self,
+        command: SessionAgentBoundaryCommand,
+    ) -> Result<(), RunError> {
+        if command.session_activity_epoch == 0 {
+            return Err(RunError::bad_request(
+                "Agent settlement does not identify a committed Session activity",
+            ));
+        }
+        if command.source_thread_id.0 != command.session_id {
+            return Ok(());
+        }
+        let current = self
+            .session(&command.session_id)
+            .await
+            .map_err(|error| RunError::unavailable(error.to_string()))?;
+        if current.is_terminal() {
+            return Ok(());
+        }
+        let mut retained = false;
+        for batch in &current.event_batches {
+            retained |= batch
+                .user_run_operation_id(&command.source_run_id)
+                .map_err(|error| RunError::internal(error.to_string()))?
+                .is_some();
+        }
+        if !retained {
+            return Ok(());
+        }
+        let (_, _, observation) = self.committed_agent_boundary(&command).await?;
+        self.settle_user_event_dispatch_observed(
+            &command.session_id,
+            command.session_activity_epoch,
+            observation,
+            &command.source_run_id,
+        )
+        .await
+        .map_err(crate::SessionActivityError::run_error)?;
+        self.wake_lifecycle_supervisor();
+        Ok(())
     }
 
     async fn interrupt_session_thread(

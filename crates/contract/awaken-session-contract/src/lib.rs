@@ -128,7 +128,8 @@ pub use event_batches::{
     SessionEventInterrupt, SessionEventProjectionAnchor, SessionEventToolReply,
     SessionEventToolReplyKind, SessionInitialEventPlan, SessionOutcomeRubric,
     SessionUserRunCommand, SessionUserRunSystemInput, decode_session_event_batch_operation,
-    session_event_batch_id, session_event_batch_operation, session_event_outcome_id,
+    session_event_batch_id, session_event_batch_operation, session_event_dispatch_settlement_plan,
+    session_event_outcome_id,
     session_event_user_run_id, session_outcome_convenience_id,
 };
 pub use lifecycle::{

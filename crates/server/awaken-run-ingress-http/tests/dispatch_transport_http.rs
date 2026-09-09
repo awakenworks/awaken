@@ -138,6 +138,64 @@ struct FailFirstTerminalSettlement {
     span_names: Mutex<Vec<Option<&'static str>>>,
 }
 
+#[derive(Default)]
+struct RecordingSessionCoordination {
+    finalized: Mutex<Vec<awaken_session_contract::SessionAgentBoundaryCommand>>,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionAgentCoordination for RecordingSessionCoordination {
+    async fn list_session_agents(
+        &self,
+        _session_id: &str,
+    ) -> Result<
+        Vec<awaken_session_contract::SessionAgentRosterEntry>,
+        awaken_session_contract::RunError,
+    > {
+        Ok(Vec::new())
+    }
+
+    async fn send_session_agent_message(
+        &self,
+        _command: awaken_session_contract::SessionAgentMessageCommand,
+    ) -> Result<
+        awaken_session_contract::SessionAgentMessageReceipt,
+        awaken_session_contract::RunError,
+    > {
+        Err(awaken_session_contract::RunError::bad_request("unused"))
+    }
+
+    async fn settle_session_agent_boundary(
+        &self,
+        _command: awaken_session_contract::SessionAgentBoundaryCommand,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        Ok(())
+    }
+
+    async fn finalize_session_agent_boundary(
+        &self,
+        command: awaken_session_contract::SessionAgentBoundaryCommand,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        self.finalized.lock().unwrap().push(command);
+        Ok(())
+    }
+
+    async fn interrupt_session_thread(
+        &self,
+        _session_id: &str,
+        _child_thread_id: &ThreadId,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        Ok(())
+    }
+
+    async fn reply_session_thread_tool(
+        &self,
+        _command: awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        Ok(())
+    }
+}
+
 #[async_trait::async_trait]
 impl DispatchSettlementObserver for FailFirstTerminalSettlement {
     async fn before_settle(
@@ -334,6 +392,55 @@ async fn settle_terminal(router: &Router, claim: &RunClaim) -> (StatusCode, Valu
         }),
     )
     .await
+}
+
+#[tokio::test]
+async fn applied_remote_dispatch_invokes_one_exact_post_settlement_callback() {
+    // Cause/effect decision table: R1 exact root claim + committed Ended Run +
+    // non-zero Session activity + Applied Dispatch => one callback carrying
+    // those exact coordinates; R2 retry after the Dispatch row is gone =>
+    // settled=false and no second callback. Invalid claim/state combinations
+    // are covered by the surrounding transport table; the contract Kani proof
+    // exhausts Event receipt/activity combinations.
+    let (store, claim, session_id, thread_id) =
+        claimed_terminal_dispatch("post-dispatch-session", false).await;
+    let recovery = terminal_recovery(
+        &session_id,
+        &thread_id,
+        &claim.run_id,
+        Ok(terminal_snapshot(
+            &thread_id,
+            &claim.run_id,
+            RunState::Ended(EndCause::NaturalEnd),
+        )),
+    );
+    let coordination = Arc::new(RecordingSessionCoordination::default());
+    let router = dispatch_transport_router_with_service(Arc::new(
+        WorkerDispatchService::new(
+            store,
+            Arc::new(HeaderWorkerAuthenticator),
+            Arc::new(ManualWorkerClock::new(0)),
+            Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+        )
+        .with_recovery_source(recovery)
+        .with_session_coordination(coordination.clone()),
+    ));
+
+    let (status, applied) = settle_terminal(&router, &claim).await;
+    assert_eq!(status, StatusCode::OK, "R1: {applied}");
+    assert_eq!(applied["settled"], true, "R1");
+    let finalized = coordination.finalized.lock().unwrap();
+    assert_eq!(finalized.len(), 1, "R1");
+    assert_eq!(finalized[0].session_id, session_id.0, "R1 exact Session");
+    assert_eq!(finalized[0].source_thread_id, thread_id, "R1 exact Thread");
+    assert_eq!(finalized[0].source_run_id, claim.run_id, "R1 exact Run");
+    assert_eq!(finalized[0].session_activity_epoch, 1, "R1 exact epoch");
+    drop(finalized);
+
+    let (status, replay) = settle_terminal(&router, &claim).await;
+    assert_eq!(status, StatusCode::OK, "R2: {replay}");
+    assert_eq!(replay["settled"], false, "R2");
+    assert_eq!(coordination.finalized.lock().unwrap().len(), 1, "R2");
 }
 
 #[tokio::test(flavor = "multi_thread")]

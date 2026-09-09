@@ -739,6 +739,18 @@ pub trait SessionAgentCoordination: Send + Sync {
         command: SessionAgentBoundaryCommand,
     ) -> Result<(), crate::RunError>;
 
+    /// Apply only after the exact Dispatch settlement CAS succeeded. The
+    /// default fails closed so a coordination adapter cannot report full
+    /// Session settlement while omitting the post-Dispatch root receipt.
+    async fn finalize_session_agent_boundary(
+        &self,
+        _command: SessionAgentBoundaryCommand,
+    ) -> Result<(), crate::RunError> {
+        Err(crate::RunError::unavailable(
+            "post-Dispatch Session settlement is unsupported",
+        ))
+    }
+
     async fn interrupt_session_thread(
         &self,
         session_id: &str,
