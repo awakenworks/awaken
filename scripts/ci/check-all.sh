@@ -103,6 +103,7 @@ run static "product release contract" python3 scripts/ci/check_product_release.p
 run static "reliability checker self-test" python3 scripts/ci/check_reliability.py --self-test
 run static "reliability evidence contract" python3 scripts/ci/check_reliability.py
 run static "Cargo target isolation self-test" scripts/ci/_cargo_target.sh --self-test
+run static "public API gate tests" python3 scripts/ci/test_public_api.py
 run static "Rust gate control-flow self-test" scripts/ci/check-rust.sh --self-test
 run static "sandbox image build deadline self-test" deploy/images/sandbox/build.sh --self-test
 run static "sandbox image provenance self-test" python3 scripts/release/awaken_sandbox_image_provenance.py self-test
