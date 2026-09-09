@@ -70,15 +70,14 @@ pub async fn drive_session_terminal_cleanup(
     control: &dyn SessionRealizationControl,
     runtime: &dyn SessionRuntime,
 ) -> Result<SessionTerminalCleanupDriveOutcome, SessionRealizationDriveError> {
-    let Some((mut work, mut started)) =
-        next_work(control, runtime, session_id, asserted_lease).await?
-    else {
-        runtime
-            .acknowledge_completed_terminal_cleanup(session_id, asserted_lease)
-            .await;
-        return Ok(SessionTerminalCleanupDriveOutcome::Completed);
-    };
-    for _ in 0..8 {
+    let mut lease = asserted_lease.clone();
+    'drive: for _ in 0..8 {
+        let Some((work, started)) = next_work(control, runtime, session_id, &lease).await? else {
+            runtime
+                .acknowledge_completed_terminal_cleanup(session_id, &lease)
+                .await;
+            return Ok(SessionTerminalCleanupDriveOutcome::Completed);
+        };
         if work.assignment.session_id != session_id {
             return Err(invalid_projection(
                 "terminal cleanup projection changed its Session root",
@@ -90,7 +89,7 @@ pub async fn drive_session_terminal_cleanup(
                 work.assignment.authority.clone().observed(started),
             )
             .await?;
-        let lease = work.assignment.authority.lease.clone();
+        lease = work.assignment.authority.lease.clone();
         let expected_workspace = work.assignment.projection.workspace_id.clone();
 
         match work.action {
@@ -183,6 +182,11 @@ pub async fn drive_session_terminal_cleanup(
                                     .await;
                                 return Ok(SessionTerminalCleanupDriveOutcome::Completed);
                             }
+                            // Another exact driver may have committed this
+                            // command after `next_work` returned it. Re-read the
+                            // aggregate instead of treating that stale projection
+                            // as corruption or executing its physical effect.
+                            Err(SessionRealizationControlFailure::NotReady) => continue 'drive,
                             Err(error) => return Err(error.into()),
                         };
                     authorization.verify_for(&effect)?;
@@ -215,6 +219,11 @@ pub async fn drive_session_terminal_cleanup(
                                 .await;
                             return Ok(SessionTerminalCleanupDriveOutcome::Completed);
                         }
+                        // The command was valid when projected, but another
+                        // exact owner advanced the aggregate before this
+                        // authorization. Only a fresh root may select the next
+                        // effect.
+                        Err(SessionRealizationControlFailure::NotReady) => continue 'drive,
                         Err(error) => return Err(error.into()),
                     }
                 }
@@ -259,18 +268,16 @@ pub async fn drive_session_terminal_cleanup(
                 }
             }
         }
-
-        let Some((next, next_started)) = next_work(control, runtime, session_id, &lease).await?
-        else {
+    }
+    match next_work(control, runtime, session_id, &lease).await? {
+        None => {
             runtime
                 .acknowledge_completed_terminal_cleanup(session_id, &lease)
                 .await;
-            return Ok(SessionTerminalCleanupDriveOutcome::Completed);
-        };
-        work = next;
-        started = next_started;
+            Ok(SessionTerminalCleanupDriveOutcome::Completed)
+        }
+        Some(_) => Err(SessionRealizationDriveError::DidNotConverge),
     }
-    Err(SessionRealizationDriveError::DidNotConverge)
 }
 
 #[cfg(test)]
@@ -286,7 +293,10 @@ mod tests {
     use awaken_agent_contract::agent::content::ContentBlock;
     use std::{
         collections::VecDeque,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
     };
 
     fn lease() -> crate::SessionRealizationLease {
@@ -417,6 +427,7 @@ mod tests {
         work: Mutex<VecDeque<SessionTerminalCleanupWork>>,
         publication: Mutex<Option<crate::SessionRepositoryPublicationProjection>>,
         events: Arc<Mutex<Vec<String>>>,
+        stale_authorization_once: AtomicBool,
     }
 
     #[async_trait::async_trait]
@@ -510,6 +521,9 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("authorize:{}", effect.command.thread_id));
+            if self.stale_authorization_once.swap(false, Ordering::SeqCst) {
+                return Err(SessionRealizationControlFailure::NotReady);
+            }
             crate::SessionTerminalCleanupPreparationAuthorization::try_new(
                 effect.clone(),
                 "workspace".into(),
@@ -757,6 +771,7 @@ mod tests {
             work: Mutex::new(VecDeque::from([child_work, root_work, disposal_work])),
             publication: Mutex::new(None),
             events: Arc::clone(&events),
+            stale_authorization_once: AtomicBool::new(false),
         };
         let runtime = RecordingRuntime {
             events: Arc::clone(&events),
@@ -797,6 +812,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_authorization_reobserves_without_executing_the_old_command() {
+        // Cause/effect graph: C1 an exact cleanup command is projected; C2 a
+        // concurrent driver advances the aggregate before authorization, so
+        // Control reports NotReady; C3 a fresh poll returns the next command.
+        // Effects: E1 the stale command has no physical effect or receipt; E2
+        // the driver re-reads the sole aggregate queue; E3 only the fresh
+        // command executes and completion is acknowledged. Decision table:
+        // R1=C1+!C2 => ordinary authorize/prepare/record; R2=C1+C2+C3 =>
+        // reobserve(E2), suppress stale effect(E1), execute fresh(E3).
+        let lease = lease();
+        let stale = SessionCleanupCommand::new("session", "stale", "root-effect");
+        let fresh = SessionCleanupCommand::new("session", "fresh", "root-effect");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let control = RecordingControl {
+            work: Mutex::new(VecDeque::from([
+                work(
+                    SessionTerminalCleanupAction::Prepare {
+                        commands: vec![stale],
+                    },
+                    &lease,
+                ),
+                work(
+                    SessionTerminalCleanupAction::Prepare {
+                        commands: vec![fresh],
+                    },
+                    &lease,
+                ),
+            ])),
+            publication: Mutex::new(None),
+            events: Arc::clone(&events),
+            stale_authorization_once: AtomicBool::new(true),
+        };
+        let runtime = RecordingRuntime {
+            events: Arc::clone(&events),
+            failing_thread: None,
+            publication_effect: None,
+        };
+
+        assert_eq!(
+            drive_session_terminal_cleanup("session", &lease, &control, &runtime)
+                .await
+                .unwrap(),
+            SessionTerminalCleanupDriveOutcome::Completed,
+            "R2/E2+E3"
+        );
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                "poll",
+                "install",
+                "authorize:stale",
+                "poll",
+                "install",
+                "authorize:fresh",
+                "prepare:fresh",
+                "record:fresh",
+                "ack:fresh",
+                "poll",
+                "ack-completed",
+            ],
+            "R2/E1-E3"
+        );
+    }
+
+    #[tokio::test]
     async fn preparation_batch_attempts_every_frozen_child_before_retry() {
         // Cause/effect graph: C1 one child preparation fails; C2 a sibling is
         // independently valid. Effects: E1 no physical disposal; E2 attempt
@@ -816,6 +896,7 @@ mod tests {
             )])),
             publication: Mutex::new(None),
             events: Arc::clone(&events),
+            stale_authorization_once: AtomicBool::new(false),
         };
         let runtime = RecordingRuntime {
             events: Arc::clone(&events),
@@ -891,6 +972,7 @@ mod tests {
                     .unwrap(),
                 )),
                 events: Arc::clone(&events),
+                stale_authorization_once: AtomicBool::new(false),
             };
             let runtime = RecordingRuntime {
                 events: Arc::clone(&events),
@@ -968,6 +1050,7 @@ mod tests {
                     .unwrap(),
                 )),
                 events: Arc::clone(&events),
+                stale_authorization_once: AtomicBool::new(false),
             };
             let runtime = RecordingRuntime {
                 events: Arc::clone(&events),

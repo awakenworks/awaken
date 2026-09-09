@@ -32,6 +32,9 @@ SESSION_REPOSITORY_PORT = (
 SESSION_REPOSITORY_PUBLICATION_AGGREGATE = (
     "crates/contract/awaken-session-contract/src/session_repo/repository_publication.rs"
 )
+SESSION_DELETE_DISPOSITION = (
+    "crates/contract/awaken-session-contract/src/session_repo/disposition.rs"
+)
 SESSION_ROW_CODEC = "crates/stores/awaken-session-store/src/row_codec.rs"
 SESSION_REALIZATION = "crates/contract/awaken-session-contract/src/session_realization.rs"
 SESSION_TERMINAL_AUTHORIZATION = (
@@ -174,6 +177,10 @@ REQUIRED = {
         "pub fn verified_terminal_cleanup(",
         "self.terminal_cleanup.verify_for(&self.session_id)?",
     ),
+    SESSION_DELETE_DISPOSITION: (
+        'event_type: "session.deleted"',
+        "SessionDeleteLifecycleFactPlan",
+    ),
     SESSION_ROW_CODEC: ("verify_aggregate(session)?;", "verify_aggregate(&aggregate)?;"),
     SESSION_REALIZATION: (
         "publish_mcp_generation_receipt",
@@ -240,7 +247,6 @@ REQUIRED = {
         "commit_delete_intent",
         "pub async fn delete_session(",
         ".wake_lifecycle_supervisor()",
-        'event_type: "session.deleted"',
         ".repository_publication_rejection(&command.session_id)",
         ".repository_publication_receipt(&command.session_id)",
     ),
@@ -1062,6 +1068,9 @@ SessionDeleteCommand
 commit_delete_intent
 pub async fn delete_session(
 .wake_lifecycle_supervisor()
+"""
+    canonical[SESSION_DELETE_DISPOSITION] = """
+SessionDeleteLifecycleFactPlan
 event_type: "session.deleted"
 """
     canonical[RUNTIME_HOST_APPLICATION] = """

@@ -30,7 +30,10 @@ use purge_guard::resource_targets;
 use repository_reference::{
     session_resources_reference_repository, session_resources_reference_repository_generation,
 };
-use terminal_cleanup::{bind_terminal_restore_target, terminal_restore_target_for_thread};
+use terminal_cleanup::{
+    bind_terminal_restore_target, terminal_cleanup_authorization_failure,
+    terminal_restore_target_for_thread,
+};
 
 #[derive(Clone)]
 enum ResourceSettlement {
@@ -290,12 +293,7 @@ impl SessionApplication {
         }
         let inherited_provider_disposal = session
             .authorize_terminal_cleanup_effect(effect)
-            .map_err(|error| match error {
-                awaken_session_contract::SessionCleanupError::RealizationMismatch => {
-                    SessionRealizationControlFailure::StaleOwnership
-                }
-                error => SessionRealizationControlFailure::Invalid(error.to_string()),
-            })?;
+            .map_err(terminal_cleanup_authorization_failure)?;
         awaken_session_contract::SessionTerminalCleanupPreparationAuthorization::try_new(
             effect.clone(),
             workspace_id,
@@ -332,12 +330,7 @@ impl SessionApplication {
         }
         session
             .authorize_terminal_cleanup_disposal_effect(&owner_scope, effect)
-            .map_err(|error| match error {
-                awaken_session_contract::SessionCleanupError::RealizationMismatch => {
-                    SessionRealizationControlFailure::StaleOwnership
-                }
-                error => SessionRealizationControlFailure::Invalid(error.to_string()),
-            })?;
+            .map_err(terminal_cleanup_authorization_failure)?;
         Ok(owner_scope)
     }
 
