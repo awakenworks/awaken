@@ -15,6 +15,9 @@
 #
 # Usage: scripts/ci/pg_tests.sh [--require-docker|--self-test]   (from repo root)
 set -uo pipefail
+# Keep phase diagnostics visible even when a command suppresses probe output.
+# This descriptor belongs to this runner; never log command arguments/secrets.
+exec 3>&2
 cd "$(dirname "$0")/../.."
 source scripts/ci/_cargo_target.sh
 awaken_configure_cargo_target "$PWD"
@@ -39,8 +42,12 @@ pg_run_with_deadline() {
     echo "invalid PostgreSQL deadline for $stage: $seconds" >&2
     return 2
   }
+  local started=$SECONDS
+  printf 'postgres stage=%s event=start budget_seconds=%s\n' "$stage" "$seconds" >&3
   run_with_deadline "$seconds" "$@"
   local result=$?
+  printf 'postgres stage=%s event=finish status=%s duration_seconds=%s\n' \
+    "$stage" "$result" "$((SECONDS - started))" >&3
   if [ "$result" -eq 124 ]; then
     echo "PostgreSQL stage timed out: $stage (${seconds}s)" >&2
   fi
@@ -249,6 +256,19 @@ PASSWORD="ci" # awaken-allow: secret (throwaway ephemeral container, torn down o
 DB="awaken"
 POSTGRES_CONTAINER_ENV=("POSTGRES_PASSWORD=$PASSWORD" "POSTGRES_DB=$DB") # awaken-allow: secret
 RECOVERY_ROOT=""
+POSTGRES_CREATE_ATTEMPTED=0
+OBJECT_CREATE_ATTEMPTED=0
+
+startup_diagnostics() {
+  local name="$1"
+  # Read only this invocation's attempted container, including lost create
+  # responses. Never inspect Config.Env or broaden to other Docker resources.
+  pg_run_with_deadline container-state "$PG_OPERATION_TIMEOUT_SECONDS" \
+    docker inspect --format 'status={{.State.Status}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} error={{json .State.Error}}' \
+    "$name" >&3 2>&3 || true
+  pg_run_with_deadline container-logs "$PG_OPERATION_TIMEOUT_SECONDS" \
+    docker logs --tail 40 "$name" >&3 2>&3 || true
+}
 
 cleanup() {
   pg_run_with_deadline cleanup "$PG_OPERATION_TIMEOUT_SECONDS" \
@@ -259,7 +279,17 @@ cleanup() {
     echo "refusing unexpected PostgreSQL recovery cleanup target: $RECOVERY_ROOT" >&2
   fi
 }
-trap cleanup EXIT
+finish() {
+  local result=$?
+  trap - EXIT
+  if [ "$result" -ne 0 ]; then
+    [ "$POSTGRES_CREATE_ATTEMPTED" -eq 0 ] || startup_diagnostics "$NAME"
+    [ "$OBJECT_CREATE_ATTEMPTED" -eq 0 ] || startup_diagnostics "$OBJECT_NAME"
+  fi
+  cleanup
+  exit "$result"
+}
+trap finish EXIT
 
 RECOVERY_ROOT=$(mktemp -d "$(postgres_recovery_prefix "$RECOVERY_PARENT")XXXXXX")
 valid_recovery_root "$RECOVERY_ROOT" \
@@ -279,6 +309,7 @@ else
   PUBLISH="127.0.0.1::5432"
   echo "-> starting ephemeral Postgres ($NAME) on a Docker-assigned free port"
 fi
+POSTGRES_CREATE_ATTEMPTED=1
 if ! pg_run_with_deadline postgres-create "$PG_OPERATION_TIMEOUT_SECONDS" \
   docker run -d --name "$NAME" \
   -e "${POSTGRES_CONTAINER_ENV[0]}" -e "${POSTGRES_CONTAINER_ENV[1]}" \
@@ -314,8 +345,6 @@ while (( SECONDS < ready_deadline )); do
 done
 if [ "$ready" -ne 1 ]; then
   echo "✗ ephemeral Postgres never became ready"
-  pg_run_with_deadline postgres-logs "$PG_OPERATION_TIMEOUT_SECONDS" \
-    docker logs --tail 20 "$NAME" || true
   exit 1
 fi
 
@@ -328,6 +357,7 @@ export FILE_STORE_ACCESS_KEY="awaken-file-store" # awaken-allow: secret (throwaw
 FILE_STORE_INITIAL_SECRET_KEY="awaken-file-store-initial" # awaken-allow: secret (throwaway fixture)
 export FILE_STORE_SECRET_KEY="$FILE_STORE_INITIAL_SECRET_KEY" # awaken-allow: secret
 # awaken-allow: secret (throwaway MinIO fixture, destroyed by the exit trap)
+OBJECT_CREATE_ATTEMPTED=1
 if ! pg_run_with_deadline object-create "$PG_OPERATION_TIMEOUT_SECONDS" \
   docker run -d --name "$OBJECT_NAME" \
   -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
@@ -355,8 +385,6 @@ while (( SECONDS < object_ready_deadline )); do
 done
 if [ "$object_ready" -ne 1 ]; then
   echo "✗ ephemeral object store never became ready"
-  pg_run_with_deadline object-logs "$PG_OPERATION_TIMEOUT_SECONDS" \
-    docker logs --tail 20 "$OBJECT_NAME" || true
   exit 1
 fi
 export AWAKEN_TEST_S3_ENDPOINT="http://127.0.0.1:$OBJECT_PORT"
