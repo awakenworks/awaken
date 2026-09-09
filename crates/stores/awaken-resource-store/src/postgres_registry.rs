@@ -126,16 +126,18 @@ impl PostgresResourceStore {
         })
     }
 
-    fn list_memory_registry_records(
+    fn list_registry_records<T: DeserializeOwned + Send + 'static>(
         &self,
-    ) -> Result<Vec<Stored<MemoryStoreAggregate>>, RegistryRepositoryError> {
+        kind: &'static str,
+        validate: impl Fn(&T, &str) -> Result<(), RegistryRepositoryError> + Send + 'static,
+    ) -> Result<Vec<Stored<T>>, RegistryRepositoryError> {
         let sql = format!(
             "SELECT id, revision, data FROM {REGISTRY_NS}_entry WHERE kind = $1 ORDER BY id"
         );
         let pool = self.pool.clone();
         block(&self.handle, move || async move {
             sqlx::query(&sql)
-                .bind(MEMORY)
+                .bind(kind)
                 .fetch_all(&pool)
                 .await
                 .map_err(unavailable)?
@@ -146,17 +148,8 @@ impl PostgresResourceStore {
                     let revision = u64::try_from(revision)
                         .map_err(corrupt)
                         .and_then(AggregateRevision::new)?;
-                    let Json(aggregate): Json<MemoryStoreAggregate> =
-                        row.try_get("data").map_err(corrupt)?;
-                    if aggregate.definition().id.as_str() != id {
-                        return Err(corrupt(format!(
-                            "row id `{id}` does not match MemoryStore aggregate id `{}`",
-                            aggregate.definition().id
-                        )));
-                    }
-                    aggregate
-                        .validate_integrity()
-                        .map_err(|error| corrupt(format!("resource `{id}`: {error}")))?;
+                    let Json(aggregate): Json<T> = row.try_get("data").map_err(corrupt)?;
+                    validate(&aggregate, &id)?;
                     Ok(Stored {
                         revision,
                         aggregate,
@@ -210,7 +203,32 @@ impl ResourceRegistryRepository for PostgresResourceStore {
         workspace_id: &str,
     ) -> Result<Vec<Stored<MemoryStoreAggregate>>, RegistryRepositoryError> {
         Ok(self
-            .list_memory_registry_records()?
+            .list_registry_records(MEMORY, |aggregate: &MemoryStoreAggregate, id| {
+                if aggregate.definition().id.as_str() != id {
+                    return Err(corrupt(format!(
+                        "row id `{id}` does not match aggregate identity"
+                    )));
+                }
+                aggregate.validate_integrity().map_err(corrupt)
+            })?
+            .into_iter()
+            .filter(|stored| stored.aggregate.definition().workspace_id == workspace_id)
+            .collect())
+    }
+
+    fn list_repositories(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<Stored<RepositoryAggregate>>, RegistryRepositoryError> {
+        Ok(self
+            .list_registry_records(REPOSITORY, |aggregate: &RepositoryAggregate, id| {
+                if aggregate.definition().id.as_str() != id {
+                    return Err(corrupt(format!(
+                        "row id `{id}` does not match aggregate identity"
+                    )));
+                }
+                aggregate.validate_integrity().map_err(corrupt)
+            })?
             .into_iter()
             .filter(|stored| stored.aggregate.definition().workspace_id == workspace_id)
             .collect())

@@ -1604,6 +1604,9 @@ struct FaultingSessionRepository {
     fail_recovery_scan_on_call: AtomicUsize,
     quarantine_recovery_scan_on_call: AtomicUsize,
     stall_recovery_cursor_on_call: AtomicUsize,
+    hold_recovery_scan_on_call: AtomicUsize,
+    recovery_scan_entered: tokio::sync::Notify,
+    recovery_scan_release: tokio::sync::Notify,
 }
 
 fn report_committed_mutation_as_conflict(
@@ -1652,6 +1655,9 @@ impl FaultingSessionRepository {
             fail_recovery_scan_on_call: AtomicUsize::new(0),
             quarantine_recovery_scan_on_call: AtomicUsize::new(0),
             stall_recovery_cursor_on_call: AtomicUsize::new(0),
+            hold_recovery_scan_on_call: AtomicUsize::new(0),
+            recovery_scan_entered: tokio::sync::Notify::new(),
+            recovery_scan_release: tokio::sync::Notify::new(),
         }
     }
 
@@ -2013,6 +2019,10 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         awaken_session_contract::SessionRepositoryError,
     > {
         let call = self.recovery_scan_count.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.hold_recovery_scan_on_call.load(Ordering::SeqCst) == call {
+            self.recovery_scan_entered.notify_one();
+            self.recovery_scan_release.notified().await;
+        }
         if self.fail_recovery_scan_once.swap(false, Ordering::SeqCst)
             || self.fail_recovery_scan_on_call.load(Ordering::SeqCst) == call
         {

@@ -41,6 +41,9 @@ async fn resource_routes_share_one_application_without_conflicts() {
     // Decision table: R1 C1+C2+C3 => E1+E3; R2 R1+C4 => E2.
     let app = Router::new()
         .merge(resources_router(ResourcesRouterInput {
+            repositories: resources.repositories(Arc::new(
+                awaken_resource_contract::UnavailableRepositoryCredentialValidator,
+            )),
             files: resources.files(),
             memories: authorities.memory_repository(),
             memory_stores: resources.memory_stores(),
@@ -52,6 +55,10 @@ async fn resource_routes_share_one_application_without_conflicts() {
     // Each plane's list entrypoint answers on the same app (200, not a 404 from a
     // dropped route). The listing bodies themselves are proven per-router elsewhere.
     assert_eq!(status(&app, "/v1/memory_stores").await, StatusCode::OK);
+    assert_eq!(
+        status(&app, "/v1/awaken/repositories").await,
+        StatusCode::OK
+    );
     assert_eq!(status(&app, "/v1/files").await, StatusCode::OK);
     assert_eq!(status(&app, "/v1/skills").await, StatusCode::OK);
     assert_eq!(status(&app, "/v1/models").await, StatusCode::OK);

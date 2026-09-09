@@ -388,6 +388,7 @@ pub(super) async fn prepare_runtime_routers(
         reconciler,
         admin_execs,
         credential_source,
+        repository_credentials,
         deployment_audit_plane,
         local_webhook_stores,
         data_subject_consent,
@@ -410,6 +411,7 @@ pub(super) async fn prepare_runtime_routers(
                 component.admin_tools,
                 component.vault_state.clone()
                     as Arc<dyn awaken_session_application::SessionCredentialSource>,
+                component.repository_credentials.clone(),
                 component.management_audit,
                 Some((
                     control_stores.webhooks.clone(),
@@ -431,6 +433,7 @@ pub(super) async fn prepare_runtime_routers(
                 None,
                 Vec::new(),
                 services.credentials,
+                services.repository_credentials,
                 ManagementAuditPlane::from_repository(services.audit),
                 None,
                 services.consent,
@@ -742,6 +745,7 @@ pub(super) async fn prepare_runtime_routers(
     let resource_authorities = resource_application.authorities();
     let resource_management_router =
         awaken_coordinator::resources_router(awaken_coordinator::ResourcesRouterInput {
+            repositories: resource_application.repositories(repository_credentials),
             files: resource_application.files(),
             memories: resource_authorities.memory_repository(),
             memory_stores: resource_application.memory_stores(),

@@ -336,6 +336,7 @@ fn resource_pep_maps_only_resource_routes_and_is_total_by_method() {
         ("/v1/skills", SKILL_READ, SKILL_WRITE),
         ("/v1/skills/skill_1/versions/1", SKILL_READ, SKILL_WRITE),
         ("/v1/memory_stores", WORKSPACE_READ, WORKSPACE_WRITE),
+        ("/v1/awaken/repositories", WORKSPACE_READ, WORKSPACE_WRITE),
         (
             "/v1/memory_stores/mem_1/memory_versions/ver_1/redact",
             WORKSPACE_READ,

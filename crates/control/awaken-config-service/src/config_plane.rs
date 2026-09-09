@@ -1,6 +1,6 @@
 //! Scope-aware edge over the scope-free Config Service.
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigWrite,
@@ -301,15 +301,29 @@ impl ConfigPlane {
         agent_id: &str,
         revision: u64,
     ) -> Result<bool, String> {
+        Ok(self
+            .published_revisions(scope)
+            .await?
+            .contains(&(agent_id.to_owned(), revision)))
+    }
+
+    /// Read the durable publication index once for a whole authoring list.
+    /// Only exact published revisions qualify; a newer draft is not published.
+    pub(crate) async fn published_revisions(
+        &self,
+        scope: &ScopeId,
+    ) -> Result<HashSet<(String, u64)>, String> {
         self.store
             .list_published_scoped(scope)
             .await
             .map(|publications| {
-                publications.into_iter().any(|publication| {
-                    publication.agent_id == agent_id
-                        && publication.source_revision == revision
-                        && publication.state == awaken_agent_config::PublicationState::Published
-                })
+                publications
+                    .into_iter()
+                    .filter(|publication| {
+                        publication.state == awaken_agent_config::PublicationState::Published
+                    })
+                    .map(|publication| (publication.agent_id, publication.source_revision))
+                    .collect()
             })
             .map_err(|error| error.to_string())
     }
