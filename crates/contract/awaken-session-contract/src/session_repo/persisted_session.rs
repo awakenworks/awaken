@@ -208,18 +208,7 @@ impl PersistedSession {
         &mut self,
         next: SessionExecutionState,
     ) -> Result<bool, SessionExecutionTransitionError> {
-        let from = self.execution;
-        if !from.can_transition_to(next) {
-            return Err(SessionExecutionTransitionError { from, to: next });
-        }
-        if from == next {
-            return Ok(false);
-        }
-        if next.is_terminal() {
-            self.active_activity_epochs.clear();
-        }
-        self.execution = next;
-        Ok(true)
+        self.activity_state().transition_execution(next)
     }
 
     /// Advance the monotonic activity fence and record the newly admitted
@@ -227,10 +216,7 @@ impl PersistedSession {
     /// backfilled here: after crash recovery the predecessor has no durable
     /// completion owner, so the successor becomes the sole explicit activity.
     pub fn begin_activity_epoch(&mut self) -> Option<u64> {
-        let next = self.activity_epoch.checked_add(1)?;
-        self.activity_epoch = next;
-        self.active_activity_epochs.insert(next);
-        Some(next)
+        self.activity_state().begin_activity_epoch()
     }
 
     /// Open an activity at the exact root revision reserved by an idempotent
@@ -238,11 +224,7 @@ impl PersistedSession {
     /// the same fencing domain as ordinary activity epochs without an auxiliary
     /// operation-to-epoch registry.
     pub fn begin_activity_epoch_at(&mut self, epoch: u64) -> bool {
-        if epoch == 0 || epoch <= self.activity_epoch {
-            return false;
-        }
-        self.activity_epoch = epoch;
-        self.active_activity_epochs.insert(epoch)
+        self.activity_state().begin_activity_epoch_at(epoch)
     }
 
     /// Settle one admitted activity epoch.
@@ -253,15 +235,15 @@ impl PersistedSession {
     /// A historical Running row with no explicit set treats its non-zero scalar
     /// epoch as a singleton for backward-compatible settlement.
     pub fn settle_activity_epoch(&mut self, expected_epoch: u64) -> Option<bool> {
-        if self.active_activity_epochs.is_empty() {
-            return (self.execution == SessionExecutionState::Running
-                && expected_epoch != 0
-                && expected_epoch == self.activity_epoch)
-                .then_some(true);
+        self.activity_state().settle_activity_epoch(expected_epoch)
+    }
+
+    fn activity_state(&mut self) -> super::activity_state::ActivityState<'_> {
+        super::activity_state::ActivityState {
+            epoch: &mut self.activity_epoch,
+            active: &mut self.active_activity_epochs,
+            execution: &mut self.execution,
         }
-        self.active_activity_epochs
-            .remove(&expected_epoch)
-            .then_some(self.active_activity_epochs.is_empty())
     }
 
     /// Whether the current aggregate has explicit, unsettled activity truth.

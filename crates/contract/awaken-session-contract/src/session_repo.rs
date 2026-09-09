@@ -15,6 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+mod activity_state;
 mod disposition;
 mod persisted_session;
 mod recovery;

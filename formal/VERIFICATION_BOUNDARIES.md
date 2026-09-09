@@ -444,6 +444,26 @@ type checking are valuable executable evidence, but are not formal proofs.
   for creation and returns the official synchronous 200 shape; no public async
   status projection is claimed at this checkpoint. Database durability,
   scheduling fairness, and HTTP delivery remain outside the theorem.
+- Session activity receipts retain the unbounded abstract theorem in
+  `SessionActivityProof.tla`. The four existing `PersistedSession` activity and
+  execution methods now delegate to one reducer borrowing the actual scalar,
+  `BTreeSet` and execution fields. There is no second receipt map or state owner.
+  A 7,840-row native table checks complete aggregate frames across admission,
+  exact settlement, legacy settlement, terminal clearing and terminal replay or
+  rejection. Eight production mutations qualify the table, including borrowing
+  the wrong persisted scalar. Two Kani base-case proofs call the real reducer
+  for one Next or Exact admission from an empty set and Idle execution over all
+  `u64` historical and requested values. They check exact result, scalar, membership and execution
+  frame, including exhaustion, actual insert/search/Drop and unwinding checks at
+  bound four. Two semantic Kani mutations require actual assertion failures.
+  Two-member admission exceeded the memory guard; two-completion settlement
+  exceeded 600 seconds; terminal set clearing has no completed Kani proof. These
+  remain explicit gaps, as does the full aggregate constructor's MCP/serde/hash
+  path. Empty Running legacy settlement can return
+  `Some(true)` repeatedly before the application commits Idle. SQL receipts,
+  durable CAS, interval closure and application exactly-once settlement remain
+  outside this executable aggregate evidence and are not promoted to a direct
+  implementation theorem.
 - The committed-event Runtime projection has one closed pending-tool reducer.
   `SessionRuntimeProjection.tla` checks replacement, accepted-but-unprocessed
   reply classification, per-id processing, terminal clearing, and error
