@@ -322,8 +322,9 @@ async fn heartbeat_compare_and_extend<Q: WorkQueue>(q: &Q) {
 /// Session ownership FMECA/cause-effect graph. Causes: C1 exact Session is
 /// queued/stopped/active; C2 caller is current owner/other owner; C3 lease is
 /// live/expired; C4 trigger is reconciliation enqueue, driving-event wake, or
-/// exact Worker release. Effects: E1 one monotonic lease; E2 stale mutations fail
-/// closed; E3 reconciliation never resurrects completed Work; E4 driving event
+/// exact Worker release; C5 receipt identity (Work/Environment/Session), owner,
+/// and epoch each match or exactly one is altered. Effects: E1 one monotonic
+/// lease; E2 stale mutations fail closed; E3 reconciliation never resurrects completed Work; E4 driving event
 /// explicitly wakes it; E5 only the exact current epoch releases, and replay is
 /// idempotent.
 ///
@@ -335,7 +336,14 @@ async fn heartbeat_compare_and_extend<Q: WorkQueue>(q: &Q) {
 /// | L4 | stopped | n/a | enqueue/acquire | E3 |
 /// | L5 | stopped | A again | wake+acquire | E4, epoch 2 |
 /// | L6 | active epoch 2 | stale epoch 1 | release | E2 |
-/// | L7 | active epoch 2 | exact epoch 2/replay | release | E5 |
+/// | L7 | active epoch 2 | one C5 field mismatches | release | E2, all authority unchanged |
+/// | L8 | active epoch 2 | all C5 fields match | release | E5, clear authority |
+/// | L9 | stopped epoch 2 | same identity/epoch, exact or other owner | release | E5, no effect |
+///
+/// L7 varies one field at a time so each production predicate must independently
+/// reject; checking the complete lease and Work projection detects a false
+/// return after a partial mutation. L9 is an accepted replay, not a new owner-
+/// authorized effect: the stopped row intentionally no longer stores its owner.
 async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &Q) {
     let id = q.enqueue_session("env", "session").await.expect("L1");
     let first = q
@@ -415,23 +423,79 @@ async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &Q) {
         WorkState::Active,
         "L6/E2 successor remains authoritative"
     );
+    let projection = |work: &awaken_session_contract::work_queue::WorkItem| {
+        (
+            work.id.clone(),
+            work.environment_id.clone(),
+            work.data.clone(),
+            work.metadata.clone(),
+            work.state,
+            work.acknowledged_at.clone(),
+            work.latest_heartbeat_at.clone(),
+            work.started_at.clone(),
+            work.stop_requested_at.clone(),
+            work.stopped_at.clone(),
+        )
+    };
+    let active = q.get("env", &id).await.unwrap().unwrap();
+    let mut wrong_owner = replacement.clone();
+    wrong_owner.owner = "owner-b".into();
+    let mut wrong_epoch = replacement.clone();
+    wrong_epoch.epoch = first.epoch;
+    let mut wrong_work = replacement.clone();
+    wrong_work.work_id = "absent-work".into();
+    let mut wrong_environment = replacement.clone();
+    wrong_environment.environment_id = "other-env".into();
+    let mut wrong_session = replacement.clone();
+    wrong_session.session_id = "other-session".into();
+    for (field, receipt) in [
+        ("owner", wrong_owner.clone()),
+        ("epoch", wrong_epoch),
+        ("work_id", wrong_work),
+        ("environment_id", wrong_environment),
+        ("session_id", wrong_session),
+    ] {
+        assert!(
+            !q.release_session(&receipt).await.expect("L7 release"),
+            "L7/E2 mismatched {field} must reject"
+        );
+        let after = q.get("env", &id).await.unwrap().unwrap();
+        assert_eq!(
+            projection(&after),
+            projection(&active),
+            "L7/E2 mismatched {field} must preserve the complete Work projection"
+        );
+        // The existing acquire contract returns another owner's current lease
+        // without renewing it; this observes owner/epoch/expiry, not a repair.
+        let current = q
+            .acquire_session("env", "session", "observer", 20)
+            .await
+            .expect("L7 read current authority");
+        assert_eq!(current.as_ref(), Some(&replacement), "L7/E2 {field}");
+    }
     assert!(
         q.release_session(&replacement)
             .await
-            .expect("L7 exact release"),
-        "L7/E5"
+            .expect("L8 exact release"),
+        "L8/E5"
     );
-    assert!(
-        q.release_session(&replacement)
-            .await
-            .expect("L7 exact replay"),
-        "L7/E5 idempotent response-loss replay"
-    );
-    assert_eq!(
-        q.get("env", &id).await.unwrap().unwrap().state,
-        WorkState::Stopped,
-        "L7/E5"
-    );
+    let stopped = q.get("env", &id).await.unwrap().unwrap();
+    assert_eq!(stopped.state, WorkState::Stopped, "L8/E5");
+    for receipt in [&replacement, &wrong_owner] {
+        assert!(
+            q.release_session(receipt).await.expect("L9 replay"),
+            "L9/E5 same-epoch stopped replay does not require the former owner"
+        );
+        let after = q.get("env", &id).await.unwrap().unwrap();
+        assert_eq!(projection(&after), projection(&stopped), "L9/E5");
+        assert!(
+            q.acquire_session("env", "session", "observer", 20)
+                .await
+                .expect("L9 no authority")
+                .is_none(),
+            "L9/E5 replay must not recreate authority"
+        );
+    }
 }
 
 /// Graceful Worker teardown cause/effect graph: C1 exact incarnation owns active

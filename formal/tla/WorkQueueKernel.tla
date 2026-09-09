@@ -97,6 +97,38 @@ Stop(worker, item, expectedEpoch) ==
     /\ kExpires' = [kExpires EXCEPT ![item] = 0]
     /\ UNCHANGED <<kEpoch, kNow>>
 
+\* Request/effect oracle for the existing Stop action, not another transition.
+\* S1 exact owner+epoch -> only the addressed row loses authority; S2 wrong
+\* owner or S3 stale epoch -> [Stop]_kVars can only stutter. General Safety
+\* alone cannot detect removing either request guard: an unauthorized stop
+\* could still leave a well-typed terminal row with no lease.
+ExactStopRequest(worker, item, expectedEpoch) ==
+    /\ kOwner[item] = worker
+    /\ kEpoch[item] = expectedEpoch
+
+StopRequestBinding ==
+    \A worker \in Workers, item \in WorkItems, expectedEpoch \in 0..MaxEpoch:
+      Stop(worker, item, expectedEpoch) => ExactStopRequest(worker, item, expectedEpoch)
+StopRequestsAreBound == [][StopRequestBinding]_kVars
+
+StopFramesOtherRows(item) ==
+    \A other \in WorkItems \ {item}:
+      /\ kState'[other] = kState[other]
+      /\ kOwner'[other] = kOwner[other]
+      /\ kEpoch'[other] = kEpoch[other]
+      /\ kHeartbeat'[other] = kHeartbeat[other]
+      /\ kExpires'[other] = kExpires[other]
+
+\* S4 Stopped clears owner: the model has no accepted-replay request/result.
+\* Its existing Spec permits unlabeled stuttering, preserving the epoch. This
+\* is not a proof of the stores' true response for Stopped/same-epoch replay.
+StoppedHasNoStopEffect ==
+    \A worker \in Workers, item \in WorkItems:
+      kState[item] = "Stopped" => ~ENABLED Stop(worker, item, kEpoch[item])
+StoppedPermitsStateStutter ==
+    \A item \in WorkItems:
+      kState[item] = "Stopped" => ENABLED UNCHANGED kVars
+
 RemoveEnvironment ==
     /\ \E i \in WorkItems: kState[i] # "Removed"
     /\ kState' = [i \in WorkItems |-> "Removed"]
