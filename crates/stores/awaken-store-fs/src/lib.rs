@@ -82,34 +82,6 @@ fn recovery_replay_plan<E, T>(entry: E, committed_at: T) -> RecoveryReplayPlan<E
     }
 }
 
-#[cfg(test)]
-mod recovery_plan_tests {
-    use super::*;
-
-    #[test]
-    fn replay_plan_has_no_identity_or_time_remapping_branch() {
-        // Cause/effect decision table: C1 known time + operation identity -> E1
-        // both unchanged; C2 legacy unknown time + plain entry -> E2 None and
-        // identity unchanged. Kani generalizes both rules to all u8/u64 values.
-        assert_eq!(
-            recovery_replay_plan(7_u8, Some(41_u64)),
-            RecoveryReplayPlan {
-                entry: 7,
-                committed_at: Some(41)
-            },
-            "C1/E1"
-        );
-        assert_eq!(
-            recovery_replay_plan(9_u8, None::<u64>),
-            RecoveryReplayPlan {
-                entry: 9,
-                committed_at: None
-            },
-            "C2/E2"
-        );
-    }
-}
-
 #[cfg(kani)]
 #[kani::proof]
 fn recovery_replay_preserves_complete_entry_and_time() {
@@ -594,4 +566,37 @@ impl StreamCheckpointStore for FsStreamCheckpointStore {
 
 fn sync_directory(dir: &Path) -> std::io::Result<()> {
     File::open(dir)?.sync_all()
+}
+
+#[cfg(test)]
+mod recovery_plan_tests {
+    use super::*;
+
+    // Layout-only coverage: test builds retain this existing replay table;
+    // non-test/Kani builds retain the same production owner and proof harness.
+    // No behavior changes, so Clippy plus the existing full crate suite own
+    // validation; no additional runtime decision-table rule is introduced.
+
+    #[test]
+    fn replay_plan_has_no_identity_or_time_remapping_branch() {
+        // Cause/effect decision table: C1 known time + operation identity -> E1
+        // both unchanged; C2 legacy unknown time + plain entry -> E2 None and
+        // identity unchanged. Kani generalizes both rules to all u8/u64 values.
+        assert_eq!(
+            recovery_replay_plan(7_u8, Some(41_u64)),
+            RecoveryReplayPlan {
+                entry: 7,
+                committed_at: Some(41)
+            },
+            "C1/E1"
+        );
+        assert_eq!(
+            recovery_replay_plan(9_u8, None::<u64>),
+            RecoveryReplayPlan {
+                entry: 9,
+                committed_at: None
+            },
+            "C2/E2"
+        );
+    }
 }
