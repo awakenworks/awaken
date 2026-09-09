@@ -341,7 +341,7 @@ class ProfileTests(unittest.TestCase):
         # or repeated profile => reject before Cargo. P3 missing opt-in, changed
         # solver, loop, bound, order, count or flags => reject the raw argv too.
         # P4 the new fixed-solver harness cannot drop swap/solver and escape via
-        # legacy memcmp-only acceptance, even under the wrong package. P5 old
+        # legacy memcmp-only acceptance, even under the wrong package. P5 qualified
         # Activity argv and all existing nonreserved memcmp calls stay accepted.
         # Execute the actual shell function with only its Cargo/deadline port
         # replaced by an argument recorder: rejection must return 2, never be
@@ -350,11 +350,21 @@ class ProfileTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         gate = (root / "scripts/ci/check_formal.sh").read_text()
         runner = gate[gate.index("  run_kani() {"):gate.index("  run_kani awaken-agent-contract")]
-        # Frozen pre-change argv, with all allowed harnesses in sorted order.
+        # Frozen qualified hex/main-dependency argv, all allowed harnesses sorted.
+        # Only the actual Session disambiguator changed; bounds/solver/order
+        # are retained and independently audited on all seven Activity GOTOs.
         # Digest fixtures avoid duplicating the production loop-name catalog.
         activity_argv = {
-            "activity-admission-height-v1": "43400d2bbd24a23fbed10c3df4106452cacfd4450a06a03dd6afe437112e5453",
-            "activity-terminal-height-v1": "822f8abb16731f681e025f929052e43963707021ce2bdc4aab18febc50217a12",
+            "activity-admission-height-v1": "da4faed6fed037cc2d358344253381322fea5d5229d849c4a915d632c6d86416",
+            "activity-terminal-height-v1": "a11204ef851413b229bdab95693deb80a22305f40eb1cf7549841860d712d6c5",
+        }
+        # P6 the two encoder profiles pin independently qualified solvers and
+        # exact UTF-8/align bounds; the generic P2/P3 mutations below must reject
+        # every changed bound, missing loop and solver, not just malformed names.
+        frozen_argv = {
+            **activity_argv,
+            "fingerprint-fnv-hex-v1": "714ec79c46a2150f9229bb0bf5df7335fe0126e40d244aa4bb21755b273f7816",
+            "fingerprint-sha256-hex-v1": "b9d1b5eb4b805eb197237899983eba96dc2416216d089d815525d203889e0556",
         }
         for profile, (package, allowed, loops, solver) in options.PROFILES.items():
             harness = sorted(allowed)[0]
@@ -374,9 +384,9 @@ class ProfileTests(unittest.TestCase):
                 self.assertTrue(options.checked_loop_override(
                     package, all_argv[:all_cut], all_argv[all_cut:], True))
                 self.assertEqual(all_argv[4 if solver else 2:all_cut], selections)
-                if profile in activity_argv and names == sorted(allowed):
+                if profile in frozen_argv and names == sorted(allowed):
                     self.assertEqual(hashlib.sha256(json.dumps(
-                        all_argv, separators=(",", ":")).encode()).hexdigest(), activity_argv[profile])
+                        all_argv, separators=(",", ":")).encode()).hexdigest(), frozen_argv[profile])
             invalid = [
                 ("foreign-package", "another-package", selected),
                 ("unknown-profile", package, [selected[0], "unknown", *selected[2:]]),

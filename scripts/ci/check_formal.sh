@@ -257,6 +257,12 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness applied_receipt_is_exact_and_names_one_successor_record \
     --harness tool_policy_selector_fails_closed_for_unregistered_widened_or_mismatched_calls \
     --harness stream_terminal_projection_is_exact_fail_closed_and_absorbing
+  # Exact final wire encoding only: SHA/FNV algorithms and enclosing request
+  # histories keep their separate obligations. Every default check stays on.
+  run_kani awaken-agent-contract --checked-loop-profile fingerprint-fnv-hex-v1 \
+    --harness fnv_hex_output_preserves_every_u64
+  run_kani awaken-agent-contract --checked-loop-profile fingerprint-sha256-hex-v1 \
+    --harness sha256_hex_output_preserves_every_digest_byte
   run_kani awaken-authorization-contract \
     --harness run_backed_route_policy_uses_exact_run_actions \
     --harness application_route_policy_never_enters_the_service_guard \
