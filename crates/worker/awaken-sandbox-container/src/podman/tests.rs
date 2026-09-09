@@ -531,6 +531,56 @@ async fn podman_child_does_not_inherit_worker_service_lifetime() {
     const CHILD: &str = "AWAKEN_TEST_PODMAN_SERVICE_CHILD";
     if std::env::var_os(CHILD).is_some() {
         let before = std::env::var_os("INVOCATION_ID");
+        // R3 service + run/start -> peer scope with exact CLI argv. R4 no
+        // invocation (including empty) OR query/create/exec/stop/rm -> original
+        // call-owned child. No command receives credentials through extra argv.
+        for verb in ["run", "start", "info", "create", "exec", "stop", "rm"] {
+            let args = vec![verb.into(), "space $ literal ' value".into()];
+            let command = podman_subcommand("podman fixture", &args);
+            let scoped =
+                before.as_ref().is_some_and(|id| !id.is_empty()) && matches!(verb, "run" | "start");
+            assert_eq!(
+                command.as_std().get_program(),
+                if scoped {
+                    "systemd-run"
+                } else {
+                    "podman fixture"
+                }
+            );
+            let mut expected: Vec<std::ffi::OsString> = if scoped {
+                [
+                    "--user",
+                    "--scope",
+                    "--quiet",
+                    "--collect",
+                    "--",
+                    "podman fixture",
+                ]
+                .into_iter()
+                .map(Into::into)
+                .collect()
+            } else {
+                Vec::new()
+            };
+            expected.extend(args.iter().map(Into::into));
+            assert_eq!(command.as_std().get_args().collect::<Vec<_>>(), expected);
+        }
+        if before.as_ref().is_some_and(|id| !id.is_empty()) {
+            // R5 activation + unavailable manager -> reject, never run /bin/true
+            // directly. This real negative boundary also detects removal of the
+            // scope selection; no working systemd manager is needed for refusal.
+            let output = podman_subcommand("/bin/true", &["start".into()])
+                .env("XDG_RUNTIME_DIR", "/nonexistent/awaken-podman-test-runtime")
+                .env(
+                    "DBUS_SESSION_BUS_ADDRESS",
+                    "unix:path=/nonexistent/awaken-podman-test-bus",
+                )
+                .output()
+                .await;
+            if let Ok(output) = output {
+                assert!(!output.status.success(), "R5 no unsupervised fallback");
+            }
+        }
         let status = podman_command("sh")
             .args([
                 "-c",
@@ -543,7 +593,7 @@ async fn podman_child_does_not_inherit_worker_service_lifetime() {
         assert_eq!(std::env::var_os("INVOCATION_ID"), before, "parent intact");
         return;
     }
-    for invocation in [None, Some("worker-service-invocation")] {
+    for invocation in [None, Some(""), Some("worker-service-invocation")] {
         let mut child = OsCommand::new(std::env::current_exe().unwrap());
         child
             .args([
@@ -620,18 +670,19 @@ async fn cancelled_readiness_probe_reaps_the_actual_cli_child() {
     // The 2s natural exit also bounds a negative-control failure; wait for that
     // cleanup before asserting, rather than orphaning the intentionally broken
     // child. This is CLI cancellation evidence, not physical container shutdown.
-    use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
     for cancellation in ["drop", "timeout"] {
         let temp = tempfile::tempdir().unwrap();
         let binary = temp.path().join("readiness CLI");
         let pid_file = temp.path().join("readiness CLI.pid");
-        std::fs::write(
+        // C4 parallel fork can inherit a just-written script's writable fd,
+        // making exec fail ETXTBSY before C1. Reuse the committed immutable CLI
+        // fixture through a private symlink; $0 keeps the PID barrier private.
+        std::os::unix::fs::symlink(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/podman-cli.sh"),
             &binary,
-            "#!/bin/sh\nprintf '%s' \"$$\" > \"$0.pid\"\nexec sleep 2\n",
         )
         .unwrap();
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         let runtime = PodmanRuntime::with_bin(9000, binary.to_str().unwrap());
         let mut probe = Box::pin(runtime.probe_ready());
         let pid = tokio::time::timeout(Duration::from_secs(5), async {
@@ -1448,8 +1499,8 @@ async fn process_secret_is_forwarded_by_alias_without_entering_podman_argv() {
     // A committed read-only fixture avoids the ETXTBSY race created by
     // writing and executing a temporary script while tests spawn commands
     // concurrently; that race confounds D1 with fixture failure (S3/O4/D2).
-    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/podman-secret-check.sh");
+    let script =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/podman-cli.sh");
 
     let (mut rt, _) = runtime_with(9000, |_| ok(""));
     rt.bin = script.to_string_lossy().into_owned();

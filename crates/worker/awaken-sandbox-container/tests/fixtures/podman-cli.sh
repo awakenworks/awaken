@@ -1,4 +1,10 @@
 #!/bin/sh
+# Immutable CLI fixture. info owns the cancellable readiness PID barrier;
+# exec owns secret alias assertions. Both avoid write/fork/exec ETXTBSY races.
+if [ "${1-}" = info ]; then
+  printf '%s' "$$" > "$0.pid"
+  exec sleep 2
+fi
 case " $* " in *podman-secret*) exit 91;; esac
 [ -z "${TOKEN-}" ] || exit 92
 alias_name=
