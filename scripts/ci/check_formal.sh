@@ -247,6 +247,31 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness environment_image_build_claim_is_exact_non_wrapping_and_blocked_is_inert \
     --harness environment_image_build_mutation_requires_exact_claim_and_admissible_command
   run_kani awaken-session-contract \
+    --harness session_network_intersection_two_by_two_ascii_hosts_partition \
+    --harness session_network_intersection_none_by_none_partition \
+    --harness session_network_intersection_none_by_unrestricted_partition \
+    --harness session_network_intersection_none_by_empty_partition \
+    --harness session_network_intersection_none_by_one_ascii_host_partition \
+    --harness session_network_intersection_none_by_two_ascii_hosts_partition \
+    --harness session_network_intersection_unrestricted_by_none_partition \
+    --harness session_network_intersection_unrestricted_by_unrestricted_partition \
+    --harness session_network_intersection_unrestricted_by_empty_partition \
+    --harness session_network_intersection_unrestricted_by_one_ascii_host_partition \
+    --harness session_network_intersection_unrestricted_by_two_ascii_hosts_partition \
+    --harness session_network_intersection_empty_by_none_partition \
+    --harness session_network_intersection_empty_by_unrestricted_partition \
+    --harness session_network_intersection_empty_by_empty_partition \
+    --harness session_network_intersection_empty_by_one_ascii_host_partition \
+    --harness session_network_intersection_empty_by_two_ascii_hosts_partition \
+    --harness session_network_intersection_one_ascii_host_by_none_partition \
+    --harness session_network_intersection_one_ascii_host_by_unrestricted_partition \
+    --harness session_network_intersection_one_ascii_host_by_empty_partition \
+    --harness session_network_intersection_one_ascii_host_by_one_ascii_host_partition \
+    --harness session_network_intersection_one_ascii_host_by_two_ascii_hosts_partition \
+    --harness session_network_intersection_two_ascii_hosts_by_none_partition \
+    --harness session_network_intersection_two_ascii_hosts_by_unrestricted_partition \
+    --harness session_network_intersection_two_ascii_hosts_by_empty_partition \
+    --harness session_network_intersection_two_ascii_hosts_by_one_ascii_host_partition \
     --harness session_network_normalization_none_partition \
     --harness session_network_normalization_unrestricted_partition \
     --harness session_network_normalization_empty_partition \

@@ -105,7 +105,6 @@ fn check_normalization(kind: u8, length: u8, bytes: [u8; 2]) {
     );
 }
 
-#[cfg(test)]
 fn check_intersection(left: (u8, u8, [u8; 2]), right: (u8, u8, [u8; 2])) {
     // Causes: each policy tag, slot count, byte normalization, duplicates/order
     // and membership in either operand. R4 either None/blank-only set absorbs;
@@ -171,7 +170,7 @@ fn intersection_crosses_tag_order_alias_and_blank_rules() {
     // R1..R6: 159 policies over twelve representative ASCII bytes, crossed with
     // every other policy = 25,281 ordered pairs. Covers NUL vs blank, vertical
     // tab, case-only equality, distinct hosts, duplicates and reversed inputs.
-    // The whole 0..127 intersection domain is not an executed Kani proof.
+    // The Kani partitions below separately exhaust the full one-byte ASCII domain.
     let inputs = cases(&[0, 9, 10, 11, 13, 32, b'A', b'a', b'B', b'b', b'_', 127]);
     assert_eq!(inputs.len(), 159);
     for left in &inputs {
@@ -269,4 +268,293 @@ fn session_network_normalization_two_ascii_hosts_partition() {
     let bytes: [u8; 2] = kani::any();
     kani::assume(bytes[0] < 128 && bytes[1] < 128);
     check_normalization(2, 2, bytes);
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_two_by_two_ascii_hosts_partition() {
+    // I44 -> R2/R3/R6: all four occupied bytes vary independently across ASCII.
+    // Both inputs include blanks, case aliases, duplicates and either order;
+    // their real normalized collection intersection must equal bitmap AND.
+    // Fixed slot counts preserve the input domain without assuming canonical
+    // inputs or bypassing String/Vec sorting, binary search, filtering or Drop.
+    let left: [u8; 2] = kani::any();
+    let right: [u8; 2] = kani::any();
+    kani::assume(left[0] < 128 && left[1] < 128);
+    kani::assume(right[0] < 128 && right[1] < 128);
+    check_intersection((2, 2, left), (2, 2, right));
+}
+
+// I00..I44 cross P0..P4 on the left and right. Their disjoint raw-policy
+// domains contain (1 + 1 + 1 + 128 + 128^2)^2 = 272,745,225 ordered pairs.
+// I44 above owns the largest partition; the 24 rows below complete the union.
+// All rows execute the same owned production composition and R1..R6 oracle.
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_none_by_none_partition() {
+    // I00 -> R1..R6: left none, right none; exact bitmap meet.
+    let left = [0, 0];
+    let right = [0, 0];
+    check_intersection((0, 0, left), (0, 0, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_none_by_unrestricted_partition() {
+    // I01 -> R1..R6: left none, right unrestricted; exact bitmap meet.
+    let left = [0, 0];
+    let right = [0, 0];
+    check_intersection((0, 0, left), (1, 0, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_none_by_empty_partition() {
+    // I02 -> R1..R6: left none, right empty; exact bitmap meet.
+    let left = [0, 0];
+    let right = [0, 0];
+    check_intersection((0, 0, left), (2, 0, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_none_by_one_ascii_host_partition() {
+    // I03 -> R1..R6: left none, right one_ascii_host; exact bitmap meet.
+    let left = [0, 0];
+    let right_byte: u8 = kani::any();
+    kani::assume(right_byte < 128);
+    let right = [right_byte, 0];
+    check_intersection((0, 0, left), (2, 1, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_none_by_two_ascii_hosts_partition() {
+    // I04 -> R1..R6: left none, right two_ascii_hosts; exact bitmap meet.
+    let left = [0, 0];
+    let right: [u8; 2] = kani::any();
+    kani::assume(right[0] < 128 && right[1] < 128);
+    check_intersection((0, 0, left), (2, 2, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_unrestricted_by_none_partition() {
+    // I10 -> R1..R6: left unrestricted, right none; exact bitmap meet.
+    let left = [0, 0];
+    let right = [0, 0];
+    check_intersection((1, 0, left), (0, 0, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_unrestricted_by_unrestricted_partition() {
+    // I11 -> R1..R6: left unrestricted, right unrestricted; exact bitmap meet.
+    let left = [0, 0];
+    let right = [0, 0];
+    check_intersection((1, 0, left), (1, 0, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_unrestricted_by_empty_partition() {
+    // I12 -> R1..R6: left unrestricted, right empty; exact bitmap meet.
+    let left = [0, 0];
+    let right = [0, 0];
+    check_intersection((1, 0, left), (2, 0, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_unrestricted_by_one_ascii_host_partition() {
+    // I13 -> R1..R6: left unrestricted, right one_ascii_host; exact bitmap meet.
+    let left = [0, 0];
+    let right_byte: u8 = kani::any();
+    kani::assume(right_byte < 128);
+    let right = [right_byte, 0];
+    check_intersection((1, 0, left), (2, 1, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_unrestricted_by_two_ascii_hosts_partition() {
+    // I14 -> R1..R6: left unrestricted, right two_ascii_hosts; exact bitmap meet.
+    let left = [0, 0];
+    let right: [u8; 2] = kani::any();
+    kani::assume(right[0] < 128 && right[1] < 128);
+    check_intersection((1, 0, left), (2, 2, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_empty_by_none_partition() {
+    // I20 -> R1..R6: left empty, right none; exact bitmap meet.
+    let left = [0, 0];
+    let right = [0, 0];
+    check_intersection((2, 0, left), (0, 0, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_empty_by_unrestricted_partition() {
+    // I21 -> R1..R6: left empty, right unrestricted; exact bitmap meet.
+    let left = [0, 0];
+    let right = [0, 0];
+    check_intersection((2, 0, left), (1, 0, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_empty_by_empty_partition() {
+    // I22 -> R1..R6: left empty, right empty; exact bitmap meet.
+    let left = [0, 0];
+    let right = [0, 0];
+    check_intersection((2, 0, left), (2, 0, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_empty_by_one_ascii_host_partition() {
+    // I23 -> R1..R6: left empty, right one_ascii_host; exact bitmap meet.
+    let left = [0, 0];
+    let right_byte: u8 = kani::any();
+    kani::assume(right_byte < 128);
+    let right = [right_byte, 0];
+    check_intersection((2, 0, left), (2, 1, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_empty_by_two_ascii_hosts_partition() {
+    // I24 -> R1..R6: left empty, right two_ascii_hosts; exact bitmap meet.
+    let left = [0, 0];
+    let right: [u8; 2] = kani::any();
+    kani::assume(right[0] < 128 && right[1] < 128);
+    check_intersection((2, 0, left), (2, 2, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_one_ascii_host_by_none_partition() {
+    // I30 -> R1..R6: left one_ascii_host, right none; exact bitmap meet.
+    let left_byte: u8 = kani::any();
+    kani::assume(left_byte < 128);
+    let left = [left_byte, 0];
+    let right = [0, 0];
+    check_intersection((2, 1, left), (0, 0, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_one_ascii_host_by_unrestricted_partition() {
+    // I31 -> R1..R6: left one_ascii_host, right unrestricted; exact bitmap meet.
+    let left_byte: u8 = kani::any();
+    kani::assume(left_byte < 128);
+    let left = [left_byte, 0];
+    let right = [0, 0];
+    check_intersection((2, 1, left), (1, 0, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_one_ascii_host_by_empty_partition() {
+    // I32 -> R1..R6: left one_ascii_host, right empty; exact bitmap meet.
+    let left_byte: u8 = kani::any();
+    kani::assume(left_byte < 128);
+    let left = [left_byte, 0];
+    let right = [0, 0];
+    check_intersection((2, 1, left), (2, 0, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_one_ascii_host_by_one_ascii_host_partition() {
+    // I33 -> R1..R6: left one_ascii_host, right one_ascii_host; exact bitmap meet.
+    let left_byte: u8 = kani::any();
+    kani::assume(left_byte < 128);
+    let left = [left_byte, 0];
+    let right_byte: u8 = kani::any();
+    kani::assume(right_byte < 128);
+    let right = [right_byte, 0];
+    check_intersection((2, 1, left), (2, 1, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_one_ascii_host_by_two_ascii_hosts_partition() {
+    // I34 -> R1..R6: left one_ascii_host, right two_ascii_hosts; exact bitmap meet.
+    let left_byte: u8 = kani::any();
+    kani::assume(left_byte < 128);
+    let left = [left_byte, 0];
+    let right: [u8; 2] = kani::any();
+    kani::assume(right[0] < 128 && right[1] < 128);
+    check_intersection((2, 1, left), (2, 2, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_two_ascii_hosts_by_none_partition() {
+    // I40 -> R1..R6: left two_ascii_hosts, right none; exact bitmap meet.
+    let left: [u8; 2] = kani::any();
+    kani::assume(left[0] < 128 && left[1] < 128);
+    let right = [0, 0];
+    check_intersection((2, 2, left), (0, 0, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_two_ascii_hosts_by_unrestricted_partition() {
+    // I41 -> R1..R6: left two_ascii_hosts, right unrestricted; exact bitmap meet.
+    let left: [u8; 2] = kani::any();
+    kani::assume(left[0] < 128 && left[1] < 128);
+    let right = [0, 0];
+    check_intersection((2, 2, left), (1, 0, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_two_ascii_hosts_by_empty_partition() {
+    // I42 -> R1..R6: left two_ascii_hosts, right empty; exact bitmap meet.
+    let left: [u8; 2] = kani::any();
+    kani::assume(left[0] < 128 && left[1] < 128);
+    let right = [0, 0];
+    check_intersection((2, 2, left), (2, 0, right));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(3)]
+fn session_network_intersection_two_ascii_hosts_by_one_ascii_host_partition() {
+    // I43 -> R1..R6: left two_ascii_hosts, right one_ascii_host; exact bitmap meet.
+    let left: [u8; 2] = kani::any();
+    kani::assume(left[0] < 128 && left[1] < 128);
+    let right_byte: u8 = kani::any();
+    kani::assume(right_byte < 128);
+    let right = [right_byte, 0];
+    check_intersection((2, 2, left), (2, 1, right));
 }

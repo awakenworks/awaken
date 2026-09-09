@@ -602,8 +602,15 @@ type checking are valuable executable evidence, but are not formal proofs.
   extend collection coverage to 257 hosts using the same bitmap oracle.
   Collecting before blank filtering preserves input length through sorting;
   blank-heavy inputs use more temporary slots than early filtering.
-  Intersection composition, arbitrary String/Vec refinement, DNS and provider
-  enforcement remain unproved; the whole obligation retains its abstract grade.
+  Twenty-five disjoint Kani partitions also prove the actual intersection
+  composition for all 272,745,225 ordered pairs in that same raw-policy domain.
+  Both real normalizations, binary search, filtering and owned Drop remain
+  enabled. The oracle checks exact bitmap content, strict ordering, uniqueness
+  and enum representation; independent parameter audits check partition coverage.
+  Actual no-fold, no-dedup and widening Kani mutants violate the intended
+  semantic assertions. This qualifies the bounded production-kernel grade;
+  empty-string host inputs, multi-byte strings, longer vectors, universal Rust
+  refinement, persistence, DNS and provider enforcement remain outside it.
 
 ## Credential effect and MCP delivery evidence
 
