@@ -164,6 +164,16 @@ adds the explicit pre-dispatch case. Mapping decision tables, real HTTP replies
 and generation-drain traces exercise this adapter boundary, not remote provider
 termination, arbitrary custom transports, or whole-system crash refinement.
 
+Returned durable-task coordinates are validated after creation through
+`ToolTaskHandle::validate_created`, reusing the same shape validator as input
+validation but mapping failure to `Indeterminate`. Runtime applies this before
+its monotonic uncertainty veto; ordinary adapter-return errors cannot disguise
+a possibly live task whose handle was malformed. MCP uses the same returned-
+handle boundary. Prepared tool and Host background-task tests require retained
+uncertainty, no wait/completion success and no repeated start; valid handles and
+pre-dispatch input validation keep their existing behavior. This classification
+does not manufacture a provider termination receipt or clear a Dispatch slot.
+
 Direct and durable delegated child Runs share the existing owned task boundary,
 so a durable Worker is not recursively polled on its parent's stack. Dropping
 the owner requests abort of that exact child task, never detachment; abort still
