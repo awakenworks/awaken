@@ -167,19 +167,23 @@ TerminalFrameClearsPending ==
     phase \in {"running", "error"} => pending = {} /\ resolving = {}
 ErrorProjectionHasEvidence == phase = "error" => lastError # NoError
 \* C1 aggregate authority; C2 committed event phase; C3 pending/resolving.
-\* Presentation of an error does not release any admission authority.
-CanSend == aggregate = "idle" /\ phase \in {"unknown", "idle", "error"}
-           /\ pending = {} /\ resolving = {}
+\* This is only the client-presented send gate. Server admission separately
+\* retains a follow-up behind an already accepted reply and leaves it queued
+\* until the durable selector processes that reply.
+ClientPresentedCanSend ==
+    aggregate = "idle" /\ phase \in {"unknown", "idle", "error"}
+    /\ pending = {} /\ resolving = {}
 PresentedPhase == IF aggregate = "terminated" THEN "terminated"
                   ELSE IF phase = "error" THEN "error"
                   ELSE IF phase = "running" THEN "running"
                   ELSE IF aggregate \in {"running", "rescheduling"} THEN aggregate
                   ELSE IF aggregate = "idle" THEN "idle" ELSE "unknown"
-AcceptedReplyBlocksFollowupUntilProcessed == resolving # {} => ~CanSend
-ActiveAggregateNeverAdmits == aggregate # "idle" => ~CanSend
+AcceptedReplyBlocksClientPresentedSendUntilProcessed ==
+    resolving # {} => ~ClientPresentedCanSend
+ActiveAggregateNeverPresentsSend == aggregate # "idle" => ~ClientPresentedCanSend
 ErrorIsVisibleWithoutRelease ==
     (phase = "error" /\ aggregate \in {"running", "rescheduling"})
-        => (PresentedPhase = "error" /\ ~CanSend)
+        => (PresentedPhase = "error" /\ ~ClientPresentedCanSend)
 ProjectionNeverInventsSourcePrefix == projectedVersion <= sourceVersion
 SuccessfulRefreshReachesObservedSourcePrefix ==
     refreshSucceeded => projectedVersion = sourceVersion
@@ -195,8 +199,8 @@ Safety ==
     /\ PendingAndResolvingAreDisjoint
     /\ TerminalFrameClearsPending
     /\ ErrorProjectionHasEvidence
-    /\ AcceptedReplyBlocksFollowupUntilProcessed
-    /\ ActiveAggregateNeverAdmits
+    /\ AcceptedReplyBlocksClientPresentedSendUntilProcessed
+    /\ ActiveAggregateNeverPresentsSend
     /\ ErrorIsVisibleWithoutRelease
     /\ ProjectionNeverInventsSourcePrefix
     /\ SuccessfulRefreshReachesObservedSourcePrefix

@@ -106,23 +106,11 @@ impl SessionDeleteCommand {
             requested_at_unix_s,
         }
     }
-
     #[cfg(test)]
     pub(crate) fn at_for_test(session_id: &str, requested_at_unix_s: i64) -> Self {
         Self {
             session_id: session_id.into(),
             requested_at_unix_s,
-        }
-    }
-
-    fn lifecycle_fact(&self, owner_scope: &str) -> ManagedLifecycleFact {
-        ManagedLifecycleFact {
-            id: format!("session:{}:deleted", self.session_id),
-            object_id: self.session_id.clone(),
-            workspace_id: Some(owner_scope.to_string()),
-            event_type: "session.deleted".into(),
-            timestamp: self.requested_at_unix_s,
-            runtime_interval: None,
         }
     }
 }
@@ -672,13 +660,16 @@ impl SessionApplication {
             // it before the pending-batch gate makes a hidden durable replay
             // absorbing without duplicating disposition interpretation here;
             // a rejected first request mutates only this detached candidate.
-            if !session.request_delete() {
+            let Some(delete_fact) = session
+                .request_delete(&owner_scope, command.requested_at_unix_s)
+                .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?
+            else {
                 return Ok(SessionDispositionMutation {
                     owner_scope,
                     session,
                     transitioned: false,
                 });
-            }
+            };
             if session.has_incomplete_event_batches() {
                 self.wake_lifecycle_supervisor();
                 return Err(pending_event_batch_error());
@@ -688,7 +679,7 @@ impl SessionApplication {
                 .map(|interval| runtime_interval_fact(&owner_scope, session_id, interval))
                 .into_iter()
                 .collect::<Vec<_>>();
-            facts.push(command.lifecycle_fact(&owner_scope));
+            facts.push(delete_fact);
             match self
                 .commit_session_snapshot_with_outcome(&owner_scope, session, "delete-intent", facts)
                 .await

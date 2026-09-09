@@ -236,10 +236,15 @@ mod tests {
 
         let mut foreign_completed = active.clone();
         foreign_completed.session_id = "foreign-publish-archive".into();
-        assert!(
-            foreign_completed.request_delete(),
-            "A2 foreign setup hidden"
+        let foreign_before = foreign_completed.clone();
+        assert_eq!(
+            foreign_completed
+                .request_delete("workspace", 0)
+                .unwrap_err(),
+            crate::SessionCleanupError::OperationMismatch,
+            "A2 foreign cleanup identity rejects Delete before mutation"
         );
+        assert_eq!(foreign_completed, foreign_before, "A2 fail-closed stutter");
         assert!(
             foreign_completed.verified_terminal_cleanup().is_err(),
             "A2 foreign sidecar cannot bind the rewritten outer Session"

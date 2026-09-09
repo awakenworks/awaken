@@ -3030,12 +3030,47 @@ async fn retained_unprocessed_tool_reply_queues_a_followup_user_message() {
         )
         .await
         .expect("AR2 retained reply admits a queued follow-up");
+    assert_eq!(
+        followup.drive,
+        ValidatedEventBatchDrive::LifecycleQueue,
+        "AR2/E2 retained resolving reply selects the existing durable queue"
+    );
     assert!(
         matches!(
             followup.inputs.as_slice(),
             [SessionEventInput::UserMessage { .. }]
         ),
         "AR2/E2"
+    );
+    let retained = state
+        .application
+        .session(&session_id)
+        .await
+        .expect("AR3 retained Session root");
+    let reply_batch = retained
+        .event_batches
+        .iter()
+        .find(|batch| {
+            batch
+                .events
+                .iter()
+                .any(|entry| matches!(entry.event, SessionEventCommand::ToolReply { .. }))
+        })
+        .expect("AR3 retained reply batch");
+    persist_batch_projection_anchors(&state, &session_id, &reply_batch.batch_id, &[1]).await;
+    let ready = state
+        .validate_event_batch(
+            &session_id,
+            &[InboundEvent::UserMessage {
+                content: vec![ContentBlock::text("continue after processed approval")],
+            }],
+        )
+        .await
+        .expect("AR3 processed reply admits ready follow-up");
+    assert_eq!(
+        ready.drive,
+        ValidatedEventBatchDrive::PreferredBatch,
+        "AR3 processed reply preserves request-local ready path"
     );
 }
 
