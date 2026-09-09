@@ -12,6 +12,15 @@ import { createTlsIdentityFixture } from './tls_identity_fixture.mjs';
 import { startTlsProxy, stopTlsProxy } from './tls_proxy_fixture.mjs';
 import { workdirWorkerManifestFixture } from './worker_manifest_fixture.mjs';
 
+// The registry retains historical incarnations. Observe its current projection
+// with the same max-generation rule as worker-registry codec::current_workers_query;
+// neither expired history nor insertion order selects the active registration.
+export const CURRENT_WORKER_ROWS_QUERY = `SELECT worker_id, incarnation_id, generation,
+  state, expires_at_ms, manifest_json, credential_observations_json, observation_sequence
+  FROM worker_registry_worker AS current
+  WHERE generation = (SELECT MAX(generation) FROM worker_registry_worker AS history
+    WHERE history.worker_id = current.worker_id) ORDER BY worker_id`;
+
 // This fixture owns only the split-process deployment of the EXISTING resource
 // oracle. Control creates the WorkerLocal source through normal startup, then
 // runs with acp_clis=[]; the production Worker artifact is the only ACP claimer.
@@ -109,9 +118,7 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
   const logs = () => supervised && fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : output;
   const registry = registryPath ?? path.join(temp, 'data', 'worker-registry.db');
   const rows = readRegistry ?? (() => sqliteRows(registry,
-    `SELECT worker_id, incarnation_id, generation, state, expires_at_ms,
-      manifest_json, credential_observations_json, observation_sequence
-     FROM worker_registry_worker`));
+    CURRENT_WORKER_ROWS_QUERY));
   const current = () => rows().find((row) => row.worker_id === workerId);
   const publish = (value) => {
     // One atomic replacement in the protected fixture directory. Never expose
