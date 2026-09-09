@@ -141,7 +141,8 @@
       "Environment installation observations retain the actual slot receipt revision/digest, cached binding, and installation Result across independent Hosts. Digests erase aggregate payload contents; this is executed Dispatch-entry trace checking, not universal async refinement or provider-side recovery proof.",
       "Maintenance observations retain actual ownership/topology/timer settings, port begin/return ordering, ordinary claim attempts, and shutdown Pending/release/join events. Empty-memory-store effects, Tokio task/waker internals and physical termination are not projected; returning injected I/O is an explicit premise, not a proof of universal async fairness. The existing session-observations container includes this Coordinator domain without introducing a second trace pipeline.",
       "Deletion observations retain exact serialized root, cleanup operation and pending outbox bytes for retry-frame equality; phase/effect/revision and the pending deleted-fact count are projected from those durable reads. Actual returned owner/root are retained and compared to durable truth; typed absence must expose owner-scoped retained tombstone revision/admissions through the existing repository port. SessionDeletion separately retains the historical committed fact count and models acknowledgement, so pending delivery is never confused with whether the fact was committed. Archived cleanup uses the same kernel before DELETE; the finite executed traces do not prove arbitrary SQL schedules, hash correctness, or provider internals.",
-      "Event-batch retry observations retain the actual SQLite root/outbox before and after recovery failure, returned full wire receipt or typed error, Runtime snapshot-read count, and the canonical complete cache-content/publication comparison. Another actual root append/close occurs while the original Runtime read is paused; pre-winner I/O is expected. Fingerprints remain opaque production hashes and the five controlled schedules do not prove arbitrary SQL/async executions or hash collision resistance."
+      "Event-batch retry observations retain the actual SQLite root/outbox before and after recovery failure, returned full wire receipt or typed error, Runtime snapshot-read count, and the canonical complete cache-content/publication comparison. Another actual root append/close occurs while the original Runtime read is paused; pre-winner I/O is expected. Fingerprints remain opaque production hashes and the five controlled schedules do not prove arbitrary SQL/async executions or hash collision resistance.",
+      "Realization capacity observations retain actual scheduler allocation identity, available permits, owned reservation count, transport entry/destruction and ordered controlled-poll cuts for one request/completion per rule at capacity eight. Separate actual Host observations retain eight original mutex allocation identities and full retained lease bytes across synchronous admission close and pending/cancelled cleanup while sixteen requests progress. They erase Tokio internal queue/waker state and arbitrary schedules; the phase-driver owner abstraction is not used as the request/completion permit refinement mapping."
     ],
     "families": {
       "root": {
@@ -248,6 +249,13 @@
           "SessionCleanupKernel"
         ]
       },
+      "realization-capacity": {
+        "model": "SessionRealizationMutex",
+        "config": "SessionRealizationRenewal",
+        "operator": "ReconciliationCapacityObservation",
+        "arguments": ["observation"],
+        "dependencies": []
+      },
       "event-batch-retry": {
         "model": "ToolResultProtocol",
         "config": "ToolResultProtocol",
@@ -259,6 +267,16 @@
       }
     },
     "required_scenarios": {
+      "realization-capacity-cancellation": {
+        "family": "realization-capacity",
+        "source": "crates/server/awaken-session-executor/src/application/realization_control_deadline/composition_tests.rs",
+        "rules": ["ok", "error", "deadline", "cancel-request", "cancel-queued-request", "cancel-queued-completion", "cancel-held-completion"]
+      },
+      "realization-capacity-mutex": {
+        "family": "realization-capacity",
+        "source": "crates/server/awaken-session-executor/src/host/tests.rs",
+        "rules": ["finish-wait", "cancel-wait", "cancel-joined"]
+      },
       "binding-apply": {
         "family": "root",
         "source": "crates/server/awaken-session-application/src/tests/authority.rs",

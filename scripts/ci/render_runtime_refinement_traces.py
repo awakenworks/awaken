@@ -368,7 +368,37 @@ def project_realization_trace(events: list[dict[str, Any]]) -> list[dict[str, An
 def validate_observation_rule(name: str, step: dict[str, Any]) -> None:
     """Bind partition labels to raw measured conditions; model owns outcomes."""
     rule = step["rule"]
-    if name == "environment-projection-convergence":
+    if name == "realization-capacity-cancellation":
+        state = {"sequence": "uint", "scheduler": "text", "event": "text",
+            "request": ("none", "queued", "held", "done"),
+            "completion": ("none", "queued", "held", "done"),
+            "available": "uint", "reserved": "uint", "active": "bool"}
+        validate_observation_schema(step, {"rule": "text", "observation": {
+            "kind": ("adapter",), "capacity": "uint", "trace": [state]}}, name)
+        events = ["initial", "queue-request", "wait-queued"]
+        if rule == "cancel-queued-request":
+            events += [rule]
+        else:
+            events += ["admit-request"]
+            if rule == "cancel-request":
+                events += [rule]
+            else:
+                events += ["deadline" if rule == "deadline" else "return", "queue-completion"]
+                if rule == "cancel-queued-completion":
+                    events += [rule]
+                else:
+                    events += ["admit-completion", "cancel-held-completion" if rule == "cancel-held-completion" else "finish"]
+        events += ["final"]
+        if [s["event"] for s in step["observation"]["trace"]] != events:
+            raise ValueError("capacity observation rule conditions drift")
+    elif name == "realization-capacity-mutex":
+        frame = {"session": "text", "identity": "text", "lease": "text", "closed":"bool", "locked": "bool"}
+        validate_observation_schema(step, {"rule":"text", "observation": {
+            "kind": ("mutex",), "before":[frame], "after":[frame], "pending":"bool",
+            "entered":"uint", "peak":"uint", "capacity":"uint"}}, name)
+        if step["observation"]["pending"] != (rule != "cancel-joined"):
+            raise ValueError("capacity mutex wait rule conditions drift")
+    elif name == "environment-projection-convergence":
         snapshot = {"revision": "uint", "fingerprint": "text", "binding": "text"}
         state = {"exists": "bool", **snapshot}
         validate_observation_schema(step, {"rule": "text", "before": state, "incoming": snapshot, "after": state, "admitted": "bool"}, name)
