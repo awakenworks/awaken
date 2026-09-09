@@ -615,19 +615,18 @@ impl ManagedState {
         // this best-effort drive considers only reply/interrupt commands in the
         // just-admitted batch. It cannot race an older DefineOutcome and block
         // this request behind that Outcome's external execution.
-        if drive == ValidatedEventBatchDrive::PreferredBatch {
-            if let Err(error) = self
+        if drive == ValidatedEventBatchDrive::PreferredBatch
+            && let Err(error) = self
                 .application
                 .drive_session_event_batches(session_id, Some(&accepted.batch_id))
                 .await
-            {
-                tracing::warn!(
-                    %session_id,
-                    batch_id = %accepted.batch_id,
-                    %error,
-                    "accepted Session Event batch remains queued for lifecycle recovery"
-                );
-            }
+        {
+            tracing::warn!(
+                %session_id,
+                batch_id = %accepted.batch_id,
+                %error,
+                "accepted Session Event batch remains queued for lifecycle recovery"
+            );
         }
         let persisted = self
             .application
