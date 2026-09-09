@@ -154,6 +154,7 @@ def check_stop_evidence_model_mutants(tlc_jar: Path) -> None:
     # a foreign complete assertion at the application's exact-subject boundary.
     # Complete assertion delivery and Dispatch application are separate actions
     # so response loss/reobservation and intervening successor admission coexist.
+    # R8 completed model/tool/local work cannot omit a still-active phase hook.
     # Positive witnesses additionally require partial, complete, historical and
     # terminal-with-outstanding-work states so "always block" cannot pass.
     source = (ROOT / "formal/tla/SessionRunStopEvidence.tla").read_text()
@@ -172,6 +173,8 @@ def check_stop_evidence_model_mutants(tlc_jar: Path) -> None:
          r"    /\ \E old \in issuedAttempts: CompleteEvidence(old)", "CompleteReceiptIsSound"),
         (r"    /\ attempt \in completeReceipts",
          r"    /\ completeReceipts # {}", "AggregateRetirementRequiresAllReceipts"),
+        (r"    /\ CompleteEvidence(attempt)",
+         r"    /\ Members(attempt) \ {Hook(attempt)} \subseteq returnedParticipants", "CompleteReceiptIsSound"),
     ]
     mutations = []
     for anchor, broken, oracle in changes:
@@ -180,12 +183,16 @@ def check_stop_evidence_model_mutants(tlc_jar: Path) -> None:
         mutations.append((source.replace(anchor, broken), config.replace(
             "INVARIANTS StopEvidenceSafety", f"INVARIANTS {oracle} StopEvidenceSafety"), oracle))
     witnesses = ("NoLocalOnlyStop", "NoRemoteOnlyStop", "NoCompleteEvidenceBeforeClear",
-                 "NoSuccessorWithOldReceipt", "NoTerminalWithOutstandingWork", "NoEmptyOpenDomain")
+                 "NoSuccessorWithOldReceipt", "NoTerminalWithOutstandingWork", "NoEmptyOpenDomain",
+                 "NoHookOnlyOutstanding")
     mutations.extend((source, config.replace("INVARIANTS StopEvidenceSafety",
         f"INVARIANTS StopEvidenceSafety {witness}"), witness) for witness in witnesses)
+    # Four independent participant kinds add stop/delivery interleavings. Keep
+    # the same three epochs, two Workers and semantic oracle; budget the existing
+    # runner explicitly instead of reducing coverage or accepting a timeout.
     check_tlc_model_mutations(tlc_jar, name, source, config, mutations,
-        dependencies=dependencies, heap_mb=1024, timeout_seconds=300)
-    # R7 conditional liveness has a deliberately separate one-epoch slice:
+        dependencies=dependencies, heap_mb=2048, timeout_seconds=300, workers=4)
+    # R9 conditional liveness has a deliberately separate one-epoch slice:
     # fairness only for receipt delivery and exact retirement, not remote stop.
     # Dropping delivery fairness must give a temporal counterexample, never a
     # timeout/parser failure. The three-epoch safety bound above is unchanged.
@@ -198,7 +205,7 @@ def check_stop_evidence_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, name, source, live,
         [(source.replace(anchor, "         TRUE"), live, "temporal:CompletePhysicalStopEventuallyRetires")],
         dependencies=dependencies, heap_mb=1024, timeout_seconds=300)
-    print("Participant stop evidence: 7 safety mutants + 1 fairness mutant killed; 6 positive witnesses reached")
+    print("Participant stop evidence: 8 safety mutants + 1 fairness mutant killed; 7 positive witnesses reached")
 
 
 def check_maintenance_observation_mutants(tlc_jar: Path, trace_dir: Path) -> None:

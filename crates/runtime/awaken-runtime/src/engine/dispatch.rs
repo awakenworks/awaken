@@ -767,7 +767,7 @@ async fn record_fresh_output(
         store.apply(command);
     }
     let (reactions, reminders) =
-        collect_tool_reactions(env, run_id, step, reaction_call, &output, store).await;
+        collect_tool_reactions(env, run_id, step, reaction_call, &output, store, context).await;
     for command in &reactions {
         store.apply(command);
     }
@@ -1265,7 +1265,7 @@ async fn record_recovered_output(
         store.apply(command);
     }
     let (reactions, reminders) =
-        collect_tool_reactions(env, run_id, 0, reaction_call, &output, store).await;
+        collect_tool_reactions(env, run_id, 0, reaction_call, &output, store, context).await;
     for command in &reactions {
         store.apply(command);
     }

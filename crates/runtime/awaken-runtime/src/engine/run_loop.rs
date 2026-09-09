@@ -593,6 +593,7 @@ pub(super) async fn drive(
         // inference and never committed.
         run_phase_hooks(
             env,
+            context,
             run_id,
             step,
             PhaseHookPoint::StepStart,
@@ -604,6 +605,7 @@ pub(super) async fn drive(
         .await;
         run_phase_hooks(
             env,
+            context,
             run_id,
             step,
             PhaseHookPoint::BeforeInference,
@@ -736,6 +738,7 @@ pub(super) async fn drive(
 
         run_phase_hooks(
             env,
+            context,
             run_id,
             step,
             PhaseHookPoint::AfterInference,
@@ -950,6 +953,7 @@ pub(super) async fn drive(
         // StepEnd fires at the boundary between steps that continue the loop.
         run_phase_hooks(
             env,
+            context,
             run_id,
             step,
             PhaseHookPoint::StepEnd,
@@ -976,6 +980,7 @@ pub(super) async fn drive(
 #[allow(clippy::too_many_arguments)]
 async fn run_phase_hooks(
     env: &ResolvedExecutionEnv,
+    context: &RuntimeRunContext,
     run_id: &RunId,
     step: usize,
     point: PhaseHookPoint,
@@ -1003,7 +1008,12 @@ async fn run_phase_hooks(
             step,
             kind: kind.clone(),
         };
-        let reaction = hook.on_phase(&ctx, conversation, store).await;
+        // Hooks can await independent work just like model/tool executors.
+        // Normal return cannot erase a nested veto; drop/unwind cannot ACK it.
+        let reaction = context
+            .physical_quiescence
+            .observe_return(hook.on_phase(&ctx, conversation, store))
+            .await;
         // Apply the reaction's state to the live store before the next hook, so a
         // once-per-run hook that gates on its own run-scoped key sees its own
         // earlier write and replays instead of recomputing (ADR-0055) — the same

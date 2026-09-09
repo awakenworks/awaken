@@ -139,6 +139,18 @@ provider computation or billing stopped. Cancellation retains the physical veto
 even after the local executor returns; it does not permit an exact ACK. Hard
 process loss likewise leaves the physical slot occupied.
 
+All five Native phase-hook points also use the same `AttemptQuiescence`
+return observer as model/tool invocation. Fresh, batch-recovered and resumed
+`AfterTool` reuse their existing reaction collector with the same attempt context; a completed
+tool cannot stand in for an unreturned hook. The five-point return/drop/unwind
+matrix reproduced the missing veto before this wiring change. The existing
+tool-dispatch cancellation branch already retained uncertainty and remains
+unchanged. These are local observer tests, not independent termination receipts:
+normal Hook return cannot prove a detached child or remote operation stopped,
+and process loss still needs complete durable participant enrollment. The
+existing SessionRunStopEvidence composition includes a distinct Hook participant
+and rejects a complete assertion that omits its outstanding receipt.
+
 Targeted crash recovery closes Registry authority through
 `WorkerDirectory::expire_incarnation(identity, now_ms)`, not a read followed by
 unconditional deregistration. The existing registry transaction checks the exact

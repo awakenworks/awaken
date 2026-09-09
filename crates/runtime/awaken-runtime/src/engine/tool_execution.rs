@@ -213,7 +213,7 @@ pub(super) async fn resume_into_messages(
             let output = spill_tool_output(context, run_id, output).await?;
             let call = pending_call(&output);
             let (messages, state) =
-                fold_resume_tool_output(env, run_id, call_id, call, &output, store).await;
+                fold_resume_tool_output(env, run_id, call_id, call, &output, store, context).await;
             Ok((messages, state, Some(output)))
         }
         ResumeResult::Permission(decision) => {
@@ -242,8 +242,16 @@ pub(super) async fn resume_into_messages(
                 )
                 .await?;
                 let output = spill_tool_output(context, run_id, output).await?;
-                let (messages, state) =
-                    fold_resume_tool_output(env, run_id, call_id, Some(call), &output, store).await;
+                let (messages, state) = fold_resume_tool_output(
+                    env,
+                    run_id,
+                    call_id,
+                    Some(call),
+                    &output,
+                    store,
+                    context,
+                )
+                .await;
                 return Ok((messages, state, Some(output)));
             }
             let reason = match decision {
@@ -332,6 +340,7 @@ pub(super) async fn fold_resume_tool_output(
     call: Option<ToolCall>,
     output: &ToolOutput,
     store: &Store,
+    context: &RuntimeRunContext,
 ) -> (Vec<Message>, Vec<StateCommand>) {
     let mut state = output.state.clone();
     let mut messages = vec![tool_result_message_from(
@@ -345,7 +354,7 @@ pub(super) async fn fold_resume_tool_output(
             work.apply(command);
         }
         let (reactions, reminders) =
-            collect_tool_reactions(env, run_id, 0, &call, output, &work).await;
+            collect_tool_reactions(env, run_id, 0, &call, output, &work, context).await;
         state.extend(reactions);
         messages.extend(reminders);
     }
@@ -365,6 +374,7 @@ pub(crate) async fn collect_tool_reactions(
     call: &ToolCall,
     output: &ToolOutput,
     state: &Store,
+    context: &RuntimeRunContext,
 ) -> (Vec<StateCommand>, Vec<Message>) {
     let mut work = state.clone();
     let mut commands: Vec<StateCommand> = Vec::new();
@@ -378,7 +388,12 @@ pub(crate) async fn collect_tool_reactions(
         }),
     };
     for hook in env.hooks_for(PhaseHookPoint::AfterTool) {
-        let reaction = hook.on_phase(&ctx, &[], &work).await;
+        // Fresh and resumed AfterTool share the same participant observer as
+        // every other phase point; a returned tool does not cover this hook.
+        let reaction = context
+            .physical_quiescence
+            .observe_return(hook.on_phase(&ctx, &[], &work))
+            .await;
         for command in &reaction.state {
             work.apply(command);
             commands.push(command.clone());
