@@ -207,6 +207,25 @@ Tokens must be isolated from untrusted Sandbox workloads. The Pod token is not
 a stop receipt, and neither its claims nor the caller's headers prove process
 confinement or termination.
 
+For Pod transport, the authenticated immutable UID also fixes the registration
+incarnation. The process's proposed random nonce is not a second identity:
+registration retries with different nonces lower to that same UID and the
+existing Registry transaction returns the unchanged record, even after expiry
+or closure. Registered requests and provider bindings require that incarnation;
+the Registry continues to allocate and validate its own generation. Signed and
+mTLS process transports keep their existing random-incarnation replacement.
+This distinction prevents registration from reopening the same physical Pod
+between exact Registry expiry and an independent Pod stop request. Historical
+Pod records with another incarnation reject without mutation; deployment must
+create a new Pod UID rather than upgrade the old physical domain in place.
+The selected authenticator is exclusive for this domain; mixing alternative
+registration authorities for the same Worker id is not a supported deployment.
+The HTTP tests cross concurrent nonces, expired/closed retries, name reuse,
+manifest drift and historical identities using the production client and
+Memory/SQLite/PostgreSQL Registry adapters. The existing provider observation
+model also rejects a nonce different from the authenticated Pod; this is not a
+proof of full Dispatch recovery or remote termination.
+
 Dynamic boundary: each request rereads the rotating projected token and obtains
 a fresh TokenReview. Missing/duplicate headers, mismatched Pod UID or Worker
 identity, revoked tokens, API errors and bounded review timeouts fail closed;
