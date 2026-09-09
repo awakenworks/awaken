@@ -10,7 +10,7 @@ RUN apt-get update \
     && chown -R awaken:awaken /var/lib/awaken
 
 ARG BIN=awaken-control
-COPY ${BIN} /usr/local/bin/awaken-control
+COPY --chmod=0755 ${BIN} /usr/local/bin/awaken-control
 
 USER 10001
 WORKDIR /var/lib/awaken
