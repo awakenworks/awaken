@@ -1136,3 +1136,43 @@ issuer in the open self-hosted composition, authorize plaintext transport, or
 claim that ordinary Provider publication reaches an independent Worker. Existing
 hosted issuers/resolvers must migrate the same port as consumers; cryptography
 and deployment remain behind the established delivery interface.
+
+## 2026-09-10 amendment: Repository Git is a Sandbox-only effect
+
+The earlier Repository amendments are superseded where they describe direct
+Worker/Runtime-Host Git or a host-side bundle clone/push adapter. Repository
+identity, config, exact credential access, holder selection, publication
+command, and receipt remain with their existing domain owners; only the
+physical effect boundary changes. Clone, remote observation, and publication
+now execute inside the selected Sandbox. Runtime Host may coordinate the exact
+operation and its short-lived credential channel, but it cannot invoke Git
+against an external Repository or copy a working tree through a host Git
+process.
+
+One derived, non-serializable `CredentialDeliveryPlan` separates carrier,
+network route, and delivered authority. It is not a second access policy and
+does not select a credential. Repository Git always uses the fixed process
+protocol carrier. A self-hosted Workload holder maps to direct egress plus
+upstream plaintext; a hosted Platform holder maps to Egress Gateway plus a
+delegated capability. Worker is not a valid Repository delivery holder. The
+logical Sandbox socket remains the same in both cases, so deployment topology
+changes payload and route without creating ENV/File/Git-specific policy forks.
+
+Credentialed Workdir and legacy Namespace host adapters fail closed. Container
+clone and push publish the typed, target-bound, expiring Git-helper service,
+execute the command through the Sandbox provider, and close the publication
+before returning. The command receives neither username nor password in its
+arguments, origin URL, persisted config, or process-wide environment. Terminal
+publication performs exact branch/commit checks and force-with-lease CAS inside
+the Sandbox. A failed CAS without a typed observed coordinate remains
+retryable/unavailable; the outer layer must not invent permanent rejection
+evidence.
+
+The self-hosted Environment profile therefore selects the canonical Sandbox
+Workload holder for Resource credentials. Cloud continues to select the
+Platform holder and must deploy its Egress Gateway; the Sandbox connects only
+to that mediated Git endpoint and receives no upstream PAT. Static architecture
+fitness rejects reintroduction of host bundle functions, missing Sandbox
+spawn/control-channel use, or credentialed Workdir/Namespace paths. Unit tests
+cover the closed Workload/Platform/Worker delivery table, exact target matching,
+secret-redacted responses, Sandbox command construction, and publication CAS.

@@ -1219,6 +1219,13 @@ mod completion_tests {
                         placement.sandbox.path_fidelity, fidelity_required,
                         "P fidelity: {isolation:?}/{has_repository}/{projected_acp}"
                     );
+                    assert_eq!(
+                        placement.sandbox.control_services.contains(
+                            &awaken_sandbox_container::SandboxControlServiceKind::RepositoryGitCredential
+                        ),
+                        has_repository,
+                        "Repository control service: {isolation:?}/{has_repository}/{projected_acp}"
+                    );
 
                     for path_fidelity in [false, true] {
                         let worker = SandboxCapabilities {
@@ -1233,7 +1240,7 @@ mod completion_tests {
                             resource_limits: true,
                             custom_rootfs: true,
                             package_provisioning: true,
-                            control_services: Default::default(),
+                            control_services: placement.sandbox.control_services.clone(),
                         };
                         assert_eq!(
                             worker.satisfies_requirements(&placement.sandbox),

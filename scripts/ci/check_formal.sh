@@ -542,6 +542,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness named_material_shape_is_exact_and_non_widening \
     --harness mcp_delivery_selection_has_only_the_explicit_pair_classes \
     --harness mcp_delivery_receipt_requires_exact_binding_holder_and_mechanism \
+    --harness credential_effect_repository_git_delivery_never_admits_worker_or_mixes_route_authority \
     --harness worker_reference_revalidation_accepts_only_exact_available_state \
     --harness worker_plaintext_holder_projection_is_exact_and_non_widening
   run_kani awaken-run-executor-acp \

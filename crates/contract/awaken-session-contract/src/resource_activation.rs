@@ -869,8 +869,8 @@ mod tests {
         let credential_binding = credential_revision.map(|_| format!("credential-{id}"));
         let credential = credential_revision.map(|revision| {
             let holder = PlaintextHolder::new(
-                PlaintextBoundary::Worker,
-                "spiffe://example.test/session-resource-worker",
+                PlaintextBoundary::Workload,
+                "spiffe://example.test/session-resource-sandbox",
             );
             Box::new(crate::ResolvedRepositoryCredential {
                 access: CredentialAccess::new(

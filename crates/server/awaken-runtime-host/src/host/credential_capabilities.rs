@@ -117,6 +117,16 @@ impl SharedHost {
             // profile; inference/ACP profiles alone reject an otherwise
             // realizable frozen MCP credential and poison the local dispatch row.
             profiles.push(materializer.worker_relay_capabilities());
+            // Repository credentials are consumed only by the Sandbox Git
+            // helper protocol. This is a separate installed adapter profile,
+            // not a widening of WorkerRelay custody.
+            profiles.push(
+                materializer.realization_capabilities(
+                    awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
+                        .resource_holder,
+                    awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField,
+                ),
+            );
             if self.acp.is_some() {
                 let configured = self
                     .deployment

@@ -365,10 +365,11 @@ Worker, Repository/config version, access mode, expiry, and credential revision;
 only that Platform trust domain materializes plaintext and replaces inbound
 authorization with upstream Git HTTP Basic. Gateway unavailability, expiry,
 revision drift, or checkout failure has no direct-token fallback. An Open
-self-hosted deployment may select the existing explicit `Direct` Repository
-transport, whose Session-owned credential helper materializes the same frozen
-access for one Git operation; transport selection is deployment policy and is
-never inferred from a failed hosted route.
+self-hosted deployment selects the explicit `Direct` Repository transport,
+whose Session-owned credential helper delivers the same frozen access into the
+Sandbox for one Git operation. Clone, observation, and push all run inside that
+Sandbox; Runtime Host has no external Git path. Transport selection is
+deployment policy and is never inferred from a failed hosted route.
 
 An HTTP success for update/archive/delete acknowledges the durable credential
 fence and outbox commit; it is not a claim that every online Session has already
@@ -853,7 +854,7 @@ the same Model/MCP/Repository validation. The published material source remains
 authoritative; deployment composition installs the matching adapter without a
 compatibility conversion or database fallback.
 
-### Dormant Sandbox control transport boundary
+### Sandbox Repository credential transport boundary
 
 The provider-neutral Sandbox control contract exposes one pre-create-known
 logical coordinate,
@@ -868,14 +869,13 @@ downgrade a demanded control service.
 
 This is transport, not a credential holder or activation policy. The provider
 does not choose an access pin, holder, exposure, target, claim, verifier,
-Repository, or Vault revision, and it does not create `GIT_CONFIG*`, a Git
-helper overlay, or an Agent-visible synthetic credential. The current
-Repository access pin remains `Forbidden`. A later Session-owned projection may
-refer to the stable coordinate when it compiles the complete sandbox spec, but
-it must first reuse the existing exact access/holder/material authorities and
-must activate Agent plus Native/Resident-Hand paths from that one projection.
-Transport availability alone authorizes nothing and is not evidence that this
-later activation has landed.
+Repository, or Vault revision. Session Repository activation now refers to this
+stable coordinate, publishes one target-bound expiring handler, and configures
+the existing `awaken-sandbox` Git helper only for the exact clone or publication
+process. Direct self-hosting carries upstream HTTP Basic; hosted execution
+carries only a Gateway capability. In both cases Git network I/O occurs inside
+the Sandbox and the publication is closed when the operation returns. Transport
+availability alone still authorizes nothing.
 
 ## Staging
 

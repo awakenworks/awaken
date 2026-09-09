@@ -175,6 +175,8 @@ pub(crate) struct CredentialMaterializerSupport {
         awaken_runtime_contract::CredentialRealizationCapabilities,
     >,
     pub(crate) worker_relay: awaken_runtime_contract::CredentialRealizationCapabilities,
+    pub(crate) repository_process_protocol:
+        awaken_runtime_contract::CredentialRealizationCapabilities,
 }
 
 impl From<&awaken_credential_materializer::PinnedCredentialMaterializer>
@@ -193,6 +195,11 @@ impl From<&awaken_credential_materializer::PinnedCredentialMaterializer>
                 })
                 .collect(),
             worker_relay: materializer.worker_relay_capabilities(),
+            repository_process_protocol: materializer.realization_capabilities(
+                awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
+                    .resource_holder,
+                awaken_runtime_contract::CredentialRealizationKind::ProcessProtocolField,
+            ),
         }
     }
 }
@@ -268,6 +275,11 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
         .filter(|_| sandbox.supports_secret_egress_without_bypass())
     {
         credential_profiles.push(materializer.worker_relay.clone());
+    }
+    if let Some(materializer) = inputs.credential_materializer.as_ref().filter(|_| {
+        inputs.resource_support == ResourceManifestSupport::SessionWithRepositoryCredentials
+    }) {
+        credential_profiles.push(materializer.repository_process_protocol.clone());
     }
     let credential_realization =
         awaken_runtime_contract::CredentialRealizationCapabilities::alternatives(

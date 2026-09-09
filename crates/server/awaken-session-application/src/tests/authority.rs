@@ -197,8 +197,8 @@ fn repository_retirement_resources(
         .map(|_| format!("{repository_id}:credential"));
     let credential = credential.map(|credential| {
         let holder = awaken_credential_contract::PlaintextHolder::new(
-            awaken_credential_contract::PlaintextBoundary::Worker,
-            "spiffe://awaken.test/worker",
+            awaken_credential_contract::PlaintextBoundary::Workload,
+            "spiffe://awaken.test/sandbox",
         );
         Box::new(awaken_session_contract::ResolvedRepositoryCredential {
             access: awaken_credential_contract::CredentialAccess::new(

@@ -1779,12 +1779,9 @@ impl crate::ManagedHost {
                             })?;
                         match pin.selected_plaintext_holder.boundary {
                             awaken_runtime_contract::PlaintextBoundary::Worker => {
-                                if !matches!(transport, awaken_resource_contract::RepositoryTransport::Direct) {
-                                    return Err(RunError::bad_request(format!(
-                                        "repository `{repository_id}` Worker credential cannot use a mediated transport"
-                                    )));
-                                }
-                                (config.remote_url.clone(), Some(pin.as_ref().clone()))
+                                return Err(RunError::bad_request(format!(
+                                    "repository `{repository_id}` credential cannot be held by the Runtime Host or Worker"
+                                )));
                             }
                             awaken_runtime_contract::PlaintextBoundary::Platform => match transport {
                                 awaken_resource_contract::RepositoryTransport::GatewayMediated {
@@ -1798,9 +1795,12 @@ impl crate::ManagedHost {
                                 }
                             },
                             awaken_runtime_contract::PlaintextBoundary::Workload => {
-                                return Err(RunError::bad_request(format!(
-                                    "repository `{repository_id}` credential requires an unsupported plaintext holder"
-                                )));
+                                if !matches!(transport, awaken_resource_contract::RepositoryTransport::Direct) {
+                                    return Err(RunError::bad_request(format!(
+                                        "repository `{repository_id}` Sandbox credential cannot use a mediated transport"
+                                    )));
+                                }
+                                (config.remote_url.clone(), Some(pin.as_ref().clone()))
                             }
                         }
                     }

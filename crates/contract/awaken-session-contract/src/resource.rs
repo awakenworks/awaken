@@ -118,6 +118,15 @@ impl ResolvedRepositoryCredential {
                 "Repository credential must remain model-invisible".into(),
             ));
         }
+        if awaken_credential_contract::repository_git_credential_delivery(
+            &self.selected_plaintext_holder,
+        )
+        .is_none()
+        {
+            return Err(SessionInputError::InvalidCredentialPin(
+                "Repository credential cannot be held by the Runtime Host or Worker".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -942,8 +951,8 @@ mod tests {
     #[test]
     fn repository_credential_pin_is_bound_to_one_https_origin() {
         let holder = awaken_credential_contract::PlaintextHolder::new(
-            awaken_credential_contract::PlaintextBoundary::Worker,
-            "spiffe://example.test/worker",
+            awaken_credential_contract::PlaintextBoundary::Workload,
+            "spiffe://example.test/sandbox",
         );
         let exact_target =
             repository_transport_credential_target("https://github.com/awaken/first.git")
@@ -1035,6 +1044,23 @@ mod tests {
                 .validate_for_repository("credential-1", "https://github.com/awaken/first.git")
                 .is_err(),
             "P6/E2"
+        );
+
+        let worker = awaken_credential_contract::PlaintextHolder::new(
+            awaken_credential_contract::PlaintextBoundary::Worker,
+            "spiffe://example.test/runtime-host",
+        );
+        let mut host_held = exposed;
+        host_held.access.policy = awaken_credential_contract::CredentialExecutionPolicy::exact(
+            worker.clone(),
+            awaken_credential_contract::ModelExposurePolicy::Forbidden,
+        );
+        host_held.selected_plaintext_holder = worker;
+        assert!(
+            host_held
+                .validate_for_repository("credential-1", "https://github.com/awaken/first.git")
+                .is_err(),
+            "P7 Runtime Host/Worker Git custody is forbidden"
         );
     }
 

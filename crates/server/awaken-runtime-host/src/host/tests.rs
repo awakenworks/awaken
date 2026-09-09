@@ -12996,7 +12996,7 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
 
 /// Repository realization cause graph:
 /// C1 binding/pin cardinality exact -> C2 source id/usage exact -> C3 holder
-/// allowed and model exposure forbidden -> C4 Worker holder exact -> C5 Git
+/// allowed and model exposure forbidden -> C4 Sandbox holder exact -> C5 Git
 /// effect opens the pinned active revision in the exact Workspace -> E1 one
 /// ephemeral operation material reaches the realizer. C1-C4 reject at staging;
 /// C5 rejects at each effect edge. Anonymous input bypasses C2-C5; the first
@@ -13087,7 +13087,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
         Rule {
             id: "H9",
             case: Case::UnsupportedHolder,
-            expected_error: Some("unsupported plaintext holder"),
+            expected_error: Some("Runtime Host or Worker"),
         },
         Rule {
             id: "H10",
@@ -13216,15 +13216,15 @@ async fn repository_credential_realization_follows_the_decision_table() {
                             );
                     }
                     Case::UnsupportedHolder => {
-                        let workload = awaken_runtime_contract::PlaintextHolder::new(
-                            awaken_runtime_contract::PlaintextBoundary::Workload,
-                            awaken_runtime_contract::credential::SELF_HOSTED_ACP_TRUST_DOMAIN,
+                        let worker = awaken_runtime_contract::PlaintextHolder::new(
+                            awaken_runtime_contract::PlaintextBoundary::Worker,
+                            awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
                         );
                         let credential = credential.as_mut().unwrap();
-                        credential.selected_plaintext_holder = workload.clone();
+                        credential.selected_plaintext_holder = worker.clone();
                         credential.access.policy =
                             awaken_runtime_contract::CredentialExecutionPolicy::exact(
-                                workload,
+                                worker,
                                 awaken_runtime_contract::ModelExposurePolicy::Forbidden,
                             );
                     }
