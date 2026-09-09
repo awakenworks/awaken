@@ -138,7 +138,9 @@ self_test() {
     echo "Postgres gate retains the retired RuntimeHost test selector" >&2
     return 1
   fi
-  grep -Fq "cargo test -p awaken-dispatch-http --test active_active_postgres" "$0" || {
+  # P9 immutable Pod registration must exercise the real database rather than
+  # merely compiling a self-skipping test in the no-database workspace gate.
+  grep -Fq "cargo test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http" "$0" || {
     echo "Postgres gate omits the coordinator-owned active/active transport test" >&2
     return 1
   }
@@ -402,7 +404,7 @@ record_failure() {
 # cancellation/checkpoint regressions; a hand-maintained target list can omit
 # new recovery suites and silently exercise them only without PostgreSQL.
 pg_test cargo test -p awaken-dispatch --features test-support || record_failure "$?"
-pg_test cargo test -p awaken-dispatch-http --test active_active_postgres -- --test-threads=1 \
+pg_test cargo test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http -- --test-threads=1 \
   || record_failure "$?"
 pg_test cargo test -p awaken-session-store --features test-support --test session_repo_conformance -- --test-threads=1 \
   || record_failure "$?"
