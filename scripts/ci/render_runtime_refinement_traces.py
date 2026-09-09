@@ -389,9 +389,39 @@ def validate_observation_rule(name: str, step: dict[str, Any]) -> None:
             "terminal": "bool", "phase": ("not_requested", "fenced", "requested", "completed"),
             "effect": "text", "cleanup": "text", "revision": "uint", "facts": "uint",
             "root": "text", "outbox": "text", "owner": "text", "tombstone": "text"}
-        validate_observation_schema(step, {"rule": "text", "kind": ("fence", "retry"),
+        schema = {"rule": "text", "kind": ("fence", "retry"),
             "lostAck": "bool", "result": ("applied", "replayed", "not_found"), "receiptOwner": "text", "receiptRoot": "text",
-            "before": state, "after": state}, name)
+            "before": state, "after": state}
+        is_race = rule.startswith("race-")
+        if ("race" in step) != is_race:
+            raise ValueError("deletion observation rule conditions drift")
+        if is_race:
+            schema["race"] = {"candidateRevision": "uint", "winnerRevision": "uint",
+                "sqliteResult": ("replayed", "conflict"), "winnerTimestamp": "uint",
+                "delayedTimestamp": "uint", "acknowledged": "bool", "tombstoned": "bool"}
+        validate_observation_schema(step, schema, name)
+        if is_race:
+            match = re.fullmatch(r"race-(active|archived-fenced|archived-requested|archived-completed)-(same_snapshot|different_revision|after_ack|after_tombstone)-(111|222)-(fence|retry)", rule)
+            if match is None:
+                raise ValueError("deletion observation rule drift")
+            initial, schedule, timestamp, stage = match.groups()
+            race, before = step["race"], step["before"]
+            initial_phase = "not_requested" if initial == "active" else initial.removeprefix("archived-")
+            tombstone = schedule == "after_tombstone"
+            acknowledged = schedule in {"after_ack", "after_tombstone"}
+            expected_phase = initial_phase if stage == "fence" else "completed" if tombstone else "fenced" if initial == "active" else initial_phase
+            expected_disposition = ("active" if initial == "active" else "archived") if stage == "fence" else "tombstoned" if tombstone else "deleting"
+            expected_facts = 0 if stage == "fence" or acknowledged else 1
+            if (step["lostAck"] or step["kind"] != stage
+                    or before["phase"] != expected_phase or before["disposition"] != expected_disposition
+                    or before["facts"] != expected_facts
+                    or race["winnerRevision"] != race["candidateRevision"] + (2 if schedule == "different_revision" else 1)
+                    or race["sqliteResult"] != ("conflict" if schedule == "different_revision" else "replayed")
+                    or race["winnerTimestamp"] != int(timestamp)
+                    or race["delayedTimestamp"] != (222 if timestamp == "111" else 111)
+                    or race["acknowledged"] != acknowledged or race["tombstoned"] != tombstone):
+                raise ValueError("deletion observation rule conditions drift")
+            return
         match = re.fullmatch(r"(active|archived-fenced|archived-requested|archived-completed)-(false|true)-(fence|first|requested|completed|tombstone)", rule)
         if match is None:
             raise ValueError("deletion observation rule drift")
@@ -471,6 +501,10 @@ def render_observations(trace_dir: Path, output: Path, repository: Path, manifes
             validate_observation_rule(name, step)
         if family == "publication":
             steps = [{key: value for key, value in step.items() if key != "cause"} for step in steps]
+        if family == "deletion":
+            # Like publication causes above, validated scheduling observations
+            # bind the native partition but do not invent model state axes.
+            steps = [{key: value for key, value in step.items() if key != "race"} for step in steps]
         if family == "realization":
             steps = [dict(step, trace=project_realization_trace(step["trace"])) for step in steps]
         expressions = []
