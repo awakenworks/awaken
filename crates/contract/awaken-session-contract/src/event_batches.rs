@@ -13,6 +13,10 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use serde::{Deserialize, Serialize};
 
 const SESSION_EVENT_BATCH_OPERATION_PREFIX: &str = "session-event-batch-v1:";
+
+#[cfg(any(test, kani))]
+mod terminal_resolution_proofs;
+
 const SESSION_ROOT_REVISION_BATCH_PREFIX: &str = "session-root-revision-v1:";
 pub const MAX_SESSION_INITIAL_EVENTS: usize = 50;
 /// Stable retry classification when another Outcome owns the Thread aggregate.

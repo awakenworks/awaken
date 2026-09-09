@@ -371,7 +371,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness session_cleanup_completion_requires_every_identity_axis \
     --harness session_cleanup_phase_advances_only_not_requested_fenced_requested_completed \
     --harness session_delete_request_plan_is_exact_hidden_terminal_and_idempotent \
-    --harness session_tombstone_requires_hidden_disposition_terminal_execution_and_verified_cleanup
+    --harness session_tombstone_requires_hidden_disposition_terminal_execution_and_verified_cleanup \
+    --harness terminal_batch_resolution_empty
   run_kani awaken-session-contract --checked-loop-profile activity-admission-height-v1 \
     --harness activity_next_epoch_inserts_exact_checked_successor \
     --harness activity_exact_epoch_inserts_only_fresh_positive_member \
