@@ -2,16 +2,17 @@
 EXTENDS SessionRunProtocol
 
 \* Participant evidence over the EXISTING composition, not another Dispatch.
-\* Its aggregate external attempt contains three independent participants.
+\* Its aggregate external attempt contains four independent participant kinds.
 \* Provider receipt authenticity and complete participant enrollment before
 \* effects are trusted boundaries, NOT claims about current Native wiring.
 \* In particular this specification does not infer absence from missing data.
-Participants == {"local", "model", "tool"}
+Participants == {"local", "model", "tool", "hook"}
 Attempts == Runs \X Workers \X (1..MaxEpoch)
 Subject(participant) == <<participant[1], participant[2], participant[3]>>
 Members(attempt) ==
     {<<attempt[1], attempt[2], attempt[3], kind>> : kind \in Participants}
 Local(attempt) == <<attempt[1], attempt[2], attempt[3], "local">>
+Hook(attempt) == <<attempt[1], attempt[2], attempt[3], "hook">>
 
 VARIABLES issuedAttempts, activeParticipants, returnedParticipants, closedAttempts,
           completeReceipts
@@ -177,6 +178,12 @@ NoLocalOnlyStop == ~\E a \in externalAttempts:
 NoRemoteOnlyStop == ~\E a \in externalAttempts:
     /\ Members(a) \ {Local(a)} \subseteq returnedParticipants
     /\ Local(a) \in activeParticipants
+\* A local Future drop/unwind is not ParticipantStops. In particular a completed
+\* tool does not terminate its AfterTool work. Runtime's observer tests exercise
+\* that local distinction; this model assumes complete pre-effect enrollment.
+NoHookOnlyOutstanding == ~\E a \in externalAttempts:
+    /\ Members(a) \ {Hook(a)} \subseteq returnedParticipants
+    /\ Hook(a) \in activeParticipants
 NoCompleteEvidenceBeforeClear == ~\E a \in externalAttempts: a \in completeReceipts
 NoSuccessorWithOldReceipt == ~\E old, next \in issuedAttempts:
     /\ old[1] = next[1] /\ old[3] < next[3]
