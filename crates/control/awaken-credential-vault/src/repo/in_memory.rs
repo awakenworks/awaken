@@ -93,15 +93,13 @@ impl CredentialRepo for InMemoryCredentialRepo {
             };
         }
         let current_after = state.rows.get(&intent.after.id.0);
-        let before_matches = if intent.is_distinct_replacement() {
-            current_after.is_none()
-                && intent
-                    .before
-                    .as_ref()
-                    .is_some_and(|before| state.rows.get(&before.id.0) == Some(before))
-        } else {
-            current_after == intent.before.as_ref()
-        };
+        let predecessor = intent.before.as_ref().and_then(|before| {
+            intent
+                .is_distinct_replacement()
+                .then(|| state.rows.get(&before.id.0))
+                .flatten()
+        });
+        let before_matches = intent.publication_preimage_matches(current_after, predecessor);
         if !before_matches {
             return Err(CredentialError::MutationConflict(
                 "credential changed before its material mutation was prepared".into(),
@@ -136,52 +134,26 @@ impl CredentialRepo for InMemoryCredentialRepo {
         &self,
         intent: &CredentialMutationIntent,
     ) -> Result<CredentialMutationIntent, CredentialError> {
-        intent.validate()?;
-        if intent.material_fence.phase != CredentialMaterialMutationPhase::Ready {
-            return Err(CredentialError::MutationConflict(
-                "credential material mutation is not ready to publish".into(),
-            ));
-        }
+        let prepared = intent.prepare_publication()?;
         let mut state = self.state.lock().expect("credential repo");
-        let expected_reclaiming = intent.with_material_reclaiming()?;
-        if state.intents.get(&intent.after.id.0) == Some(&expected_reclaiming)
-            && state.rows.get(&intent.after.id.0) == Some(&intent.after)
-        {
-            return Ok(expected_reclaiming);
-        }
-        if state.intents.get(&intent.after.id.0) != Some(intent) {
-            return Err(CredentialError::MutationConflict(
-                "credential mutation has no matching durable intent".into(),
-            ));
-        }
-        let current_after = state.rows.get(&intent.after.id.0);
-        if intent.is_distinct_replacement() {
-            let before = intent.before.as_ref().ok_or_else(|| {
-                CredentialError::InvalidSource(
-                    "distinct replacement requires an exact predecessor".into(),
-                )
-            })?;
-            if current_after.is_some() || state.rows.get(&before.id.0) != Some(before) {
-                return Err(CredentialError::MutationConflict(
-                    "credential replacement precondition changed during mutation".into(),
-                ));
+        let reclaiming = match prepared.admit(
+            state.intents.get(&intent.after.id.0),
+            state.rows.get(&intent.after.id.0),
+        )? {
+            CredentialPublicationAdmission::Replayed(reclaiming) => return Ok(reclaiming),
+            CredentialPublicationAdmission::Apply(reclaiming) => reclaiming,
+            CredentialPublicationAdmission::NeedsPredecessor(publication) => {
+                let current = state.rows.get(&publication.before().id.0);
+                publication.admit(current)?
             }
-            state
-                .rows
-                .insert(intent.after.id.0.clone(), intent.after.clone());
-        } else if current_after != intent.before.as_ref() {
-            return Err(CredentialError::MutationConflict(
-                "credential revision changed during mutation".into(),
-            ));
-        } else {
-            state
-                .rows
-                .insert(intent.after.id.0.clone(), intent.after.clone());
-        }
+        };
+        state
+            .rows
+            .insert(intent.after.id.0.clone(), intent.after.clone());
         state
             .intents
-            .insert(intent.after.id.0.clone(), expected_reclaiming.clone());
-        Ok(expected_reclaiming)
+            .insert(intent.after.id.0.clone(), reclaiming.clone());
+        Ok(reclaiming)
     }
 
     async fn pending_mutations(&self) -> Result<Vec<CredentialMutationIntent>, CredentialError> {

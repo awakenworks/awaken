@@ -421,6 +421,296 @@ async fn rotation_publication_is_revision_cas_and_idempotent(repo: &dyn Credenti
         "R8"
     );
     assert_eq!(repo.get(&winner.id).await.unwrap(), winner, "R8");
+
+    // R9-R11 are one full-Source decision table, not independent field-level
+    // authorization rules. Cause axes: all thirteen non-key Source fields x
+    // begin / Ready apply / committed replay. Exactly one field changes; the
+    // endpoint case starts provider-scoped so it remains a valid domain row.
+    // Effect: reject the stale complete image, preserving the current Source,
+    // every pending WAL fact and an unrelated Source. Identity is the physical
+    // lookup key and has its absent/wrong-key witness R12 below. The two extra
+    // replacement rows check changed predecessor rejects first publication but
+    // cannot invalidate an exact destination/WAL replay after publication. Repository put
+    // constructs the competing snapshot; this does not claim that an ordinary
+    // rotation command permits changing every tested field at the same version.
+    fn drift(row: &mut CredentialSource, coordinate: u8) {
+        match coordinate {
+            0 => {
+                row.replacement_of = Some(CredentialRef {
+                    id: "cred:ancestor".into(),
+                    revision: 1,
+                })
+            }
+            1 => row.workspace_id.push_str("-other"),
+            2 => row.kind = CredentialKind::Oauth,
+            3 => {
+                use awaken_credential_contract::{
+                    CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose,
+                    CredentialTarget, CredentialTargetContract, CredentialUsage,
+                };
+                row.descriptor = Some(CredentialDescriptor::new(
+                    "github",
+                    CredentialMaterialDescriptor::secret("awaken.secret/v1"),
+                    [CredentialTargetContract::new(
+                        CredentialTarget::new(
+                            CredentialPurpose::RepositoryTransport,
+                            awaken_credential_contract::repository_transport_audience(
+                                "https://github.com/awaken/example.git",
+                            )
+                            .unwrap(),
+                        ),
+                        CredentialUsage::HttpBasicAuth,
+                    )],
+                ));
+            }
+            4 => row.provider_id = Some("other-provider".into()),
+            5 => row.protocol_endpoint_id = Some("other-endpoint".into()),
+            6 => row.env_key = Some("OTHER_KEY".into()),
+            7 => row.material_ref = Some(SecretRef("sec:other-current".into())),
+            8 => {
+                row.auxiliary_material_refs
+                    .insert("other".into(), SecretRef("sec:other-slot".into()));
+            }
+            9 => row.oauth_command = Some(vec!["other-command".into()]),
+            10 => {
+                row.worker_local_binding =
+                    Some(WorkerLocalBinding::new("other-driver", "other-subject"))
+            }
+            11 => row.status = CredentialStatus::Disabled,
+            12 => row.version += 1,
+            _ => unreachable!(),
+        }
+    }
+    let spectator = source("cred:rotation-spectator", "ws");
+    repo.put(spectator.clone()).await.unwrap();
+    for stage in 0..5 {
+        for coordinate in 0..13 {
+            let rule = format!("Source stage {stage} field {coordinate}");
+            let mut before = source(&format!("cred:rotation-drift:{stage}:{coordinate}"), "ws");
+            before.provider_id = (coordinate == 5).then(|| "endpoint-provider".into());
+            before.env_key = None;
+            before.material_ref = Some(SecretRef("sec:old-current".into()));
+            repo.put(before.clone()).await.unwrap();
+            let mut after = before.clone();
+            after.version += 1;
+            after.material_ref = Some(SecretRef("sec:new-current".into()));
+            if stage >= 3 {
+                after.id.0.push_str("-replacement");
+                after.version = 1;
+                after.replacement_of = Some(CredentialRef {
+                    id: before.id.0.clone(),
+                    revision: 1,
+                });
+            }
+            let writing = CredentialMutationIntent::prepare(Some(before.clone()), after).unwrap();
+            let ready = if stage > 0 {
+                assert!(
+                    repo.begin_mutation(writing.clone()).await.unwrap(),
+                    "{rule}"
+                );
+                Some(repo.mark_mutation_ready(&writing).await.unwrap())
+            } else {
+                None
+            };
+            let reclaiming = if stage == 2 || stage == 4 {
+                Some(repo.apply_mutation(ready.as_ref().unwrap()).await.unwrap())
+            } else {
+                None
+            };
+            let original = if stage == 2 { &writing.after } else { &before };
+            let mut changed = original.clone();
+            drift(&mut changed, coordinate);
+            changed
+                .validate_authority()
+                .expect("drift must reach CAS, not validation");
+            assert_ne!(changed, *original, "{rule}");
+            if coordinate != 12 {
+                assert_eq!(changed.version, original.version, "{rule}");
+            }
+            repo.put(changed.clone()).await.unwrap();
+            let pending = repo.pending_mutations().await.unwrap();
+            let rejected = match ready.as_ref() {
+                None => repo.begin_mutation(writing.clone()).await.map(|_| ()),
+                Some(ready) => repo.apply_mutation(ready).await.map(|_| ()),
+            };
+            if stage == 4 {
+                assert!(
+                    rejected.is_ok(),
+                    "replacement replay ignores changed predecessor"
+                );
+            } else {
+                assert!(
+                    matches!(rejected, Err(CredentialError::MutationConflict(_))),
+                    "{rule} full Source CAS"
+                );
+            }
+            if stage == 3 {
+                assert!(
+                    matches!(
+                        repo.get(&writing.after.id).await,
+                        Err(CredentialError::SourceNotFound(_))
+                    ),
+                    "replacement CAS cannot insert destination"
+                );
+            } else if stage == 4 {
+                assert_eq!(
+                    repo.get(&writing.after.id).await.unwrap(),
+                    writing.after,
+                    "replacement replay retains complete published destination"
+                );
+            }
+            assert_eq!(
+                repo.get(&changed.id).await.unwrap(),
+                changed,
+                "{rule} current Source frame"
+            );
+            assert_eq!(
+                repo.pending_mutations().await.unwrap(),
+                pending,
+                "{rule} complete WAL frame"
+            );
+            assert_eq!(
+                repo.get(&spectator.id).await.unwrap(),
+                spectator,
+                "{rule} spectator frame"
+            );
+            // Restore the constructed competing snapshot to retire only this
+            // case's exact WAL through the production abort/completion port.
+            repo.put(original.clone()).await.unwrap();
+            if let Some(reclaiming) = reclaiming {
+                repo.complete_mutation(&reclaiming).await.unwrap();
+            } else if let Some(ready) = ready {
+                let abort = repo.abort_mutation(&ready).await.unwrap();
+                repo.complete_mutation(&abort).await.unwrap();
+            }
+        }
+    }
+
+    // R12: the same payload/revision at another physical id is not this row's
+    // preimage. A missing positive-version target cannot claim a creation WAL.
+    let mut missing_before = spectator.clone();
+    missing_before.id = CredentialSourceId("cred:rotation-missing-key".into());
+    let mut missing_after = missing_before.clone();
+    missing_after.version += 1;
+    let missing = CredentialMutationIntent::prepare(Some(missing_before), missing_after).unwrap();
+    let pending = repo.pending_mutations().await.unwrap();
+    assert!(
+        matches!(
+            repo.begin_mutation(missing.clone()).await,
+            Err(CredentialError::MutationConflict(_))
+        ),
+        "R12 exact lookup key"
+    );
+    assert!(
+        matches!(
+            repo.get(&missing.after.id).await,
+            Err(CredentialError::SourceNotFound(_))
+        ),
+        "R12 absent stays absent"
+    );
+    assert_eq!(
+        repo.get(&spectator.id).await.unwrap(),
+        spectator,
+        "R12 other key frame"
+    );
+    assert_eq!(
+        repo.pending_mutations().await.unwrap(),
+        pending,
+        "R12 WAL frame"
+    );
+
+    // R13/R14: independently vary the request's complete WAL identity while
+    // durable truth is Ready/Reclaiming and Source is its exact before/after.
+    // All requests validate; token/epoch/lease/before/after changes must fail
+    // actual WAL equality. Non-Ready phases fail the phase gate even for replay.
+    let mut before = source("cred:rotation-wal-gates", "ws");
+    before.material_ref = Some(SecretRef("sec:wal-old".into()));
+    repo.put(before.clone()).await.unwrap();
+    let mut after = before.clone();
+    after.version += 1;
+    after.material_ref = Some(SecretRef("sec:wal-new".into()));
+    let writing = CredentialMutationIntent::prepare(Some(before), after).unwrap();
+    repo.begin_mutation(writing.clone()).await.unwrap();
+    let ready = repo.mark_mutation_ready(&writing).await.unwrap();
+    for published in [false, true] {
+        if published {
+            repo.apply_mutation(&ready).await.unwrap();
+        }
+        let current = repo.get(&ready.after.id).await.unwrap();
+        let pending = repo.pending_mutations().await.unwrap();
+        for coordinate in 0..8 {
+            let mut stale = ready.clone();
+            match coordinate {
+                0 => stale.material_fence.writer_token.push('x'),
+                1 => stale.material_fence.writer_epoch += 1,
+                2 => stale.material_fence.writer_lease_expires_at_unix_ms -= 1,
+                3 => stale.before.as_mut().unwrap().env_key = Some("OTHER_BEFORE".into()),
+                4 => stale.after.env_key = Some("OTHER_AFTER".into()),
+                5 => stale.material_fence.phase = CredentialMaterialMutationPhase::Writing,
+                6 => stale.material_fence.phase = CredentialMaterialMutationPhase::Reclaiming,
+                7 => stale.material_fence.phase = CredentialMaterialMutationPhase::ReclaimingAbort,
+                _ => unreachable!(),
+            }
+            stale
+                .validate()
+                .expect("request must reach publication admission");
+            assert!(
+                matches!(
+                    repo.apply_mutation(&stale).await,
+                    Err(CredentialError::MutationConflict(_))
+                ),
+                "R13/R14 published={published} field={coordinate}"
+            );
+            assert_eq!(
+                repo.get(&ready.after.id).await.unwrap(),
+                current,
+                "R13/R14 Source frame"
+            );
+            assert_eq!(
+                repo.pending_mutations().await.unwrap(),
+                pending,
+                "R13/R14 WAL frame"
+            );
+        }
+    }
+    let reclaiming = repo.apply_mutation(&ready).await.unwrap();
+    repo.complete_mutation(&reclaiming).await.unwrap();
+    // R15/R16: old Ready cannot infer replay from matching Source alone after
+    // its WAL is gone or a successor's Ready fact occupies the same key.
+    for successor_pending in [false, true] {
+        if successor_pending {
+            let mut successor = ready.after.clone();
+            successor.version += 1;
+            successor.material_ref = Some(SecretRef("sec:successor".into()));
+            let intent =
+                CredentialMutationIntent::prepare(Some(ready.after.clone()), successor).unwrap();
+            repo.begin_mutation(intent.clone()).await.unwrap();
+            repo.mark_mutation_ready(&intent).await.unwrap();
+        }
+        let pending = repo.pending_mutations().await.unwrap();
+        assert!(
+            matches!(
+                repo.apply_mutation(&ready).await,
+                Err(CredentialError::MutationConflict(_))
+            ),
+            "R15/R16 requires exact WAL"
+        );
+        assert_eq!(
+            repo.get(&ready.after.id).await.unwrap(),
+            ready.after,
+            "R15/R16 Source frame"
+        );
+        assert_eq!(
+            repo.pending_mutations().await.unwrap(),
+            pending,
+            "R15/R16 successor WAL frame"
+        );
+        assert_eq!(
+            repo.get(&spectator.id).await.unwrap(),
+            spectator,
+            "R15/R16 spectator frame"
+        );
+    }
 }
 
 /// Distinct replacement cause/effect table. C1 the old full row equals the
