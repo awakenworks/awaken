@@ -11,7 +11,7 @@ readonly kani_patch_sha256="556129cbcc5e1d4d8f7f191131b5a3afe8010538d87eaf72cbd5
 # The compiler still uses the release-matched GOTO tools. Only CBMC's reviewed
 # SMT encoder/model reader is replaced; this script owns both source identities.
 readonly cbmc_revision="cdee49cb1a32c6d6703cebf6ae67161977264ad4"
-readonly cbmc_patch_sha256="b5c694baec4055f02ff3678fea1cdb8d0c4f2594111fa10ed1ff4823ec8b75d5"
+readonly cbmc_patch_sha256="959fd1118cddf97f08d21affd0c621ecf608bf3b3242ee795dd387c714ca973d"
 readonly cbmc_build_options="-G Ninja -DCMAKE_BUILD_TYPE=Release -DWITH_JBMC=OFF -Dsat_impl=cadical"
 readonly script_dir="$(cd "$(dirname "$0")" && pwd)"
 readonly backend_patch="$script_dir/patches/cbmc-smt-type-dependencies.patch"
