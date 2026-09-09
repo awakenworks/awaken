@@ -280,6 +280,11 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness environment_image_build_mutation_requires_exact_claim_and_admissible_command
   run_kani awaken-environment-contract \
     --harness environment_registration_intent_is_exact_idempotent_and_recoverable
+  # Empty retained inventories exercise the actual deleted resolver, complete
+  # revision/source frame and replay. This does not cover retained receipts.
+  run_kani awaken-session-contract -Z unstable-options \
+    --harness deleted_admission_resolver_preserves_empty \
+    --cbmc-args --unwindset memcmp.0:64
   run_kani awaken-session-contract \
     --harness session_event_batch_admission_resolution_is_total_closed_and_append_once \
     --harness session_agent_boundary_requires_a_visible_committed_target \
@@ -366,7 +371,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness session_cleanup_completion_requires_every_identity_axis \
     --harness session_cleanup_phase_advances_only_not_requested_fenced_requested_completed \
     --harness session_delete_request_plan_is_exact_hidden_terminal_and_idempotent \
-    --harness session_tombstone_requires_hidden_disposition_terminal_execution_and_verified_cleanup
+    --harness session_tombstone_requires_hidden_disposition_terminal_execution_and_verified_cleanup \
+    --harness terminal_batch_resolution_empty
   run_kani awaken-session-contract --checked-loop-profile activity-admission-height-v1 \
     --harness activity_next_epoch_inserts_exact_checked_successor \
     --harness activity_exact_epoch_inserts_only_fresh_positive_member \
