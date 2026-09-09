@@ -1,5 +1,5 @@
 diff --git a/src/solvers/smt2/smt2_conv.cpp b/src/solvers/smt2/smt2_conv.cpp
-index 50a59a6f..56fde91b 100644
+index 50a59a6f..db811c01 100644
 --- a/src/solvers/smt2/smt2_conv.cpp
 +++ b/src/solvers/smt2/smt2_conv.cpp
 @@ -241,7 +241,25 @@ void smt2_convt::write_footer()
@@ -29,7 +29,28 @@ index 50a59a6f..56fde91b 100644
    {
      for(const auto &id : smt2_identifiers)
        out << "(get-value (" << id << "))"
-@@ -969,11 +987,13 @@ void smt2_convt::convert_address_of_rec(
+@@ -620,12 +638,19 @@ exprt smt2_convt::parse_array(
+ {
+   std::unordered_map<int64_t, exprt> operands_map;
+   walk_array_tree(&operands_map, src, type);
++  // Unavailable model elements must retain their element type when trace
++  // simplification selects them, just like boolbvt::bv_get_unbounded_array.
++  // This represents missing information, not a concrete solver value.
++  const exprt unknown_element{ID_unknown, type.element_type()};
++  for(auto &entry : operands_map)
++    if(entry.second.is_nil())
++      entry.second = unknown_element;
+   exprt::operandst operands;
+   // Try to find the default value, if there is none then set it
+   auto maybe_default_op = operands_map.find(-1);
+   exprt default_op;
+   if(maybe_default_op == operands_map.end())
+-    default_op = nil_exprt();
++    default_op = unknown_element;
+   else
+     default_op = maybe_default_op->second;
+   int64_t i = 0;
+@@ -969,11 +994,13 @@ void smt2_convt::convert_address_of_rec(
          expr.id_string());
  }
  
@@ -46,7 +67,7 @@ index 50a59a6f..56fde91b 100644
        result = true;
    });
    return result;
-@@ -1009,8 +1029,9 @@ literalt smt2_convt::convert(const exprt &expr)
+@@ -1009,8 +1036,9 @@ literalt smt2_convt::convert(const exprt &expr)
    // Note that here we are always converting, so we do not need to consider
    // other literal kinds, only "|B###|"
  
@@ -58,7 +79,7 @@ index 50a59a6f..56fde91b 100644
    {
      out << "(declare-fun ";
      convert_literal(l);
-@@ -5113,10 +5134,18 @@ void smt2_convt::set_to(const exprt &expr, bool value)
+@@ -5113,10 +5141,18 @@ void smt2_convt::set_to(const exprt &expr, bool value)
          }
          else
          {
@@ -80,7 +101,7 @@ index 50a59a6f..56fde91b 100644
            if(
              equal_expr.lhs().type().id() != ID_array ||
              use_array_theory(prepared_rhs))
-@@ -5131,7 +5160,7 @@ void smt2_convt::set_to(const exprt &expr, bool value)
+@@ -5131,7 +5167,7 @@ void smt2_convt::set_to(const exprt &expr, bool value)
  
              unflatten(wheret::END, equal_expr.lhs().type());
            }
@@ -89,7 +110,7 @@ index 50a59a6f..56fde91b 100644
          }
  
          return; // done
-@@ -5967,26 +5996,28 @@ void smt2_convt::convert_type(const typet &type)
+@@ -5967,26 +6003,28 @@ void smt2_convt::convert_type(const typet &type)
  
  void smt2_convt::find_symbols(const typet &type)
  {
@@ -125,7 +146,7 @@ index 50a59a6f..56fde91b 100644
      {
        const std::string smt_typename =
          "complex." + std::to_string(datatype_map.size());
-@@ -6010,8 +6041,9 @@ void smt2_convt::find_symbols_rec(
+@@ -6010,8 +6048,9 @@ void smt2_convt::find_symbols_rec(
    {
      // Cater for mutually recursive struct types
      bool need_decl=false;
@@ -137,7 +158,7 @@ index 50a59a6f..56fde91b 100644
      {
        const std::string smt_typename =
          "struct." + std::to_string(datatype_map.size());
-@@ -6023,7 +6055,7 @@ void smt2_convt::find_symbols_rec(
+@@ -6023,7 +6062,7 @@ void smt2_convt::find_symbols_rec(
        to_struct_type(type).components();
  
      for(const auto &component : components)
@@ -146,7 +167,7 @@ index 50a59a6f..56fde91b 100644
  
      // Declare the corresponding SMT type if we haven't already.
      if(need_decl)
-@@ -6114,32 +6146,41 @@ void smt2_convt::find_symbols_rec(
+@@ -6114,32 +6153,41 @@ void smt2_convt::find_symbols_rec(
        to_union_type(type).components();
  
      for(const auto &component : components)
@@ -196,7 +217,7 @@ index 50a59a6f..56fde91b 100644
      }
    }
    else if(type.id() == ID_union_tag)
-@@ -6147,15 +6188,16 @@ void smt2_convt::find_symbols_rec(
+@@ -6147,15 +6195,16 @@ void smt2_convt::find_symbols_rec(
      const auto &union_tag = to_union_tag_type(type);
      const irep_idt &id = union_tag.get_identifier();
  
@@ -217,7 +238,7 @@ index 50a59a6f..56fde91b 100644
      {
        datatype_map[type] = "state";
        out << "(declare-sort state 0)\n";
-@@ -6166,9 +6208,9 @@ void smt2_convt::find_symbols_rec(
+@@ -6166,9 +6215,9 @@ void smt2_convt::find_symbols_rec(
      const auto &mathematical_function_type =
        to_mathematical_function_type(type);
      for(auto &d_type : mathematical_function_type.domain())
@@ -378,10 +399,10 @@ index 7f516674..cfcd9cb3 100644
  
    // Booleans
 diff --git a/unit/solvers/smt2/smt2_conv.cpp b/unit/solvers/smt2/smt2_conv.cpp
-index df758709..502e83af 100644
+index df758709..8d60c673 100644
 --- a/unit/solvers/smt2/smt2_conv.cpp
 +++ b/unit/solvers/smt2/smt2_conv.cpp
-@@ -2,7 +2,20 @@
+@@ -2,7 +2,26 @@
  
  #include <testing-utils/use_catch.h>
  
@@ -394,15 +415,21 @@ index df758709..502e83af 100644
 +#include <util/mathematical_types.h>
 +#include <util/message.h>
 +#include <util/namespace.h>
++#include <util/simplify_expr.h>
 +#include <util/std_types.h>
 +#include <util/symbol_table.h>
 +
++#include <ansi-c/ansi_c_language.h>
++#include <goto-programs/json_goto_trace.h>
++#include <langapi/mode.h>
++
++#include <solvers/smt2/smt2irep.h>
  #include <solvers/smt2/smt2_conv.h>
 +#include <solvers/smt2/smt2_dec.h>
  
  TEST_CASE(
    "smt2_convt::convert_identifier character escaping.",
-@@ -17,3 +30,832 @@ TEST_CASE(
+@@ -17,3 +36,957 @@ TEST_CASE(
    CHECK(smt2_convt::convert_identifier("|") == "|&124;|");
    CHECK(smt2_convt::convert_identifier("&") == "&");
  }
@@ -711,6 +738,7 @@ index df758709..502e83af 100644
 +public:
 +  using smt2_dect::smt2_dect;
 +  using smt2_dect::read_result;
++  using smt2_convt::parse_rec;
 +};
 +} // namespace
 +
@@ -1234,4 +1262,128 @@ index df758709..502e83af 100644
 +  }
 +  else
 +    CHECK(result == decision_proceduret::resultt::D_UNSATISFIABLE);
++}
++
++TEST_CASE(
++  "SMT unavailable array model elements retain types through JSON traces",
++  "[core][solvers][smt2]")
++{
++  smt2_type_discovery_testt test;
++  if(!get_language_from_mode(ID_C))
++    register_language(new_ansi_c_language);
++  null_message_handlert messages;
++  smt2_result_testt solver{
++    test.ns, "partial array model", "", "ALL", smt2_convt::solvert::Z3,
++    "", messages};
++  const unsignedbv_typet byte{8};
++  const unsignedbv_typet index_type{64};
++  array_typet array_type{byte, from_integer(2, index_type)};
++  const exprt unknown_byte{ID_unknown, byte};
++  const exprt seven = from_integer(7, byte);
++  const exprt nine = from_integer(9, byte);
++  exprt::operandst expected;
++  std::string model;
++  SECTION("Missing symbolic default")
++  {
++    // U1: unrecognized array symbol + size one => one typed unknown, never
++    // zero or untyped nil. Indexing it reproduces the observed trace crash.
++    array_type.size() = from_integer(1, index_type);
++    model = "unavailable_array";
++    expected = {unknown_byte};
++  }
++  SECTION("Unsupported lambda model")
++  {
++    // U2: lambda models remain unsupported. Do not interpret the body or
++    // invent bytes merely to render a trace; both elements stay unknown.
++    model = "(lambda ((i (_ BitVec 64))) #x07)";
++    expected = {unknown_byte, unknown_byte};
++  }
++  SECTION("Partial store without a default")
++  {
++    // U3: known index one remains nine; the missing index zero is unknown.
++    model = "(store unavailable_array #x0000000000000001 #x09)";
++    expected = {unknown_byte, nine};
++  }
++  SECTION("Known default")
++  {
++    // U4: a supported constant model retains every concrete default value.
++    model = "((as const (Array (_ BitVec 64) (_ BitVec 8))) #x07)";
++    expected = {seven, seven};
++  }
++  SECTION("Known default and store through a let binding")
++  {
++    // U5: existing binding resolution and stores retain all known values.
++    model = "(let ((base ((as const (Array (_ BitVec 64) "
++            "(_ BitVec 8))) #x07))) "
++            "(store base #x0000000000000001 #x09))";
++    expected = {seven, nine};
++  }
++  SECTION("Unavailable parsed default")
++  {
++    // U6: parse_rec returns nil for an unknown Boolean default; normalize
++    // that actual element to typed unknown as well as a missing default.
++    array_type.element_type() = bool_typet{};
++    model = "((as const (Array (_ BitVec 64) Bool)) unavailable_bool)";
++    expected = {exprt{ID_unknown, bool_typet{}},
++                exprt{ID_unknown, bool_typet{}}};
++  }
++  SECTION("Unavailable parsed store value")
++  {
++    // U7: an unknown explicit store value is unknown, not the true default;
++    // the untouched index keeps its known true value.
++    array_type.element_type() = bool_typet{};
++    model = "(store ((as const (Array (_ BitVec 64) Bool)) true) "
++            "#x0000000000000000 unavailable_bool)";
++    expected = {exprt{ID_unknown, bool_typet{}}, true_exprt{}};
++  }
++  SECTION("Unknown array size")
++  {
++    // U8: preserve the existing contiguous-prefix representation: known
++    // index zero followed by a typed unknown default for an unknown size.
++    array_type.size() = symbol_exprt{"length", index_type};
++    model = "(store unavailable_array #x0000000000000000 #x09)";
++    expected = {nine, unknown_byte};
++  }
++  SECTION("Zero length")
++  {
++    // U9: zero-size models remain empty, with no invented placeholder byte.
++    array_type.size() = from_integer(0, index_type);
++    model = "unavailable_array";
++  }
++  std::istringstream input{model};
++  const auto parsed = smt2irep(input, messages);
++  REQUIRE(parsed.has_value());
++  const exprt actual = solver.parse_rec(*parsed, array_type);
++  REQUIRE(actual.id() == ID_array);
++  REQUIRE(actual.operands().size() == expected.size());
++  for(std::size_t i = 0; i < expected.size(); ++i)
++  {
++    const index_exprt selected{actual, from_integer(i, index_type)};
++    CHECK(simplify_expr(selected, test.ns) == expected[i]);
++    REQUIRE(actual.operands()[i].type() == array_type.element_type());
++
++    // The same model value passes through the actual JSON DECL exporter,
++    // including its simplify_expr call that previously lost the byte type.
++    // Unknown values must render explicitly as unknown, with no data field.
++    const symbolt symbol{"selected", array_type.element_type(), ID_C};
++    if(!test.symbol_table.has_symbol(symbol.name))
++      test.symbol_table.insert(symbol);
++    goto_trace_stept step{};
++    step.type = goto_trace_stept::typet::DECL;
++    step.full_lhs = symbol.symbol_expr();
++    step.full_lhs_value = selected;
++    const json_nullt location;
++    json_objectt assignment;
++    convert_decl(
++      assignment, {location, step, test.ns}, trace_optionst::default_options);
++    if(expected[i].id() == ID_unknown)
++    {
++      CHECK(assignment["value"]["name"].value == "unknown");
++      const auto &value = to_json_object(assignment["value"]);
++      CHECK(value.find("data") == value.end());
++    }
++    else
++      CHECK(assignment["value"]["name"].value != "unknown");
++  }
++  REQUIRE(actual == array_exprt{expected, array_type});
 +}
