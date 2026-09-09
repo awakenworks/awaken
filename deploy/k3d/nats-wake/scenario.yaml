@@ -10,6 +10,7 @@ spec:
   selector: { app: nats }
   ports:
     - { name: client, port: 4222, targetPort: 4222 }
+    - { name: monitor, port: 8222, targetPort: 8222 }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -28,9 +29,12 @@ spec:
         - name: nats
           image: nats:2
           imagePullPolicy: Never
-          args: ["-p", "4222"]
+          # Read-only evidence for this disposable test broker, via private
+          # port-forward only. Queue authority remains in Postgres.
+          args: ["-p", "4222", "-m", "8222"]
           ports:
             - containerPort: 4222
+            - containerPort: 8222
           readinessProbe:
             tcpSocket: { port: 4222 }
             initialDelaySeconds: 1
