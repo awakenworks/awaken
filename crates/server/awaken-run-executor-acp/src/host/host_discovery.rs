@@ -296,10 +296,28 @@ pub trait AcpDiscovery: Send + Sync {
     async fn discover_all(&self) -> Vec<AcpHostObservation> {
         let mut observations = Vec::with_capacity(known_acp_clis().len());
         for cli in known_acp_clis() {
-            observations.push(self.discover(cli).await);
+            observations.push(discover_scoped(self, cli).await);
         }
         observations
     }
+}
+
+/// Bind adapter evidence to the exact catalog request before any caller can
+/// cache it, project credentials, or negotiate a backend capability. A failed
+/// adapter contract carries no version/login/capability evidence across CLIs.
+pub(super) async fn discover_scoped(
+    discovery: &(impl AcpDiscovery + ?Sized),
+    cli: &AcpCli,
+) -> AcpHostObservation {
+    let observed = discovery.discover(cli).await;
+    if observed.cli_id != cli.id {
+        return observation(
+            cli,
+            AcpDetectionState::ProbeFailed,
+            "acp_discovery_backend_mismatch",
+        );
+    }
+    observed
 }
 
 impl AcpHostDiscovery {
