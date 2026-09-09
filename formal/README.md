@@ -338,13 +338,13 @@ obligation when the development host is Linux.
   exact create replay classification, realization fencing, terminal absorption,
   and disposable Work projection. Their standalone instances have independent
   TLC and TLAPS gates.
-- `SessionEventProtocol.tla` composes the activity and Dispatch kernels for one
-  initial Event without collapsing the initial wake activity into the distinct
-  Run activity. `SessionStartProtocol.tla` composes Session root, WorkQueue,
-  realization, Event, Run admission, observed ThreadCommit, Session settlement,
-  Dispatch settlement, and exact Work release. Its ordinary configuration
-  explores faults and replays; its reachability configuration proves the
-  fault-free full path can reach Idle under weak fairness.
+- `SessionEventProtocol.tla` composes activity and Dispatch with distinct wake/Run
+  receipts. `SessionStartProtocol.tla` composes root, Work, realization, Event,
+  Run, ThreadCommit observation and settlement; original TLC configs check faults
+  and fault-free fair progress to Idle. `SessionStartRootProof.tla` reuses the
+  canonical Root theorem for unbounded acceptance/queryability/projection safety,
+  qualified by four mutants and four reachable witnesses. File-SQLite cold-reopen
+  tests cover initial events, failed scan and replay; SQL/refinement stay external.
 - `Delegation.tla` covers stable child identity, local/remote lifecycle
   equivalence, atomic child admission and input-delivery claims, independent
   owner/epoch recovery, depth/cycle/parallel/total

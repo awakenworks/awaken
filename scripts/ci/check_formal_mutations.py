@@ -567,6 +567,7 @@ def main() -> None:
         "work-queue-stop-model-mutants": check_work_queue_stop_model_mutants,
         "session-observation-model-mutants": check_session_observation_model_mutants,
         "session-ownership-model-mutants": check_session_ownership_model_mutants,
+        "session-start-root-model-mutants": check_session_start_root_model_mutants,
         "cowork-lifecycle-model-mutants": check_cowork_lifecycle_model_mutants,
         "local-process-model-mutant": check_local_process_model_mutants,
         "local-recovery-model-mutants": check_local_recovery_model_mutants,
@@ -1331,6 +1332,54 @@ def check_verified_admission_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "VerifiedProfileAdmission", source, config, mutations)
     print("Verified admission mutation score: 9/9 killed (target freshness, exact executed release and bound image payload)")
 
+
+
+def check_session_start_root_model_mutants(tlc_jar: Path) -> None:
+    # Cause/effect table: S1 acceptance without Create loses the durable root;
+    # S2 Work row without Root.ProjectWork violates its sole authority; S3 a
+    # terminal failure deleting its accepted root loses queryability; S4 early
+    # Dispatch publication bypasses complete-root creation. Select each exact
+    # semantic invariant separately, so another safety rule cannot mask a kill.
+    # The four inverted positive witnesses establish all antecedents are live.
+    source = (ROOT / "formal/tla/SessionStartProtocol.tla").read_text()
+    config = (ROOT / "formal/tla/SessionStartProtocol.cfg").read_text()
+    header = config.split("INVARIANTS", 1)[0]
+    mutations = []
+    for anchor, broken, invariant in (
+        ('/\\ Root!Create(SessionOwner, Payload, "Worker", TRUE)',
+         '/\\ UNCHANGED rootVars', 'AcceptedResponseIsDurableRoot'),
+        ('/\\ Root!ProjectWork\n', '/\\ UNCHANGED rootVars\n',
+         'WorkProjectionHasOneAuthority'),
+    ):
+        if source.count(anchor) != 1:
+            raise SystemExit("Session start mutation anchor drifted")
+        mutations.append((source.replace(anchor, broken),
+                          header + f"INVARIANTS {invariant}\nCHECK_DEADLOCK FALSE\n", invariant))
+    # These illegal writers each change exactly one canonical coordinate. The
+    # remaining frame is derived from the actual component tuples, not copied.
+    coordinates = []
+    for name in ("rootVars", "eventVars", "workVars"):
+        coordinates.extend(part.strip() for part in source.split(name + " == <<", 1)[1].split(">>", 1)[0].split(","))
+    coordinates += ["workRowPresent", "realizationWorkEpoch", "acceptedResponse"]
+    anchor = '    \\/ (UNCHANGED acceptedResponse /\\ OtherNext)'
+    if source.count(anchor) != 1:
+        raise SystemExit("Session start writer anchor drifted")
+    for target, guard, value, invariant in (
+        ('existence', 'acceptedResponse /\\ execution = "ActivationFailed"',
+         '"Absent"', 'AcceptedFailureRemainsQueryable'),
+        ('dispatchExists', 'existence = "Absent"',
+         'TRUE', 'CompleteRootPrecedesEveryProjection'),
+    ):
+        frame = ", ".join(name for name in coordinates if name != target)
+        action = f"\n    \\/ (/\\ {guard}\n        /\\ {target}' = {value}\n        /\\ UNCHANGED <<{frame}>>)"
+        mutations.append((source.replace(anchor, anchor + action),
+                          header + f"INVARIANTS {invariant}\nCHECK_DEADLOCK FALSE\n", invariant))
+    for witness in ("NoAcceptedPreparingRoot", "NoAcceptedFailure", "NoWorkProjection", "NoDispatchProjection"):
+        mutations.append((source, header + f"INVARIANTS {witness}\nCHECK_DEADLOCK FALSE\n", witness))
+    check_tlc_model_mutations(tlc_jar, "SessionStartProtocol", source, config, mutations,
+                             dependencies=("SessionRootKernel", "SessionEventKernel", "WorkQueueKernel",
+                                           "RunIngressKernel", "SessionActivityKernel"))
+    print("Session start root: 4/4 semantic mutants killed; 4/4 authority witnesses reached")
 
 
 def check_session_ownership_model_mutants(tlc_jar: Path) -> None:
