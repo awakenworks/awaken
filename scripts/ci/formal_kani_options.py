@@ -3,7 +3,7 @@
 
 These bounds change finite loop expansion, not the input domain or checks. Every
 unwinding assertion remains enabled, so a reachable extra iteration fails proof.
-Pinned Kani/std v0 identities select audited library loops. Other loops and Drop
+Pinned Kani/std v0 identities select audited library loops. All unlisted loops and recursion
 retain each harness's global bound; optional solver choices are fixed per profile.
 """
 
@@ -40,8 +40,37 @@ FINGERPRINT_ENCODING_LOOPS = (
     "_RNvNvNtCsjxLPRqQEPX2_4core3ptr12align_offset7mod_invCscYh4lW7VexR_21awaken_agent_contract.0",
 )
 
+# Direct resume fixtures retain a real empty serde_json object, empty content/
+# context/state Vecs and real Drop. These exact GOTO bounds cover four empty
+# tree loops, two Value/ContentBlock recursion points and six empty slice Drop
+# loops. Zero element/tree iterations need bound 1 (exit); recursion bound 1
+# retains its assertion too. Any deeper actual structure
+# fails proof. All unlisted loops retain global 16, including comparisons and
+# allocation. CBMC symex_bmc.cpp::get_unwind_recursion consumes --unwindset for
+# exact function ids too; the function entries below are not loop wildcards.
+TOOL_RESULT_EMPTY_OBJECT_LOOPS = (
+    ('_RINvMsj_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree8navigateINtNtB8_4node6HandleINtB11_7NodeRefNtNtB11_6marker5DyingNtNtBc_6string6StringNtNtCsbpSFxJTBWlC_10serde_json5value5ValueNtB1z_4LeafENtB1z_4EdgeE16deallocating_endNtNtBc_5alloc6GlobalEB2h_.0', 1),
+    ('_RNvMsn_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree8navigateINtNtB7_4node7NodeRefNtNtB10_6marker5DyingNtNtBb_6string6StringNtNtCsbpSFxJTBWlC_10serde_json5value5ValueNtB1k_14LeafOrInternalE15first_leaf_edgeB22_.0', 1),
+    ('_RNvXsy_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree3mapINtB5_8IntoIterNtNtBb_6string6StringNtNtCsbpSFxJTBWlC_10serde_json5value5ValueENtNtNtCsjxLPRqQEPX2_4core3ops4drop4Drop4dropB1w_.0', 1),
+    ('_RINvMsj_NtNtNtCs5YUhLFlCshu_5alloc11collections5btree8navigateINtNtB8_4node6HandleINtB11_7NodeRefNtNtB11_6marker5DyingNtNtBc_6string6StringNtNtCsbpSFxJTBWlC_10serde_json5value5ValueNtB1z_4LeafENtB1z_4EdgeE17deallocating_nextNtNtBc_5alloc6GlobalEB2h_.0', 1),
+    ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeNtNtCsbpSFxJTBWlC_10serde_json5value5ValueEBK_', 1),
+    ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeNtNtNtCsecBtpv2pihN_21awaken_agent_contract5agent7content12ContentBlockEBM_', 1),
+    ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeSNtNtNtCsecBtpv2pihN_21awaken_agent_contract5agent7content19SearchResultContentEBN_.0', 1),
+    ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeSNtNtNtCsecBtpv2pihN_21awaken_agent_contract5agent7content12ContentBlockEBN_.0', 1),
+    ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeSNtNtCs5YUhLFlCshu_5alloc6string6StringECs6MUXvrZ2NgI_3std.0', 1),
+    ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeSNtNtNtCsecBtpv2pihN_21awaken_agent_contract5agent5state7CommandEBN_.0', 1),
+    ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeSNtNtCsbpSFxJTBWlC_10serde_json5value5ValueEBL_.0', 1),
+    ('_RINvNtCsjxLPRqQEPX2_4core3ptr13drop_in_placeSNtNtNtCsecBtpv2pihN_21awaken_agent_contract5agent7message7MessageEBN_.0', 1),
+)
+
 # Profiles bind solver options to their exact production package and harnesses.
 PROFILES = {
+    "resume-validator-empty-object-v1": (
+        "awaken-runtime-contract",
+        frozenset({"resume_validator_preserves_complete_binding_decision_table"}),
+        TOOL_RESULT_EMPTY_OBJECT_LOOPS,
+        "cadical",
+    ),
     "fingerprint-fnv-hex-v1": (
         "awaken-agent-contract",
         frozenset({"fnv_hex_output_preserves_every_u64"}),

@@ -206,16 +206,20 @@ pub fn validate_resume(ticket: &ResumeTicket, command: &ResumeCommand) -> Result
     {
         return Err(ResumeError::ToolCallMismatch);
     }
-    let mut context_ids = std::collections::HashSet::new();
-    for message in &command.context_messages {
-        if message.role != awaken_agent_contract::agent::message::Role::System {
-            return Err(ResumeError::InvalidContextRole);
-        }
-        if message.id.0.trim().is_empty()
-            || message.content.is_empty()
-            || !context_ids.insert(message.id.clone())
-        {
-            return Err(ResumeError::InvalidContextMessage);
+    // An absent context needs no duplicate index or random hash seed. Keep
+    // nonempty context validation in this same owner and in the same order.
+    if !command.context_messages.is_empty() {
+        let mut context_ids = std::collections::HashSet::new();
+        for message in &command.context_messages {
+            if message.role != awaken_agent_contract::agent::message::Role::System {
+                return Err(ResumeError::InvalidContextRole);
+            }
+            if message.id.0.trim().is_empty()
+                || message.content.is_empty()
+                || !context_ids.insert(message.id.clone())
+            {
+                return Err(ResumeError::InvalidContextMessage);
+            }
         }
     }
     Ok(())
@@ -242,7 +246,7 @@ pub trait OwnedToolContinuation: Send + Sync {
     ) -> crate::execution::Result<awaken_agent_contract::agent::run::RunState>;
 }
 
-#[cfg(test)]
+#[cfg(any(test, kani))]
 mod tests {
     use super::*;
     use awaken_agent_contract::agent::awaiting::{
@@ -576,6 +580,8 @@ mod tests {
         // | C4 | System | no | E3 message error |
         // Constraints/invariants: compatibility defaults only omission; accepted
         // context is complete, unique, System-role data with stable ids.
+        // C1 exercises the empty-context fast path; C2-C4 force the same
+        // nonempty validator to accept or return its original typed errors.
         let mut legacy = serde_json::to_value(command()).expect("serialize command");
         legacy
             .as_object_mut()
@@ -610,6 +616,169 @@ mod tests {
             ),
             Err(ResumeError::InvalidContextMessage),
             "C4/E3"
+        );
+    }
+    // Causes: all nine closed targets x five delivered result variants; every
+    // combination of the five immutable identity mismatches; exact/foreign tool
+    // call bytes; absent/present deadline and caller time. Effects are the FIRST typed
+    // mismatch, Expired, ResultKindMismatch, ToolCallMismatch, or acceptance.
+    // R1-R5 identity errors precede R6 expiry; R7 kind precedes R8 call identity.
+    // R9 Delegation forwards the typed child answer for the child's own ticket;
+    // it never equates the child's call with the parent delegation call.
+    // The numeric masks below are an independent decision table, not the
+    // production match expression. All fixtures use the existing ticket and
+    // from_ticket owners, real Strings/Vecs/Drop, and empty optional context.
+    // Call identity has six ASCII bytes; the oracle combines each byte XOR,
+    // independently of the production String equality implementation.
+    fn check_resume_decision_table(
+        target: u8,
+        result: u8,
+        mismatches: u8,
+        call_bytes: [u8; 6],
+        deadline: Option<u64>,
+        now_ms: u64,
+    ) {
+        const RESULT_MASKS: [u8; 9] = [12, 2, 12, 30, 16, 16, 16, 16, 1];
+        assert!(target < 9 && result < 5 && mismatches < 32);
+        assert!(call_bytes.iter().all(|byte| *byte < 128));
+        let mut call_difference = 0;
+        for (index, byte) in call_bytes.iter().enumerate() {
+            call_difference |= byte ^ b"call-1"[index];
+        }
+        let matching_call = call_difference == 0;
+        let target_value = match target {
+            0 => tool_target(ToolAwaitReason::Permission),
+            1 => tool_target(ToolAwaitReason::ClientExecution),
+            2 => tool_target(ToolAwaitReason::ScheduledAction),
+            3 => tool_target(ToolAwaitReason::Delegation),
+            4 | 5 => AwaitTarget::RemoteInput {
+                reason: if target == 4 {
+                    RemoteInputReason::UserInput
+                } else {
+                    RemoteInputReason::ExternalEvent
+                },
+                call_id: "remote".into(),
+            },
+            6 => AwaitTarget::Pause(PauseReason::Manual),
+            7 => AwaitTarget::Pause(PauseReason::RateLimit),
+            _ => AwaitTarget::Pause(PauseReason::BudgetReached),
+        };
+        let ticket = ticket_for(target_value).with_deadline(deadline);
+        let result_value = match result {
+            0 => ResumeResult::Continue,
+            1 => ResumeResult::ToolResult(ToolOutput {
+                call_id: String::from_utf8(call_bytes.to_vec()).expect("ASCII call fixture"),
+                content: Vec::new(),
+                is_error: false,
+                state: Vec::new(),
+            }),
+            2 => ResumeResult::allow(),
+            3 => ResumeResult::deny(None),
+            _ => ResumeResult::Input(String::new()),
+        };
+        let mut command = ResumeCommand::from_ticket(&ticket, result_value, now_ms);
+        if mismatches & 1 != 0 {
+            command.correlation_id = "xx".into();
+        }
+        if mismatches & 2 != 0 {
+            command.run_id = RunId("xxxxx".into());
+        }
+        if mismatches & 4 != 0 {
+            command.thread_id = ThreadId("xxxxxxxx".into());
+        }
+        if mismatches & 8 != 0 {
+            command.snapshot_id = ExecutableAgentSnapshotId("xxxxxx".into());
+        }
+        if mismatches & 16 != 0 {
+            command.catalog_fingerprint = CatalogFingerprint("xxxx".into());
+        }
+        let expected = if mismatches != 0 {
+            Err(match mismatches.trailing_zeros() {
+                0 => ResumeError::CorrelationMismatch,
+                1 => ResumeError::RunMismatch,
+                2 => ResumeError::ThreadMismatch,
+                3 => ResumeError::SnapshotMismatch,
+                _ => ResumeError::FingerprintMismatch,
+            })
+        } else if deadline.is_some_and(|limit| now_ms > limit) {
+            Err(ResumeError::Expired)
+        } else if RESULT_MASKS[usize::from(target)] & (1 << result) == 0 {
+            Err(ResumeError::ResultKindMismatch)
+        } else if target == 1 && result == 1 && !matching_call {
+            Err(ResumeError::ToolCallMismatch)
+        } else {
+            Ok(())
+        };
+        assert_eq!(validate_resume(&ticket, &command), expected);
+    }
+
+    #[test]
+    fn resume_validation_complete_binding_decision_table() {
+        // Cartesian R1-R9 rows combine every identity mismatch with 64 call
+        // byte-position mismatch masks and the original foreign fixture. Each
+        // position can fail alone or together, so length/prefix/suffix-only
+        // comparisons cannot pass. The exact call remains a positive witness.
+        // Clock rows exercise None, inclusive boundary, immediate expiry and
+        // both u64 endpoints; Kani retains all 128^6 ASCII calls and u64 clocks.
+        let mut call_ids: Vec<[u8; 6]> = (0..64)
+            .map(|mask| {
+                let mut bytes = *b"call-1";
+                for (index, byte) in bytes.iter_mut().enumerate() {
+                    *byte ^= ((mask >> index) & 1) as u8;
+                }
+                bytes
+            })
+            .collect();
+        call_ids.push(*b"other!");
+        let clocks = [
+            (None, 0),
+            (None, u64::MAX),
+            (Some(0), 0),
+            (Some(0), 1),
+            (Some(100), 99),
+            (Some(100), 100),
+            (Some(100), 101),
+            (Some(u64::MAX), u64::MAX),
+        ];
+        let mut rows = 0;
+        for target in 0..9 {
+            for result in 0..5 {
+                for mismatches in 0..32 {
+                    for &call_bytes in &call_ids {
+                        for (deadline, now_ms) in clocks {
+                            check_resume_decision_table(
+                                target, result, mismatches, call_bytes, deadline, now_ms,
+                            );
+                            rows += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(rows, 748_800);
+    }
+
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn resume_validator_preserves_complete_binding_decision_table() {
+        // Same R1-R9 oracle and actual validator as the native Cartesian table.
+        // Modulo selects every closed target/result and all 32 independent
+        // mismatch masks; deadline/clock are unconstrained u64 with both Option
+        // states. All six call bytes range over ASCII; other identity contents
+        // remain fixed equal-length matching/foreign fixtures and optional
+        // context is empty. Original exact/foreign calls remain in this domain.
+        // The independent byte-XOR oracle must agree with the real validator.
+        // This proves validation only:
+        // ticket acquisition, child dispatch, consumption, terminal commit and
+        // SQL/transport histories retain their own owners and evidence gaps.
+        check_resume_decision_table(
+            kani::any::<u8>() % 9,
+            kani::any::<u8>() % 5,
+            kani::any::<u8>() % 32,
+            kani::any::<[u8; 6]>().map(|byte| byte % 128),
+            if kani::any() { Some(kani::any()) } else { None },
+            kani::any(),
         );
     }
 }

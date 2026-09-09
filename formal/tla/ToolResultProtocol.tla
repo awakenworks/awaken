@@ -10,12 +10,12 @@ ASSUME /\ Calls # {} /\ PendingCommits # {} /\ Operations # {}
        /\ MaxRejected \in Nat /\ MaxConflicts \in Nat
 
 VARIABLE awaiting, awaitingCommit, completed, receiptCall, receiptCommit,
-         accepted, rejected, lastAccepted, lastExpected,
+         accepted, rejected, lastAccepted, lastExpected, lastAcceptedCall, lastExpectedCall,
          lastAcceptedCommit, lastExpectedCommit, terminal,
          batchFingerprint, batchAppends, batchConflicts
 
 vars == <<awaiting, awaitingCommit, completed, receiptCall, receiptCommit,
-          accepted, rejected, lastAccepted, lastExpected,
+          accepted, rejected, lastAccepted, lastExpected, lastAcceptedCall, lastExpectedCall,
           lastAcceptedCommit, lastExpectedCommit, terminal,
           batchFingerprint, batchAppends, batchConflicts>>
 
@@ -28,6 +28,8 @@ Init == /\ awaiting = None
         /\ rejected = 0
         /\ lastAccepted = None
         /\ lastExpected = None
+        /\ lastAcceptedCall = None
+        /\ lastExpectedCall = None
         /\ lastAcceptedCommit = None
         /\ lastExpectedCommit = None
         /\ terminal = FALSE
@@ -46,7 +48,7 @@ Await(call, pendingCommit) ==
     /\ awaiting' = call
     /\ awaitingCommit' = pendingCommit
     /\ UNCHANGED <<completed, receiptCall, receiptCommit, accepted, rejected,
-                    lastAccepted, lastExpected, lastAcceptedCommit,
+                    lastAccepted, lastExpected, lastAcceptedCall, lastExpectedCall, lastAcceptedCommit,
                     lastExpectedCommit, terminal,
                     batchFingerprint, batchAppends, batchConflicts>>
 
@@ -69,6 +71,8 @@ Deliver(call, pendingCommit, op) ==
     /\ accepted' = [accepted EXCEPT ![op] = @ + 1]
     /\ lastAccepted' = op
     /\ lastExpected' = op
+    /\ lastAcceptedCall' = call
+    /\ lastExpectedCall' = awaiting
     /\ lastAcceptedCommit' = pendingCommit
     /\ lastExpectedCommit' = awaitingCommit
     /\ UNCHANGED <<rejected, terminal, batchFingerprint,
@@ -98,7 +102,7 @@ Reject(call, pendingCommit, op) ==
              \/ awaitingCommit # pendingCommit
     /\ rejected' = rejected + 1
     /\ UNCHANGED <<awaiting, awaitingCommit, completed, receiptCall,
-                    receiptCommit, accepted, lastAccepted, lastExpected,
+                    receiptCommit, accepted, lastAccepted, lastExpected, lastAcceptedCall, lastExpectedCall,
                     lastAcceptedCommit, lastExpectedCommit, terminal,
                     batchFingerprint, batchAppends, batchConflicts>>
 
@@ -114,7 +118,7 @@ AppendBatch(key, fingerprint) ==
     /\ batchAppends' = [batchAppends EXCEPT ![key] = @ + 1]
     /\ UNCHANGED <<awaiting, awaitingCommit, completed, receiptCall,
                     receiptCommit, accepted, rejected, lastAccepted,
-                    lastExpected, lastAcceptedCommit, lastExpectedCommit,
+                    lastExpected, lastAcceptedCall, lastExpectedCall, lastAcceptedCommit, lastExpectedCommit,
                     terminal, batchConflicts>>
 
 \* One retry decision is consumed by the original batch actions and the
@@ -151,7 +155,7 @@ CloseBatch(key, fingerprint) ==
     /\ batchFingerprint' = [batchFingerprint EXCEPT ![key] = fingerprint]
     /\ UNCHANGED <<awaiting, awaitingCommit, completed, receiptCall,
                     receiptCommit, accepted, rejected, lastAccepted,
-                    lastExpected, lastAcceptedCommit, lastExpectedCommit,
+                    lastExpected, lastAcceptedCall, lastExpectedCall, lastAcceptedCommit, lastExpectedCommit,
                     terminal, batchAppends, batchConflicts>>
 
 ConflictBatch(key, fingerprint) ==
@@ -162,7 +166,7 @@ ConflictBatch(key, fingerprint) ==
     /\ batchConflicts' = batchConflicts + 1
     /\ UNCHANGED <<awaiting, awaitingCommit, completed, receiptCall,
                     receiptCommit, accepted, rejected, lastAccepted,
-                    lastExpected, lastAcceptedCommit, lastExpectedCommit, terminal,
+                    lastExpected, lastAcceptedCall, lastExpectedCall, lastAcceptedCommit, lastExpectedCommit, terminal,
                     batchFingerprint, batchAppends>>
 
 End == /\ ~terminal
@@ -170,7 +174,7 @@ End == /\ ~terminal
        /\ awaiting' = None
        /\ awaitingCommit' = None
        /\ UNCHANGED <<completed, receiptCall, receiptCommit, accepted, rejected,
-                       lastAccepted, lastExpected, lastAcceptedCommit,
+                       lastAccepted, lastExpected, lastAcceptedCall, lastExpectedCall, lastAcceptedCommit,
                        lastExpectedCommit, batchFingerprint,
                        batchAppends, batchConflicts>>
 
@@ -195,6 +199,8 @@ TypeOK ==
     /\ rejected \in 0..MaxRejected
     /\ lastAccepted \in Operations \cup {None}
     /\ lastExpected \in Operations \cup {None}
+    /\ lastAcceptedCall \in Calls \cup {None}
+    /\ lastExpectedCall \in Calls \cup {None}
     /\ lastAcceptedCommit \in PendingCommits \cup {None}
     /\ lastExpectedCommit \in PendingCommits \cup {None}
     /\ terminal \in BOOLEAN
@@ -202,9 +208,14 @@ TypeOK ==
     /\ batchAppends \in [Keys -> 0..1]
     /\ batchConflicts \in 0..MaxConflicts
 
+\* Observe the delivered call and PRE-transition awaiting call independently.
+\* Equating operation ids assigned from the same input cannot detect a removed
+\* call guard; exact call and pending-commit coordinates must both agree.
 OnlyMatchingResultIsAccepted ==
     lastAccepted # None =>
-        lastAccepted = lastExpected /\ lastAcceptedCommit = lastExpectedCommit
+        /\ lastAccepted = lastExpected
+        /\ lastAcceptedCall = lastExpectedCall
+        /\ lastAcceptedCommit = lastExpectedCommit
 
 EveryOperationIsConsumedAtMostOnce ==
     \A op \in Operations: accepted[op] <= 1
