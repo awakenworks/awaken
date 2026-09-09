@@ -8300,6 +8300,46 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
     assert!(coordinator.dispatch_pool.get().is_none(), "T3/E2");
 }
 
+#[tokio::test]
+async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coordinator() {
+    // Causes: C1 a local CPU-derived default; C2 registered manifest capacity is
+    // lower/equal/higher than that default; C3 execution owner is Worker or
+    // Coordinator. Effects: R1 local Host retains C1; R2 Worker uses exactly C2
+    // (including I/O concurrency above CPU quota); R3 Coordinator owns no pool.
+    // The existing pool_memory concurrent-Run tests own slot/execution bounds;
+    // this regression owns the production Host transport-to-capacity wiring.
+    let default =
+        std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::new(4).unwrap());
+    let local = SharedHost::new(Arc::new(OkModel), "stub");
+    assert_eq!(local.dispatch_pool_concurrency, default, "R1");
+    for capacity in [1, default.get(), default.get() + 2] {
+        let capacity = std::num::NonZeroUsize::new(capacity).unwrap();
+        let store = Arc::new(awaken_dispatch::MemoryDispatchStore::new());
+        let worker = Arc::new(
+            SharedHost::new(Arc::new(OkModel), "stub").with_worker_dispatch(store, capacity),
+        );
+        worker.ensure_dispatch_pool();
+        assert_eq!(
+            worker.dispatch_pool.get().unwrap().concurrency(),
+            capacity.get(),
+            "R2 actual slots"
+        );
+        worker.begin_pool_drain().await;
+        let coordinator = Arc::new(
+            SharedHost::new(Arc::new(OkModel), "stub")
+                .with_worker_dispatch(
+                    Arc::new(awaken_dispatch::MemoryDispatchStore::new()),
+                    capacity,
+                )
+                .with_coordinator_dispatch_store(Arc::new(
+                    awaken_dispatch::AnyDispatchStore::open_sqlite(":memory:").unwrap(),
+                )),
+        );
+        coordinator.ensure_dispatch_pool();
+        assert!(coordinator.dispatch_pool.get().is_none(), "R3");
+    }
+}
+
 /// Restart authorization cause/effect graph: C1 the replacement realization
 /// lease is absent/present. R1 !C1 rejects before provider or receipt I/O with a
 /// retryable stale code; R2 C1 authorizes, persists once, then publishes. The

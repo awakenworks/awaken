@@ -158,12 +158,16 @@ impl SharedHost {
         self
     }
 
-    /// Install the dispatch service supplied by a database-less Worker transport.
+    /// Install the dispatch service and validated registered execution capacity.
+    /// CPU quota governs CPU time, not the number of concurrent I/O-bound Session
+    /// preparations. The registered manifest is the Worker capacity authority.
     #[must_use]
     pub fn with_worker_dispatch(
-        self,
+        mut self,
         dispatch: Arc<dyn awaken_dispatch_contract::Dispatch>,
+        capacity: std::num::NonZeroUsize,
     ) -> Self {
+        self.dispatch_pool_concurrency = capacity;
         self.with_dispatch_store(Arc::new(
             awaken_dispatch::AnyDispatchStore::from_dispatch(dispatch),
         ))
@@ -489,6 +493,8 @@ impl SharedHost {
             memory_mounter: std::sync::RwLock::new(None),
             gate_override: None,
             dispatch_pool: std::sync::OnceLock::new(),
+            dispatch_pool_concurrency: std::thread::available_parallelism()
+                .unwrap_or(std::num::NonZeroUsize::new(4).expect("nonzero local fallback")),
             dispatch_reconciler: std::sync::OnceLock::new(),
             terminal_scan: Default::default(),
             dispatch_store_override: None,
@@ -1525,9 +1531,7 @@ impl SharedHost {
             host: Arc::downgrade(self),
         });
         let config = DispatchServiceConfig::default();
-        let concurrency = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
+        let concurrency = self.dispatch_pool_concurrency.get();
         // On the Postgres backend with `AWAKEN_DISPATCH_WAKE=pg-notify` or `=nats`,
         // spawn the pool with the cross-node wake so a peer's enqueue nudges this pool
         // without busy-poll; otherwise the in-process `LocalWakeSignal` suffices.

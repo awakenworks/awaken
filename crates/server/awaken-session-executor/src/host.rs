@@ -358,6 +358,9 @@ pub struct SharedHost {
     /// its thread. Held here so background submit / cross-thread relay nudge it and
     /// so it lives for the process's lifetime.
     pub(crate) dispatch_pool: std::sync::OnceLock<Arc<DispatchPool<AnyDispatchStore>>>,
+    /// Resolved process capacity. Registered Workers replace the local CPU default
+    /// with their validated manifest capacity when installing the transport.
+    pub(crate) dispatch_pool_concurrency: std::num::NonZeroUsize,
     /// The run-ingress-owned maintenance loop used by a coordinator-only Host.
     /// Local pools already own the same canonical maintenance mechanism.
     pub(crate) dispatch_reconciler: std::sync::OnceLock<awaken_dispatch::DispatchReconciler>,
