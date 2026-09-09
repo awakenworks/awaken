@@ -85,6 +85,246 @@ struct MarkPlugin {
     resolves: Arc<AtomicUsize>,
 }
 
+#[derive(Clone, Copy)]
+enum PhaseProbeMode {
+    Return,
+    Pending,
+    Panic,
+}
+
+#[derive(Clone)]
+struct PhaseProbe {
+    point: PhaseHookPoint,
+    entered: Arc<tokio::sync::Notify>,
+    mode: PhaseProbeMode,
+}
+
+#[async_trait::async_trait]
+impl PhaseHook for PhaseProbe {
+    fn point(&self) -> PhaseHookPoint {
+        self.point
+    }
+
+    async fn on_phase(&self, _: &PhaseContext, _: &[Message], _: &Store) -> HookReaction {
+        self.entered.notify_one();
+        match self.mode {
+            PhaseProbeMode::Return => HookReaction::default(),
+            PhaseProbeMode::Pending => std::future::pending().await,
+            PhaseProbeMode::Panic => panic!("injected phase failure"),
+        }
+    }
+}
+
+impl Plugin for PhaseProbe {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: "phase-probe".into(),
+            requires: Vec::new(),
+            config_sections: Vec::new(),
+            bound: CapabilityBound {
+                phase_hooks: vec![self.point],
+                ..Default::default()
+            },
+        }
+    }
+
+    fn resolve(&self) -> Contributions {
+        let mut contributions = Contributions::new("phase-probe");
+        contributions.phase_hooks.push(Arc::new(self.clone()));
+        contributions
+    }
+}
+
+fn phase_probe_runtime(probe: PhaseProbe) -> Runtime {
+    Runtime::new()
+        .with_llm(Arc::new(ToolThenTextLlm {
+            calls: AtomicUsize::new(0),
+        }))
+        .with_tool(Arc::new(CountingEcho {
+            ran: Arc::new(AtomicUsize::new(0)),
+        }))
+        .with_plugin(Arc::new(probe))
+}
+
+#[tokio::test]
+async fn every_entered_phase_hook_vetoes_ack_on_drop_or_unwind_but_not_return() {
+    // Causes H1 five production phase points plus recovered AfterTool;
+    // H2 normal return / pending Future
+    // drop / panic. Effects E1 normal return preserves the prior latch; E2 an
+    // entered unreturned participant vetoes ACK. Cross H1 x H2 (18 cases),
+    // through the actual Native loop, not direct invocation of the observer.
+    // Await the entry barrier before aborting; join proves the Future was dropped.
+    // This is process-local veto evidence, not remote termination or hard-crash
+    // recovery. The complete durable participant inventory remains separate.
+    for (point, recovered) in [
+        (PhaseHookPoint::StepStart, false),
+        (PhaseHookPoint::BeforeInference, false),
+        (PhaseHookPoint::AfterInference, false),
+        (PhaseHookPoint::AfterTool, false),
+        (PhaseHookPoint::StepEnd, false),
+        (PhaseHookPoint::AfterTool, true),
+    ] {
+        for mode in [
+            PhaseProbeMode::Return,
+            PhaseProbeMode::Pending,
+            PhaseProbeMode::Panic,
+        ] {
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let mut runtime = phase_probe_runtime(PhaseProbe {
+                point,
+                entered: entered.clone(),
+                mode,
+            });
+            let activation = activation(vec!["phase-probe".into()]);
+            let mut context = RuntimeRunContext::new();
+            if recovered {
+                use awaken_agent_contract::agent::state::StateKey;
+                use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolBatch};
+                use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
+                // A committed Requested call needs no replay permission. A
+                // text-only model cannot accidentally supply a fresh AfterTool
+                // witness if recovery is skipped. This tests the Runtime fold,
+                // not permission to bypass an occupied predecessor Dispatch.
+                runtime = runtime.with_llm(Arc::new(TextLlm));
+                let commit = Arc::new(MemoryCommitCoordinator::new());
+                let batch = ToolBatch::for_step(
+                    activation.run_id.clone(),
+                    0,
+                    [(
+                        ToolCall {
+                            call_id: "recovered-hook".into(),
+                            tool_id: "echo".into(),
+                            arguments: serde_json::json!({}),
+                        },
+                        Default::default(),
+                    )],
+                )
+                .unwrap();
+                commit
+                    .commit(ThreadCommit::assemble(
+                        activation.thread_id.clone(),
+                        RunDisposition::running(activation.run_id.clone()),
+                        true,
+                        Vec::new(),
+                        vec![ActiveToolBatch::write(&Some(batch))],
+                        Vec::new(),
+                    ))
+                    .await
+                    .unwrap();
+                context = context.with_commit(commit.clone()).with_reader(commit);
+            }
+            let quiescence = context.physical_quiescence.clone();
+            let task = tokio::spawn(async move { runtime.execute(activation, context).await });
+            tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
+                .await
+                .expect("phase entered");
+            if matches!(mode, PhaseProbeMode::Pending) {
+                task.abort();
+            }
+            let result = task.await;
+            match mode {
+                PhaseProbeMode::Return => {
+                    result.expect("no panic").expect("normal run");
+                }
+                PhaseProbeMode::Pending => assert!(result.unwrap_err().is_cancelled()),
+                PhaseProbeMode::Panic => assert!(result.unwrap_err().is_panic()),
+            }
+            assert_eq!(
+                quiescence.can_acknowledge_return(),
+                matches!(mode, PhaseProbeMode::Return),
+                "{point:?}, recovered={recovered}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn cancelling_a_pending_after_tool_hook_cannot_ack_the_returned_native_attempt() {
+    // H3 tool invocation returned but its AfterTool participant is still pending;
+    // H4 the existing Native tool-dispatch cancellation branch drops that hook.
+    // H3+H4 => logical Cancelled may return, but the shared physical veto must
+    // survive so Worker cannot finish_attempt. No time-based stop assertion.
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let runtime = phase_probe_runtime(PhaseProbe {
+        point: PhaseHookPoint::AfterTool,
+        entered: entered.clone(),
+        mode: PhaseProbeMode::Pending,
+    });
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let context = RuntimeRunContext::new().with_cancellation(cancellation.clone());
+    let quiescence = context.physical_quiescence.clone();
+    let task = tokio::spawn(async move {
+        runtime
+            .execute(activation(vec!["phase-probe".into()]), context)
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
+        .await
+        .expect("hook entered");
+    cancellation.cancel();
+    let state = tokio::time::timeout(std::time::Duration::from_secs(2), task)
+        .await
+        .expect("Native returned")
+        .expect("no panic")
+        .expect("cancelled run");
+    assert_eq!(state, RunState::Ended(EndCause::Cancelled));
+    assert!(
+        !quiescence.can_acknowledge_return(),
+        "a dropped hook is not an observed return"
+    );
+}
+
+struct ConfirmTool;
+
+#[async_trait::async_trait]
+impl ToolGateHook for ConfirmTool {
+    async fn gate(&self, call: &ToolCall, _: &Store) -> GateOutcome {
+        GateOutcome::RequireConfirmation {
+            correlation_id: format!("confirm-{}", call.call_id),
+        }
+    }
+}
+
+#[tokio::test]
+async fn resumed_after_tool_hook_retains_the_same_drop_veto() {
+    // H5 the tool batch is committed Awaiting, then resumed by its exact ticket.
+    // H6 its AfterTool phase is entered and the resumed Future is aborted.
+    // H5+H6 => the new attempt's shared latch vetoes ACK too; the first Awaiting
+    // attempt did not enter that hook and therefore retains its normal return.
+    use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let runtime = phase_probe_runtime(PhaseProbe {
+        point: PhaseHookPoint::AfterTool,
+        entered: entered.clone(),
+        mode: PhaseProbeMode::Pending,
+    })
+    .with_gate(Arc::new(ConfirmTool));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let original = RuntimeRunContext::new().with_commit(commit.clone());
+    let original_quiescence = original.physical_quiescence.clone();
+    assert_eq!(
+        runtime
+            .execute(activation(vec!["phase-probe".into()]), original)
+            .await
+            .unwrap(),
+        RunState::Awaiting
+    );
+    assert!(original_quiescence.can_acknowledge_return());
+    let ticket = commit
+        .resume_ticket_for(&RunId("run-1".into()))
+        .expect("committed ticket");
+    let command = ResumeCommand::from_ticket(&ticket, ResumeResult::allow(), 0);
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    let quiescence = context.physical_quiescence.clone();
+    let task = tokio::spawn(async move { runtime.resume(command, commit.as_ref(), context).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
+        .await
+        .expect("resumed hook entered");
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert!(!quiescence.can_acknowledge_return());
+}
+
 impl Plugin for MarkPlugin {
     fn manifest(&self) -> PluginManifest {
         PluginManifest {
