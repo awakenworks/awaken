@@ -520,6 +520,56 @@ fn rootless_systemd_bus_decision_table_selects_only_user_manager_authority() {
     );
 }
 
+#[tokio::test]
+async fn podman_child_does_not_inherit_worker_service_lifetime() {
+    // Cause/effect table: C1 caller is/is not a systemd invocation; C2 unrelated
+    // deployment environment exists. R1/R2 both C1 rows -> only the Podman child
+    // loses INVOCATION_ID, retains C2, and leaves its parent unchanged. Spawn
+    // this same test in isolated processes so no global env mutation races other
+    // tests. Actual systemd/Podman/network survival is owned by the Cowork pause
+    // matrix; a child-environment check alone cannot qualify physical recovery.
+    const CHILD: &str = "AWAKEN_TEST_PODMAN_SERVICE_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let before = std::env::var_os("INVOCATION_ID");
+        let status = podman_command("sh")
+            .args([
+                "-c",
+                r#"test -z "${INVOCATION_ID+x}" && test "$AWAKEN_TEST_PODMAN_SERVICE_CHILD" = fixture"#,
+            ])
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success(), "R1/R2 child scope and unrelated env");
+        assert_eq!(std::env::var_os("INVOCATION_ID"), before, "parent intact");
+        return;
+    }
+    for invocation in [None, Some("worker-service-invocation")] {
+        let mut child = OsCommand::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "podman::tests::podman_child_does_not_inherit_worker_service_lifetime",
+                "--nocapture",
+            ])
+            .env(CHILD, "fixture")
+            .env_remove("INVOCATION_ID");
+        if let Some(invocation) = invocation {
+            child.env("INVOCATION_ID", invocation);
+        }
+        let output = child.output().await.unwrap();
+        assert!(
+            output.status.success(),
+            "R1/R2 {invocation:?}: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "the isolated child must execute its assertion",
+        );
+    }
+}
+
 #[test]
 fn signal_flag_maps_every_signal() {
     assert_eq!(signal_flag(pc::Signal::Term), "TERM");

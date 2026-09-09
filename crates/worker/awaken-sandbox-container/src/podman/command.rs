@@ -28,6 +28,12 @@ pub(super) fn rootless_systemd_bus(runtime_dir: Option<&OsStr>) -> Option<OsStri
 pub(super) fn podman_command(bin: &str) -> OsCommand {
     let mut command = OsCommand::new(bin);
     command.kill_on_drop(true);
+    // A Session container outlives its Worker service. Podman interprets the
+    // parent's INVOCATION_ID as permission to retain conmon in that service's
+    // cgroup; systemd then kills it (and its network lifetime) on Worker exit.
+    // Let Podman's existing cgroup manager own the independent container.
+    // Only this child environment changes; the Worker keeps its manager identity.
+    command.env_remove("INVOCATION_ID");
     if let Some(address) = rootless_systemd_bus(std::env::var_os("XDG_RUNTIME_DIR").as_deref()) {
         command.env("DBUS_SESSION_BUS_ADDRESS", address);
     }
