@@ -19,8 +19,7 @@ impl HostWorkerResolver {
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         rebuild_unavailable_environment: bool,
     ) -> Result<(), awaken_dispatch::Error> {
-        let realization = host.session_slots.realization_lock(session_id);
-        let _realization = realization.lock().await;
+        let realization = host.session_slots.acquire_realization(session_id).await;
         let synchronizer = WorkerProjectionSynchronizer::for_directive(
             host,
             &directive,
@@ -36,6 +35,7 @@ impl HostWorkerResolver {
             synchronizer,
             awaken_local_process::authority_proof_started()
                 .map_err(|error| Self::execution_error(error.to_string()))?,
+            &realization,
         )
         .await
         .map_err(Self::map_session_realization_drive_error)
@@ -50,6 +50,7 @@ impl HostWorkerResolver {
         directive: awaken_session_contract::SessionRealizationDirective,
         claimed: Option<&awaken_dispatch::Claimed>,
         request_started: awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+        realization: &crate::session_slot::SessionRealizationPermit,
     ) -> Result<(), awaken_dispatch::Error> {
         let claim = claimed.map(|claimed| awaken_dispatch::RunClaim::from(&claimed.lease));
         let synchronizer = WorkerProjectionSynchronizer::for_claimed(
@@ -65,6 +66,7 @@ impl HostWorkerResolver {
             directive,
             synchronizer,
             request_started,
+            realization,
         )
         .await
         .map_err(Self::map_session_realization_drive_error)
@@ -78,6 +80,7 @@ impl HostWorkerResolver {
         directive: awaken_session_contract::SessionRealizationDirective,
         synchronizer: WorkerProjectionSynchronizer<'_>,
         request_started: awaken_runtime_contract::authority_lease::AuthorityProofStarted,
+        _realization: &crate::session_slot::SessionRealizationPermit,
     ) -> Result<(), awaken_session_contract::SessionRealizationDriveError> {
         let host = synchronizer.host;
         awaken_session_contract::drive_session_realization(
@@ -706,6 +709,7 @@ mod tests {
         session_id: &str,
         directive: awaken_session_contract::SessionRealizationDirective,
     ) -> Result<(), awaken_session_contract::SessionRealizationDriveError> {
+        let realization = host.session_slots.acquire_realization(session_id).await;
         let synchronizer =
             WorkerProjectionSynchronizer::for_directive(host, &directive, None, None, false, None);
         HostWorkerResolver::drive_session_realization_with_synchronizer(
@@ -714,6 +718,7 @@ mod tests {
             directive,
             synchronizer,
             awaken_local_process::authority_proof_started().unwrap(),
+            &realization,
         )
         .await
     }

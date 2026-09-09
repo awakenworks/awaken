@@ -16,6 +16,8 @@ pub(crate) use environment_owner::*;
 mod execution_authority;
 mod projection_receipt;
 pub(crate) use projection_receipt::FrozenProjectionReceipt;
+mod realization_permit;
+pub(crate) use realization_permit::SessionRealizationPermit;
 
 /// Host fixtures use the actual Control-clock coordinate for live replies.
 /// Deliberately rejects expired input: an expiry test must construct and age
@@ -752,6 +754,7 @@ impl SessionRuntimeSlots {
         .unwrap_or_else(|| Ok(Vec::new()))
     }
 
+    #[cfg(test)]
     pub fn realization_lock(&self, session: &str) -> Arc<tokio::sync::Mutex<()>> {
         self.update(session, |slot| slot.realization.clone())
     }

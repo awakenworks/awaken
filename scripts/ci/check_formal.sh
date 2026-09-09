@@ -665,6 +665,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness terminal_state_classification_is_exact \
     --harness unknown_transition_trigger_and_result_fail_closed
   run_kani awaken-session-executor \
+    --harness session_realization_permit_admits_only_a_current_acquired_slot \
+    --harness session_realization_control_permit_is_bounded_and_every_settlement_releases \
     --harness acp_mcp_projection_has_one_exact_authority \
     --harness acp_tool_export_requires_claim_execution_environment \
     --harness coordination_envelope_never_satisfies_execution_cache_admission \

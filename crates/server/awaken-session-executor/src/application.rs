@@ -1566,8 +1566,10 @@ impl crate::SharedHost {
                 "terminal assignment time proof names another lease",
             ));
         }
-        let realization = self.session_slots.realization_lock(&assignment.session_id);
-        let _realization = realization.lock().await;
+        let _realization = self
+            .session_slots
+            .acquire_realization(&assignment.session_id)
+            .await;
         self.install_frozen_session_projection_with_resource_authority(
             &assignment.session_id,
             assignment.projection.clone(),

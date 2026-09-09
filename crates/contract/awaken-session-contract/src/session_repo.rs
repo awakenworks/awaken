@@ -23,7 +23,9 @@ mod repository_port;
 mod repository_publication;
 mod runtime_intervals;
 
-use disposition::{SessionDeleteDispositionClass, session_delete_request_plan};
+use disposition::{
+    SessionDeleteDispositionClass, SessionDeleteRequestPlan, session_delete_request_plan,
+};
 pub use disposition::{SessionDisposition, SessionDispositionTransitionError};
 pub use persisted_session::PersistedSession;
 pub use recovery::{
@@ -1904,8 +1906,8 @@ mod mutation_tests {
 #[cfg(kani)]
 mod verification {
     use super::{
-        SessionDeleteDispositionClass, SessionExecutionState, session_delete_request_plan,
-        session_tombstone_is_admitted,
+        SessionDeleteDispositionClass, SessionDeleteRequestPlan, SessionExecutionState,
+        session_delete_request_plan, session_tombstone_is_admitted,
     };
 
     #[kani::proof]
@@ -1983,16 +1985,15 @@ mod verification {
         let execution_terminal = kani::any::<bool>();
         let plan = session_delete_request_plan(disposition, execution_terminal);
         let first_request = disposition_code < 2;
-        assert_eq!(plan.transition_to_deleting, first_request);
-        assert_eq!(plan.request_cleanup, first_request);
         assert_eq!(
-            plan.terminalize_execution,
-            first_request && !execution_terminal
+            matches!(plan, SessionDeleteRequestPlan::Commit { .. }),
+            first_request
         );
-        if disposition_code >= 2 {
-            assert!(!plan.transition_to_deleting);
-            assert!(!plan.request_cleanup);
-            assert!(!plan.terminalize_execution);
+        match plan {
+            SessionDeleteRequestPlan::Commit {
+                terminalize_execution,
+            } => assert_eq!(terminalize_execution, !execution_terminal),
+            SessionDeleteRequestPlan::Replay => assert!(!first_request),
         }
     }
 }
