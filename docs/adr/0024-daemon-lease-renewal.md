@@ -443,6 +443,21 @@ ownership check. Local return records `Returned`; the outer watchdog records
 Entry is conservative intent, not proof that the network send occurred.
 The complete ordinal history remains in the same append-only state log.
 
+After an acknowledged entry, Runtime scopes the existing Thread/Run/ordinal/
+model-binding tuple to the actual provider invocation. Provider adapters derive
+a versioned bounded operation id from that tuple; direct unjournaled calls have
+no such identity and explicitly mask an outer scope. The brokered grant adapter
+requires exact Run and model-binding context and uses it for its existing grant
+idempotency key. Its former per-executor counter restarted on every lazy pinned
+materialization, incorrectly aliasing different model calls to one grant; that
+second allocator is removed. Streaming and nonstreaming grant lifecycles share
+one implementation. Reconstructing one recorded invocation preserves its key;
+a subsequent journal ordinal gets a different key. This supplies addressable
+correlation, not provider deduplication, permission to resend, or termination
+evidence. No new receipt database, request payload copy or public model protocol
+field is introduced. Grant-response loss and opaque remote completion still
+require their respective existing recovery policies and independent evidence.
+
 Evidence write rejection or lost ACK terminates the drive as a commit error,
 outside provider retry, model failover and consecutive-inference-failure
 tolerance. Read/provider waits remain cancellable, but cancellation retains

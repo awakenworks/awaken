@@ -3,7 +3,7 @@
 
 use super::*;
 use awaken_runtime_contract::model_operation::{
-    ActiveModelOperation, ModelOperation, ModelOperationPhase,
+    ActiveModelOperation, ModelOperation, ModelOperationContext, ModelOperationPhase,
 };
 use awaken_runtime_contract::resolved::ModelBinding;
 
@@ -154,11 +154,19 @@ impl<'a> ModelOperationJournal<'a> {
     pub async fn enter(
         &mut self,
         binding: &ModelBinding,
-    ) -> awaken_runtime_contract::llm::Result<()> {
+    ) -> awaken_runtime_contract::llm::Result<Option<ModelOperationContext>> {
         let previous = self.verify_reentry(false)?;
         let next = ModelOperation::next(previous.as_ref(), binding.clone())
             .ok_or_else(|| self.reject("model operation ordinal exhausted"))?;
-        self.persist(next).await
+        // An ephemeral direct Runtime can still infer, but its in-memory
+        // ordinal cannot masquerade as a committed, reconstructible identity.
+        let identity = self
+            .context
+            .commit
+            .as_ref()
+            .map(|_| ModelOperationContext::from_operation(self.thread_id, self.run_id, &next));
+        self.persist(next).await?;
+        Ok(identity)
     }
 
     pub async fn returned(

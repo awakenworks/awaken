@@ -7,7 +7,6 @@
 //! receives or persists Cloud-internal target coordinates.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
@@ -688,7 +687,6 @@ pub(crate) struct BrokeredCandidateExecutor {
     native_protocol: String,
     local_run_correlation: Option<String>,
     ownership: Option<Arc<dyn awaken_runtime_contract::AttemptOwnershipVerifier>>,
-    sequence: AtomicU64,
 }
 
 impl BrokeredCandidateExecutor {
@@ -723,11 +721,23 @@ impl BrokeredCandidateExecutor {
             native_protocol: native_protocol.into(),
             local_run_correlation,
             ownership,
-            sequence: AtomicU64::new(0),
         })
     }
 
-    async fn lease(&self) -> Result<BrokeredInferenceLease, LlmError> {
+    async fn lease(
+        &self,
+        binding: &awaken_runtime_contract::resolved::ModelBinding,
+    ) -> Result<BrokeredInferenceLease, LlmError> {
+        let operation = awaken_runtime_contract::model_operation::current_model_operation_context()
+            .filter(|operation| {
+                self.local_run_correlation.as_deref() == Some(operation.run_id().0.as_str())
+                    && operation.binding() == binding
+            })
+            .ok_or_else(|| {
+                LlmError::Binding(
+                    "brokered inference requires the exact model operation context".into(),
+                )
+            })?;
         self.ownership
             .as_ref()
             .ok_or_else(|| {
@@ -736,12 +746,11 @@ impl BrokeredCandidateExecutor {
             .verify_current()
             .await
             .map_err(|error| LlmError::Binding(error.to_string()))?;
-        let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
         let idempotency_fingerprint = awaken_runtime_contract::content_fingerprint(&(
-            self.local_run_correlation.as_deref().unwrap_or("run"),
+            operation.operation_id(),
             &self.provider,
             &self.model,
-            sequence,
+            &self.native_protocol,
         ))
         .map_err(|error| LlmError::Binding(error.to_string()))?;
         self.client
@@ -770,19 +779,23 @@ impl BrokeredCandidateExecutor {
     async fn close(&self, lease: &BrokeredInferenceLease) {
         let _ = self.client.close_grant(&lease.grant_id).await;
     }
-}
 
-#[async_trait]
-impl LlmExecutor for BrokeredCandidateExecutor {
-    async fn infer(&self, mut request: ChatRequest) -> Result<ChatResponse, LlmError> {
-        let lease = self.lease().await.map_err(|error| {
+    async fn execute(
+        &self,
+        mut request: ChatRequest,
+        sink: Option<&dyn DeltaSink>,
+    ) -> Result<ChatResponse, LlmError> {
+        let lease = self.lease(&request.model_binding).await.map_err(|error| {
             error.with_execution_evidence(
                 awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched,
             )
         })?;
         request.model_binding.model_ref.clone_from(&self.model);
         let result = match self.executor(&lease) {
-            Ok(executor) => executor.infer(request).await,
+            Ok(executor) => match sink {
+                Some(sink) => executor.infer_streaming(request, sink).await,
+                None => executor.infer(request).await,
+            },
             Err(error) => Err(error.with_execution_evidence(
                 awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched,
             )),
@@ -790,26 +803,20 @@ impl LlmExecutor for BrokeredCandidateExecutor {
         self.close(&lease).await;
         result
     }
+}
+
+#[async_trait]
+impl LlmExecutor for BrokeredCandidateExecutor {
+    async fn infer(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
+        self.execute(request, None).await
+    }
 
     async fn infer_streaming(
         &self,
-        mut request: ChatRequest,
+        request: ChatRequest,
         sink: &dyn DeltaSink,
     ) -> Result<ChatResponse, LlmError> {
-        let lease = self.lease().await.map_err(|error| {
-            error.with_execution_evidence(
-                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched,
-            )
-        })?;
-        request.model_binding.model_ref.clone_from(&self.model);
-        let result = match self.executor(&lease) {
-            Ok(executor) => executor.infer_streaming(request, sink).await,
-            Err(error) => Err(error.with_execution_evidence(
-                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched,
-            )),
-        };
-        self.close(&lease).await;
-        result
+        self.execute(request, Some(sink)).await
     }
 }
 
@@ -1168,13 +1175,63 @@ mod tests {
         .unwrap()
     }
 
+    fn model_operation(
+        ordinal: u64,
+    ) -> awaken_runtime_contract::model_operation::ModelOperationContext {
+        use awaken_runtime_contract::model_operation::{ModelOperation, ModelOperationContext};
+        let mut record = ModelOperation::next(
+            None,
+            awaken_runtime_contract::resolved::ModelBinding::new("openai@3", "gpt-5", "native"),
+        )
+        .unwrap();
+        record.ordinal = std::num::NonZeroU64::new(ordinal).unwrap();
+        ModelOperationContext::from_operation(
+            &awaken_agent_contract::agent::thread::Id("thread-7".into()),
+            &awaken_agent_contract::agent::run::Id("run-7".into()),
+            &record,
+        )
+    }
+
+    async fn lease_operation(
+        executor: &BrokeredCandidateExecutor,
+        ordinal: u64,
+    ) -> Result<BrokeredInferenceLease, LlmError> {
+        let operation = model_operation(ordinal);
+        let binding = operation.binding().clone();
+        awaken_runtime_contract::model_operation::with_model_operation_context(
+            Some(operation),
+            executor.lease(&binding),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn rematerialized_candidates_must_not_reuse_another_invocations_grant_key() {
+        // G1 the pinned wrapper materializes a fresh candidate per invocation;
+        // G2 both invocations belong to the same Run and target. Distinct durable
+        // model invocations must request distinct grants despite G1+G2. A local
+        // counter reset must not impersonate a retry of the preceding operation.
+        let client = Arc::new(RecordingClient::default());
+        for ordinal in 1..=2 {
+            lease_operation(
+                &executor(client.clone(), Some(Arc::new(CurrentOwnership))),
+                ordinal,
+            )
+            .await
+            .unwrap();
+        }
+        let requests = client.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_ne!(requests[0].idempotency_key, requests[1].idempotency_key);
+    }
+
     #[tokio::test]
     async fn t1_t2_exact_request_and_unique_idempotency_are_derived_locally() {
         let client = Arc::new(RecordingClient::default());
         let executor = executor(client.clone(), Some(Arc::new(CurrentOwnership)));
 
-        executor.lease().await.unwrap();
-        executor.lease().await.unwrap();
+        lease_operation(&executor, 1).await.unwrap();
+        lease_operation(&executor, 2).await.unwrap();
 
         let requests = client.requests.lock().unwrap();
         assert_eq!(requests.len(), 2);
@@ -1188,7 +1245,9 @@ mod tests {
     #[tokio::test]
     async fn t3_missing_attempt_ownership_prevents_a_grant_call() {
         let client = Arc::new(RecordingClient::default());
-        let error = executor(client.clone(), None).lease().await.unwrap_err();
+        let error = lease_operation(&executor(client.clone(), None), 1)
+            .await
+            .unwrap_err();
 
         assert_eq!(error.code(), "binding_rejected");
         assert!(client.requests.lock().unwrap().is_empty());
@@ -1220,6 +1279,47 @@ mod tests {
             );
         }
         assert!(client.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn grant_retry_identity_survives_reconstruction_and_rejects_foreign_context() {
+        use awaken_runtime_contract::model_operation::with_model_operation_context;
+        // G3 same durable invocation through new adapter instances => same key,
+        // including a lost grant response retry. G4 ordinal advances => distinct
+        // (adjacent reproduction). G5 absent context, foreign Run or binding =>
+        // zero broker IO. Ownership is necessary but cannot supply missing identity.
+        let client = Arc::new(RecordingClient::default());
+        for _ in 0..2 {
+            lease_operation(
+                &executor(client.clone(), Some(Arc::new(CurrentOwnership))),
+                7,
+            )
+            .await
+            .unwrap();
+        }
+        {
+            let requests = client.requests.lock().unwrap();
+            assert_eq!(requests[0].idempotency_key, requests[1].idempotency_key);
+        }
+        let model = executor(client.clone(), Some(Arc::new(CurrentOwnership)));
+        let operation = model_operation(7);
+        let binding = operation.binding().clone();
+        assert!(model.lease(&binding).await.is_err());
+        let mut foreign_binding = binding.clone();
+        foreign_binding.model_ref = "foreign-model".into();
+        assert!(
+            with_model_operation_context(Some(operation.clone()), model.lease(&foreign_binding))
+                .await
+                .is_err()
+        );
+        let mut foreign_run = executor(client.clone(), Some(Arc::new(CurrentOwnership)));
+        foreign_run.local_run_correlation = Some("foreign-run".into());
+        assert!(
+            with_model_operation_context(Some(operation), foreign_run.lease(&binding))
+                .await
+                .is_err()
+        );
+        assert_eq!(client.requests.lock().unwrap().len(), 2);
     }
 
     #[test]

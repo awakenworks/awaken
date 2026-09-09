@@ -123,6 +123,14 @@ step "run-ingress-neutral" "keep store-only arithmetic out of the database-less 
 step "run-ingress-neutral-unit" "keep memory and domain tests independent from optional SQL drivers" \
   cargo test -p awaken-dispatch --no-default-features --lib "${locked[@]}"
 
+# CR7 a brokered client needs catalog/HTTP contracts but no Admin database:
+# its actual transitive graph must compile warning-free without workspace SQL
+# feature unification. CR8 SQL adapters/tests still own migration-history helpers;
+# the workspace check below and Admin schema tests retain those consumers. Do not
+# silence dead-code warnings or enable a database merely to hide this boundary.
+step "brokered-inference-neutral" "keep database-only migration helpers out of the brokered client graph" \
+  cargo clippy -p awaken-credential-materializer --features brokered --all-targets "${locked[@]}" -- -D warnings
+
 # CR6 optional Pod transport and its production startup are not enabled by
 # default -> include the owning CLI feature, which also enables Worker and
 # security adapters. A leaf-only check would miss configuration/wiring drift.

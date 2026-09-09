@@ -77,6 +77,86 @@ fn next_ordinal(previous: u64) -> Option<NonZeroU64> {
     previous.checked_add(1).and_then(NonZeroU64::new)
 }
 
+/// Identity derived from the existing Run-scoped model journal. This is trusted
+/// execution context, never model input, a provider response id or a stop proof.
+/// There is no second sequence allocator or independently persisted identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelOperationContext {
+    thread_id: awaken_agent_contract::agent::thread::Id,
+    run_id: awaken_agent_contract::agent::run::Id,
+    ordinal: NonZeroU64,
+    binding: ModelBinding,
+}
+
+impl ModelOperationContext {
+    /// Runtime publishes this context only after the corresponding entry write
+    /// succeeds. Recovery may reconstruct the same identity from that record;
+    /// constructing it alone does not authorize dispatch or replay.
+    #[must_use]
+    pub fn from_operation(
+        thread_id: &awaken_agent_contract::agent::thread::Id,
+        run_id: &awaken_agent_contract::agent::run::Id,
+        operation: &ModelOperation,
+    ) -> Self {
+        Self {
+            thread_id: thread_id.clone(),
+            run_id: run_id.clone(),
+            ordinal: operation.ordinal,
+            binding: operation.binding.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn run_id(&self) -> &awaken_agent_contract::agent::run::Id {
+        &self.run_id
+    }
+
+    #[must_use]
+    pub fn binding(&self) -> &ModelBinding {
+        &self.binding
+    }
+
+    /// A versioned, bounded coordinate for infrastructure correlation. Hash the
+    /// structured tuple so delimiters inside opaque ids cannot create aliases.
+    /// Equality identifies one invocation, not permission to invoke it again.
+    #[must_use]
+    pub fn operation_id(&self) -> String {
+        let fingerprint = crate::resolution::content_fingerprint(&(
+            "model-operation-v1",
+            &self.thread_id,
+            &self.run_id,
+            self.ordinal,
+            &self.binding,
+        ))
+        .expect("model operation identity components always serialize");
+        format!("model-op-v1:{fingerprint}")
+    }
+}
+
+tokio::task_local! {
+    static MODEL_OPERATION_CONTEXT: Option<ModelOperationContext>;
+}
+
+/// Read the Runtime-owned identity at provider entry. Direct calls outside an
+/// instrumented invocation have no durable identity and must not fabricate one.
+#[must_use]
+pub fn current_model_operation_context() -> Option<ModelOperationContext> {
+    MODEL_OPERATION_CONTEXT
+        .try_with(Clone::clone)
+        .ok()
+        .flatten()
+}
+
+/// Scope one provider invocation, including adapter awaits, to its journal
+/// identity. `None` explicitly masks an outer invocation rather than borrowing
+/// its key. Child tasks must receive their own explicit execution context.
+pub async fn with_model_operation_context<T>(
+    context: Option<ModelOperationContext>,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    MODEL_OPERATION_CONTEXT.scope(context, future).await
+}
+
 /// One latest-value projection; older invocations remain in the append-only
 /// Thread state log. ToolBatch and model usage keep their existing owners.
 pub struct ActiveModelOperation;
@@ -173,6 +253,22 @@ fn model_operation_ordinal_never_wraps_or_reuses_a_coordinate() {
             assert!(previous < u64::MAX);
             assert!(next.get() > previous);
             assert_eq!(next.get() - previous, 1);
+            // C3 adapter identity is projected from this record, not allocated
+            // by a second counter. Exhaust the full-width ordinal projection;
+            // string tuple isolation and task-local propagation use Rust tests.
+            // This does not prove the fingerprint or any provider-side effect.
+            let operation = ModelOperation {
+                ordinal: next,
+                binding: ModelBinding::new("", "", ""),
+                phase: ModelOperationPhase::Entered,
+                execution: ModelExecutionEvidence::Unknown,
+            };
+            let identity = ModelOperationContext::from_operation(
+                &awaken_agent_contract::agent::thread::Id(String::new()),
+                &awaken_agent_contract::agent::run::Id(String::new()),
+                &operation,
+            );
+            assert_eq!(identity.ordinal, next);
         }
         None => assert_eq!(previous, u64::MAX),
     }
@@ -181,6 +277,74 @@ fn model_operation_ordinal_never_wraps_or_reuses_a_coordinate() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn model_identity_is_reconstructible_exact_and_task_scoped() {
+        use awaken_agent_contract::agent::{run::Id as RunId, thread::Id as ThreadId};
+        // I1 same persisted tuple reconstructed, regardless of local phase =>
+        // same id. I2 change each coordinate independently => distinct id. I3
+        // concurrent/nested scopes => isolated; I4 absent/direct scope => None.
+        // Hash collision resistance is TCB; this checks serialization boundaries,
+        // not provider idempotency, replay authorization or stop evidence.
+        let thread = ThreadId("thread:a".into());
+        let run = RunId("run:b".into());
+        let record = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
+        let context = ModelOperationContext::from_operation(&thread, &run, &record);
+        let mut restored: ModelOperation =
+            serde_json::from_value(serde_json::to_value(&record).unwrap()).unwrap();
+        restored.phase = ModelOperationPhase::Returned;
+        restored.execution = ModelExecutionEvidence::Terminated;
+        assert_eq!(
+            context,
+            ModelOperationContext::from_operation(&thread, &run, &restored)
+        );
+        for field in 0..6 {
+            let mut changed = context.clone();
+            match field {
+                0 => changed.thread_id.0.push('x'),
+                1 => changed.run_id.0.push('x'),
+                2 => changed.ordinal = NonZeroU64::new(2).unwrap(),
+                3 => changed.binding.provider_identity_ref.push('x'),
+                4 => changed.binding.model_ref.push('x'),
+                _ => changed.binding.backend_ref.push('x'),
+            }
+            assert_ne!(
+                context.operation_id(),
+                changed.operation_id(),
+                "I2 field {field}"
+            );
+            let observe = |value: ModelOperationContext| async move {
+                with_model_operation_context(Some(value.clone()), async {
+                    tokio::task::yield_now().await;
+                    assert_eq!(current_model_operation_context(), Some(value.clone()));
+                    with_model_operation_context(None, async {
+                        tokio::task::yield_now().await;
+                        assert_eq!(current_model_operation_context(), None);
+                    })
+                    .await;
+                    assert_eq!(current_model_operation_context(), Some(value));
+                })
+                .await;
+            };
+            tokio::join!(observe(context.clone()), observe(changed));
+            assert_eq!(current_model_operation_context(), None);
+        }
+        let a = ModelOperationContext::from_operation(
+            &ThreadId("a:b".into()),
+            &RunId("c".into()),
+            &record,
+        );
+        let b = ModelOperationContext::from_operation(
+            &ThreadId("a".into()),
+            &RunId("b:c".into()),
+            &record,
+        );
+        assert_ne!(
+            a.operation_id(),
+            b.operation_id(),
+            "I2 delimiters cannot alias"
+        );
+    }
 
     #[test]
     fn committed_model_observation_is_exact_run_and_prefix_scoped() {
