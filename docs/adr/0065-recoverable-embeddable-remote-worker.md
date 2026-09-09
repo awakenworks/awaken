@@ -293,11 +293,41 @@ The resulting `WorkerProcessStopStatus` is deliberately local-only and has no
 Dispatch mutation capability. An Exited observation preserves the original
 binding and provider evidence reference; blank references and cross-domain cached
 receipts reject. Neither the closed command nor the observation is deserializable.
-Unknown/Exited both retain `Blocked`; provider
-failure or timeout returns retryable Unavailable and retains occupancy. This
-implements independent process-stop consumption, not complete attempt recovery.
-Remote participants still require their own authoritative terminal/continuation
-evidence before exact Dispatch retirement can be enabled. The HTTP decision
+The same trusted `WorkerExecutionStopSource` has a separate, read-only
+`observe_attempt_termination` method. Its default is Unknown, including for the
+current Kubernetes adapter. The application constructs its private
+`ClosedAttemptExecution` subject only after exact local exit, then rereads the
+original slot. A complete assertion must bind the entire original
+`PhysicalAttempt` (Run/owner/epoch and frozen provider/Worker binding), and its
+evidence reference must be nonempty. This is an infrastructure trust boundary,
+not a signature or an inference from the latest model/tool projection. The
+provider must establish complete enrollment before effects and terminal/no-restart
+facts for all participants, including SDK retries, hooks and independent work.
+Legacy absence and incomplete coverage remain Unknown. Neither observation
+subject nor complete assertion is deserializable from Worker/user JSON.
+
+Only an exact complete assertion reaches the original `finish_attempt` transaction
+and retired-epoch watermark. Provider IO holds no Dispatch transaction; an old
+reply cannot clear a successor admitted during IO. The evidence query is read-only
+because a concurrent durable handoff may already have transferred the remote
+operation: this query cannot issue cancellation against a stale owner snapshot.
+Remote stop remains the corresponding backend owner's protocol, not Coordinator
+JSON or a new recovery queue. Response loss retries query the same frozen subject.
+Local-only/Unknown observations retain occupancy; errors/deadlines fail closed.
+Even successful retirement returns the original Blocked admission response so
+the existing Worker retry must freshly authenticate and acquire its own slot.
+Retirement neither grants the old Worker commit rights nor upgrades Runtime's
+replay policy or journal evidence. Unknown model results and NeverReplay tools
+still need their own supported recovery decisions.
+
+This implements the complete-evidence consumption seam, not a production Native
+termination provider or complete crash recovery. Kubernetes still has only local
+process evidence, and Native still lacks complete durable participant enrollment
+and provider-query integration. The complete-assertion HTTP tests use a trusted
+deterministic provider fixture, with Memory/SQLite/real PostgreSQL Dispatch,
+response-loss deadlines, concurrent replies, successor admission between replies,
+foreign receipts and invented Worker JSON. They do not prove a real model stopped.
+The HTTP decision
 matrix crosses Registry adapters and old-response races; production CLI tests
 exercise the assembled stop source against a mock Kubernetes API. Neither is
 the Native hard-crash k3d acceptance test.

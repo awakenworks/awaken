@@ -1774,6 +1774,17 @@ fn closed_environment_recovery_admission_covers_every_owner_class() {
     // Effects: E1 only Rebuild plus an exact unprotected class consumes; E2
     // every Reject or protected/stale row retains. This is the complete 2x6
     // decision table used before the production plan carries the exact fence.
+    // Layout rule: large retirement/pending payloads remain exact owned values
+    // behind indirection; small variants and the fail-closed plan must not reserve
+    // hundreds of inline bytes across async recovery. A relative pointer-width
+    // budget covers the representation independently of target architecture.
+    assert!(
+        std::mem::size_of::<ClosedEnvironmentRecoveryOwner>() <= 4 * std::mem::size_of::<usize>()
+    );
+    assert!(
+        std::mem::size_of::<ClosedEnvironmentRecoveryPlan<'_>>()
+            <= 6 * std::mem::size_of::<usize>()
+    );
     let owners = [
         ClosedEnvironmentRecoveryOwnerClass::Revoked,
         ClosedEnvironmentRecoveryOwnerClass::RecoveryDiscard,

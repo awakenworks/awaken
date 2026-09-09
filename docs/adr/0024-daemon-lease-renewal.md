@@ -269,9 +269,11 @@ same bound domain, and only the original exit validator may return its receipt.
 CAS conflicts and response loss retry without retargeting a replacement. The
 adapter never removes the finalizer or deletes Session/PVC participants. Its
 whole-Worker scope requires trusted recovery composition, not per-Run cancellation.
-Production deployment installation and post-retirement release of retention,
-remote-participant proof and exact crash retirement remain unwired. ADR-0065
-owns the Coordinator's independent local-stop consumption and its evidence limit.
+Production deployment installation, post-retirement release of retention and
+remote-participant proof remain unavailable. ADR-0065 owns the Coordinator's
+local-stop and complete-assertion consumption: only the separately verified full
+assertion can reach exact retirement. The Kubernetes adapter retains Unknown for
+that assertion; local exit alone never retires an attempt.
 
 This is a provider observation, not a Native recovery command. Dispatch now
 freezes an optional `AttemptExecutionBinding` with its physical slot, in the
@@ -696,7 +698,12 @@ Dispatch, Session or Work transition. Its three participant classes (local
 process, model, tool) stop and deliver exact Run/Worker/Epoch receipts separately.
 Physical exit precedes receipt delivery; an open local domain can still receive
 a delayed launch. Only irreversible closure plus every exact participant receipt
-permits the original aggregate return and exact `FinishExecution`. A committed
+permits delivery of a complete assertion. Delivery and its application to the
+original aggregate return and exact `FinishExecution` are separate actions, so
+response loss and successor admission between old replies remain observable.
+The consumer must match that assertion's exact subject, not merely find any
+complete assertion. Seven safety mutants, one fairness mutant and six positive
+witnesses qualify these boundaries. A committed
 Ended fact, lease change, local-only exit or an older attempt's complete receipts
 cannot discharge another outstanding participant. Duplicate deliveries stutter;
 delivery loss may persist indefinitely. The safety slice retains two Workers

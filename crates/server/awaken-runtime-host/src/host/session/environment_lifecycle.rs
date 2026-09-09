@@ -187,7 +187,7 @@ struct UnavailableEnvironmentRecovery<'a> {
 enum ClosedEnvironmentRecoveryOwner {
     Retiring(Box<RetiringSessionEnvironment>),
     Resident(Arc<crate::session_environment::SessionEnvironment>),
-    Pending(Box<BoundSessionEnvironmentIdentity>, String),
+    Pending(Box<(BoundSessionEnvironmentIdentity, String)>),
     Vacant,
 }
 
@@ -365,10 +365,10 @@ impl SharedHost {
                 {
                     (
                         ClosedEnvironmentRecoveryOwnerClass::Pending,
-                        Some(ClosedEnvironmentRecoveryOwner::Pending(
-                            Box::new(identity.clone()),
+                        Some(ClosedEnvironmentRecoveryOwner::Pending(Box::new((
+                            identity.clone(),
                             binding.clone(),
-                        )),
+                        )))),
                     )
                 } else if revoked.is_none()
                     && resident.is_none()
@@ -1148,11 +1148,11 @@ impl SharedHost {
                     ClosedEnvironmentRecoveryOwner::Resident(environment) => {
                         self.discard_observed_session_environment(thread, &environment)
                     }
-                    ClosedEnvironmentRecoveryOwner::Pending(identity, pending_binding) => self
+                    ClosedEnvironmentRecoveryOwner::Pending(pending) => self
                         .session_slots
                         .modify(thread, |slot| {
                             slot.environment_owner
-                                .discard_closed_pending_adoption(&identity, &pending_binding)
+                                .discard_closed_pending_adoption(&pending.0, &pending.1)
                         })
                         .unwrap_or(false),
                     ClosedEnvironmentRecoveryOwner::Vacant => true,

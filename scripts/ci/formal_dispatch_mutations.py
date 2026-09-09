@@ -150,7 +150,10 @@ def check_stop_evidence_model_mutants(tlc_jar: Path) -> None:
     # exact Dispatch retirement. Lease expiry, logical Ended, local-only stop,
     # missing delivery and receipts belonging to an older epoch cannot satisfy
     # that conjunction. Duplicate delivery is idempotent; delayed delivery may
-    # arrive in any order. R1-R6 below each negate one conjunct/subject check.
+    # arrive in any order. R1-R6 negate provider-premise conjuncts; R7 substitutes
+    # a foreign complete assertion at the application's exact-subject boundary.
+    # Complete assertion delivery and Dispatch application are separate actions
+    # so response loss/reobservation and intervening successor admission coexist.
     # Positive witnesses additionally require partial, complete, historical and
     # terminal-with-outstanding-work states so "always block" cannot pass.
     source = (ROOT / "formal/tla/SessionRunStopEvidence.tla").read_text()
@@ -158,15 +161,17 @@ def check_stop_evidence_model_mutants(tlc_jar: Path) -> None:
     dependencies = ("SessionRunProtocol", "RunIngressKernel", "SessionActivityKernel", "WorkQueueKernel")
     name = "SessionRunStopEvidence"
     changes = [
-        (r"    /\ CompleteEvidence(attempt)", "    /\\ TRUE", "AggregateRetirementRequiresAllReceipts"),
+        (r"    /\ CompleteEvidence(attempt)", "    /\\ TRUE", "CompleteReceiptIsSound"),
         (r"    /\ participant \notin activeParticipants", "    /\\ TRUE", "ReceiptIsSound"),
         (r'    /\ participant[4] = "local" => Subject(participant) \in closedAttempts',
          "    /\\ TRUE", "ReceiptIsSound"),
         (r"    /\ attempt \notin closedAttempts", "    /\\ TRUE", "ReceiptIsSound"),
         (r"    /\ CompleteEvidence(attempt)",
-         r"    /\ Local(attempt) \in returnedParticipants", "AggregateRetirementRequiresAllReceipts"),
+         r"    /\ Local(attempt) \in returnedParticipants", "CompleteReceiptIsSound"),
         (r"    /\ CompleteEvidence(attempt)",
-         r"    /\ \E old \in issuedAttempts: CompleteEvidence(old)", "AggregateRetirementRequiresAllReceipts"),
+         r"    /\ \E old \in issuedAttempts: CompleteEvidence(old)", "CompleteReceiptIsSound"),
+        (r"    /\ attempt \in completeReceipts",
+         r"    /\ completeReceipts # {}", "AggregateRetirementRequiresAllReceipts"),
     ]
     mutations = []
     for anchor, broken, oracle in changes:
@@ -193,7 +198,7 @@ def check_stop_evidence_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, name, source, live,
         [(source.replace(anchor, "         TRUE"), live, "temporal:CompletePhysicalStopEventuallyRetires")],
         dependencies=dependencies, heap_mb=1024, timeout_seconds=300)
-    print("Participant stop evidence: 6 safety mutants + 1 fairness mutant killed; 6 positive witnesses reached")
+    print("Participant stop evidence: 7 safety mutants + 1 fairness mutant killed; 6 positive witnesses reached")
 
 
 def check_maintenance_observation_mutants(tlc_jar: Path, trace_dir: Path) -> None:
