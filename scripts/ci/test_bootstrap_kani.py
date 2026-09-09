@@ -21,26 +21,49 @@ if name == "git":
     source = None
     if args[:1] == ["-C"]:
         source = pathlib.Path(args[1]); args = args[2:]
+    backend = source is not None and source.name == "source"
+    prefix = "CBMC_" if backend else ""
     action = args[0]
-    if action == "clone":
-        source = pathlib.Path(args[-1]); (source / ".git").mkdir(parents=True)
+    if action in ("clone", "init"):
+        if action == "clone":
+            source = pathlib.Path(args[-1])
+        (source / ".git").mkdir(parents=True)
         (source / "scripts").mkdir()
         (source / "scripts/kani").symlink_to(os.environ["KANI_WITNESS"])
     elif action == "rev-parse":
-        print(os.environ.get("ACTUAL_REVISION", os.environ["PINNED_REVISION"]))
+        print(os.environ.get(prefix + "ACTUAL_REVISION", os.environ[prefix + "PINNED_REVISION"]))
     elif action == "ls-files":
-        print("unexpected.rs" if os.environ.get("UNTRACKED") else "")
+        print("unexpected.rs" if os.environ.get(prefix + "UNTRACKED") else "")
     elif action == "apply" and "--check" not in args:
         (source / "applied").touch()
     elif action == "diff":
         if "--cached" in args:
-            sys.exit(int(os.environ.get("STAGED", "0")))
+            sys.exit(int(os.environ.get(prefix + "STAGED", "0")))
         if "--quiet" in args:
-            sys.exit(int((source / "applied").exists() or bool(os.environ.get("DRIFT"))))
+            sys.exit(int((source / "applied").exists() or bool(os.environ.get(prefix + "DRIFT"))))
         if (source / "applied").exists():
-            sys.stdout.write(pathlib.Path(os.environ["PATCH"]).read_text())
-        if os.environ.get("DRIFT"):
+            sys.stdout.write(pathlib.Path(os.environ[prefix + "PATCH"]).read_text())
+        if os.environ.get(prefix + "DRIFT"):
             print("unreviewed change")
+elif name == "cmake":
+    if args[0] == "--build":
+        build = pathlib.Path(args[1])
+        (build / "bin").mkdir(parents=True, exist_ok=True)
+        for binary in ("cbmc", "unit"):
+            target = build / "bin" / binary
+            target.write_bytes(pathlib.Path(sys.argv[0]).read_bytes()); target.chmod(0o755)
+        sys.exit(int(os.environ.get("CBMC_BUILD_EXIT", "0")))
+    build = pathlib.Path(args[args.index("-B") + 1]); build.mkdir(parents=True)
+    (build / "CMakeCache.txt").write_text(" ".join(args))
+elif name == "unit":
+    print("All tests passed")
+    sys.exit(int(os.environ.get("Z3_EXIT" if args == ["[smt2-z3]"] else "UNIT_EXIT", "0")))
+elif name == "goto-cc":
+    pathlib.Path(args[args.index("-o") + 1]).write_text("goto")
+elif name == "cbmc":
+    negative = args[-1].endswith(".goto")
+    print("[main.assertion.1] force typed pointer discovery: FAILURE" if negative else "VERIFICATION SUCCESSFUL")
+    sys.exit(int(os.environ.get("NEGATIVE_EXIT" if negative else "POSITIVE_EXIT", "10" if negative else "0")))
 elif name == "cargo":
     build = pathlib.Path.cwd() / "target/kani"
     build.mkdir(parents=True, exist_ok=True)
@@ -58,7 +81,8 @@ class BootstrapTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.scripts = self.root / "scripts/ci"
         for relative in ("bootstrap_kani.sh", "patches/kani-wide-niche.patch",
-                         "fixtures/kani_wide_niche.rs"):
+                         "fixtures/kani_wide_niche.rs", "patches/cbmc-smt-type-dependencies.patch",
+                         "fixtures/cbmc_recursive_alias.c"):
             target = self.scripts / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / "scripts/ci" / relative, target)
@@ -73,14 +97,20 @@ class BootstrapTests(unittest.TestCase):
         self.patched = self.cache / f"{revision}-{digest[:12]}"
         bindir = self.root / "bin"
         bindir.mkdir()
-        for name in ("git", "cargo", "rustup", "kani", "cbmc", "goto-cc"):
+        for name in ("git", "cargo", "rustup", "kani", "cbmc", "goto-cc", "goto-instrument", "cmake", "z3"):
             tool = bindir / name
             tool.write_text(TOOL)
             tool.chmod(0o755)
+        # The only replaced port is the release installation directory; all
+        # source/build/qualification and selection rules execute the real shell.
+        source = source.replace('$HOME/.kani/kani-$kani_backend_version/bin', str(bindir))
+        (self.scripts / "bootstrap_kani.sh").write_text(source)
         self.calls = self.root / "calls"
         self.env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}",
                         AWAKEN_KANI_CACHE_DIR=str(self.cache),
-                        AWAKEN_KANI_BACKEND_DIR=str(bindir), CALLS=str(self.calls),
+                        CALLS=str(self.calls),
+                        CBMC_PINNED_REVISION=re.search(r'readonly cbmc_revision="([^"]+)"', source)[1],
+                        CBMC_PATCH=str(self.scripts / "patches/cbmc-smt-type-dependencies.patch"),
                         PINNED_REVISION=revision, PATCH=str(self.scripts / "patches/kani-wide-niche.patch"),
                         KANI_WITNESS=str(bindir / "kani"))
 
@@ -99,7 +129,7 @@ class BootstrapTests(unittest.TestCase):
             self.assertTrue(self.previous.is_dir())
         calls = self.calls.read_text().splitlines()
         applied = [line for line in calls if " apply " in line and "--check" not in line]
-        self.assertEqual(len(applied), 1)
+        self.assertEqual(len(applied), 2)
         builds = [i for i, line in enumerate(calls) if line == "cargo build-dev"]
         checks = [i for i, line in enumerate(calls) if line.startswith("kani ")]
         self.assertEqual(len(checks), 2)
@@ -124,6 +154,7 @@ class BootstrapTests(unittest.TestCase):
                 result = self.run_bootstrap(**changes)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual((self.cache / "current").resolve(), self.previous)
+                self.assertFalse(any(self.cache.glob("cbmc-*/qualified.txt")))
                 calls = self.calls.read_text()
                 self.assertEqual("cargo build-dev" in calls, reaches_build)
                 self.assertEqual(any(line.startswith("kani ") for line in calls.splitlines()), reaches_check)
@@ -172,6 +203,146 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn("qualified cache", result.stderr)
         self.assertEqual(compiler.read_text(), "changed compiler bytes")
 
+    def backend(self):
+        return next(self.cache.glob("cbmc-*"))
+
+    def verify(self, **changes):
+        return subprocess.run(["bash", str(self.scripts / "bootstrap_kani.sh"),
+                               "--verify-source", str(self.patched)],
+                              env=dict(self.env, **changes), capture_output=True, text=True)
+
+    def test_backend_decision_table_never_publishes_unqualified_tools(self):
+        # B1 revision/staged/untracked/patch drift -> no compilation. B2 compiler,
+        # unit, real-Z3 or positive regression failure -> no receipt/publication.
+        # B3 intentional negative must fail as a property (10), never succeed
+        # (0) or throw an encoder exception (6). Each row starts a fresh cache.
+        for changes, builds in (
+            ({"CBMC_ACTUAL_REVISION": "wrong"}, False),
+            ({"CBMC_STAGED": "1"}, False), ({"CBMC_UNTRACKED": "1"}, False),
+            ({"CBMC_DRIFT": "1"}, False), ({"CBMC_BUILD_EXIT": "23"}, True),
+            ({"UNIT_EXIT": "24"}, True), ({"Z3_EXIT": "25"}, True),
+            ({"POSITIVE_EXIT": "6"}, True), ({"NEGATIVE_EXIT": "0"}, True),
+            ({"NEGATIVE_EXIT": "6"}, True),
+        ):
+            with self.subTest(changes=changes):
+                for package in self.cache.glob("cbmc-*"):
+                    shutil.rmtree(package)
+                self.calls.write_text("")
+                result = self.run_bootstrap(**changes)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertEqual((self.cache / "current").resolve(), self.previous)
+                self.assertFalse(any(self.cache.glob("cbmc-*/qualified.txt")))
+                self.assertEqual("cmake --build" in self.calls.read_text(), builds)
+                self.assertNotIn("kani ", self.calls.read_text())
+
+    def test_unqualified_destination_links_cannot_overwrite_previous_tools(self):
+        # B6 a failed attempt leaves destinations linked to an older package.
+        # Retrying may replace its own links, but must preserve every old byte.
+        self.assertNotEqual(self.run_bootstrap(UNIT_EXIT="23").returncode, 0)
+        backend = self.backend()
+        old = self.previous / "old-tool"
+        old.write_bytes(b"qualified old bytes")
+        for name in ("cbmc", "goto-cc", "goto-instrument"):
+            destination = backend / "bin" / name
+            destination.unlink()
+            if name == "goto-cc":
+                os.link(old, destination)
+            else:
+                destination.symlink_to(old)
+        for output in ("qualified.pending", "unit.log", "z3.log", "leaf.goto", "internal.log"):
+            destination = backend / output
+            destination.unlink(missing_ok=True)
+            destination.symlink_to(old)
+        result = self.run_bootstrap()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(old.read_bytes(), b"qualified old bytes")
+        self.assertTrue(all(not (backend / "bin" / name).is_symlink()
+                            for name in ("cbmc", "goto-cc", "goto-instrument")))
+
+    def test_unqualified_source_alias_never_patches_a_previous_source(self):
+        # B7 even a clean, correctly pinned source is not writable through an
+        # alias into a previous cache. Refusal must precede git apply/build.
+        self.assertNotEqual(self.run_bootstrap(CBMC_BUILD_EXIT="23").returncode, 0)
+        backend = self.backend()
+        source = backend / "source"
+        previous_source = self.previous / "source"
+        source.rename(previous_source)
+        (previous_source / "applied").unlink()
+        source.symlink_to(previous_source)
+        self.calls.write_text("")
+        result = self.run_bootstrap()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((previous_source / "applied").exists())
+        self.assertNotIn(" apply ", self.calls.read_text())
+        self.assertNotIn("cmake ", self.calls.read_text())
+
+    def test_backend_readonly_identity_covers_all_actual_inputs(self):
+        # B4 a qualified package is immutable: source, options/configuration,
+        # each actual binary path/bytes, fixture/contract and Z3 identity must
+        # match. Missing configuration cannot match a truncated receipt. Verify
+        # only observes; it cannot rebuild or rerun a green mock to bless drift.
+        self.assertEqual(self.run_bootstrap().returncode, 0)
+        backend = self.backend()
+        good_receipt = (backend / "qualified.txt").read_bytes()
+        for relative in ("bin/cbmc", "bin/goto-cc", "bin/goto-instrument", "build/CMakeCache.txt"):
+            for action in ("bytes", "missing", "symlink"):
+                with self.subTest(relative=relative, action=action):
+                    path = backend / relative
+                    original = path.read_bytes()
+                    mode = path.stat().st_mode
+                    if action == "bytes":
+                        path.write_bytes(original + b"changed")
+                    elif action == "missing":
+                        path.unlink()
+                    else:
+                        target = self.root / "other-target"
+                        target.write_bytes(original); target.chmod(mode)
+                        path.unlink(); path.symlink_to(target)
+                    self.calls.write_text("")
+                    result = self.verify()
+                    # CMakeCache is input bytes rather than a runtime executable;
+                    # an equal-byte path alias does not alter its build options.
+                    expected = relative == "build/CMakeCache.txt" and action == "symlink"
+                    self.assertEqual(result.returncode == 0, expected, result.stderr)
+                    self.assertNotIn("cmake ", self.calls.read_text())
+                    self.assertNotIn("unit ", self.calls.read_text())
+                    if path.exists() or path.is_symlink():
+                        path.unlink()
+                    path.write_bytes(original); path.chmod(mode)
+                    self.assertEqual((backend / "qualified.txt").read_bytes(), good_receipt)
+        for changes in ({"CBMC_ACTUAL_REVISION": "wrong"}, {"CBMC_DRIFT": "1"},
+                        {"CBMC_STAGED": "1"}, {"CBMC_UNTRACKED": "1"}):
+            self.assertNotEqual(self.verify(**changes).returncode, 0)
+        config = backend / "build/CMakeCache.txt"
+        config.unlink()
+        (backend / "qualified.txt").write_text(good_receipt.decode().split("configuration_sha256=")[0])
+        self.assertNotEqual(self.verify().returncode, 0)
+
+    def test_selected_backend_contract_and_path_shadow_are_rejected(self):
+        # B5 changing only the qualification contract/fixture or Z3 bytes must
+        # invalidate an explicitly selected old package. A tool earlier in the
+        # real driver PATH must not be mistaken for the recorded backend.
+        self.assertEqual(self.run_bootstrap().returncode, 0)
+        selected = {"AWAKEN_KANI_BACKEND_DIR": str(self.backend() / "bin")}
+        for path in (self.scripts / "bootstrap_kani.sh", self.scripts / "fixtures/cbmc_recursive_alias.c",
+                     self.root / "bin/z3"):
+            original = path.read_bytes()
+            path.write_bytes(original + b"\n# drift\n")
+            self.assertNotEqual(self.verify(**selected).returncode, 0)
+            path.write_bytes(original)
+        shadow = self.patched / "scripts/cbmc"
+        shadow.write_text("#!/bin/sh\nexit 0\n"); shadow.chmod(0o755)
+        result = self.verify(**selected)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PATH selects", result.stderr)
+        shadow.unlink()
+        self.calls.write_text("")
+        result = self.verify(**selected)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("qualification_z3_sha256=", result.stdout)
+        self.assertIn("goto-instrument_path=", result.stdout)
+        self.assertNotIn("cmake ", self.calls.read_text())
+
     def test_formal_invocation_freezes_the_selected_compiler_before_current_changes(self):
         # R8 current initially points at A, then another bootstrap publishes B.
         # All later calls in this invocation must still execute and attest A.
@@ -181,16 +352,28 @@ class BootstrapTests(unittest.TestCase):
             tool = scripts / "cargo-kani"
             tool.write_text(f"#!/bin/sh\nprintf '%s\\n' {name}\n")
             tool.chmod(0o755)
+        backend_link = self.cache / "selected-backend"
+        for name in ("backend-A", "backend-B"):
+            (self.cache / name / "bin").mkdir(parents=True)
+        backend_link.symlink_to(self.cache / "backend-A/bin")
         current = self.cache / "selected"
         current.symlink_to(self.cache / "A")
         gate = (ROOT / "scripts/ci/check_formal.sh").read_text()
-        selection = "kani_cache_root=" + gate.split("kani_cache_root=", 1)[1].split("\nrequire_tools=", 1)[0]
-        script = selection + '\nln -sfn "$CACHE_B" "$AWAKEN_KANI_SOURCE_DIR"\nprintf "%s\\n" "$kani_source_dir"\ncargo-kani\n'
-        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+        selection = 'kani_selection=' + gate.split('kani_selection=', 1)[1].split("\nrust_trace_dir=", 1)[0]
+        selection = selection.replace('scripts/ci/bootstrap_kani.sh --paths', 'bash scripts/ci/bootstrap_kani.sh --paths')
+        script = selection + (
+            '\nln -sfn "$CACHE_B" "$AWAKEN_KANI_SOURCE_DIR"'
+            '\nln -sfn "$BACKEND_B" "$BACKEND_LINK"'
+            '\nprintf "%s\\n" "$kani_source_dir" "$kani_backend_dir"\ncargo-kani\n'
+        )
+        result = subprocess.run(["bash", "-c", script], cwd=self.root, capture_output=True, text=True,
                                 env=dict(self.env, AWAKEN_KANI_SOURCE_DIR=str(current),
-                                         CACHE_B=str(self.cache / "B")))
+                                         CACHE_B=str(self.cache / "B"),
+                                         AWAKEN_KANI_BACKEND_DIR=str(backend_link),
+                                         BACKEND_LINK=str(backend_link),
+                                         BACKEND_B=str(self.cache / "backend-B/bin")))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines(), [str(self.cache / "A"), "A"])
+        self.assertEqual(result.stdout.splitlines(), [str(self.cache / "A"), str(self.cache / "backend-A/bin"), "A"])
 
 
 if __name__ == "__main__":

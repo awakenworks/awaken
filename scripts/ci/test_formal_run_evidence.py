@@ -29,12 +29,15 @@ def prepare_source_fixture(root: Path, extra_sources: dict[str, str] | None = No
     root.mkdir()
     for relative in ("scripts/ci/formal_run_evidence.py", "scripts/ci/check_formal.sh",
                      "scripts/ci/bootstrap_kani.sh", "scripts/ci/_cargo_target.sh",
+                     "scripts/ci/patches/kani-wide-niche.patch",
+                     "scripts/ci/patches/cbmc-smt-type-dependencies.patch",
+                     "scripts/ci/fixtures/cbmc_recursive_alias.c", "scripts/ci/fixtures/kani_wide_niche.rs",
                      "scripts/ci/_deadline.sh", "scripts/ci/deadline.py",
                      "scripts/ci/_provider_environment.sh", "scripts/ci/check-reliability.sh",
                      "rust-toolchain.toml"):
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(ROOT / relative, target)
+        shutil.copy2(ROOT / relative, target)
     for relative, source in {".gitignore": "target/\n", "transitive.rs": "// dependency\n",
                              **(extra_sources or {})}.items():
         target = root / relative
@@ -284,7 +287,15 @@ class EvidenceTests(unittest.TestCase):
         # reject-everything implementation from satisfying this decision table.
         passed = finish_record(begin_record(self.root, True, 100), self.root, False, 110)
         validate_record(passed, self.root, 110)
-        mutations = (
+        # V5 each new CBMC source/patch/options axis comes from bootstrap and
+        # independently invalidates a receipt when changed; no second pin list.
+        backend_axes = ("cbmc_source_revision", "cbmc_source_patch_sha256", "cbmc_build_options")
+        for axis in backend_axes:
+            self.assertTrue(passed["proof_toolchain"][axis])
+        mutations = tuple(
+            ("proof_toolchain", dict(passed["proof_toolchain"], **{axis: "wrong"}))
+            for axis in backend_axes
+        ) + (
             ("status", "running"), ("strict", False), ("schema_version", 0),
             ("run_id", ""), ("started_at_unix", 120), ("finished_at_unix", 111),
             ("source", dict(passed["source"], commit="a" * 40)),
@@ -311,33 +322,45 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual([p.name for p in path.parent.iterdir()], [path.name])
 
     def test_actual_gate_failure_replaces_stale_success_with_not_passed(self):
-        # C1 a completed previous run; C2 the actual check_formal.sh starts;
-        # C3 its first checker fails with 23. Effects: exact 23 exits and is
-        # finalized as Not-passed/execution-failed; no Cargo/proof call and no
-        # stale green reuse. Decision rule R1=C1+C2+C3->E1+E2.
+        # C1 a completed previous run; C2 the actual gate starts. R1 its first
+        # checker fails (23); R2 bootstrap --paths rejects a changed patch (1),
+        # before any checker. Both must retire stale Passed, preserve the exact
+        # failure and seal diagnostics. R2 specifically guards initialization
+        # order: tool selection is inside the existing receipt/EXIT lifecycle.
         path = self.root / "target/test-timings/formal-run.json"
-        write_record(path, finish_record(begin_record(self.root, True, 100), self.root, False, 110))
         bindir = Path(self.temporary.name) / "bin"
         bindir.mkdir()
+        checker_started = bindir / "checker-started"
         shim = bindir / "python3"
         shim.write_text("#!/bin/sh\ncase \"$1\" in\n"
                         "  scripts/ci/formal_run_evidence.py) exec " + shlex.quote(sys.executable) + " \"$@\" ;;\n"
-                        "  *) exit 23 ;;\nesac\n")
+                        "  *) touch \"$CHECKER_STARTED\"; exit 23 ;;\nesac\n")
         shim.chmod(0o755)
         env = dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ["PATH"],
-                   AWAKEN_FORMAL_RUN_EVIDENCE=str(path))
-        result = subprocess.run(["bash", "scripts/ci/check_formal.sh", "--require-tools"],
-                                cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
-        self.assertEqual(result.returncode, 23, result.stderr)
-        record = json.loads(path.read_text())
-        self.assertEqual(record["status"], "not-passed")
-        self.assertEqual(record["outcome"], {
-            "kind": "execution-failed", "exit_code": 23, "stage": "formal-gate",
-        })
-        bundles = list((self.root / "target/test-timings").glob("formal-*/evidence.json"))
-        self.assertEqual(len(bundles), 1)
-        failure = verify_artifacts(bundles[0].parent, self.root)
-        self.assertEqual((failure["status"], failure["exit_code"]), ("failed", 23))
+                   AWAKEN_FORMAL_RUN_EVIDENCE=str(path), CHECKER_STARTED=str(checker_started))
+        patch = self.root / "scripts/ci/patches/cbmc-smt-type-dependencies.patch"
+        original = patch.read_bytes()
+        for stage, expected in (("checker", 23), ("tool-selection", 1)):
+            with self.subTest(stage=stage):
+                shutil.rmtree(self.root / "target", ignore_errors=True)
+                checker_started.unlink(missing_ok=True)
+                if stage == "tool-selection":
+                    patch.write_bytes(original + b"\n")
+                write_record(path, finish_record(begin_record(self.root, True, 100), self.root, False, 110))
+                result = subprocess.run(["bash", "scripts/ci/check_formal.sh", "--require-tools"],
+                                        cwd=self.root, env=env, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, expected, result.stderr)
+                self.assertEqual(checker_started.exists(), stage == "checker")
+                record = json.loads(path.read_text())
+                self.assertEqual(record["status"], "not-passed")
+                self.assertEqual(record["outcome"], {
+                    "kind": "execution-failed", "exit_code": expected, "stage": "formal-gate",
+                })
+                bundles = list((self.root / "target/test-timings").glob("formal-*/evidence.json"))
+                self.assertEqual(len(bundles), 1)
+                failure = verify_artifacts(bundles[0].parent, self.root)
+                self.assertEqual((failure["status"], failure["exit_code"]), ("failed", expected))
+                patch.write_bytes(original)
 
     def test_invalid_kani_deadline_fails_before_the_first_gate_command(self):
         # Cause C1: the explicit Kani batch deadline is zero. Effects: E1 the
