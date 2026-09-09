@@ -481,11 +481,13 @@ mod verification {
     }
 
     // Qualified occupied cases cover all 24 None/empty/one-ID combinations
-    // plus two-ID absent cases 24/28/30 and Closed case 31. All retain fixed
-    // one-byte strings, every u64 revision and the complete source/replay frame.
+    // plus every two-ID Absent/Conflict/Closed case. All retain fixed one-byte
+    // strings, every u64 revision and the complete source/replay frame.
     // Accepted one-ID output is cleared before replay; the added two-ID cases
     // do not return operation IDs, so two-ID output ordering remains native-only.
-    // Cases 25/26/27/29 and all two-receipt inventories remain unproved by Kani.
+    // Accepted27 and all two-receipt inventories remain unproved by Kani.
+    // Cases 25/26/29 pass with a measured 600s budget, unchanged inputs/checks;
+    // Accepted27 needs swap-chunk bound 4, whose full probe hit the RSS guard.
     // Bound 3 retains the two-ID slice comparison's loop exit (bound 2 failed);
     // the other literals keep bound 2. All default checks remain enabled.
     // Conflict's complete 64-byte message needs memcmp bound 65 for loop exit;
@@ -681,5 +683,23 @@ mod verification {
     #[kani::unwind(3)]
     fn deleted_admission_one_retained_closed_two_31() {
         check_single_retained_literal::<31>(kani::any());
+    }
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn deleted_admission_one_retained_absent_two_26() {
+        check_single_retained_literal::<26>(kani::any());
+    }
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn deleted_admission_one_retained_conflict_two_25() {
+        check_single_retained_literal::<25>(kani::any());
+    }
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(3)]
+    fn deleted_admission_one_retained_conflict_two_29() {
+        check_single_retained_literal::<29>(kani::any());
     }
 }
