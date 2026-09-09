@@ -444,6 +444,15 @@ type checking are valuable executable evidence, but are not formal proofs.
   roll the visible projection backwards. They do not prove database snapshot
   isolation, cold reconstruction of pre-anchor legacy history, browser delivery,
   or lifecycle-supervisor fairness.
+  Direct Kani evidence additionally calls the production reply-anchor selector
+  over 0..3 lifecycle facts, all seven event kinds, exact/mismatching Thread and
+  Run identity classes, and every u64 commit, lifecycle cursor and snapshot
+  fence. It returns precisely the greatest nonzero same-owner Awaiting commit
+  within the fence, or the exact retryable Unavailable error. Native cause tables
+  cover competing order, duplicate commits, missing owners, and both numeric
+  boundaries. This selector proof does not prove arbitrary identity codecs,
+  unbounded history, async prefix collection, SQL snapshots or durable reply
+  admission; the combined pending/resolving/processed obligation remains abstract.
   `SessionRuntimeProjection.tla` also checks opening identity with the bounded
   `SessionRuntimeProjectionOpening.cfg`: one retained opening, up to three
   source commits and one later interval, arbitrary live reads, terminal

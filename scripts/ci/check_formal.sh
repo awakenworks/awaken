@@ -460,6 +460,11 @@ if command -v cargo-kani >/dev/null 2>&1; then
     echo "skipped Z3: install the pinned solver on PATH (TLAPS bundles it)"
     missing=1
   fi
+  # The reply selector visits at most three lifecycle facts; comparing the
+  # exact retryable error code needs a separate builtin memcmp budget.
+  run_kani awaken-protocol-managed -Z unstable-options --solver kissat \
+    --harness managed_reply_anchor_selects_exact_fenced_commit \
+    --cbmc-args --unwindset memcmp.0:16
   run_kani awaken-protocol-managed \
     --harness canonical_event_order_never_depends_on_wall_time \
     --solver kissat \

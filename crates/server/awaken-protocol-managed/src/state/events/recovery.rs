@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[cfg(any(test, kani))]
+mod selection_tests;
+
 impl ManagedState {
     /// Resolve the one current Run coordinate carried by a recovery prefix.
     /// Strict admission, lenient projection, and interruption must not each

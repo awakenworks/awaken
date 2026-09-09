@@ -1734,69 +1734,6 @@ async fn activation_failure_projects_only_the_exact_unowned_error() {
     );
 }
 
-#[test]
-fn tool_reply_freezes_the_latest_awaiting_commit_inside_its_recovery_fence() {
-    // Cause/effect graph: C1 lifecycle contains older/current/future Awaiting
-    // commits for one Run; C2 another Thread or Run has an Awaiting commit; C3
-    // a legacy event has no source cursor; C4 the fenced prefix has no matching
-    // Awaiting. Effects: E1 select the latest same-Thread/same-Run commit no
-    // later than the snapshot fence; E2 ignore C2/C3; E3 C4 remains retryable
-    // and cannot mint an ordering anchor. Decision table: R1=C1+C2+C3=>E1+E2;
-    // R2=C4=>E3. The lifecycle feed remains the sole commit-coordinate owner.
-    let thread = ThreadId("thread-reply-order".into());
-    let run = RunId("run-reply-order".into());
-    let events = vec![
-        lifecycle(
-            10,
-            &thread.0,
-            &run,
-            RunLifecycleEventKind::Awaiting,
-            RunState::Awaiting,
-        ),
-        lifecycle(
-            30,
-            &thread.0,
-            &run,
-            RunLifecycleEventKind::Awaiting,
-            RunState::Awaiting,
-        ),
-        lifecycle(
-            40,
-            &thread.0,
-            &run,
-            RunLifecycleEventKind::Awaiting,
-            RunState::Awaiting,
-        ),
-        lifecycle(
-            25,
-            "other-thread",
-            &run,
-            RunLifecycleEventKind::Awaiting,
-            RunState::Awaiting,
-        ),
-    ];
-    assert_eq!(
-        ManagedState::answered_pending_commit_cursor(&thread, &run, 35, &events).unwrap(),
-        30,
-        "R1/E1-E2"
-    );
-    assert_eq!(
-        ManagedState::answered_pending_commit_cursor(&thread, &run, 20, &events).unwrap(),
-        10,
-        "R1/E1 older fence"
-    );
-    assert!(
-        ManagedState::answered_pending_commit_cursor(
-            &thread,
-            &RunId("missing-run".into()),
-            35,
-            &events,
-        )
-        .is_err(),
-        "R2/E3"
-    );
-}
-
 #[tokio::test]
 async fn recovery_pending_projection_enforces_one_current_run_ticket() {
     // Causes: the fixtures below establish `recovery pending projection enforces one current run
@@ -9741,7 +9678,7 @@ async fn closed_permission_wait_retains_aliased_call_on_warm_and_cold_reads() {
                 let draft: awaken_agent_contract::audit::draft::Draft =
                     awaken_agent_contract::audit::run_event::RunEvent::RunStateChanged {
                         state: RunState::Awaiting,
-                        await_reason: Some(reason.clone()),
+                        await_reason: Some(reason),
                         await_target: Some(target),
                     }
                     .into();
