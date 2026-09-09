@@ -471,6 +471,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness erasure_checkpoint_action_requires_all_targets_and_accountability
   run_kani awaken-data-subject-application --checked-loop-profile erasure-progress-count-v1 \
     --harness erasure_progress_counts_selected_target_once_or_preserves_overflow
+  run_kani awaken-data-subject-application --checked-loop-profile erasure-checkpoint-successor-v1 \
+    --harness erasure_checkpoint_successor_preserves_all_completed_targets
   run_kani awaken-credential-vault \
     --harness credential_material_phase_transitions_preserve_exact_writer_fence \
     --harness credential_material_recovery_action_is_total_and_expiry_exact \
@@ -1081,6 +1083,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/erasure-saga" \
     -config formal/tla/ErasureSaga.cfg formal/tla/ErasureSaga.tla
+  python3 scripts/ci/check_formal_mutations.py --erasure-checkpoint-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/credential-creation" \
     -config formal/tla/CredentialCreation.cfg formal/tla/CredentialCreation.tla

@@ -240,3 +240,108 @@ fn erasure_checkpoint_action_requires_all_targets_and_accountability() {
         kani::any(),
     );
 }
+
+fn check_successor(
+    old: ([Option<ErasureTarget>; 2], u64, usize, [bool; 2]),
+    new: ([Option<ErasureTarget>; 2], u64, usize, [bool; 2]),
+    present: bool,
+    expected_revision: Option<u64>,
+) {
+    use ErasureTarget::{Coordinator, Resources};
+    // Causes: C1 old row present; C2 caller expected present/equal/stale/future;
+    // C3 candidate revision zero/exact/equal/jump/wrap; C4 each old target occurs
+    // in the candidate. Rules S1 absent+None+zero -> accept; S2 present+exact
+    // expected+representable successor+target superset -> accept; S3 every other
+    // combination -> reject. Duplicate/reordered rows use set membership, not
+    // vector equality or multiplicity. Counts and both flags are arbitrary
+    // independent frame, not additional admission rules. No assumptions exclude
+    // regressive candidates or exhaustion. Admission never mutates either row.
+    let current = present.then(|| checkpoint(old.0, old.1, old.2, old.3));
+    let candidate = checkpoint(new.0, new.1, new.2, new.3);
+    let before = (current.clone(), candidate.clone());
+    let old_members = [
+        old.0[0] == Some(Coordinator) || old.0[1] == Some(Coordinator),
+        old.0[0] == Some(Resources) || old.0[1] == Some(Resources),
+    ];
+    let new_members = [
+        new.0[0] == Some(Coordinator) || new.0[1] == Some(Coordinator),
+        new.0[0] == Some(Resources) || new.0[1] == Some(Resources),
+    ];
+    let preserves = (!old_members[0] || new_members[0]) && (!old_members[1] || new_members[1]);
+    let expected = match (present, expected_revision) {
+        (false, None) => new.1 == 0,
+        (true, Some(revision)) => {
+            revision == old.1 && u128::from(new.1) == u128::from(revision) + 1 && preserves
+        }
+        _ => false,
+    };
+    let actual = candidate.follows(expected_revision, current.as_ref());
+    assert_eq!(actual, expected);
+    if actual && present {
+        assert!(preserves);
+        assert!(new.1 > old.1);
+    }
+    assert_eq!((current, candidate), before);
+}
+
+#[test]
+fn erasure_checkpoint_successor_decision_table() {
+    // Execute S1-S3 across every 0..2-row list pair (duplicates/reversal), all
+    // old/expected presence and flag combinations. The revision table includes
+    // zero/create, exact, stale/future, equal/jump, MAX-1->MAX and MAX exhaustion.
+    let values = [
+        None,
+        Some(ErasureTarget::Coordinator),
+        Some(ErasureTarget::Resources),
+    ];
+    for a in values {
+        for b in values {
+            for c in values {
+                for d in values {
+                    for bits in 0_u8..64 {
+                        for (old, expected, new) in [
+                            (0, 0, 0),
+                            (0, 0, 1),
+                            (0, 0, 2),
+                            (1, 0, 1),
+                            (0, 1, 2),
+                            (1, 1, 2),
+                            (u64::MAX - 1, u64::MAX - 1, u64::MAX),
+                            (u64::MAX, u64::MAX, 0),
+                            (u64::MAX, u64::MAX, u64::MAX),
+                        ] {
+                            check_successor(
+                                ([a, b], old, usize::MAX, [bits & 4 != 0, bits & 8 != 0]),
+                                ([c, d], new, 0, [bits & 16 != 0, bits & 32 != 0]),
+                                bits & 1 != 0,
+                                (bits & 2 != 0).then_some(expected),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(32)]
+fn erasure_checkpoint_successor_preserves_all_completed_targets() {
+    check_successor(
+        (
+            [arbitrary_target(), arbitrary_target()],
+            kani::any(),
+            kani::any(),
+            kani::any(),
+        ),
+        (
+            [arbitrary_target(), arbitrary_target()],
+            kani::any(),
+            kani::any(),
+            kani::any(),
+        ),
+        kani::any(),
+        kani::any(),
+    );
+}

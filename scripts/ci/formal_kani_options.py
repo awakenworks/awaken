@@ -97,6 +97,15 @@ PROFILES = {
         ),
         "cadical",  # Explicitly retains Kani's default solver.
     ),
+    'erasure-checkpoint-successor-v1': (
+        "awaken-data-subject-application",
+        frozenset({'erasure_checkpoint_successor_preserves_all_completed_targets'}),
+        ERASURE_PROGRESS_LOOPS + (
+            # slice/iter/macros.rs:314: all visits at most two old rows plus exit.
+            ('_RINvXs2J_NtNtCsjxLPRqQEPX2_4core5slice4iterINtB7_4IterNtCs7LhrEI5S3s3_31awaken_data_subject_application13ErasureTargetENtNtNtNtBb_4iter6traits8iterator8Iterator3allNCNvMs0_BS_NtBS_15ErasureProgress7follows0EBS_.0', 3),
+        ),
+        "cadical",  # Same default solver; global 32 retains allocation and Drop.
+    ),
     'erasure-progress-count-v1': (
         "awaken-data-subject-application",
         frozenset({'erasure_progress_counts_selected_target_once_or_preserves_overflow'}),
