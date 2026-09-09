@@ -19,6 +19,7 @@ use awaken_sandbox_container::{
 use k8s_common::{
     container_id, disposal_authorization, effect_fence, fixture_image, spec_with_command,
 };
+use pc::test_support::EffectAuthority;
 
 fn command(argv: &[&str]) -> Vec<String> {
     argv.iter().map(|value| (*value).to_string()).collect()
@@ -107,7 +108,7 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
         &provider,
         &desired,
         Some(&create_fence),
-        None,
+        Some(&EffectAuthority::new(&create_fence)),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -121,7 +122,7 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
         &provider,
         &desired,
         Some(&create_fence),
-        None,
+        Some(&EffectAuthority::new(&create_fence)),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -138,7 +139,7 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
         &provider,
         &changed,
         Some(&create_fence),
-        None,
+        Some(&EffectAuthority::new(&create_fence)),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -482,7 +483,7 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
         &provider,
         &frozen,
         Some(&create_fence),
-        None,
+        Some(&EffectAuthority::new(&create_fence)),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -565,7 +566,7 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
         &provider,
         &frozen,
         Some(&rebuild_fence),
-        None,
+        Some(&EffectAuthority::new(&rebuild_fence)),
         ContainerRealizationIntent::Rebuild {
             source_incarnation,
             source_runtime_handle,
@@ -646,7 +647,7 @@ async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
         &provider,
         &frozen,
         Some(&first_fence),
-        None,
+        Some(&EffectAuthority::new(&first_fence)),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -682,7 +683,7 @@ async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
         &provider,
         &frozen,
         Some(&second_fence),
-        None,
+        Some(&EffectAuthority::new(&second_fence)),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -754,7 +755,7 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
         &provider,
         &frozen,
         Some(&create_fence),
-        None,
+        Some(&EffectAuthority::new(&create_fence)),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -812,7 +813,7 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
         &provider,
         &frozen,
         Some(&foreign_fence),
-        None,
+        Some(&EffectAuthority::new(&foreign_fence)),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -839,7 +840,7 @@ async fn orphaned_claim_replays_only_under_the_same_create_effect() {
         &provider,
         &frozen,
         Some(&create_fence),
-        None,
+        Some(&EffectAuthority::new(&create_fence)),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -899,7 +900,12 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
      * A unavailable, permitting the existing Rebuild policy; neither deletes P.
      * Direct dispose_authorized with a default Recovery expectation must still
      * reject P, as must terminal preparation. These paired callers prevent a
-     * shared classifier from confusing execution absence with cleanup completion. */
+     * shared classifier from confusing execution absence with cleanup completion.
+     * KPV5 current-authority precondition: each fenced create/rebuild supplies
+     * the existing EffectAuthority fixture; None rejects before any API call and
+     * cannot validate these lifecycle effects. The provider unit suite owns that
+     * negative authority case. KPV5b must execute both prepare and activate of
+     * the new Pod, never merely observe that the old source was absent. */
     let Some(runtime) = live_runtime().await else {
         return;
     };
@@ -915,7 +921,7 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         &provider,
         &frozen,
         Some(&create_fence),
-        None,
+        Some(&EffectAuthority::new(&create_fence)),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -1084,7 +1090,7 @@ async fn absent_source_pod_with_live_claim_fails_closed_until_rebuild_serializes
         &provider,
         &frozen,
         Some(&rebuild_fence),
-        None,
+        Some(&EffectAuthority::new(&rebuild_fence)),
         ContainerRealizationIntent::Rebuild {
             source_incarnation: pod_uid,
             source_runtime_handle,
@@ -1189,7 +1195,7 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
         provider.as_ref(),
         &frozen,
         Some(&create_fence),
-        None,
+        Some(&EffectAuthority::new(&create_fence)),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -1303,7 +1309,7 @@ async fn rebuild_delete_wins_before_cleanup_gate_without_mutating_the_retained_c
             rebuild_provider.as_ref(),
             &rebuild_spec,
             Some(&fence),
-            None,
+            Some(&EffectAuthority::new(&fence)),
             ContainerRealizationIntent::Rebuild {
                 source_incarnation: rebuild_source_uid,
                 source_runtime_handle: runtime_handle,
@@ -1451,7 +1457,7 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
         &provider,
         &frozen,
         Some(&create_fence),
-        None,
+        Some(&EffectAuthority::new(&create_fence)),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -1605,7 +1611,7 @@ async fn terminal_cleanup_fences_the_claim_before_releasing_the_source_pod() {
         &provider,
         &frozen,
         Some(&rebuild_fence),
-        None,
+        Some(&EffectAuthority::new(&rebuild_fence)),
         ContainerRealizationIntent::Rebuild {
             source_incarnation: pod_uid,
             source_runtime_handle: runtime_handle,
@@ -1663,7 +1669,7 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
         &plain_provider,
         &frozen,
         Some(&owner_fence),
-        None,
+        Some(&EffectAuthority::new(&owner_fence)),
         ContainerRealizationIntent::Create,
     )
     .await
@@ -1710,11 +1716,12 @@ async fn foreign_pod_is_rejected_before_continuation_claim_creation() {
     }));
     let retained_provider = ContainerProvider::new(retained_runtime, fixture_image());
     let foreign_fence = effect_fence(&scope, "create-b", "preflight-owner-b", 1);
+    let authority = EffectAuthority::new(&foreign_fence);
     let error = ContainerEnvironmentProvider::create_environment_for_effect(
         &retained_provider,
         &frozen,
         Some(&foreign_fence),
-        None,
+        Some(&authority),
         ContainerRealizationIntent::Create,
     );
     let error = error.await.err().expect("KPV2 foreign effect rejects");
