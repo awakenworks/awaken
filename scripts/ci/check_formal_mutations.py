@@ -562,6 +562,7 @@ def main() -> None:
         "session-network-model-mutant": check_session_network_model_mutant,
         "work-queue-stop-model-mutants": check_work_queue_stop_model_mutants,
         "session-observation-model-mutants": check_session_observation_model_mutants,
+        "session-ownership-model-mutants": check_session_ownership_model_mutants,
         "cowork-lifecycle-model-mutants": check_cowork_lifecycle_model_mutants,
         "local-process-model-mutant": check_local_process_model_mutants,
         "local-recovery-model-mutants": check_local_recovery_model_mutants,
@@ -1325,6 +1326,60 @@ def check_verified_admission_model_mutants(tlc_jar: Path) -> None:
                       config, "ImageConsumptionBindsCheckedSubject"))
     check_tlc_model_mutations(tlc_jar, "VerifiedProfileAdmission", source, config, mutations)
     print("Verified admission mutation score: 9/9 killed (target freshness, exact executed release and bound image payload)")
+
+
+
+def check_session_ownership_model_mutants(tlc_jar: Path) -> None:
+    # Cause/effect rules: O1 missing owner and O2 zero generation invalidate a
+    # visible root; R1 false-empty and R2 mixed-owner reads violate exact capture
+    # even when their row types are valid. The read pulse prevents false-empty
+    # returns from hiding as stutters. Reachability witnesses include a live
+    # read, a conflicting create, and a retained pre-tombstone snapshot.
+    source = (ROOT / "formal/tla/SessionOwnership.tla").read_text()
+    config = (ROOT / "formal/tla/SessionOwnership.cfg").read_text()
+    header = config.split("INVARIANTS", 1)[0]
+    mutations = []
+    cases = [
+        ("owner |-> kOwner", "owner |-> NoOwner", "OwnershipSafety"),
+        ("generation |-> kRevision", "generation |-> 0", "OwnershipSafety"),
+        ("Read == /\\ readSnapshot' = RootRow",
+         "Read == /\\ readSnapshot' = NoRow", "action:ReadCapturesOneRootFact"),
+        ("Read == /\\ readSnapshot' = RootRow",
+         'Read == /\\ readSnapshot\' = IF kExistence = "Live" '
+         'THEN [RootRow EXCEPT !.owner = CHOOSE o \\in Owners: o # kOwner] '
+         'ELSE RootRow', "action:ReadCapturesOneRootFact"),
+    ]
+    for anchor, broken, invariant in cases:
+        if source.count(anchor) != 1:
+            raise SystemExit("Session ownership mutation anchor drifted")
+        check = ("PROPERTIES " + invariant.removeprefix("action:")
+                 if invariant.startswith("action:") else "INVARIANTS " + invariant)
+        mutations.append((source.replace(anchor, broken),
+                          header + check + "\nCHECK_DEADLOCK FALSE\n", invariant))
+    # O3 reinstates the deleted writer's ability to rebind an already live
+    # root. All other tuple coordinates remain equal; the exact action property
+    # must fail, rather than a parser error or a malformed root type.
+    anchor = "OwnershipNext == (Next /\\ UNCHANGED <<readSnapshot, readCompleted>>) \\/ Read"
+    kernel = (ROOT / "formal/tla/SessionRootKernel.tla").read_text()
+    coordinates = kernel.split("kVars == <<", 1)[1].split(">>", 1)[0].split(",")
+    frame = ", ".join(name.strip() for name in coordinates if name.strip() != "kOwner")
+    broken = anchor + (
+        '\n    \\/ (/\\ kExistence = "Live"'
+        '\n        /\\ kOwner\' = CHOOSE o \\in Owners: o # kOwner'
+        f'\n        /\\ UNCHANGED <<{frame}>>'
+        '\n        /\\ UNCHANGED <<readSnapshot, readCompleted>>)'
+    )
+    if source.count(anchor) != 1:
+        raise SystemExit("Session ownership writer mutation anchor drifted")
+    mutations.append((source.replace(anchor, broken),
+                      header + "PROPERTIES OwnerNeverRebinds\n",
+                      "action:OwnerNeverRebinds"))
+    for witness in ("NoOwnedReadReached", "NoHistoricalReadAfterTombstone",
+                    "NoConflictingReadReached"):
+        mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
+    check_tlc_model_mutations(tlc_jar, "SessionOwnership", source, config,
+                             mutations, dependencies=("SessionRootKernel",))
+    print("Session ownership: 5/5 semantic mutants killed; 3/3 read witnesses reached")
 
 
 def check_session_observation_model_mutants(tlc_jar: Path) -> None:

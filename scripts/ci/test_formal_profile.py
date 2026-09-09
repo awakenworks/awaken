@@ -234,37 +234,45 @@ class ProfileTests(unittest.TestCase):
             profile_result(features, coverage)
 
     def test_kani_loop_override_cannot_disable_or_redirect_checks(self):
-        # L1 the live literal positive memcmp override is admitted by the CLI
-        # parity test below. L2 missing unstable opt-in, nonliteral/zero/negative
-        # bound, different loop, check-disabling flag or trailing option => reject
-        # before source inventory; no escape hatch may count unexecuted harnesses.
+        # L1 each live literal positive memcmp override is admitted by the CLI
+        # parity test below. L2 independently mutate each actual run_kani command:
+        # missing opt-in, nonliteral/zero/negative bound, foreign loop, disabled
+        # check or trailing option => reject before source inventory. Another
+        # valid command must not hide a bad one. Reuse the checker's continuation
+        # normalization; multiple independent owners may use the same override.
         root = Path(__file__).resolve().parents[2]
         gate = root / "scripts/ci/check_formal.sh"
         checker = root / "scripts/ci/check_formal_coverage.py"
-        source = gate.read_text()
+        source = gate.read_text().replace("\\\n", " ")
         original_read = Path.read_text
         override = "--cbmc-args --unwindset memcmp.0:16"
-        self.assertEqual(source.count(override), 1)
-        candidates = [source.replace("run_kani awaken-credential-vault -Z unstable-options", "run_kani awaken-credential-vault")]
-        for replacement in (
-            "--cbmc-args --no-unwinding-checks",
-            "--cbmc-args --unwindset memcmp.0:0",
-            "--cbmc-args --unwindset memcmp.0:-1",
-            "--cbmc-args --unwindset memcmp.0:$BOUND",
-            "--cbmc-args --unwindset foreign.0:16",
-            override + " --no-assertions",
-        ):
-            candidates.append(source.replace(override, replacement))
-        for candidate in candidates:
-            def read(path, *args, **kwargs):
-                return candidate if path == gate else original_read(path, *args, **kwargs)
-            with self.subTest(candidate=candidate[-80:]), \
-                    mock.patch.object(Path, "read_text", read), \
-                    mock.patch.object(sys, "argv", [str(checker)]), \
-                    contextlib.redirect_stderr(io.StringIO()), \
-                    self.assertRaises(SystemExit) as raised:
-                runpy.run_path(str(checker), run_name="__main__")
-            self.assertEqual(raised.exception.code, 1)
+        invocations = [line for line in source.splitlines()
+                       if line.lstrip().startswith("run_kani ") and override in line]
+        self.assertTrue(invocations)
+        for invocation in invocations:
+            self.assertEqual(invocation.count(override), 1)
+            self.assertEqual(source.count(invocation), 1)
+            candidates = [("missing-opt-in", invocation.replace("-Z unstable-options", "", 1))]
+            for replacement in (
+                "--cbmc-args --no-unwinding-checks",
+                "--cbmc-args --unwindset memcmp.0:0",
+                "--cbmc-args --unwindset memcmp.0:-1",
+                "--cbmc-args --unwindset memcmp.0:$BOUND",
+                "--cbmc-args --unwindset foreign.0:16",
+                override + " --no-assertions",
+            ):
+                candidates.append((replacement, invocation.replace(override, replacement, 1)))
+            for mutation, replacement in candidates:
+                candidate = source.replace(invocation, replacement, 1)
+                def read(path, *args, **kwargs):
+                    return candidate if path == gate else original_read(path, *args, **kwargs)
+                with self.subTest(package=invocation.split()[1], mutation=mutation), \
+                        mock.patch.object(Path, "read_text", read), \
+                        mock.patch.object(sys, "argv", [str(checker)]), \
+                        contextlib.redirect_stderr(io.StringIO()), \
+                        self.assertRaises(SystemExit) as raised:
+                    runpy.run_path(str(checker), run_name="__main__")
+                self.assertEqual(raised.exception.code, 1)
 
     def test_live_checker_and_release_consume_the_same_qualification(self):
         # One real ledger is consumed through the CLI and release imports.

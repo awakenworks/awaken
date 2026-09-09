@@ -375,7 +375,7 @@ obligation when the development host is Linux.
 - `RemoteTool.tla`, `SessionOwnership.tla`, `CircuitBreaker.tla`, `AggregateCAS.tla`,
   `ManagedProjectionPublish.tla`, `AgentMessageProtocol.tla`, and
   `DeploymentCAS.tla` cover durable operation
-  identity, atomic ownership, generation-fenced permits, optimistic concurrency,
+  identity, root-kernel-derived ownership/read coherence (TLAPS), generation-fenced permits, optimistic concurrency,
   reverse-completing projection publication, Thread-owned Agent-message replay,
   transactionally bounded scheduled capacity, and revision-fenced
   scheduled-occurrence claims.
