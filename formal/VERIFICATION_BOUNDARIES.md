@@ -1070,11 +1070,12 @@ to that identity before a runtime may advertise Verified.
 
 `ToolResultProtocol` also checks that a retained Event-batch retry identity
 cannot change between accepted and finally closed, including delayed sends.
-Its finite model does not contain physical Session deletion or Classroom quota
-settlement. Current Session tombstones discard Event-batch provenance; a 404
-after deletion therefore remains unknown, not a final non-admission proof.
-File-backed SQLite reopen and HTTP isolation tests cover the retained-root
-implementation, not deletion recovery or cross-service convergence liveness.
+The model excludes deletion and Classroom quota settlement. The delete CAS
+retains content-free keyed receipts from its locked root. Scoped
+tombstone reads distinguish legacy unknown from complete inventory: exact keys
+replay Accepted/Closed, changed fingerprints conflict, absent keys return the
+deletion revision; a bare 404 remains unknown. SQLite/PostgreSQL tests check
+ordered multi-key replay, not universal SQL refinement or convergence liveness.
 
 Use durable inbox/outbox records for network and side-effect boundaries. Keep
 session, run, memory, deployment, and outcome state as deterministic reducers

@@ -1039,10 +1039,18 @@ async fn deleted_event_admission_decision_table<R: ManagedSessionRepository>(rep
     // Delete CAS is the sole proof writer. D1 accepted key=>same Accepted;
     // D2 closed key=>same Closed; D3 absent key=>Deleted fence; D4 changed
     // fingerprint=>conflict; D5 foreign/missing Session=>no disclosure; D6
-    // stale delete=>no tombstone. Payload is absent from retained projection.
-    for kind in ["accepted", "closed", "empty"] {
+    // stale delete=>no tombstone. D7 mixed keyed/unkeyed batches=>retain only
+    // keyed receipts in original order, including an accepted second key with
+    // 12 operations (numeric order differs from lexical order at 10). D8 every
+    // lookup/error/replay=>the complete stored proof remains unchanged. The
+    // expected operation order is frozen from the original commands, without
+    // calling the production operation_ids projection used by the encoder.
+    // Payload is absent from retained projection.
+    for kind in ["accepted", "closed", "empty", "mixed"] {
         let id = format!("sesn_retained_{kind}");
         let mut value = session(&id, "private title");
+        let mut expected_receipts = vec![];
+        let mut expected_operations = vec![];
         if kind != "empty" {
             let batch = if kind == "closed" {
                 SessionEventBatch::closed_admission(
@@ -1058,7 +1066,8 @@ async fn deleted_event_admission_decision_table<R: ManagedSessionRepository>(rep
                         "private message",
                     )],
                 };
-                let mut batch = SessionEventBatch::compile(&id, "batch", vec![input]).unwrap();
+                let inputs = vec![input; if kind == "mixed" { 12 } else { 1 }];
+                let mut batch = SessionEventBatch::compile(&id, "batch", inputs).unwrap();
                 batch.admitted_revision = SessionRevision(1);
                 batch
                     .anchor_admission_projection(SessionEventProjectionAnchor {
@@ -1069,7 +1078,49 @@ async fn deleted_event_admission_decision_table<R: ManagedSessionRepository>(rep
                 batch.resolve_terminally(None, 1);
                 batch
             };
+            expected_operations = batch
+                .events
+                .iter()
+                .map(|entry| entry.event.operation_id().to_owned())
+                .collect();
+            expected_receipts.push(
+                json!({"key":"key","request_fingerprint":"fp","batch_id":"batch",
+                "closed":kind == "closed", "operation_ids":expected_operations}),
+            );
             value.event_batches.push(batch);
+        }
+        if kind == "mixed" {
+            let closed = SessionEventBatch::closed_admission(
+                "prior:batch".into(),
+                SessionRevision(1),
+                "prior-key".into(),
+                "prior-fp".into(),
+            )
+            .unwrap();
+            value.event_batches.insert(0, closed);
+            expected_receipts.insert(
+                0,
+                json!({"key":"prior-key", "request_fingerprint":"prior-fp",
+                "batch_id":"prior:batch", "closed":true, "operation_ids":[]}),
+            );
+            let mut unkeyed = SessionEventBatch::compile(
+                &id,
+                "unkeyed",
+                vec![SessionEventInput::UserMessage {
+                    content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                        "unretained private message",
+                    )],
+                }],
+            )
+            .unwrap();
+            unkeyed.admitted_revision = SessionRevision(1);
+            unkeyed
+                .anchor_admission_projection(SessionEventProjectionAnchor {
+                    source_commit_cursor: 0,
+                })
+                .unwrap();
+            unkeyed.resolve_terminally(None, 1);
+            value.event_batches.push(unkeyed);
         }
         assert!(value.request_delete());
         complete_terminal_cleanup(&mut value);
@@ -1104,10 +1155,10 @@ async fn deleted_event_admission_decision_table<R: ManagedSessionRepository>(rep
         } else {
             assert_eq!(
                 proof.resolve("key", "fp").unwrap(),
-                if kind == "accepted" {
+                if kind != "closed" {
                     SessionEventAdmission::Accepted {
                         batch_id: "batch".into(),
-                        operation_ids: Some(value.event_batches[0].operation_ids()),
+                        operation_ids: Some(expected_operations.clone()),
                     }
                 } else {
                     SessionEventAdmission::Closed {
@@ -1122,12 +1173,37 @@ async fn deleted_event_admission_decision_table<R: ManagedSessionRepository>(rep
                 "D4"
             );
             let retained = serde_json::to_value(proof.admissions.as_ref().unwrap()).unwrap();
+            assert_eq!(retained, json!(expected_receipts));
+        }
+        if kind == "mixed" {
             assert_eq!(
-                retained,
-                json!([{"key":"key","request_fingerprint":"fp","batch_id":"batch","closed":kind == "closed",
-                    "operation_ids":value.event_batches[0].operation_ids()}])
+                proof.resolve("prior-key", "prior-fp").unwrap(),
+                SessionEventAdmission::Closed {
+                    batch_id: "prior:batch".into(),
+                },
+                "D7 first key remains distinct from accepted second key"
+            );
+            assert_eq!(
+                proof.resolve("prior-key", "fp").unwrap_err().code,
+                "idempotency_conflict",
+                "D7 fingerprint belongs to its exact key"
             );
         }
+        assert_eq!(
+            repo.deleted_event_admissions("ws_a", &id).await.unwrap(),
+            Some(proof.clone()),
+            "D8 reads preserve full proof"
+        );
+        assert!(
+            matches!(repo.commit_mutation("ws_a", delete_mutation(&value, &format!("delete-{kind}"))).await.unwrap(),
+            SessionMutationResult::Replayed { new_revision } if new_revision == proof.deleted_revision),
+            "D8 stable delete receipt"
+        );
+        assert_eq!(
+            repo.deleted_event_admissions("ws_a", &id).await.unwrap(),
+            Some(proof),
+            "D8 deletion replay preserves full proof"
+        );
         assert_eq!(
             repo.deleted_event_admissions("foreign", &id).await.unwrap(),
             None,
