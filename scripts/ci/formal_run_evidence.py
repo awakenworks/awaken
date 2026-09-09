@@ -49,6 +49,7 @@ def proof_toolchain(repository: Path) -> dict:
     return {
         "rust_toolchain": rust["toolchain"]["channel"],
         "kani_source_revision": constant(bootstrap, "kani_revision"),
+        "kani_source_patch_sha256": constant(bootstrap, "kani_patch_sha256"),
         "kani_nightly": constant(bootstrap, "kani_nightly"),
         "kani_backend": constant(bootstrap, "kani_backend_version"),
         "tlc": constant(gate, "tlc_version"),

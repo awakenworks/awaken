@@ -1,0 +1,23 @@
+diff --git a/kani-compiler/src/codegen_cprover_gotoc/codegen/rvalue.rs b/kani-compiler/src/codegen_cprover_gotoc/codegen/rvalue.rs
+index f863af1fe..dfdc531f5 100644
+--- a/kani-compiler/src/codegen_cprover_gotoc/codegen/rvalue.rs
++++ b/kani-compiler/src/codegen_cprover_gotoc/codegen/rvalue.rs
+@@ -976,8 +976,7 @@ pub fn codegen_get_discriminant(&mut self, e: Expr, ty: Ty, res_ty: Ty) -> Expr
+                     let discr_mir_ty = self.codegen_enum_discr_typ_stable(ty);
+                     let discr_type = self.codegen_ty_stable(discr_mir_ty);
+                     let niche_val = self.codegen_get_niche(e, offset.bytes() as usize, discr_type);
+-                    let relative_discr =
+-                        wrapping_sub(&niche_val, u64::try_from(*niche_start).unwrap());
++                    let relative_discr = wrapping_sub(&niche_val, *niche_start);
+                     let relative_max =
+                         niche_variants.end().as_u32() - niche_variants.start().as_u32();
+                     let is_niche = if relative_max == 0 {
+@@ -1831,7 +1830,7 @@ fn comparison_expr(
+ /// Perform a wrapping subtraction of an Expr with a constant "expr - constant"
+ /// where "-" is wrapping subtraction, i.e., the result should be interpreted as
+ /// an unsigned value (2's complement).
+-fn wrapping_sub(expr: &Expr, constant: u64) -> Expr {
++fn wrapping_sub(expr: &Expr, constant: u128) -> Expr {
+     let unsigned_expr = if expr.typ().is_pointer() {
+         expr.clone()
+     } else {
