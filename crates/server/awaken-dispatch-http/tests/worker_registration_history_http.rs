@@ -78,8 +78,7 @@ async fn assert_registration_history(directory: Arc<dyn WorkerDirectory>, worker
     let error = client
         .register_classified("A", manifest.clone())
         .await
-        .err()
-        .expect("T3 historical registration fails");
+        .expect_err("T3 historical registration fails");
     assert!(
         error.to_string().contains("historical incarnation"),
         "T3 specific authority rejection: {error}"

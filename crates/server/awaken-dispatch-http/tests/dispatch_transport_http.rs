@@ -429,13 +429,15 @@ async fn applied_remote_dispatch_invokes_one_exact_post_settlement_callback() {
     let (status, applied) = settle_terminal(&router, &claim).await;
     assert_eq!(status, StatusCode::OK, "R1: {applied}");
     assert_eq!(applied["settled"], true, "R1");
-    let finalized = coordination.finalized.lock().unwrap();
-    assert_eq!(finalized.len(), 1, "R1");
-    assert_eq!(finalized[0].session_id, session_id.0, "R1 exact Session");
-    assert_eq!(finalized[0].source_thread_id, thread_id, "R1 exact Thread");
-    assert_eq!(finalized[0].source_run_id, claim.run_id, "R1 exact Run");
-    assert_eq!(finalized[0].session_activity_epoch, 1, "R1 exact epoch");
-    drop(finalized);
+    {
+        // Finish the R1 observation before the R2 HTTP replay can lock it.
+        let finalized = coordination.finalized.lock().unwrap();
+        assert_eq!(finalized.len(), 1, "R1");
+        assert_eq!(finalized[0].session_id, session_id.0, "R1 exact Session");
+        assert_eq!(finalized[0].source_thread_id, thread_id, "R1 exact Thread");
+        assert_eq!(finalized[0].source_run_id, claim.run_id, "R1 exact Run");
+        assert_eq!(finalized[0].session_activity_epoch, 1, "R1 exact epoch");
+    }
 
     let (status, replay) = settle_terminal(&router, &claim).await;
     assert_eq!(status, StatusCode::OK, "R2: {replay}");
