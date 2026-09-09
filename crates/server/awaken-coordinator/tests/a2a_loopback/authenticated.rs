@@ -2,18 +2,22 @@
 use super::*;
 use std::sync::Mutex;
 
+// One observation buffer for the peer and middleware; existing authenticated
+// execution/cancellation tests assert method, path and authorization together.
+type PeerRequests = Arc<Mutex<Vec<(String, String, bool)>>>;
+
 pub(super) struct AuthenticatedPeer {
     pub endpoint: String,
     pub access: CredentialAccess,
     pub security_fingerprint: String,
-    pub requests: Arc<Mutex<Vec<(String, String, bool)>>>,
+    pub requests: PeerRequests,
     credentials: Arc<InMemoryCredentialRepo>,
     secrets: Arc<InMemorySecretStore>,
     task: tokio::task::JoinHandle<()>,
 }
 
 async fn require_remote_bearer(
-    axum::extract::State(requests): axum::extract::State<Arc<Mutex<Vec<(String, String, bool)>>>>,
+    axum::extract::State(requests): axum::extract::State<PeerRequests>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
