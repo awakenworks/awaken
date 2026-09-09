@@ -144,14 +144,10 @@ use crate::{
 
 mod application_mcp;
 mod cleanup;
-mod publication;
 pub use application_mcp::{
     APPLICATION_MCP_PROVIDER_ID, ApplicationMcpBearerCommand, PreparedApplicationMcpBearerRotation,
     application_mcp_material_ref, application_mcp_operation_id,
     enter_or_rotate_application_mcp_bearer, prepare_application_mcp_bearer_rotation,
-};
-pub use publication::{
-    CredentialPublicationAdmission, CredentialPublicationPredecessor, PreparedCredentialPublication,
 };
 mod material_mutation;
 pub use material_mutation::{
