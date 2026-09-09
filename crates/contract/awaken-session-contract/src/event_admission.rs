@@ -61,18 +61,29 @@ impl DeletedSessionEventAdmissions {
         let admissions = self.admissions.as_ref().ok_or_else(|| {
             crate::RunError::unavailable("Legacy Session deletion has no retained admission proof")
         })?;
-        match admissions.iter().find(|receipt| receipt.key == key) {
-            Some(receipt) if receipt.request_fingerprint != fingerprint => {
-                Err(event_admission_conflict())
+        let receipt = admissions.iter().find(|receipt| receipt.key == key);
+        // Retention owns lookup/payloads; the same canonical admission class
+        // as the live root owns fingerprint-before-closed precedence.
+        match crate::classify_session_event_batch_admission(
+            receipt.is_some(),
+            receipt.is_some_and(|receipt| receipt.request_fingerprint == fingerprint),
+            receipt.is_some_and(|receipt| receipt.closed),
+        ) {
+            crate::SessionEventBatchAdmissionClass::Conflict => Err(event_admission_conflict()),
+            crate::SessionEventBatchAdmissionClass::Closed => Ok(SessionEventAdmission::Closed {
+                batch_id: receipt
+                    .expect("closed class has retained evidence")
+                    .batch_id
+                    .clone(),
+            }),
+            crate::SessionEventBatchAdmissionClass::Accepted => {
+                let receipt = receipt.expect("accepted class has retained evidence");
+                Ok(SessionEventAdmission::Accepted {
+                    batch_id: receipt.batch_id.clone(),
+                    operation_ids: receipt.operation_ids.clone(),
+                })
             }
-            Some(receipt) if receipt.closed => Ok(SessionEventAdmission::Closed {
-                batch_id: receipt.batch_id.clone(),
-            }),
-            Some(receipt) => Ok(SessionEventAdmission::Accepted {
-                batch_id: receipt.batch_id.clone(),
-                operation_ids: receipt.operation_ids.clone(),
-            }),
-            None => Ok(SessionEventAdmission::Deleted {
+            crate::SessionEventBatchAdmissionClass::Absent => Ok(SessionEventAdmission::Deleted {
                 deleted_revision: self.deleted_revision,
             }),
         }
@@ -95,63 +106,247 @@ pub fn event_admission_closed() -> crate::RunError {
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, kani))]
+mod verification {
     use super::*;
 
+    // This oracle states each observable outcome's necessary and sufficient
+    // causes. The caller supplies the expected first index independently; it
+    // never searches with the production iterator or calls its error factory.
+    fn check_result(
+        proof: &DeletedSessionEventAdmissions,
+        first: Option<usize>,
+        fingerprint: &str,
+        result: &Result<SessionEventAdmission, crate::RunError>,
+    ) {
+        let selected = first.map(|index| &proof.admissions.as_ref().unwrap()[index]);
+        match result {
+            Err(error) => {
+                if proof.admissions.is_none() {
+                    assert!(
+                        error.kind == crate::RunErrorKind::Unavailable,
+                        "exact retained admission field"
+                    );
+                    assert!(
+                        error.code == "unavailable",
+                        "exact retained admission field"
+                    );
+                    assert!(
+                        error.message == "Legacy Session deletion has no retained admission proof",
+                        "exact retained admission field"
+                    );
+                } else {
+                    let receipt =
+                        selected.expect("complete inventory errors require a matching key");
+                    assert!(receipt.request_fingerprint != fingerprint);
+                    assert!(
+                        error.kind == crate::RunErrorKind::BadRequest,
+                        "exact retained admission field"
+                    );
+                    assert!(
+                        error.code == "idempotency_conflict",
+                        "exact retained admission field"
+                    );
+                    assert!(
+                        error.message
+                            == "Idempotency-Key was already used for another Session Event batch",
+                        "exact retained admission field"
+                    );
+                }
+            }
+            Ok(SessionEventAdmission::Deleted { deleted_revision }) => {
+                assert!(proof.admissions.is_some());
+                assert!(first.is_none());
+                assert!(
+                    *deleted_revision == proof.deleted_revision,
+                    "exact retained admission field"
+                );
+            }
+            Ok(SessionEventAdmission::Closed { batch_id }) => {
+                let receipt = selected.expect("closed requires retained evidence");
+                assert!(
+                    receipt.request_fingerprint == fingerprint,
+                    "exact retained admission field"
+                );
+                assert!(receipt.closed);
+                assert!(
+                    *batch_id == receipt.batch_id,
+                    "exact retained admission field"
+                );
+            }
+            Ok(SessionEventAdmission::Accepted {
+                batch_id,
+                operation_ids,
+            }) => {
+                let receipt = selected.expect("acceptance requires retained evidence");
+                assert!(
+                    receipt.request_fingerprint == fingerprint,
+                    "exact retained admission field"
+                );
+                assert!(!receipt.closed);
+                assert!(
+                    *batch_id == receipt.batch_id,
+                    "exact retained admission field"
+                );
+                assert!(
+                    *operation_ids == receipt.operation_ids,
+                    "exact retained admission field"
+                );
+            }
+        }
+    }
+
+    fn check_replay_and_frame(
+        proof: DeletedSessionEventAdmissions,
+        key: &str,
+        fingerprint: &str,
+        first: Option<usize>,
+    ) {
+        let before = proof.clone();
+        let mut result = proof.resolve(key, fingerprint);
+        check_result(&before, first, fingerprint, &result);
+        assert!(proof == before);
+        // Mutating the returned owned clone must not poison retained evidence
+        // or the next replay, including ordered operation ids and batch id.
+        match &mut result {
+            Ok(SessionEventAdmission::Accepted {
+                batch_id,
+                operation_ids,
+            }) => {
+                batch_id.clear();
+                if let Some(ids) = operation_ids {
+                    ids.reverse();
+                    if let Some(id) = ids.first_mut() {
+                        id.clear();
+                    }
+                }
+            }
+            Ok(SessionEventAdmission::Closed { batch_id }) => batch_id.clear(),
+            _ => {}
+        }
+        assert!(proof == before);
+        check_result(
+            &before,
+            first,
+            fingerprint,
+            &proof.resolve(key, fingerprint),
+        );
+        assert!(proof == before);
+    }
+
+    #[cfg(test)]
     #[test]
     fn deleted_admission_decision_table() {
-        // Causes: C1 complete inventory, C2 matching key, C3 matching body,
-        // C4 accepted versus closed. Effects: legacy unknown never releases;
-        // absent key is fenced by deletion; matching receipt retains outcome;
-        // changed body conflicts. R1 !C1=>unknown; R2 C1,!C2=>deleted;
-        // R3 C1,C2,!C3=>conflict; R4/R5 C1,C2,C3=>original C4.
-        let mut proof = DeletedSessionEventAdmissions {
-            deleted_revision: SessionRevision(7),
-            admissions: None,
-        };
-        assert_eq!(
-            proof.resolve("key", "fp").unwrap_err().kind,
-            crate::RunErrorKind::Unavailable
-        );
-        proof.admissions = Some(vec![]);
-        assert_eq!(
-            proof.resolve("key", "fp").unwrap(),
-            SessionEventAdmission::Deleted {
-                deleted_revision: SessionRevision(7)
+        // Causes C1 legacy None / complete inventory lengths 0,1,2; C2 first
+        // matching key at none/0/1 (including duplicate keys); C3 fingerprint
+        // same/different independently per receipt; C4 each receipt closed;
+        // C5 operation ids None/Some(empty)/Some(one)/Some(two ordered ids).
+        // R1 !C1 => exact Unavailable. R2 complete/no key => full revision.
+        // R3 first key + different fingerprint => exact conflict even if closed.
+        // R4/R5 first key + same fingerprint => original closed/accepted receipt.
+        // Every rule checks source equality, mutation-isolated owned output and
+        // a second real resolve. The first-index table is independent of find.
+        let mut cases = 0;
+        for revision in [0, 1, u64::MAX] {
+            for admissions in [None, Some(vec![])] {
+                check_replay_and_frame(
+                    DeletedSessionEventAdmissions {
+                        deleted_revision: SessionRevision(revision),
+                        admissions,
+                    },
+                    "k",
+                    "fp",
+                    None,
+                );
+                cases += 1;
             }
-        );
-        for closed in [false, true] {
-            proof.admissions = Some(vec![RetainedEventAdmission {
-                key: "key".into(),
-                request_fingerprint: "fp".into(),
-                batch_id: "original".into(),
-                closed,
-                operation_ids: None,
-            }]);
-            assert_eq!(
-                proof.resolve("key", "changed").unwrap_err().code,
-                "idempotency_conflict"
-            );
-            assert_eq!(
-                proof.resolve("key", "fp").unwrap(),
-                if closed {
-                    SessionEventAdmission::Closed {
-                        batch_id: "original".into(),
-                    }
-                } else {
-                    SessionEventAdmission::Accepted {
-                        batch_id: "original".into(),
-                        operation_ids: None,
+            // Only occupied slots contribute causes: no phantom second-slot
+            // flags in the one-receipt rows. Each receipt owns independent ids.
+            for len in [1, 2] {
+                for keys in 0..(1 << len) {
+                    let first = if keys & 1 != 0 {
+                        Some(0)
+                    } else if len == 2 && keys & 2 != 0 {
+                        Some(1)
+                    } else {
+                        None
+                    };
+                    for flags in 0..(1 << (2 * len)) {
+                        for ids in 0..(1 << (2 * len)) {
+                            let receipts = (0..len)
+                                .map(|index| RetainedEventAdmission {
+                                    key: if keys & (1 << index) == 0 {
+                                        "other"
+                                    } else {
+                                        "k"
+                                    }
+                                    .into(),
+                                    request_fingerprint: if flags & (1 << index) == 0 {
+                                        "fp"
+                                    } else {
+                                        "changed"
+                                    }
+                                    .into(),
+                                    batch_id: format!("batch:{index}"),
+                                    closed: flags & (1 << (len + index)) != 0,
+                                    operation_ids: match (ids >> (2 * index)) & 3 {
+                                        0 => None,
+                                        1 => Some(vec![]),
+                                        2 => Some(vec![format!("{index}:op:0")]),
+                                        _ => Some(vec![
+                                            format!("{index}:op:0"),
+                                            format!("{index}:op:1"),
+                                        ]),
+                                    },
+                                })
+                                .collect();
+                            check_replay_and_frame(
+                                DeletedSessionEventAdmissions {
+                                    deleted_revision: SessionRevision(revision),
+                                    admissions: Some(receipts),
+                                },
+                                "k",
+                                "fp",
+                                first,
+                            );
+                            cases += 1;
+                        }
                     }
                 }
-            );
-            assert_eq!(
-                proof.resolve("other", "fp").unwrap(),
-                SessionEventAdmission::Deleted {
-                    deleted_revision: SessionRevision(7)
-                }
-            );
+            }
         }
+        assert_eq!(cases, 3 * (2 + 32 + 1024));
+    }
+
+    #[cfg(kani)]
+    fn short_str() -> &'static str {
+        match kani::any::<u8>() % 5 {
+            0 => "",
+            1 => "a",
+            2 => "b",
+            3 => "ab",
+            _ => "ba",
+        }
+    }
+
+    // Bounded actual resolver proof: Some(empty), all u64 revisions and
+    // request key/fingerprint in {empty,a,b,ab,ba}. It must return Deleted with
+    // the exact revision, preserve the complete source and repeat identically.
+    // Real Vec/String/Result operations and Drop retain all safety checks.
+    // This partition excludes legacy None and one/two retained receipts; it
+    // does not prove the whole resolver or SQL codec/transaction behavior.
+    #[cfg(kani)]
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn deleted_admission_resolver_preserves_empty() {
+        check_replay_and_frame(
+            DeletedSessionEventAdmissions {
+                deleted_revision: SessionRevision(kani::any()),
+                admissions: Some(vec![]),
+            },
+            short_str(),
+            short_str(),
+            None,
+        );
     }
 }
