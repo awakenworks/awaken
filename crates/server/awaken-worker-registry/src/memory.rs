@@ -151,19 +151,14 @@ impl WorkerDirectory for MemoryWorkerDirectory {
             .cloned())
     }
 
-    async fn expire(&self, now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError> {
-        let mut workers = self
-            .workers
-            .lock()
-            .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?;
-        let mut expired = Vec::new();
-        for record in workers.values_mut() {
-            if let Some(next) = transition::expire(record, now_ms) {
-                expired.push(next.snapshot.identity.clone());
-                *record = next;
-            }
-        }
-        Ok(expired)
+    async fn expire_incarnation(
+        &self,
+        identity: &WorkerIdentity,
+        now_ms: u64,
+    ) -> Result<RegistryMutation, RegistryError> {
+        self.mutate(identity, |current| {
+            transition::expire(current, identity, now_ms)
+        })
     }
 }
 
@@ -224,7 +219,12 @@ mod loom_tests {
     }
 
     #[test]
-    fn stale_heartbeat_cannot_mutate_a_concurrent_replacement() {
+    fn stale_heartbeat_and_expiry_cannot_mutate_a_concurrent_replacement() {
+        // R9 three concurrent commands: old-time heartbeat, exact expiry and
+        // replacement. Heartbeat first => renewed old identity survives both
+        // expiry/replacement; expiry/replacement first => successor survives,
+        // old heartbeat is rejected. The real mutation mutex and transition
+        // functions are used; Registry closure is not process-stop evidence.
         loom::model(|| {
             let directory = Arc::new(MemoryWorkerDirectory::new());
             let first = directory
@@ -232,6 +232,7 @@ mod loom_tests {
                 .unwrap();
             let stale_identity = first.snapshot.identity;
             let heartbeat_directory = directory.clone();
+            let expiry_identity = stale_identity.clone();
             let heartbeat = thread::spawn(move || {
                 heartbeat_directory
                     .heartbeat_sync(
@@ -253,19 +254,37 @@ mod loom_tests {
             let replacement = thread::spawn(move || {
                 replacement_directory.register_sync(registration("boot-2"), 11, 100)
             });
+            let expiry_directory = directory.clone();
+            let expiry = thread::spawn(move || {
+                expiry_directory
+                    .mutate(&expiry_identity, |current| {
+                        transition::expire(current, &expiry_identity, 11)
+                    })
+                    .unwrap()
+            });
             let heartbeat_result = heartbeat.join().unwrap();
             let replacement_result = replacement.join().unwrap();
+            let expiry_result = expiry.join().unwrap();
             let workers = directory.workers.lock().unwrap();
             let current = workers.get("worker").unwrap();
             if current.snapshot.identity.incarnation_id == "boot-2" {
                 assert_eq!(current.snapshot.identity.generation, 2);
                 assert_eq!(current.heartbeat_sequence, 0);
-                assert_eq!(heartbeat_result, RegistryMutation::StaleIncarnation);
+                assert!(matches!(
+                    heartbeat_result,
+                    RegistryMutation::StaleIncarnation | RegistryMutation::InvalidTransition
+                ));
+                assert!(matches!(
+                    expiry_result,
+                    RegistryMutation::Applied | RegistryMutation::StaleIncarnation
+                ));
                 assert!(replacement_result.is_ok());
             } else {
                 assert_eq!(current.snapshot.identity.incarnation_id, "boot-1");
                 assert_eq!(current.snapshot.identity.generation, 1);
                 assert_eq!(current.heartbeat_sequence, 1);
+                assert_eq!(heartbeat_result, RegistryMutation::Applied);
+                assert_eq!(expiry_result, RegistryMutation::InvalidTransition);
                 assert!(matches!(
                     replacement_result,
                     Err(RegistryError::SlotOccupied { .. })

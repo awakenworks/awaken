@@ -287,34 +287,17 @@ impl WorkerDirectory for SqliteWorkerDirectory {
         .await
     }
 
-    async fn expire(&self, now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError> {
-        let durable_now_ms = durable_i64("now_ms", now_ms)?;
+    async fn expire_incarnation(
+        &self,
+        identity: &WorkerIdentity,
+        now_ms: u64,
+    ) -> Result<RegistryMutation, RegistryError> {
+        durable_i64("now_ms", now_ms)?;
+        let identity = identity.clone();
         self.with_connection(move |conn| {
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(persist)?;
-            let encoded = {
-                let mut stmt = tx
-                    .prepare(&format!(
-                        "SELECT {WORKER_COLUMNS} FROM worker_registry_worker \
-                         WHERE state IN ('starting', 'ready', 'draining') AND expires_at_ms <= ?1",
-                    ))
-                    .map_err(persist)?;
-                let rows = stmt
-                    .query_map(params![durable_now_ms], encoded_row)
-                    .map_err(persist)?;
-                rows.collect::<Result<Vec<_>, _>>().map_err(persist)?
-            };
-            let mut expired = Vec::new();
-            for value in encoded {
-                let current = decode(value)?;
-                if let Some(next) = transition::expire(&current, now_ms) {
-                    expired.push(next.snapshot.identity.clone());
-                    Self::write(&tx, &next)?;
-                }
-            }
-            tx.commit().map_err(persist)?;
-            Ok(expired)
+            Self::mutate(conn, &identity, |current| {
+                transition::expire(current, &identity, now_ms)
+            })
         })
         .await
     }

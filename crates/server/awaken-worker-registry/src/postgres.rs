@@ -57,6 +57,9 @@ enum Mutation {
     },
     Quiesce,
     Deregister,
+    Expire {
+        now_ms: u64,
+    },
 }
 
 impl PostgresWorkerDirectory {
@@ -226,6 +229,7 @@ impl PostgresWorkerDirectory {
             }
             Mutation::Quiesce => transition::quiesce(current.as_ref(), identity),
             Mutation::Deregister => transition::deregister(current.as_ref(), identity),
+            Mutation::Expire { now_ms } => transition::expire(current.as_ref(), identity, now_ms),
         };
         if let Some(next) = next {
             Self::write(&mut tx, &next).await?;
@@ -327,28 +331,13 @@ impl WorkerDirectory for PostgresWorkerDirectory {
         row.map(|row| decode(encoded_row(&row))).transpose()
     }
 
-    async fn expire(&self, now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError> {
-        let durable_now_ms = durable_i64("now_ms", now_ms)?;
-        let mut tx = self.pool.begin().await.map_err(persist)?;
-        let rows = sqlx::query(&format!(
-            "SELECT {WORKER_COLUMNS} FROM worker_registry_worker \
-             WHERE state IN ('starting', 'ready', 'draining') AND expires_at_ms <= $1 \
-             FOR UPDATE SKIP LOCKED"
-        ))
-        .bind(durable_now_ms)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(persist)?;
-        let mut expired = Vec::new();
-        for row in rows {
-            let current = decode(encoded_row(&row))?;
-            if let Some(next) = transition::expire(&current, now_ms) {
-                expired.push(next.snapshot.identity.clone());
-                Self::write(&mut tx, &next).await?;
-            }
-        }
-        tx.commit().await.map_err(persist)?;
-        Ok(expired)
+    async fn expire_incarnation(
+        &self,
+        identity: &WorkerIdentity,
+        now_ms: u64,
+    ) -> Result<RegistryMutation, RegistryError> {
+        durable_i64("now_ms", now_ms)?;
+        self.mutate(identity, Mutation::Expire { now_ms }).await
     }
 }
 

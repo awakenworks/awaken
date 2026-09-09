@@ -85,8 +85,12 @@ impl WorkerDirectory for CurrentWorkerDirectory {
         Ok((worker_id == self.0.snapshot.identity.worker_id).then(|| self.0.clone()))
     }
 
-    async fn expire(&self, _now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError> {
-        Ok(Vec::new())
+    async fn expire_incarnation(
+        &self,
+        _identity: &WorkerIdentity,
+        _now_ms: u64,
+    ) -> Result<RegistryMutation, RegistryError> {
+        Ok(RegistryMutation::InvalidTransition)
     }
 }
 
