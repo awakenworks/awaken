@@ -20,6 +20,7 @@ pub fn awaken_sandbox_fs::ExclusiveFileLock::remove_sibling_directory_tree_exact
 pub fn awaken_sandbox_fs::ExclusiveFileLock::remove_sibling_regular_file_nofollow(&self, &std::path::Path) -> core::io::error::Result<()>
 pub fn awaken_sandbox_fs::ExclusiveFileLock::replace_sibling_regular_file_atomic(&self, &std::path::Path, &[u8]) -> core::io::error::Result<()>
 pub fn awaken_sandbox_fs::ExclusiveFileLock::sibling_names(&self) -> core::io::error::Result<alloc::vec::Vec<std::ffi::os_str::OsString>>
+pub fn awaken_sandbox_fs::ExclusiveFileLock::transform_sibling_regular_file_atomic<F>(&self, &std::path::Path, F) -> core::io::error::Result<()> where F: core::ops::function::FnOnce(&mut std::fs::File, &mut std::fs::File) -> core::io::error::Result<()>
 pub fn awaken_sandbox_fs::ExclusiveFileLock::validate_parent_path(&self) -> core::io::error::Result<()>
 impl core::ops::drop::Drop for awaken_sandbox_fs::ExclusiveFileLock
 pub fn awaken_sandbox_fs::ExclusiveFileLock::drop(&mut self)
