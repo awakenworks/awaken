@@ -22161,6 +22161,119 @@ async fn per_request_deadlines_release_every_renewal_capacity_slot() {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn control_deadline_releases_capacity_before_expired_session_mutex_cleanup() {
+    use std::sync::atomic::Ordering;
+
+    /* Deadline/mutex composition table: C1 sixteen due Control calls never
+     * answer; C2 the first eight expired Sessions have their canonical
+     * realization mutex held by an earlier phase; C3 the Control capacity is
+     * eight; C4 both timeout waves elapse. Effects: E1 the first wave releases
+     * all Control permits at its deadline even though revocation must wait; E2
+     * the second wave enters without weakening or bypassing any held Session
+     * mutex; E3 concurrency never exceeds eight; E4 releasing the original
+     * guards lets exact revocation finish and leaves no local authority.
+     *
+     * | Rule | Control | first-wave mutex | Effect |
+     * |---|---|---|---|
+     * | M1 | first eight time out | held | E1; cleanup waits |
+     * | M2 | second eight pending/time out | first still held | E2 + E3 |
+     * | M3 | all timed out | released | E4 |
+     * Tokio semaphore/mutex wakeups and virtual-time scheduling are the test
+     * platform boundary; the production typed permit kernels own admission,
+     * identity recheck, bounded capacity, and terminal release decisions.
+     */
+    const SESSION_COUNT: usize = 16;
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    *control.renewal_gate.lock().unwrap() = Some(Arc::new(tokio::sync::Semaphore::new(0)));
+    let host =
+        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()));
+    let now = crate::terminal_repository_publication::runtime_unix_now_ms();
+    let mut held = Vec::new();
+    for index in 0..SESSION_COUNT {
+        let session = format!("deadline-mutex-{index:02}");
+        let lease = awaken_session_contract::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a:incarnation".into(),
+            epoch: 1,
+            expires_at_unix_ms: now.saturating_add(90_000),
+        };
+        host.session_slots.update(&session, |slot| {
+            slot.realization_authority = crate::session_slot::SessionRealizationAuthority::Live(
+                crate::session_slot::test_expired_observed_lease(lease.clone()),
+            );
+        });
+        control
+            .renewals
+            .lock()
+            .unwrap()
+            .insert(session.clone(), lease);
+        if index < crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS {
+            held.push(
+                host.session_slots
+                    .realization_lock(&session)
+                    .lock_owned()
+                    .await,
+            );
+        }
+    }
+
+    let running_host = host.clone();
+    let reconciliation = tokio::spawn(async move {
+        running_host
+            .renew_due_session_realizations(
+                awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(
+                    300_000,
+                ),
+            )
+            .await
+    });
+    // Yield to both 50s request-deadline waves without a runnable spin loop
+    // that would prevent Tokio's paused clock from advancing.
+    tokio::time::sleep(std::time::Duration::from_secs(110)).await;
+    assert_eq!(
+        control.renewal_sessions.lock().unwrap().len(),
+        SESSION_COUNT,
+        "M1-M2 both deadline waves enter while first cleanup waits"
+    );
+    assert_eq!(
+        control.max_renewals_active.load(Ordering::SeqCst),
+        crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS,
+        "M2/E3"
+    );
+    assert!(
+        !reconciliation.is_finished(),
+        "M1/E2 held per-Session mutex is never bypassed"
+    );
+    for index in 0..crate::application::MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS {
+        assert!(
+            host.session_slots
+                .contains(&format!("deadline-mutex-{index:02}")),
+            "M1/E2 held Session remains installed"
+        );
+    }
+
+    drop(held);
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), reconciliation)
+            .await
+            .expect("M3 cleanup finishes after original mutex release")
+            .expect("M3 reconciliation task")
+            .expect("M3 expired timeout is a handled revocation"),
+        0,
+        "M3/E4"
+    );
+    assert_eq!(control.renewals_active.load(Ordering::SeqCst), 0, "M3/E4");
+    for index in 0..SESSION_COUNT {
+        assert!(
+            !host
+                .session_slots
+                .contains(&format!("deadline-mutex-{index:02}")),
+            "M3/E4"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn delayed_realization_renewal_cannot_replace_or_revoke_new_projection() {
     // Cause/effect graph: C1 a due renewal has captured lease A and blocks at

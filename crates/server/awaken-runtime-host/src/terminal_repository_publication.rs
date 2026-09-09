@@ -28,11 +28,11 @@ impl ManagedHost {
         // Lease renewal may still update the process-local slot while these
         // effect locks are held; every boundary therefore re-reads the current
         // same-generation lease rather than extending the asserted value.
-        let realization_lock = self
+        let _realization = self
             .host
             .session_slots
-            .realization_lock(&command.session_id);
-        let _realization = realization_lock.lock().await;
+            .acquire_realization(&command.session_id)
+            .await;
         let lifecycle_lock = self
             .host
             .session_slots

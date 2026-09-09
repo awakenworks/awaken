@@ -1,15 +1,19 @@
 //! Lease-only scheduling and response application for the canonical Session slot.
 
-use super::realization_control_deadline::DeadlineSessionRealizationControl;
+use super::realization_control_deadline::{
+    DeadlineSessionRealizationControl, MAX_CONCURRENT_SESSION_REALIZATION_REQUESTS,
+};
 use super::{RenewalFailureDisposition, realization_renewal_failure_disposition};
 use awaken_runtime_contract::authority_lease::AuthorityLeaseTiming;
+use awaken_session_contract::SessionRealizationControl as _;
 use futures_util::stream::{self, StreamExt};
 use std::sync::Arc;
 
 /// Independent Session lease renewals are fast root CAS operations. Bound them
 /// per Worker so cloud replica count scales total capacity without removing
 /// local backpressure or allowing one Worker to overload Control.
-pub(crate) const MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS: usize = 8;
+pub(crate) const MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS: usize =
+    MAX_CONCURRENT_SESSION_REALIZATION_REQUESTS;
 
 /// Scoped preparation, not another lease manager. The existing scheduler sees
 /// the canonical slot before Resource I/O; this guard only bounds that I/O's
@@ -157,7 +161,7 @@ impl Drop for ResourcePreparation<'_> {
 impl crate::SharedHost {
     async fn reconcile_one_session_realization(
         &self,
-        control: &dyn awaken_session_contract::SessionRealizationControl,
+        control: &DeadlineSessionRealizationControl<'_>,
         session_id: String,
         lease: awaken_session_contract::SessionRealizationLease,
         requested_expiry_unix_ms: u64,
@@ -193,7 +197,10 @@ impl crate::SharedHost {
         else {
             return Ok(false);
         };
-        let renewal: Result<bool, (crate::HostError, bool)> = async {
+        let renewal: Result<
+            awaken_session_contract::ObservedSessionRealizationLease,
+            (crate::HostError, bool),
+        > = async {
             let control_failure = |error| {
                 let revoke = realization_renewal_failure_disposition(&error)
                     == RenewalFailureDisposition::RevokeImmediately;
@@ -201,7 +208,7 @@ impl crate::SharedHost {
             };
             let request_started = awaken_local_process::authority_proof_started()
                 .map_err(|error| (crate::HostError::internal(error.to_string()), true))?;
-            let renewed_lease = match control
+            match control
                 .renew_session_realization(awaken_session_contract::RenewSessionRealization {
                     session_id: session_id.clone(),
                     asserted_lease: lease.clone(),
@@ -209,15 +216,26 @@ impl crate::SharedHost {
                 })
                 .await
             {
-                Ok(renewed_lease) => renewed_lease.observed(request_started),
+                Ok(renewed_lease) => Ok(renewed_lease.observed(request_started)),
                 Err(error) => return Err(control_failure(error)),
-            };
-            // The response belongs to the snapshot sent before I/O. Compare
-            // and install atomically: another driver may already have extended,
-            // replaced, or removed that projection. A renewal is not authority
-            // to recreate a slot or overwrite a later installed lease.
-            let applied = self
-                .authorize_worker_effect(|| {
+            }
+        }
+        .await;
+        // The Control request released its shared permit before reaching this
+        // point. Re-enter the same scheduler for local response application or
+        // exact-owner cleanup: queued peer requests can consume the released
+        // capacity, while no unbounded second completion lane is created.
+        let _completion_permit = control
+            .acquire_completion_permit()
+            .await
+            .map_err(|error| crate::HostError::internal(error.to_string()))?;
+        let renewal: Result<bool, (crate::HostError, bool)> = match renewal {
+            Ok(renewed_lease) => {
+                // The response belongs to the snapshot sent before I/O. Compare
+                // and install atomically: another driver may already have extended,
+                // replaced, or removed that projection. A renewal is not authority
+                // to recreate a slot or overwrite a later installed lease.
+                self.authorize_worker_effect(|| {
                     Ok(self
                         .session_slots
                         .modify(&session_id, |slot| {
@@ -226,10 +244,10 @@ impl crate::SharedHost {
                         })
                         .unwrap_or(false))
                 })
-                .map_err(|error| (error, true))?;
-            Ok(applied)
-        }
-        .await;
+                .map_err(|error| (error, true))
+            }
+            Err(error) => Err(error),
+        };
         match renewal {
             Ok(false)
                 if self
@@ -393,8 +411,8 @@ impl crate::SharedHost {
             std::time::Duration,
         )| { left.2.cmp(&right.2).then_with(|| left.0.cmp(&right.0)) };
         due.sort_by(order);
-        let outcomes = stream::iter(due)
-            .map(|(session_id, lease, _)| {
+        let outcomes =
+            futures_util::future::join_all(due.into_iter().map(|(session_id, lease, _)| {
                 let control = &control;
                 // The exact asserted expiry is a Control-clock coordinate.
                 // Extend that coordinate, never add a Worker wall-clock value.
@@ -410,9 +428,7 @@ impl crate::SharedHost {
                     )
                     .await
                 }
-            })
-            .buffer_unordered(MAX_CONCURRENT_SESSION_REALIZATION_RENEWALS)
-            .collect::<Vec<_>>()
+            }))
             .await;
         let mut renewed = 0;
         let mut first_error = None;
