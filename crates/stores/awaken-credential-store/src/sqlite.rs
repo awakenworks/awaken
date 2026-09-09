@@ -25,8 +25,8 @@ use awaken_credential_vault::repo::{
     CredentialMaterialMutationPhase, CredentialMutationIntent, CredentialPublicationAdmission,
     CredentialRepo, ManagedCredentialOperation, ManagedCredentialRepository,
     ManagedCredentialRollout, ManagedCredentialRolloutIdentityDecision,
-    PendingManagedCredentialMutation, managed_credential_rollout_identity_decision,
-    managed_retirement_parent_admitted,
+    PendingManagedCredentialMutation, managed_credential_commit_plan,
+    managed_credential_rollout_identity_decision, managed_retirement_parent_admitted,
     managed_rollout_from_committed,
 };
 use awaken_credential_vault::{

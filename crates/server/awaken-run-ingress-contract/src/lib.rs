@@ -17,8 +17,9 @@ pub mod run_dispatch;
 mod worker_transport;
 
 pub use awaken_runtime_contract::{
-    AttemptCredentialBinding, CandidateFingerprint, CredentialRealizationReceipt,
-    CredentialReceiptError, verify_credential_realization_receipt,
+    AttemptCredentialBinding, CandidateFingerprint, CredentialRealizationPersistenceDecision,
+    CredentialRealizationReceipt, CredentialReceiptError,
+    credential_realization_persistence_decision, verify_credential_realization_receipt,
 };
 pub use awaken_session_contract::SessionRunReplacement;
 pub use awaken_worker_contract::{

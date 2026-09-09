@@ -154,6 +154,62 @@ pub struct CredentialRealizationReceipt {
     pub receipt_fingerprint: String,
 }
 
+/// Exact admission result for one materialization receipt against its frozen
+/// attempt binding. Persistence adapters consume the public error vocabulary;
+/// this closed decision remains the single owner of coordinate precedence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CredentialRealizationReceiptDecision {
+    Exact,
+    BindingMismatch,
+    MechanismMismatch,
+    FingerprintMismatch,
+}
+
+/// Durable receipt identity shared by every Dispatch store after binding
+/// verification. `Insert` is the only state-changing decision; exact replay is
+/// an idempotent stutter and any same-candidate payload change is a collision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialRealizationPersistenceDecision {
+    Insert,
+    ExactReplay,
+    Collision,
+}
+
+#[must_use]
+pub fn credential_realization_persistence_decision(
+    existing: Option<&CredentialRealizationReceipt>,
+    proposed: &CredentialRealizationReceipt,
+) -> CredentialRealizationPersistenceDecision {
+    match existing {
+        None => CredentialRealizationPersistenceDecision::Insert,
+        Some(existing) if existing == proposed => {
+            CredentialRealizationPersistenceDecision::ExactReplay
+        }
+        Some(_) => CredentialRealizationPersistenceDecision::Collision,
+    }
+}
+
+#[must_use]
+fn credential_realization_receipt_decision(
+    binding: &AttemptCredentialBinding,
+    receipt: &CredentialRealizationReceipt,
+    expected_fingerprint: &str,
+) -> CredentialRealizationReceiptDecision {
+    if receipt.candidate_fingerprint != binding.candidate_fingerprint
+        || receipt.credential != binding.credential
+        || receipt.selected_plaintext_holder != binding.selected_plaintext_holder
+        || receipt.claim_epoch != binding.claim_epoch
+    {
+        CredentialRealizationReceiptDecision::BindingMismatch
+    } else if receipt.actual_realization_kind != binding.selected_realization_kind {
+        CredentialRealizationReceiptDecision::MechanismMismatch
+    } else if receipt.receipt_fingerprint != expected_fingerprint {
+        CredentialRealizationReceiptDecision::FingerprintMismatch
+    } else {
+        CredentialRealizationReceiptDecision::Exact
+    }
+}
+
 impl CredentialRealizationReceipt {
     /// Construct a receipt for the effect actually completed. Verification
     /// rejects it unless that effect equals the frozen attempt decision.
@@ -187,21 +243,114 @@ impl CredentialRealizationReceipt {
     }
 
     pub fn verify(&self, binding: &AttemptCredentialBinding) -> Result<(), CredentialReceiptError> {
-        if self.candidate_fingerprint != binding.candidate_fingerprint
-            || self.credential != binding.credential
-            || self.selected_plaintext_holder != binding.selected_plaintext_holder
-            || self.claim_epoch != binding.claim_epoch
-        {
-            return Err(CredentialReceiptError::BindingMismatch);
+        let expected_fingerprint = self.expected_fingerprint()?;
+        match credential_realization_receipt_decision(binding, self, &expected_fingerprint) {
+            CredentialRealizationReceiptDecision::Exact => Ok(()),
+            CredentialRealizationReceiptDecision::BindingMismatch => {
+                Err(CredentialReceiptError::BindingMismatch)
+            }
+            CredentialRealizationReceiptDecision::MechanismMismatch => {
+                Err(CredentialReceiptError::MechanismMismatch)
+            }
+            CredentialRealizationReceiptDecision::FingerprintMismatch => {
+                Err(CredentialReceiptError::FingerprintMismatch)
+            }
         }
-        if self.actual_realization_kind != binding.selected_realization_kind {
-            return Err(CredentialReceiptError::MechanismMismatch);
-        }
-        if self.receipt_fingerprint != self.expected_fingerprint()? {
-            return Err(CredentialReceiptError::FingerprintMismatch);
-        }
-        Ok(())
     }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(20)]
+fn credential_realization_receipt_requires_every_exact_binding_coordinate() {
+    // Causes: C1 candidate fingerprint; C2 credential id; C3 revision;
+    // C4 holder boundary; C5 trust domain; C6 realization mechanism;
+    // C7 claim epoch; C8 receipt fingerprint. Each cause independently either
+    // matches or differs. Effects: E1 all match => Exact; E2 any C1-C5/C7
+    // mismatch => BindingMismatch; E3 otherwise C6 mismatch =>
+    // MechanismMismatch; E4 otherwise C8 mismatch => FingerprintMismatch.
+    // The precedence is the public error contract. SHA-256 implementation and
+    // durable claim/store linearization remain outside this coordinate proof.
+    let exact = [
+        kani::any::<bool>(),
+        kani::any::<bool>(),
+        kani::any::<bool>(),
+        kani::any::<bool>(),
+        kani::any::<bool>(),
+        kani::any::<bool>(),
+        kani::any::<bool>(),
+        kani::any::<bool>(),
+    ];
+    let binding = AttemptCredentialBinding {
+        candidate_fingerprint: CandidateFingerprint("candidate-a".into()),
+        credential: CredentialRef {
+            id: "credential-a".into(),
+            revision: 7,
+        },
+        selected_plaintext_holder: PlaintextHolder::new(PlaintextBoundary::Worker, "holder-a"),
+        selected_realization_kind: CredentialRealizationKind::WorkerProviderAdapter,
+        claim_epoch: 11,
+    };
+    let receipt = CredentialRealizationReceipt {
+        candidate_fingerprint: CandidateFingerprint(
+            if exact[0] {
+                "candidate-a"
+            } else {
+                "candidate-b"
+            }
+            .into(),
+        ),
+        credential: CredentialRef {
+            id: if exact[1] {
+                "credential-a"
+            } else {
+                "credential-b"
+            }
+            .into(),
+            revision: if exact[2] { 7 } else { 8 },
+        },
+        selected_plaintext_holder: PlaintextHolder::new(
+            if exact[3] {
+                PlaintextBoundary::Worker
+            } else {
+                PlaintextBoundary::Workload
+            },
+            if exact[4] { "holder-a" } else { "holder-b" },
+        ),
+        actual_realization_kind: if exact[5] {
+            CredentialRealizationKind::WorkerProviderAdapter
+        } else {
+            CredentialRealizationKind::WorkerRelay
+        },
+        claim_epoch: if exact[6] { 11 } else { 12 },
+        receipt_fingerprint: if exact[7] { "receipt-a" } else { "receipt-b" }.into(),
+    };
+    let decision = credential_realization_receipt_decision(&binding, &receipt, "receipt-a");
+    let binding_exact = exact[0] && exact[1] && exact[2] && exact[3] && exact[4] && exact[6];
+    let expected = if !binding_exact {
+        CredentialRealizationReceiptDecision::BindingMismatch
+    } else if !exact[5] {
+        CredentialRealizationReceiptDecision::MechanismMismatch
+    } else if !exact[7] {
+        CredentialRealizationReceiptDecision::FingerprintMismatch
+    } else {
+        CredentialRealizationReceiptDecision::Exact
+    };
+    assert_eq!(decision, expected);
+    assert_eq!(
+        credential_realization_persistence_decision(None, &receipt),
+        CredentialRealizationPersistenceDecision::Insert
+    );
+    assert_eq!(
+        credential_realization_persistence_decision(Some(&receipt), &receipt),
+        CredentialRealizationPersistenceDecision::ExactReplay
+    );
+    let mut collision = receipt.clone();
+    collision.claim_epoch = collision.claim_epoch.wrapping_add(1);
+    assert_eq!(
+        credential_realization_persistence_decision(Some(&receipt), &collision),
+        CredentialRealizationPersistenceDecision::Collision
+    );
 }
 
 /// Stable fingerprint used by claim compilation and every execution adapter.

@@ -482,6 +482,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness mcp_client_credential_admission_has_no_gateway_or_adapter_fallback
   run_kani awaken-run-ingress-contract \
     --harness claim_credential_operation_is_total_and_terminal_dominates \
+    --harness claim_credential_binding_revalidation_rejects_missing_widened_reordered_or_stale_wire \
     --harness only_awaiting_or_already_superseded_is_replacement_safe \
     --harness stale_dispatch_claim_cannot_modify_authoritative_state \
     --harness exact_dispatch_settlement_is_terminal_or_awaiting_only \
@@ -610,6 +611,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-runtime-contract --solver kissat \
     --harness created_tool_handle_validation_never_invents_termination
   run_kani awaken-runtime-contract \
+    --harness credential_realization_receipt_requires_every_exact_binding_coordinate \
     --harness model_operation_ordinal_never_wraps_or_reuses_a_coordinate \
     --harness model_execution_reentry_requires_positive_evidence \
     --harness claim_bound_external_effect_admits_only_current_ownership \

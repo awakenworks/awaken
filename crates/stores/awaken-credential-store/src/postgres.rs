@@ -32,8 +32,8 @@ use awaken_credential_vault::repo::{
     CredentialMaterialMutationPhase, CredentialMutationIntent, CredentialPublicationAdmission,
     CredentialRepo, ManagedCredentialOperation, ManagedCredentialRepository,
     ManagedCredentialRollout, ManagedCredentialRolloutIdentityDecision,
-    PendingManagedCredentialMutation, managed_credential_rollout_identity_decision,
-    managed_retirement_parent_admitted,
+    PendingManagedCredentialMutation, managed_credential_commit_plan,
+    managed_credential_rollout_identity_decision, managed_retirement_parent_admitted,
     managed_rollout_from_committed,
 };
 use awaken_credential_vault::{
@@ -481,6 +481,7 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
         pending: &PendingManagedCredentialMutation,
     ) -> Result<PendingManagedCredentialMutation, ManagedCredentialMutationError> {
         pending.validate()?;
+        let plan = managed_credential_commit_plan(pending)?;
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let durable = sqlx::query(&format!(
@@ -558,10 +559,9 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
         })
         .transpose()?;
         if durable.material_fence.phase == CredentialMaterialMutationPhase::Reclaiming {
-            let expected_reclaiming = pending.with_material_reclaiming()?;
-            if durable != expected_reclaiming
-                || current_source.as_ref() != Some(&pending.after_source)
-                || current_child.as_ref() != Some(&pending.after_credential)
+            if durable != plan.reclaiming_mutation
+                || current_source.as_ref() != Some(&plan.source)
+                || current_child.as_ref() != Some(&plan.credential)
             {
                 return Err(ManagedCredentialMutationError::RevisionConflict);
             }
@@ -647,7 +647,7 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
             ))
             .bind(&pending.after_source.id.0)
             .bind(&pending.after_source.workspace_id)
-            .bind(Json(&pending.after_source))
+            .bind(Json(&plan.source))
             .execute(&mut *tx)
             .await
             .map_err(storage)?
@@ -662,7 +662,7 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
                  WHERE id = $3 AND workspace_id = $4"
             ))
             .bind(&pending.after_source.workspace_id)
-            .bind(Json(&pending.after_source))
+            .bind(Json(&plan.source))
             .bind(&pending.after_source.id.0)
             .bind(&before.workspace_id)
             .execute(&mut *tx)
@@ -684,7 +684,7 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
             .bind(&pending.after_credential.vault_id)
             .bind(&pending.after_credential.workspace_id)
             .bind(&pending.after_credential.source_id.0)
-            .bind(Json(&pending.after_credential))
+            .bind(Json(&plan.credential))
             .execute(&mut *tx)
             .await
             .map_err(storage)?
@@ -702,7 +702,7 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
             .bind(&pending.after_credential.vault_id)
             .bind(&pending.after_credential.workspace_id)
             .bind(&pending.after_credential.source_id.0)
-            .bind(Json(&pending.after_credential))
+            .bind(Json(&plan.credential))
             .bind(&pending.after_credential.id)
             .bind(&before.vault_id)
             .bind(&before.workspace_id)
@@ -715,18 +715,15 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
         if child_changed != 1 {
             return Err(ManagedCredentialMutationError::RevisionConflict);
         }
-        let reclaiming = pending
-            .with_material_reclaiming()
-            .map_err(ManagedCredentialMutationError::Store)?;
         sqlx::query(&format!(
             "UPDATE {p}_managed_credential_mutation SET data = $1 WHERE source_id = $2"
         ))
-        .bind(Json(&reclaiming))
+        .bind(Json(&plan.reclaiming_mutation))
         .bind(&pending.after_source.id.0)
         .execute(&mut *tx)
         .await
         .map_err(storage)?;
-        if let Some(rollout) = managed_rollout_from_committed(pending) {
+        if let Some(rollout) = plan.rollout {
             sqlx::query(&format!(
                 "INSERT INTO {p}_managed_credential_rollout (event_id, data) VALUES ($1, $2) \
                  ON CONFLICT (event_id) DO NOTHING"
@@ -753,7 +750,7 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
             }
         }
         tx.commit().await.map_err(storage)?;
-        Ok(reclaiming)
+        Ok(plan.reclaiming_mutation)
     }
 
     async fn mark_managed_mutation_ready(

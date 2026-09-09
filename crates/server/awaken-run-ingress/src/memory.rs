@@ -21,18 +21,18 @@ use awaken_runtime_contract::resume::ResumeResult;
 use crate::dispatch::{
     AttemptAdmission, AttemptCredentialBinding, AttemptExecutionBinding, CasOutcome,
     ClaimCredentialOperation, Claimed, CommitEpochGuard, ContinuationAdmission,
-    CredentialRealizationReceipt, DispatchCompletion, DispatchError, DispatchOutcome,
-    DispatchQueue, DispatchState, DispatchSummary, ExactClaimMode, Inbox, Lease,
-    LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, PhysicalAttempt, RunClaim,
-    RunIdentityDecision, SessionChildAdmission, SessionRunReservationActivation,
+    CredentialRealizationPersistenceDecision, CredentialRealizationReceipt, DispatchCompletion,
+    DispatchError, DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, ExactClaimMode,
+    Inbox, Lease, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, PhysicalAttempt,
+    RunClaim, RunIdentityDecision, SessionChildAdmission, SessionRunReservationActivation,
     SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome,
     StoredRunIdentity, SubmitOptions, can_admit_claim_credentials, claim_credential_operation,
     claim_with_frozen, classify_completed_session_run_reservation, classify_exact_claim_mode,
     classify_live_session_run_reservation, classify_session_run_reservation_activation,
-    compile_claim_credential_bindings, decide_lease_renewal, decide_run_identity,
-    ensure_session_child_capacity, installed_worker_credential_capabilities,
-    normalize_pending_millis, session_child_parent, session_child_thread,
-    validate_executable_dispatch_admission, validate_outbox_continuation,
+    compile_claim_credential_bindings, credential_realization_persistence_decision,
+    decide_lease_renewal, decide_run_identity, ensure_session_child_capacity,
+    installed_worker_credential_capabilities, normalize_pending_millis, session_child_parent,
+    session_child_thread, validate_executable_dispatch_admission, validate_outbox_continuation,
     validate_session_resume_activity_transition, validate_session_resume_evidence,
     validate_session_resume_target, validate_session_run_replacement_candidates,
     validate_session_run_reservation_request, validate_session_run_reservation_resolution,
@@ -1409,18 +1409,20 @@ impl DispatchQueue for MemoryDispatchStore {
         }
         verify_credential_realization_receipt(&row.credential_bindings, &receipt)
             .map_err(|error| DispatchError::Rejected(error.to_string()))?;
-        if let Some(existing) = row
+        let existing = row
             .credential_receipts
             .iter()
-            .find(|existing| existing.candidate_fingerprint == receipt.candidate_fingerprint)
-        {
-            return if existing == &receipt {
-                Ok(SettleOutcome::Applied)
-            } else {
-                Err(DispatchError::Rejected(
+            .find(|existing| existing.candidate_fingerprint == receipt.candidate_fingerprint);
+        match credential_realization_persistence_decision(existing, &receipt) {
+            CredentialRealizationPersistenceDecision::ExactReplay => {
+                return Ok(SettleOutcome::Applied);
+            }
+            CredentialRealizationPersistenceDecision::Collision => {
+                return Err(DispatchError::Rejected(
                     "credential realization receipt conflicts with committed evidence".to_string(),
-                ))
-            };
+                ));
+            }
+            CredentialRealizationPersistenceDecision::Insert => {}
         }
         row.credential_receipts.push(receipt);
         Ok(SettleOutcome::Applied)

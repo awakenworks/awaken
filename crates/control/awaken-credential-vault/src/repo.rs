@@ -371,6 +371,35 @@ pub fn managed_rollout_from_committed(
     })
 }
 
+/// Complete value plan consumed by one Managed Credential commit boundary.
+///
+/// Repository adapters retain ownership of their lock/transaction and affected-
+/// row checks. This plan prevents them from independently deciding which
+/// Source, child, cleanup fact, or rollout belongs to the accepted mutation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedCredentialCommitPlan {
+    pub source: CredentialSource,
+    pub credential: ManagedVaultCredential,
+    pub reclaiming_mutation: PendingManagedCredentialMutation,
+    pub rollout: Option<ManagedCredentialRollout>,
+}
+
+/// Project an already validated and admitted `Ready` mutation into every value
+/// that must be published by the repository's one physical commit boundary.
+pub fn managed_credential_commit_plan(
+    pending: &PendingManagedCredentialMutation,
+) -> Result<ManagedCredentialCommitPlan, ManagedCredentialMutationError> {
+    let reclaiming_mutation = pending
+        .with_material_reclaiming()
+        .map_err(ManagedCredentialMutationError::Store)?;
+    Ok(ManagedCredentialCommitPlan {
+        source: pending.after_source.clone(),
+        credential: pending.after_credential.clone(),
+        reclaiming_mutation,
+        rollout: managed_rollout_from_committed(pending),
+    })
+}
+
 #[cfg(any(test, kani))]
 mod publication_proofs {
     use super::*;
@@ -460,8 +489,9 @@ mod publication_proofs {
         // C1 all four operations; C2 full signed source revision; C3 full
         // unsigned child revision. R1 Create => no event; R2 other operations
         // => exactly the committed identity/payload, with the existing zero
-        // fallback for invalid signed revisions. Distinct fixed identity
-        // strings detect crossed fields; arbitrary strings and transaction
+        // fallback for invalid signed revisions. The shared commit plan must
+        // carry the same distinct Source/child coordinates and advance only
+        // the material phase. Arbitrary strings and transaction-engine
         // atomicity are not inferred from this value-constructor proof.
         let mut pending = pending();
         pending.operation = match kani::any::<u8>() % 4 {
@@ -472,7 +502,26 @@ mod publication_proofs {
         };
         pending.after_source.version = kani::any();
         pending.after_credential.revision = kani::any();
-        let event = managed_rollout_from_committed(&pending);
+        let plan = managed_credential_commit_plan(&pending).expect("Ready has one commit plan");
+        assert_eq!(plan.source.id.0, "s");
+        assert_eq!(plan.source.workspace_id, "w");
+        assert_eq!(plan.source.version, pending.after_source.version);
+        assert_eq!(plan.credential.id, "c");
+        assert_eq!(plan.credential.vault_id, "v");
+        assert_eq!(plan.credential.workspace_id, "w");
+        assert_eq!(plan.credential.source_id.0, "s");
+        assert_eq!(plan.credential.revision, pending.after_credential.revision);
+        assert_eq!(
+            plan.reclaiming_mutation.material_fence.phase,
+            CredentialMaterialMutationPhase::Reclaiming
+        );
+        assert_eq!(plan.reclaiming_mutation.operation_id, pending.operation_id);
+        assert_eq!(plan.reclaiming_mutation.operation, pending.operation);
+        assert!(plan.reclaiming_mutation.before_source.is_none());
+        assert!(plan.reclaiming_mutation.before_credential.is_none());
+        assert_eq!(plan.reclaiming_mutation.after_source.id.0, "s");
+        assert_eq!(plan.reclaiming_mutation.after_credential.id, "c");
+        let event = plan.rollout;
         assert_eq!(
             event.is_none(),
             pending.operation == ManagedCredentialOperation::Create

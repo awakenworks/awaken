@@ -21,7 +21,8 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_runtime_contract::CredentialRealizationCapabilities;
 pub use awaken_runtime_contract::{
     AttemptCredentialBinding, AttemptCredentialBindingError, CandidateFingerprint,
-    CredentialRealizationReceipt, CredentialReceiptError, verify_credential_realization_receipt,
+    CredentialRealizationPersistenceDecision, CredentialRealizationReceipt, CredentialReceiptError,
+    credential_realization_persistence_decision, verify_credential_realization_receipt,
 };
 #[cfg(test)]
 use awaken_runtime_contract::{

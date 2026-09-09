@@ -303,6 +303,7 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
         pending: &PendingManagedCredentialMutation,
     ) -> Result<PendingManagedCredentialMutation, ManagedCredentialMutationError> {
         pending.validate()?;
+        let plan = managed_credential_commit_plan(pending)?;
         let mut state = self.state.lock().expect("credential repo");
         let durable = state
             .managed_mutations
@@ -315,11 +316,10 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
             })?;
         durable.validate()?;
         if durable.material_fence.phase == CredentialMaterialMutationPhase::Reclaiming {
-            let expected_reclaiming = pending.with_material_reclaiming()?;
-            if durable == expected_reclaiming
-                && state.rows.get(&pending.after_source.id.0) == Some(&pending.after_source)
+            if durable == plan.reclaiming_mutation
+                && state.rows.get(&pending.after_source.id.0) == Some(&plan.source)
                 && state.vault_credentials.get(&pending.after_credential.id)
-                    == Some(&pending.after_credential)
+                    == Some(&plan.credential)
             {
                 return Ok(durable);
             }
@@ -416,8 +416,7 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
                 }
             }
         }
-        let rollout = managed_rollout_from_committed(pending);
-        if rollout.as_ref().is_some_and(|proposed| {
+        if plan.rollout.as_ref().is_some_and(|proposed| {
             managed_credential_rollout_identity_decision(
                 state.managed_rollouts.get(&proposed.id),
                 proposed,
@@ -425,27 +424,21 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
         }) {
             return Err(ManagedCredentialMutationError::RevisionConflict);
         }
-        state.rows.insert(
-            pending.after_source.id.0.clone(),
-            pending.after_source.clone(),
-        );
-        state.vault_credentials.insert(
-            pending.after_credential.id.clone(),
-            pending.after_credential.clone(),
-        );
-        if let Some(rollout) = rollout {
+        state.rows.insert(plan.source.id.0.clone(), plan.source);
+        state
+            .vault_credentials
+            .insert(plan.credential.id.clone(), plan.credential);
+        if let Some(rollout) = plan.rollout {
             state
                 .managed_rollouts
                 .entry(rollout.id.clone())
                 .or_insert(rollout);
         }
-        let reclaiming = pending
-            .with_material_reclaiming()
-            .map_err(ManagedCredentialMutationError::Store)?;
-        state
-            .managed_mutations
-            .insert(pending.after_source.id.0.clone(), reclaiming.clone());
-        Ok(reclaiming)
+        state.managed_mutations.insert(
+            pending.after_source.id.0.clone(),
+            plan.reclaiming_mutation.clone(),
+        );
+        Ok(plan.reclaiming_mutation)
     }
 
     async fn mark_managed_mutation_ready(
