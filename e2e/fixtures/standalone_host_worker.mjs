@@ -179,6 +179,7 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
     controlFields,
     controlConfig: Object.entries(controlFields).map(([key,value]) => `${key} = ${JSON.stringify(value)}`),
     get process() { return worker; },
+    get pid() { return supervised ? supervised.status().pid : worker?.pid; },
     current,
     async replace(signal) {
       assert.ok(!supervised, 'explicit process replacement is separate from systemd recovery');
@@ -219,7 +220,8 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
         try { return (await fetch(`http://127.0.0.1:${adminPort}/readyz`,
           {signal:AbortSignal.timeout(1000)})).status; } catch { return undefined; }
       }, status => status === 200, 'SR0 Worker pool accepting before physical pause', {timeoutMs:30_000});
-      // SR1 idle Ready + real OS stop beyond the registered authority deadline
+      // SR1 Ready (idle or an existing caller-owned journey barrier) + real OS
+      // stop beyond the registered authority deadline
       // -> resumed old process fails closed and exits; systemd alone starts its
       // replacement. SR2 new PID/InvocationID + exactly one restart + newer Ready
       // registry generation; credentials/root remain the same, no DB mutation.
@@ -251,6 +253,10 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
       console.log(`Standalone systemd recovery: ${JSON.stringify({unit:supervised.name,
         old_pid:before.pid, pid:after.pid, old_generation:registered.generation,
         generation, restarts:after.restarts})}`);
+      return { exit_code:Number(exited[0].status), signal:null,
+        supervisor:supervised.name, old_invocation:before.InvocationID,
+        invocation:after.InvocationID, restarts_before:before.restarts,
+        restarts_after:after.restarts };
     },
     async verifyRevocation() {
       // Cause/effect rules: W2 same live process + disabled/absent projection
