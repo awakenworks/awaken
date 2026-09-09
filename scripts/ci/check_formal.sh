@@ -1023,6 +1023,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/tool-result-protocol" \
     -config formal/tla/ToolResultProtocol.cfg formal/tla/ToolResultProtocol.tla
+  python3 scripts/ci/check_formal_mutations.py --event-batch-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/worker-drain" \
     -config formal/tla/WorkerDrain.cfg formal/tla/WorkerDrain.tla

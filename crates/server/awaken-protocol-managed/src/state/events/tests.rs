@@ -1177,6 +1177,8 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for AdvisorP
     }
 }
 
+type RecoveryPause = (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);
+
 #[derive(Clone, Default)]
 struct LifecycleRuntime {
     messages: Arc<Mutex<Vec<Message>>>,
@@ -1196,6 +1198,9 @@ struct LifecycleRuntime {
     outcome_commit_on_read: Arc<Mutex<Vec<(awaken_agent_contract::agent::state::Command, u64)>>>,
     include_runs_in_snapshot: Arc<AtomicBool>,
     fail_recovery_snapshot: Arc<AtomicBool>,
+    /// Pause one existing Runtime read so a real root CAS can win while the
+    /// original transport has already begun cold recovery. No receipt is faked.
+    recovery_pause: Arc<Mutex<Option<RecoveryPause>>>,
     pending: Arc<Mutex<Option<Pending>>>,
     snapshot_reads: Arc<AtomicUsize>,
     split_message_reads: Arc<AtomicUsize>,
@@ -1301,6 +1306,11 @@ impl SessionRuntime for LifecycleRuntime {
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
         self.snapshot_reads.fetch_add(1, Ordering::SeqCst);
+        let pause = self.recovery_pause.lock().unwrap().take();
+        if let Some((entered, release)) = pause {
+            entered.notify_one();
+            release.notified().await;
+        }
         if self.fail_recovery_snapshot.load(Ordering::SeqCst) {
             return Err(RunError::unavailable(
                 "scripted cold recovery snapshot failure",
@@ -1595,6 +1605,233 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
         runtime.snapshot_reads.load(Ordering::SeqCst),
         reads_before,
         "IR2/E2 conflict also precedes cold recovery"
+    );
+
+    // IR3-IR7 extend the SAME retry table with a controlled Absent->winner
+    // window. C5 initial lookup misses; C6 ordinary cold recovery has entered
+    // Runtime I/O; C7 another replica commits exact/changed/closed/no identity;
+    // C8 that in-flight recovery then fails. Effects: the durable winner owns
+    // exact receipt/conflict/closed, or no winner preserves the original error.
+    // Pre-win I/O is expected; after releasing the failed read there may be no
+    // additional Runtime read, drive, cache publication or root/outbox mutation.
+    // Body and data-subject changes are independent fingerprint causes; trace
+    // context is provenance and is not a new idempotency coordinate.
+    let mut observations = Vec::new();
+    for winner in [
+        "exact",
+        "changed-body",
+        "changed-subject",
+        "closed",
+        "absent",
+    ] {
+        let runtime = LifecycleRuntime::default();
+        let repository = Arc::new(ephemeral_session_repo());
+        let state =
+            Arc::new(ManagedState::new(runtime.clone()).with_session_repo(repository.clone()));
+        let session = state
+            .create_session(
+                serde_json::from_value(serde_json::json!({
+                    "agent":"coder", "environment_id":"env_local"
+                }))
+                .unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        state.sessions.lock().unwrap().remove(&session.id);
+        let request = SendEventsRequest {
+            events: vec![InboundEvent::UserMessage {
+                content: vec![ContentBlock::text("original intent")],
+            }],
+        };
+        let subject = Some("original-subject".to_string());
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        *runtime.recovery_pause.lock().unwrap() = Some((entered.clone(), release.clone()));
+        let pending = {
+            let state = state.clone();
+            let id = session.id.clone();
+            let request = request.clone();
+            let subject = subject.clone();
+            tokio::spawn(async move {
+                state
+                    .send_events_attributed(&id, request, subject, Some("race-key".into()))
+                    .await
+            })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+            .await
+            .expect("IR3 recovery entered after absent lookup");
+        let winner_request = if winner == "changed-body" {
+            SendEventsRequest {
+                events: vec![InboundEvent::UserMessage {
+                    content: vec![ContentBlock::text("different intent")],
+                }],
+            }
+        } else {
+            request.clone()
+        };
+        let winner_subject = if winner == "changed-subject" {
+            Some("different-subject".to_string())
+        } else {
+            subject.clone()
+        };
+        let subject_changed = winner_subject != subject;
+        let fingerprint =
+            awaken_session_contract::stable_fingerprint(&(&winner_request, &winner_subject));
+        let batch = if winner == "closed" {
+            state
+                .application
+                .close_session_event_admission(
+                    "default",
+                    &session.id,
+                    "race-key".into(),
+                    fingerprint,
+                )
+                .await
+                .unwrap();
+            None
+        } else if winner == "absent" {
+            None
+        } else {
+            Some(
+                state
+                    .application
+                    .append_session_event_batch_idempotent(
+                        &session.id,
+                        vec![SessionEventInput::UserMessage {
+                            content: vec![ContentBlock::text(if winner == "changed-body" {
+                                "different intent"
+                            } else {
+                                "original intent"
+                            })],
+                        }],
+                        winner_subject,
+                        Some("winner-provenance".into()),
+                        Some(("race-key".into(), fingerprint)),
+                    )
+                    .await
+                    .unwrap(),
+            )
+        };
+        let root_before = repository.get(&session.id).await.unwrap();
+        let outbox_before = repository.pending_lifecycle().await.unwrap();
+        let cache_before = state.sessions.lock().unwrap().get(&session.id).cloned();
+        let reads_before = runtime.snapshot_reads.load(Ordering::SeqCst);
+        assert!(reads_before > 0, "IR3 pre-win recovery I/O is real");
+        runtime.fail_recovery_snapshot.store(true, Ordering::SeqCst);
+        release.notify_one();
+        let actual = tokio::time::timeout(std::time::Duration::from_secs(10), pending)
+            .await
+            .unwrap()
+            .unwrap();
+        let expected_receipt = batch.as_ref().map(|batch| SendEventsResponse {
+            data: accepted_inbound_receipts(&session.id, batch)
+                .into_iter()
+                .map(|p| p.event)
+                .collect(),
+        });
+        let (result, receipt, error) = match &actual {
+            Ok(response) => (
+                "exact",
+                serde_json::to_string(response).unwrap(),
+                "none".into(),
+            ),
+            Err(StateError::IdempotencyMismatch) => {
+                ("conflict", "null".into(), "idempotency_conflict".into())
+            }
+            Err(StateError::Run(error)) if error.code == "event_admission_closed" => {
+                ("closed", "null".into(), error.code.clone())
+            }
+            Err(StateError::Run(error)) => (
+                "unavailable",
+                "null".into(),
+                format!("{:?}:{}:{}", error.kind, error.code, error.message),
+            ),
+            Err(error) => panic!("unexpected retry result: {error:?}"),
+        };
+        match winner {
+            "exact" => {
+                assert_eq!(
+                    serde_json::to_value(
+                        actual.expect("IR3 exact winner supersedes recovery failure")
+                    )
+                    .unwrap(),
+                    serde_json::to_value(&expected_receipt).unwrap(),
+                    "IR3 complete original receipt"
+                );
+            }
+            "changed-body" | "changed-subject" => assert!(
+                matches!(actual, Err(StateError::IdempotencyMismatch)),
+                "IR4/IR5 changed winner conflicts: {actual:?}"
+            ),
+            "closed" => assert!(
+                matches!(actual, Err(StateError::Run(ref error)) if error.code == "event_admission_closed"),
+                "IR6 closed winner remains closed: {actual:?}"
+            ),
+            "absent" => assert!(
+                matches!(actual, Err(StateError::Run(ref error)) if error.message == "scripted cold recovery snapshot failure" && error.code == "unavailable" && error.kind == awaken_session_contract::RunErrorKind::Unavailable),
+                "IR7 absent retains original failure: {actual:?}"
+            ),
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            repository.get(&session.id).await.unwrap(),
+            root_before,
+            "IR3-IR7 full root frame"
+        );
+        assert_eq!(
+            repository.pending_lifecycle().await.unwrap(),
+            outbox_before,
+            "IR3-IR7 outbox frame"
+        );
+        let cache_after = state.sessions.lock().unwrap().get(&session.id).cloned();
+        let cache_unchanged = match (&cache_before, &cache_after) {
+            (None, None) => true,
+            (Some(before), Some(after)) => {
+                before.cache_revision == after.cache_revision
+                    && before.same_projected_content(after).unwrap()
+            }
+            _ => false,
+        };
+        assert!(
+            cache_unchanged,
+            "IR3-IR7 complete cache content and publication frame"
+        );
+        assert_eq!(
+            runtime.snapshot_reads.load(Ordering::SeqCst),
+            reads_before,
+            "IR3-IR7 no post-win Runtime read or drive"
+        );
+        let retained = root_before
+            .event_batches
+            .iter()
+            .find(|batch| batch.idempotency_key.as_deref() == Some("race-key"));
+        let frame = |root: &awaken_session_contract::PersistedSession,
+                     outbox: &[awaken_session_contract::ManagedLifecycleFact],
+                     reads| {
+            serde_json::json!({
+                "root": serde_json::to_string(root).unwrap(), "outbox": serde_json::to_string(outbox).unwrap(), "reads": reads,
+            })
+        };
+        observations.push(serde_json::json!({"rule": winner, "observation": {
+            "present": retained.is_some(), "closed": retained.is_some_and(|batch| batch.admission_closed),
+            "fingerprint": retained.and_then(|batch| batch.request_fingerprint.as_deref()).unwrap_or("none"),
+            "requested": awaken_session_contract::stable_fingerprint(&(&request, &subject)),
+            "body_changed": serde_json::to_value(&winner_request).unwrap() != serde_json::to_value(&request).unwrap(),
+            "subject_changed": subject_changed,
+            "result": result, "receipt": receipt,
+            "expected_receipt": serde_json::to_string(&expected_receipt).unwrap(),
+            "error": error, "failure": "Unavailable:unavailable:scripted cold recovery snapshot failure",
+            "before": frame(&root_before, &outbox_before, reads_before),
+            "after": frame(&repository.get(&session.id).await.unwrap(), &repository.pending_lifecycle().await.unwrap(), runtime.snapshot_reads.load(Ordering::SeqCst)),
+            "cache_unchanged": cache_unchanged,
+        }}));
+    }
+    awaken_reliability_testkit::write_observation_trace(
+        "event-batch-recovery-retry",
+        "event-batch-retry",
+        serde_json::Value::Array(observations),
     );
 }
 

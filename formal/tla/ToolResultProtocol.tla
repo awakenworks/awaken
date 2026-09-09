@@ -117,10 +117,28 @@ AppendBatch(key, fingerprint) ==
                     lastExpected, lastAcceptedCommit, lastExpectedCommit,
                     terminal, batchConflicts>>
 
+\* One retry decision is consumed by the original batch actions and the
+\* production observation relation. Closed is retained non-admission, never
+\* an executable receipt. An absent post-failure read preserves that failure.
+BatchRetryDecision(present, matchesFingerprint, closed) ==
+    IF ~present THEN "unavailable"
+    ELSE IF ~matchesFingerprint THEN "conflict"
+    ELSE IF closed THEN "closed" ELSE "exact"
+
+BatchRetryObservation(o) ==
+    /\ o.result = BatchRetryDecision(o.present, o.fingerprint = o.requested, o.closed)
+    /\ o.before = o.after /\ o.cache_unchanged
+    /\ IF o.result = "exact"
+          THEN o.receipt = o.expected_receipt /\ o.receipt # "null" /\ o.error = "none"
+          ELSE /\ o.receipt = "null"
+               /\ o.error = CASE o.result = "conflict" -> "idempotency_conflict"
+                                  [] o.result = "closed" -> "event_admission_closed"
+                                  [] OTHER -> o.failure
+
 ReplayBatch(key, fingerprint) ==
     /\ key \in Keys
     /\ fingerprint \in Fingerprints
-    /\ batchFingerprint[key] = fingerprint
+    /\ BatchRetryDecision(batchFingerprint[key] # None, batchFingerprint[key] = fingerprint, batchAppends[key] = 0) \in {"exact", "closed"}
     /\ UNCHANGED vars
 
 \* Final non-admission occupies the SAME key/fingerprint slot. batchAppends
@@ -139,8 +157,7 @@ CloseBatch(key, fingerprint) ==
 ConflictBatch(key, fingerprint) ==
     /\ key \in Keys
     /\ fingerprint \in Fingerprints
-    /\ batchFingerprint[key] # None
-    /\ batchFingerprint[key] # fingerprint
+    /\ BatchRetryDecision(batchFingerprint[key] # None, batchFingerprint[key] = fingerprint, batchAppends[key] = 0) = "conflict"
     /\ batchConflicts < MaxConflicts
     /\ batchConflicts' = batchConflicts + 1
     /\ UNCHANGED <<awaiting, awaitingCommit, completed, receiptCall,
@@ -212,6 +229,10 @@ AcceptedBatchHasIdentity ==
 BatchIsClosed(key) == batchFingerprint[key] # None /\ batchAppends[key] = 0
 ClosedBatchNeverAppends == \A key \in Keys: [](BatchIsClosed(key) => []BatchIsClosed(key))
 AcceptedBatchNeverCloses == \A key \in Keys: [](batchAppends[key] = 1 => [](batchAppends[key] = 1))
+
+\* Once either Append or Close binds a key, every retry keeps its identity.
+BatchFingerprintNeverChanges ==
+    [][\A key \in Keys: (batchFingerprint[key] # None) => (batchFingerprint'[key] = batchFingerprint[key])]_vars
 
 EveryBatchKeyAppendsAtMostOnce ==
     \A key \in Keys: batchAppends[key] <= 1
