@@ -4015,6 +4015,23 @@ async fn failed_committed_projection_does_not_poison_warm_recovery() {
         ),
         "A1/E2 no failed projection is broadcast"
     );
+    let warm_after_failure = state
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&session.id)
+        .unwrap()
+        .clone();
+    assert_eq!(
+        warm_after_failure.cache_revision, before.cache_revision,
+        "A1/E2 failed build cannot advance the live CAS coordinate"
+    );
+    assert!(
+        warm_after_failure
+            .same_projected_content(&before)
+            .expect("A1 compare complete warm records"),
+        "A1/E2 every visible result and checkpoint field stutters"
+    );
 
     let tool_use = Message::new(
         MessageId("message-recovered-tool-use".into()),
@@ -4044,6 +4061,32 @@ async fn failed_committed_projection_does_not_poison_warm_recovery() {
             "A2/E3 {event_type} recovered exactly once"
         );
     }
+    let observed_revision = state
+        .application
+        .session(&session.id)
+        .await
+        .expect("A2 observed Session root")
+        .revision;
+    let recovered_source = state
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&session.id)
+        .unwrap()
+        .checkpoint
+        .source
+        .clone();
+    assert_eq!(
+        recovered_source.session_revision, observed_revision,
+        "A2/E3"
+    );
+    assert_eq!(recovered_source.root_thread_version, 1, "A2/E3");
+    assert!(recovered_source.child_thread_versions.is_empty(), "A2/E3");
+    assert_eq!(
+        recovered_source.lifecycle_cursor,
+        lifecycle_cursor(1),
+        "A2/E3"
+    );
     state
         .refresh_committed_events(&session.id)
         .await

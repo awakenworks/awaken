@@ -564,6 +564,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-protocol-managed \
     --harness projection_publish_decision_is_total_exact_and_fail_closed \
     --harness runtime_tool_projection_phase_is_total_distinct_and_fail_closed \
+    --harness projection_refresh_failure_stutters_and_success_preserves_one_pair \
+    --harness projection_source_stamp_is_exact_for_the_complete_observed_thread_prefix \
     --harness canonical_event_order_never_depends_on_wall_time \
     --harness historical_pending_order_precedes_every_admitted_terminal \
     --solver kissat \

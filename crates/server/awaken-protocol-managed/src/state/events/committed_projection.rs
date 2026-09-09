@@ -61,10 +61,13 @@ impl ManagedState {
         Ok(())
     }
 
-    async fn refresh_committed_projection_once(
+    async fn build_committed_projection_candidate(
         &self,
         session_id: &str,
-    ) -> Result<bool, StateError> {
+    ) -> Result<
+        publication::ProjectionRefreshBuild<publication::ProjectionRefreshCandidate>,
+        StateError,
+    > {
         // Private Worker realization mutates the same durable Session application
         // without passing through this protocol adapter. Include that root in the
         // same private candidate as Runtime facts so GET cannot publish a stale
@@ -340,7 +343,7 @@ impl ManagedState {
                     reason = "coordinated_prefix",
                     "Managed projection retry"
                 );
-                return Ok(false);
+                return Ok(publication::ProjectionRefreshBuild::Retry);
             }
             let final_root_snapshot = self.recovery_snapshot(session_id, session_id).await?;
             if !same_thread_projection_prefix(root_snapshot.as_ref(), final_root_snapshot.as_ref())
@@ -352,7 +355,7 @@ impl ManagedState {
                     final_version = ?final_root_snapshot.as_ref().map(|snapshot| snapshot.thread_version),
                     "Managed projection retry"
                 );
-                return Ok(false);
+                return Ok(publication::ProjectionRefreshBuild::Retry);
             }
 
             let final_persisted = self
@@ -370,7 +373,7 @@ impl ManagedState {
                     final_revision = ?final_persisted.revision,
                     "Managed projection retry"
                 );
-                return Ok(false);
+                return Ok(publication::ProjectionRefreshBuild::Retry);
             }
         }
 
@@ -1112,18 +1115,23 @@ impl ManagedState {
                 child_pending: &child_pending,
             },
         )?;
-        publication::stamp_source(
-            &mut staged_record,
-            persisted.revision,
-            root_snapshot.as_ref(),
-            &child_snapshots,
-        );
+        Ok(publication::ProjectionRefreshBuild::Complete(
+            publication::ProjectionRefreshCandidate::new(
+                base_cache_revision,
+                staged_record,
+                previous_event_ids,
+                persisted.revision,
+                root_snapshot.as_ref(),
+                &child_snapshots,
+            ),
+        ))
+    }
 
-        self.publish_projection_candidate(
-            session_id,
-            base_cache_revision,
-            staged_record,
-            &previous_event_ids,
-        )
+    async fn refresh_committed_projection_once(
+        &self,
+        session_id: &str,
+    ) -> Result<bool, StateError> {
+        let build = self.build_committed_projection_candidate(session_id).await;
+        self.finish_projection_refresh(session_id, build)
     }
 }
