@@ -334,9 +334,11 @@ pub trait DispatchQueue: Send + Sync {
         ))
     }
 
-    /// Acknowledge that the physical executor future owned by `claim` has
-    /// returned. This intentionally accepts the exact predecessor epoch after a
-    /// durable reclaim: it can only clear its own execution slot and grants no
+    /// Acknowledge complete physical quiescence owned by `claim`: either actual
+    /// executor return without nested uncertainty, or the Coordinator's trusted
+    /// independent complete-termination assertion. A local process exit alone
+    /// is insufficient. This intentionally accepts the exact predecessor epoch
+    /// after a durable reclaim: it can only clear its own execution slot and grants no
     /// commit, checkpoint, or settlement authority. A mismatched claim is fenced.
     async fn finish_attempt(&self, _claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
         Err(DispatchError::Rejected(

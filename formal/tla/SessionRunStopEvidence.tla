@@ -13,9 +13,10 @@ Members(attempt) ==
     {<<attempt[1], attempt[2], attempt[3], kind>> : kind \in Participants}
 Local(attempt) == <<attempt[1], attempt[2], attempt[3], "local">>
 
-VARIABLES issuedAttempts, activeParticipants, returnedParticipants, closedAttempts
+VARIABLES issuedAttempts, activeParticipants, returnedParticipants, closedAttempts,
+          completeReceipts
 evidenceVars == <<issuedAttempts, activeParticipants, returnedParticipants,
-                  closedAttempts>>
+                  closedAttempts, completeReceipts>>
 stopVars == <<vars, evidenceVars>>
 
 StopEvidenceInit ==
@@ -24,6 +25,7 @@ StopEvidenceInit ==
     /\ activeParticipants = {}
     /\ returnedParticipants = {}
     /\ closedAttempts = {}
+    /\ completeReceipts = {}
 
 \* R1: the canonical physical admission enrolls every possible participant
 \* before any external effect. This bounded overapproximation allows model and
@@ -33,14 +35,15 @@ StartWithParticipants(run, worker, epoch) ==
     /\ StartExecution(run, worker, epoch)
     /\ issuedAttempts' = issuedAttempts \cup {attempt}
     /\ activeParticipants' = activeParticipants \cup Members(attempt)
-    /\ UNCHANGED <<returnedParticipants, closedAttempts>>
+    /\ UNCHANGED <<returnedParticipants, closedAttempts, completeReceipts>>
 
 \* R2: process death, model return and tool return are independent physical
 \* facts. Neither death nor a logical committed Ended changes other work.
 ParticipantStops(participant) ==
     /\ participant \in activeParticipants
     /\ activeParticipants' = activeParticipants \ {participant}
-    /\ UNCHANGED <<vars, issuedAttempts, returnedParticipants, closedAttempts>>
+    /\ UNCHANGED <<vars, issuedAttempts, returnedParticipants, closedAttempts,
+                   completeReceipts>>
 
 \* The provider's irreversible launch closure is separate from observing an
 \* empty domain. Exact Worker Registry expiry and Kubernetes closure are
@@ -48,7 +51,8 @@ ParticipantStops(participant) ==
 CloseExecutionDomain(attempt) ==
     /\ attempt \in issuedAttempts
     /\ closedAttempts' = closedAttempts \cup {attempt}
-    /\ UNCHANGED <<vars, issuedAttempts, activeParticipants, returnedParticipants>>
+    /\ UNCHANGED <<vars, issuedAttempts, activeParticipants, returnedParticipants,
+                   completeReceipts>>
 
 \* R3: a delayed local launch may still arrive while the domain is open.
 \* No new incarnation/epoch may be mistaken for reopening this exact domain.
@@ -56,7 +60,8 @@ DelayedLocalLaunch(attempt) ==
     /\ attempt \in issuedAttempts
     /\ attempt \notin closedAttempts
     /\ activeParticipants' = activeParticipants \cup {Local(attempt)}
-    /\ UNCHANGED <<vars, issuedAttempts, returnedParticipants, closedAttempts>>
+    /\ UNCHANGED <<vars, issuedAttempts, returnedParticipants, closedAttempts,
+                   completeReceipts>>
 
 \* R4: trusted provider delivery, independent of Worker survival and leases.
 \* Lost delivery is stutter; duplicates and reordered delivery are set union.
@@ -66,15 +71,26 @@ ObserveParticipantReceipt(participant) ==
     /\ participant \notin activeParticipants
     /\ participant[4] = "local" => Subject(participant) \in closedAttempts
     /\ returnedParticipants' = returnedParticipants \cup {participant}
-    /\ UNCHANGED <<vars, issuedAttempts, activeParticipants, closedAttempts>>
+    /\ UNCHANGED <<vars, issuedAttempts, activeParticipants, closedAttempts,
+                   completeReceipts>>
 
 CompleteEvidence(attempt) == Members(attempt) \subseteq returnedParticipants
 
-\* R5: compose ALL exact receipts, then use the original aggregate return.
+\* R5: the trusted source may deliver a complete assertion only for ALL exact
+\* receipts. This is repeatably queryable provider evidence, not a new Dispatch
+\* database/table. Loss/crash before application leaves the physical slot intact.
+\* Query is read-only: a handoff during IO cannot authorize cancelling its work.
+ObserveCompleteReceipt(attempt) ==
+    /\ CompleteEvidence(attempt)
+    /\ completeReceipts' = completeReceipts \cup {attempt}
+    /\ UNCHANGED <<vars, issuedAttempts, activeParticipants,
+                   returnedParticipants, closedAttempts>>
+
+\* R6: validate the delivered assertion's exact identity before original return.
 \* The original FinishExecution keeps the exact owner/epoch clear and its
 \* retired watermark. There is no new clear transition or settlement path.
 ObserveCompleteReturn(attempt) ==
-    /\ CompleteEvidence(attempt)
+    /\ attempt \in completeReceipts
     /\ ObserveExternalReturn(attempt[1], attempt[2], attempt[3])
     /\ UNCHANGED evidenceVars
 
@@ -90,7 +106,7 @@ StopEvidenceNext ==
          ParticipantStops(participant) \/ ObserveParticipantReceipt(participant)
     \/ \E attempt \in Attempts:
          CloseExecutionDomain(attempt) \/ DelayedLocalLaunch(attempt)
-         \/ ObserveCompleteReturn(attempt)
+         \/ ObserveCompleteReceipt(attempt) \/ ObserveCompleteReturn(attempt)
 
 StopEvidenceSpec == StopEvidenceInit /\ [][StopEvidenceNext]_stopVars
 
@@ -102,6 +118,7 @@ StopEvidenceFairness ==
     /\ \A participant \in (Runs \X Workers \X (1..MaxEpoch) \X Participants):
          WF_stopVars(ObserveParticipantReceipt(participant))
     /\ \A attempt \in Attempts:
+         /\ WF_stopVars(ObserveCompleteReceipt(attempt))
          /\ WF_stopVars(ObserveCompleteReturn(attempt))
          /\ WF_stopVars(FinishExecution(attempt[1], attempt[2], attempt[3])
                         /\ UNCHANGED evidenceVars)
@@ -117,6 +134,9 @@ StopEvidenceTypeOK ==
     /\ closedAttempts \subseteq issuedAttempts
     /\ activeParticipants \subseteq UNION {Members(a) : a \in issuedAttempts}
     /\ returnedParticipants \subseteq UNION {Members(a) : a \in issuedAttempts}
+    /\ completeReceipts \subseteq issuedAttempts
+
+CompleteReceiptIsSound == \A a \in completeReceipts: CompleteEvidence(a)
 
 ReceiptIsSound ==
     /\ returnedParticipants \intersect activeParticipants = {}
@@ -132,6 +152,7 @@ AggregateRetirementRequiresAllReceipts ==
 StopEvidenceSafety ==
     /\ StopEvidenceTypeOK
     /\ ReceiptIsSound
+    /\ CompleteReceiptIsSound
     /\ ParticipantsRetainAggregate
     /\ AggregateRetirementRequiresAllReceipts
     /\ Safety
@@ -156,10 +177,10 @@ NoLocalOnlyStop == ~\E a \in externalAttempts:
 NoRemoteOnlyStop == ~\E a \in externalAttempts:
     /\ Members(a) \ {Local(a)} \subseteq returnedParticipants
     /\ Local(a) \in activeParticipants
-NoCompleteEvidenceBeforeClear == ~\E a \in externalAttempts: CompleteEvidence(a)
+NoCompleteEvidenceBeforeClear == ~\E a \in externalAttempts: a \in completeReceipts
 NoSuccessorWithOldReceipt == ~\E old, next \in issuedAttempts:
     /\ old[1] = next[1] /\ old[3] < next[3]
-    /\ CompleteEvidence(old) /\ ExactSlot(next)
+    /\ old \in completeReceipts /\ ExactSlot(next)
 NoTerminalWithOutstandingWork == ~\E a \in externalAttempts:
     /\ committedDisposition[a[1]] = "Ended"
     /\ Members(a) \intersect activeParticipants # {}

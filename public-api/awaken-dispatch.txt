@@ -114,6 +114,9 @@ pub awaken_dispatch::ApplicationErrorKind::Conflict
 pub awaken_dispatch::ApplicationErrorKind::Internal
 pub awaken_dispatch::ApplicationErrorKind::InvalidRequest
 pub awaken_dispatch::ApplicationErrorKind::Unavailable
+pub enum awaken_dispatch::AttemptStopStatus
+pub awaken_dispatch::AttemptStopStatus::Stopped(awaken_dispatch::ObservedAttemptStop)
+pub awaken_dispatch::AttemptStopStatus::Unknown
 pub enum awaken_dispatch::Error
 pub awaken_dispatch::Error::Dispatch(awaken_dispatch_contract::dispatch::DispatchError)
 pub awaken_dispatch::Error::Execution(awaken_runtime_contract::execution::Error)
@@ -236,6 +239,11 @@ impl awaken_dispatch::ClaimedCommitService
 pub async fn awaken_dispatch::ClaimedCommitService::apply_claimed(&self, awaken_dispatch_contract::worker_transport::ClaimedCommitRequest) -> core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_dispatch::ApplicationError>
 pub fn awaken_dispatch::ClaimedCommitService::new(alloc::sync::Arc<dyn awaken_dispatch_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::OperationCoordinator>) -> Self
 pub fn awaken_dispatch::ClaimedCommitService::with_coordinator_resolver(alloc::sync::Arc<dyn awaken_dispatch_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_dispatch::ClaimedOperationCoordinatorResolver>) -> Self
+pub struct awaken_dispatch::ClosedAttemptExecution
+impl awaken_dispatch::ClosedAttemptExecution
+pub fn awaken_dispatch::ClosedAttemptExecution::attempt(&self) -> &awaken_dispatch_contract::dispatch::attempt_binding::PhysicalAttempt
+pub fn awaken_dispatch::ClosedAttemptExecution::observed_all_execution_stopped(&self, impl core::convert::Into<alloc::string::String>) -> core::result::Result<awaken_dispatch::AttemptStopStatus, awaken_dispatch::ApplicationError>
+pub fn awaken_dispatch::ClosedAttemptExecution::process_exit(&self) -> &awaken_dispatch::ObservedWorkerProcessExit
 pub struct awaken_dispatch::ClosedWorkerExecution
 impl awaken_dispatch::ClosedWorkerExecution
 pub fn awaken_dispatch::ClosedWorkerExecution::binding(&self) -> &awaken_dispatch_contract::dispatch::attempt_binding::AttemptExecutionBinding
@@ -245,6 +253,7 @@ impl<S: awaken_dispatch_contract::dispatch::Dispatch + 'static> awaken_dispatch:
 pub async fn awaken_dispatch::DispatchPool<S>::begin_drain(&self)
 pub async fn awaken_dispatch::DispatchPool<S>::can_resume(&self) -> bool
 pub async fn awaken_dispatch::DispatchPool<S>::cancel(&self, &awaken_agent_contract::agent::run::Id) -> core::result::Result<bool, awaken_dispatch::Error>
+pub fn awaken_dispatch::DispatchPool<S>::concurrency(&self) -> usize
 pub async fn awaken_dispatch::DispatchPool<S>::deliver(&self, awaken_dispatch_contract::dispatch::PendingInput) -> core::result::Result<(), awaken_dispatch::Error>
 pub fn awaken_dispatch::DispatchPool<S>::in_flight(&self) -> u32
 pub async fn awaken_dispatch::DispatchPool<S>::is_accepting(&self) -> bool
@@ -348,6 +357,10 @@ pub fn awaken_dispatch::LocalWakeSignal::new() -> Self
 impl awaken_dispatch::WakeSignal for awaken_dispatch::LocalWakeSignal
 pub fn awaken_dispatch::LocalWakeSignal::publish<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch::LocalWakeSignal::wait<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_dispatch::ObservedAttemptStop
+impl awaken_dispatch::ObservedAttemptStop
+pub fn awaken_dispatch::ObservedAttemptStop::attempt(&self) -> &awaken_dispatch_contract::dispatch::attempt_binding::PhysicalAttempt
+pub fn awaken_dispatch::ObservedAttemptStop::evidence_ref(&self) -> &str
 pub struct awaken_dispatch::ObservedWorkerProcessExit
 impl awaken_dispatch::ObservedWorkerProcessExit
 pub fn awaken_dispatch::ObservedWorkerProcessExit::binding(&self) -> &awaken_dispatch_contract::dispatch::attempt_binding::AttemptExecutionBinding
@@ -542,6 +555,7 @@ pub fn awaken_dispatch::PgNotifyWake::wait<'life0, 'async_trait>(&'life0 self) -
 pub trait awaken_dispatch::WorkerExecutionBindingSource: core::marker::Send + core::marker::Sync
 pub fn awaken_dispatch::WorkerExecutionBindingSource::binding_for<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_worker_contract::registry::WorkerIdentity) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::attempt_binding::AttemptExecutionBinding, awaken_dispatch::ApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_dispatch::WorkerExecutionStopSource: core::marker::Send + core::marker::Sync
+pub fn awaken_dispatch::WorkerExecutionStopSource::observe_attempt_termination<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch::ClosedAttemptExecution) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch::AttemptStopStatus, awaken_dispatch::ApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch::WorkerExecutionStopSource::stop_closed_worker<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch::ClosedWorkerExecution) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch::WorkerProcessStopStatus, awaken_dispatch::ApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_dispatch::WorkerResolver<S>: core::marker::Send + core::marker::Sync
 pub fn awaken_dispatch::WorkerResolver::credential_realization_capabilities(&self) -> awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities

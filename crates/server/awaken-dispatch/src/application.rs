@@ -85,21 +85,112 @@ pub enum WorkerProcessStopStatus {
     Exited(ObservedWorkerProcessExit),
 }
 
+/// One exact predecessor, after independent local exit and irreversible Worker
+/// closure. Only the Coordinator application constructs this observation subject;
+/// neither a Worker request nor a Run's logical terminal status can construct it.
+///
+/// ```compile_fail
+/// use awaken_dispatch::{ClosedAttemptExecution, PhysicalAttempt, ObservedWorkerProcessExit};
+/// fn forge(attempt: PhysicalAttempt, process_exit: ObservedWorkerProcessExit) {
+///     let _ = ClosedAttemptExecution { attempt, process_exit };
+/// }
+/// ```
+pub struct ClosedAttemptExecution {
+    attempt: crate::PhysicalAttempt,
+    process_exit: ObservedWorkerProcessExit,
+}
+
+impl ClosedAttemptExecution {
+    pub fn attempt(&self) -> &crate::PhysicalAttempt {
+        &self.attempt
+    }
+
+    pub fn process_exit(&self) -> &ObservedWorkerProcessExit {
+        &self.process_exit
+    }
+
+    /// Trusted provider assertion, NOT a test for local completion. Call only
+    /// after proving complete pre-effect enrollment AND terminal/no-restart
+    /// evidence for ALL work belonging to this exact attempt, including SDK
+    /// retries, hooks, nested tools and independently hosted Sandboxes. Missing
+    /// records, latest-value projections and a closed HTTP connection are not
+    /// evidence of absence. Unsupported/legacy execution must remain Unknown.
+    /// The reference identifies repeatably queryable provider evidence; it is
+    /// not a signature and this constructor cannot verify provider honesty.
+    pub fn observed_all_execution_stopped(
+        &self,
+        evidence_ref: impl Into<String>,
+    ) -> Result<AttemptStopStatus, ApplicationError> {
+        let evidence_ref = evidence_ref.into();
+        if evidence_ref.trim().is_empty() {
+            return Err(ApplicationError::invalid(
+                "complete attempt termination requires provider evidence",
+            ));
+        }
+        Ok(AttemptStopStatus::Stopped(ObservedAttemptStop {
+            attempt: self.attempt.clone(),
+            evidence_ref,
+        }))
+    }
+}
+
+/// Subject-bound assertion from the trusted stop source, never deserialized
+/// from Worker/user JSON. Covers this physical attempt only, not Session cleanup,
+/// business outcome, side-effect replay safety, or a successor's authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedAttemptStop {
+    attempt: crate::PhysicalAttempt,
+    evidence_ref: String,
+}
+
+impl ObservedAttemptStop {
+    pub fn attempt(&self) -> &crate::PhysicalAttempt {
+        &self.attempt
+    }
+
+    pub fn evidence_ref(&self) -> &str {
+        &self.evidence_ref
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttemptStopStatus {
+    Unknown,
+    Stopped(ObservedAttemptStop),
+}
+
 /// Trusted, independent infrastructure control, selected by Coordinator startup.
 /// Implementations must validate the provider and exact frozen process identity,
-/// stop idempotently, preserve evidence, and never upgrade local exit to an ACK.
+/// stop idempotently and preserve evidence. The two methods report DIFFERENT
+/// facts; a local-only implementation must retain the default Unknown below.
 #[async_trait::async_trait]
 pub trait WorkerExecutionStopSource: Send + Sync {
     async fn stop_closed_worker(
         &self,
         execution: &ClosedWorkerExecution,
     ) -> Result<WorkerProcessStopStatus, ApplicationError>;
+
+    /// Read complete termination evidence from independent providers, after
+    /// verified local exit. This is READ ONLY: a concurrent durable handoff may
+    /// transfer the remote operation after this observation subject was built.
+    /// Therefore this method cannot cancel/close remote operations, submit work,
+    /// or mutate Dispatch. Backend owners control their own stop protocol;
+    /// this source composes their terminal/no-restart facts. Missing capability
+    /// or historical enrollment remains Unknown, including after local exit.
+    async fn observe_attempt_termination(
+        &self,
+        _execution: &ClosedAttemptExecution,
+    ) -> Result<AttemptStopStatus, ApplicationError> {
+        Ok(AttemptStopStatus::Unknown)
+    }
 }
 
 /// Progress a blocked successor through the existing authorities, without a
 /// recovery queue or a second copy of slot state. The caller bounds provider IO
 /// and retries through ordinary admission. `None` means no stop was authorized.
-/// Even `Some(Exited)` is NOT complete attempt quiescence and cannot clear a slot.
+/// The returned observation remains LOCAL only. Retirement additionally requires
+/// a separate complete assertion from `observe_attempt_termination`; the existing
+/// Dispatch slot is the sole retirement authority, not this return value.
 pub async fn stop_expired_predecessor(
     dispatch: &dyn DispatchQueue,
     directory: &dyn crate::WorkerDirectory,
@@ -161,6 +252,43 @@ pub async fn stop_expired_predecessor(
         return Err(ApplicationError::internal(
             "provider exit observation names another execution",
         ));
+    }
+    if let WorkerProcessStopStatus::Exited(process_exit) = &observation {
+        // Do not query a superseded subject after a late process observation.
+        // Recheck after local IO, without holding a transaction over
+        // the next provider call. A subsequent race is handled by exact finish.
+        if dispatch
+            .load_physical_attempt(&successor.run_id)
+            .await
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+            .as_ref()
+            != Some(&predecessor)
+        {
+            return Ok(Some(observation));
+        }
+        let stopped = source
+            .observe_attempt_termination(&ClosedAttemptExecution {
+                attempt: predecessor.clone(),
+                process_exit: process_exit.clone(),
+            })
+            .await?;
+        if let AttemptStopStatus::Stopped(receipt) = &stopped {
+            if receipt.attempt() != &predecessor {
+                return Err(ApplicationError::internal(
+                    "provider termination evidence names another physical attempt",
+                ));
+            }
+            // Reuse the aggregate's exact owner/epoch transaction and retired
+            // watermark. Never clear by Run/Thread/Worker alone. A concurrent
+            // ACK, handoff or successor admission can only fence this old clear.
+            let retirement = dispatch
+                .finish_attempt(&predecessor.claim)
+                .await
+                .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
+            tracing::debug!(?retirement, evidence_ref = receipt.evidence_ref(),
+                run_id = %predecessor.claim.run_id.0, epoch = predecessor.claim.epoch,
+                "independent complete attempt termination observed");
+        }
     }
     Ok(Some(observation))
 }
@@ -369,6 +497,84 @@ impl ClaimedCommitService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_receipt_freezes_all_physical_identity_coordinates() {
+        // R28 exact typed assertion => equal; independently vary Run, owner,
+        // epoch, optional binding, Worker id/incarnation/generation, provider and
+        // execution reference => unequal. This is the same derived equality the
+        // application uses before finish_attempt, not string concatenation or a
+        // Run-only comparison. Blank evidence rejects. Constructor privacy is
+        // covered by the compile-fail doctest; provider truth is outside this test.
+        let worker = crate::WorkerIdentity::new("worker", "boot", 1);
+        let binding =
+            crate::AttemptExecutionBinding::new(worker.clone(), "provider", "instance").unwrap();
+        let attempt = crate::PhysicalAttempt {
+            claim: crate::RunClaim {
+                run_id: awaken_agent_contract::agent::run::Id("run".into()),
+                owner: worker.lease_owner(),
+                epoch: 1,
+            },
+            binding: Some(binding.clone()),
+        };
+        let command = ClosedAttemptExecution {
+            attempt: attempt.clone(),
+            process_exit: ObservedWorkerProcessExit {
+                binding,
+                evidence_ref: "local-exit".into(),
+            },
+        };
+        assert!(command.observed_all_execution_stopped("\n\t").is_err());
+        let AttemptStopStatus::Stopped(receipt) =
+            command.observed_all_execution_stopped("complete").unwrap()
+        else {
+            panic!("positive witness")
+        };
+        assert_eq!(receipt.attempt(), &attempt);
+        for coordinate in [
+            "run",
+            "owner",
+            "epoch",
+            "missing-binding",
+            "worker",
+            "boot",
+            "generation",
+            "provider",
+            "instance",
+        ] {
+            let mut other = attempt.clone();
+            let mut other_worker = worker.clone();
+            match coordinate {
+                "run" => other.claim.run_id.0.push('2'),
+                "owner" => other.claim.owner.push('2'),
+                "epoch" => other.claim.epoch += 1,
+                "missing-binding" => other.binding = None,
+                "worker" => other_worker.worker_id.push('2'),
+                "boot" => other_worker.incarnation_id.push('2'),
+                "generation" => other_worker.generation += 1,
+                _ => {}
+            }
+            if !["run", "owner", "epoch", "missing-binding"].contains(&coordinate) {
+                other.binding = Some(
+                    crate::AttemptExecutionBinding::new(
+                        other_worker,
+                        if coordinate == "provider" {
+                            "provider2"
+                        } else {
+                            "provider"
+                        },
+                        if coordinate == "instance" {
+                            "instance2"
+                        } else {
+                            "instance"
+                        },
+                    )
+                    .unwrap(),
+                );
+            }
+            assert_ne!(receipt.attempt(), &other, "{coordinate}");
+        }
+    }
 
     #[test]
     fn application_error_kinds_preserve_http_mapping_causes() {

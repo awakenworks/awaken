@@ -3,13 +3,15 @@
 use std::sync::{Arc, Mutex};
 
 use awaken_dispatch::{
-    ApplicationError, AttemptAdmission, AttemptExecutionBinding, ClosedWorkerExecution,
-    DispatchQueue, MemoryDispatchStore, RunClaim, RunDispatch, WorkerDirectory,
-    WorkerExecutionStopSource, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
+    ApplicationError, AttemptAdmission, AttemptExecutionBinding, AttemptStopStatus,
+    ClosedAttemptExecution, ClosedWorkerExecution, DispatchQueue, MemoryDispatchStore,
+    PhysicalAttempt, PostgresDispatchStore, RunClaim, RunDispatch, SqliteDispatchStore,
+    WorkerDirectory, WorkerExecutionStopSource, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
     WorkerProcessStopStatus, WorkerRegistration, WorkerState, stop_expired_predecessor,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_dispatch_testkit::worker_http::activation;
+use awaken_dispatch_testkit::{AuthoritativeWallClock, ConformanceClock};
 use awaken_worker_registry::{
     MemoryWorkerDirectory, PostgresWorkerDirectory, SqliteWorkerDirectory,
 };
@@ -26,6 +28,7 @@ struct StopSource {
     replayed: Mutex<Option<WorkerProcessStopStatus>>,
     entered: Notify,
     release: Semaphore,
+    attempt: Mutex<Option<Arc<AttemptStopProbe>>>,
 }
 
 #[async_trait::async_trait]
@@ -63,6 +66,66 @@ impl WorkerExecutionStopSource for StopSource {
             None => Ok(WorkerProcessStopStatus::Unknown),
             Some(reference) => command.observed_exit(reference),
         }
+    }
+
+    async fn observe_attempt_termination(
+        &self,
+        command: &ClosedAttemptExecution,
+    ) -> Result<AttemptStopStatus, ApplicationError> {
+        let probe = self.attempt.lock().unwrap().clone();
+        let Some(probe) = probe else {
+            return Ok(AttemptStopStatus::Unknown);
+        };
+        assert_eq!(
+            command.attempt().binding.as_ref(),
+            Some(command.process_exit().binding())
+        );
+        assert!(!command.process_exit().evidence_ref().is_empty());
+        probe.calls.lock().unwrap().push(command.attempt().clone());
+        probe.entered.add_permits(1);
+        probe.release.acquire().await.unwrap().forget();
+        if let Some(replayed) = probe.replayed.lock().unwrap().clone() {
+            return Ok(replayed);
+        }
+        let result = probe
+            .result
+            .lock()
+            .unwrap()
+            .clone()
+            .map_err(ApplicationError::unavailable)?;
+        let observed = match result {
+            None => AttemptStopStatus::Unknown,
+            Some(reference) => command.observed_all_execution_stopped(reference)?,
+        };
+        *probe.last.lock().unwrap() = Some(observed.clone());
+        Ok(observed)
+    }
+}
+
+/// Deterministic TRUSTED provider fixture, not a production participant inventory
+/// or proof that an actual remote model stopped. Tests below qualify consumption,
+/// ordering, HTTP retry and the real Dispatch transaction only.
+struct AttemptStopProbe {
+    calls: Mutex<Vec<PhysicalAttempt>>,
+    result: Mutex<Result<Option<String>, String>>,
+    replayed: Mutex<Option<AttemptStopStatus>>,
+    last: Mutex<Option<AttemptStopStatus>>,
+    entered: Semaphore,
+    release: Semaphore,
+}
+
+impl AttemptStopProbe {
+    fn install(fixture: &Fixture) -> Arc<Self> {
+        let probe = Arc::new(Self {
+            calls: Mutex::new(Vec::new()),
+            result: Mutex::new(Ok(None)),
+            replayed: Mutex::new(None),
+            last: Mutex::new(None),
+            entered: Semaphore::new(0),
+            release: Semaphore::new(0),
+        });
+        *fixture.stop.attempt.lock().unwrap() = Some(probe.clone());
+        probe
     }
 }
 
@@ -109,7 +172,7 @@ async fn register(
 }
 
 struct Fixture {
-    store: Arc<MemoryDispatchStore>,
+    store: Arc<dyn DispatchQueue>,
     directory: Arc<dyn WorkerDirectory>,
     stop: Arc<StopSource>,
     old: RunClaim,
@@ -133,6 +196,23 @@ impl Fixture {
         old_ttl: u64,
         budget: u64,
     ) -> Self {
+        Self::with_store(
+            Arc::new(MemoryDispatchStore::new()),
+            directory,
+            bound,
+            old_ttl,
+            budget,
+        )
+        .await
+    }
+
+    async fn with_store(
+        store: Arc<dyn DispatchQueue>,
+        directory: Arc<dyn WorkerDirectory>,
+        bound: bool,
+        old_ttl: u64,
+        budget: u64,
+    ) -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let tag = format!(
             "stop-http-{}-{}",
@@ -141,19 +221,28 @@ impl Fixture {
         );
         let old_worker = register(directory.as_ref(), &format!("{tag}-old"), 100, old_ttl).await;
         let worker = register(directory.as_ref(), &format!("{tag}-next"), 200, 10_000).await;
-        let store = Arc::new(MemoryDispatchStore::new());
-        let request = RunDispatch::new(activation("stop-predecessor"))
+        let request = RunDispatch::new(activation(&tag))
             .with_placement(awaken_dispatch::PlacementRequirements::remote_required());
+        let run_id = request.run_id().clone();
         store.enqueue(request).await.unwrap();
-        let old_snapshot = directory
+        let mut old_snapshot = directory
             .current(&old_worker.worker_id)
             .await
             .unwrap()
             .unwrap()
             .snapshot;
+        // R30 SQL Dispatch owns a wall clock, while this fixture's Registry and
+        // HTTP clock deliberately control closure at 100/200. Placement input
+        // is kept live on either clock; Registry expiry itself is tested through
+        // the original, unmodified directory record. Advance the actual lease
+        // through the public renewal path instead of assuming caller time can
+        // expire PostgreSQL or mutating its tables directly.
+        // R31 a shared DB may contain another test's pending/recoverable Run:
+        // both claims must name this fixture's exact Run, never scan the queue.
+        old_snapshot.expires_at_ms = u64::MAX;
         let old = RunClaim::from(
             &store
-                .claim_compatible(&old_snapshot, 50, 100)
+                .claim_run_compatible(&run_id, &old_snapshot, 60_000, 100)
                 .await
                 .unwrap()
                 .unwrap()
@@ -168,15 +257,21 @@ impl Fixture {
                 .unwrap(),
             AttemptAdmission::Applied
         );
-        let next_snapshot = directory
+        assert_eq!(
+            store.renew_lease(&old, 0, 100).await.unwrap(),
+            awaken_dispatch::LeaseRenewalOutcome::Current
+        );
+        AuthoritativeWallClock.advance_past(0).await;
+        let mut next_snapshot = directory
             .current(&worker.worker_id)
             .await
             .unwrap()
             .unwrap()
             .snapshot;
+        next_snapshot.expires_at_ms = u64::MAX;
         let next = RunClaim::from(
             &store
-                .claim_compatible(&next_snapshot, 10_000, 200)
+                .claim_run_compatible(&run_id, &next_snapshot, 60_000, 200)
                 .await
                 .unwrap()
                 .unwrap()
@@ -189,6 +284,7 @@ impl Fixture {
             replayed: Mutex::new(None),
             entered: Notify::new(),
             release: Semaphore::new(0),
+            attempt: Mutex::new(None),
         });
         let service = WorkerDispatchService::new(
             store.clone(),
@@ -486,4 +582,272 @@ async fn local_exit_receipt_keeps_its_subject_and_rejects_empty_provider_evidenc
     );
     first.assert_occupied().await;
     second.assert_occupied().await;
+}
+
+async fn dispatch_stores() -> Vec<Arc<dyn DispatchQueue>> {
+    let mut stores: Vec<Arc<dyn DispatchQueue>> = vec![
+        Arc::new(MemoryDispatchStore::new()),
+        Arc::new(SqliteDispatchStore::open_in_memory().unwrap()),
+    ];
+    if let Ok(url) = std::env::var("AWAKEN_TEST_POSTGRES_URL") {
+        stores.push(Arc::new(
+            PostgresDispatchStore::connect(&url, 5).await.unwrap(),
+        ));
+        eprintln!("complete stop matrix: real PostgreSQL Dispatch enabled");
+    }
+    stores
+}
+
+#[tokio::test]
+async fn complete_stop_uses_exact_retirement_and_requires_fresh_successor_admission() {
+    // Cause/effect graph: C1 independent local exit; C2 full provider coverage;
+    // C3 nonempty evidence; C4 exact subject. C1 & C2 & C3 & C4 => retire OLD slot;
+    // retirement != admission/commit/replay authority for either Worker.
+    // R18 !C1 => no complete-provider IO; R19 !C2 => occupied; R20 provider error
+    // => retryable 503 + occupied; R21 !C3 => 400 + occupied; R22 all => empty but
+    // original HTTP reply still Blocked. R23 next ordinary begin => Applied;
+    // old claim remains fenced. Cross real Memory/SQLite/configured PostgreSQL.
+    for store in dispatch_stores().await {
+        let f = Fixture::with_store(
+            store,
+            Arc::new(MemoryWorkerDirectory::new()),
+            true,
+            50,
+            5_000,
+        )
+        .await;
+        let probe = AttemptStopProbe::install(&f);
+        f.stop.release.add_permits(1);
+        assert_eq!(f.begin().await.1["admission"], "blocked");
+        assert!(probe.calls.lock().unwrap().is_empty(), "R18");
+        f.assert_occupied().await;
+
+        *f.stop.result.lock().unwrap() = Ok(Some("local-exit".into()));
+        for (result, expected_status) in [
+            (Ok(None), reqwest::StatusCode::OK),
+            (
+                Err("lost termination query response".into()),
+                reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (Ok(Some(" \t".into())), reqwest::StatusCode::BAD_REQUEST),
+        ] {
+            *probe.result.lock().unwrap() = result;
+            f.stop.release.add_permits(1);
+            probe.release.add_permits(1);
+            assert_eq!(f.begin().await.0, expected_status);
+            f.assert_occupied().await;
+        }
+        *probe.result.lock().unwrap() = Ok(Some("all-participants-terminal-v7".into()));
+        f.stop.release.add_permits(1);
+        probe.release.add_permits(1);
+        assert_eq!(
+            f.begin().await.1["admission"],
+            "blocked",
+            "R22 is not admission"
+        );
+        assert_eq!(
+            f.store.load_physical_attempt(&f.old.run_id).await.unwrap(),
+            None
+        );
+        assert!(!f.store.claim_is_current(&f.old, 200).await.unwrap());
+        assert_eq!(
+            f.store
+                .begin_attempt(&f.old, 200, Some(&f.binding))
+                .await
+                .unwrap(),
+            AttemptAdmission::Fenced
+        );
+        assert_eq!(
+            f.begin().await.1["admission"],
+            "applied",
+            "R23 retries the original path"
+        );
+        assert_eq!(
+            f.store
+                .load_physical_attempt(&f.next.run_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .claim,
+            f.next
+        );
+        assert_eq!(
+            *probe.calls.lock().unwrap(),
+            vec![
+                PhysicalAttempt {
+                    claim: f.old.clone(),
+                    binding: Some(f.binding.clone()),
+                };
+                4
+            ]
+        );
+        let receipt = probe.last.lock().unwrap().clone().unwrap();
+        let AttemptStopStatus::Stopped(receipt) = receipt else {
+            panic!("R22")
+        };
+        assert_eq!(receipt.evidence_ref(), "all-participants-terminal-v7");
+        assert_eq!(receipt.attempt().claim, f.old);
+    }
+}
+
+#[tokio::test]
+async fn complete_stop_timeout_retains_occupancy_and_retries_the_same_subject() {
+    // R24 local already exited, complete-provider reply stalls => existing HTTP
+    // budget expires, not a stop receipt. R25 repeat same query with positive
+    // evidence => retire once. Models lost response after provider completion;
+    // no new remote operation or execution may be started by the observation.
+    let f = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 50, 20).await;
+    let probe = AttemptStopProbe::install(&f);
+    *f.stop.result.lock().unwrap() = Ok(Some("local-exit".into()));
+    *probe.result.lock().unwrap() = Ok(Some("terminal-evidence".into()));
+    f.stop.release.add_permits(2);
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), f.begin())
+        .await
+        .unwrap();
+    assert_eq!(response.0, reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    f.assert_occupied().await;
+    probe.release.add_permits(1);
+    assert_eq!(f.begin().await.1["admission"], "blocked");
+    assert_eq!(
+        f.store.load_physical_attempt(&f.old.run_id).await.unwrap(),
+        None
+    );
+    assert_eq!(
+        *probe.calls.lock().unwrap(),
+        vec![
+            PhysicalAttempt {
+                claim: f.old.clone(),
+                binding: Some(f.binding.clone()),
+            };
+            2
+        ]
+    );
+}
+
+#[tokio::test]
+async fn concurrent_complete_receipts_cannot_clear_a_successor_slot() {
+    // R26 two Coordinator requests independently reach the same complete source.
+    // One response retires old, successor begins, then the other old receipt
+    // arrives. Its original finish_attempt must be fenced; no newer slot clears.
+    // Deterministic barriers (not sleeps) put the successor between receipt
+    // applications. Successful DB access while IO waits also proves no database
+    // transaction is held across provider IO. Cross actual store adapters.
+    for store in dispatch_stores().await {
+        let f = Fixture::with_store(
+            store,
+            Arc::new(MemoryWorkerDirectory::new()),
+            true,
+            50,
+            5_000,
+        )
+        .await;
+        let probe = AttemptStopProbe::install(&f);
+        *f.stop.result.lock().unwrap() = Ok(Some("local-exit".into()));
+        *probe.result.lock().unwrap() = Ok(Some("all-terminal".into()));
+        f.stop.release.add_permits(2);
+        let replies = Semaphore::new(0);
+        let completed = async {
+            let response = f.begin().await;
+            replies.add_permits(1);
+            response
+        };
+        let second = async {
+            let response = f.begin().await;
+            replies.add_permits(1);
+            response
+        };
+        let race = async {
+            probe.entered.acquire_many(2).await.unwrap().forget();
+            probe.release.add_permits(1);
+            replies.acquire().await.unwrap().forget();
+            assert_eq!(
+                f.store.load_physical_attempt(&f.old.run_id).await.unwrap(),
+                None
+            );
+            assert_eq!(
+                f.store.begin_attempt(&f.next, 200, None).await.unwrap(),
+                AttemptAdmission::Applied
+            );
+            probe.release.add_permits(1);
+        };
+        let (a, b, ()) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            tokio::join!(completed, second, race)
+        })
+        .await
+        .unwrap();
+        assert_eq!(a.1["admission"], "blocked");
+        assert_eq!(b.1["admission"], "blocked");
+        assert_eq!(
+            f.store
+                .load_physical_attempt(&f.next.run_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .claim,
+            f.next
+        );
+        assert_eq!(probe.calls.lock().unwrap().len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn cached_complete_receipt_for_another_attempt_is_rejected() {
+    // R27 otherwise positive evidence is cached for another Run/Worker/binding:
+    // reject before finish_attempt, preserving both stores' current occupants.
+    // These are opaque typed receipts, not deserialized worker-provided JSON.
+    let first = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 50, 5_000).await;
+    let old = AttemptStopProbe::install(&first);
+    *first.stop.result.lock().unwrap() = Ok(Some("local-first".into()));
+    *old.result.lock().unwrap() = Ok(Some("all-first".into()));
+    first.stop.release.add_permits(1);
+    old.release.add_permits(1);
+    assert_eq!(first.begin().await.1["admission"], "blocked");
+    assert_eq!(first.begin().await.1["admission"], "applied");
+
+    let second = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 50, 5_000).await;
+    let probe = AttemptStopProbe::install(&second);
+    *second.stop.result.lock().unwrap() = Ok(Some("local-second".into()));
+    *probe.replayed.lock().unwrap() = old.last.lock().unwrap().clone();
+    second.stop.release.add_permits(1);
+    probe.release.add_permits(1);
+    assert_eq!(
+        second.begin().await.0,
+        reqwest::StatusCode::INTERNAL_SERVER_ERROR
+    );
+    second.assert_occupied().await;
+    assert_eq!(
+        first
+            .store
+            .load_physical_attempt(&first.next.run_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .claim,
+        first.next
+    );
+}
+
+#[tokio::test]
+async fn worker_json_cannot_supply_independent_termination_evidence() {
+    // R29 authenticated Worker + otherwise valid request + invented full-stop
+    // JSON => reject at every attempt verb, zero source calls and unchanged slot.
+    // Provider selection is trusted server composition, never a wire parameter.
+    let f = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 50, 5_000).await;
+    let probe = AttemptStopProbe::install(&f);
+    for verb in ["begin", "handoff", "finish"] {
+        let response = reqwest::Client::new()
+            .post(format!("{}/v1/worker/dispatch/attempt/{verb}", f.address))
+            .header("x-awaken-worker-id", &f.worker.worker_id)
+            .json(&json!({
+                "identity": f.worker, "claim": f.next,
+                "termination": { "stopped": true, "evidence_ref": "invented" },
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_client_error(), "{verb}");
+    }
+    assert!(probe.calls.lock().unwrap().is_empty());
+    assert!(f.stop.calls.lock().unwrap().is_empty());
+    f.assert_occupied().await;
 }

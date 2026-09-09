@@ -324,9 +324,11 @@ async fn admit_attempt(
             ),
         )
         .await
-        .map_err(|_| HostError::unavailable("predecessor process stop observation timed out"))??;
-        // Local exit cannot discharge remote work. Keep the original Blocked
-        // result; existing Worker retries drive observation without a new task.
+        .map_err(|_| HostError::unavailable("predecessor stop observation timed out"))??;
+        // This request was not admitted. Even after independently confirmed
+        // retirement, return its original Blocked result: the ordinary retry
+        // must reacquire current authority and atomically install its own slot.
+        // Local-only stop sources retain occupancy through the Unknown default.
         tracing::debug!(?observation, "blocked predecessor process stop observation");
     }
     Ok(json!({ "admission": admission }))
