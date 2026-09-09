@@ -150,6 +150,9 @@ CleanupObserverRetained == observing
 TermFailureAllowsEscalation ==
   (termSent /\ termFailed /\ ~killSent /\ ~cleanupExpired /\ exitCode = 0)
     => ENABLED SendKill
+\* Reachability control: timeout retains the observer, allowing a later exit ACK.
+\* This assumes the original owner survives; it does not release orphaned slots.
+NoLateExitAcknowledged == ~(cleanupExpired /\ ack)
 NoFailedTermEscalationReached == ~(termFailed /\ killSent)
 
 TypeOK ==

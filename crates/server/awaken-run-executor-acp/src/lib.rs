@@ -18,7 +18,9 @@
 
 use std::sync::Arc;
 
+mod cleanup;
 pub mod host;
+use cleanup::CleanupScope;
 
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
@@ -70,10 +72,8 @@ fn preserve_terminal_outcome<T>(
     outcome: std::result::Result<T, AcpError>,
     cleanup: std::result::Result<bool, AcpError>,
     process_id: &str,
-    quiescence: &awaken_runtime_contract::runtime_context::AttemptQuiescence,
 ) -> std::result::Result<T, AcpError> {
     if let Err(cleanup_error) = cleanup {
-        quiescence.mark_uncertain();
         tracing::warn!(
             process_id,
             error = %cleanup_error,
@@ -540,7 +540,14 @@ impl AcpRunExecutor {
         if let Some(state) = self.prepare_owned_tools(&activation, &mut context).await? {
             return Ok(state);
         }
-        let result = self.drive(activation, &context, permission_resume).await;
+        let mut cleanup = CleanupScope::new(context.physical_quiescence.clone());
+        let result = self
+            .drive(activation, &context, permission_resume, &mut cleanup)
+            .await;
+        // A committed business outcome may precede physical exit. Keep the
+        // same structured execution and channel alive until cleanup observes
+        // that exit; the Dispatch owner cannot ACK merely because drive ended.
+        cleanup.finish(self.policy.reap_grace).await;
         if let Some((key, plan)) = &home {
             match verify_attempt_ownership(context.ownership.as_deref()).await {
                 Ok(()) => self.session_home.harvest(key, plan).await,
@@ -699,6 +706,7 @@ impl AcpRunExecutor {
         activation: RunActivation,
         context: &RuntimeRunContext,
         permission_resume: Option<PermissionResume>,
+        cleanup: &mut CleanupScope,
     ) -> Result<RunState> {
         verify_attempt_ownership(context.ownership.as_deref()).await?;
         // Wrapper acquisition completed during product startup. Per-run lifecycle
@@ -712,7 +720,7 @@ impl AcpRunExecutor {
 
         // The host opens the channel (sandbox launch / remote dial). A failure here
         // is a launch/config fault → classify at the Initialize stage.
-        let mut session = match self.source.open(&activation, context).await {
+        cleanup.session = Some(match self.source.open(&activation, context).await {
             Ok(session) => session,
             Err(open) => {
                 notify(
@@ -723,8 +731,10 @@ impl AcpRunExecutor {
                 return finish_failure(context, &activation, &failure, permission_resume.as_ref())
                     .await;
             }
-        };
-        self.apply_session_mcp_projection(&mut session);
+        });
+        cleanup.complete = false;
+        let session = cleanup.session.as_mut().expect("opened ACP session");
+        self.apply_session_mcp_projection(session);
 
         // ADR-0054 P4: drive Steps in a boundary loop. After each Step the shared
         // `evaluate_boundary` drains any live-inbox steer; queued input becomes the
@@ -812,19 +822,7 @@ impl AcpRunExecutor {
         });
 
         loop {
-            if let Err(error) = verify_attempt_ownership(context.ownership.as_deref()).await {
-                if Supervisor::reap_after_terminal(
-                    session.channel.as_mut(),
-                    session.process.as_ref(),
-                    self.policy.reap_grace,
-                )
-                .await
-                .is_err()
-                {
-                    context.physical_quiescence.mark_uncertain();
-                }
-                return Err(error);
-            }
+            verify_attempt_ownership(context.ownership.as_deref()).await?;
             let step_namespace = format!("{activation_namespace}:{step_ordinal}");
             step_ordinal += 1;
             let mut appender = CollectingAppender::new(
@@ -893,28 +891,19 @@ impl AcpRunExecutor {
             // the Step but commonly leaves the adapter waiting for another request;
             // reap it explicitly so the next boundary really relaunches it and provider
             // teardown hooks (including refreshed OAuth-file write-back) complete.
-            let already_reaped = matches!(
-                outcome,
-                Ok(TerminationReason::Cancelled | TerminationReason::TimedOut)
-            );
-            let outcome = if already_reaped {
-                outcome
-            } else {
-                // The protocol terminal fact is the business outcome. Cleanup is
-                // an independently observable lifecycle concern and must never
-                // rewrite a completed Step into a different result.
-                preserve_terminal_outcome(
-                    outcome,
-                    Supervisor::reap_after_terminal(
-                        session.channel.as_mut(),
-                        process.as_ref(),
-                        self.policy.reap_grace,
-                    )
-                    .await,
-                    process.id(),
-                    &context.physical_quiescence,
-                )
-            };
+            // A Cancelled/TimedOut frame can originate from the agent itself;
+            // its business reason is not evidence that the supervisor reaped it.
+            // Already reaped handles simply report their cached exit here.
+            let reaped = Supervisor::reap_after_terminal(
+                session.channel.as_mut(),
+                process.as_ref(),
+                self.policy.reap_grace,
+            )
+            .await;
+            cleanup.complete = reaped.is_ok();
+            // Keep the business fact, but do not discard this exact process
+            // on a transient cleanup error. The enclosing scope retains it.
+            let outcome = preserve_terminal_outcome(outcome, reaped, process.id());
             // The Step is over — stop the cancellation→interrupt forwarder so it does
             // not outlive this Step's injection channel.
             if let Some(handle) = interrupt_forwarder {
@@ -934,6 +923,7 @@ impl AcpRunExecutor {
                 Ok(reason) => reason,
                 Err(err)
                     if !handshake_retry_used
+                        && cleanup.complete
                         && context.physical_quiescence.can_acknowledge_return()
                         && retryable_handshake_failure(
                             session.codec,
@@ -951,7 +941,7 @@ impl AcpRunExecutor {
                             "ACP handshake interrupted; relaunching once",
                         ),
                     );
-                    session = match self.source.open(&activation, context).await {
+                    *session = match self.source.open(&activation, context).await {
                         Ok(session) => session,
                         Err(open) => {
                             let failure =
@@ -967,7 +957,8 @@ impl AcpRunExecutor {
                             .await;
                         }
                     };
-                    self.apply_session_mcp_projection(&mut session);
+                    cleanup.complete = false;
+                    self.apply_session_mcp_projection(session);
                     continue;
                 }
                 Err(AcpError::PermissionAwait {
@@ -1159,18 +1150,19 @@ impl AcpRunExecutor {
             // A failed reap must not overlap another per-Step process inside
             // this same physical attempt. Preserve the fixed terminal outcome
             // and leave queued input untouched for its durable owner.
-            let boundary = if context.physical_quiescence.can_acknowledge_return() {
-                evaluate_boundary(context, &run_id, &committed)
-            } else {
-                BoundaryOutcome::Idle
-            };
+            let boundary =
+                if cleanup.complete && context.physical_quiescence.can_acknowledge_return() {
+                    evaluate_boundary(context, &run_id, &committed)
+                } else {
+                    BoundaryOutcome::Idle
+                };
             match boundary {
                 BoundaryOutcome::Continue { fold } => {
                     prompt = prompt_of(&fold);
                     committed.extend(fold);
                     // Relaunch the CLI for the next Step (ACP is per-Step).
                     verify_attempt_ownership(context.ownership.as_deref()).await?;
-                    session = match self.source.open(&activation, context).await {
+                    *session = match self.source.open(&activation, context).await {
                         Ok(session) => session,
                         Err(open) => {
                             let failure =
@@ -1199,7 +1191,8 @@ impl AcpRunExecutor {
                             return Ok(state);
                         }
                     };
-                    self.apply_session_mcp_projection(&mut session);
+                    cleanup.complete = false;
+                    self.apply_session_mcp_projection(session);
                 }
                 // Operator pause (ADR-0054 P5/U2): commit any in-flight steer that
                 // rode out with the await, then await durably on a no-tool awaiting
