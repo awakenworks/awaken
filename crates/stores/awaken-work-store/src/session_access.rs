@@ -8,6 +8,21 @@ use sha2::{Digest, Sha256};
 
 const SESSION_TOKEN_BYTES: usize = 32;
 
+// SQL adapters share these exact column shapes. Keeping the aliases beside the
+// conversion boundary prevents SQLite and PostgreSQL from independently
+// restating lease identity/order. There is no runtime decision to unit-test;
+// the existing cross-adapter claim/release decision tables exercise every
+// field, while Clippy/type checking verifies both queries retain this shape.
+type StoredClaimCandidate = (
+    String,
+    String,
+    Option<String>,
+    i64,
+    Option<i64>,
+    Option<i64>,
+);
+type StoredLeaseAuthority = (Option<String>, i64, Option<i64>, Option<i64>);
+
 pub(crate) fn issue_session_token() -> RedactedString {
     let mut bytes = [0_u8; SESSION_TOKEN_BYTES];
     OsEntropy.fill_bytes(&mut bytes);
@@ -57,7 +72,7 @@ impl SqliteWorkQueue {
             tx.commit().map_err(storage)?;
             return Ok(None);
         }
-        let selected: Option<(String, String, Option<String>, i64, Option<i64>, Option<i64>)> = tx
+        let selected: Option<StoredClaimCandidate> = tx
             .query_row(
                 "SELECT work_id, data_type, lease_owner, lease_epoch, lease_refreshed_ms, lease_expires_ms FROM work_queue_item \
                  WHERE environment_id = ?1 AND state = 'queued' ORDER BY seq ASC LIMIT 1",
@@ -126,7 +141,7 @@ impl SqliteWorkQueue {
         env_id: &str,
         wid: &str,
     ) -> Result<LeaseAuthorityTuple<String, i64>, WorkQueueError> {
-        let authority: (Option<String>, i64, Option<i64>, Option<i64>) = tx
+        let authority: StoredLeaseAuthority = tx
             .query_row(
                 "SELECT lease_owner, lease_epoch, lease_refreshed_ms, lease_expires_ms FROM work_queue_item \
                  WHERE work_id = ?1 AND environment_id = ?2",
@@ -419,7 +434,7 @@ impl PostgresWorkQueue {
             tx.commit().await.map_err(storage)?;
             return Ok(None);
         }
-        let selected: Option<(String, String, Option<String>, i64, Option<i64>, Option<i64>)> = sqlx::query_as(
+        let selected: Option<StoredClaimCandidate> = sqlx::query_as(
             "SELECT work_id, data_type, lease_owner, lease_epoch, lease_refreshed_ms, lease_expires_ms FROM work_queue_item \
              WHERE environment_id = $1 AND state = 'queued' ORDER BY seq ASC LIMIT 1",
         )
@@ -617,7 +632,7 @@ impl PostgresWorkQueue {
         expected_epoch: Option<u64>,
     ) -> Result<WorkMutationResult, WorkQueueError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        let authority: Option<(Option<String>, i64, Option<i64>, Option<i64>)> = sqlx::query_as(
+        let authority: Option<StoredLeaseAuthority> = sqlx::query_as(
             "SELECT lease_owner, lease_epoch, lease_refreshed_ms, lease_expires_ms FROM work_queue_item WHERE work_id = $1 \
              AND environment_id = $2 FOR UPDATE",
         )
