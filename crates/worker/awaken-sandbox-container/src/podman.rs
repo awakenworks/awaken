@@ -1,12 +1,11 @@
-//! Rootless **Podman** backend (`podman` feature) — the daemonless, worker-parented
-//! executor for the container tier (awaken-next / oversight parity).
+//! Rootless **Podman** backend (`podman` feature), driven over the CLI.
 //!
-//! Unlike the bollard/kube adapters, Podman is driven over its **CLI** (`podman run`
-//! …): there is no daemon, so the container is a direct child of the worker and is
-//! reaped as a unit (`--init` handles PID 1). It realizes the same [`ContainerRuntime`]
-//! port as Docker/K8s and honors the [`crate::RootfsPlan`] (an `Image` or a private
-//! `IsolatedRoot`), reached over the published agent port via [`crate::net`] — the
-//! same dial the Docker adapter uses. Compile-verified here; running needs `podman`.
+//! The Worker owns each CLI call; the Session owns the retained container.
+//! Podman's cgroup and network helpers must therefore outlive a Worker service
+//! incarnation. Activation uses a peer systemd scope when invoked by a service;
+//! recovery and deletion retain the same exact [`ContainerRuntime`] identity.
+//! The adapter honors [`crate::RootfsPlan`] and uses [`crate::net`] for published
+//! agent ports, sharing the Docker/K8s connection boundary.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -42,9 +41,9 @@ use crate::{
     podman_create_argv, podman_run_argv, restoration_metadata, restoration_plan_fingerprint,
     restore_container_name, runtime_container_name, sandbox_scope_identity,
 };
-use command::podman_command;
 #[cfg(test)]
 use command::rootless_systemd_bus;
+use command::{podman_command, podman_subcommand};
 
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -161,7 +160,7 @@ struct OsCommandExec;
 #[async_trait]
 impl CommandExec for OsCommandExec {
     async fn exec(&self, bin: &str, args: &[String]) -> std::io::Result<CmdOutput> {
-        let out = podman_command(bin).args(args).output().await?;
+        let out = podman_subcommand(bin, args).output().await?;
         Ok(CmdOutput {
             ok: out.status.success(),
             status_code: out.status.code(),
