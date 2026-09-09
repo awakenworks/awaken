@@ -13,8 +13,8 @@ authority = "work"
 # Volatile executable specifications and fixtures are opt-in. Product builds have
 # no process-local WorkQueue implementation to select accidentally.
 test-support = []
-# Replace the lease-authority mutex with Loom's scheduler-aware mutex in the
-# dedicated concurrency proof build.
+# Replace reference-queue and lease-authority mutexes with Loom-aware mutexes
+# in the dedicated concurrency proof build.
 loom = []
 
 [dependencies]

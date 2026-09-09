@@ -121,10 +121,10 @@ cargo test -p awaken-session-application --lib profiled_session_creation_enforce
 # feature swaps only its mutex for Loom's instrumented mutex; the transition
 # kernel and directory methods remain the production code.
 cargo test -p awaken-worker-registry --features loom --lib loom_tests
-# Explore the production reference WorkQueue's owner/epoch/expiry snapshot.
-# Reclaim, release and observation share the same implementation used outside
-# the Loom proof build; only the mutex implementation is substituted.
-cargo test -p awaken-work-store --features loom --lib lease_book::loom_tests
+# Explore complete reference WorkQueue commands and its existing LeaseBook.
+# Work rows, token digests and lease snapshots use the actual implementation;
+# only their mutexes are substituted for the bounded Loom schedules.
+cargo test -p awaken-work-store --features loom --lib loom_tests
 # Exercise the production BackgroundTask projection under callback/replacement
 # races. Only its single mutex is instrumented; durable commits remain outside
 # this bounded lock-interleaving claim.
