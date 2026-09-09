@@ -7,7 +7,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # A tag-existence bypass can pass against old binaries, so no diagnostic reuse
 # switch may bypass either build. Incremental caching stays Cargo/Docker-owned.
 ! grep -q 'ADR71_REUSE_IMAGE\|--ensure-hand' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
-grep -Fq 'k3d_create_cluster "$CLUSTER" 3 128Mi "" --shared-volume "$CONTINUATION_VOLUME" "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'k3d_create_cluster "$CLUSTER" 3 "" "" --shared-volume "$CONTINUATION_VOLUME" "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 # D12 host build failure occurs before cluster creation and must not query an
 # ambient kubectl context; after creation every diagnostic uses the harness's
 # exact-context, bounded observer. The harness self-test owns deadline behavior.

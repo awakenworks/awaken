@@ -176,13 +176,10 @@ for executable in awaken-control awaken-coordinator awaken-worker awaken-server;
     awaken-image-permission-probe "$executable" "$expected_hash"
 done
 ok "all role artifacts execute as UID 10001 with normalized mode and unchanged bytes"
-# An absolute threshold keeps this nested K3d qualification independent of the
-# host volume's total size. Imported role images live in each Docker-backed K3s
-# node's small writable layer, so reserve 128 MiB there; the host runner owns
-# the separate capacity preflight and cleanup policy.
+# Reuse the shared nested-node reserve and actual capacity admission.
 k3d_ensure_images "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine
 CONTINUATION_VOLUME=$(docker volume create --label "awaken.e2e.cluster=$CLUSTER")
-k3d_create_cluster "$CLUSTER" 3 128Mi "" --shared-volume "$CONTINUATION_VOLUME" "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine
+k3d_create_cluster "$CLUSTER" 3 "" "" --shared-volume "$CONTINUATION_VOLUME" "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine
 CLUSTER_CREATED=1
 # The installed local-path provisioner owns PVC/PV lifecycle. Its shared-filesystem
 # mode removes node affinity because this exact Docker volume is mounted on every
