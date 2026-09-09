@@ -15,35 +15,38 @@ enum ControlPermitEvent {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ControlCapacityState {
-    active: usize,
+enum ControlPermitReleasePlan {
+    RetainOwned,
+    ReleaseOwned,
+    StutterReleased,
+    Reject,
 }
 
-/// Pure transition used by the production permit adapter. Tokio owns wakeup
-/// and mutex/semaphore mechanics; this kernel owns the fail-closed capacity and
-/// release decision for every repository-visible request outcome.
-const fn control_capacity_transition(
-    state: ControlCapacityState,
-    capacity: usize,
+/// The production lifecycle for one actual Tokio-owned permit. This is not a
+/// second capacity counter: the Semaphore remains the sole global capacity
+/// authority. The plan decides whether this wrapper must retain or release its
+/// one opaque permit after each repository-owned lifecycle event.
+const fn control_permit_release_plan(
+    has_owned_permit: bool,
     event: ControlPermitEvent,
-) -> Option<ControlCapacityState> {
-    match event {
-        ControlPermitEvent::Acquire if state.active < capacity => Some(ControlCapacityState {
-            active: state.active + 1,
-        }),
-        ControlPermitEvent::Returned
-        | ControlPermitEvent::DeadlineElapsed
-        | ControlPermitEvent::ScopeEnded
-            if state.active > 0 =>
-        {
-            Some(ControlCapacityState {
-                active: state.active - 1,
-            })
-        }
-        ControlPermitEvent::Acquire
-        | ControlPermitEvent::Returned
-        | ControlPermitEvent::DeadlineElapsed
-        | ControlPermitEvent::ScopeEnded => None,
+) -> ControlPermitReleasePlan {
+    match (has_owned_permit, event) {
+        (true, ControlPermitEvent::Acquire) => ControlPermitReleasePlan::RetainOwned,
+        (
+            true,
+            ControlPermitEvent::Returned
+            | ControlPermitEvent::DeadlineElapsed
+            | ControlPermitEvent::ScopeEnded,
+        ) => ControlPermitReleasePlan::ReleaseOwned,
+        // Explicit settlement consumes `self`, whose destructor must remain a
+        // harmless ScopeEnded stutter instead of attempting a second release.
+        (false, ControlPermitEvent::ScopeEnded) => ControlPermitReleasePlan::StutterReleased,
+        (
+            false,
+            ControlPermitEvent::Acquire
+            | ControlPermitEvent::Returned
+            | ControlPermitEvent::DeadlineElapsed,
+        ) => ControlPermitReleasePlan::Reject,
     }
 }
 
@@ -54,15 +57,6 @@ struct SessionRealizationControlScheduler {
 
 impl SessionRealizationControlScheduler {
     fn new() -> Self {
-        let initial = ControlCapacityState { active: 0 };
-        debug_assert_eq!(
-            control_capacity_transition(
-                initial,
-                MAX_CONCURRENT_SESSION_REALIZATION_REQUESTS,
-                ControlPermitEvent::Acquire,
-            ),
-            Some(ControlCapacityState { active: 1 })
-        );
         Self {
             permits: Arc::new(tokio::sync::Semaphore::new(
                 MAX_CONCURRENT_SESSION_REALIZATION_REQUESTS,
@@ -77,9 +71,7 @@ impl SessionRealizationControlScheduler {
             .acquire_owned()
             .await
             .map_err(|_| "Session realization Control scheduler closed")?;
-        Ok(ControlRequestPermit {
-            permit: Some(permit),
-        })
+        Ok(ControlRequestPermit::acquired(permit))
     }
 }
 
@@ -88,41 +80,47 @@ pub(super) struct ControlRequestPermit {
 }
 
 impl ControlRequestPermit {
+    fn acquired(permit: tokio::sync::OwnedSemaphorePermit) -> Self {
+        let mut acquired = Self {
+            permit: Some(permit),
+        };
+        acquired.apply(ControlPermitEvent::Acquire);
+        acquired
+    }
+
+    fn apply(&mut self, event: ControlPermitEvent) {
+        match control_permit_release_plan(self.permit.is_some(), event) {
+            ControlPermitReleasePlan::RetainOwned | ControlPermitReleasePlan::StutterReleased => {}
+            ControlPermitReleasePlan::ReleaseOwned => {
+                // The typed release plan, not a debug-only assertion, drives
+                // the physical release in every production build.
+                drop(
+                    self.permit
+                        .take()
+                        .expect("release plan must still own one Tokio permit"),
+                );
+            }
+            ControlPermitReleasePlan::Reject => {
+                panic!("Control permit event must follow its owned-token lifecycle")
+            }
+        }
+    }
+
     fn settle(mut self, event: ControlPermitEvent) {
-        debug_assert!(matches!(
+        assert!(matches!(
             event,
             ControlPermitEvent::Returned | ControlPermitEvent::DeadlineElapsed
         ));
-        debug_assert_eq!(
-            control_capacity_transition(
-                ControlCapacityState { active: 1 },
-                MAX_CONCURRENT_SESSION_REALIZATION_REQUESTS,
-                event,
-            ),
-            Some(ControlCapacityState { active: 0 })
-        );
-        // Dropping the sole owned permit is the actual production release edge.
-        self.permit.take();
+        self.apply(event);
     }
 }
 
 impl Drop for ControlRequestPermit {
     fn drop(&mut self) {
-        // Completion or cancellation follows the same kernel edge. The Tokio
-        // owned permit is then dropped by Rust field destruction and returns
-        // one capacity slot.
-        debug_assert_eq!(
-            control_capacity_transition(
-                ControlCapacityState {
-                    active: usize::from(self.permit.is_some()),
-                },
-                MAX_CONCURRENT_SESSION_REALIZATION_REQUESTS,
-                ControlPermitEvent::ScopeEnded,
-            ),
-            self.permit
-                .is_some()
-                .then_some(ControlCapacityState { active: 0 })
-        );
+        // Return/deadline settlement reaches Released first; cancellation,
+        // panic unwind, and ordinary scope exit reach this edge while Acquired.
+        // Both paths consume the same production ownership plan.
+        self.apply(ControlPermitEvent::ScopeEnded);
     }
 }
 
@@ -187,36 +185,32 @@ impl<'a> DeadlineSessionRealizationControl<'a> {
 
 #[cfg(kani)]
 #[kani::proof]
-fn session_realization_control_permit_is_bounded_and_every_settlement_releases() {
-    let capacity: usize = kani::any();
-    let active: usize = kani::any();
+fn session_realization_control_permit_ownership_release_is_total_and_exact() {
+    let has_owned_permit: bool = kani::any();
     let event = match kani::any::<u8>() % 4 {
         0 => ControlPermitEvent::Acquire,
         1 => ControlPermitEvent::Returned,
         2 => ControlPermitEvent::DeadlineElapsed,
         _ => ControlPermitEvent::ScopeEnded,
     };
-    let state = ControlCapacityState { active };
-    let next = control_capacity_transition(state, capacity, event);
+    let plan = control_permit_release_plan(has_owned_permit, event);
 
-    match event {
-        ControlPermitEvent::Acquire => {
-            assert_eq!(next.is_some(), active < capacity);
-            if let Some(next) = next {
-                assert_eq!(next.active, active + 1);
-                assert!(next.active <= capacity);
-            }
-        }
-        ControlPermitEvent::Returned
-        | ControlPermitEvent::DeadlineElapsed
-        | ControlPermitEvent::ScopeEnded => {
-            assert_eq!(next.is_some(), active > 0);
-            if let Some(next) = next {
-                assert_eq!(next.active, active - 1);
-                assert!(next.active < active);
-            }
-        }
-    }
+    assert_eq!(
+        plan == ControlPermitReleasePlan::ReleaseOwned,
+        has_owned_permit && !matches!(event, ControlPermitEvent::Acquire)
+    );
+    assert_eq!(
+        plan == ControlPermitReleasePlan::RetainOwned,
+        has_owned_permit && event == ControlPermitEvent::Acquire
+    );
+    assert_eq!(
+        plan == ControlPermitReleasePlan::StutterReleased,
+        !has_owned_permit && event == ControlPermitEvent::ScopeEnded
+    );
+    assert_eq!(
+        plan == ControlPermitReleasePlan::Reject,
+        !has_owned_permit && event != ControlPermitEvent::ScopeEnded
+    );
 }
 
 /// Deadline decoration only bounds transport waiting. The wrapped Control
@@ -437,30 +431,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn control_capacity_decision_is_bounded_and_releases_every_terminal_row() {
-        // Cause/effect table: C1 active requests are below/at capacity; C2 the
-        // event acquires, returns, reaches its deadline, or is cancelled.
-        // Effects: E1 acquire advances only below the bound; E2 every terminal
-        // event releases exactly one occupied slot; E3 invalid underflow and
-        // over-capacity transitions fail closed.
+    fn control_permit_ownership_decision_releases_every_terminal_row_once() {
+        // Cause/effect table: C1 the sole Option does or does not contain the
+        // actual Tokio permit; C2 the event is acquire, return, deadline, or
+        // scope-end. Effects: E1 acquired+Acquire retains it; E2 every acquired
+        // terminal row orders one release; E3 destructor-after-settlement
+        // stutters; E4 every torn ordering fails closed.
         //
-        // | Rule | active/capacity | event | Effect |
+        // | Rule | Owned permit | event | Effect |
         // |---|---|---|---|
-        // | C1 | 0/1 | acquire | E1 -> 1 |
-        // | C2 | 1/1 | acquire | E3 |
-        // | C3 | 1/1 | return/deadline/cancel | E2 -> 0 |
-        // | C4 | 0/1 | return/deadline/cancel | E3 |
-        let empty = ControlCapacityState { active: 0 };
-        let occupied = ControlCapacityState { active: 1 };
+        // | P1 | yes | Acquire | E1 retain |
+        // | P2 | yes | return/deadline/scope | E2 release |
+        // | P3 | no | scope | E3 stutter |
+        // | P4 | no | acquire/return/deadline | E4 reject |
         assert_eq!(
-            control_capacity_transition(empty, 1, ControlPermitEvent::Acquire),
-            Some(occupied),
-            "C1/E1"
-        );
-        assert_eq!(
-            control_capacity_transition(occupied, 1, ControlPermitEvent::Acquire),
-            None,
-            "C2/E3"
+            control_permit_release_plan(true, ControlPermitEvent::Acquire),
+            ControlPermitReleasePlan::RetainOwned,
+            "P1/E1"
         );
         for event in [
             ControlPermitEvent::Returned,
@@ -468,15 +455,81 @@ mod tests {
             ControlPermitEvent::ScopeEnded,
         ] {
             assert_eq!(
-                control_capacity_transition(occupied, 1, event),
-                Some(empty),
-                "C3/E2 {event:?}"
-            );
-            assert_eq!(
-                control_capacity_transition(empty, 1, event),
-                None,
-                "C4/E3 {event:?}"
+                control_permit_release_plan(true, event),
+                ControlPermitReleasePlan::ReleaseOwned,
+                "P2/E2"
             );
         }
+        assert_eq!(
+            control_permit_release_plan(false, ControlPermitEvent::ScopeEnded),
+            ControlPermitReleasePlan::StutterReleased,
+            "P3/E3"
+        );
+        for event in [
+            ControlPermitEvent::Acquire,
+            ControlPermitEvent::Returned,
+            ControlPermitEvent::DeadlineElapsed,
+        ] {
+            assert_eq!(
+                control_permit_release_plan(false, event),
+                ControlPermitReleasePlan::Reject,
+                "P4/E4"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn owned_capacity_returns_after_return_deadline_cancel_panic_and_drop() {
+        // Runtime cause/effect table: C1 one production scheduler acquires an
+        // actual Tokio OwnedSemaphorePermit; C2 it leaves by Control return,
+        // deadline, task cancellation, panic unwind, or ordinary drop. Effect
+        // E1 every row restores exactly the configured capacity. Acquisition
+        // and wake/drop semantics are Tokio TCB; this test checks that each Rust
+        // path consumes the production typed release plan and no shadow count.
+        //
+        // | Rule | Exit | Production edge | Effect |
+        // |---|---|---|---|
+        // | R1 | return | settle(Returned) | E1 |
+        // | R2 | timeout | settle(DeadlineElapsed) | E1 |
+        // | R3 | cancel | Drop(ScopeEnded) | E1 |
+        // | R4 | panic | unwind Drop(ScopeEnded) | E1 |
+        // | R5 | ordinary scope | Drop(ScopeEnded) | E1 |
+        let scheduler = SessionRealizationControlScheduler::new();
+        let capacity = MAX_CONCURRENT_SESSION_REALIZATION_REQUESTS;
+
+        scheduler
+            .acquire()
+            .await
+            .expect("R1 acquire")
+            .settle(ControlPermitEvent::Returned);
+        assert_eq!(scheduler.permits.available_permits(), capacity, "R1/E1");
+
+        scheduler
+            .acquire()
+            .await
+            .expect("R2 acquire")
+            .settle(ControlPermitEvent::DeadlineElapsed);
+        assert_eq!(scheduler.permits.available_permits(), capacity, "R2/E1");
+
+        let cancelled = scheduler.acquire().await.expect("R3 acquire");
+        let cancelled_task = tokio::spawn(async move {
+            let _permit = cancelled;
+            std::future::pending::<()>().await;
+        });
+        cancelled_task.abort();
+        assert!(cancelled_task.await.unwrap_err().is_cancelled(), "R3");
+        assert_eq!(scheduler.permits.available_permits(), capacity, "R3/E1");
+
+        let panicking = scheduler.acquire().await.expect("R4 acquire");
+        let panicking_task = tokio::spawn(async move {
+            let _permit = panicking;
+            panic!("R4 injected permit-owner panic");
+        });
+        assert!(panicking_task.await.unwrap_err().is_panic(), "R4");
+        assert_eq!(scheduler.permits.available_permits(), capacity, "R4/E1");
+
+        let dropped = scheduler.acquire().await.expect("R5 acquire");
+        drop(dropped);
+        assert_eq!(scheduler.permits.available_permits(), capacity, "R5/E1");
     }
 }
