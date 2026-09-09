@@ -6,6 +6,7 @@ import io
 import json
 import re
 import runpy
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -210,6 +211,34 @@ class ProfileTests(unittest.TestCase):
             mutation(candidate)
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 guardrail_results(candidate, {"run.safe": coverage["obligations"][0]})
+
+    def test_strict_formal_runner_requires_exact_g42_and_g43_guardrails(self):
+        # Cause/effect decision table: C1 the sole coverage invocation exists;
+        # C2 evidence completeness is required; C3 exact G42 is required once;
+        # C4 exact G43 is required once. R1 all true=>the strict runner is wired;
+        # R2 any false, duplicate, renamed, or parallel invocation=>this source
+        # test fails before tools run. Runtime proof execution remains owned by
+        # check_formal.sh and its exact-SHA formal-run receipt.
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "scripts/ci/check_formal.sh").read_text()
+        invocations = []
+        for command in source.replace("\\\n", " ").splitlines():
+            tokens = shlex.split(command, comments=True)
+            if tokens[:2] == ["python3", "scripts/ci/check_formal_coverage.py"]:
+                invocations.append(tokens)
+        self.assertEqual(
+            invocations,
+            [[
+                "python3",
+                "scripts/ci/check_formal_coverage.py",
+                "--require-complete",
+                "--require-guardrail",
+                "G42",
+                "--require-guardrail",
+                "G43",
+            ]],
+            "R1 requires one exact fail-closed G42/G43 qualification boundary",
+        )
 
     def test_absent_guardrail_profiles_preserve_legacy_qualification(self):
         # Cause/effect graph: C1 promotion field is absent or an empty list;

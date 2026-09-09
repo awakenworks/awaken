@@ -104,7 +104,9 @@ observation_trace_dir="$formal_artifact_dir/session-observations/raw"
 observation_rendered_dir="$formal_artifact_dir/session-observations/rendered"
 
 python3 scripts/ci/check_feature_coverage.py --require-complete
-python3 scripts/ci/check_formal_coverage.py --require-complete
+python3 scripts/ci/check_formal_coverage.py --require-complete \
+  --require-guardrail G42 \
+  --require-guardrail G43
 python3 scripts/ci/test_formal_profile.py
 python3 scripts/ci/test_formal_run_evidence.py
 python3 scripts/ci/test_bootstrap_kani.py
@@ -379,6 +381,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-service-auth-contract \
     --harness service_token_retry_is_enabled_only_for_an_exact_changed_token
   run_kani awaken-session-application \
+    --harness session_activity_open_and_settlement_plans_are_total_exact_and_fail_closed \
     --harness realization_publication_selects_only_unacknowledged_active_generation \
     --harness session_root_observation_is_total_monotonic_and_idempotent \
     --harness session_root_receipt_selects_candidate_only_for_applied_revision \
@@ -512,6 +515,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness thread_physical_peer_vetoes_begin_and_handoff \
     --harness physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair
   run_kani awaken-dispatch --no-default-features \
+    --harness agent_message_completed_tombstone_replays_only_exact_dispatch_identity \
     --harness maintenance_schedule_exists_only_for_the_owning_adapter \
     --harness recovery_snapshot_admission_requires_exact_claim_identity \
     --harness acknowledged_projection_is_exact_monotonic_or_a_noop \
@@ -675,6 +679,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness terminal_state_classification_is_exact \
     --harness unknown_transition_trigger_and_result_fail_closed
   run_kani awaken-session-executor \
+    --harness session_agent_message_admission_requires_every_committed_field \
     --harness session_realization_permit_admits_only_a_current_acquired_slot \
     --harness session_realization_control_permit_is_bounded_and_every_settlement_releases \
     --harness acp_mcp_projection_has_one_exact_authority \
