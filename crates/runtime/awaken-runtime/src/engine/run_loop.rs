@@ -221,6 +221,12 @@ async fn infer_step(
     let mut cand_idx = 0usize;
     let mut pending_resume = step_resume;
     loop {
+        // A completed MODEL receipt cannot clear an inline child's veto. Check
+        // before materialization/admission too: neither another provider request
+        // nor a quota pause may hide outstanding work from this same attempt.
+        if !context.physical_quiescence.can_acknowledge_return() {
+            break Ok(InferStepOutcome::Indeterminate);
+        }
         let mut request = build_chat_request_checked(
             &resolved.spec,
             prelude,
@@ -266,9 +272,12 @@ async fn infer_step(
                     "model preparation cancelled".into(),
                 )
             })??;
+            if !context.physical_quiescence.can_acknowledge_return() {
+                break Ok(InferStepOutcome::Indeterminate);
+            }
         }
         if let Some(gate) = &context.model_request_gate {
-            match inference::model_read(
+            let admission = inference::model_read(
                 context.cancellation.as_ref(),
                 gate.admit_model_request(ModelRequestAdmissionRequest {
                     run_id: run_id.clone(),
@@ -285,7 +294,13 @@ async fn infer_step(
                 awaken_runtime_contract::llm::Error::Unauthorized(format!(
                     "model request admission unavailable: {error}"
                 ))
-            })? {
+            })?;
+            // Admission can pause, but cannot upgrade another participant's
+            // unknown stop into an ordinary resumable budget boundary.
+            if !context.physical_quiescence.can_acknowledge_return() {
+                break Ok(InferStepOutcome::Indeterminate);
+            }
+            match admission {
                 ModelRequestAdmission::Admit => {}
                 ModelRequestAdmission::Pause(reason) => {
                     break Ok(InferStepOutcome::Await(reason));

@@ -460,6 +460,18 @@ evidence: `Unknown`, `NotDispatched`, or `Terminated`. Missing fields, including
 legacy `Returned`, decode as `Unknown`. Before checkpoint salvage and every new
 invocation, Runtime checks the prior Run-scoped evidence; Unknown retains the
 physical veto and ends logically as Indeterminate without retry or failover.
+Positive model evidence is still subordinate to this attempt's shared physical
+veto: an inline child can remain uncertain even when its outer tool returned
+success or a model-visible business error. Runtime checks that same veto before
+model preparation/admission, after their successful awaits, during journal
+reentry, and after the post-intent ownership await immediately before provider
+entry. A quota Pause cannot hide the veto as an ordinary resumable budget wait.
+Native decision-table regressions reproduce the formerly admitted second model
+call, preserve ordinary success/error continuation, and exercise veto arrival
+before Run entry, before/after durable model intent, during preparation and
+during Admit/Pause observation. These checks reuse the existing monotonic latch
+and model journal; they do not persist a new all-participant stop receipt or
+authorize independent post-crash Dispatch retirement.
 Error taxonomy still owns provider health and routing, never physical safety.
 An existing stream checkpoint also requires predecessor evidence: no journal
 is not equivalent to a fresh call when an interrupted partial exists. Such
