@@ -664,9 +664,30 @@ represent two physical invocations of the same logical Run, unlike a Run-keyed
 function alone. Receipt authenticity remains an assumption, not an implemented
 Native provider-recovery API. The mutation gate rejects an unconditional finish
 and requires an external-execution reachability witness.
-This model treats each physical attempt as one external invocation; the
-per-model-operation ordinal, sequential retries inside an attempt and opaque
-SDK retries are outside that abstraction. The Native watchdog regression
+`SessionRunStopEvidence` extends that same composition without copying any
+Dispatch, Session or Work transition. Its three participant classes (local
+process, model, tool) stop and deliver exact Run/Worker/Epoch receipts separately.
+Physical exit precedes receipt delivery; an open local domain can still receive
+a delayed launch. Only irreversible closure plus every exact participant receipt
+permits the original aggregate return and exact `FinishExecution`. A committed
+Ended fact, lease change, local-only exit or an older attempt's complete receipts
+cannot discharge another outstanding participant. Duplicate deliveries stutter;
+delivery loss may persist indefinitely. The safety slice retains two Workers
+and three epochs for one Run; existing configurations retain the separate
+multi-Run/same-Thread exclusion coverage. Conditional liveness has a separate
+one-epoch slice: once all work stopped in a closed domain, fair receipt delivery
+and exact retirement suffice. It never assumes an opaque provider will stop.
+
+This is a design-level evidence composition, not implemented Native recovery.
+Complete enrollment before effects, authenticated provider truth and remote
+no-restart terminal semantics are explicit trusted boundaries. Current Native
+model records do not enumerate all independent tool/child work or provide a
+post-crash provider query; a terminal tool-batch phase may contain Indeterminate.
+Consequently none of those projections alone may authorize production clearing.
+No new receipt database, Worker-writable proof or alternative Dispatch transition
+is introduced by this verification. The per-model-operation ordinal, sequential
+retries inside an attempt and opaque SDK retries remain outside this abstraction.
+The Native watchdog regression
 separately enables retry, failover and outer tolerance at the actual Runtime
 boundary and checks that abandoned inference cannot enter any of them.
 
