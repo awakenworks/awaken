@@ -316,13 +316,68 @@ impl EnvironmentRegistrationIntent {
         Self {
             environment_id: item.id.clone(),
             revision: item.revision,
-            operation: if item.archived_at.is_some() {
-                EnvironmentRegistrationOperation::Withdraw
-            } else {
-                EnvironmentRegistrationOperation::Register
-            },
+            operation: registration_operation(item.archived_at.is_some()),
             delivered: false,
         }
+    }
+
+    /// Whether the one durable intent must cross the executable-projection
+    /// boundary in this drain mode. Normal draining stutters after an exact
+    /// acknowledgement; startup recovery deliberately replays the same intent
+    /// so an empty disposable projection can be rebuilt without deriving work
+    /// from current Environment rows.
+    #[must_use]
+    pub const fn requires_delivery(&self, replay_delivered: bool) -> bool {
+        !self.delivered || replay_delivered
+    }
+}
+
+const fn registration_operation(archived: bool) -> EnvironmentRegistrationOperation {
+    if archived {
+        EnvironmentRegistrationOperation::Withdraw
+    } else {
+        EnvironmentRegistrationOperation::Register
+    }
+}
+
+#[cfg(kani)]
+mod registration_intent_proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn environment_registration_intent_is_exact_idempotent_and_recoverable() {
+        // Cause/effect table: C1 the committed Environment is active/archived;
+        // C2 its exact intent is pending/delivered; C3 the caller is the normal
+        // pending drainer/startup recovery. E1 maps active only to Register and
+        // archived only to Withdraw; E2 normal drain delivers only pending;
+        // E3 recovery delivers both states; E4 no branch changes the operation.
+        //
+        // | Rule | C1 | C2 | C3 | Effect |
+        // |---|---|---|---|---|
+        // | R1 | active | any | any | Register |
+        // | R2 | archived | any | any | Withdraw |
+        // | R3 | any | pending | normal/recovery | deliver |
+        // | R4 | any | delivered | normal | stutter |
+        // | R5 | any | delivered | recovery | redeliver exact intent |
+        let archived = kani::any::<bool>();
+        let delivered = kani::any::<bool>();
+        let replay_delivered = kani::any::<bool>();
+        let operation = registration_operation(archived);
+        assert_eq!(
+            operation == EnvironmentRegistrationOperation::Withdraw,
+            archived
+        );
+        let intent = EnvironmentRegistrationIntent {
+            environment_id: String::new(),
+            revision: EnvironmentRevision(kani::any()),
+            operation,
+            delivered,
+        };
+        assert_eq!(
+            intent.requires_delivery(replay_delivered),
+            !delivered || replay_delivered
+        );
+        assert_eq!(intent.operation, operation);
     }
 }
 
@@ -688,6 +743,34 @@ mod tests {
     #[test]
     fn environment_default_is_the_self_hosted_decision() {
         assert_eq!(EnvironmentConfig::default(), EnvironmentConfig::SelfHosted);
+    }
+
+    #[test]
+    fn registration_intent_delivery_uses_one_exact_recovery_rule() {
+        // Cause/effect decision table shared with the production method:
+        // pending x normal/recovery -> deliver; delivered x normal -> stutter;
+        // delivered x recovery -> redeliver the same Register/Withdraw fact.
+        // The operation is crossed independently so replay cannot reclassify it.
+        for operation in [
+            EnvironmentRegistrationOperation::Register,
+            EnvironmentRegistrationOperation::Withdraw,
+        ] {
+            for delivered in [false, true] {
+                for replay_delivered in [false, true] {
+                    let intent = EnvironmentRegistrationIntent {
+                        environment_id: "env".into(),
+                        revision: EnvironmentRevision(7),
+                        operation,
+                        delivered,
+                    };
+                    assert_eq!(
+                        intent.requires_delivery(replay_delivered),
+                        !delivered || replay_delivered
+                    );
+                    assert_eq!(intent.operation, operation);
+                }
+            }
+        }
     }
 
     #[test]
