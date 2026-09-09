@@ -1,11 +1,120 @@
-//! Credential-free Git bundle transfer across a container Session boundary.
+//! Repository Git effects executed exclusively inside a container Sandbox.
+
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use awaken_provisioning_contract as pc;
-use tokio::io::AsyncReadExt;
+use awaken_sandbox_container::{SandboxControlService, SandboxControlServiceKind};
+use awaken_sandbox_control::{
+    CapabilityExpiresAtUnixMs, REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH, RepositoryGitCredentialQuery,
+    SandboxControlRequest, SandboxControlResponse, SandboxControlSecret,
+};
 
-const MAX_REPO_BUNDLE_BYTES: usize = 256 * 1024 * 1024;
-const MAX_REPOSITORY_BRANCH_BYTES: usize = 1024;
-static TRANSFER_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+const CREDENTIAL_OPERATION_TTL: Duration = Duration::from_secs(120);
+
+struct OperationRepositoryCredential {
+    protocol: String,
+    host: String,
+    path: String,
+    username: String,
+    password: String,
+    expires_at_unix_ms: u64,
+}
+
+impl OperationRepositoryCredential {
+    fn new(
+        remote_url: &str,
+        credential: &pc::RepositoryHttpBasicCredential,
+    ) -> Result<Self, pc::SandboxError> {
+        let url = url::Url::parse(remote_url)
+            .map_err(|_| pc::SandboxError::new("Repository transport URL is invalid"))?;
+        if url.scheme() != "https" || url.query().is_some() || url.fragment().is_some() {
+            return Err(pc::SandboxError::new(
+                "credentialed Repository transport must use a canonical HTTPS URL",
+            ));
+        }
+        let mut host = url
+            .host_str()
+            .ok_or_else(|| pc::SandboxError::new("Repository transport URL has no host"))?
+            .to_owned();
+        if let Some(port) = url.port() {
+            host.push(':');
+            host.push_str(&port.to_string());
+        }
+        let path = url.path().trim_start_matches('/').to_owned();
+        if path.is_empty() {
+            return Err(pc::SandboxError::new(
+                "Repository transport URL has no path",
+            ));
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| pc::SandboxError::new("system clock is before Unix epoch"))?;
+        let expires_at_unix_ms = u64::try_from((now + CREDENTIAL_OPERATION_TTL).as_millis())
+            .map_err(|_| pc::SandboxError::new("Repository credential expiry overflow"))?;
+        Ok(Self {
+            protocol: url.scheme().to_owned(),
+            host,
+            path,
+            username: credential.expose_username().to_owned(),
+            password: credential.expose_password().to_owned(),
+            expires_at_unix_ms,
+        })
+    }
+
+    fn matches(&self, query: &RepositoryGitCredentialQuery) -> bool {
+        query.protocol == self.protocol
+            && query.host == self.host
+            && query.path.trim_start_matches('/') == self.path
+    }
+}
+
+#[async_trait::async_trait]
+impl SandboxControlService for OperationRepositoryCredential {
+    async fn handle(&self, request: SandboxControlRequest) -> SandboxControlResponse {
+        let SandboxControlRequest::RepositoryGitCredentialGet { query } = request;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_millis()).ok());
+        if !self.matches(&query) || now.is_none_or(|now| now >= self.expires_at_unix_ms) {
+            return SandboxControlResponse::Denied;
+        }
+        let Ok(username) = SandboxControlSecret::new(self.username.clone()) else {
+            return SandboxControlResponse::Unavailable;
+        };
+        let Ok(password) = SandboxControlSecret::new(self.password.clone()) else {
+            return SandboxControlResponse::Unavailable;
+        };
+        SandboxControlResponse::RepositoryGitCredential {
+            username,
+            password,
+            expires_at_unix_ms: CapabilityExpiresAtUnixMs(self.expires_at_unix_ms),
+        }
+    }
+}
+
+async fn publish_credential(
+    sandbox: &dyn awaken_sandbox_container::ContainerEnvironment,
+    remote_url: &str,
+    credential: Option<&pc::RepositoryHttpBasicCredential>,
+) -> Result<
+    Option<Box<dyn awaken_sandbox_container::PublishedSandboxControlService>>,
+    pc::SandboxError,
+> {
+    let Some(credential) = credential else {
+        return Ok(None);
+    };
+    let service = Arc::new(OperationRepositoryCredential::new(remote_url, credential)?);
+    sandbox
+        .publish_sandbox_control_service(
+            SandboxControlServiceKind::RepositoryGitCredential,
+            service,
+        )
+        .await
+        .map(Some)
+        .map_err(|_| pc::SandboxError::new("Sandbox Repository credential channel is unavailable"))
+}
 
 pub(super) async fn provision(
     sandbox: &dyn awaken_sandbox_container::ContainerEnvironment,
@@ -13,49 +122,31 @@ pub(super) async fn provision(
     plan: &pc::RepositoryRealizationPlan,
     credential: Option<&pc::RepositoryHttpBasicCredential>,
 ) -> Result<(), pc::SandboxError> {
-    // Validate before the host obtains a bundle or exposes a credential. The
-    // adapter consumes the exact admitted sandbox path; it never interprets a
-    // caller path as a workspace-relative alias.
     plan.validate_mount_path()?;
-    let sequence = TRANSFER_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let url_owned = plan.transport_url.clone();
-    let initial_branch_owned = plan.initial_branch.clone();
-    let initial_commit_owned = plan.initial_commit.clone();
-    let credential_owned = credential.cloned();
-    let bundle = tokio::task::spawn_blocking(move || {
-        awaken_sandbox_local::clone_repo_bundle(
-            &url_owned,
-            initial_branch_owned.as_deref(),
-            initial_commit_owned.as_deref(),
-            credential_owned.as_ref(),
-        )
-    })
-    .await
-    .map_err(|error| pc::SandboxError::new(error.to_string()))??;
-    if bundle.len() > MAX_REPO_BUNDLE_BYTES {
-        return Err(pc::SandboxError::new("repository bundle exceeds limit"));
+    let publication = publish_credential(sandbox, &plan.transport_url, credential).await?;
+    let command = repository_clone_command(plan, publisher_bin, uuid::Uuid::new_v4())?;
+    let result = match sandbox.spawn(command).await {
+        Ok(process) => process.wait().await,
+        Err(error) => Err(error),
+    };
+    if let Some(publication) = publication {
+        publication.close().await;
     }
-    let bundle_path = format!("/tmp/awaken-repo-{sequence}.bundle");
-    super::container_files::write(sandbox, &bundle_path, &bundle).await?;
-    let command =
-        repository_import_command(plan, publisher_bin, bundle_path, uuid::Uuid::new_v4())?;
-    let process = sandbox.spawn(command).await?;
-    let status = process.wait().await?;
+    let status = result?;
     if status.code == Some(0) {
         sandbox.record_owned_path(&plan.mount_path)?;
         Ok(())
     } else {
         Err(pc::SandboxError::new(format!(
-            "container repository import exited {:?}",
+            "container Repository clone exited {:?}",
             status.code
         )))
     }
 }
 
-fn repository_import_command(
+fn repository_clone_command(
     plan: &pc::RepositoryRealizationPlan,
     publisher_bin: &str,
-    bundle_path: String,
     stage_identity: uuid::Uuid,
 ) -> Result<pc::Command, pc::SandboxError> {
     let parent = plan
@@ -73,9 +164,9 @@ fn repository_import_command(
             "sh".into(),
             "-c".into(),
             concat!(
-                "set -eu; bundle=$1; destination=$2; parent=$3; stage=$4; remote=$5; branch=$6; commit=$7; publisher=$8; ",
-                "stage_owned=0; cleanup() { rm -f -- \"$bundle\"; ",
-                "if test \"$stage_owned\" = 1; then rm -rf -- \"$stage\"; fi; }; trap cleanup EXIT; ",
+                "set -eu; export GIT_TERMINAL_PROMPT=0; destination=$1; parent=$2; stage=$3; remote=$4; branch=$5; commit=$6; publisher=$7; helper=$8; socket=$9; ",
+                "credential_helper=\"!$helper git-credential --socket $socket\"; stage_owned=0; ",
+                "cleanup() { if test \"$stage_owned\" = 1; then rm -rf -- \"$stage\"; fi; }; trap cleanup EXIT; ",
                 "is_occupied() { test -e \"$1\" || test -L \"$1\"; }; ",
                 "is_exact() { candidate=$1; test -d \"$candidate\" && test ! -L \"$candidate\" || return 1; ",
                 "test -d \"$candidate/.git\" && test ! -L \"$candidate/.git\" || return 1; ",
@@ -83,22 +174,17 @@ fn repository_import_command(
                 "git -C \"$candidate\" rev-parse --verify 'HEAD^{commit}' >/dev/null 2>&1 || return 1; ",
                 "if test -n \"$branch\"; then test \"$(git -C \"$candidate\" symbolic-ref --short HEAD)\" = \"$branch\" || return 1; fi; ",
                 "if test -n \"$commit\"; then test \"$(git -C \"$candidate\" rev-parse HEAD)\" = \"$(git -C \"$candidate\" rev-parse \"$commit\")\" || return 1; fi; }; ",
-                "if is_occupied \"$destination\"; then is_exact \"$destination\" && exit 0; ",
-                "echo 'Repository destination is occupied by a non-exact realization' >&2; exit 1; fi; ",
+                "if is_occupied \"$destination\"; then is_exact \"$destination\" && exit 0; echo 'Repository destination is occupied by a non-exact realization' >&2; exit 1; fi; ",
                 "mkdir -p -- \"$parent\"; mkdir -m 700 -- \"$stage\"; stage_owned=1; ",
-                "git clone --no-checkout -- \"$bundle\" \"$stage\"; ",
+                "git -c credential.useHttpPath=true -c \"credential.helper=$credential_helper\" clone --no-checkout -- \"$remote\" \"$stage\"; ",
                 "if test -n \"$branch\"; then git -C \"$stage\" checkout \"$branch\"; fi; ",
-                "if test -n \"$commit\"; then git -C \"$stage\" checkout --detach \"$commit\"; else git -C \"$stage\" reset --hard HEAD; fi; ",
-                "git -C \"$stage\" remote set-url origin \"$remote\"; is_exact \"$stage\"; ",
-                "if is_occupied \"$destination\"; then is_exact \"$destination\" && exit 0; ",
-                "echo 'Repository destination became occupied before publication' >&2; exit 1; fi; ",
+                "if test -n \"$commit\"; then git -C \"$stage\" checkout --detach \"$commit\"; else git -C \"$stage\" reset --hard HEAD; fi; is_exact \"$stage\"; ",
+                "if is_occupied \"$destination\"; then is_exact \"$destination\" && exit 0; echo 'Repository destination became occupied before publication' >&2; exit 1; fi; ",
                 "publish_status=0; \"$publisher\" repository-publish-noreplace \"$stage\" \"$destination\" || publish_status=$?; ",
-                "if test \"$publish_status\" != 0; then is_exact \"$destination\" && exit 0; exit \"$publish_status\"; fi; ",
-                "stage_owned=0; is_exact \"$destination\""
+                "if test \"$publish_status\" != 0; then is_exact \"$destination\" && exit 0; exit \"$publish_status\"; fi; stage_owned=0; is_exact \"$destination\""
             )
             .into(),
-            "awaken-repo-import".into(),
-            bundle_path,
+            "awaken-repo-clone".into(),
             plan.mount_path.clone(),
             parent.into(),
             stage,
@@ -106,6 +192,8 @@ fn repository_import_command(
             plan.initial_branch.clone().unwrap_or_default(),
             plan.initial_commit.clone().unwrap_or_default(),
             publisher_bin.into(),
+            publisher_bin.into(),
+            REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH.into(),
         ],
         cwd: pc::WorkspaceLayout::ROOT.into(),
         env: Vec::new(),
@@ -115,6 +203,7 @@ fn repository_import_command(
 
 pub(super) async fn push(
     sandbox: &dyn awaken_sandbox_container::ContainerEnvironment,
+    helper_bin: &str,
     plan: &pc::RepositoryRealizationPlan,
     expectation: &pc::RepositoryPublicationExpectation,
     credential: Option<&pc::RepositoryHttpBasicCredential>,
@@ -129,112 +218,77 @@ pub(super) async fn push(
             pc::SandboxError::new("read-only repository cannot be published"),
         ));
     }
-    let repo = plan.mount_path.clone();
+    let publication = publish_credential(sandbox, &plan.transport_url, credential)
+        .await
+        .map_err(pc::RepositoryPublicationError::Unavailable)?;
     let process = sandbox
-        .spawn_agent_process(pc::Command {
-            argv: vec![
-                "sh".into(),
-                "-c".into(),
-                concat!(
-                    "set -eu; repo=$1; ",
-                    "git -C \"$repo\" symbolic-ref --quiet --short HEAD; ",
-                    "git -C \"$repo\" bundle create - --all"
-                )
-                .into(),
-                "awaken-repo-export".into(),
-                repo,
-            ],
-            cwd: pc::WorkspaceLayout::ROOT.into(),
-            env: Vec::new(),
-            stdio: pc::Stdio::Piped,
-        })
-        .await
-        .map_err(pc::RepositoryPublicationError::Unavailable)?;
-    let mut bundle = Vec::new();
-    process
-        .channel
-        .take((MAX_REPO_BUNDLE_BYTES + MAX_REPOSITORY_BRANCH_BYTES + 2) as u64)
-        .read_to_end(&mut bundle)
-        .await
-        .map_err(|error| {
-            pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(error.to_string()))
-        })?;
-    if bundle.len() > MAX_REPO_BUNDLE_BYTES + MAX_REPOSITORY_BRANCH_BYTES + 1 {
-        let _ = process.process.signal(pc::Signal::Kill).await;
-        return Err(pc::RepositoryPublicationError::Unavailable(
-            pc::SandboxError::new("repository bundle exceeds limit"),
-        ));
+        .spawn_agent_process(repository_push_command(plan, expectation, helper_bin))
+        .await;
+    let result = match process {
+        Ok(process) => process.process.wait().await,
+        Err(error) => Err(error),
+    };
+    if let Some(publication) = publication {
+        publication.close().await;
     }
-    let status = process
-        .process
-        .wait()
-        .await
-        .map_err(pc::RepositoryPublicationError::Unavailable)?;
-    if status.code != Some(0) {
-        return Err(pc::RepositoryPublicationError::Unavailable(
-            pc::SandboxError::new(format!(
-                "container repository export exited {:?}",
-                status.code
-            )),
-        ));
+    let status = result.map_err(pc::RepositoryPublicationError::Unavailable)?;
+    match status.code {
+        Some(0) => Ok(pc::RepositoryPublicationReceipt::new(plan, expectation)),
+        // The in-Sandbox command deliberately emits no remote coordinate over
+        // its process channel. Without typed conflict evidence the outer port
+        // must classify a failed CAS as unavailable, never invent a permanent
+        // rejection that could close a retryable Session effect.
+        Some(42) => Err(pc::RepositoryPublicationError::Unavailable(
+            pc::SandboxError::new("container Repository publication coordinate was rejected"),
+        )),
+        code => Err(pc::RepositoryPublicationError::Unavailable(
+            pc::SandboxError::new(format!("container Repository push exited {code:?}")),
+        )),
     }
-    let branch_end = bundle
-        .iter()
-        .position(|byte| *byte == b'\n')
-        .filter(|index| *index > 0 && *index <= MAX_REPOSITORY_BRANCH_BYTES)
-        .ok_or_else(|| {
-            pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(
-                "repository export has no current branch",
-            ))
-        })?;
-    let branch = std::str::from_utf8(&bundle[..branch_end])
-        .map_err(|error| {
-            pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(error.to_string()))
-        })?
-        .to_owned();
-    let bundle = bundle.split_off(branch_end + 1);
-    if bundle.len() > MAX_REPO_BUNDLE_BYTES {
-        return Err(pc::RepositoryPublicationError::Unavailable(
-            pc::SandboxError::new("repository bundle exceeds limit"),
-        ));
+}
+
+fn repository_push_command(
+    plan: &pc::RepositoryRealizationPlan,
+    expectation: &pc::RepositoryPublicationExpectation,
+    helper_bin: &str,
+) -> pc::Command {
+    pc::Command {
+        argv: vec![
+            "sh".into(),
+            "-c".into(),
+            concat!(
+                "set -eu; export GIT_TERMINAL_PROMPT=0; repo=$1; remote=$2; branch=$3; commit=$4; prior=$5; helper=$6; socket=$7; ",
+                "credential_helper=\"!$helper git-credential --socket $socket\"; ",
+                "git check-ref-format --branch \"$branch\" >/dev/null 2>&1 || exit 42; ",
+                "test \"$(git -C \"$repo\" symbolic-ref --quiet --short HEAD)\" = \"$branch\" || exit 42; ",
+                "test \"$(git -C \"$repo\" rev-parse HEAD)\" = \"$commit\" || exit 42; ",
+                "remote_commit=$(git -c credential.useHttpPath=true -c \"credential.helper=$credential_helper\" ls-remote --refs \"$remote\" \"refs/heads/$branch\" | awk 'NR == 1 { print $1 }'); ",
+                "if test \"$remote_commit\" = \"$commit\"; then exit 0; fi; ",
+                "if test \"$remote_commit\" != \"$prior\"; then exit 42; fi; ",
+                "git -c credential.useHttpPath=true -c \"credential.helper=$credential_helper\" -C \"$repo\" push --porcelain --force-with-lease=\"refs/heads/$branch:$prior\" \"$remote\" \"$commit:refs/heads/$branch\""
+            )
+            .into(),
+            "awaken-repo-push".into(),
+            plan.mount_path.clone(),
+            plan.transport_url.clone(),
+            expectation.branch.clone(),
+            expectation.commit.clone(),
+            expectation.expected_prior_commit.clone().unwrap_or_default(),
+            helper_bin.into(),
+            REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH.into(),
+        ],
+        cwd: pc::WorkspaceLayout::ROOT.into(),
+        env: Vec::new(),
+        stdio: pc::Stdio::Null,
     }
-    let plan = plan.clone();
-    let expectation = expectation.clone();
-    let credential = credential.cloned();
-    tokio::task::spawn_blocking(move || {
-        awaken_sandbox_local::push_repo_bundle(
-            &bundle,
-            &branch,
-            &plan,
-            &expectation,
-            credential.as_ref(),
-        )
-    })
-    .await
-    .map_err(|error| {
-        pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(error.to_string()))
-    })?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Container Repository crash-cut cause/effect decision table. C1 final is
-    /// absent/exact/non-exact occupied; C2 the random stage name is absent or
-    /// collided before this attempt owns it; C3 clone/verification succeeds;
-    /// C4 the atomic publisher succeeds or loses a name race. Effects: E1 exact
-    /// is an idempotent success; E2 non-exact final is rejected and never
-    /// removed; E3 a stage collision is preserved; E4 only a stage created by
-    /// this attempt is cleaned on ordinary failure; E5 successful publication
-    /// is post-verified; E6 publisher capability comes from the configured Hand
-    /// binary. Rules: C1=exact=>E1; C1=occupied-nonexact=>E2; absent+C2=collision
-    /// =>E3; absent+C2=absent+!C3=>E4; absent+C3+C4=success=>E5+E6;
-    /// absent+C3+C4=lost=>recheck exact for E1, otherwise E2. The real syscall
-    /// collision is covered by `awaken-sandbox`'s primitive test.
-    #[test]
-    fn repository_import_command_owns_only_its_random_stage_and_never_clobbers_final() {
-        let plan = pc::RepositoryRealizationPlan {
+    fn plan() -> pc::RepositoryRealizationPlan {
+        pc::RepositoryRealizationPlan {
             repository_id: "repository".into(),
             mount_path: "/workspace/source/repository".into(),
             source_remote_url: "https://example.invalid/repository".into(),
@@ -242,53 +296,77 @@ mod tests {
             initial_branch: Some("main".into()),
             initial_commit: None,
             access: pc::MountAccess::ReadWrite,
-        };
-        let command = repository_import_command(
-            &plan,
-            "/opt/custom/awaken-sandbox",
-            "/tmp/repository.bundle".into(),
-            uuid::Uuid::nil(),
-        )
-        .expect("valid import command");
-        let script = &command.argv[2];
+        }
+    }
 
-        assert_eq!(command.argv[6], "/workspace/source", "shared parent");
-        assert_eq!(
-            command.argv[7],
-            "/workspace/source/.awaken-repository-00000000000000000000000000000000.stage",
-            "per-attempt stage identity"
-        );
-        assert_eq!(
-            command.argv[11], "/opt/custom/awaken-sandbox",
-            "E6 configured binary is the sole publisher capability"
-        );
-        assert!(
-            script.contains("if test \"$stage_owned\" = 1; then rm -rf -- \"$stage\"; fi"),
-            "E4 cleanup is gated by successful current-attempt ownership"
-        );
-        assert!(
-            script.contains("mkdir -m 700 -- \"$stage\"; stage_owned=1"),
-            "E3 a colliding unknown stage is never claimed or removed"
-        );
-        assert_eq!(
-            script.matches("rm -rf --").count(),
-            1,
-            "E2/E3 no final or unknown-stage deletion path exists"
-        );
+    #[test]
+    fn clone_command_executes_network_git_in_sandbox_and_never_embeds_credentials() {
+        let command =
+            repository_clone_command(&plan(), "/opt/custom/awaken-sandbox", uuid::Uuid::nil())
+                .expect("valid clone command");
+        let script = &command.argv[2];
+        assert!(script.contains("clone --no-checkout -- \"$remote\" \"$stage\""));
+        assert!(script.contains("credential.helper=$credential_helper"));
+        assert_eq!(command.argv[10], "/opt/custom/awaken-sandbox");
+        assert_eq!(command.argv[11], "/opt/custom/awaken-sandbox");
+        assert_eq!(command.argv[12], REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH);
+        assert!(!format!("{command:?}").contains("password"));
+        assert!(!script.contains("rmdir -- \"$stage\""));
+        assert_eq!(script.matches("rm -rf --").count(), 1);
         assert!(!script.contains("rm -rf -- \"$destination\""));
-        assert!(!script.contains("mv --"), "no check-then-rename fallback");
-        assert!(
-            script.contains(
-                "\"$publisher\" repository-publish-noreplace \"$stage\" \"$destination\""
-            )
-        );
-        assert!(
-            script.contains("stage_owned=0; is_exact \"$destination\""),
-            "E5 successful publish is post-verified"
-        );
-        assert!(
-            script.contains("git -C \"$candidate\" rev-parse --verify 'HEAD^{commit}'"),
-            "E1 exact requires a complete checkout"
-        );
+        assert!(script.contains("repository-publish-noreplace"));
+    }
+
+    #[test]
+    fn push_command_is_exact_cas_and_executes_only_in_sandbox() {
+        let expectation = pc::RepositoryPublicationExpectation {
+            branch: "awf/work".into(),
+            commit: "0123456789012345678901234567890123456789".into(),
+            expected_prior_commit: Some("1111111111111111111111111111111111111111".into()),
+        };
+        let command = repository_push_command(&plan(), &expectation, "/opt/custom/awaken-sandbox");
+        let script = &command.argv[2];
+        assert!(script.contains("git check-ref-format --branch"));
+        assert!(script.contains("ls-remote --refs"));
+        assert!(script.contains("--force-with-lease="));
+        assert!(script.contains("credential.helper=$credential_helper"));
+        assert!(script.contains("exit 42"));
+        assert_eq!(command.argv[9], "/opt/custom/awaken-sandbox");
+        assert!(!format!("{command:?}").contains("password"));
+    }
+
+    #[tokio::test]
+    async fn credential_service_is_exact_target_bound_and_redacted() {
+        let credential =
+            pc::RepositoryHttpBasicCredential::new("user".to_owned(), "secret".to_owned());
+        let service = OperationRepositoryCredential::new(
+            "https://github.example:8443/owner/repo.git",
+            &credential,
+        )
+        .unwrap();
+        let response = service
+            .handle(SandboxControlRequest::RepositoryGitCredentialGet {
+                query: RepositoryGitCredentialQuery {
+                    protocol: "https".into(),
+                    host: "github.example:8443".into(),
+                    path: "owner/repo.git".into(),
+                },
+            })
+            .await;
+        assert!(matches!(
+            response,
+            SandboxControlResponse::RepositoryGitCredential { .. }
+        ));
+        let denied = service
+            .handle(SandboxControlRequest::RepositoryGitCredentialGet {
+                query: RepositoryGitCredentialQuery {
+                    protocol: "https".into(),
+                    host: "github.example:8443".into(),
+                    path: "owner/other.git".into(),
+                },
+            })
+            .await;
+        assert!(matches!(denied, SandboxControlResponse::Denied));
+        assert!(!format!("{response:?}").contains("secret"));
     }
 }

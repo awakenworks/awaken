@@ -633,7 +633,7 @@ new Session             -> current Repository config, clone current remote conte
 
 No cross-Session commit replay is promised.
 
-#### Dormant Repository credential endpoint
+#### Repository credential endpoint
 
 The Environment provider can now realize a demanded, provider-neutral
 Repository Git credential control endpoint at the single sandbox-absolute path
@@ -652,13 +652,21 @@ consumes the credential channel; Pod UID and owner transfer fence subsequent
 port-forwards. The typed request contains only the normalized Git authority and
 the response is short-lived, bounded, and zeroized at the helper/codec edge.
 
-This is a dormant Environment capability. `SessionEnvironment` does not yet
-request it, project a `GIT_CONFIG*` overlay, or activate the helper for Agent,
-Native Hand, or Resident Hand. The provider neither chooses nor verifies the
-Repository/credential binding and cannot turn endpoint availability into access.
-The existing Session Repository pin, Resource binding verifier, material
-resolver, and `Forbidden` exposure remain authoritative; their later activation
-must reuse this endpoint instead of adding a second Git credential path.
+This is now the sole active credential transport for Repository Git in a
+container Sandbox. `SessionEnvironment` demands the control service when a
+Repository is present, but does not project a persistent `GIT_CONFIG*` overlay.
+Instead, each clone or publication operation installs the helper only for its
+own in-Sandbox Git process and closes the publication afterward. The existing
+Session Repository pin, Resource binding verifier, material resolver, and
+`Forbidden` exposure remain authoritative; the provider still neither chooses
+nor verifies the Repository/credential binding.
+
+The self-hosted profile serves exact-target, expiring plaintext through this
+channel and the Git process connects directly. The hosted profile serves a
+short-lived Gateway capability through the same channel and the Git process
+connects through the Gateway. Runtime Host only coordinates the operation: it
+does not run network Git or transfer a Git bundle. Credentialed Workdir and
+legacy Namespace realization fail closed so they cannot become a second path.
 
 ### Release and reclaim
 

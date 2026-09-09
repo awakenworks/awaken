@@ -13,6 +13,11 @@ impl pc::RepositoryRealizer for SessionEnvironment {
         credential: Option<&pc::RepositoryHttpBasicCredential>,
     ) -> Result<(), pc::SandboxError> {
         match self {
+            Self::Workdir { .. } | Self::Namespace { .. } if credential.is_some() => {
+                Err(pc::SandboxError::new(
+                    "credentialed Repository effects require a container Sandbox",
+                ))
+            }
             Self::Workdir { sandbox, .. } => {
                 pc::RepositoryRealizer::realize_repository(sandbox.as_ref(), plan, credential).await
             }
@@ -36,6 +41,11 @@ impl pc::RepositoryRealizer for SessionEnvironment {
         credential: Option<&pc::RepositoryHttpBasicCredential>,
     ) -> Result<pc::RepositoryPublicationReceipt, pc::RepositoryPublicationError> {
         match self {
+            Self::Workdir { .. } | Self::Namespace { .. } if credential.is_some() => Err(
+                pc::RepositoryPublicationError::Unavailable(pc::SandboxError::new(
+                    "credentialed Repository effects require a container Sandbox",
+                )),
+            ),
             Self::Workdir { sandbox, .. } => {
                 pc::RepositoryRealizer::publish_repository(
                     sandbox.as_ref(),
@@ -46,8 +56,15 @@ impl pc::RepositoryRealizer for SessionEnvironment {
                 .await
             }
             Self::Namespace { sandbox, .. } => sandbox.push_repo(plan, expectation, credential),
-            Self::Container { sandbox, .. } => {
-                container_repositories::push(sandbox.as_ref(), plan, expectation, credential).await
+            Self::Container { sandbox, hand, .. } => {
+                container_repositories::push(
+                    sandbox.as_ref(),
+                    hand.binary_path(),
+                    plan,
+                    expectation,
+                    credential,
+                )
+                .await
             }
         }
     }

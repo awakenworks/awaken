@@ -32,6 +32,12 @@ RUNTIME_HOST_ERROR_OWNER = "crates/server/awaken-session-executor/src/lib.rs"
 SESSION_RUN_ADMISSION_OWNER = (
     "crates/server/awaken-session-application/src/run_admission.rs"
 )
+CONTAINER_REPOSITORY_OWNER = (
+    "crates/server/awaken-session-executor/src/session_environment/container_repositories.rs"
+)
+SESSION_REPOSITORY_ADAPTER = (
+    "crates/server/awaken-session-executor/src/session_environment/repository_realizer.rs"
+)
 FORBIDDEN_HOST_ERROR_INFERENCE = (
     '.contains("401")',
     '.contains("auth")',
@@ -244,6 +250,56 @@ def runtime_host_boundary_violations(sources: dict[str, str]) -> list[str]:
     return errors
 
 
+def repository_git_boundary_violations(sources: dict[str, str]) -> list[str]:
+    """Credentialed Repository network effects exist only inside a Sandbox."""
+    errors: list[str] = []
+    for path, source in sources.items():
+        if not path.startswith("crates/server/awaken-session-executor/src/"):
+            continue
+        if path.endswith("/tests.rs") or path.endswith("_tests.rs"):
+            continue
+        production = _crate_boundary_workspace.production_rust(source)
+        for forbidden in (
+            "clone_repo_bundle",
+            "push_repo_bundle",
+            'Command::new("git")',
+        ):
+            if forbidden in production:
+                errors.append(
+                    f"{path}: Runtime Host Repository Git uses forbidden host path {forbidden!r}"
+                )
+    owner = _crate_boundary_workspace.production_rust(
+        sources.get(CONTAINER_REPOSITORY_OWNER, "")
+    )
+    for forbidden in ("spawn_blocking",):
+        if forbidden in owner:
+            errors.append(
+                f"{CONTAINER_REPOSITORY_OWNER}: Runtime Host Repository Git uses forbidden host path {forbidden!r}"
+            )
+    for required in (
+        "publish_sandbox_control_service",
+        "REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH",
+        "sandbox.spawn(",
+        "spawn_agent_process(",
+    ):
+        if required not in owner:
+            errors.append(
+                f"{CONTAINER_REPOSITORY_OWNER}: missing Sandbox-only Repository Git mechanism {required!r}"
+            )
+    adapter = _crate_boundary_workspace.production_rust(
+        sources.get(SESSION_REPOSITORY_ADAPTER, "")
+    )
+    for required in (
+        "Self::Workdir { .. } | Self::Namespace { .. } if credential.is_some()",
+        "credentialed Repository effects require a container Sandbox",
+    ):
+        if required not in adapter:
+            errors.append(
+                f"{SESSION_REPOSITORY_ADAPTER}: credentialed Repository bypass is not closed ({required!r})"
+            )
+    return errors
+
+
 def check_all(repo_root: Path) -> list[str]:
     errors: list[str] = []
     rust_sources: dict[str, str] = {}
@@ -257,6 +313,7 @@ def check_all(repo_root: Path) -> list[str]:
                 )
     errors.extend(duplicate_tool_registry_violations(rust_sources))
     errors.extend(runtime_host_boundary_violations(rust_sources))
+    errors.extend(repository_git_boundary_violations(rust_sources))
 
     fixture_sources: dict[str, str] = {}
     for relative_root in EXECUTABLE_FIXTURE_ROOTS:
@@ -369,3 +426,34 @@ def selftest() -> None:
     ), "B2"
     boundary[RUNTIME_HOST_ERROR_OWNER] = 'message.contains("401")'
     assert runtime_host_boundary_violations(boundary), "B3"
+
+    # Repository Git decision table: G1 clone+push use Sandbox processes and a
+    # single control protocol -> accept; G2 host bundle/subprocess transport ->
+    # reject; G3 Workdir/Namespace accept a credential -> reject; G4 moving the
+    # host Git call to another Runtime Host module still cannot evade the gate.
+    git_boundary = {
+        CONTAINER_REPOSITORY_OWNER: (
+            "publish_sandbox_control_service REPOSITORY_GIT_CREDENTIAL_SOCKET_PATH "
+            "sandbox.spawn( spawn_agent_process("
+        ),
+        SESSION_REPOSITORY_ADAPTER: (
+            "Self::Workdir { .. } | Self::Namespace { .. } if credential.is_some() "
+            "credentialed Repository effects require a container Sandbox"
+        ),
+    }
+    assert repository_git_boundary_violations(git_boundary) == [], "G1"
+    git_boundary[CONTAINER_REPOSITORY_OWNER] += " clone_repo_bundle"
+    assert repository_git_boundary_violations(git_boundary), "G2"
+    git_boundary[CONTAINER_REPOSITORY_OWNER] = git_boundary[
+        CONTAINER_REPOSITORY_OWNER
+    ].replace(" clone_repo_bundle", "")
+    git_boundary[SESSION_REPOSITORY_ADAPTER] = "credential accepted"
+    assert repository_git_boundary_violations(git_boundary), "G3"
+    git_boundary[SESSION_REPOSITORY_ADAPTER] = (
+        "Self::Workdir { .. } | Self::Namespace { .. } if credential.is_some() "
+        "credentialed Repository effects require a container Sandbox"
+    )
+    git_boundary[
+        "crates/server/awaken-session-executor/src/session_environment/host_git_bypass.rs"
+    ] = 'Command::new("git")'
+    assert repository_git_boundary_violations(git_boundary), "G4"

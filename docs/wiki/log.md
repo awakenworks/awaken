@@ -765,3 +765,16 @@
 - Linked the exact BYOK grants and request capability projection to the existing Credential/Catalog owners.
 - Recorded Workspace endpoint isolation and one Profile compiler with delegated managed route publication.
 - Added lifecycle recovery and HTTP composition test coverage without a second policy or catalog authority.
+
+## 2026-09-10 — Move Repository Git entirely into the Sandbox
+
+- Replaced Runtime Host bundle clone/push with Sandbox-executed Git and one
+  target-bound, expiring credential-helper channel.
+- Kept self-hosted direct plaintext and hosted Gateway capability delivery on
+  the same carrier while rejecting Worker-held and credentialed non-container
+  paths.
+- Added a mechanical architecture gate and focused holder, target, redaction,
+  clone, and exact publication-CAS tests.
+- Promoted the previously dormant provider-neutral Repository credential
+  endpoint to the sole active per-operation Sandbox transport and removed the
+  stale activation-not-implemented fact.

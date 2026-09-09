@@ -90,13 +90,13 @@ Owner: [credentials-and-vaults.md](../design/credentials-and-vaults.md).
 - Links: [Session-owned Repository lifecycle](../design/resources-memory-files-skills.md#session-ownership-and-root-adoption)
 - Verification: V1-to-V2 migration/backfill/restart, root update/archive/delete/unrelated-source, SQLite/Postgres conformance, exact rollout, and inline Repository credential reclamation tests.
 
-## FACT-CRED-011: Sandbox control transport does not authorize credentials
+## FACT-CRED-011: Repository Git uses one Sandbox credential transport
 
-- Status: active dormant provider capability; Session Git-helper activation is not implemented
-- Owner: [Dormant Sandbox control transport boundary](../design/credentials-and-vaults.md#dormant-sandbox-control-transport-boundary)
-- Fact: Namespace and Kubernetes may realize the same fixed Repository Git credential endpoint and publish a bounded typed service, but the provider does not select or authorize a holder, exposure, claim, verifier, Repository, Vault material, or Git configuration. The Repository pin remains `Forbidden`; a later Session-owned projection must activate Agent and Native/Resident-Hand paths through the existing credential authorities.
-- Links: [ADR-0041 Amendment 7](../adr/0041-sandbox-execution-environment-provider.md#amendment-7-2026-08-29-dormant-provider-neutral-sandbox-control-transport); [ADR-0067 boundary note](../adr/0067-credential-custody-model-exposure-and-secret-delivery.md#2026-08-29-boundary-note-sandbox-control-transport-is-not-credential-activation)
-- Verification: provider contract/path/adoption/lifecycle tests plus static absence of `GIT_CONFIG*`, helper overlay, holder selection, and material persistence in the provider slice.
+- Status: active
+- Owner: [Sandbox Repository credential transport boundary](../design/credentials-and-vaults.md#sandbox-repository-credential-transport-boundary)
+- Fact: Repository clone, remote observation, and push execute only inside the selected Sandbox through one fixed Git-helper protocol. Self-hosted execution delivers exact upstream plaintext to the Sandbox and connects directly; hosted execution delivers a short Gateway capability over the same carrier. Runtime Host coordinates but has no external Git or bundle-transfer path, and credentialed Workdir/legacy Namespace paths fail closed.
+- Links: [ADR-0067 Sandbox-only amendment](../adr/0067-credential-custody-model-exposure-and-secret-delivery.md#2026-09-10-amendment-repository-git-is-a-sandbox-only-effect); [ADR-0041 Amendment 7](../adr/0041-sandbox-execution-environment-provider.md#amendment-7-2026-08-29-dormant-provider-neutral-sandbox-control-transport)
+- Verification: closed holder/route/payload table; exact-target and redaction tests; Sandbox clone/push/CAS command tests; architecture fitness rejecting host bundle and credentialed non-container paths.
 
 ## FACT-CRED-012: Hosted BYOK shares Workspace credential and publication owners
 

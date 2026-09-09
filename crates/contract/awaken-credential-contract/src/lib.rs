@@ -27,6 +27,11 @@ pub use custody::{
     CredentialCustodyPublication, CredentialMaterialBinding, CredentialMaterialCustodian,
     CredentialMaterialDelivery, credential_envelope_payload_fingerprint,
 };
+mod delivery_plan;
+pub use delivery_plan::{
+    CredentialDeliveredAuthority, CredentialDeliveryCarrier, CredentialDeliveryPlan,
+    CredentialInvocationRoute, repository_git_credential_delivery,
+};
 mod managed_rollout;
 pub use managed_rollout::{
     ManagedCredentialOperation, ManagedCredentialRollout, ManagedCredentialRolloutIdentityDecision,
@@ -57,6 +62,7 @@ pub use realization_capabilities::{
 /// Hosted deployments publish their own opaque domains instead.
 pub const SELF_HOSTED_WORKER_TRUST_DOMAIN: &str = "awaken.worker";
 pub const SELF_HOSTED_ACP_TRUST_DOMAIN: &str = "awaken.workload.acp";
+pub const SELF_HOSTED_SANDBOX_TRUST_DOMAIN: &str = "awaken.workload.sandbox";
 
 /// A stable reference to one credential source revision.
 #[derive(
@@ -186,10 +192,14 @@ pub struct CredentialExecutionPolicy {
 }
 
 impl CredentialExecutionPolicy {
-    fn self_hosted_holders() -> [PlaintextHolder; 2] {
+    fn self_hosted_holders() -> [PlaintextHolder; 3] {
         [
             PlaintextHolder::new(PlaintextBoundary::Worker, SELF_HOSTED_WORKER_TRUST_DOMAIN),
             PlaintextHolder::new(PlaintextBoundary::Workload, SELF_HOSTED_ACP_TRUST_DOMAIN),
+            PlaintextHolder::new(
+                PlaintextBoundary::Workload,
+                SELF_HOSTED_SANDBOX_TRUST_DOMAIN,
+            ),
         ]
     }
 
@@ -235,10 +245,10 @@ impl CredentialExecutionPolicy {
 pub struct CredentialRealizationProfile {
     pub inference_holder: PlaintextHolder,
     pub mcp_holder: PlaintextHolder,
-    /// Exact holder for Session Resource credentials such as host-mediated Git
-    /// transport. Older persisted Environment snapshots predate this purpose and
-    /// therefore decode to the canonical self-hosted Worker boundary.
-    #[serde(default = "self_hosted_worker_holder")]
+    /// Exact holder for Session Resource credentials. Repository Git effects
+    /// are Sandbox-owned; older snapshots without this field decode to the same
+    /// fail-closed Workload holder rather than restoring Runtime Host custody.
+    #[serde(default = "self_hosted_sandbox_holder")]
     pub resource_holder: PlaintextHolder,
 }
 
@@ -270,6 +280,13 @@ fn self_hosted_worker_holder() -> PlaintextHolder {
     PlaintextHolder::new(PlaintextBoundary::Worker, SELF_HOSTED_WORKER_TRUST_DOMAIN)
 }
 
+fn self_hosted_sandbox_holder() -> PlaintextHolder {
+    PlaintextHolder::new(
+        PlaintextBoundary::Workload,
+        SELF_HOSTED_SANDBOX_TRUST_DOMAIN,
+    )
+}
+
 impl CredentialRealizationProfile {
     /// Canonical self-hosted profile for the in-process Native runtime.
     #[must_use]
@@ -277,8 +294,8 @@ impl CredentialRealizationProfile {
         let worker = self_hosted_worker_holder();
         Self {
             inference_holder: worker.clone(),
-            mcp_holder: worker.clone(),
-            resource_holder: worker,
+            mcp_holder: worker,
+            resource_holder: self_hosted_sandbox_holder(),
         }
     }
 
@@ -292,7 +309,7 @@ impl CredentialRealizationProfile {
         Self {
             inference_holder: workload.clone(),
             mcp_holder: workload,
-            resource_holder: self_hosted_worker_holder(),
+            resource_holder: self_hosted_sandbox_holder(),
         }
     }
 }
@@ -1164,7 +1181,7 @@ mod tests {
             profile.mcp_holder,
             PlaintextHolder::new(PlaintextBoundary::Worker, "retained.worker")
         );
-        assert_eq!(profile.resource_holder, self_hosted_worker_holder());
+        assert_eq!(profile.resource_holder, self_hosted_sandbox_holder());
     }
 
     #[derive(Clone)]

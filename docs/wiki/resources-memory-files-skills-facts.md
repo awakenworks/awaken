@@ -114,10 +114,10 @@ Owner: [resources-memory-files-skills.md](../design/resources-memory-files-skill
 - Links: guardrail G48; [ADR-0063 CAS amendment](../adr/0063-resource-input-identity-configuration-pinning-and-lifecycle.md#2026-08-31-amendment-exact-update-lease-and-durable-rejection); [ADR-0075 Worker outcome amendment](../adr/0075-unified-managed-session-worker-execution.md#amendment-2026-08-31-registered-workers-record-the-same-publication-outcome)
 - Verification: legacy wire/fingerprint compatibility, lowercase-OID admission, child/publication/root ordering, create/update/replay/response-loss Git decision table, foreign receipt/rejection store rejection, unavailable command retention, permanent rejection replay without a second Git call, and registered-Worker rejection-before-root-cleanup tests.
 
-## FACT-RES-014: Repository credential endpoint is fixed but dormant
+## FACT-RES-014: Repository credential endpoint is the sole active Git credential transport
 
-- Status: active provider capability; Session Repository activation is not implemented
-- Owner: [Dormant Repository credential endpoint](../design/resources-memory-files-skills.md#dormant-repository-credential-endpoint)
-- Fact: demanded Namespace and Kubernetes sandboxes project one pre-create-known `/run/awaken/control/repository-git-credential.sock` coordinate, persist exact realized topology for adoption, and close the publisher before provider removal. No provider path generates Git configuration or decides the Repository binding; later Session activation must reuse the existing pin, verifier, and material resolver.
-- Links: [ADR-0041 Amendment 7](../adr/0041-sandbox-execution-environment-provider.md#amendment-7-2026-08-29-dormant-provider-neutral-sandbox-control-transport); [credential boundary fact](credentials-and-vaults-facts.md#fact-cred-011-sandbox-control-transport-does-not-authorize-credentials)
-- Verification: exact-demand/adoption matrix, Namespace generation/inode races, K8s UID/marker/security projection, port-forward error, idle/retry/dispose, helper protocol/deadline/zeroize tests, and static no-activation checks.
+- Status: active
+- Owner: [Repository credential endpoint](../design/resources-memory-files-skills.md#repository-credential-endpoint)
+- Fact: container Sandboxes project one pre-create-known `/run/awaken/control/repository-git-credential.sock` coordinate and persist exact realized topology for adoption. Session Repository activation publishes one exact-target, expiring response only around each in-Sandbox Git operation, then closes it. No provider path generates persistent Git configuration or decides the Repository binding. Runtime Host has no network-Git or bundle-transfer path, and credentialed Workdir/legacy Namespace realization fails closed.
+- Links: [ADR-0041 Amendment 7](../adr/0041-sandbox-execution-environment-provider.md#amendment-7-2026-08-29-dormant-provider-neutral-sandbox-control-transport); [credential boundary fact](credentials-and-vaults-facts.md#fact-cred-011-repository-git-uses-one-sandbox-credential-transport)
+- Verification: exact-demand/adoption matrix, provider generation/inode/UID fencing, helper protocol/deadline/zeroize tests, exact-target/redaction tests, Sandbox clone/push/CAS tests, and the architecture gate rejecting host Git and credentialed non-container paths.
