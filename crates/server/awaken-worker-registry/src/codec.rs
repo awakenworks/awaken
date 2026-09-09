@@ -8,6 +8,14 @@ pub(crate) const WORKER_COLUMNS: &str = "worker_id, incarnation_id, generation, 
     heartbeat_sequence, observation_sequence, registered_at_ms, heartbeat_at_ms, \
     drain_deadline_ms";
 
+pub(crate) fn current_workers_query() -> String {
+    format!(
+        "SELECT {WORKER_COLUMNS} FROM worker_registry_worker AS current \
+        WHERE generation = (SELECT MAX(generation) FROM worker_registry_worker AS history \
+        WHERE history.worker_id = current.worker_id) ORDER BY worker_id"
+    )
+}
+
 pub(crate) struct EncodedWorkerRow {
     pub worker_id: String,
     pub incarnation_id: String,

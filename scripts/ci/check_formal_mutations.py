@@ -21,6 +21,7 @@ import unittest
 from unittest.mock import patch
 
 from formal_model_mutation_runner import check_tlc_model_mutations
+from formal_worker_registration_mutations import check_worker_registration_model_mutants
 from formal_realization_capacity_mutations import check_realization_capacity_observation_mutants
 from formal_event_batch_mutations import check_event_batch_model_mutants, check_event_batch_observation_mutants
 from formal_session_deletion_mutations import (check_session_deletion_model_mutants, check_deletion_observation_mutants)
@@ -542,6 +543,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     # One registry owns both accepted CLI flags and their execution handlers.
     model_checks = {
+        "worker-registration-model-mutants": check_worker_registration_model_mutants,
         "memory-copy-model-mutant": check_memory_copy_model_mutant,
         "agent-input-model-mutant": check_agent_input_model_mutant,
         "resource-preparation-model-mutant": check_resource_preparation_model_mutant,

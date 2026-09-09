@@ -6,7 +6,7 @@ use awaken_worker_contract::{
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::path::Path;
 
-use crate::codec::{EncodedWorkerRow, WORKER_COLUMNS, decode, encode_json};
+use crate::codec::{EncodedWorkerRow, WORKER_COLUMNS, current_workers_query, decode, encode_json};
 use crate::durable_i64;
 use crate::schema::{BUNDLE_ID, NS, converged_registry_bundle, selected_registry_bundle};
 use crate::transition;
@@ -74,7 +74,7 @@ impl SqliteWorkerDirectory {
         let encoded = tx
             .query_row(
                 &format!(
-                    "SELECT {WORKER_COLUMNS} FROM worker_registry_worker WHERE worker_id = ?1"
+                    "SELECT {WORKER_COLUMNS} FROM worker_registry_worker WHERE worker_id = ?1 ORDER BY generation DESC LIMIT 1"
                 ),
                 params![worker_id],
                 encoded_row,
@@ -96,8 +96,7 @@ impl SqliteWorkerDirectory {
                  expires_at_ms, heartbeat_sequence, observation_sequence, registered_at_ms, \
                  heartbeat_at_ms, drain_deadline_ms) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) \
-             ON CONFLICT(worker_id) DO UPDATE SET \
-                incarnation_id = excluded.incarnation_id, generation = excluded.generation, \
+             ON CONFLICT(worker_id, generation) DO UPDATE SET \
                 state = excluded.state, manifest_json = excluded.manifest_json, \
                 capability_fingerprint = excluded.capability_fingerprint, \
                 in_flight = excluded.in_flight, \
@@ -181,11 +180,7 @@ fn persist(error: impl std::fmt::Display) -> RegistryError {
 impl WorkerObservationSource for SqliteWorkerDirectory {
     async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
         self.with_connection(|conn| {
-            let mut stmt = conn
-                .prepare(&format!(
-                    "SELECT {WORKER_COLUMNS} FROM worker_registry_worker ORDER BY worker_id"
-                ))
-                .map_err(persist)?;
+            let mut stmt = conn.prepare(&current_workers_query()).map_err(persist)?;
             let rows = stmt.query_map([], encoded_row).map_err(persist)?;
             rows.map(|row| {
                 let encoded = row.map_err(persist)?;
@@ -211,8 +206,14 @@ impl WorkerDirectory for SqliteWorkerDirectory {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(persist)?;
             let current = Self::read(&tx, &worker_id)?;
+            let history = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM worker_registry_worker WHERE worker_id=?1 AND incarnation_id=?2), \
+                 EXISTS(SELECT 1 FROM worker_registry_worker WHERE worker_id=?1 AND generation=1)",
+                params![worker_id, registration.incarnation_id],
+                |row| Ok(transition::RegistrationHistory { incarnation_seen: row.get(0)?, complete: row.get(1)? }),
+            ).map_err(persist)?;
             let (record, changed) =
-                transition::register(current.as_ref(), registration, now_ms, ttl_ms)?;
+                transition::register(current.as_ref(), history, registration, now_ms, ttl_ms)?;
             if changed {
                 Self::write(&tx, &record)?;
             }

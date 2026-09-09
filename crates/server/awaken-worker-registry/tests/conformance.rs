@@ -369,6 +369,7 @@ async fn memory_registry_conforms() {
     // fitness owns R1; this conformance case owns R2.
     let directory = Arc::new(MemoryWorkerDirectory::new());
     assert_registry(directory.clone(), "dwr-memory").await;
+    assert_registration_history(directory.clone(), directory.clone(), "memory").await;
     assert_expiry_race(directory.clone(), directory, "memory").await;
 }
 
@@ -392,6 +393,31 @@ async fn sqlite_registry_conforms_and_reopens() {
         .expect("tombstone survives restart");
     assert_eq!(record.snapshot.identity.generation, 2);
     assert_eq!(record.snapshot.state, WorkerState::Dead);
+    let reopened = Arc::new(reopened);
+    assert_registration_history(
+        reopened.clone(),
+        Arc::new(SqliteWorkerDirectory::open(path).unwrap()),
+        "sqlite",
+    )
+    .await;
+    drop(reopened);
+    let reopened = SqliteWorkerDirectory::open(path).unwrap();
+    assert!(
+        matches!(
+            reopened
+                .register(
+                    registration(
+                        &format!("history-sqlite-{}-starting-false", std::process::id()),
+                        "A"
+                    ),
+                    500,
+                    50
+                )
+                .await,
+            Err(RegistryError::HistoricalIncarnation { .. })
+        ),
+        "H9 retained history survives close/reopen"
+    );
     assert_expiry_race(
         Arc::new(reopened),
         Arc::new(SqliteWorkerDirectory::open(path).unwrap()),
@@ -408,9 +434,13 @@ async fn postgres_registry_conforms_when_configured() {
     // canonical transition kernel remains usable.
     // R3 missing/drifted ledger -> connect_existing fails closed (covered by the
     // shared scoped-migration verify suite used by this adapter).
-    let Ok(url) = std::env::var("AWAKEN_TEST_POSTGRES_URL") else {
-        eprintln!("AWAKEN_TEST_POSTGRES_URL not set; skipping Postgres registry conformance");
-        return;
+    let url = match std::env::var("AWAKEN_TEST_DATABASE_URL") {
+        Ok(url) => url,
+        Err(std::env::VarError::NotPresent) => {
+            eprintln!("AWAKEN_TEST_DATABASE_URL not set; skipping Postgres registry conformance");
+            return;
+        }
+        Err(error) => panic!("invalid PostgreSQL test configuration: {error}"),
     };
     PostgresWorkerDirectory::connect(&url, 5).await.unwrap();
     let store = Arc::new(
@@ -423,6 +453,16 @@ async fn postgres_registry_conforms_when_configured() {
         .await
         .unwrap();
     assert_registry(store.clone(), "dwr-postgres").await;
+    assert_registration_history(
+        store.clone(),
+        Arc::new(
+            PostgresWorkerDirectory::connect_existing(&url, 5)
+                .await
+                .unwrap(),
+        ),
+        "postgres",
+    )
+    .await;
     assert_expiry_race(
         store,
         Arc::new(
@@ -491,6 +531,185 @@ async fn assert_expiry_race(
                 expired,
                 RegistryMutation::Applied | RegistryMutation::StaleIncarnation
             ));
+        }
+    }
+}
+
+async fn assert_registration_history(
+    first: Arc<dyn WorkerDirectory>,
+    second: Arc<dyn WorkerDirectory>,
+    backend: &str,
+) {
+    // Cause/effect graph: C1 proposal is current B / historical A / fresh C;
+    // C2 current B is Starting/Ready/Draining/Quiesced/Dead; C3 clock before/at
+    // expiry; C4 proposal manifest unchanged/changed; C5 independent connections
+    // race registration; C6 another Worker id shares an incarnation string.
+    // Ordered decision rules: H1 current+same manifest -> exact replay, no lease
+    // extension, even closed/expired; H2 current+changed manifest -> reject;
+    // H3 historical+either manifest -> HistoricalIncarnation, never a fresh gen;
+    // H4 fresh+(closed OR expired) -> next gen; H5 fresh+live -> SlotOccupied.
+    // H6 list/current show only max generation, including closed current rows;
+    // H7 old heartbeat/drain/expiry cannot mutate retained history or successor;
+    // H8 race historical A vs fresh C -> only C can win; H9 durable reopen keeps
+    // H3 (SQLite caller closes both connections); H10 history is Worker-scoped.
+    // Full C1 x C2 x C3 table, C4 on both retry classes, and C5 on replaceable
+    // rows. H11 missing-history upgrade is owned by schema migration tests.
+    for state in ["starting", "ready", "draining", "quiesced", "dead"] {
+        for expired in [false, true] {
+            let id = format!("history-{backend}-{}-{state}-{expired}", std::process::id());
+            let a = first
+                .register(registration(&id, "A"), 100, 50)
+                .await
+                .unwrap();
+            let b = first
+                .register(registration(&id, "B"), 150, 50)
+                .await
+                .unwrap();
+            let identity = b.snapshot.identity.clone();
+            let beat = WorkerHeartbeat {
+                sequence: 1,
+                ready: true,
+                in_flight: 0,
+                warm_environment_shapes: Default::default(),
+                credential_observations: Default::default(),
+                acp_capability_observations: Default::default(),
+            };
+            if state == "ready" {
+                assert_eq!(
+                    first
+                        .heartbeat(&identity, beat.clone(), 150, 50)
+                        .await
+                        .unwrap(),
+                    RegistryMutation::Applied
+                );
+            }
+            if matches!(state, "draining" | "quiesced") {
+                assert_eq!(
+                    first.begin_drain(&identity, 190).await.unwrap(),
+                    RegistryMutation::Applied
+                );
+            }
+            if state == "quiesced" {
+                assert_eq!(
+                    first.mark_quiesced(&identity).await.unwrap(),
+                    RegistryMutation::Applied
+                );
+            }
+            if state == "dead" {
+                assert_eq!(
+                    first.deregister(&identity).await.unwrap(),
+                    RegistryMutation::Applied
+                );
+            }
+            let before = first.current(&id).await.unwrap().unwrap();
+            let now = if expired { 200 } else { 160 };
+            assert_eq!(
+                second
+                    .register(registration(&id, "B"), now, 500)
+                    .await
+                    .unwrap(),
+                before,
+                "H1"
+            );
+            let mut changed = registration(&id, "B");
+            changed.manifest.build_digest = "different".into();
+            assert!(
+                matches!(
+                    second.register(changed, now, 500).await,
+                    Err(RegistryError::ManifestChanged)
+                ),
+                "H2"
+            );
+            for changed in [false, true] {
+                let mut replay = registration(&id, "A");
+                if changed {
+                    replay.manifest.build_digest = "different".into();
+                }
+                assert!(
+                    matches!(
+                        second.register(replay, now, 500).await,
+                        Err(RegistryError::HistoricalIncarnation { .. })
+                    ),
+                    "H3 {id} changed={changed}"
+                );
+                assert_eq!(
+                    first.current(&id).await.unwrap(),
+                    Some(before.clone()),
+                    "H3 no write"
+                );
+            }
+            let replaceable = expired || matches!(state, "quiesced" | "dead");
+            let (fresh, replay) = tokio::join!(
+                first.register(registration(&id, "C"), now, 50),
+                second.register(registration(&id, "A"), now, 50),
+            );
+            assert!(
+                matches!(replay, Err(RegistryError::HistoricalIncarnation { .. })),
+                "H8"
+            );
+            let expected = if replaceable {
+                let c = fresh.unwrap();
+                assert_eq!(c.snapshot.identity.generation, 3, "H4");
+                assert_eq!(c.snapshot.identity.incarnation_id, "C", "H4");
+                c
+            } else {
+                assert!(
+                    matches!(fresh, Err(RegistryError::SlotOccupied { .. })),
+                    "H5"
+                );
+                before
+            };
+            assert_eq!(
+                first.current(&id).await.unwrap(),
+                Some(expected.clone()),
+                "H6 current"
+            );
+            let listed: Vec<_> = second
+                .list()
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|record| record.snapshot.identity.worker_id == id)
+                .collect();
+            assert_eq!(listed, vec![expected.clone()], "H6 list");
+            assert_eq!(
+                first
+                    .heartbeat(&a.snapshot.identity, beat, now, 500)
+                    .await
+                    .unwrap(),
+                RegistryMutation::StaleIncarnation,
+                "H7 heartbeat"
+            );
+            assert_eq!(
+                first.begin_drain(&a.snapshot.identity, now).await.unwrap(),
+                RegistryMutation::StaleIncarnation,
+                "H7 drain"
+            );
+            assert_eq!(
+                second
+                    .expire_incarnation(&a.snapshot.identity, now)
+                    .await
+                    .unwrap(),
+                RegistryMutation::StaleIncarnation,
+                "H7 expiry"
+            );
+            assert_eq!(
+                second.current(&id).await.unwrap(),
+                Some(expected),
+                "H7 no write"
+            );
+            let peer = format!("{id}-peer");
+            assert_eq!(
+                second
+                    .register(registration(&peer, "A"), now, 50)
+                    .await
+                    .unwrap()
+                    .snapshot
+                    .identity
+                    .generation,
+                1,
+                "H10"
+            );
         }
     }
 }

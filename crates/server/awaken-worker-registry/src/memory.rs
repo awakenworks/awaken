@@ -14,7 +14,7 @@ use crate::transition;
 
 #[derive(Default)]
 pub struct MemoryWorkerDirectory {
-    workers: Mutex<BTreeMap<String, RegisteredWorker>>,
+    workers: Mutex<BTreeMap<String, BTreeMap<u64, RegisteredWorker>>>,
 }
 
 impl MemoryWorkerDirectory {
@@ -33,14 +33,22 @@ impl MemoryWorkerDirectory {
             .workers
             .lock()
             .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?;
+        let records = workers.entry(registration.worker_id.clone()).or_default();
+        let history = transition::RegistrationHistory {
+            incarnation_seen: records.values().any(|record| {
+                record.snapshot.identity.incarnation_id == registration.incarnation_id
+            }),
+            complete: records.contains_key(&1),
+        };
         let (record, changed) = transition::register(
-            workers.get(&registration.worker_id),
+            records.last_key_value().map(|(_, record)| record),
+            history,
             registration,
             now_ms,
             ttl_ms,
         )?;
         if changed {
-            workers.insert(record.snapshot.identity.worker_id.clone(), record.clone());
+            records.insert(record.snapshot.identity.generation, record.clone());
         }
         Ok(record)
     }
@@ -76,9 +84,15 @@ impl MemoryWorkerDirectory {
             .workers
             .lock()
             .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?;
-        let (next, outcome) = decide(workers.get(&identity.worker_id));
-        if let Some(next) = next {
-            workers.insert(identity.worker_id.clone(), next);
+        let records = workers.get_mut(&identity.worker_id);
+        let (next, outcome) = decide(
+            records
+                .as_ref()
+                .and_then(|rows| rows.last_key_value())
+                .map(|(_, record)| record),
+        );
+        if let (Some(next), Some(records)) = (next, records) {
+            records.insert(next.snapshot.identity.generation, next);
         }
         Ok(outcome)
     }
@@ -92,6 +106,7 @@ impl WorkerObservationSource for MemoryWorkerDirectory {
             .lock()
             .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?
             .values()
+            .filter_map(|rows| rows.last_key_value().map(|(_, record)| record))
             .cloned()
             .collect())
     }
@@ -148,6 +163,7 @@ impl WorkerDirectory for MemoryWorkerDirectory {
             .lock()
             .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?
             .get(worker_id)
+            .and_then(|rows| rows.last_key_value().map(|(_, record)| record))
             .cloned())
     }
 
@@ -175,6 +191,39 @@ mod loom_tests {
             incarnation_id: incarnation.to_string(),
             manifest: WorkerManifest::default(),
         }
+    }
+
+    #[test]
+    fn historical_register_cannot_win_a_concurrent_fresh_replacement() {
+        // L1 A/g1 -> B/g2 expired, then concurrent old A retry and fresh C.
+        // Both mutex schedules must reject A and allocate C/g3 exactly once;
+        // all three physical identities remain in the same Registry history.
+        // This uses the production Memory transaction and reducer, not a model
+        // of the lock. SQL independent-connection races live in conformance.
+        loom::model(|| {
+            let directory = Arc::new(MemoryWorkerDirectory::new());
+            directory.register_sync(registration("A"), 0, 10).unwrap();
+            directory.register_sync(registration("B"), 10, 10).unwrap();
+            let first = directory.clone();
+            let old = thread::spawn(move || first.register_sync(registration("A"), 20, 10));
+            let second = directory.clone();
+            let fresh = thread::spawn(move || second.register_sync(registration("C"), 20, 10));
+            assert!(matches!(
+                old.join().unwrap(),
+                Err(RegistryError::HistoricalIncarnation { .. })
+            ));
+            let fresh = fresh.join().unwrap().unwrap();
+            assert_eq!(fresh.snapshot.identity.incarnation_id, "C");
+            assert_eq!(fresh.snapshot.identity.generation, 3);
+            let workers = directory.workers.lock().unwrap();
+            let records = workers.get("worker").unwrap();
+            assert_eq!(records.len(), 3);
+            assert_eq!(
+                records.get(&1).unwrap().snapshot.identity.incarnation_id,
+                "A"
+            );
+            assert_eq!(records.last_key_value().unwrap().1, &fresh);
+        });
     }
 
     #[test]
@@ -212,7 +261,14 @@ mod loom_tests {
             drain.join().unwrap();
             let workers = directory.workers.lock().unwrap();
             assert_eq!(
-                workers.get("worker").unwrap().snapshot.state,
+                workers
+                    .get("worker")
+                    .unwrap()
+                    .last_key_value()
+                    .unwrap()
+                    .1
+                    .snapshot
+                    .state,
                 WorkerState::Draining
             );
         });
@@ -266,7 +322,7 @@ mod loom_tests {
             let replacement_result = replacement.join().unwrap();
             let expiry_result = expiry.join().unwrap();
             let workers = directory.workers.lock().unwrap();
-            let current = workers.get("worker").unwrap();
+            let current = workers.get("worker").unwrap().last_key_value().unwrap().1;
             if current.snapshot.identity.incarnation_id == "boot-2" {
                 assert_eq!(current.snapshot.identity.generation, 2);
                 assert_eq!(current.heartbeat_sequence, 0);
@@ -375,7 +431,7 @@ mod loom_tests {
                 handle.join().unwrap();
             }
             let workers = directory.workers.lock().unwrap();
-            let current = workers.get("worker").unwrap();
+            let current = workers.get("worker").unwrap().last_key_value().unwrap().1;
             assert_eq!(current.heartbeat_sequence, 2);
             assert_eq!(current.snapshot.state, WorkerState::Ready);
             assert!(!current.snapshot.accepts(&required, 1), "H2 revoked login");

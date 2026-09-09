@@ -123,6 +123,12 @@ self_test() {
   # targets whose volatile fixtures are isolated behind `test-support` enable
   # that feature explicitly; Cargo refusing to start a target is a red gate,
   # never evidence that the Postgres behavior passed.
+  # P13 the Registry migration and conformance cases use the canonical fixture
+  # URL and execute both library and integration targets in the live PG gate.
+  grep -Fxq 'pg_test cargo test -p awaken-worker-registry --features test-support --lib --test conformance || record_failure "$?"' "$0" || {
+    echo "Postgres gate must run WorkerRegistry migration and conformance tests" >&2
+    return 1
+  }
   grep -Fxq 'pg_test cargo test -p awaken-dispatch --features test-support || record_failure "$?"' "$0" || {
     echo "Postgres gate must run the complete ingress suite with test-support" >&2
     return 1
@@ -147,7 +153,7 @@ self_test() {
   fi
   # P9 immutable Pod registration must exercise the real database rather than
   # merely compiling a self-skipping test in the no-database workspace gate.
-  grep -Fq "cargo test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http" "$0" || {
+  grep -Fq "cargo test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http" "$0" || {
     echo "Postgres gate omits the coordinator-owned active/active transport test" >&2
     return 1
   }
@@ -437,8 +443,11 @@ record_failure() {
 # P7 run the whole ingress contract in this fixture lifetime, including Worker
 # cancellation/checkpoint regressions; a hand-maintained target list can omit
 # new recovery suites and silently exercise them only without PostgreSQL.
+# Registry lineage and replacement must execute against the same real database;
+# a no-URL workspace pass is not PostgreSQL conformance evidence.
+pg_test cargo test -p awaken-worker-registry --features test-support --lib --test conformance || record_failure "$?"
 pg_test cargo test -p awaken-dispatch --features test-support || record_failure "$?"
-pg_test cargo test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http -- --test-threads=1 \
+pg_test cargo test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http -- --test-threads=1 \
   || record_failure "$?"
 pg_test cargo test -p awaken-session-store --features test-support --test session_repo_conformance -- --test-threads=1 \
   || record_failure "$?"
