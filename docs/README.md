@@ -203,6 +203,7 @@ are checked separately by the OKF/wiki hooks.
 | `managed-deployments.md` | Durable Managed Deployment and DeploymentRun scheduling, exact occurrence claims, Agent version freezing, lifecycle webhooks, and the shared periodic driver |
 | `credentials-and-vaults.md` | Boundary guidance for product-owned credential lifecycle and authorization boundaries |
 | `resources-memory-files-skills.md` | Resources application composition; File/Memory/Repository/Skill identities, binding, activation, explicit terminal Repository publication, recovery, and reclamation |
+| `file-lifecycle.md` | Logical File creation, exact byte resolution, deletion replay, ownership references, and physical reclamation boundaries |
 | `observability-eval-dataset-boundary.md` | Trace, dataset, eval, and analytics boundaries |
 | `error-taxonomy.md` | Neutral error ownership and public adapter error mapping |
 | `packaging-enforcement-matrix.md` | Package/import/license/vocabulary enforcement matrix |

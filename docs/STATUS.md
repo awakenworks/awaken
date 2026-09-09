@@ -69,6 +69,7 @@ consistent vocabulary. This affects the documentation layers differently:
 | `design/web-ui.md` | Product-owned | Web console blueprint: Oversight two-scope shell over the management plane, session surface, design tokens, contract-first frontend engineering plan |
 | `design/credentials-and-vaults.md` | Product-owned | Credential/product concern; runtime sees opaque refs only |
 | `design/resources-memory-files-skills.md` | Product-owned | Normative Resources application composition and File/Memory/Repository/Skill lifecycles, including command ownership, config resolution, activation, explicit terminal Repository publication, recovery, and reclamation |
+| `design/file-lifecycle.md` | Product-owned | Logical File creation, exact byte resolution, deletion replay and reclamation; delegates common component ownership to the Resources design |
 | `design/resources-memory-files-skills-roadmap.md` | Product-owned | Delegates its bounded delivery sequence, exclusions, and guardrail index to the normative Resources design without defining another model |
 | `design/runtime-persistence.md` | Runtime-owned | Expands ADR-0039: persistence bounded contexts (agent-truth / dispatch / config / protocol-projection), port surface, `awaken-store-<medium>` backend matrix, atomic staged commit (G13), and fact-authority reads (D4) |
 | `design/tool-state-machine.md` | Runtime-owned | Defines the tool call state machine: typed state cells over the untyped command store, the four runtime seams (state materialization, tool gate chain, tool-outcome reaction hook, run-end guard state), reminder emission via the conversation aggregate, capability bounds, and persistence/atomicity/transactionality/restart guarantees |
@@ -122,6 +123,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/web-ui.md` | Product/downstream mapping | Not required | n/a |
 | `design/credentials-and-vaults.md` | Product/downstream mapping | Not required | n/a |
 | `design/resources-memory-files-skills.md` | Role owner | Required | self |
+| `design/file-lifecycle.md` | Delegated boundary narrative | Delegated | [resources-memory-files-skills.md](design/resources-memory-files-skills.md#resource-input-component-catalog) |
 | `design/resources-memory-files-skills-roadmap.md` | Delegated boundary narrative | Delegated | [resources-memory-files-skills.md](design/resources-memory-files-skills.md#resource-input-component-catalog) |
 | `design/observability-eval-dataset-boundary.md` | Product/downstream mapping | Not required | n/a |
 | `design/prompt-skill-optimization-data-contracts.md` | Proposed implementation contract | Not required | n/a |

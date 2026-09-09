@@ -1177,6 +1177,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/resource-reclamation" \
     -config formal/tla/ResourceReclamation.cfg \
     formal/tla/ResourceReclamation.tla
+  python3 scripts/ci/check_formal_mutations.py --file-reclamation-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/management-audit-intent" \
     -config formal/tla/ManagementAuditIntent.cfg formal/tla/ManagementAuditIntent.tla
