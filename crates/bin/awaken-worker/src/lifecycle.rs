@@ -969,6 +969,11 @@ mod tests {
         // probes => retry only before the ORIGINAL deadline, then stop; T2 each
         // cancelled request drops before the next probe starts => max flight=1.
         // Exact virtual-time equality detects timeout-anchored freshness bugs.
+        // T6 timeout vs deadline-clipped expiry emits exact elapsed/remaining
+        // diagnostics from that same timing owner, without changing either
+        // deadline. A returned timeout must never look like new evidence.
+        use tracing::instrument::WithSubscriber;
+        let captured = awaken_reliability_testkit::events::CapturedEvents::default();
         let timing =
             awaken_runtime_contract::authority_lease::AuthorityLeaseTiming::from_ttl_ms(600);
         let started = tokio::time::Instant::now();
@@ -986,7 +991,23 @@ mod tests {
             let _flight = Flight(&active);
             std::future::pending::<Result<(), &'static str>>().await
         })
+        .with_subscriber(captured.clone())
         .await;
+        let events = captured.snapshot();
+        let timeouts = events
+            .iter()
+            .filter(|fields| fields.contains_key("probe_elapsed_ms"))
+            .collect::<Vec<_>>();
+        assert_eq!(timeouts.len(), 2, "T6 timeout then expiry");
+        for (event, expected) in timeouts
+            .iter()
+            .zip([("100", "300", "100"), ("80", "400", "0")])
+        {
+            assert_eq!(event["probe_elapsed_ms"], expected.0);
+            assert_eq!(event["proof_age_ms"], expected.1);
+            assert_eq!(event["remaining_proof_ms"], expected.2);
+            assert_eq!(event["request_budget_ms"], "100");
+        }
         assert_eq!(
             started.elapsed(),
             timing.proof_window(),

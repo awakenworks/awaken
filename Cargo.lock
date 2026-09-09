@@ -2708,6 +2708,7 @@ dependencies = [
  "awaken-protocol-acp",
  "awaken-protocol-mcp",
  "awaken-provisioning-contract",
+ "awaken-reliability-testkit",
  "awaken-resource-worker-http",
  "awaken-run-executor-acp",
  "awaken-runtime-contract",

@@ -557,6 +557,81 @@ async fn ping_succeeds_when_the_binary_responds() {
     assert!(rt.ping().await.is_ok());
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn cancelled_readiness_probe_reaps_the_actual_cli_child() {
+    // Cause/effect graph: C1 the real CommandExec has spawned its CLI child;
+    // C2 the caller drops the probe; C3 the caller's timeout drops the probe.
+    // R1 C1+C2 and R2 C1+C3 -> the OS child is reaped before another probe.
+    // A PID-file barrier proves C1; a scripted binary reaches exec sleep, so
+    // there is no container or daemon to confuse with the call-owned CLI.
+    // Existing ping/nonzero tests own successful/error decoding. Linux /proc
+    // checks actual process disappearance, not merely a dropped future flag.
+    // The 2s natural exit also bounds a negative-control failure; wait for that
+    // cleanup before asserting, rather than orphaning the intentionally broken
+    // child. This is CLI cancellation evidence, not physical container shutdown.
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+    for cancellation in ["drop", "timeout"] {
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp.path().join("readiness CLI");
+        let pid_file = temp.path().join("readiness CLI.pid");
+        std::fs::write(
+            &binary,
+            "#!/bin/sh\nprintf '%s' \"$$\" > \"$0.pid\"\nexec sleep 2\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let runtime = PodmanRuntime::with_bin(9000, binary.to_str().unwrap());
+        let mut probe = Box::pin(runtime.probe_ready());
+        let pid = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                tokio::select! {
+                    result = &mut probe => panic!("C1 probe ended before cancellation: {result:?}"),
+                    () = tokio::time::sleep(Duration::from_millis(2)) => {
+                        if let Ok(value) = std::fs::read_to_string(&pid_file) {
+                            if let Ok(pid) = value.parse::<u32>() { break pid; }
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .expect("C1 child reached PID barrier");
+        let process = PathBuf::from(format!("/proc/{pid}"));
+        assert!(process.exists(), "C1 actual child is live");
+        if cancellation == "drop" {
+            drop(probe);
+        } else {
+            assert!(
+                tokio::time::timeout(Duration::from_millis(10), probe)
+                    .await
+                    .is_err()
+            );
+        }
+        let gone_promptly = tokio::time::timeout(Duration::from_millis(500), async {
+            while process.exists() {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .is_ok();
+        if !gone_promptly {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while process.exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("negative-control fixture reached its natural exit and was reaped");
+        }
+        assert!(
+            gone_promptly,
+            "{cancellation}: cancelled CLI must be reaped, not left running"
+        );
+    }
+}
+
 #[test]
 fn registry_auth_file_is_scoped_to_pull_and_push() {
     let file = tempfile::NamedTempFile::new().unwrap();
