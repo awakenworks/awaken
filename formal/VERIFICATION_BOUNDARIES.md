@@ -462,19 +462,34 @@ type checking are valuable executable evidence, but are not formal proofs.
   A 7,840-row native table checks complete aggregate frames across admission,
   exact settlement, legacy settlement, terminal clearing and terminal replay or
   rejection. Eight production mutations qualify the table, including borrowing
-  the wrong persisted scalar. Two Kani base-case proofs call the real reducer
-  for one Next or Exact admission from an empty set and Idle execution over all
-  `u64` historical and requested values. They check exact result, scalar, membership and execution
-  frame, including exhaustion, actual insert/search/Drop and unwinding checks at
-  bound four. Two semantic Kani mutations require actual assertion failures.
-  Two-member admission exceeded the memory guard; two-completion settlement
-  exceeded 600 seconds; terminal set clearing has no completed Kani proof. These
-  remain explicit gaps, as does the full aggregate constructor's MCP/serde/hash
-  path. Empty Running legacy settlement can return
-  `Some(true)` repeatedly before the application commits Idle. SQL receipts,
-  durable CAS, interval closure and application exactly-once settlement remain
-  outside this executable aggregate evidence and are not promoted to a direct
-  implementation theorem.
+  the wrong persisted scalar. Two Kani base cases and four Next/Exact two-call
+  partitions call the real reducer from an empty set and Idle execution over
+  every `u64` historical/requested value. They check exact nonwrapping result,
+  scalar, membership and execution frame after each call, including exhaustion
+  and actual insert/search/Drop. A separate proof starts Running, uses two real
+  Next admissions from any historical scalar to produce 0..2 members, and checks
+  both terminal targets, complete clearing, the scalar frame, terminal replay
+  and rejection of Running. No uniqueness or tree-height conclusion is assumed.
+  All seven harnesses keep global unwind four and every default safety/unwinding
+  assertion. `scripts/ci/formal_kani_options.py` is the single runtime/checker
+  owner of the pinned std height-loop profiles: eight bound-one loops for
+  admission and seven for terminal clearing. Other loops retain the global
+  bound; any reachable extra height iteration is a proof failure, not an
+  assumption. Unqualified raw overrides, wrong package/harness bindings, duplicate
+  selections and appended check-disabling options are rejected.
+  Two actual production mutations fail the named Kani assertions: omitting
+  terminal clear fails T2; skipping Exact insertion only when the set is
+  nonempty fails M1 while preserving the empty-set base behavior. Matching
+  green baselines, source/argv binding and retained checks qualify both failures.
+  Real removal followed by two completions remains unproved: combined and
+  input-partitioned probes exceeded the 12 GiB solver memory guard; checked
+  per-loop path exploration reached its 600-second deadline. These failures
+  are not registered as CI proofs. Arbitrary preexisting sets, unbounded traces
+  and the full constructor's MCP/serde/hash path remain outside this boundary.
+  Empty Running legacy settlement can return `Some(true)` repeatedly before
+  the application commits Idle. SQL receipts, durable CAS, interval closure and
+  application exactly-once settlement remain outside this executable aggregate
+  evidence; the obligation retains its abstract-theorem grade.
 - The committed-event Runtime projection has one closed pending-tool reducer.
   `SessionRuntimeProjection.tla` checks replacement, accepted-but-unprocessed
   reply classification, per-id processing, terminal clearing, and error

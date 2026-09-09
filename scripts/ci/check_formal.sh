@@ -208,8 +208,20 @@ if command -v cargo-kani >/dev/null 2>&1; then
   # override wins; otherwise strict and diagnostic runs both use the same finite
   # 30-minute budget. The shared deadline helper owns descendant termination.
   run_kani() {
-    local package="$1" result
+    local package="$1" result expanded
+    local -a checked_options
     shift
+    # Profile expansion is fail-closed: command substitution status is checked
+    # before readarray, so an invalid binding never falls back to default flags.
+    if [[ " $* " == *" --checked-loop-profile "* ]]; then
+      if expanded=$(python3 scripts/ci/formal_kani_options.py "$package" "$@"); then
+        readarray -t checked_options <<< "$expanded"
+        set -- "${checked_options[@]}"
+      else
+        result=$?
+        return "$result"
+      fi
+    fi
     # C1 Cargo has an independent build-dir (user/CI configuration); E1 Kani's
     # driver still reads target/kani/debug artifacts. Keep compiler and driver
     # in that one authored tree; otherwise valid compilation ends in ENOENT.
@@ -320,8 +332,6 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness failed_resource_replacement_never_promotes_the_pending_manifest \
     --harness resource_retry_reuses_exact_pending_revision \
     --harness terminal_execution_never_reopens \
-    --harness activity_next_epoch_inserts_exact_checked_successor \
-    --harness activity_exact_epoch_inserts_only_fresh_positive_member \
     --harness realization_renewal_never_widens_owner_epoch_or_expiry_authority \
     --harness session_realization_assignment_never_shares_a_live_foreign_owner_or_reuses_an_epoch \
     --harness runtime_intervals_open_once_and_never_close_before_start \
@@ -345,6 +355,15 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness session_cleanup_phase_advances_only_not_requested_fenced_requested_completed \
     --harness session_delete_request_plan_is_exact_hidden_terminal_and_idempotent \
     --harness session_tombstone_requires_hidden_disposition_terminal_execution_and_verified_cleanup
+  run_kani awaken-session-contract --checked-loop-profile activity-admission-height-v1 \
+    --harness activity_next_epoch_inserts_exact_checked_successor \
+    --harness activity_exact_epoch_inserts_only_fresh_positive_member \
+    --harness activity_next_next_admissions_preserve_exact_members \
+    --harness activity_next_exact_admissions_preserve_exact_members \
+    --harness activity_exact_next_admissions_preserve_exact_members \
+    --harness activity_exact_exact_admissions_preserve_exact_members
+  run_kani awaken-session-contract --checked-loop-profile activity-terminal-height-v1 \
+    --harness activity_terminal_transition_clears_real_members
   run_kani awaken-service-auth-contract \
     --harness service_token_retry_is_enabled_only_for_an_exact_changed_token
   run_kani awaken-session-application \

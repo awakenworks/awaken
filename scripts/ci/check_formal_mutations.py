@@ -21,6 +21,7 @@ import unittest
 from unittest.mock import patch
 
 from formal_model_mutation_runner import check_tlc_model_mutations
+from formal_session_deletion_mutations import (check_session_deletion_model_mutants, check_deletion_observation_mutants)
 from formal_local_process_mutations import (
     check_local_process_model_mutants, check_local_recovery_model_mutants,
 )
@@ -543,6 +544,7 @@ def main() -> None:
         "agent-input-model-mutant": check_agent_input_model_mutant,
         "resource-preparation-model-mutant": check_resource_preparation_model_mutant,
         "terminal-resource-model-mutants": check_terminal_resource_model_mutants,
+        "session-deletion-model-mutants": check_session_deletion_model_mutants,
         "remote-attempt-model-mutants": check_remote_attempt_model_mutants,
         "unmaterialized-cleanup-model-mutant": check_unmaterialized_cleanup_model_mutant,
         "realization-renewal-model-mutant": check_realization_renewal_model_mutant,
@@ -1511,7 +1513,8 @@ def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:
     check_observation_rule_mutants(trace_dir, manifest)
     check_realization_trace_mutants(tlc_jar, trace_dir, manifest)
     check_maintenance_observation_mutants(tlc_jar, trace_dir)
-    print("Production observation trace mutation score: 5/5 base families plus maintenance controls killed")
+    check_deletion_observation_mutants(tlc_jar, trace_dir)
+    print("Production observation trace mutation score: 5/5 base families plus maintenance and deletion controls killed")
 
 def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
     # Worker fault matrix W1 registry-only renewal; W2 evidence-only renewal;
@@ -1583,25 +1586,7 @@ def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
     check_tlc_model_mutations(tlc_jar, "ManagedCredentialRollout", source, config, [
         (mutant, config, "AdoptionCoversEveryNamedFence"),
     ])
-    # R2/R4/R7/R8: logical termination, partial source preparation and partial
-    # physical cleanup cannot become a full cleanup receipt. Each mutant must
-    # violate the named evidence invariant, not merely fail parsing or tooling.
-    source = (ROOT / "formal/tla/SessionDeletion.tla").read_text()
-    config = (ROOT / "formal/tla/SessionDeletion.cfg").read_text().replace(
-        "    DeleteSafety", "    PhysicalEvidenceRequired\n    DeleteSafety")
-    prepare = source[source.index("PrepareParticipant(participant, effect) =="):source.index("RemoveTarget(target, effect) ==")]
-    remove = source[source.index("RemoveTarget(target, effect) =="):source.index("Next ==")]
-    success = source[source.index("CleanupSucceeds =="):source.index("CommitTombstone ==")]
-    check_tlc_model_mutations(tlc_jar, "SessionDeletion", source, config, [
-        (source.replace(prepare, prepare.replace("~physicalActive /\\ effect", "effect", 1)),
-         config, "PhysicalEvidenceRequired"),
-        (source.replace(remove, remove.replace("~physicalActive /\\ prepared = Participants", "TRUE", 1)),
-         config, "PhysicalEvidenceRequired"),
-        (source.replace(success, success.replace("removedTargets = PhysicalTargets", "removedTargets # {}", 1)),
-         config, "PhysicalEvidenceRequired"),
-        (source.replace(success, success.replace("/\\ ~physicalActive /\\ prepared = Participants\n                         /\\ removedTargets = PhysicalTargets", "", 1)),
-         config, "PhysicalEvidenceRequired"),
-    ], dependencies=("SessionCleanupKernel",))
+    check_session_deletion_model_mutants(tlc_jar)
     # P0: current errors stay visible under active aggregate authority; neither
     # error presentation nor a resolving tool reply can authorize new input.
     source = (ROOT / "formal/tla/SessionRuntimeProjection.tla").read_text()
@@ -1663,7 +1648,7 @@ def check_observation_rule_mutants(trace_dir: Path, manifest: dict) -> None:
                         if not any(text in str(error) for text in ["empty observation", "rule coverage drift"]): raise
                         killed += 1
                     else: raise SystemExit(f"coverage mutant survived: {name}/{index}/{fault}")
-            if name in {"publication-cardinality-renewal", "binding-clock-cases", "store-torn-prefix", "realization-http-crashes"}:
+            if name in {"publication-cardinality-renewal", "binding-clock-cases", "store-torn-prefix", "realization-http-crashes", "delete-retry-lifecycle"}:
                 for index in range(len(original["steps"])):
                     doc = deepcopy(original)
                     doc["steps"][index] = deepcopy(original["steps"][(index + 1) % len(original["steps"])])

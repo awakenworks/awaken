@@ -4,7 +4,7 @@ EXTENDS Naturals, TLC
 CONSTANTS MaxCleanupFailures, MaxRevision
 ASSUME MaxCleanupFailures \in Nat
        /\ MaxRevision \in Nat
-       /\ MaxRevision >= 4
+       /\ MaxRevision >= 5
 
 \* One bounded Session deletion saga. The durable delete fence is committed
 \* before cleanup begins; external cleanup may fail, the process may restart,
@@ -12,19 +12,48 @@ ASSUME MaxCleanupFailures \in Nat
 VARIABLES disposition, executionState, cleanupPhase, visible,
           cleanupEffectId, lastAttemptEffectId, cleanupAttempts,
           cleanupFailures, workRetired, resourceReleaseRequested,
-          deletedFactCount, revision, processUp,
+          deletedFactCount, deletedFactPending, revision, processUp,
           physicalActive, returnObserved, reconstructed, prepared, removedTargets
 
 vars == <<disposition, executionState, cleanupPhase, visible,
           cleanupEffectId, lastAttemptEffectId, cleanupAttempts,
           cleanupFailures, workRetired, resourceReleaseRequested,
-          deletedFactCount, revision, processUp,
+          deletedFactCount, deletedFactPending, revision, processUp,
           physicalActive, returnObserved, reconstructed, prepared, removedTargets>>
 
 NoEffect == "none"
 DeleteEffect == "session-cleanup:session-1"
 Participants == {"Memory", "Secret", "Staging"}
 PhysicalTargets == {"Container", "HostStaging"}
+TerminalDispositions == {"archived", "deleting"}
+
+\* These relations are shared by actual durable observations and the model
+\* actions below. Native snapshots additionally retain full root/cleanup/fact
+\* bytes; equality therefore checks a stronger frame than this finite view.
+DeleteView == [disposition |-> disposition, terminal |-> executionState = "terminated",
+               phase |-> cleanupPhase, cleanup |-> cleanupEffectId,
+               effect |-> cleanupEffectId, facts |-> IF deletedFactPending THEN 1 ELSE 0, revision |-> revision]
+DeleteFence(before, after) ==
+    /\ before.disposition \in {"active", "archived"}
+    /\ after.disposition = "deleting" /\ after.terminal
+    /\ after.revision = before.revision + 1
+    /\ after.facts = before.facts + 1
+    /\ IF before.phase = "not_requested"
+        THEN after.phase = "fenced" /\ after.effect # NoEffect
+        ELSE /\ after.phase = before.phase /\ after.cleanup = before.cleanup
+             /\ after.effect = before.effect
+DeleteRetryFrame(before, after) == before = after
+DeleteObservation(before, after, kind, lostAck, result, receiptOwner, receiptRoot) ==
+    /\ IF result = "not_found"
+          THEN receiptOwner = "none" /\ receiptRoot = "null" /\ after.tombstone # "null"
+          ELSE receiptOwner = after.owner /\ receiptRoot = after.root
+    /\ IF kind = "fence"
+          THEN /\ DeleteFence(before, after)
+               /\ result = IF lostAck THEN "replayed" ELSE "applied"
+          ELSE /\ kind = "retry"
+               /\ before.disposition \in {"deleting", "tombstoned"}
+               /\ DeleteRetryFrame(before, after)
+               /\ result = IF before.disposition = "tombstoned" THEN "not_found" ELSE "replayed"
 
 \* R7/R8 evidence is abstract. Rust/provider tests own exact mount, Memory
 \* base and Secret broker validation. This existing composition derives the
@@ -48,6 +77,7 @@ Init ==
     /\ visible = TRUE
     /\ workRetired = FALSE
     /\ deletedFactCount = 0
+    /\ deletedFactPending = FALSE
     /\ revision = 0
     /\ processUp = TRUE
     /\ physicalActive = TRUE
@@ -56,18 +86,31 @@ Init ==
     /\ prepared = {}
     /\ removedTargets = {}
 
+\* A visible Archived root can already own Fenced, Requested or Completed
+\* cleanup when DELETE arrives. Use the SAME cleanup transitions for this
+\* reachable prefix; do not seed fabricated completion or reset its operation.
+ArchiveBeforeDelete ==
+    /\ processUp /\ disposition = "active" /\ revision < MaxRevision
+    /\ disposition' = "archived" /\ executionState' = "terminated"
+    /\ Cleanup!Fence /\ revision' = revision + 1
+    /\ UNCHANGED <<visible, deletedFactCount, deletedFactPending, workRetired, processUp,
+                    physicalActive, returnObserved, reconstructed, prepared, removedTargets>>
+
 \* The first delete request atomically records the lifecycle fact, hides and
 \* terminalizes the Session, and installs the stable cleanup effect identity.
 CommitDeleteIntent ==
     /\ processUp
-    /\ disposition = "active"
+    /\ disposition \in {"active", "archived"}
     /\ revision < MaxRevision
     /\ disposition' = "deleting"
     /\ executionState' = "terminated"
-    /\ Cleanup!Fence
+    /\ IF cleanupPhase = "not_requested" THEN Cleanup!Fence ELSE UNCHANGED <<cleanupPhase, cleanupEffectId, lastAttemptEffectId,
+                                  cleanupAttempts, cleanupFailures, resourceReleaseRequested>>
     /\ visible' = FALSE
     /\ deletedFactCount' = deletedFactCount + 1
+    /\ deletedFactPending' = TRUE
     /\ revision' = revision + 1
+    /\ DeleteFence(DeleteView, DeleteView')
     /\ UNCHANGED <<workRetired, processUp,
                     physicalActive, returnObserved, reconstructed, prepared, removedTargets>>
 
@@ -76,17 +119,25 @@ CommitDeleteIntent ==
 ReplayDelete ==
     /\ disposition \in {"deleting", "tombstoned"}
     /\ UNCHANGED vars
+    /\ DeleteRetryFrame(vars, vars')
+
+\* Delivery acknowledgement removes pending delivery, not historical fact
+\* authority. A later DELETE or tombstone cannot recreate the acknowledged row.
+AcknowledgeDeletedFact ==
+    /\ processUp /\ deletedFactPending
+    /\ deletedFactPending' = FALSE
+    /\ UNCHANGED <<disposition, executionState, cleanupPhase, visible, cleanupEffectId, lastAttemptEffectId, cleanupAttempts, cleanupFailures, workRetired, resourceReleaseRequested, deletedFactCount, revision, processUp, physicalActive, returnObserved, reconstructed, prepared, removedTargets>>
 
 \* The cleanup target set is frozen durably before any substrate effect.
 FreezeCleanupTargets ==
     /\ processUp
-    /\ disposition = "deleting"
+    /\ disposition \in TerminalDispositions
     /\ cleanupPhase = "fenced"
     /\ revision < MaxRevision
     /\ Cleanup!Freeze
     /\ revision' = revision + 1
     /\ UNCHANGED <<disposition, executionState, visible,
-                    workRetired, deletedFactCount, processUp,
+                    workRetired, deletedFactCount, deletedFactPending, processUp,
                     physicalActive, returnObserved, reconstructed, prepared, removedTargets>>
 
 \* Queue retirement is an idempotent recovery effect. It may run immediately
@@ -94,32 +145,32 @@ FreezeCleanupTargets ==
 \* until this independent external authority has settled.
 RetireWork ==
     /\ processUp
-    /\ disposition = "deleting"
+    /\ disposition \in TerminalDispositions
     /\ cleanupPhase \in {"fenced", "requested"}
     /\ ~workRetired
     /\ workRetired' = TRUE
     /\ UNCHANGED <<disposition, executionState, cleanupPhase, visible,
                     cleanupEffectId, lastAttemptEffectId, cleanupAttempts,
                     cleanupFailures, resourceReleaseRequested,
-                    deletedFactCount, revision, processUp,
+                    deletedFactCount, deletedFactPending, revision, processUp,
                     physicalActive, returnObserved, reconstructed, prepared, removedTargets>>
 
 \* A failed external attempt records no completion authority. Failures are
 \* bounded only so TLC can also check eventual recovery under fairness.
 CleanupFails ==
     /\ processUp
-    /\ disposition = "deleting"
+    /\ disposition \in TerminalDispositions
     /\ cleanupPhase = "requested"
     /\ Cleanup!Fail
     /\ UNCHANGED <<disposition, executionState, visible,
                     workRetired,
-                    deletedFactCount, revision, processUp,
+                    deletedFactCount, deletedFactPending, revision, processUp,
                     physicalActive, returnObserved, reconstructed, prepared, removedTargets>>
 
 \* Only an exact successful cleanup attempt advances durable completion.
 CleanupSucceeds ==
     /\ processUp
-    /\ disposition = "deleting"
+    /\ disposition \in TerminalDispositions
     /\ cleanupPhase = "requested"
     /\ workRetired
     /\ resourceReleaseRequested
@@ -130,7 +181,7 @@ CleanupSucceeds ==
     /\ revision' = revision + 1
     /\ UNCHANGED <<disposition, executionState, visible,
                     workRetired,
-                    deletedFactCount, processUp,
+                    deletedFactCount, deletedFactPending, processUp,
                     physicalActive, returnObserved, reconstructed, prepared, removedTargets>>
 
 \* Physical deletion is a separate durable CAS and is forbidden until the
@@ -144,7 +195,7 @@ CommitTombstone ==
     /\ revision' = revision + 1
     /\ UNCHANGED <<executionState, cleanupPhase, visible, cleanupEffectId,
                     lastAttemptEffectId, cleanupAttempts, cleanupFailures,
-                    workRetired, resourceReleaseRequested, deletedFactCount, processUp,
+                    workRetired, resourceReleaseRequested, deletedFactCount, deletedFactPending, processUp,
                     physicalActive, returnObserved, reconstructed, prepared, removedTargets>>
 
 Crash ==
@@ -155,7 +206,7 @@ Crash ==
     /\ UNCHANGED <<disposition, executionState, cleanupPhase, visible,
                     cleanupEffectId, lastAttemptEffectId, cleanupAttempts,
                     cleanupFailures, workRetired, resourceReleaseRequested,
-                    deletedFactCount, revision,
+                    deletedFactCount, deletedFactPending, revision,
                     physicalActive, returnObserved, prepared, removedTargets>>
 
 Restart ==
@@ -164,7 +215,7 @@ Restart ==
     /\ UNCHANGED <<disposition, executionState, cleanupPhase, visible,
                     cleanupEffectId, lastAttemptEffectId, cleanupAttempts,
                     cleanupFailures, workRetired, resourceReleaseRequested,
-                    deletedFactCount, revision,
+                    deletedFactCount, deletedFactPending, revision,
                     physicalActive, returnObserved, reconstructed, prepared, removedTargets>>
 
 \* R2/R4: only an exact observed attempt return supplies physical evidence.
@@ -173,20 +224,20 @@ ObserveAttemptReturn ==
     /\ processUp /\ physicalActive
     /\ physicalActive' = FALSE
     /\ returnObserved' = TRUE
-    /\ UNCHANGED <<disposition, executionState, cleanupPhase, visible, cleanupEffectId, lastAttemptEffectId, cleanupAttempts, cleanupFailures, workRetired, resourceReleaseRequested, deletedFactCount, revision, processUp, reconstructed, prepared, removedTargets>>
+    /\ UNCHANGED <<disposition, executionState, cleanupPhase, visible, cleanupEffectId, lastAttemptEffectId, cleanupAttempts, cleanupFailures, workRetired, resourceReleaseRequested, deletedFactCount, deletedFactPending, revision, processUp, reconstructed, prepared, removedTargets>>
 
 RecoverParticipant(participant) ==
     /\ processUp /\ cleanupPhase = "requested"
     /\ participant \in Participants \ reconstructed
     /\ reconstructed' = reconstructed \cup {participant}
-    /\ UNCHANGED <<disposition, executionState, cleanupPhase, visible, cleanupEffectId, lastAttemptEffectId, cleanupAttempts, cleanupFailures, workRetired, resourceReleaseRequested, deletedFactCount, revision, processUp, physicalActive, returnObserved, prepared, removedTargets>>
+    /\ UNCHANGED <<disposition, executionState, cleanupPhase, visible, cleanupEffectId, lastAttemptEffectId, cleanupAttempts, cleanupFailures, workRetired, resourceReleaseRequested, deletedFactCount, deletedFactPending, revision, processUp, physicalActive, returnObserved, prepared, removedTargets>>
 
 PrepareParticipant(participant, effect) ==
     /\ processUp /\ cleanupPhase = "requested"
     /\ ~physicalActive /\ effect = cleanupEffectId
     /\ participant \in reconstructed \ prepared
     /\ prepared' = prepared \cup {participant}
-    /\ UNCHANGED <<disposition, executionState, cleanupPhase, visible, cleanupEffectId, lastAttemptEffectId, cleanupAttempts, cleanupFailures, workRetired, resourceReleaseRequested, deletedFactCount, revision, processUp, physicalActive, returnObserved, reconstructed, removedTargets>>
+    /\ UNCHANGED <<disposition, executionState, cleanupPhase, visible, cleanupEffectId, lastAttemptEffectId, cleanupAttempts, cleanupFailures, workRetired, resourceReleaseRequested, deletedFactCount, deletedFactPending, revision, processUp, physicalActive, returnObserved, reconstructed, removedTargets>>
 
 RemoveTarget(target, effect) ==
     /\ processUp /\ cleanupPhase = "requested"
@@ -194,9 +245,11 @@ RemoveTarget(target, effect) ==
     /\ effect = cleanupEffectId
     /\ target \in PhysicalTargets \ removedTargets
     /\ removedTargets' = removedTargets \cup {target}
-    /\ UNCHANGED <<disposition, executionState, cleanupPhase, visible, cleanupEffectId, lastAttemptEffectId, cleanupAttempts, cleanupFailures, workRetired, resourceReleaseRequested, deletedFactCount, revision, processUp, physicalActive, returnObserved, reconstructed, prepared>>
+    /\ UNCHANGED <<disposition, executionState, cleanupPhase, visible, cleanupEffectId, lastAttemptEffectId, cleanupAttempts, cleanupFailures, workRetired, resourceReleaseRequested, deletedFactCount, deletedFactPending, revision, processUp, physicalActive, returnObserved, reconstructed, prepared>>
 
 Next ==
+    \/ AcknowledgeDeletedFact
+    \/ ArchiveBeforeDelete
     \/ ObserveAttemptReturn
     \/ \E p \in Participants: RecoverParticipant(p)
     \/ \E p \in Participants, effect \in {DeleteEffect, "foreign"}: PrepareParticipant(p, effect)
@@ -239,12 +292,14 @@ FairSpec ==
     /\ SF_vars(CommitTombstone)
 
 TypeOK ==
-    /\ disposition \in {"active", "deleting", "tombstoned"}
+    /\ disposition \in {"active", "archived", "deleting", "tombstoned"}
     /\ executionState \in {"running", "terminated"}
     /\ Cleanup!TypeOK
     /\ visible \in BOOLEAN
     /\ workRetired \in BOOLEAN
     /\ deletedFactCount \in 0..1
+    /\ deletedFactPending \in BOOLEAN
+    /\ (deletedFactPending => deletedFactCount = 1)
     /\ revision \in 0..MaxRevision
     /\ processUp \in BOOLEAN
     /\ physicalActive \in BOOLEAN /\ returnObserved \in BOOLEAN
@@ -256,7 +311,7 @@ HiddenDeleteStateIsTerminal ==
         => (~visible /\ executionState = "terminated")
 
 VisibilityMatchesDurableDisposition ==
-    visible <=> disposition = "active"
+    visible <=> disposition \in {"active", "archived"}
 
 TombstoneRequiresCompletedCleanup ==
     disposition = "tombstoned" => (cleanupPhase = "completed" /\ workRetired)
@@ -293,6 +348,16 @@ DeleteSafety ==
     /\ FrozenTargetsOwnResourceRelease
     /\ CleanupUsesStableEffectId
     /\ DeletedFactIsCommittedAtMostOnce
+
+NoFactAfterDeleteFence ==
+    [][(disposition \in {"deleting", "tombstoned"})
+       => (deletedFactCount' = deletedFactCount
+           /\ (~deletedFactPending => ~deletedFactPending'))]_vars
+
+ArchiveCleanupSurvivesDelete ==
+    [][disposition = "archived" /\ disposition' = "deleting"
+       => UNCHANGED <<cleanupPhase, cleanupEffectId, lastAttemptEffectId,
+                                  cleanupAttempts, cleanupFailures, resourceReleaseRequested>>]_vars
 
 DeleteEventuallyTombstones ==
     disposition = "deleting" ~> disposition = "tombstoned"
