@@ -281,11 +281,16 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-environment-contract \
     --harness environment_registration_intent_is_exact_idempotent_and_recoverable
   # The actual deleted resolver covers empty-inventory replay and one legacy
-  # error/frame/Drop call. Nonempty inventories and legacy replay remain open.
+  # error/frame/Drop call. Legacy replay remains open.
   run_kani awaken-session-contract -Z unstable-options \
     --harness deleted_admission_resolver_preserves_empty \
     --harness deleted_admission_resolver_preserves_legacy_error_and_frame \
     --cbmc-args --unwindset memcmp.0:64
+  # One nonempty closed receipt with no operation ids; full replay and frame.
+  # The checked one-entry bound does not cover the other retained partitions.
+  run_kani awaken-session-contract -Z unstable-options \
+    --harness deleted_admission_one_retained_closed_none_07 \
+    --cbmc-args --unwindset memcmp.0:2
   run_kani awaken-session-contract \
     --harness session_event_batch_admission_resolution_is_total_closed_and_append_once \
     --harness session_agent_boundary_requires_a_visible_committed_target \
