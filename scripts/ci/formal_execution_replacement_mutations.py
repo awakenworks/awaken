@@ -4,6 +4,63 @@ from pathlib import Path
 from formal_model_mutation_runner import ROOT, check_tlc_model_mutations
 
 
+def check_remote_attempt_model_mutants(tlc_jar: Path) -> None:
+    # RA1/2 duplicate an Execute/Resume send; RA3/4 first-send after the
+    # corresponding Prepared crash; RA5 rearm unknown state without immediate
+    # IO; RA6 send before Prepared; RA7 cancel the predecessor of unknown Resume.
+    # Exact named action/invariant failures qualify kills. Positive witnesses
+    # retain both crash windows and legal Accepted GET/new Resume progress.
+    source = (ROOT / "formal/tla/RemoteAttempt.tla").read_text()
+    config = (ROOT / "formal/tla/RemoteAttempt.cfg").read_text()
+    header = config.split("INVARIANTS", 1)[0]
+    mutations = []
+
+    def change(start: str, end: str, replacements: list[tuple[str, str]], oracle: str) -> None:
+        left, right = source.index(start), source.index(end)
+        block = source[left:right]
+        for anchor, broken in replacements:
+            if block.count(anchor) != 1:
+                raise SystemExit(f"RemoteAttempt mutation anchor drifted: {oracle}: {anchor}")
+            block = block.replace(anchor, broken)
+        kind = "PROPERTIES" if oracle.startswith("action:") else "INVARIANTS"
+        mutations.append((source[:left] + block + source[right:],
+                          header + f"{kind} {oracle.removeprefix('action:')}\n", oracle))
+
+    for operation, start, end, prepared, sent in [
+        ("Execute", "SendFresh ==", "CrashPrepared ==", "FreshPrepared", "FreshSent"),
+        ("Resume", "SendResume ==", "CommitResumeAcceptance ==", "ResumePrepared", "ResumeSent"),
+    ]:
+        change(start, end, [
+            (f'phase = "{prepared}"', f'phase \\in {{"{prepared}", "{sent}"}}'),
+            (f'"{operation}" \\notin sentMessageIds', "TRUE"),
+        ], "EachOperationIsSentAtMostOnce")
+        change(start, end, [
+            (f'phase = "{prepared}"', f'phase \\in {{"{prepared}", "Unconfirmed"}}'),
+        ], "action:UnconfirmedNeverRearmsOrProducesOutbound")
+    change("RouteChange ==", "AwaitInput ==", [
+        ('/\\ configuredEndpoint\' =', '/\\ phase\' = IF phase = "Unconfirmed" THEN "Ready" ELSE phase\n    /\\ configuredEndpoint\' ='),
+        ("UNCHANGED <<phase, durableEndpoint", "UNCHANGED <<durableEndpoint"),
+    ], "action:UnconfirmedNeverRearmsOrProducesOutbound")
+    change("SendFresh ==", "CrashPrepared ==", [
+        ('phase = "FreshPrepared"', 'phase \\in {"Ready", "FreshPrepared"}'),
+        ('preparedOperation = "Execute"', "TRUE"),
+    ], "action:EverySendHasFreshPreparedAuthority")
+    change("Cancel ==", "Next ==", [
+        ('{"Running", "Awaiting", "Recovering"}', '{"Running", "Awaiting", "Recovering", "Unconfirmed"}'),
+        ('durableTask # NoTask', 'durableTask # NoTask \\/ predecessorTask # NoTask'),
+        ('preparedOperation = "NoOperation"', 'TRUE'),
+        ('acceptedOperation # "NoOperation"', 'TRUE'),
+        ("cancelAddressedTask' = durableTask", "cancelAddressedTask' = predecessorTask"),
+    ], "action:UnconfirmedNeverRearmsOrProducesOutbound")
+    for witness in ("NoFreshPreSendCrash", "NoFreshPostSendCrash", "NoResumePreSendCrash",
+                    "NoResumePostSendCrash", "NoAcceptedRecovery", "NoDistinctResumeSend"):
+        mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
+    mutations.append((source, header + "PROPERTIES NoResumedAcceptedRecovery\n",
+                      "action:NoResumedAcceptedRecovery"))
+    check_tlc_model_mutations(tlc_jar, "RemoteAttempt", source, config, mutations)
+    print("Remote attempts: 7/7 semantic mutants killed; 7/7 crash and legal recovery witnesses reachable")
+
+
 def check_k8s_process_observation_model_mutants(tlc_jar: Path) -> None:
     # KPT: UID replacement, deleted history, phase-only failure, omitted
     # participant, absent binding and authentication/read TOCTOU fail closed.

@@ -131,6 +131,8 @@ cargo test -p awaken-work-store --features loom --lib loom_tests
 # same-revision status update may replace an earlier accepted value.
 cargo test -p awaken-run-executor-acp --features loom --lib binding_batch_tests
 cargo test -p awaken-acp-application --lib binding_batch_
+# Exercise the real A2A executor across both commit/send crash-window tables.
+cargo test -p awaken-run-executor-a2a --lib send_windows
 # Exercise the production BackgroundTask projection under callback/replacement
 # races. Only its single mutex is instrumented; durable commits remain outside
 # this bounded lock-interleaving claim.
@@ -803,6 +805,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/remote-attempt" \
     -config formal/tla/RemoteAttempt.cfg formal/tla/RemoteAttempt.tla
+  python3 scripts/ci/check_formal_mutations.py --remote-attempt-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/authz-kernel" \
     -config formal/tla/AuthzKernel.cfg formal/tla/AuthzKernel.tla

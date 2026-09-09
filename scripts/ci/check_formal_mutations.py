@@ -31,6 +31,7 @@ from formal_memory_mutations import (
 )
 from formal_execution_replacement_mutations import (
     check_execution_replacement_model_mutants, check_k8s_process_observation_model_mutants,
+    check_remote_attempt_model_mutants,
 )
 from formal_credential_mutations import (
     check_mcp_credential_model_mutants, check_credential_effect_model_mutants,
@@ -541,6 +542,7 @@ def main() -> None:
         "agent-input-model-mutant": check_agent_input_model_mutant,
         "resource-preparation-model-mutant": check_resource_preparation_model_mutant,
         "terminal-resource-model-mutants": check_terminal_resource_model_mutants,
+        "remote-attempt-model-mutants": check_remote_attempt_model_mutants,
         "unmaterialized-cleanup-model-mutant": check_unmaterialized_cleanup_model_mutant,
         "realization-renewal-model-mutant": check_realization_renewal_model_mutant,
         "resolution-failure-model-mutant": check_resolution_failure_model_mutant,
