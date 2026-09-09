@@ -1087,15 +1087,20 @@ async fn postgres_reclaim_after_process_bound_attempt_quiesces_applies_never_rep
     // Causes: C1 owner A is blocked after committing tool Executing; C2 the
     // release gate lets its executor Future return with an injected commit
     // failure; C3 `run_physical_attempt` records A's exact physical quiescence;
-    // C4 its lease then expires; C5 owner B reclaims through a second
-    // coordinator. Effects: E1 B reads current Running truth and applies
-    // NeverReplay; E2 the external tool runs once; E3 one terminal log survives
-    // A's fenced delayed commit. Constraints: every claim installs an
+    // C4 A's deliberately short lease then expires; C5 owner B reclaims through
+    // a second coordinator with an independent production-sized recovery lease.
+    // Effects: E1 B reads current Running truth and applies NeverReplay; E2 the
+    // external tool runs once; E3 one terminal log survives A's fenced delayed
+    // commit; E4 B remains live while it installs the authoritative snapshot and
+    // reaches physical admission. Constraints: every claim installs an
     // authoritative snapshot before policy; only production executor return,
-    // never abort/drop, clears the slot. The Memory end-to-end and shared store
-    // conformance own the complementary C1+!C2 Blocked rule. Decision rule:
-    // execute C1-C5 and assert E1-E3.
-    const LEASE: u64 = 1_000;
+    // never abort/drop, clears the slot. `B_RECOVERY_LEASE` is a fixture
+    // scheduling budget, not a wait or correctness threshold: renewal and claim
+    // fencing remain the production authorities. The Memory end-to-end and
+    // shared store conformance own the complementary C1+!C2 Blocked rule.
+    // Decision rule: execute C1-C5 and assert E1-E4.
+    const A_EXPIRY_LEASE: u64 = 1_000;
+    const B_RECOVERY_LEASE: u64 = 30_000;
     let schema = "t_pg_midflight";
     let Some(pool) = harness::schema_pool(schema).await else {
         return;
@@ -1129,14 +1134,14 @@ async fn postgres_reclaim_after_process_bound_attempt_quiesces_applies_never_rep
     // exact lease lets the fixture observe the production return/renewal scope
     // without pretending a task abort is physical quiescence.
     let claimed_a = store
-        .claim("owner-a", LEASE, 0, &Default::default())
+        .claim("owner-a", A_EXPIRY_LEASE, 0, &Default::default())
         .await
         .expect("A claim query")
         .expect("A claims");
     let lease_a = claimed_a.lease.clone();
     let worker_a = Arc::new(
         DispatchWorker::new(runtime.clone(), store.clone(), commit_a.clone(), "owner-a")
-            .with_lease_ms(LEASE),
+            .with_lease_ms(A_EXPIRY_LEASE),
     );
     let a_handle = {
         let worker_a = worker_a.clone();
@@ -1187,16 +1192,16 @@ async fn postgres_reclaim_after_process_bound_attempt_quiesces_applies_never_rep
         .advance_past(
             lease_a
                 .expires_ms
-                .max(renewal_stopped_at_ms.saturating_add(LEASE)),
+                .max(renewal_stopped_at_ms.saturating_add(A_EXPIRY_LEASE)),
         )
         .await;
 
     // Owner B's lease-expired reclaim recovers the committed Executing phase and
     // completes the run without entering the non-recoverable tool again.
     let worker_b = DispatchWorker::new(runtime, store.clone(), commit_b.clone(), "owner-b")
-        .with_lease_ms(LEASE);
+        .with_lease_ms(B_RECOVERY_LEASE);
     let processed = worker_b
-        .tick(harness::clock(LEASE + 1))
+        .tick(harness::clock(A_EXPIRY_LEASE + 1))
         .await
         .expect("B drives");
     assert_eq!(
