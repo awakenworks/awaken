@@ -1054,8 +1054,24 @@ and terminal authority clearing. The official worker header is persisted as
 the claim owner, including before the first heartbeat; only that worker may
 advance the `first`/`matching last_heartbeat` condition. Stop consumes the exact
 owner-and-epoch lease receipt, so a paused same-incarnation predecessor cannot
-retire a higher-epoch successor. The in-memory, SQLite,
-and PostgreSQL conformance paths exercise the same ownership rule. Stop remains
+retire a higher-epoch successor. Parameterized TLAPS lemmas bind every existing
+kernel Stop effect to its request, prove that owner/epoch mismatch permits only
+unchanged authority, and frame every other Work row. The original finite TLC
+configuration additionally checks this action property; independently deleting
+the owner or epoch guard must violate that precise oracle, even when ordinary
+queue Safety still holds. A reachable legal Stop qualifies the terminal checks.
+The specification permits unlabeled Stopped stutter but contains no replay
+request or boolean result; this cannot establish the stores' replay response.
+
+The existing in-memory, SQLite and PostgreSQL conformance suite independently
+alters each receipt's owner, epoch, Work id, Environment id and Session id. Every
+rejection preserves the complete Work projection and current lease. Exact release
+clears authority; Stopped/same-epoch replay with either the former or a different
+owner returns true without changing state or recreating authority. This preserves
+the existing response-loss replay contract: its success is not another release
+effect authorized by that owner. These adapter cases cross-check the abstract
+request boundary, without proving Rust/SQL refinement or arbitrary concurrent
+histories; the release row retains its abstract theorem grade. Stop remains
 a control-plane operation rather than worker authority, and exactly-once
 external work effects remain outside the queue proof.
 

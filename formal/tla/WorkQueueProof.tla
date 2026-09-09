@@ -41,6 +41,57 @@ BY Z3T(30) DEF Stop, Safety, TypeOK, SingleActive, ActiveHasOneOwner,
    ActiveEpochIsPositive, TerminalHasNoLeaseAuthority, WorkStates,
    TerminalStates, KernelAssumptions
 
+\* Cause/effect rows S1..S4 quantify over request identity separately from
+\* state invariants. Deleting an admission guard must refute its binding or
+\* noninterference theorem even if StopSafety continues to hold.
+LEMMA StopEffectBindsExactRequest ==
+    \A worker \in Workers, item \in WorkItems, expectedEpoch \in 0..MaxEpoch:
+      Stop(worker, item, expectedEpoch) => ExactStopRequest(worker, item, expectedEpoch)
+BY Z3T(30) DEF Stop, ExactStopRequest
+
+LEMMA WrongOwnerStopCannotChangeAuthority ==
+    \A worker \in Workers, item \in WorkItems, expectedEpoch \in 0..MaxEpoch:
+      kOwner[item] # worker /\ [Stop(worker, item, expectedEpoch)]_kVars =>
+        UNCHANGED kVars
+BY Z3T(30) DEF Stop, kVars
+
+LEMMA WrongEpochStopCannotChangeAuthority ==
+    \A worker \in Workers, item \in WorkItems, expectedEpoch \in 0..MaxEpoch:
+      kEpoch[item] # expectedEpoch /\ [Stop(worker, item, expectedEpoch)]_kVars =>
+        UNCHANGED kVars
+BY Z3T(30) DEF Stop, kVars
+
+LEMMA ExactStopClearsOnlyAddressedAuthority ==
+    \A worker \in Workers, item \in WorkItems, expectedEpoch \in 0..MaxEpoch:
+      TypeOK /\ Stop(worker, item, expectedEpoch) =>
+        /\ kState'[item] = "Stopped"
+        /\ kOwner'[item] = NoWorker
+        /\ kEpoch'[item] = expectedEpoch
+        /\ kHeartbeat'[item] = 0
+        /\ kExpires'[item] = 0
+        /\ StopFramesOtherRows(item)
+        /\ UNCHANGED kNow
+BY Z3T(30) DEF Stop, StopFramesOtherRows, TypeOK
+
+LEMMA StoppedCannotApplyAnotherStop ==
+    \A worker \in Workers, item \in WorkItems, expectedEpoch \in 0..MaxEpoch:
+      KernelAssumptions /\ Safety /\ kState[item] = "Stopped" =>
+        ~Stop(worker, item, expectedEpoch)
+BY Z3T(30) DEF Stop, KernelAssumptions, Safety, TerminalHasNoLeaseAuthority,
+   TerminalStates
+
+LEMMA StoppedStutterKeepsItsEpoch ==
+    \A item \in WorkItems, expectedEpoch \in 0..MaxEpoch:
+      kState[item] = "Stopped" /\ kEpoch[item] = expectedEpoch /\ UNCHANGED kVars =>
+        /\ [Next]_kVars
+        /\ kState'[item] = "Stopped"
+        /\ kEpoch'[item] = expectedEpoch
+BY Z3T(30) DEF kVars
+
+THEOREM EveryStopEffectHasExactRequest == StopRequestsAreBound
+BY StopEffectBindsExactRequest, PTL
+   DEF StopRequestsAreBound, StopRequestBinding, kVars
+
 LEMMA RemoveEnvironmentSafety ==
     KernelAssumptions /\ Safety /\ RemoveEnvironment => Safety'
 BY Z3T(30) DEF RemoveEnvironment, Safety, TypeOK, SingleActive,
