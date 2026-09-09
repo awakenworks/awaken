@@ -5,6 +5,59 @@ use super::*;
 #[cfg(any(test, kani))]
 mod selection_tests;
 
+/// Facts selected from the same committed snapshot, before materializing any
+/// public Pending payload. Cardinality belongs to the outer snapshot lookup.
+#[derive(Clone, Copy)]
+enum PendingTicketObservation<'a> {
+    Absent,
+    Multiple,
+    One(&'a awaken_agent_contract::agent::awaiting::ResumeTicket),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingTicketAdmission {
+    Inactive,
+    Missing { positive_awaiting: bool },
+    Multiple,
+    Inconsistent,
+    Admit,
+}
+
+/// The one strict ticket-admission decision, consumed by the snapshot entry
+/// below. Run truth dominates residual, duplicate and corrupt ticket rows.
+/// Unknown legacy lifecycle preserves a unique exact ticket. Identity remains
+/// owned by the neutral recovery contract; this adapter does not reimplement it.
+fn pending_ticket_admission(
+    current_state: Option<&awaken_agent_contract::agent::run::RunState>,
+    current_run_id: &awaken_agent_contract::RunId,
+    thread_id: &awaken_agent_contract::ThreadId,
+    observation: PendingTicketObservation<'_>,
+) -> PendingTicketAdmission {
+    use awaken_agent_contract::agent::run::RunState;
+    if matches!(current_state, Some(RunState::Running | RunState::Ended(_))) {
+        return PendingTicketAdmission::Inactive;
+    }
+    match observation {
+        PendingTicketObservation::Absent => PendingTicketAdmission::Missing {
+            positive_awaiting: matches!(current_state, Some(RunState::Awaiting)),
+        },
+        PendingTicketObservation::Multiple => PendingTicketAdmission::Multiple,
+        PendingTicketObservation::One(ticket) => {
+            if awaken_agent_contract::thread::read::recovery::validate_resume_ticket_owner(
+                ticket,
+                current_run_id,
+                thread_id,
+            )
+            .is_err()
+            {
+                PendingTicketAdmission::Inconsistent
+            } else {
+                PendingTicketAdmission::Admit
+            }
+        }
+    }
+}
+
 impl ManagedState {
     /// Resolve the one current Run coordinate carried by a recovery prefix.
     /// Strict admission, lenient projection, and interruption must not each
@@ -268,15 +321,6 @@ impl ManagedState {
         snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
     ) -> Result<Option<(awaken_agent_contract::agent::run::Id, String, Pending)>, StateError> {
         let (run_id, current_state) = Self::current_recovery_run(snapshot);
-        // Current producers always include `runs`; older/remote recovery
-        // payloads may not. Preserve an exact typed ticket when lifecycle state
-        // is unknown, but never let a stale row override an explicit non-Awaiting
-        // fact. Missing-ticket repair below requires positive Awaiting evidence.
-        if current_state.is_some_and(|state| {
-            !matches!(state, awaken_agent_contract::agent::run::RunState::Awaiting)
-        }) {
-            return Ok(None);
-        }
         // The Runtime resumes one committed Awaiting ticket at a time. An
         // ActiveToolBatch may retain later Requested calls, but they are not
         // externally answerable until the current ticket is consumed and the
@@ -286,47 +330,53 @@ impl ManagedState {
             .resume_tickets
             .iter()
             .filter(|ticket| &ticket.run_id == run_id);
-        let Some(ticket) = tickets.next() else {
-            if snapshot
-                .resume_tickets
-                .iter()
-                .any(|ticket| &ticket.ticket.run_id == run_id)
-            {
+        let ticket = tickets.next();
+        let observation = match ticket {
+            None => PendingTicketObservation::Absent,
+            Some(_) if tickets.next().is_some() => PendingTicketObservation::Multiple,
+            Some(ticket) => PendingTicketObservation::One(&ticket.ticket),
+        };
+        let admission =
+            pending_ticket_admission(current_state, run_id, &snapshot.thread_id, observation);
+        match admission {
+            PendingTicketAdmission::Inactive => return Ok(None),
+            PendingTicketAdmission::Multiple => {
+                return Err(StateError::projection_recovery_required(
+                    "Runtime recovery exposed multiple answerable tickets for one Run; interrupt the Session to settle it",
+                ));
+            }
+            PendingTicketAdmission::Inconsistent => {
                 return Err(StateError::projection_recovery_required(
                     "Runtime recovery exposed an inconsistent pending-tool identity; interrupt the Session to settle it",
                 ));
             }
-            let audit_state =
-                Self::latest_recovery_run_state_change(snapshot, run_id).map(|(_, state)| state);
-            if matches!(
-                current_state,
-                Some(awaken_agent_contract::agent::run::RunState::Awaiting)
-            ) || matches!(
-                audit_state,
-                Some(awaken_agent_contract::agent::run::RunState::Awaiting)
-            ) {
-                return Err(StateError::projection_recovery_required(
-                    "Runtime recovery exposed an Awaiting Run without its answerable ticket; interrupt the Session to settle it",
-                ));
+            PendingTicketAdmission::Missing { positive_awaiting } => {
+                if snapshot
+                    .resume_tickets
+                    .iter()
+                    .any(|ticket| &ticket.ticket.run_id == run_id)
+                {
+                    return Err(StateError::projection_recovery_required(
+                        "Runtime recovery exposed an inconsistent pending-tool identity; interrupt the Session to settle it",
+                    ));
+                }
+                let audit_state = Self::latest_recovery_run_state_change(snapshot, run_id)
+                    .map(|(_, state)| state);
+                if positive_awaiting
+                    || matches!(
+                        audit_state,
+                        Some(awaken_agent_contract::agent::run::RunState::Awaiting)
+                    )
+                {
+                    return Err(StateError::projection_recovery_required(
+                        "Runtime recovery exposed an Awaiting Run without its answerable ticket; interrupt the Session to settle it",
+                    ));
+                }
+                return Ok(None);
             }
-            return Ok(None);
-        };
-        if tickets.next().is_some() {
-            return Err(StateError::projection_recovery_required(
-                "Runtime recovery exposed multiple answerable tickets for one Run; interrupt the Session to settle it",
-            ));
+            PendingTicketAdmission::Admit => {}
         }
-        if awaken_agent_contract::thread::read::recovery::validate_resume_ticket_owner(
-            &ticket.ticket,
-            &ticket.run_id,
-            &snapshot.thread_id,
-        )
-        .is_err()
-        {
-            return Err(StateError::projection_recovery_required(
-                "Runtime recovery exposed an inconsistent pending-tool identity; interrupt the Session to settle it",
-            ));
-        }
+        let ticket = ticket.expect("admission requires the selected unique ticket");
         let pending = Pending::from_resume_ticket(&ticket.ticket);
         Ok(pending.map(|pending| {
             (
