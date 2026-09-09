@@ -620,8 +620,8 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   The bounded model does not prove manifest byte equality, lease identity, or
   physical IO. The production crossover/rollback/failure decision tables are
   in `awaken-session-application/src/tests/resource_resume.rs`; terminal
-  assignment/cold-read coverage in `tests/realization.rs` binds the abstract
-  generation selection to the production Session adapter. Provider absence and
+  assignment coverage in `tests/realization.rs` checks fifteen SQLite close/reopen
+  cases with independent history/manifest expectations. Provider absence and
   late-create fencing remain separate obligations. Signed dispatch
   transport and contract serialization are separately exercised tests, not a
   Rust-to-TLA refinement proof.
