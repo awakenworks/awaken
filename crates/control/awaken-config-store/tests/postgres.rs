@@ -149,9 +149,12 @@ async fn postgres_config_cas_missing_row_and_revision_decision_table() {
     let Some(pool) = schema_pool("t_config_cas_table").await else {
         return;
     };
-    let store = Arc::new(PostgresConfigStore::with_pool(pool).await.unwrap());
+    // R6 separate adapters share the same schema; PgPool leases independent
+    // physical connections to overlapping writes, with no application mutex.
+    let store = Arc::new(PostgresConfigStore::with_pool(pool.clone()).await.unwrap());
+    let other = Arc::new(PostgresConfigStore::with_existing_pool(pool).await.unwrap());
     revision_cas::decision_table(store.as_ref()).await;
-    revision_cas::concurrent_writers(store).await;
+    revision_cas::concurrent_writers(&[store, other]).await;
 }
 
 #[tokio::test]
@@ -180,6 +183,19 @@ async fn postgres_config_cas_exhaustion_preserves_reopenable_truth() {
         .unwrap();
     assert_eq!(row.revision, i64::MAX as u64);
     assert_eq!(row.config, config);
+}
+
+#[tokio::test]
+async fn postgres_config_history_insert_failure_rolls_back_all_write_paths() {
+    // R8 fault belongs to this test's schema and exact history generation 2.
+    // Real PostgreSQL must roll back the statement and the wider audited txn.
+    let Some(pool) = schema_pool("t_config_history_fault").await else {
+        return;
+    };
+    let store = PostgresConfigStore::with_pool(pool.clone()).await.unwrap();
+    pool.execute("CREATE FUNCTION inject_history_failure() RETURNS TRIGGER AS $$ BEGIN RAISE EXCEPTION 'injected config history failure'; END; $$ LANGUAGE plpgsql").await.unwrap();
+    pool.execute("CREATE TRIGGER inject_history_failure BEFORE INSERT ON config_agent_revision FOR EACH ROW WHEN (NEW.generation = 2) EXECUTE FUNCTION inject_history_failure()").await.unwrap();
+    revision_cas::history_failure_rolls_back(&store).await;
 }
 
 fn compile(
@@ -476,17 +492,19 @@ async fn schema_pool(schema: &'static str) -> Option<PgPool> {
         .await
         .expect("create schema");
     admin.close().await;
-    PgPoolOptions::new()
-        .after_connect(move |conn, _meta| {
-            Box::pin(async move {
-                conn.execute(format!("SET search_path = {schema}").as_str())
-                    .await?;
-                Ok(())
+    Some(
+        PgPoolOptions::new()
+            .after_connect(move |conn, _meta| {
+                Box::pin(async move {
+                    conn.execute(format!("SET search_path = {schema}").as_str())
+                        .await?;
+                    Ok(())
+                })
             })
-        })
-        .connect(&database_url())
-        .await
-        .ok()
+            .connect(&database_url())
+            .await
+            .expect("reachable PostgreSQL fixture must open its isolated schema"),
+    )
 }
 
 #[tokio::test]
