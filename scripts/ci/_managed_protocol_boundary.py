@@ -12,6 +12,9 @@ AWAKEN_MANAGED_EXTENSION_ROUTES = frozenset(
     {
         ("GET", "/v1/awaken/memory-stores/{}/dream-policy"),
         ("GET", "/v1/awaken/files/output-capture"),
+        ("GET", "/v1/awaken/repositories"),
+        ("POST", "/v1/awaken/repositories"),
+        ("GET", "/v1/awaken/repositories/{}"),
         ("GET", "/v1/awaken/memory-stores/{}/copy-conflicts"),
         ("PUT", "/v1/awaken/memory-stores/{}/dream-policy"),
         ("GET", "/v1/awaken/sessions/{}/live-inbox"),
@@ -197,6 +200,25 @@ def selftest() -> None:
         set(AWAKEN_MANAGED_EXTENSION_ROUTES) | {("GET", "/v1/custom")},
     ), "R3"
     assert managed_route_inventory_violations(official, set(), set()), "R4"
+
+    # R5 Repository list/create/retrieve each belong to the explicit Awaken
+    # extension inventory. Moving any one into compatibility core must report
+    # contamination; omitting it must report a missing extension. The exact
+    # method/path table is independent of the production extension catalog.
+    repository_routes = {
+        ("GET", "/v1/awaken/repositories"),
+        ("POST", "/v1/awaken/repositories"),
+        ("GET", "/v1/awaken/repositories/{}"),
+    }
+    assert repository_routes <= AWAKEN_MANAGED_EXTENSION_ROUTES, "R5 registered"
+    for route in repository_routes:
+        remaining = set(AWAKEN_MANAGED_EXTENSION_ROUTES) - {route}
+        assert f"non-Anthropic route in managed core: {route[0]} {route[1]}" in (
+            managed_route_inventory_violations(official, set(official) | {route}, remaining)
+        ), "R5 wrong owner"
+        assert f"missing listed Awaken managed extension route: {route[0]} {route[1]}" in (
+            managed_route_inventory_violations(official, set(official), remaining)
+        ), "R5 omitted"
 
     # Application-boundary cause/effect graph: C5 production wire state calls a
     # semantic SessionApplication operation; C6 it reaches through the application

@@ -8,49 +8,17 @@ use crate::{
     routes::{ManagedJson, ManagedQuery},
     types::{PageCursor, PageQuery, paginate},
 };
+use awaken_protocol_awaken::{CreateRepository, RepositoryObject};
 use awaken_resource_contract::{
-    ClonePolicy, CreateRepositoryCommand, RepositoryApplicationService, RepositoryConfigVersion,
-    RepositoryDefinition, RepositoryDetails, ResourceRegistryError,
+    CreateRepositoryCommand, RepositoryApplicationService, ResourceRegistryError,
 };
 use axum::{
     Json, Router,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::get,
 };
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CreateRepository {
-    name: String,
-    #[serde(default)]
-    description: String,
-    remote_url: String,
-    credential_binding: Option<String>,
-    initial_branch: Option<String>,
-    initial_commit: Option<String>,
-    #[serde(default)]
-    clone_policy: ClonePolicy,
-}
-
-#[derive(Serialize)]
-struct RepositoryObject {
-    #[serde(flatten)]
-    definition: RepositoryDefinition,
-    config: RepositoryConfigVersion,
-}
-
-impl From<RepositoryDetails> for RepositoryObject {
-    fn from(value: RepositoryDetails) -> Self {
-        Self {
-            definition: value.definition,
-            config: value.config,
-        }
-    }
-}
 
 fn failure(error: ResourceRegistryError) -> axum::response::Response {
     match error {
@@ -78,10 +46,7 @@ fn failure(error: ResourceRegistryError) -> axum::response::Response {
 }
 
 pub fn repositories_router(application: Arc<dyn RepositoryApplicationService>) -> Router {
-    Router::new()
-        .route("/v1/awaken/repositories", get(list).post(create))
-        .route("/v1/awaken/repositories/{id}", get(retrieve))
-        .with_state(application)
+    awaken_protocol_awaken::repositories_router(list, create, retrieve).with_state(application)
 }
 
 async fn list(
