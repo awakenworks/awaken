@@ -732,6 +732,7 @@ if [ -n "$tlapm_bin" ] && [ -x "$tlapm_bin" ]; then
   "$tlapm_bin" -I formal/tla formal/tla/WorkQueueProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/SessionActivityProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/SessionRootProof.tla
+  "$tlapm_bin" -I formal/tla formal/tla/SessionOwnershipProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/SessionNetworkPolicyProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/LiveInboxProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/ServiceLifecycleProof.tla
@@ -824,6 +825,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-ownership" \
     -config formal/tla/SessionOwnership.cfg formal/tla/SessionOwnership.tla
+  python3 scripts/ci/check_formal_mutations.py --session-ownership-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-deletion" \
     -config formal/tla/SessionDeletion.cfg formal/tla/SessionDeletion.tla
