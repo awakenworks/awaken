@@ -217,7 +217,7 @@ impl crate::SharedHost {
                 .await
             {
                 Ok(renewed_lease) => Ok(renewed_lease.observed(request_started)),
-                Err(error) => return Err(control_failure(error)),
+                Err(error) => Err(control_failure(error)),
             }
         }
         .await;

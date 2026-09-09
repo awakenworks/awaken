@@ -359,4 +359,82 @@ RealizationTraceIsRefinement(trace, cut, count) ==
     /\ \A i \in 2..Len(trace) :
          /\ ObservedNext(trace[i-1], trace[i])
          /\ trace[i].event = "crash" => trace[i-1].event = cut
+
+(* The phase-driver ActiveSessions/ControlTimeout model above deliberately
+   abstracts driver ownership. It is NOT a refinement mapping for the renewal
+   adapter: that adapter releases a request permit before reacquiring completion
+   capacity, and its exact Session mutex may remain held independently.
+   These observations check the actual adapter's separate resources at controlled
+   poll/drop cuts, using the same model authority without a second controller.
+   Tokio internals and arbitrary schedules are outside this finite relation. *)
+SchedulerSnapshot(s, capacity) ==
+    /\ s.available \in 0..capacity /\ s.reserved \in 0..capacity
+    /\ s.request \in {"none", "queued", "held", "done"}
+    /\ s.completion \in {"none", "queued", "held", "done"}
+    /\ s.active \in BOOLEAN
+    /\ s.active = (s.request = "held")
+    /\ s.available + s.reserved + (IF s.active THEN 1 ELSE 0)
+         + (IF s.completion = "held" THEN 1 ELSE 0) = capacity
+    /\ s.completion # "none" => s.request = "done"
+
+SchedulerCut(s) == <<s.available, s.reserved, s.request, s.completion>>
+SchedulerObservationStep(s, t, capacity) ==
+    /\ t.sequence = s.sequence + 1
+    /\ t.scheduler = s.scheduler
+    /\ CASE t.event = "queue-request" ->
+          /\ s.request = "none"
+          /\ SchedulerCut(t) = <<s.available, s.reserved, "queued", "none">>
+        [] t.event = "wait-queued" ->
+          /\ s.request = "queued" /\ s.available = 0
+          /\ SchedulerCut(t) = SchedulerCut(s)
+        [] t.event = "admit-request" ->
+          /\ s.request = "queued" /\ s.reserved > 0
+          /\ SchedulerCut(t) = <<s.available, s.reserved - 1, "held", "none">>
+        [] t.event \in {"return", "deadline", "cancel-request"} ->
+          /\ s.request = "held"
+          /\ SchedulerCut(t) = <<s.available + 1, s.reserved, "done", "none">>
+        [] t.event = "cancel-queued-request" ->
+          /\ s.request = "queued"
+          /\ SchedulerCut(t) = <<s.available, s.reserved, "done", "none">>
+        [] t.event = "queue-completion" ->
+          /\ s.request = "done" /\ s.completion = "none" /\ s.available > 0
+          /\ SchedulerCut(t) = <<s.available - 1, s.reserved + 1, "done", "queued">>
+        [] t.event = "admit-completion" ->
+          /\ s.completion = "queued" /\ s.reserved > 0
+          /\ SchedulerCut(t) = <<s.available, s.reserved - 1, "done", "held">>
+        [] t.event = "cancel-queued-completion" ->
+          /\ s.completion = "queued"
+          /\ SchedulerCut(t) = <<s.available, s.reserved, "done", "done">>
+        [] t.event \in {"finish", "cancel-held-completion"} ->
+          /\ s.completion = "held"
+          /\ SchedulerCut(t) = <<s.available + 1, s.reserved, "done", "done">>
+        [] t.event = "final" ->
+          /\ s.request = "done" /\ s.completion \in {"none", "done"}
+          /\ SchedulerCut(t) = <<capacity, 0, "done", "done">>
+        [] OTHER -> FALSE
+
+ControlSchedulerObservation(trace, capacity) ==
+    /\ capacity = 8 /\ Len(trace) >= 5
+    /\ trace[1].event = "initial" /\ trace[1].sequence = 0
+    /\ SchedulerCut(trace[1]) = <<0, capacity, "none", "none">>
+    /\ trace[Len(trace)].event = "final"
+    /\ \A i \in 1..Len(trace) : SchedulerSnapshot(trace[i], capacity)
+    /\ \A i \in 2..Len(trace) : SchedulerObservationStep(trace[i-1], trace[i], capacity)
+
+HeldRealizationMutexObservation(o) ==
+    /\ o.capacity = 8 /\ o.peak = o.capacity
+    /\ o.entered = 2 * o.capacity
+    /\ Len(o.before) = o.capacity /\ Len(o.after) = o.capacity
+    /\ \A i \in 1..o.capacity :
+         /\ o.before[i].locked /\ o.after[i].locked
+         /\ <<o.before[i].session, o.before[i].identity, o.before[i].lease>> =
+              <<o.after[i].session, o.after[i].identity, o.after[i].lease>>
+         /\ o.after[i].closed
+    /\ Cardinality({o.before[i].session : i \in 1..o.capacity}) = o.capacity
+    /\ Cardinality({o.before[i].identity : i \in 1..o.capacity}) = o.capacity
+
+ReconciliationCapacityObservation(o) ==
+    CASE o.kind = "adapter" -> ControlSchedulerObservation(o.trace, o.capacity)
+      [] o.kind = "mutex" -> HeldRealizationMutexObservation(o)
+      [] OTHER -> FALSE
 =============================================================================
