@@ -76,6 +76,7 @@ export function requirePrebuiltExecutable(environmentName, environment = process
  *   targetKind?: 'bin' | 'example',
  *   features?: string[],
  *   noDefaultFeatures?: boolean,
+ *   release?: boolean,
  * }} options
  */
 export function cargoArguments({
@@ -84,6 +85,7 @@ export function cargoArguments({
   targetKind = 'bin',
   features = [],
   noDefaultFeatures = false,
+  release = false,
 }) {
   const targetFlag = targetKind === 'example' ? '--example' : '--bin';
   const args = [
@@ -95,6 +97,7 @@ export function cargoArguments({
     targetFlag,
     targetName,
   ];
+  if (release) args.push('--release');
   if (noDefaultFeatures) args.push('--no-default-features');
   if (features.length > 0) args.push('--features', features.join(','));
   return args;
@@ -108,6 +111,7 @@ export function cargoArguments({
  *   targetKind?: 'bin' | 'example',
  *   features?: string[],
  *   noDefaultFeatures?: boolean,
+ *   release?: boolean,
  *   environment?: NodeJS.ProcessEnv,
  *   prebuiltEnvironmentName?: string,
  *   snapshotDestination?: string,
@@ -121,6 +125,7 @@ export function cargoExecutable({
   targetKind = 'bin',
   features = [],
   noDefaultFeatures = false,
+  release = false,
   environment = process.env,
   prebuiltEnvironmentName,
   snapshotDestination,
@@ -137,6 +142,7 @@ export function cargoExecutable({
     targetKind,
     features,
     noDefaultFeatures,
+    release,
   });
 
   const buildEnvironment = checkoutLocalCargoEnvironment(cwd, environment);
@@ -257,6 +263,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       options: {
         features: { type: 'string', multiple: true },
         'no-default-features': { type: 'boolean' },
+        release: { type: 'boolean' },
+        'snapshot-destination': { type: 'string' },
       },
     });
     if (positionals.length !== 2) throw new Error('expected package and binary names');
@@ -266,6 +274,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       targetName: positionals[1],
       features: values.features ?? [],
       noDefaultFeatures: values['no-default-features'] ?? false,
+      release: values.release ?? false,
+      snapshotDestination: values['snapshot-destination'],
     })}\n`);
   } catch (error) {
     process.stderr.write(`${error.message}\n`);

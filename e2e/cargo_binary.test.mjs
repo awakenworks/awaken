@@ -118,6 +118,77 @@ test('preserves structured Cargo diagnostics with a stderr fallback', () => {
   );
 });
 
+test('image staging uses the canonical release snapshot and preserves failure evidence', { skip: process.platform === 'win32' }, () => {
+  // Causes: C1 exact bin artifact (not same-name example); C2 Cargo succeeds;
+  // C3 feature selection absent/present; C4 caller umask 077 and relative path
+  // containing spaces; C5 the published shared artifact is later overwritten.
+  // Effects: E1 one release build in a private output directory; E2 exact bytes
+  // staged mode 0755 and survive C5; E3 failure retains the previous destination
+  // and exposes diagnostics. Rules: I1 C1+C2 x C3+C4 => E1+E2; I2 !C2 even
+  // with C1 => E3; I3 !C1+C2 => E3. Existing real-Cargo concurrency tests below
+  // own cache/output isolation; this test executes the actual staging adapter.
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'image-stage-'));
+  try {
+    for (const relative of ['deploy/images/sandbox/stage-binary.sh',
+      'e2e/cargo_binary.mjs', 'e2e/executable_snapshot.mjs']) {
+      const destination = path.join(temp, relative);
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.copyFileSync(new URL('../' + relative, import.meta.url), destination);
+    }
+    const bin = path.join(temp, 'bin');
+    fs.mkdirSync(bin);
+    const calls = path.join(temp, 'calls');
+    const artifact = path.join(temp, 'shared artifact');
+    fs.writeFileSync(path.join(bin, 'cargo'), `#!${process.execPath}
+const fs = require('node:fs'), path = require('node:path'), args = process.argv.slice(2);
+fs.appendFileSync(process.env.CALLS, JSON.stringify(args)+'\\n');
+if(args[0]==='metadata') {
+  console.log(JSON.stringify({build_directory:path.join(process.cwd(),'cache')}));
+} else {
+  console.log(JSON.stringify({reason:'compiler-artifact',target:{name:'awaken-sandbox',kind:['example']},executable:'/must-not-select'}));
+  if(process.env.MODE!=='missing') console.log(JSON.stringify({reason:'compiler-artifact',target:{name:'awaken-sandbox',kind:['bin']},executable:process.env.ARTIFACT}));
+  if(process.env.MODE==='failed') {
+    console.log(JSON.stringify({reason:'compiler-message',message:{rendered:'exact staging compilation failure'}}));
+    process.exit(7);
+  }
+}
+`, { mode: 0o755 });
+    const output = path.join(temp, 'caller', 'image output', 'sandbox');
+    fs.mkdirSync(path.dirname(output), { recursive: true });
+    for (const mode of ['plain', 'hand', 'failed', 'missing']) {
+      fs.writeFileSync(calls, '');
+      fs.writeFileSync(artifact, '#!/bin/sh\necho staged\n', { mode: 0o700 });
+      fs.writeFileSync(output, 'prior');
+      const run = spawnSync('bash', ['-c', 'umask 077; bash "$1" "$2" "$3"',
+        'stage-test', path.join(temp, 'deploy/images/sandbox/stage-binary.sh'),
+        'image output/sandbox', mode === 'plain' ? '' : 'hand'], {
+        cwd: path.join(temp, 'caller'), encoding: 'utf8',
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CALLS: calls,
+          MODE: mode, ARTIFACT: artifact },
+      });
+      const [metadata, build] = fs.readFileSync(calls, 'utf8').trim().split('\n').map(JSON.parse);
+      assert.deepEqual(metadata, ['metadata', '--no-deps', '--format-version=1']);
+      assert.equal(build[0], 'build');
+      assert.ok(build.includes('--release'), 'I1 release profile');
+      assert.equal(build.includes('--features'), mode !== 'plain', 'I1 C3');
+      assert.ok(build.includes('--target-dir'), 'I1 private publication');
+      assert.equal(fs.existsSync(build[build.indexOf('--target-dir') + 1]), false, 'staging removed');
+      if (['plain', 'hand'].includes(mode)) {
+        assert.equal(run.status, 0, run.stderr);
+        fs.writeFileSync(artifact, 'later build');
+        assert.equal(fs.statSync(output).mode & 0o777, 0o755, 'I1 C4');
+        assert.equal(spawnSync(output, [], { encoding: 'utf8' }).stdout, 'staged\n', 'I1 C5');
+      } else {
+        assert.notEqual(run.status, 0, 'I2/I3');
+        assert.match(run.stderr, mode === 'failed' ? /exact staging compilation failure/ : /no bin artifact/);
+        assert.equal(fs.readFileSync(output, 'utf8'), 'prior', 'I2/I3 E3');
+      }
+    }
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
 // Process-level decision table: S1 exact artifact + unrelated records => one
 // build and exact stdout path; S2 nonzero Cargo, even with a matching artifact
 // => failure + rendered diagnostics; S3 successful Cargo without exact artifact
@@ -201,6 +272,8 @@ test('prebuilt snapshot bundle is independent and refuses missing companions', (
 });
 
 test('real concurrent Cargo builds pin feature bytes before exposing snapshots', async () => {
+  // P3 also crosses debug/release profiles: the release staging caller shares
+  // the same metadata, private-output and exact-byte ownership as debug E2Es.
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'cargo-concurrent-'));
   const children = [];
   try {
@@ -224,7 +297,7 @@ test('real concurrent Cargo builds pin feature bytes before exposing snapshots',
         `import {cargoExecutable} from ${JSON.stringify(resolver)};
         cargoExecutable(${JSON.stringify({ cwd: temp, packageName: options.packageName,
           targetName: options.targetName, snapshotDestination: destination,
-          features: i % 2 ? ['second'] : [] })});`], { env: environment, stdio: ['ignore', 'pipe', 'pipe'] });
+          features: i % 2 ? ['second'] : [], release: i === 0 })});`], { env: environment, stdio: ['ignore', 'pipe', 'pipe'] });
       children.push(child);
       let stderr = '';
       child.stderr.on('data', (data) => { stderr += data; });
