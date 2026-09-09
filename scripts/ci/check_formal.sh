@@ -260,7 +260,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-authorization-contract \
     --harness run_backed_route_policy_uses_exact_run_actions \
     --harness application_route_policy_never_enters_the_service_guard \
-    --harness credential_ingress_role_contains_only_workspace_apikey_authority \
+    --harness credential_ingress_role_contains_only_apikey_and_provider_connect_authority \
     --harness agent_publisher_role_contains_only_workspace_model_read_and_skill_authority \
     --harness hosted_admin_role_contains_exactly_its_seven_workspace_authorities \
     --harness hosted_builder_role_has_writes_without_apikey_or_model_administration \
