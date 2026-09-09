@@ -274,6 +274,81 @@ class ProfileTests(unittest.TestCase):
                     runpy.run_path(str(checker), run_name="__main__")
                 self.assertEqual(raised.exception.code, 1)
 
+    def test_checked_tree_profiles_bind_runtime_and_checker(self):
+        # P1 known profile + exact package + unique allowed harnesses => the
+        # runner and checker consume identical literal checked loop bounds.
+        # P2 unknown/dynamic profile, foreign package/harness, duplicate/empty
+        # selection, appended CBMC/check/solver flags or repeated profile =>
+        # explicit rejection before Cargo. P3 missing opt-in or mutated loop,
+        # bound, order, count or trailing flags => backend-tail rejection.
+        # Exercise the actual shell function with only its Cargo/deadline port
+        # replaced by an argument recorder: expansion failure must return 2,
+        # never disappear inside process substitution or launch default Kani.
+        import formal_kani_options as options
+        root = Path(__file__).resolve().parents[2]
+        gate = (root / "scripts/ci/check_formal.sh").read_text()
+        runner = gate[gate.index("  run_kani() {"):gate.index("  run_kani awaken-agent-contract")]
+        for profile, (package, allowed, loops) in options.PROFILES.items():
+            harness = sorted(allowed)[0]
+            selected = ["--checked-loop-profile", profile, "--harness", harness]
+            expanded = options.expand_options(package, selected)
+            cut = expanded.index("--cbmc-args")
+            self.assertTrue(options.checked_loop_override(package, expanded[:cut], expanded[cut:], True))
+            self.assertEqual(expanded[-1], ",".join(name + ":1" for name in loops))
+            invalid = [
+                ("foreign-package", "another-package", selected),
+                ("unknown-profile", package, [selected[0], "unknown", *selected[2:]]),
+                ("dynamic-profile", package, [selected[0], "$PROFILE", *selected[2:]]),
+                ("foreign-harness", package, [*selected[:3], "foreign"]),
+                ("empty", package, selected[:2]),
+                ("duplicate-harness", package, selected + selected[2:]),
+                ("duplicate-profile", package, selected + selected[:2]),
+            ]
+            for flag in ("--no-unwinding-checks", "--no-assertions", "--solver", "--cbmc-args"):
+                invalid.append((flag, package, selected + [flag, "foreign"]))
+            for label, candidate_package, candidate in invalid:
+                with self.subTest(profile=profile, rule=label):
+                    with self.assertRaises(ValueError):
+                        options.expand_options(candidate_package, candidate)
+            tail = expanded[cut:]
+            for candidate in (
+                tail[:2] + [tail[2].replace(":1", ":0", 1)],
+                tail[:2] + [tail[2].replace(":1", ":2", 1)],
+                tail[:2] + [tail[2].replace(":1", ":$BOUND", 1)],
+                tail[:2] + [",".join(tail[2].split(",")[1:])],
+                tail[:2] + [tail[2] + "," + tail[2].split(",")[0]],
+                tail[:2] + [tail[2].replace(loops[0], "foreign.0", 1)],
+                tail + ["--no-assertions"],
+                ["--cbmc-args", "--no-unwinding-checks"],
+            ):
+                with self.subTest(profile=profile, tail=candidate):
+                    self.assertFalse(options.checked_loop_override(package, expanded[:cut], candidate, True))
+            # Each individual loop identity and bound is binding, not only
+            # the first entry or vector length. Ordering is canonical too.
+            for index, loop in enumerate(loops):
+                for replacement in ("foreign.0:1", loop + ":0", loop + ":2", loop + ":$BOUND"):
+                    entries = tail[2].split(",")
+                    entries[index] = replacement
+                    with self.subTest(profile=profile, index=index, replacement=replacement):
+                        self.assertFalse(options.checked_loop_override(
+                            package, expanded[:cut], [*tail[:2], ",".join(entries)], True))
+            self.assertFalse(options.checked_loop_override(
+                package, expanded[:cut], [*tail[:2], ",".join(reversed(tail[2].split(",")))], True))
+            self.assertFalse(options.checked_loop_override(package, expanded[:cut], tail, False))
+            shell = ("kani_jobs=1; kani_batch_timeout_seconds=600; CARGO_TARGET_DIR=/tmp/checked-profile-test\n"
+                     "run_with_deadline() { printf '%s\\n' \"$@\"; }\n" + runner + '\nrun_kani "$@"')
+            good = subprocess.run(["bash", "-c", shell, "profile-test", package, *selected],
+                                  cwd=root, text=True, capture_output=True)
+            self.assertEqual(good.returncode, 0, good.stderr)
+            self.assertEqual(good.stdout.splitlines()[9:], expanded)
+            for label, candidate_package, candidate in invalid:
+                with self.subTest(profile=profile, runtime=label):
+                    bad = subprocess.run(["bash", "-c", shell, "profile-test", candidate_package, *candidate],
+                                         cwd=root, text=True, capture_output=True)
+                    self.assertEqual(bad.returncode, 2, bad.stderr)
+                    self.assertEqual(bad.stdout, "")
+                    self.assertIn("formal Kani options:", bad.stderr)
+
     def test_live_checker_and_release_consume_the_same_qualification(self):
         # One real ledger is consumed through the CLI and release imports.
         # R1 their denominator, numerator and exact gaps agree, with no mocked
