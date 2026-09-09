@@ -103,7 +103,7 @@ impl WorkerRequestAuthorizer for KubernetesWorkerRequestAuthorizer {
             || self
                 .identity
                 .as_ref()
-                .is_some_and(|identity| identity.worker_id != worker_id)
+                .is_some_and(|identity| !self.pod.matches_worker(identity))
         {
             return Err("request Worker identity does not match the Kubernetes Pod".into());
         }

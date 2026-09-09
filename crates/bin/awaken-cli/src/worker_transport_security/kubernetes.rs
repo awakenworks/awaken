@@ -46,9 +46,9 @@ impl WorkerExecutionBindingSource for KubernetesWorkerBindings {
     ) -> Result<AttemptExecutionBinding, ApplicationError> {
         let pod = KubernetesPodIdentity::from_worker_id(&worker.worker_id)
             .map_err(ApplicationError::invalid)?;
-        if pod.namespace() != self.namespace {
+        if pod.namespace() != self.namespace || !pod.matches_worker(worker) {
             return Err(ApplicationError::invalid(
-                "Worker belongs to another Kubernetes namespace",
+                "Worker does not match its immutable Kubernetes process domain",
             ));
         }
         // The request identity has already passed TokenReview and Registry checks.

@@ -927,7 +927,7 @@ fn verify_worker_id(worker: &VerifiedWorkerContext, worker_id: &str) -> Result<(
 async fn register_worker(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
-    Json(request): Json<RegisterWorkerReq>,
+    Json(mut request): Json<RegisterWorkerReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         verify_worker_id(&worker, &request.registration.worker_id)?;
@@ -944,6 +944,24 @@ async fn register_worker(
             return Err(HostError::bad_request(
                 "Worker manifest does not explicitly support the current runtime protocol",
             ));
+        }
+        if let Some(incarnation) = worker.registration_incarnation() {
+            // All registrations through this authenticated domain select one
+            // immutable incarnation. The existing atomic register therefore
+            // only creates or retries it; expiry and close cannot become a new
+            // generation. Refuse historical identities instead of backfilling
+            // a binding after their effects have already started.
+            if directory(&service)?
+                .current(worker.worker_id())
+                .await
+                .map_err(|error| HostError::unavailable(error.to_string()))?
+                .is_some_and(|current| current.snapshot.identity.incarnation_id != incarnation)
+            {
+                return Err(HostError::bad_request(
+                    "immutable Worker domain has a different historical incarnation; replace the execution domain",
+                ));
+            }
+            request.registration.incarnation_id = incarnation.into();
         }
         let record = match directory(&service)?
             .register(

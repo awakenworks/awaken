@@ -31,6 +31,9 @@ tokio = { workspace = true, features = ["time"] }
 test-support = []
 
 [dev-dependencies]
+awaken-worker-registry = { workspace = true, features = ["test-support"] }
+awaken-worker-transport-security = { workspace = true, features = ["kubernetes"] }
+kube = { version = "1", default-features = false, features = ["client"] }
 awaken-provisioning-contract.workspace = true
 awaken-resource-application.workspace = true
 awaken-file-store = { workspace = true, features = ["test-support"] }

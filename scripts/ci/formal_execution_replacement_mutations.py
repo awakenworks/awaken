@@ -77,11 +77,12 @@ def check_k8s_process_observation_model_mutants(tlc_jar: Path) -> None:
         ("/\\ CompleteExit(current)", "/\\ (Domain(current) \\intersect exited # {})"),
         ("Observe(g) ==\n    /\\ <<g, g>> \\in bound", "Observe(g) ==\n    /\\ g \\in Generations"),
         ("/\\ authenticated = current", "/\\ authenticated # 0"),
+        ("/\\ incarnation = current", "/\\ TRUE"),
         ("/\\ current = g", "/\\ TRUE"),
         ("/\\ g \\in protectedBindings", "/\\ TRUE"),
         ("/\\ current \\in retained\n    /\\ ~CompleteExit(current)", "/\\ TRUE\n    /\\ ~CompleteExit(current)"),
-        ("/\\ UNCHANGED <<current, present, started, exited, authenticated, bound, failed,\n                    observation, retained, protectedBindings>>",
-         "/\\ observation' = g\n    /\\ UNCHANGED <<current, present, started, exited, authenticated, bound, failed,\n                    retained, protectedBindings>>"),
+        ("/\\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,\n                    observation, retained, protectedBindings>>",
+         "/\\ observation' = g\n    /\\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,\n                    retained, protectedBindings>>"),
     ]:
         if source.count(anchor) != 1:
             raise SystemExit(f"Kubernetes process observation mutation anchor drifted: {anchor}")
@@ -89,7 +90,7 @@ def check_k8s_process_observation_model_mutants(tlc_jar: Path) -> None:
     for witness in ("NoObservedExit", "NoReplacementBinding", "NoReplacementExit", "NoLiveStopRequest", "NoReplacementStop"):
         mutations.append((source, config.replace("INVARIANT Safety", f"INVARIANT {witness}"), witness))
     check_tlc_model_mutations(tlc_jar, "K8sProcessObservation", source, config, mutations)
-    print("Kubernetes process observation/stop: 10 unsafe-evidence mutants killed; 5 observation and exact-stop witnesses reached")
+    print("Kubernetes process observation/stop: 11 unsafe-evidence mutants killed; 5 observation and exact-stop witnesses reached")
 
 
 def check_execution_replacement_model_mutants(tlc_jar: Path) -> None:

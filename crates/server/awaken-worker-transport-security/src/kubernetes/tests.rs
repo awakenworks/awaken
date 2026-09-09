@@ -109,6 +109,37 @@ fn parts(identity: Option<&WorkerIdentity>) -> Parts {
     request.body(()).unwrap().into_parts().0
 }
 
+#[tokio::test]
+async fn one_pod_uid_cannot_authenticate_another_process_incarnation() {
+    // I1 exact Pod UID + canonical incarnation + positive Registry generation =>
+    // authenticated. I2 same reviewed UID + another incarnation =>
+    // reject before review. Otherwise a closed incarnation can register anew
+    // inside the very Pod an independent stop command is about to terminate.
+    // UID replacement must instead use a different Worker id and Pod domain.
+    let api = MockApi::new(Duration::from_secs(2), Duration::ZERO).await;
+    let exact = WorkerIdentity::new(pod().worker_id(), pod().uid(), 1);
+    let bootstrap = api.auth.authenticate(&parts(None)).await.unwrap();
+    assert_eq!(
+        bootstrap.registration_incarnation(),
+        Some(pod().uid()),
+        "I1 fixed registration"
+    );
+    assert!(api.auth.authenticate(&parts(Some(&exact))).await.is_ok());
+    for identity in [
+        WorkerIdentity::new(pod().worker_id(), "new-random-boot", 1),
+        WorkerIdentity::new(pod().worker_id(), "another-pod-uid", 1),
+    ] {
+        assert!(
+            api.auth
+                .authenticate(&parts(Some(&identity)))
+                .await
+                .is_err(),
+            "I2"
+        );
+    }
+    assert_eq!(api.state.calls.load(Ordering::SeqCst), 2, "I2 no review");
+}
+
 #[test]
 fn pod_coordinate_codec_is_exact_and_cannot_alias_a_replacement_or_path() {
     // P1 valid names/UID => bijective Worker-id coordinate. P2 changing any
@@ -239,7 +270,7 @@ async fn reviewed_pod_requires_all_identity_audience_and_service_account_conjunc
     // R1 all => exact context; R2 each missing conjunct => denial. Each mutation
     // starts from R1 (MC/DC). Kubernetes API honesty is TCB, not mocked proof.
     let api = MockApi::new(Duration::from_secs(2), Duration::ZERO).await;
-    let identity = WorkerIdentity::new(pod().worker_id(), "boot-a", 7);
+    let identity = WorkerIdentity::new(pod().worker_id(), pod().uid(), 7);
     for registered in [false, true] {
         let request = parts(registered.then_some(&identity));
         api.set(StatusCode::OK, accepted());
@@ -316,7 +347,7 @@ async fn malformed_or_unbound_requests_never_spend_a_token_review() {
     // outside POST register => local denial and zero API calls. A token cannot
     // turn a bootstrap identity into a claimed execution or foreign Worker.
     let api = MockApi::new(Duration::from_secs(2), Duration::ZERO).await;
-    let identity = WorkerIdentity::new(pod().worker_id(), "boot-a", 7);
+    let identity = WorkerIdentity::new(pod().worker_id(), pod().uid(), 7);
     for header in [WORKER_ID_HEADER, "authorization", IDENTITY_HEADER] {
         let mut request = parts(Some(&identity));
         let value = request.headers[header].clone();
@@ -423,7 +454,7 @@ async fn projected_token_rotation_and_registration_use_the_existing_authorizer_p
     let directory = tempfile::tempdir().unwrap();
     let token = directory.path().join("token");
     let authorizer = KubernetesWorkerRequestAuthorizer::new(pod(), token.clone()).unwrap();
-    let identity = WorkerIdentity::new(pod().worker_id(), "boot", 7);
+    let identity = WorkerIdentity::new(pod().worker_id(), pod().uid(), 7);
     let client = reqwest::Client::new();
     let request = |authorizer: &dyn WorkerRequestAuthorizer, path: &str| {
         let outgoing = authorizer

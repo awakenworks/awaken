@@ -76,17 +76,14 @@ async fn authenticated_pod_is_bound_through_the_same_client_without_a_second_ide
     // C1 exact reviewed Pod identity; C2 exact running private non-restarting
     // Pod; C3 Registry-allocated incarnation. R1 conjunction => frozen binding
     // contains that incarnation + operator provider + exact process coordinate.
-    // R2 new incarnation changes only the Worker tuple, never physical identity.
+    // R2 Registry generation remains separately checked; the Pod incarnation
+    // cannot change independently of its immutable UID.
     // Authentication proves the caller, not termination or replay authority.
     let (transport, facts) = fixture();
     let (auth, bindings) = transport.into_parts();
     let bindings = bindings.expect("Kubernetes selection cannot lose its binding source");
     for generation in [1, 2] {
-        let worker = WorkerIdentity::new(
-            "k8s:workers:worker-a:uid-a",
-            format!("boot-{generation}"),
-            generation,
-        );
+        let worker = WorkerIdentity::new("k8s:workers:worker-a:uid-a", "uid-a", generation);
         let request = Request::builder()
             .method("POST")
             .uri("/v1/worker/dispatch/attempt/begin")
@@ -128,7 +125,7 @@ async fn pod_replacement_and_unobservable_processes_never_degrade_to_unbound_adm
     // Each mutation starts from the valid R1 witness (MC/DC).
     let (transport, facts) = fixture();
     let source = transport.into_parts().1.unwrap();
-    let worker = WorkerIdentity::new("k8s:workers:worker-a:uid-a", "boot", 1);
+    let worker = WorkerIdentity::new("k8s:workers:worker-a:uid-a", "uid-a", 1);
     for (pointer, value) in [
         ("/metadata/uid", json!("uid-replacement")),
         ("/spec/restartPolicy", json!("Always")),
@@ -167,6 +164,14 @@ async fn pod_replacement_and_unobservable_processes_never_degrade_to_unbound_adm
         );
     }
     let before = facts.reads.load(Ordering::SeqCst);
+    // R6 the same Pod id with a new process-proposed incarnation must fail
+    // before provider I/O, just like a cross-namespace identity (MC/DC).
+    assert!(
+        source
+            .binding_for(&WorkerIdentity::new(&worker.worker_id, "new-boot", 1))
+            .await
+            .is_err()
+    );
     for id in ["unsigned-worker", "k8s:foreign:worker-a:uid-a"] {
         assert!(
             source

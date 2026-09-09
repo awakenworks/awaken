@@ -83,6 +83,7 @@ impl awaken_worker_transport_security::VerifiedWorkerContext
 pub fn awaken_worker_transport_security::VerifiedWorkerContext::authenticated(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_worker_transport_security::VerifiedWorkerContext::credential_id(&self) -> core::option::Option<&str>
 pub fn awaken_worker_transport_security::VerifiedWorkerContext::identity(&self) -> core::option::Option<&awaken_worker_contract::registry::WorkerIdentity>
+pub fn awaken_worker_transport_security::VerifiedWorkerContext::registration_incarnation(&self) -> core::option::Option<&str>
 pub fn awaken_worker_transport_security::VerifiedWorkerContext::worker_id(&self) -> &str
 pub struct awaken_worker_transport_security::WorkerSigningCredential
 impl awaken_worker_transport_security::WorkerSigningCredential

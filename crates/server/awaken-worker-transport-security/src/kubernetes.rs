@@ -73,6 +73,14 @@ impl KubernetesPodIdentity {
     pub fn uid(&self) -> &str {
         &self.uid
     }
+
+    /// One Pod UID has one incarnation. Registry still validates its allocated
+    /// generation; a new random boot id cannot reopen this physical domain.
+    pub fn matches_worker(&self, identity: &WorkerIdentity) -> bool {
+        identity.worker_id == self.worker_id()
+            && identity.incarnation_id == self.uid
+            && identity.generation > 0
+    }
 }
 
 fn dns_name(value: &str, max: usize) -> bool {
@@ -213,10 +221,7 @@ impl WorkerRequestAuthenticator for KubernetesWorkerAuthenticator {
             })
             .transpose()?;
         match identity.as_ref() {
-            Some(identity)
-                if identity.worker_id == worker_id
-                    && !identity.incarnation_id.trim().is_empty()
-                    && identity.generation > 0 => {}
+            Some(identity) if requested_pod.matches_worker(identity) => {}
             None if parts.method == "POST" && parts.uri.path() == REGISTER_PATH => {}
             _ => return Err(invalid("missing or mismatched Worker incarnation")),
         }
@@ -252,11 +257,16 @@ impl WorkerRequestAuthenticator for KubernetesWorkerAuthenticator {
         if pod != requested_pod {
             return Err(invalid("Kubernetes token belongs to another Pod"));
         }
-        Ok(VerifiedWorkerContext::signed(
+        let mut context = VerifiedWorkerContext::signed(
             worker_id.into(),
             identity,
             format!("k8s-pod:{}", pod.uid()),
-        ))
+        );
+        // A non-restarting Pod is one execution domain. A process-proposed
+        // nonce must not resurrect its closed Registry slot while an independent
+        // controller stops that same Pod. Generation remains Registry-owned.
+        context.registration_incarnation = Some(pod.uid().into());
+        Ok(context)
     }
 }
 
