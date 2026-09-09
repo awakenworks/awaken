@@ -114,6 +114,7 @@ python3 scripts/ci/check_formal_mutations.py
 
 # The abstract network algebra is not Rust String/Vec refinement. Exercise the
 # actual owner and frozen SQLite root alongside its TLAPS/TLC checks below.
+cargo test -p awaken-protocol-managed --lib projection_publish_decision_covers_cache_and_source_fences
 cargo test -p awaken-session-contract --lib network_policy::tests
 cargo test -p awaken-session-application --lib profiled_session_creation_enforces_publication_and_upfront_inputs
 cargo test -p awaken-session-application --lib realization::publication::collection_tests
@@ -846,6 +847,14 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/managed-projection-publish" \
     -config formal/tla/ManagedProjectionPublish.cfg \
     formal/tla/ManagedProjectionPublish.tla
+  java -Djava.io.tmpdir="$tlc_state_root" -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/managed-projection-inputs" \
+    -config formal/tla/ManagedProjectionPublishInputs.cfg \
+    formal/tla/ManagedProjectionPublish.tla
+  java -Djava.io.tmpdir="$tlc_state_root" -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/managed-projection-topology" \
+    -config formal/tla/ManagedProjectionPublishTopology.cfg \
+    formal/tla/ManagedProjectionPublish.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/agent-message-protocol" \
     -config formal/tla/AgentMessageProtocol.cfg \
@@ -1004,6 +1013,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/acp-projected-binding-use" \
     -config formal/tla/AcpProjectedBindingUse.cfg formal/tla/AcpProjectedBindingUse.tla
   python3 scripts/ci/check_formal_mutations.py --acp-projection-model-mutants "$tla_jar"
+  python3 scripts/ci/check_formal_mutations.py --managed-projection-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/audit-commit" \
     -config formal/tla/AuditCommit.cfg formal/tla/AuditCommit.tla

@@ -40,7 +40,7 @@ from formal_credential_mutations import (
     check_acp_projection_model_mutants,
 )
 from formal_dispatch_mutations import (check_resolution_failure_model_mutant, check_terminal_scan_model_mutants,
-    check_maintenance_observation_mutants)
+    check_maintenance_observation_mutants, check_managed_projection_model_mutants)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -336,7 +336,8 @@ class MutationOracleTests(unittest.TestCase):
             "background-completion-model-mutant", "sandbox-control-model-mutants",
             "audit-commit-model-mutants", "effect-retirement-model-mutant",
             "credential-creation-model-mutants", "verified-admission-model-mutants",
-            "session-network-model-mutant", "work-queue-stop-model-mutants", "session-observation-model-mutants",
+            "session-network-model-mutant", "work-queue-stop-model-mutants",
+            "managed-projection-model-mutants", "session-observation-model-mutants",
             "cowork-lifecycle-model-mutants", "local-process-model-mutant",
             "local-recovery-model-mutants", "checkpoint-recovery-model-mutants",
             "mcp-credential-model-mutants", "credential-effect-model-mutants",
@@ -570,6 +571,7 @@ def main() -> None:
         "acp-binding-model-mutants": check_acp_binding_model_mutants,
         "acp-observation-model-mutants": check_acp_observation_model_mutants,
         "acp-projection-model-mutants": check_acp_projection_model_mutants,
+        "managed-projection-model-mutants": check_managed_projection_model_mutants,
     }
     model_selection = parser.add_mutually_exclusive_group()
     for name in model_checks:
