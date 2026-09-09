@@ -372,6 +372,26 @@ def validate_observation_rule(name: str, step: dict[str, Any]) -> None:
         snapshot = {"revision": "uint", "fingerprint": "text", "binding": "text"}
         state = {"exists": "bool", **snapshot}
         validate_observation_schema(step, {"rule": "text", "before": state, "incoming": snapshot, "after": state, "admitted": "bool"}, name)
+    elif name == "delete-retry-lifecycle":
+        state = {"disposition": ("active", "archived", "deleting", "tombstoned"),
+            "terminal": "bool", "phase": ("not_requested", "fenced", "requested", "completed"),
+            "effect": "text", "cleanup": "text", "revision": "uint", "facts": "uint",
+            "root": "text", "outbox": "text", "owner": "text", "tombstone": "text"}
+        validate_observation_schema(step, {"rule": "text", "kind": ("fence", "retry"),
+            "lostAck": "bool", "result": ("applied", "replayed", "not_found"), "receiptOwner": "text", "receiptRoot": "text",
+            "before": state, "after": state}, name)
+        match = re.fullmatch(r"(active|archived-fenced|archived-requested|archived-completed)-(false|true)-(fence|first|requested|completed|tombstone)", rule)
+        if match is None:
+            raise ValueError("deletion observation rule drift")
+        initial, lost_ack, stage = match.groups()
+        before = step["before"]
+        expected_kind = "fence" if stage == "fence" else "retry"
+        expected_phase = ("not_requested" if initial == "active" else initial.removeprefix("archived-")) if stage == "fence" else ("fenced" if initial == "active" else initial.removeprefix("archived-")) if stage == "first" else "completed" if stage == "tombstone" else stage
+        expected_disposition = ("active" if initial == "active" else "archived") if stage == "fence" else "tombstoned" if stage == "tombstone" else "deleting"
+        if (step["lostAck"] != (lost_ack == "true") or step["kind"] != expected_kind
+                or before["phase"] != expected_phase or before["disposition"] != expected_disposition
+                or before["facts"] != (1 if stage == "first" else 0)):
+            raise ValueError("deletion observation rule conditions drift")
     elif name == "maintenance-scheduler-composition":
         validate_observation_schema(step, {"rule": "text", "owns": "bool",
             "topology": ("service", "pool", "reconciler"), "terminal": "bool",

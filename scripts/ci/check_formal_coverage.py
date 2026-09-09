@@ -10,6 +10,7 @@ import sys
 import tomllib
 
 from _crate_boundary_workspace import rust_syntax
+from formal_kani_options import checked_loop_override, expand_options
 from formal_profile import PROOF_GRADES, profile_result, validate_proof_grade
 
 
@@ -77,18 +78,19 @@ for line in formal_gate.replace("\\\n", " ").splitlines():
     tokens = shlex.split(line, comments=True)
     if len(tokens) < 4 or re.fullmatch(r"[a-z0-9_-]+", tokens[1]) is None:
         fail("strict CI Kani selection must name a literal package and exact harnesses")
+    try:
+        tokens = tokens[:2] + expand_options(tokens[1], tokens[2:])
+    except ValueError as error:
+        fail(str(error))
     index = 2
     unstable_options = False
     while index < len(tokens):
         flag = tokens[index]
         if flag == "--cbmc-args":
-            # Only a literal positive memcmp loop bound may cross this escape
-            # hatch. No check-disabling, arbitrary CBMC options or shell values.
-            tail = tokens[index:]
-            if (not unstable_options or len(tail) != 3
-                    or tail[1] != "--unwindset"
-                    or re.fullmatch(r"memcmp\.0:[1-9][0-9]*", tail[2]) is None):
-                fail("strict CI Kani selection permits only a checked literal memcmp loop bound")
+            # The two qualified literal forms never admit arbitrary CBMC
+            # options or source-controlled shell values.
+            if not checked_loop_override(tokens[1], tokens[2:index], tokens[index:], unstable_options):
+                fail("strict CI Kani selection permits only checked literal loop bounds")
             break
         if flag == "--no-default-features":
             index += 1

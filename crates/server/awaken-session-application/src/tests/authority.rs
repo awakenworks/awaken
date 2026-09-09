@@ -2446,35 +2446,226 @@ async fn terminal_edges_wait_for_every_accepted_event_effect_anchor() {
 
 #[tokio::test]
 async fn delete_fact_is_committed_once_at_the_fence_and_not_reemitted_by_tombstone() {
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .expect("session repository"),
+    // Causes: C1 Active or Archived with Fenced/Requested/Completed cleanup;
+    // C2 the first fence returns normally or commit_then_conflict_once injects
+    // Conflict after the real SQL commit, forcing authoritative reread (not
+    // arbitrary network/storage errors); C3 DELETE repeats through a
+    // cold application before/after outbox ACK and cleanup progress; C4 an
+    // external preparation fails; C5 completed cleanup loses its tombstone CAS.
+    // Effects: D1 exactly one hidden terminal fence/fact; D2 existing archive
+    // cleanup is retained in full; D3 all retries preserve the complete durable
+    // root/outbox, including revision and cleanup identity; D4 errors retain the
+    // same operation for recovery; D5 tombstone/late retry emits no second fact.
+    // Decision table: each C1 x C2 runs first fence + cold replay + ACK; every
+    // incomplete cleanup takes C4 and Requested replay, then all cases take C5
+    // and Completed replay before D5. SQL, application and the canonical driver
+    // execute unchanged. The SAME model relations consume these observations;
+    // the projection retains full root/cleanup/outbox bytes for replay equality.
+    // D1/D3 also bind returned owner and entire receipt root to durable truth;
+    // a correct write with an incorrect response is still a failure. D5 reads
+    // retained deletion evidence through the existing owner-scoped port and
+    // checks its exact revision; absence alone cannot stand in for a tombstone.
+    use super::observation_refinement::deletion_observation;
+    let mut observations = Vec::new();
+    for initial in [
+        "active",
+        "archived-fenced",
+        "archived-requested",
+        "archived-completed",
+    ] {
+        for lost_ack in [false, true] {
+            let session_id = format!("delete-{initial}-{lost_ack}");
+            let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            );
+            let repo = Arc::new(FaultingSessionRepository::new(durable.clone()));
+            let runtime = Arc::new(RecordingCleanupRuntime::default());
+            let app = application_with_runtime(
+                runtime.clone(),
+                repo.clone(),
+                Arc::new(RecordingEnvironmentSource::default()),
+            );
+            let mut root = persisted(&session_id, false, "idle");
+            if initial != "active" {
+                root.archive("original-archive").unwrap();
+            }
+            if initial == "archived-requested" {
+                root.freeze_terminal_cleanup_targets(Vec::<String>::new(), 17, 19)
+                    .unwrap();
+            }
+            create(repo.as_ref(), root).await;
+            if initial == "archived-completed" {
+                let completed = app
+                    .release_terminal_resources("workspace", &session_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert!(completed.terminal_cleanup.is_completed());
+            }
+            let before_root = durable.get(&session_id).await.unwrap();
+            let before = deletion_observation(durable.as_ref(), &session_id, "workspace").await;
+            if lost_ack {
+                repo.commit_then_conflict_once("delete-intent");
+            }
+            let transition = app
+                .commit_delete_intent(SessionDeleteCommand::new(&session_id))
+                .await
+                .unwrap();
+            assert_eq!(
+                transition.transitioned, !lost_ack,
+                "D1 response loss recovers the winner"
+            );
+            let after_root = durable.get(&session_id).await.unwrap();
+            assert_eq!(
+                transition.owner_scope,
+                durable.owner(&session_id).await.unwrap(),
+                "D1 receipt owner"
+            );
+            assert_eq!(
+                transition.session, after_root,
+                "D1 receipt is the complete committed root"
+            );
+            assert!(after_root.is_hidden() && after_root.execution.is_terminal());
+            assert_eq!(
+                after_root.revision.0,
+                before_root.revision.0 + 1,
+                "D1 one fence CAS"
+            );
+            if initial != "active" {
+                assert_eq!(
+                    after_root.terminal_cleanup, before_root.terminal_cleanup,
+                    "D2 archived cleanup preserved"
+                );
+            }
+            let facts = durable.pending_lifecycle().await.unwrap();
+            assert_eq!(facts.len(), 1, "D1 exactly one fact");
+            assert_eq!(facts[0].id, format!("session:{session_id}:deleted"));
+            assert_eq!(facts[0].workspace_id.as_deref(), Some("workspace"));
+            observations.push(serde_json::json!({"rule": format!("{initial}-{lost_ack}-fence"), "kind": "fence", "lostAck": lost_ack, "result": if transition.transitioned { "applied" } else { "replayed" }, "receiptOwner": transition.owner_scope, "receiptRoot": serde_json::to_string(&transition.session).unwrap(), "before": before, "after": deletion_observation(durable.as_ref(), &session_id, "workspace").await}));
+            let original_effect = observations.last().unwrap()["after"]["effect"].clone();
+            let cold = application_with_runtime(
+                runtime.clone(),
+                repo.clone(),
+                Arc::new(RecordingEnvironmentSource::default()),
+            );
+            for stage in ["first", "requested", "completed"] {
+                if stage == "requested" {
+                    durable.complete_lifecycle(&facts[0].id).await.unwrap();
+                    if after_root.terminal_cleanup.is_completed() {
+                        continue;
+                    }
+                    runtime
+                        .fail_before_effect_once
+                        .store(true, Ordering::SeqCst);
+                    assert!(
+                        cold.release_terminal_resources("workspace", &session_id)
+                            .await
+                            .is_err(),
+                        "D4 pre-effect failure"
+                    );
+                    assert!(
+                        durable
+                            .get(&session_id)
+                            .await
+                            .unwrap()
+                            .terminal_cleanup
+                            .is_requested()
+                    );
+                }
+                if stage == "completed" {
+                    // Match only the final tombstone key, not other mutations
+                    // that happen to contain this Session's delete-* id.
+                    repo.fail_once("session:delete:");
+                    assert!(
+                        cold.release_terminal_resources("workspace", &session_id)
+                            .await
+                            .is_err(),
+                        "D4 tombstone outage"
+                    );
+                    assert!(
+                        durable
+                            .get(&session_id)
+                            .await
+                            .unwrap()
+                            .terminal_cleanup
+                            .is_completed()
+                    );
+                }
+                let before = deletion_observation(durable.as_ref(), &session_id, "workspace").await;
+                assert_eq!(
+                    before["effect"], original_effect,
+                    "D4 stable cleanup operation"
+                );
+                let replay = cold
+                    .commit_delete_intent(SessionDeleteCommand::new(&session_id))
+                    .await
+                    .unwrap();
+                assert!(!replay.transitioned, "D3 retry is an absorbing replay");
+                assert_eq!(
+                    replay.owner_scope,
+                    durable.owner(&session_id).await.unwrap(),
+                    "D3 receipt owner"
+                );
+                assert_eq!(
+                    replay.session,
+                    durable.get(&session_id).await.unwrap(),
+                    "D3 receipt is the complete current root"
+                );
+                let after = deletion_observation(durable.as_ref(), &session_id, "workspace").await;
+                assert_eq!(after, before, "D3 full durable replay frame");
+                observations.push(serde_json::json!({"rule": format!("{initial}-{lost_ack}-{stage}"), "kind": "retry", "lostAck": lost_ack, "result": if replay.transitioned { "applied" } else { "replayed" }, "receiptOwner": replay.owner_scope, "receiptRoot": serde_json::to_string(&replay.session).unwrap(), "before": before, "after": after}));
+            }
+            let completed_revision = durable.get(&session_id).await.unwrap().revision.0;
+            let effect_calls = runtime.intents.lock().unwrap().len();
+            assert!(
+                cold.release_terminal_resources("workspace", &session_id)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                durable.pending_lifecycle().await.unwrap().is_empty(),
+                "D5 acknowledged fact not re-emitted"
+            );
+            let before = deletion_observation(durable.as_ref(), &session_id, "workspace").await;
+            assert_eq!(
+                before["revision"],
+                completed_revision + 1,
+                "D5 exact durable tombstone revision"
+            );
+            assert!(
+                durable
+                    .deleted_event_admissions("foreign", &session_id)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "D5 tombstone remains owner scoped"
+            );
+            let absent = cold
+                .commit_delete_intent(SessionDeleteCommand::new(&session_id))
+                .await;
+            assert!(matches!(absent, Err(SessionPreparationError::NotFound)));
+            assert!(
+                cold.release_terminal_resources("workspace", &session_id)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            let after = deletion_observation(durable.as_ref(), &session_id, "workspace").await;
+            assert_eq!(after, before, "D5 tombstone remains absorbing");
+            assert_eq!(
+                runtime.intents.lock().unwrap().len(),
+                effect_calls,
+                "D5 no repeated provider effect"
+            );
+            observations.push(serde_json::json!({"rule": format!("{initial}-{lost_ack}-tombstone"), "kind": "retry", "lostAck": lost_ack, "result": "not_found", "receiptOwner": "none", "receiptRoot": "null", "before": before, "after": after}));
+        }
+    }
+    awaken_reliability_testkit::write_observation_trace(
+        "delete-retry-lifecycle",
+        "deletion",
+        serde_json::Value::Array(observations),
     );
-    create(repo.as_ref(), persisted("delete-fact-once", false, "idle")).await;
-    let app = application(
-        repo.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
-
-    let transition = app
-        .commit_delete_intent(SessionDeleteCommand::new("delete-fact-once"))
-        .await
-        .expect("Delete fence");
-    let facts = repo.pending_lifecycle().await.expect("Delete outbox");
-    assert_eq!(facts.len(), 1);
-    assert_eq!(facts[0].id, "session:delete-fact-once:deleted");
-    repo.complete_lifecycle(&facts[0].id)
-        .await
-        .expect("consumer acknowledged Delete fact");
-
-    app.release_terminal_resources(&transition.owner_scope, "delete-fact-once")
-        .await
-        .expect("verified cleanup and tombstone");
-    assert!(repo.pending_lifecycle().await.unwrap().is_empty());
-    assert!(matches!(
-        repo.get("delete-fact-once").await,
-        Err(awaken_session_contract::SessionRepositoryError::NotFound)
-    ));
 }
 
 #[tokio::test]
