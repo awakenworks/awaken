@@ -143,7 +143,9 @@ class EvidenceTests(unittest.TestCase):
         # Z4 proof failure => propagate. Execute the real runner selection and its
         # final strict check with a solver process stub; this is not proof evidence.
         source = (self.root / "scripts/ci/check_formal.sh").read_text()
-        selection = "  if command -v z3" + source.split("  if command -v z3", 1)[1].split("  run_kani awaken-protocol-managed \\\n", 1)[0]
+        # End at this conditional's own indentation, not the next package
+        # batch: another solver selection can legally follow the closing fi.
+        selection = "  if command -v z3" + source.split("  if command -v z3", 1)[1].split("\n  fi\n", 1)[0] + "\n  fi\n"
         strict_check = "\nif [ \"$require_tools\"" + source.rsplit("\nif [ \"$require_tools\"", 1)[1]
         version = begin_record(self.root, True, 100)["proof_toolchain"]["z3"]
         for installed, reported, version_exit, proof_exit, strict, expected in (

@@ -840,13 +840,13 @@ pinned Z3 executable under `lib/tlapm/backends/bin`; adding that directory to
 `PATH` reuses it. The gate checks its version and binds it in the existing
 execution receipt.
 
-The bootstrap is pinned to a reviewed Kani source revision using Rust 1.97
-nightly because the published Kani 0.67 bundle embeds Rust 1.93, while the
-workspace's IAM dependencies require Rust 1.96. It retains Cargo's
-`rust-version` enforcement instead of masking an incompatible compiler with
-`--ignore-rust-version`; subsequent formal runs discover the cached source
-build automatically. `AWAKEN_KANI_CACHE_DIR`, `AWAKEN_KANI_SOURCE_DIR`, and
-`AWAKEN_KANI_BACKEND_DIR` allow CI to provide an equivalent prebuilt cache.
+The pinned Kani source uses Rust 1.97 nightly: the published bundle's Rust 1.93
+cannot meet the workspace's Rust 1.96 floor. Cargo's `rust-version` remains enforced.
+A SHA-256-pinned compiler patch preserves full `u128` niche offsets; a high-offset
+`Option` regression qualifies bootstrap and formal runs. Receipts bind revision
+and patch digest. Bootstrap rejects unrelated edits and preserves the old cache.
+`AWAKEN_KANI_CACHE_DIR`, `AWAKEN_KANI_SOURCE_DIR`, and `AWAKEN_KANI_BACKEND_DIR`
+allow an equivalent prebuilt cache; subsequent runs discover the source build.
 
 The script names every Kani harness and uses isolated TLC state directories so
 fast sequential models cannot collide on TLC's timestamp-based default path. It
