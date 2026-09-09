@@ -1536,7 +1536,7 @@ impl WorkerNode {
         shutdown?;
         if authority_lost {
             return Err(std::io::Error::other(
-                "worker lost registry authority; supervisor restart required",
+                "worker lost execution authority; supervisor restart required",
             )
             .into());
         }
