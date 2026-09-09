@@ -30,6 +30,7 @@ tracing = "0.1"
 libc = "0.2"
 
 [features]
+loom = []
 # Speak the official agent-client-protocol JSON-RPC wire to a real CLI (the
 # default): a projected-launch (`ProjectingChannelSource`) run selects it. Off
 # reverts every wire to the newline stand-in (fixtures only).
@@ -37,6 +38,7 @@ default = ["real-acp"]
 real-acp = ["awaken-protocol-acp/real-acp"]
 
 [dev-dependencies]
+loom = "0.7"
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "io-util", "time", "sync"] }
 serde_json.workspace = true
 # dev-only: the session-home reference impl's recovery tests use temp dirs.
