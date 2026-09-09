@@ -133,6 +133,11 @@ impl ResourcesApplication {
     }
 
     #[must_use]
+    pub fn purge_preparation(&self) -> Arc<dyn awaken_resource_contract::ResourcePurgePreparation> {
+        self.files.clone()
+    }
+
+    #[must_use]
     pub fn physical_cleanup(&self) -> Arc<dyn awaken_resource_contract::ResourcePhysicalReclaimer> {
         self.physical_cleanup.clone()
     }

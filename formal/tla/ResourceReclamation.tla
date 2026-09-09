@@ -8,16 +8,18 @@ VARIABLES lifecycle, intentState, claimGeneration, fence, fenceGeneration,
           lastPurgeReferences, lastPurgeLeases, lastPurgeFenceGeneration,
           receipt, completedGeneration, processUp, lastReferenceAttempt,
           lastReferenceCount, lastLeaseAttempt, lastLeaseCount,
-          lastReceiptAttempt, lastReceiptValue
+          lastReceiptAttempt, lastReceiptValue, fileOwnership, lastPurgeFileOwnership
 
 vars == <<lifecycle, intentState, claimGeneration, fence, fenceGeneration,
           references, leases, physicalPresent, purgeObserved, purgeGeneration,
           lastPurgeReferences, lastPurgeLeases, lastPurgeFenceGeneration,
           receipt, completedGeneration, processUp, lastReferenceAttempt,
           lastReferenceCount, lastLeaseAttempt, lastLeaseCount,
-          lastReceiptAttempt, lastReceiptValue>>
+          lastReceiptAttempt, lastReceiptValue, fileOwnership, lastPurgeFileOwnership>>
 
-Init == /\ lifecycle = "active"
+Init == /\ fileOwnership = TRUE
+        /\ lastPurgeFileOwnership = FALSE
+        /\ lifecycle = "active"
         /\ intentState = "none"
         /\ claimGeneration = 0
         /\ fence = FALSE
@@ -59,7 +61,8 @@ TryAddReference ==
                     lastPurgeReferences, lastPurgeLeases,
                     lastPurgeFenceGeneration, receipt, completedGeneration,
                     processUp, lastLeaseAttempt, lastLeaseCount,
-                    lastReceiptAttempt, lastReceiptValue>>
+                    lastReceiptAttempt, lastReceiptValue,
+                    fileOwnership, lastPurgeFileOwnership>>
 
 RemoveReference ==
     /\ references > 0
@@ -71,7 +74,8 @@ RemoveReference ==
                     purgeGeneration, lastPurgeReferences, lastPurgeLeases,
                     lastPurgeFenceGeneration, receipt, completedGeneration,
                     processUp, lastLeaseAttempt, lastLeaseCount,
-                    lastReceiptAttempt, lastReceiptValue>>
+                    lastReceiptAttempt, lastReceiptValue,
+                    fileOwnership, lastPurgeFileOwnership>>
 
 TryAcquireLease ==
     /\ leases < MaxLeases
@@ -86,7 +90,8 @@ TryAcquireLease ==
                     purgeObserved, purgeGeneration, lastPurgeReferences,
                     lastPurgeLeases, lastPurgeFenceGeneration, receipt,
                     completedGeneration, processUp, lastReferenceAttempt,
-                    lastReferenceCount, lastReceiptAttempt, lastReceiptValue>>
+                    lastReferenceCount, lastReceiptAttempt, lastReceiptValue,
+                    fileOwnership, lastPurgeFileOwnership>>
 
 ReleaseLease ==
     /\ leases > 0
@@ -98,20 +103,55 @@ ReleaseLease ==
                     purgeObserved, purgeGeneration, lastPurgeReferences,
                     lastPurgeLeases, lastPurgeFenceGeneration, receipt,
                     completedGeneration, processUp, lastReferenceAttempt,
-                    lastReferenceCount, lastReceiptAttempt, lastReceiptValue>>
+                    lastReferenceCount, lastReceiptAttempt, lastReceiptValue,
+                    fileOwnership, lastPurgeFileOwnership>>
 
-LogicalDelete ==
+\* FileApplication persists the intent, tombstones the File, then releases its
+\* ownership edge in separate durable calls. Foreground retry and resource-owned
+\* preparation resume these same monotonic steps after any crash. Other owners
+\* and live leases retain their independent counts above.
+RequestDelete ==
+    /\ processUp
     /\ lifecycle = "active"
     /\ intentState = "none"
-    /\ lifecycle' = "deleted"
     /\ intentState' = "pending"
-    /\ UNCHANGED <<claimGeneration, fence, fenceGeneration, references, leases,
+    /\ UNCHANGED <<lifecycle, claimGeneration, fence, fenceGeneration, references, leases,
                     physicalPresent, purgeObserved, purgeGeneration,
                     lastPurgeReferences, lastPurgeLeases,
                     lastPurgeFenceGeneration, receipt, completedGeneration,
                     processUp, lastReferenceAttempt, lastReferenceCount,
                     lastLeaseAttempt, lastLeaseCount, lastReceiptAttempt,
-                    lastReceiptValue>>
+                    lastReceiptValue,
+                    fileOwnership, lastPurgeFileOwnership>>
+
+LogicalDelete ==
+    /\ processUp
+    /\ lifecycle = "active"
+    /\ intentState \in {"pending", "claimed"}
+    /\ lifecycle' = "deleted"
+    /\ UNCHANGED <<intentState, claimGeneration, fence, fenceGeneration, references, leases,
+                    physicalPresent, purgeObserved, purgeGeneration,
+                    lastPurgeReferences, lastPurgeLeases,
+                    lastPurgeFenceGeneration, receipt, completedGeneration,
+                    processUp, lastReferenceAttempt, lastReferenceCount,
+                    lastLeaseAttempt, lastLeaseCount, lastReceiptAttempt,
+                    lastReceiptValue,
+                    fileOwnership, lastPurgeFileOwnership>>
+
+ReleaseFileOwnership ==
+    /\ processUp
+    /\ lifecycle = "deleted"
+    /\ fileOwnership
+    /\ intentState \in {"pending", "claimed"}
+    /\ fileOwnership' = FALSE
+    /\ UNCHANGED <<lifecycle, intentState, claimGeneration, fence, fenceGeneration, references, leases,
+                    physicalPresent, purgeObserved, purgeGeneration,
+                    lastPurgeReferences, lastPurgeLeases,
+                    lastPurgeFenceGeneration, receipt, completedGeneration,
+                    processUp, lastReferenceAttempt, lastReferenceCount,
+                    lastLeaseAttempt, lastLeaseCount, lastReceiptAttempt,
+                    lastReceiptValue,
+                    lastPurgeFileOwnership>>
 
 Claim ==
     /\ processUp
@@ -126,13 +166,14 @@ Claim ==
                     lastPurgeFenceGeneration, receipt, completedGeneration,
                     processUp, lastReferenceAttempt, lastReferenceCount,
                     lastLeaseAttempt, lastLeaseCount, lastReceiptAttempt,
-                    lastReceiptValue>>
+                    lastReceiptValue,
+                    fileOwnership, lastPurgeFileOwnership>>
 
 Defer ==
     /\ processUp
     /\ intentState = "claimed"
     /\ ~fence
-    /\ references > 0 \/ leases > 0
+    /\ fileOwnership \/ references > 0 \/ leases > 0
     /\ intentState' = "pending"
     /\ UNCHANGED <<lifecycle, claimGeneration, fence, fenceGeneration,
                     references, leases, physicalPresent, purgeObserved,
@@ -140,11 +181,13 @@ Defer ==
                     lastPurgeFenceGeneration, receipt, completedGeneration,
                     processUp, lastReferenceAttempt, lastReferenceCount,
                     lastLeaseAttempt, lastLeaseCount, lastReceiptAttempt,
-                    lastReceiptValue>>
+                    lastReceiptValue,
+                    fileOwnership, lastPurgeFileOwnership>>
 
 AcquireFence ==
     /\ processUp
     /\ intentState = "claimed"
+    /\ ~fileOwnership
     /\ references = 0
     /\ leases = 0
     /\ (~fence \/ fenceGeneration < claimGeneration)
@@ -156,15 +199,18 @@ AcquireFence ==
                     lastPurgeFenceGeneration, receipt, completedGeneration,
                     processUp, lastReferenceAttempt, lastReferenceCount,
                     lastLeaseAttempt, lastLeaseCount, lastReceiptAttempt,
-                    lastReceiptValue>>
+                    lastReceiptValue,
+                    fileOwnership, lastPurgeFileOwnership>>
 
 Purge ==
     /\ processUp
     /\ intentState = "claimed"
     /\ fence
     /\ fenceGeneration = claimGeneration
+    /\ ~fileOwnership
     /\ references = 0
     /\ leases = 0
+    /\ lastPurgeFileOwnership' = fileOwnership
     /\ physicalPresent' = FALSE
     /\ purgeObserved' = TRUE
     /\ purgeGeneration' = claimGeneration
@@ -175,7 +221,8 @@ Purge ==
                     fenceGeneration, references, leases, receipt,
                     completedGeneration, processUp, lastReferenceAttempt,
                     lastReferenceCount, lastLeaseAttempt, lastLeaseCount,
-                    lastReceiptAttempt, lastReceiptValue>>
+                    lastReceiptAttempt, lastReceiptValue,
+                    fileOwnership>>
 
 ReleaseFence ==
     /\ processUp
@@ -192,7 +239,8 @@ ReleaseFence ==
                     lastPurgeFenceGeneration, receipt, completedGeneration,
                     processUp, lastReferenceAttempt, lastReferenceCount,
                     lastLeaseAttempt, lastLeaseCount, lastReceiptAttempt,
-                    lastReceiptValue>>
+                    lastReceiptValue,
+                    fileOwnership, lastPurgeFileOwnership>>
 
 Complete ==
     /\ processUp
@@ -210,7 +258,8 @@ Complete ==
                     purgeGeneration, lastPurgeReferences, lastPurgeLeases,
                     lastPurgeFenceGeneration, processUp,
                     lastReferenceAttempt, lastReferenceCount,
-                    lastLeaseAttempt, lastLeaseCount>>
+                    lastLeaseAttempt, lastLeaseCount,
+                    fileOwnership, lastPurgeFileOwnership>>
 
 Crash ==
     /\ processUp
@@ -221,7 +270,8 @@ Crash ==
                     lastPurgeLeases, lastPurgeFenceGeneration, receipt,
                     completedGeneration, lastReferenceAttempt,
                     lastReferenceCount, lastLeaseAttempt, lastLeaseCount,
-                    lastReceiptAttempt, lastReceiptValue>>
+                    lastReceiptAttempt, lastReceiptValue,
+                    fileOwnership, lastPurgeFileOwnership>>
 
 Restart ==
     /\ ~processUp
@@ -232,7 +282,8 @@ Restart ==
                     lastPurgeLeases, lastPurgeFenceGeneration, receipt,
                     completedGeneration, lastReferenceAttempt,
                     lastReferenceCount, lastLeaseAttempt, lastLeaseCount,
-                    lastReceiptAttempt, lastReceiptValue>>
+                    lastReceiptAttempt, lastReceiptValue,
+                    fileOwnership, lastPurgeFileOwnership>>
 
 \* Lease recovery advances the durable fencing generation. An older physical
 \* fence may remain, but it must be adopted before the recovered claim can purge.
@@ -248,7 +299,8 @@ RecoverClaim ==
                     lastPurgeLeases, lastPurgeFenceGeneration, receipt,
                     completedGeneration, processUp, lastReferenceAttempt,
                     lastReferenceCount, lastLeaseAttempt, lastLeaseCount,
-                    lastReceiptAttempt, lastReceiptValue>>
+                    lastReceiptAttempt, lastReceiptValue,
+                    fileOwnership, lastPurgeFileOwnership>>
 
 RejectStaleReceipt ==
     /\ processUp
@@ -261,14 +313,17 @@ RejectStaleReceipt ==
                     purgeObserved, purgeGeneration, lastPurgeReferences,
                     lastPurgeLeases, lastPurgeFenceGeneration, receipt,
                     completedGeneration, processUp, lastReferenceAttempt,
-                    lastReferenceCount, lastLeaseAttempt, lastLeaseCount>>
+                    lastReferenceCount, lastLeaseAttempt, lastLeaseCount,
+                    fileOwnership, lastPurgeFileOwnership>>
 
 Next == TryAddReference \/ RemoveReference \/ TryAcquireLease \/ ReleaseLease \/
-        LogicalDelete \/ Claim \/ Defer \/ AcquireFence \/ Purge \/
+        RequestDelete \/ LogicalDelete \/ ReleaseFileOwnership \/ Claim \/ Defer \/ AcquireFence \/ Purge \/
         ReleaseFence \/ Complete \/ Crash \/ Restart \/ RecoverClaim \/
         RejectStaleReceipt
 
-TypeOK == /\ lifecycle \in {"active", "deleted"}
+TypeOK == /\ fileOwnership \in BOOLEAN
+          /\ lastPurgeFileOwnership \in BOOLEAN
+          /\ lifecycle \in {"active", "deleted"}
           /\ intentState \in {"none", "pending", "claimed", "completed"}
           /\ claimGeneration \in 0..MaxGeneration
           /\ fence \in BOOLEAN
@@ -291,9 +346,11 @@ TypeOK == /\ lifecycle \in {"active", "deleted"}
           /\ lastReceiptAttempt \in {"none", "current", "stale"}
           /\ lastReceiptValue \in BOOLEAN
 
-IntentRequiresLogicalDelete == intentState # "none" => lifecycle = "deleted"
+DeletedFileRequiresIntent == lifecycle = "deleted" => intentState # "none"
 
-FenceHasNoReferencesOrLeases == fence => references = 0 /\ leases = 0
+ActiveFileRetainsOwnership == lifecycle = "active" => fileOwnership
+
+FenceHasNoReferencesOrLeases == fence => ~fileOwnership /\ references = 0 /\ leases = 0
 
 FenceCannotLeadTheDurableClaim == fence => fenceGeneration <= claimGeneration
 
@@ -306,6 +363,7 @@ RejectedLeaseDoesNotCreateHandle ==
 PurgeWasFencedAndUnreferenced ==
     purgeObserved =>
         /\ purgeGeneration > 0
+        /\ ~lastPurgeFileOwnership
         /\ lastPurgeReferences = 0
         /\ lastPurgeLeases = 0
         /\ lastPurgeFenceGeneration = purgeGeneration

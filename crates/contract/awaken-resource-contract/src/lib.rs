@@ -48,10 +48,10 @@ pub use input::{
 pub use lifecycle::{
     AcquireResourceReclamationOutcome, PutResourcePurgeOutcome, ResourceKind,
     ResourcePhysicalReclaimer, ResourcePurgeError, ResourcePurgeEvidence, ResourcePurgeGuard,
-    ResourcePurgeIntent, ResourcePurgeReceipt, ResourcePurgeRepository, ResourcePurgeScheduler,
-    ResourcePurgeStatus, ResourceReclamationFence, ResourceReclamationRepository,
-    ResourceReference, ResourceReferenceIndex, ResourceReferenceKind, ResourceReferenceRecord,
-    ResourceTarget,
+    ResourcePurgeIntent, ResourcePurgePreparation, ResourcePurgeReceipt, ResourcePurgeRepository,
+    ResourcePurgeScheduler, ResourcePurgeStatus, ResourceReclamationFence,
+    ResourceReclamationRepository, ResourceReference, ResourceReferenceIndex,
+    ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
 };
 pub use memory_application::{
     CreateMemoryStoreCommand, MemoryStoreApplicationError, MemoryStoreApplicationService,

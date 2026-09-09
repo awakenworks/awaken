@@ -7,12 +7,14 @@
 
 use std::sync::Arc;
 
+mod deletion;
+
 use awaken_resource_contract::{
     ArtifactCapture, ArtifactPublication, CreateFileRecordOutcome, FileApplicationService,
     FileCatalog, FileCatalogError, FileRecord, FileStore, MAX_MANAGED_FILE_SIZE_BYTES,
     MAX_WORKSPACE_FILE_BYTES, ReplaceArtifactCapture, ReplaceArtifactCaptureOutcome, ResourceKind,
-    ResourcePurgeError, ResourcePurgeIntent, ResourceReclamationRepository, ResourceReference,
-    ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget, content_id,
+    ResourcePurgeError, ResourceReclamationRepository, ResourceReference, ResourceReferenceKind,
+    ResourceReferenceRecord, ResourceTarget, content_id,
 };
 
 /// Complete logical-File creation command. Public uploads, generated outputs,
@@ -321,48 +323,6 @@ impl FileApplication {
             })?;
         Ok(Some((record, bytes)))
     }
-
-    pub async fn delete(
-        &self,
-        workspace_id: &str,
-        file_id: &str,
-        requested_at_unix_ms: u64,
-    ) -> Result<Option<FileRecord>, ResourcePurgeError> {
-        // Command recovery must see the retained tombstone: the first attempt
-        // may have committed logical deletion before reference removal failed.
-        // Ordinary get/bytes keep their active-only visibility contract.
-        let Some(record) = self
-            .catalog
-            .get_file(workspace_id, file_id, true)
-            .await
-            .map_err(file_catalog_error)?
-        else {
-            return Ok(None);
-        };
-        let target = ResourceTarget::new(workspace_id, ResourceKind::File, &record.blob_id);
-        let intent = ResourcePurgeIntent::new(
-            format!("purge:File:{workspace_id}:{file_id}"),
-            format!("file-delete:{workspace_id}:{file_id}"),
-            target,
-            None,
-            requested_at_unix_ms,
-            requested_at_unix_ms,
-        )?;
-        self.reclamation.put(intent).await?;
-        let deleted = self
-            .catalog
-            .mark_file_deleted(workspace_id, file_id)
-            .await
-            .map_err(file_catalog_error)?;
-        if deleted.is_some() {
-            self.reclamation
-                .remove_reference(&logical_file_reference(&record))
-                .await?;
-        }
-        // Replayed deletion still has the public missing-File response, after
-        // completing the original durable cleanup prefix instead of skipping it.
-        Ok(if record.deleted { None } else { deleted })
-    }
 }
 
 #[async_trait::async_trait]
@@ -561,7 +521,7 @@ mod tests {
     use super::*;
     use awaken_resource_contract::{content_id, harvest_idempotency_key};
 
-    fn application() -> FileApplication {
+    pub(super) fn application() -> FileApplication {
         let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
         FileApplication::new(
             files.clone(),
@@ -573,7 +533,7 @@ mod tests {
         )
     }
 
-    fn artifact_publication(
+    pub(super) fn artifact_publication(
         logical_path: &str,
         bytes: &[u8],
         idempotency_scope: Option<&str>,
@@ -817,231 +777,6 @@ mod tests {
         assert!(
             app.create_artifact(&substituted).await.is_err(),
             "R2 rejects a substituted harvest identity"
-        );
-    }
-
-    #[tokio::test]
-    async fn delete_replay_resumes_durable_prefixes_without_losing_other_owners() {
-        // Cause/effect table: D1 purge-intent insert fails; D2 tombstone update
-        // fails after intent commit; D3 reference removal fails after tombstone;
-        // D4 all effects commit but the caller retries without using the receipt.
-        // D1/D2 remain readable; D3/D4 deny ordinary reads. Reopening the actual
-        // SQLite adapters then replaying must finish this File's reference
-        // removal and preserve the first durable intent, without another queue.
-        // An already tombstoned File still returns None (HTTP 404 compatibility).
-        // Every rule crosses upload/artifact ownership and C5 another Workspace
-        // owns the same physical blob (eight cases, including Cowork outputs):
-        // its File, bytes and reference must survive; no inline blob deletion.
-        // Missing/wrong-Workspace IDs produce no effects. SQLite triggers abort
-        // the real statements, not a parallel fake deletion implementation.
-        use awaken_resource_contract::{ResourcePurgeRepository, ResourceReferenceIndex};
-        let cases = [
-            (
-                "D1",
-                Some("BEFORE INSERT ON resource_lifecycle_purge_intents"),
-                false,
-            ),
-            (
-                "D2",
-                Some("BEFORE UPDATE OF deleted ON file_store_file"),
-                false,
-            ),
-            (
-                "D3",
-                Some("BEFORE DELETE ON resource_lifecycle_references"),
-                true,
-            ),
-            ("D4", None, true),
-        ];
-        for ((rule, trigger, tombstoned), artifact) in cases
-            .into_iter()
-            .flat_map(|case| [false, true].map(|artifact| (case, artifact)))
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("resources.sqlite");
-            let open = || {
-                let files = Arc::new(
-                    awaken_file_store::sqlite::SqliteFileStore::open(path.to_str().unwrap())
-                        .unwrap(),
-                );
-                let lifecycle =
-                    Arc::new(awaken_resource_store::SqliteResourceStore::open(&path).unwrap());
-                let app = FileApplication::new(files.clone(), files.clone(), lifecycle.clone());
-                (app, files, lifecycle)
-            };
-            let (app, files, lifecycle) = open();
-            let file = if artifact {
-                app.create_artifact(&artifact_publication("a.txt", b"shared", None))
-                    .await
-                    .unwrap()
-            } else {
-                app.create_uploaded_file(
-                    "workspace-a",
-                    "a.txt".into(),
-                    "text/plain".into(),
-                    b"shared",
-                )
-                .await
-                .unwrap()
-            };
-            let other = app
-                .create_uploaded_file(
-                    "workspace-b",
-                    "b.txt".into(),
-                    "text/plain".into(),
-                    b"shared",
-                )
-                .await
-                .unwrap();
-            assert_eq!(file.blob_id, other.blob_id);
-            let intent_id = format!("purge:File:workspace-a:{}", file.id);
-            let sql = rusqlite::Connection::open(&path).unwrap();
-            if let Some(event) = trigger {
-                sql.execute_batch(&format!("CREATE TRIGGER deletion_fault {event} BEGIN SELECT RAISE(ABORT, 'injected deletion failure'); END;")).unwrap();
-            }
-            let first = app.delete("workspace-a", &file.id, 7).await;
-            if trigger.is_some() {
-                assert!(
-                    first
-                        .unwrap_err()
-                        .to_string()
-                        .contains("injected deletion failure"),
-                    "{rule}"
-                );
-                assert!(
-                    app.delete("workspace-a", &file.id, 8)
-                        .await
-                        .unwrap_err()
-                        .to_string()
-                        .contains("injected deletion failure"),
-                    "{rule}: persistent failure is not masked by the tombstone"
-                );
-            } else {
-                assert!(first.unwrap().is_some(), "{rule}");
-            }
-            assert_eq!(
-                app.bytes("workspace-a", &file.id).await.unwrap().is_none(),
-                tombstoned,
-                "{rule}"
-            );
-            let original_intent = ResourcePurgeRepository::get(lifecycle.as_ref(), &intent_id)
-                .await
-                .unwrap();
-            assert_eq!(original_intent.is_some(), rule != "D1", "{rule}");
-            let references = lifecycle
-                .references_for_resource(ResourceKind::File, &file.blob_id)
-                .await
-                .unwrap();
-            assert_eq!(references.len(), if rule == "D4" { 1 } else { 2 }, "{rule}");
-            if trigger.is_some() {
-                sql.execute_batch("DROP TRIGGER deletion_fault").unwrap();
-            }
-            drop(sql);
-            drop(app);
-            drop(files);
-            drop(lifecycle);
-
-            let (app, files, lifecycle) = open();
-            assert!(
-                app.delete("workspace-b", &file.id, 9)
-                    .await
-                    .unwrap()
-                    .is_none(),
-                "{rule}: scope"
-            );
-            assert!(
-                app.delete("workspace-a", "missing-file", 9)
-                    .await
-                    .unwrap()
-                    .is_none(),
-                "{rule}: missing"
-            );
-            let replay = app.delete("workspace-a", &file.id, 11).await.unwrap();
-            assert_eq!(
-                replay.is_none(),
-                tombstoned,
-                "{rule}: original HTTP semantics"
-            );
-            assert!(
-                app.bytes("workspace-a", &file.id).await.unwrap().is_none(),
-                "{rule}"
-            );
-            let references = lifecycle
-                .references_for_resource(ResourceKind::File, &file.blob_id)
-                .await
-                .unwrap();
-            assert_eq!(
-                references,
-                vec![logical_file_reference(&other)],
-                "{rule}: exact remaining owner"
-            );
-            assert_eq!(
-                app.bytes("workspace-b", &other.id)
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .1,
-                b"shared",
-                "{rule}"
-            );
-            assert_eq!(
-                files.get(&file.blob_id).await.unwrap().unwrap(),
-                b"shared",
-                "{rule}: no inline purge"
-            );
-            let after = ResourcePurgeRepository::get(lifecycle.as_ref(), &intent_id)
-                .await
-                .unwrap()
-                .unwrap();
-            if let Some(before) = original_intent {
-                assert_eq!(after, before, "{rule}: no reset of durable intent");
-            } else {
-                assert_eq!(after.requested_at_unix_ms, 11, "{rule}");
-            }
-            assert!(
-                app.delete("workspace-a", &file.id, 13)
-                    .await
-                    .unwrap()
-                    .is_none(),
-                "{rule}: exact replay"
-            );
-            assert_eq!(
-                ResourcePurgeRepository::get(lifecycle.as_ref(), &intent_id)
-                    .await
-                    .unwrap(),
-                Some(after),
-                "{rule}: repeated replay"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn decision_table_logical_delete_denies_reads_without_deleting_bytes_inline() {
-        // Cause/effect design:
-        // C1 active logical File -> E1 metadata and bytes are readable;
-        // C2 delete command -> E2 tombstone + purge intent are durable before the
-        // ownership reference is removed;
-        // C3 post-delete read -> E3 ordinary reads fail closed while physical blob
-        // reclamation remains an independent, retryable reclamation operation.
-        let app = application();
-        let file = app
-            .create_uploaded_file("workspace-a", "input.txt".into(), "text/plain".into(), b"x")
-            .await
-            .unwrap();
-        assert!(
-            app.bytes("workspace-a", &file.id).await.unwrap().is_some(),
-            "E1"
-        );
-        assert!(
-            app.delete("workspace-a", &file.id, 7)
-                .await
-                .unwrap()
-                .is_some(),
-            "E2"
-        );
-        assert!(
-            app.bytes("workspace-a", &file.id).await.unwrap().is_none(),
-            "E3"
         );
     }
 }

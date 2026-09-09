@@ -1753,6 +1753,7 @@ dependencies = [
  "awaken-file-store",
  "awaken-memory-store",
  "awaken-resource-contract",
+ "awaken-resource-reclaimer",
  "awaken-resource-store",
  "awaken-session-contract",
  "awaken-skill-store",

@@ -20,6 +20,7 @@ uuid = { version = "1", features = ["v4"] }
 zip = { version = "8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
+awaken-resource-reclaimer.workspace = true
 awaken-file-store = { workspace = true, features = ["test-support", "sqlite"] }
 awaken-memory-store = { workspace = true, features = ["test-support"] }
 awaken-resource-store = { workspace = true, features = ["test-support"] }

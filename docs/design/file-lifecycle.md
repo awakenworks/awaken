@@ -49,8 +49,22 @@ marks the logical File deleted, then removes its exact ownership reference.
 If reference removal fails after the tombstone commits, another DELETE resumes
 that prefix; it cannot use the ordinary active-only read and skip cleanup.
 Ordinary get/bytes still deny tombstones, and replay retains the missing-File
-response after cleanup. This is replay recovery, not an autonomous repair scan:
-without another command, a failed removal can retain a conservative reference.
+response after cleanup.
+
+`ResourcesApplication::purge_preparation` exposes that same File application to
+the existing `ResourceReclaimer`. After claiming a durable intent and before
+checking guards or acquiring the physical fence, it resumes logical cleanup.
+The reference index identifies candidate owners in the intent's Workspace;
+the File application re-derives its original intent from each retained File and
+requires the complete immutable command identity before replaying `delete`.
+It never parses opaque ids or treats a generic blob purge as permission to delete
+every File sharing those bytes. A preparation error stays retryable in the same
+intent, with no physical effects. The original startup and five-second service
+loop both install this preparation; no second queue or scanner exists.
+
+An intent-insert failure leaves no durable command and still needs another
+authorized DELETE. Once the intent commits, restart recovery can finish either
+the missing tombstone or its reference removal without user redelivery.
 Physical blob GC is allowed only when all are false:
 
 ```text
