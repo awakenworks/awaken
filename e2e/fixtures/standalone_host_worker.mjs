@@ -19,7 +19,9 @@ import { workdirWorkerManifestFixture } from './worker_manifest_fixture.mjs';
 // implementation is involved. The publisher here is an explicit trusted test
 // operator, NOT evidence of automatic authenticated projection delivery.
 export async function prepareStandaloneHostWorker({ root, temp, productDirectory, runtime, scopedHost,
-  providerCredentials, registryPath, readRegistry }) {
+  providerCredentials, registryPath, readRegistry, supervisor = 'process' }) {
+  assert.ok(['process', 'systemd'].includes(supervisor), 'known Worker supervisor');
+  assert.ok(supervisor !== 'systemd' || providerCredentials, 'systemd requires the frozen Provider bundle');
   const workerId = `resource-${runtime}-worker`;
   const workerData = path.join(temp, 'standalone worker');
   const internalPort = await availablePort(0);
@@ -96,6 +98,15 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
   let output = '';
   let reference;
   let generation = 0;
+  let expectedRestarts = 0;
+  const logFile = path.join(temp, 'standalone-worker.log');
+  const args = ['--config', workerConfig, '--server', `https://127.0.0.1:${tlsPort}`];
+  const childEnv = { ...withoutControlAuthority(environment), AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: providerCredentials ? '0' : '1' };
+  const supervised = supervisor === 'systemd'
+    ? (await import('./systemd_worker_supervisor.mjs')).systemdWorkerSupervisor({
+      directory: temp, binary, args, cwd: root, environment: childEnv, logFile,
+    }) : undefined;
+  const logs = () => supervised && fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : output;
   const registry = registryPath ?? path.join(temp, 'data', 'worker-registry.db');
   const rows = readRegistry ?? (() => sqliteRows(registry,
     `SELECT worker_id, incarnation_id, generation, state, expires_at_ms,
@@ -122,23 +133,12 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
       assert.equal(fs.existsSync(path.join(workerData, forbidden)), false,
         `standalone Worker must not create ${forbidden}`);
     }
-    assert.ok(!output.includes(workerSigning.secret_base64), 'request signer is not logged');
+    assert.ok(!logs().includes(workerSigning.secret_base64), 'request signer is not logged');
   };
-  const launch = async () => {
-    worker = spawn(binary, ['--config', workerConfig, '--server', `https://127.0.0.1:${tlsPort}`], {
-      cwd: root, env: { ...withoutControlAuthority(environment), AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: providerCredentials ? '0' : '1' },
-      // Physical signal acceptance must run the production signal owner. The
-      // legacy portable resource fixture retains its existing stdin EOF mode.
-      stdio: [providerCredentials ? 'ignore' : 'pipe', 'pipe', 'pipe'],
-    });
-    const capture = (chunk) => {
-      output += chunk.toString();
-      fs.appendFileSync(path.join(temp, 'standalone-worker.log'), chunk, {mode:0o600});
-    };
-    worker.stdout.on('data', capture);
-    worker.stderr.on('data', capture);
+  const waitReady = async () => {
     const row = await waitForValue(async () => {
-      assert.ok(worker.exitCode === null && worker.signalCode === null,
+      if (supervised) assert.notEqual(supervised.status().ActiveState, 'failed', logs());
+      else assert.ok(worker.exitCode === null && worker.signalCode === null,
         `production Worker exited during registration: ${output}`);
       return current();
     }, (value) => value?.generation > generation && exactAvailable(value),
@@ -149,6 +149,25 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
     assert.deepEqual(eligible.map((value) => value.worker_id), [workerId],
       'W1 no embedded ACP Worker can satisfy the resource mission');
     assertCustody();
+  };
+  const launch = async () => {
+    if (supervised) await supervised.start();
+    else {
+      worker = spawn(binary, args, {
+        cwd: root, env: childEnv,
+        // Physical signal acceptance must run the production signal owner.
+        stdio: [providerCredentials ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      });
+      const capture = (chunk) => {
+        output += chunk.toString();
+        fs.appendFileSync(logFile, chunk, {mode:0o600});
+      };
+      worker.stdout.on('data', capture);
+      worker.stderr.on('data', capture);
+    }
+    await waitReady();
+    if (supervised) assert.equal(supervised.status().restarts, 0,
+      'Ready must not conceal a failed initial incarnation');
   };
   const controlFields = {
     internal_bind:`127.0.0.1:${internalPort}`, worker_id:embeddedSigning.worker_id,
@@ -162,6 +181,7 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
     get process() { return worker; },
     current,
     async replace(signal) {
+      assert.ok(!supervised, 'explicit process replacement is separate from systemd recovery');
       assert.ok(['SIGKILL','SIGTERM'].includes(signal));
       if (signal === 'SIGKILL') await hardKillServer(worker, 'standalone Cowork Worker');
       else {
@@ -190,6 +210,48 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
       proxy = await startTlsProxy(tlsPort, internalPort, identity.serverCertificate, identity.serverKey);
       await launch();
     },
+    async verifySupervisorRecovery() {
+      assert.ok(supervised, 'requires external systemd supervision');
+      // A Registry receipt can precede final pool assembly. Pause only after
+      // the installed admin owner confirms actual claim admission, not merely
+      // after TCP bind or a registry row, so this is a RUNNING authority fault.
+      await waitForValue(async () => {
+        try { return (await fetch(`http://127.0.0.1:${adminPort}/readyz`,
+          {signal:AbortSignal.timeout(1000)})).status; } catch { return undefined; }
+      }, status => status === 200, 'SR0 Worker pool accepting before physical pause', {timeoutMs:30_000});
+      // SR1 idle Ready + real OS stop beyond the registered authority deadline
+      // -> resumed old process fails closed and exits; systemd alone starts its
+      // replacement. SR2 new PID/InvocationID + exactly one restart + newer Ready
+      // registry generation; credentials/root remain the same, no DB mutation.
+      // This is a physical process-pause fault, not a remote-host outage or a
+      // diagnosis of historical Podman probe latency under model load.
+      const before = supervised.status();
+      assert.equal(before.restarts, expectedRestarts, 'no hidden startup restart');
+      const registered = current();
+      const logOffset = logs().length;
+      console.log(`Standalone systemd pause: ${JSON.stringify({unit:supervised.name,
+        pid:before.pid, generation, expires_at_ms:registered.expires_at_ms})}`);
+      process.kill(before.pid, 'SIGSTOP');
+      try {
+        await new Promise(resolve => setTimeout(resolve, Math.max(0, registered.expires_at_ms - Date.now()) + 2000));
+      } finally { process.kill(before.pid, 'SIGCONT'); }
+      await waitReady();
+      const after = supervised.status();
+      expectedRestarts = before.restarts + 1;
+      assert.equal(after.restarts, expectedRestarts, 'one manager restart');
+      assert.notEqual(after.pid, before.pid);
+      assert.notEqual(after.InvocationID, before.InvocationID);
+      const exited = supervised.exits().filter(row => row.invocation === before.InvocationID);
+      assert.equal(exited.length, 1, 'one old incarnation exit observation');
+      assert.equal(exited[0].code, 'exited');
+      assert.notEqual(exited[0].status, '0');
+      assert.equal(exited[0].result, 'exit-code');
+      assert.ok(!fs.existsSync(`/proc/${before.pid}`), 'old process has physically exited');
+      assert.match(logs().slice(logOffset), /worker lost execution authority; supervisor restart required/);
+      console.log(`Standalone systemd recovery: ${JSON.stringify({unit:supervised.name,
+        old_pid:before.pid, pid:after.pid, old_generation:registered.generation,
+        generation, restarts:after.restarts})}`);
+    },
     async verifyRevocation() {
       // Cause/effect rules: W2 same live process + disabled/absent projection
       // => a NEW observation sequence contains no usable exact reference;
@@ -213,6 +275,7 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
       assertCustody();
     },
     async restart({ crash = false } = {}) {
+      assert.ok(!supervised, 'explicit process replacement is separate from systemd recovery');
       // W4 dirty live Sessions + only Worker replacement => a strictly newer
       // registered generation recovers the SAME resource edits. Control stays
       // alive; the shared resource oracle rejects recloning/cleanup resurrection.
@@ -226,7 +289,18 @@ export async function prepareStandaloneHostWorker({ root, temp, productDirectory
     assertCustody,
     async cleanup() {
       await runCleanupSteps([
-        () => worker && stopServer(worker, { requireCleanExit: true }),
+        async () => {
+          if (supervised) {
+            const before = supervised.status();
+            await supervised.stop();
+            assert.equal(before.restarts, expectedRestarts, 'unexpected later Worker restart');
+            assertCustody();
+            console.log(`Standalone systemd clean shutdown: ${JSON.stringify({
+              unit:supervised.name, generation, restarts:expectedRestarts, exit_code:0,
+            })}`);
+          } else if (worker) await stopServer(worker, { requireCleanExit: true });
+        },
+        () => supervised?.dispose(),
         () => proxy && stopTlsProxy(proxy),
       ]);
       if (worker) console.log(`Standalone Worker clean shutdown: ${JSON.stringify({
