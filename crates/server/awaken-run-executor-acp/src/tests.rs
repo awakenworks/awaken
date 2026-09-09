@@ -177,6 +177,90 @@ fn terminal_business_outcome_is_not_rewritten_by_cleanup_failure() {
     assert!(!quiescence.can_acknowledge_return());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn failed_term_escalation_requires_real_child_exit_before_ack() {
+    // Causes: C1 TERM transport returns an error without delivery; C2 KILL is
+    // delivered/refused; C3 terminal/cancellation entry. Effects: E1 the same
+    // LocalProcess is killed and reaped, allowing return ACK; E2 it remains
+    // alive at the cleanup deadline, retaining uncertainty and the logical end.
+    // Decision table R1=C1+C2(delivered), each C3 => E1; R2=C1+C2(refused),
+    // each C3 => E2. Signal results never substitute for an OS wait receipt.
+    // The decorator injects only signal delivery faults; production LocalProcess
+    // owns spawn, PID/group identity, poll, wait and final fixture cleanup.
+    // This is real-child integration, not remote/container failure qualification.
+    struct SignalFault {
+        process: awaken_local_process::LocalProcess,
+        deliver_kill: bool,
+        signals: Mutex<Vec<Signal>>,
+    }
+    #[async_trait]
+    impl ProcessHandle for SignalFault {
+        fn id(&self) -> &str {
+            self.process.id()
+        }
+        async fn poll(&self) -> std::result::Result<Option<ExitStatus>, SandboxError> {
+            self.process.poll().await
+        }
+        async fn wait(&self) -> std::result::Result<ExitStatus, SandboxError> {
+            self.process.wait().await
+        }
+        async fn signal(&self, signal: Signal) -> std::result::Result<(), SandboxError> {
+            self.signals.lock().unwrap().push(signal);
+            if signal == Signal::Kill && self.deliver_kill {
+                self.process.signal(signal).await
+            } else {
+                Err(SandboxError::new("injected signal transport failure"))
+            }
+        }
+    }
+    for terminal in [false, true] {
+        for deliver_kill in [false, true] {
+            let mut command = tokio::process::Command::new("sleep");
+            command.arg("60");
+            let process = SignalFault {
+                process: awaken_local_process::LocalProcess::spawn(&mut command).unwrap(),
+                deliver_kill,
+                signals: Mutex::new(Vec::new()),
+            };
+            assert!(process.poll().await.unwrap().is_none());
+            let grace = std::time::Duration::from_millis(200);
+            let result = if terminal {
+                let (mut channel, _peer) = tokio::io::duplex(64);
+                Supervisor::reap_after_terminal(&mut channel, &process, grace).await
+            } else {
+                Supervisor::reap(&process, grace).await
+            };
+            let observed = process.poll().await.unwrap();
+            // Clean up the exact fixture before assertions, including on a
+            // regression where the supervisor never reaches KILL.
+            process.process.signal(Signal::Kill).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(5), process.process.wait())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.is_ok(), deliver_kill, "terminal={terminal}");
+            assert_eq!(observed.is_some(), deliver_kill, "same-child receipt");
+            if let Some(status) = observed {
+                assert!(status.signaled, "R1 actual OS signal exit");
+            }
+            assert_eq!(
+                *process.signals.lock().unwrap(),
+                vec![Signal::Term, Signal::Kill]
+            );
+            let quiescence = awaken_runtime_contract::runtime_context::AttemptQuiescence::default();
+            let outcome = preserve_terminal_outcome(
+                Ok(TerminationReason::NaturalEnd),
+                result,
+                process.id(),
+                &quiescence,
+            );
+            assert_eq!(outcome.unwrap(), TerminationReason::NaturalEnd);
+            assert_eq!(quiescence.can_acknowledge_return(), deliver_kill);
+        }
+    }
+}
+
 #[tokio::test]
 async fn managed_acp_terminal_cannot_escape_without_commit_capability() {
     // Cause/effect graph: C1 ACP produces a terminal disposition; C2 commit

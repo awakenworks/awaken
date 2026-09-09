@@ -1,9 +1,9 @@
 ------------------------------ MODULE AcpBoundary ------------------------------
 EXTENDS Naturals, FiniteSets, Sequences
 
-VARIABLES waiters, exitCode, termSent, killSent, cleanupExpired, observing, ack
+VARIABLES waiters, exitCode, termSent, termFailed, killSent, cleanupExpired, observing, ack
 VARIABLES handshake, permissionCall, projectedOption, promptCount, finalCount
-processVars == <<waiters, exitCode, termSent, killSent, cleanupExpired, observing, ack>>
+processVars == <<waiters, exitCode, termSent, termFailed, killSent, cleanupExpired, observing, ack>>
 protocolVars == <<handshake, permissionCall, projectedOption, promptCount, finalCount>>
 VARIABLES hostLeft, peerLeft, peerChunks, uplink, downlink, queue, delivered, wireOutcome
 wireVars == <<hostLeft, peerLeft, peerChunks, uplink, downlink, queue, delivered, wireOutcome>>
@@ -11,7 +11,7 @@ vars == <<processVars, protocolVars, wireVars>>
 
 Init ==
   /\ waiters = {} /\ exitCode = 0
-  /\ termSent = FALSE /\ killSent = FALSE /\ cleanupExpired = FALSE
+  /\ termSent = FALSE /\ termFailed = FALSE /\ killSent = FALSE /\ cleanupExpired = FALSE
   /\ observing = TRUE /\ ack = FALSE
   /\ handshake = FALSE
   /\ permissionCall = FALSE
@@ -59,27 +59,29 @@ ProjectReject ==
 BeginWait(w) ==
   /\ w \in {1, 2} /\ w \notin waiters /\ exitCode = 0
   /\ waiters' = waiters \cup {w}
-  /\ UNCHANGED <<protocolVars, exitCode, termSent, killSent, cleanupExpired, observing, ack>>
+  /\ UNCHANGED <<protocolVars, exitCode, termSent, termFailed, killSent, cleanupExpired, observing, ack>>
 DropWait(w) ==
   /\ w \in waiters
   /\ waiters' = waiters \ {w}
-  /\ UNCHANGED <<protocolVars, exitCode, termSent, killSent, cleanupExpired, observing, ack>>
+  /\ UNCHANGED <<protocolVars, exitCode, termSent, termFailed, killSent, cleanupExpired, observing, ack>>
+\* termSent records a returned request, including failure; it is not delivery proof.
 SendTerm ==
   /\ ~termSent /\ exitCode = 0 /\ termSent' = TRUE
+  /\ termFailed' \in BOOLEAN
   /\ UNCHANGED <<protocolVars, waiters, exitCode, killSent, cleanupExpired, observing, ack>>
 SendKill ==
   /\ termSent /\ ~killSent /\ exitCode = 0 /\ killSent' = TRUE
-  /\ UNCHANGED <<protocolVars, waiters, exitCode, termSent, cleanupExpired, observing, ack>>
+  /\ UNCHANGED <<protocolVars, waiters, exitCode, termSent, termFailed, cleanupExpired, observing, ack>>
 CleanupTimeout ==
   /\ termSent /\ ~cleanupExpired /\ cleanupExpired' = TRUE
-  /\ UNCHANGED <<protocolVars, waiters, exitCode, termSent, killSent, observing, ack>>
+  /\ UNCHANGED <<protocolVars, waiters, exitCode, termSent, termFailed, killSent, observing, ack>>
 ObserveExit(code) ==
   /\ code \in {7, 137} /\ exitCode = 0
   /\ exitCode' = code
-  /\ UNCHANGED <<protocolVars, waiters, termSent, killSent, cleanupExpired, observing, ack>>
+  /\ UNCHANGED <<protocolVars, waiters, termSent, termFailed, killSent, cleanupExpired, observing, ack>>
 Acknowledge ==
   /\ exitCode # 0 /\ observing /\ ~ack /\ ack' = TRUE
-  /\ UNCHANGED <<protocolVars, waiters, exitCode, termSent, killSent, cleanupExpired, observing>>
+  /\ UNCHANGED <<protocolVars, waiters, exitCode, termSent, termFailed, killSent, cleanupExpired, observing>>
 
 LifecycleNext == CompleteHandshake \/ BeginPermission \/ ProjectAllow \/ ProjectReject
         \/ (\E w \in {1, 2}: BeginWait(w) \/ DropWait(w))
@@ -144,10 +146,15 @@ WireSafety ==
 ActualExitEventuallyAcknowledged == exitCode # 0 ~> ack
 NoFabricatedQuiescence == ack => exitCode # 0
 CleanupObserverRetained == observing
+\* Request failure does not prove exit or revoke the same-handle KILL stage.
+TermFailureAllowsEscalation ==
+  (termSent /\ termFailed /\ ~killSent /\ ~cleanupExpired /\ exitCode = 0)
+    => ENABLED SendKill
+NoFailedTermEscalationReached == ~(termFailed /\ killSent)
 
 TypeOK ==
   /\ waiters \subseteq {1, 2} /\ exitCode \in {0, 7, 137}
-  /\ termSent \in BOOLEAN /\ killSent \in BOOLEAN
+  /\ termSent \in BOOLEAN /\ termFailed \in BOOLEAN /\ killSent \in BOOLEAN
   /\ cleanupExpired \in BOOLEAN /\ observing \in BOOLEAN /\ ack \in BOOLEAN
   /\ handshake \in BOOLEAN
   /\ permissionCall \in BOOLEAN
@@ -158,5 +165,5 @@ TypeOK ==
 HandshakeBeforePrompt == promptCount > 0 => handshake
 ProjectionRequiresCall == projectedOption # "None" => permissionCall
 AtMostOneFinal == finalCount <= 1
-Safety == WireSafety /\ NoFabricatedQuiescence /\ CleanupObserverRetained /\ TypeOK /\ HandshakeBeforePrompt /\ ProjectionRequiresCall /\ AtMostOneFinal
+Safety == TermFailureAllowsEscalation /\ WireSafety /\ NoFabricatedQuiescence /\ CleanupObserverRetained /\ TypeOK /\ HandshakeBeforePrompt /\ ProjectionRequiresCall /\ AtMostOneFinal
 =============================================================================
