@@ -476,7 +476,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness worker_plaintext_holder_projection_is_exact_and_non_widening
   run_kani awaken-run-executor-acp \
     --harness host_observation_projection_is_exactly_backend_scoped \
-    --harness local_binding_batch_admits_only_absent_or_exact_existing_identities \
+    --harness local_binding_batch_publication_is_complete_or_stutters \
     --harness projected_binding_use_rechecks_the_exact_projection_after_probe \
     --harness mcp_client_credential_admission_has_no_gateway_or_adapter_fallback
   run_kani awaken-run-ingress-contract \
@@ -497,6 +497,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness thread_physical_peer_vetoes_begin_and_handoff \
     --harness physical_attempt_slot_never_normalizes_a_torn_owner_epoch_pair
   run_kani awaken-run-ingress --no-default-features \
+    --harness maintenance_schedule_exists_only_for_the_owning_adapter \
     --harness recovery_snapshot_admission_requires_exact_claim_identity \
     --harness acknowledged_projection_is_exact_monotonic_or_a_noop \
     --harness claimed_snapshot_execution_requires_exact_identity \
