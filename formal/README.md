@@ -639,11 +639,11 @@ downstream idempotency; they are not claimed exactly once by these proofs.
 - `ResourceDispatch.tla` covers one-time configuration pinning, mutable content,
   worker capability admission, Workspace equality, explicit-empty revocation,
   and the live lifecycle deny evaluated at each activation attempt.
-- `ResourceReclamation.tla` covers logical delete, durable claim recovery,
-  physical-identity fencing, reference/lease exclusion, idempotent purge, and
-  receipt generation fencing. A receipt proves that one purge occurred while
-  fenced and unreferenced; it does not assert permanent absence of a shared
-  content-addressed File blob that a later owner may recreate.
+- `ResourceReclamation.tla` separates File intent/tombstone/reference commits,
+  crashes, guard/fence admission, shared references/leases and receipt identity.
+  The [File lifecycle design](../docs/design/file-lifecycle.md) explains recovery.
+  [coverage.json](coverage.json) owns proof bounds and assumptions; a receipt
+  proves a safe purge operation, not permanent absence of shared content.
 - `LocalProcessLifecycle.tla` models the sole `awaken-local-process` spawn
   boundary, two concurrent waiters, mutex acquisition/backoff, cancellation,
   signal requests, asynchronous OS exit, normal Drop and abrupt Worker death.

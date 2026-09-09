@@ -1,6 +1,6 @@
 //! Authorization-agnostic resource reclamation application service.
 //!
-//! Logical delete is authorized and committed before this service is invoked.
+//! Durable intent authorizes resource-owned logical preparation before reclamation.
 //! The reclaimer consumes only intrinsic resource lifecycle/reference facts and
 //! drives an idempotent physical adapter behind a fenced durable intent. Local
 //! embedding and cloud deployment therefore share the same state machine while
@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use awaken_resource_contract::{
     AcquireResourceReclamationOutcome, PutResourcePurgeOutcome, ResourcePhysicalReclaimer,
-    ResourcePurgeError, ResourcePurgeGuard, ResourcePurgeIntent, ResourcePurgeReceipt,
-    ResourcePurgeRepository,
+    ResourcePurgeError, ResourcePurgeGuard, ResourcePurgeIntent, ResourcePurgePreparation,
+    ResourcePurgeReceipt, ResourcePurgeRepository,
 };
 
 /// Outcome of one reconciliation scan.
@@ -45,6 +45,7 @@ pub struct ResourceReclaimer {
     lease_ms: u64,
     repository: Arc<dyn ResourcePurgeRepository>,
     guards: Vec<Arc<dyn ResourcePurgeGuard>>,
+    preparation: Option<Arc<dyn ResourcePurgePreparation>>,
     physical: Arc<dyn ResourcePhysicalReclaimer>,
 }
 
@@ -66,6 +67,7 @@ impl ResourceReclaimer {
             lease_ms,
             repository,
             guards: Vec::new(),
+            preparation: None,
             physical,
         })
     }
@@ -75,6 +77,14 @@ impl ResourceReclaimer {
     #[must_use]
     pub fn with_guard(mut self, guard: Arc<dyn ResourcePurgeGuard>) -> Self {
         self.guards.push(guard);
+        self
+    }
+
+    /// Install the resource owner's idempotent logical recovery stage. Omitting
+    /// it retains conservative reference blocking, never permission to purge.
+    #[must_use]
+    pub fn with_preparation(mut self, preparation: Arc<dyn ResourcePurgePreparation>) -> Self {
+        self.preparation = Some(preparation);
         self
     }
 
@@ -119,8 +129,14 @@ impl ResourceReclaimer {
             }
 
             let mut blockers = Vec::new();
-            let mut guard_error = None;
+            let mut guard_error = match &self.preparation {
+                Some(preparation) => preparation.prepare(&intent).await.err(),
+                None => None,
+            };
             for guard in &self.guards {
+                if guard_error.is_some() {
+                    break;
+                }
                 match guard
                     .blockers(&intent.target, intent.config_version, now_unix_ms)
                     .await

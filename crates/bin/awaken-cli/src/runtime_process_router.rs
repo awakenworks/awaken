@@ -586,6 +586,7 @@ pub(super) async fn prepare_runtime_routers(
             resource_application.physical_cleanup(),
         )
         .expect("construct resource reclaimer")
+        .with_preparation(resource_application.purge_preparation())
         .with_guard(resource_application.lifecycle_guard())
         .with_guard(Arc::new(
             awaken_session_application::SessionResourcePurgeGuard::new(

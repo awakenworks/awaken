@@ -7,12 +7,14 @@
 
 use std::sync::Arc;
 
+mod deletion;
+
 use awaken_resource_contract::{
     ArtifactCapture, ArtifactPublication, CreateFileRecordOutcome, FileApplicationService,
     FileCatalog, FileCatalogError, FileRecord, FileStore, MAX_MANAGED_FILE_SIZE_BYTES,
     MAX_WORKSPACE_FILE_BYTES, ReplaceArtifactCapture, ReplaceArtifactCaptureOutcome, ResourceKind,
-    ResourcePurgeError, ResourcePurgeIntent, ResourceReclamationRepository, ResourceReference,
-    ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget, content_id,
+    ResourcePurgeError, ResourceReclamationRepository, ResourceReference, ResourceReferenceKind,
+    ResourceReferenceRecord, ResourceTarget, content_id,
 };
 
 /// Complete logical-File creation command. Public uploads, generated outputs,
@@ -321,38 +323,6 @@ impl FileApplication {
             })?;
         Ok(Some((record, bytes)))
     }
-
-    pub async fn delete(
-        &self,
-        workspace_id: &str,
-        file_id: &str,
-        requested_at_unix_ms: u64,
-    ) -> Result<Option<FileRecord>, ResourcePurgeError> {
-        let Some(record) = self.get(workspace_id, file_id).await? else {
-            return Ok(None);
-        };
-        let target = ResourceTarget::new(workspace_id, ResourceKind::File, &record.blob_id);
-        let intent = ResourcePurgeIntent::new(
-            format!("purge:File:{workspace_id}:{file_id}"),
-            format!("file-delete:{workspace_id}:{file_id}"),
-            target,
-            None,
-            requested_at_unix_ms,
-            requested_at_unix_ms,
-        )?;
-        self.reclamation.put(intent).await?;
-        let deleted = self
-            .catalog
-            .mark_file_deleted(workspace_id, file_id)
-            .await
-            .map_err(file_catalog_error)?;
-        if deleted.is_some() {
-            self.reclamation
-                .remove_reference(&logical_file_reference(&record))
-                .await?;
-        }
-        Ok(deleted)
-    }
 }
 
 #[async_trait::async_trait]
@@ -551,7 +521,7 @@ mod tests {
     use super::*;
     use awaken_resource_contract::{content_id, harvest_idempotency_key};
 
-    fn application() -> FileApplication {
+    pub(super) fn application() -> FileApplication {
         let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
         FileApplication::new(
             files.clone(),
@@ -563,7 +533,7 @@ mod tests {
         )
     }
 
-    fn artifact_publication(
+    pub(super) fn artifact_publication(
         logical_path: &str,
         bytes: &[u8],
         idempotency_scope: Option<&str>,
@@ -807,36 +777,6 @@ mod tests {
         assert!(
             app.create_artifact(&substituted).await.is_err(),
             "R2 rejects a substituted harvest identity"
-        );
-    }
-
-    #[tokio::test]
-    async fn decision_table_logical_delete_denies_reads_without_deleting_bytes_inline() {
-        // Cause/effect design:
-        // C1 active logical File -> E1 metadata and bytes are readable;
-        // C2 delete command -> E2 tombstone + purge intent are durable before the
-        // ownership reference is removed;
-        // C3 post-delete read -> E3 ordinary reads fail closed while physical blob
-        // reclamation remains an independent, retryable reclamation operation.
-        let app = application();
-        let file = app
-            .create_uploaded_file("workspace-a", "input.txt".into(), "text/plain".into(), b"x")
-            .await
-            .unwrap();
-        assert!(
-            app.bytes("workspace-a", &file.id).await.unwrap().is_some(),
-            "E1"
-        );
-        assert!(
-            app.delete("workspace-a", &file.id, 7)
-                .await
-                .unwrap()
-                .is_some(),
-            "E2"
-        );
-        assert!(
-            app.bytes("workspace-a", &file.id).await.unwrap().is_none(),
-            "E3"
         );
     }
 }

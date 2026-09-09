@@ -545,6 +545,7 @@ def main() -> None:
         "memory-copy-model-mutant": check_memory_copy_model_mutant,
         "agent-input-model-mutant": check_agent_input_model_mutant,
         "resource-preparation-model-mutant": check_resource_preparation_model_mutant,
+        "file-reclamation-model-mutants": check_file_reclamation_model_mutants,
         "terminal-resource-model-mutants": check_terminal_resource_model_mutants,
         "event-batch-model-mutants": check_event_batch_model_mutants,
         "session-deletion-model-mutants": check_session_deletion_model_mutants,
@@ -805,6 +806,32 @@ def check_terminal_resource_model_mutants(tlc_jar: Path) -> None:
     ]
     check_tlc_model_mutations(tlc_jar, "SessionResourceActivation", source, config, mutations)
     print("Terminal Resource mutation score: 2/2 killed (active-only projection, premature receipt)")
+
+
+def check_file_reclamation_model_mutants(tlc_jar: Path) -> None:
+    # F1 release ownership before the tombstone; F2 fence while that ownership
+    # remains. Require named safety failures. W1/W2 prove both separate durable
+    # prefixes can survive a crash; W3 proves receipt completion is reachable.
+    # These witnesses reject the old atomic-delete abstraction, not SQL engines.
+    source = (ROOT / "formal/tla/ResourceReclamation.tla").read_text()
+    config = (ROOT / "formal/tla/ResourceReclamation.cfg").read_text()
+    release = 'ReleaseFileOwnership ==\n    /\\ processUp\n    /\\ lifecycle = "deleted"'
+    fence = 'AcquireFence ==\n    /\\ processUp\n    /\\ intentState = "claimed"\n    /\\ ~fileOwnership'
+    if source.count(release) != 1 or source.count(fence) != 1:
+        raise SystemExit("File reclamation mutation anchors drifted")
+    mutations = [
+        (source.replace(release, release.replace('lifecycle = "deleted"', 'TRUE')), config, "ActiveFileRetainsOwnership"),
+        (source.replace(fence, fence.replace('~fileOwnership', 'TRUE')), config, "FenceHasNoReferencesOrLeases"),
+    ]
+    for name, condition in [
+        ("IntentPrefixUnreachable", 'intentState = "pending" /\\ lifecycle = "active" /\\ ~processUp'),
+        ("TombstonePrefixUnreachable", 'lifecycle = "deleted" /\\ fileOwnership /\\ ~processUp'),
+        ("CompletionUnreachable", 'receipt /\\ ~fileOwnership'),
+    ]:
+        witness_source = source.replace("Spec ==", f"{name} == ~({condition})\n\nSpec ==")
+        mutations.append((witness_source, config + f"INVARIANT {name}\n", name))
+    check_tlc_model_mutations(tlc_jar, "ResourceReclamation", source, config, mutations)
+    print("File reclamation: 2/2 mutants killed; 3/3 durable-prefix/completion witnesses reachable")
 
 
 def check_unmaterialized_cleanup_model_mutant(tlc_jar: Path) -> None:

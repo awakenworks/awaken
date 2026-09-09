@@ -179,7 +179,8 @@ const fn resource_purge_claim_is_current(
     status_is_claimed && owner_matches && generation_matches && lease_is_live
 }
 
-/// Recoverable physical-reclamation request created after logical denial commits.
+/// Durable reclamation intent. A resource owner may persist this before logical
+/// denial; its ownership reference must then protect the unfinished prefix.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourcePurgeIntent {
     pub intent_id: String,
@@ -562,6 +563,14 @@ pub trait ResourcePurgeScheduler: Send + Sync {
         requested_at_unix_ms: u64,
         not_before_unix_ms: u64,
     ) -> Result<PutResourcePurgeOutcome, ResourcePurgeError>;
+}
+
+/// Resume only logical effects authorized by the exact durable purge intent.
+/// This stage owns no queue or physical deletion. Errors prevent fence acquisition;
+/// unknown intents must leave unrelated logical owners and references untouched.
+#[async_trait]
+pub trait ResourcePurgePreparation: Send + Sync {
+    async fn prepare(&self, intent: &ResourcePurgeIntent) -> Result<(), ResourcePurgeError>;
 }
 
 /// One independently replaceable safety predicate. Composition can combine

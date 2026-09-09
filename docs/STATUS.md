@@ -73,6 +73,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/web-ui.md` | Product/downstream mapping | Not required | n/a |
 | `design/credentials-and-vaults.md` | Product/downstream mapping | Not required | n/a |
 | `design/resources-memory-files-skills.md` | Role owner | Required | self |
+| `design/file-lifecycle.md` | Delegated boundary narrative | Delegated | [resources-memory-files-skills.md](design/resources-memory-files-skills.md#resource-input-component-catalog) |
 | `design/resources-memory-files-skills-roadmap.md` | Delegated boundary narrative | Delegated | [resources-memory-files-skills.md](design/resources-memory-files-skills.md#resource-input-component-catalog) |
 | `design/observability-eval-dataset-boundary.md` | Product/downstream mapping | Not required | n/a |
 | `design/prompt-skill-optimization-data-contracts.md` | Proposed implementation contract | Not required | n/a |
