@@ -170,6 +170,85 @@ async function main() {
   let server = start(directory);
   try {
     await ready(server);
+    // File-command cause/effect table (the application unit test owns the
+    // upload/Artifact and identity permutations; this owns the process seam):
+    // D1=intent insert aborts -> no durable command, File remains active;
+    // D2=tombstone update aborts -> intent exists, File remains active;
+    // D3=ownership removal aborts -> intent and tombstone exist, reads deny.
+    // C4=a distinct File owns the same bytes; C5=SIGKILL after the failed HTTP
+    // response, followed by normal production startup on the same directory.
+    // D1+C4+C5 must do nothing until a fresh authorized DELETE. D2/D3+C4+C5
+    // must resume without user redelivery, preserve the original intent and
+    // retain the shared blob. Removing C4 through its own DELETE permits both
+    // receipts and physical GC; another source DELETE stays 404 and cannot
+    // reset the receipt. SQL faults remain installed until the exact child has
+    // exited, so periodic reclamation cannot hide the crash boundary. This is
+    // one local process SIGKILL, not disk power loss or two-host acceptance.
+    const prefixes = [];
+    for (const rule of ['D1', 'D2', 'D3']) {
+      const bytes = `file-delete-prefix-${rule}`;
+      const source = await upload(bytes, `${rule}-source.txt`);
+      const other = await upload(bytes, `${rule}-other.txt`);
+      const blobId = blobForFile(files, source);
+      assert.notEqual(source, other);
+      assert.equal(blobForFile(files, other), blobId);
+      const database = rule === 'D2' ? files : lifecycle;
+      const boundary = rule === 'D1'
+        ? `BEFORE INSERT ON resource_lifecycle_purge_intents
+             WHEN NEW.intent_id = ${sqlQuote(`purge:File:${WORKSPACE}:${source}`)}`
+        : rule === 'D2'
+          ? `BEFORE UPDATE OF deleted ON file_store_file
+               WHEN OLD.id = ${sqlQuote(source)}`
+          : `BEFORE DELETE ON resource_lifecycle_references
+               WHEN OLD.reference_id = ${sqlQuote(source)}`;
+      sqlite(database, `CREATE TRIGGER prefix_${rule} ${boundary}
+        BEGIN SELECT RAISE(ABORT, 'injected File prefix ${rule}'); END;`);
+      const response = await json('DELETE', `files/${source}`);
+      assert.equal(response.status, 500, `${rule}: ${JSON.stringify(response.body)}`);
+      assert.equal((await json('GET', `files/${source}`)).status, rule === 'D3' ? 404 : 200);
+      const intent = intentFor(directory, source);
+      assert.equal(Boolean(intent), rule !== 'D1');
+      assert.equal(Number(sqliteScalar(lifecycle,
+        `SELECT count(*) FROM resource_lifecycle_references
+         WHERE reference_kind='workspace_ownership' AND reference_id=${sqlQuote(source)}`)), 1);
+      prefixes.push({ rule, source, other, blobId, bytes, database, intent });
+    }
+    await hardKillServer(server, 'File deletion committed-prefix recovery');
+    assert.equal(server.signalCode, 'SIGKILL');
+    for (const row of prefixes) sqlite(row.database, `DROP TRIGGER prefix_${row.rule};`);
+    server = start(directory);
+    await ready(server);
+    // Observe D1 only after both committed commands have fully converged: the
+    // reclaimer has actually run, yet no uncommitted delete became authority.
+    for (const row of [prefixes[1], prefixes[2], prefixes[0]]) {
+      if (row.rule === 'D1') {
+        assert.equal(intentFor(directory, row.source), undefined);
+        assert.equal((await json('GET', `files/${row.source}`)).status, 200);
+        assert.equal((await json('DELETE', `files/${row.source}`)).status, 200);
+      }
+      const [prepared] = await waitFor(directory, [row.source], intent =>
+        intent.status === 'pending' && intent.blockers.length === 1
+          && intent.blockers[0].reference_id === row.other);
+      if (row.intent) {
+        for (const field of ['intent_id', 'idempotency_key', 'target', 'config_version', 'requested_at_unix_ms']) {
+          assert.deepEqual(prepared[field], row.intent[field], `${row.rule}: immutable ${field}`);
+        }
+      }
+      assert.equal((await json('GET', `files/${row.source}`)).status, 404);
+      assert.equal((await json('GET', `files/${row.other}`)).status, 200);
+      assert.equal(sqliteScalar(files,
+        `SELECT hex(bytes) FROM file_store_blob WHERE id=${sqlQuote(row.blobId)}`),
+        Buffer.from(row.bytes).toString('hex').toUpperCase());
+      assert.equal((await json('DELETE', `files/${row.other}`)).status, 200);
+      const receipts = await waitFor(directory, [row.source, row.other], intent => intent.status === 'completed');
+      assert.ok(receipts.every(intent => intent.receipt !== null));
+      assert.equal(Number(sqliteScalar(files,
+        `SELECT count(*) FROM file_store_blob WHERE id=${sqlQuote(row.blobId)}`)), 0);
+      assert.equal((await json('DELETE', `files/${row.source}`)).status, 404);
+      assert.deepEqual(intentFor(directory, row.source), receipts[0], 'replay preserves the completed receipt');
+    }
+    console.log('  ok: D1-D3 File prefixes survive SIGKILL; only committed deletes resume; shared bytes remain protected');
+
     const releaseFailure = await upload('release-failure', 'release.txt');
     const contended = await upload('contended-fence', 'contended.txt');
     const lateReference = await upload('late-reference', 'late.txt');
