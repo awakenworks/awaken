@@ -19,8 +19,10 @@ impl PodProcessStopper {
 
     /// Retry the same exact bound domain, never a replacement with its name.
     /// Accepted DELETE and an already-deleting Pod remain Unknown until the
-    /// existing observer establishes every exact runtime exit. Response loss is
-    /// retried by reading the same UID; no separate stop-operation store exists.
+    /// existing observer establishes every exact runtime exit in a Pod with
+    /// accepted deletion intent. Natural exit does not skip that closure.
+    /// Response loss is retried by reading the same UID; no separate
+    /// stop-operation store exists.
     /// Missing history, unretained legacy bindings and API failures never mint a
     /// stop receipt. No response here grants replay or Dispatch retirement.
     pub async fn request_stop(
@@ -46,13 +48,13 @@ impl PodProcessStopper {
         if !evidence_is_retained(&pod) {
             return Err(backend("Worker process evidence retention was lost"));
         }
-        let observed = observe(binding, &pod);
-        if matches!(observed, PodProcessTermination::Observed(_)) {
-            return Ok(observed);
-        }
         if pod.metadata.deletion_timestamp.is_some() {
-            return Ok(PodProcessTermination::Unknown);
+            return Ok(observe(binding, &pod));
         }
+        // Even an already-exited Pod needs the API-owned, irreversible deletion
+        // intent. Never-restart policy and point-in-time exit alone do not close
+        // its launch lifecycle. Accepted DELETE is still only Unknown: a fresh
+        // read must establish both closure and the same exact process exits.
         let version = coordinate(pod.metadata.resource_version.as_deref())
             .ok_or_else(|| backend("Worker Pod has no exact resource version"))?;
         // Do not force-remove a zero-grace Pod's API history. Even disposable

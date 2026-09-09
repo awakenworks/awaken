@@ -42,6 +42,46 @@ async fn stop_and_observe(
     .unwrap_or_else(|_| panic!("independent exact exit observation: {last_error:?}"))
 }
 
+fn hard_stop_container(cluster: &str, pod: &k8s_openapi::api::core::v1::Pod, container: &str) {
+    let node = pod.spec.as_ref().unwrap().node_name.as_ref().unwrap();
+    let owned = std::process::Command::new("docker")
+        .args([
+            "inspect",
+            node,
+            "--format",
+            "{{ index .Config.Labels \"k3d.cluster\" }}",
+        ])
+        .output()
+        .unwrap();
+    assert!(owned.status.success());
+    assert_eq!(String::from_utf8(owned.stdout).unwrap().trim(), cluster);
+    let id = pod
+        .status
+        .as_ref()
+        .unwrap()
+        .container_statuses
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|status| status.name == container)
+        .unwrap()
+        .container_id
+        .as_ref()
+        .unwrap()
+        .strip_prefix("containerd://")
+        .unwrap();
+    assert!(!id.is_empty() && id.bytes().all(|b| b.is_ascii_hexdigit()));
+    let stopped = std::process::Command::new("docker")
+        .args(["exec", node, "crictl", "stop", "--timeout", "0", id])
+        .output()
+        .unwrap();
+    assert!(
+        stopped.status.success(),
+        "exact CRI fault: {}",
+        String::from_utf8_lossy(&stopped.stderr)
+    );
+}
+
 #[tokio::test]
 async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_history() {
     // Live decision table (production adapter, real kubelet/CRI; not a Dispatch
@@ -53,6 +93,9 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
     // KPT7 delayed DELETE carrying only the old UID => API conflict, successor
     // stays live; KPT8 successor exit => only its fresh binding yields evidence.
     // KPT9 adding retention after the old binding cannot authorize its stop.
+    // KPT10 all containers crash before stop: a read-only exit observation is
+    // possible, but the stop command must still close the exact Pod and return
+    // Unknown before a subsequent independent closed-exit observation.
     // KPT5/6/8 correspond to ExactCompleteObservation in the existing three-
     // generation K8sProcessObservation model. KPT7 tests the API's UID-precondition
     // trusted boundary, not a new Dispatch retirement or replay implementation.
@@ -108,43 +151,7 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
     // tool command cannot crash it. Inject through the exact local node's CRI,
     // after verifying the node belongs to the explicitly selected k3d cluster.
     let current = pods.get(&pod).await.unwrap();
-    let node = current.spec.as_ref().unwrap().node_name.as_ref().unwrap();
-    let owned = std::process::Command::new("docker")
-        .args([
-            "inspect",
-            node,
-            "--format",
-            "{{ index .Config.Labels \"k3d.cluster\" }}",
-        ])
-        .output()
-        .unwrap();
-    assert!(owned.status.success());
-    assert_eq!(String::from_utf8(owned.stdout).unwrap().trim(), cluster);
-    let id = current
-        .status
-        .as_ref()
-        .unwrap()
-        .container_statuses
-        .as_ref()
-        .unwrap()
-        .iter()
-        .find(|s| s.name == "agent")
-        .unwrap()
-        .container_id
-        .as_ref()
-        .unwrap()
-        .strip_prefix("containerd://")
-        .unwrap();
-    assert!(!id.is_empty() && id.bytes().all(|b| b.is_ascii_hexdigit()));
-    let stopped = std::process::Command::new("docker")
-        .args(["exec", node, "crictl", "stop", "--timeout", "0", id])
-        .output()
-        .unwrap();
-    assert!(
-        stopped.status.success(),
-        "exact CRI fault: {}",
-        String::from_utf8_lossy(&stopped.stderr)
-    );
+    hard_stop_container(&cluster, &current, "agent");
     let observer = PodProcessObserver::new(
         awaken_sandbox_container::k8s::connect_control_client()
             .await
@@ -288,6 +295,63 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
             .status
             .success(),
         "KPT7 successor still executes"
+    );
+    // Crash the entire successor before asking the recovery provider to close
+    // it. Reuse the exact CRI injector; ordinary exit and partial crash above
+    // must not stand in for this all-processes-already-exited fault cut.
+    for container in &survivor.spec.as_ref().unwrap().containers {
+        hard_stop_container(&cluster, &survivor, &container.name);
+    }
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            if matches!(
+                observer
+                    .observe_pod_process_termination(&replacement_binding)
+                    .await
+                    .unwrap(),
+                PodProcessTermination::Observed(_)
+            ) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .expect("KPT10 every exact process exited before stop");
+    assert!(
+        pods.get(&pod)
+            .await
+            .unwrap()
+            .metadata
+            .deletion_timestamp
+            .is_none(),
+        "KPT10 exit alone did not close the Pod"
+    );
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            match stopper.request_stop(&replacement_binding).await {
+                Ok(result) => {
+                    assert_eq!(
+                        result,
+                        PodProcessTermination::Unknown,
+                        "KPT10 accepted closure is not yet a closed-exit observation"
+                    );
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(200)).await,
+            }
+        }
+    })
+    .await
+    .expect("KPT10 exact closure despite status CAS races");
+    assert!(
+        pods.get(&pod)
+            .await
+            .unwrap()
+            .metadata
+            .deletion_timestamp
+            .is_some(),
+        "KPT10 API-owned launch closure retained before receipt"
     );
     let replacement_receipt = stop_and_observe(&stopper, &replacement_binding).await;
     assert_eq!(replacement_receipt.binding(), &replacement_binding, "KPT8");

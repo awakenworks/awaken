@@ -161,6 +161,72 @@ impl Fixture {
             .await
             .unwrap()
     }
+
+    fn exit(&self) {
+        let mut facts = self.facts.lock().unwrap();
+        let pod = facts.pod.as_mut().unwrap();
+        // A kubelet status update preserves the API-owned deletion intent and
+        // retention; replacing the whole Pod with a template would erase them.
+        pod.status = decode(terminal()).status;
+        pod.metadata.resource_version = Some("exited".into());
+    }
+}
+
+#[tokio::test]
+async fn an_already_exited_pod_must_be_closed_before_a_stop_receipt() {
+    // S12 causes: exact retained binding + every process already exited, but
+    // no API deletion intent. Effects: exact DELETE, Unknown; only a fresh read
+    // of the closed Pod can return the local stop receipt. Cross successful,
+    // failing and OOM exits: restartPolicy Never is not an active closure fact.
+    // S13 independent adapter/repeated observation => same receipt, one DELETE.
+    for reason in ["Completed", "Error", "OOMKilled"] {
+        let fixture = Fixture::new(Fault::None);
+        let binding = fixture.binding().await;
+        fixture.exit();
+        fixture
+            .facts
+            .lock()
+            .unwrap()
+            .pod
+            .as_mut()
+            .unwrap()
+            .status
+            .as_mut()
+            .unwrap()
+            .container_statuses
+            .as_mut()
+            .unwrap()[0]
+            .state
+            .as_mut()
+            .unwrap()
+            .terminated
+            .as_mut()
+            .unwrap()
+            .reason = Some(reason.into());
+        assert_eq!(
+            fixture.stopper().request_stop(&binding).await.unwrap(),
+            PodProcessTermination::Unknown,
+            "S12 {reason}: exit is not closure"
+        );
+        assert_eq!(
+            fixture.facts.lock().unwrap().accepted,
+            1,
+            "S12 exact DELETE"
+        );
+        for _ in 0..2 {
+            let PodProcessTermination::Observed(receipt) =
+                fixture.stopper().request_stop(&binding).await.unwrap()
+            else {
+                panic!("S13 closed exact exit: {reason}")
+            };
+            assert_eq!(receipt.binding(), &binding);
+        }
+        assert_eq!(
+            fixture.facts.lock().unwrap().accepted,
+            1,
+            "S13 no duplicate DELETE"
+        );
+    }
 }
 
 #[tokio::test]
@@ -169,7 +235,7 @@ async fn stop_requires_prebound_retention_and_returns_only_independent_exact_exi
     // identity/profile; C4 deleting; C5 complete runtime exit; C6 API read status.
     // Effects: E1 no IO for invalid binding; E2 GET only, no proof; E3 one exact
     // DELETE, still Unknown; E4 local exit receipt, no DELETE. Rules: S1 all
-    // prerequisites + live => E3; S2 deleting+live => E2; S3 complete=>E4;
+    // prerequisites + live => E3; S2 deleting+live => E2; S3 deleting+complete=>E4;
     // S4 !C1=>E1; S5 !C2 / read error=>error without writes; S6 !C3/404=>E2.
     // All negative causes are changed independently from the S1 witness.
     let fixture = Fixture::new(Fault::None);
@@ -182,7 +248,7 @@ async fn stop_requires_prebound_retention_and_returns_only_independent_exact_exi
         );
     }
     assert_eq!(fixture.facts.lock().unwrap().accepted, 1);
-    fixture.facts.lock().unwrap().pod = Some(retained(terminal()));
+    fixture.exit();
     for _ in 0..2 {
         let PodProcessTermination::Observed(receipt) =
             fixture.stopper().request_stop(&binding).await.unwrap()
@@ -296,41 +362,63 @@ async fn stop_response_loss_and_cas_conflicts_never_retarget_or_forge_completion
     // one accepted DELETE, Unknown until runtime exit. S8 revision conflict =>
     // re-read then exact retry. S9 replacement/retention loss between GET and
     // DELETE => conflict and no accepted write; subsequent read cannot redirect.
-    for fault in [
-        Fault::BeforeDelete,
-        Fault::AfterDelete,
-        Fault::Conflict,
-        Fault::Replacement,
-        Fault::RetentionLost,
-    ] {
-        let fixture = Fixture::new(fault);
-        let binding = fixture.binding().await;
-        assert!(fixture.stopper().request_stop(&binding).await.is_err());
-        let retry = fixture.stopper().request_stop(&binding).await;
-        if matches!(fault, Fault::RetentionLost) {
-            assert!(retry.is_err());
-        } else {
-            assert_eq!(retry.unwrap(), PodProcessTermination::Unknown);
+    // S14 cross every fault with exit-before-stop: a previously finished process
+    // cannot bypass any CAS, retention or lost-response branch. After an exact
+    // accepted deletion, an independent retry may expose that already-known exit.
+    for already_exited in [false, true] {
+        for fault in [
+            Fault::BeforeDelete,
+            Fault::AfterDelete,
+            Fault::Conflict,
+            Fault::Replacement,
+            Fault::RetentionLost,
+        ] {
+            let fixture = Fixture::new(fault);
+            let binding = fixture.binding().await;
+            if already_exited {
+                fixture.exit();
+            }
+            assert!(fixture.stopper().request_stop(&binding).await.is_err());
+            let retry = fixture.stopper().request_stop(&binding).await;
+            if matches!(fault, Fault::RetentionLost) {
+                assert!(retry.is_err());
+            } else if already_exited && matches!(fault, Fault::AfterDelete) {
+                assert!(
+                    matches!(retry.unwrap(), PodProcessTermination::Observed(_)),
+                    "S14 lost accepted response: fresh read proves closure and exit"
+                );
+            } else {
+                assert_eq!(retry.unwrap(), PodProcessTermination::Unknown);
+            }
+            if already_exited && !matches!(fault, Fault::Replacement | Fault::RetentionLost) {
+                assert!(
+                    matches!(
+                        fixture.stopper().request_stop(&binding).await.unwrap(),
+                        PodProcessTermination::Observed(_)
+                    ),
+                    "S14 exact post-acceptance retry"
+                );
+            }
+            let state = fixture.facts.lock().unwrap();
+            let foreign = matches!(fault, Fault::Replacement | Fault::RetentionLost);
+            assert_eq!(state.accepted, usize::from(!foreign));
+            for (_, request) in state.calls.iter().filter(|(method, _)| method == "DELETE") {
+                assert_eq!(request["preconditions"]["uid"], "uid-a");
+                assert!(request["preconditions"]["resourceVersion"].is_string());
+            }
+            assert!(
+                state
+                    .pod
+                    .as_ref()
+                    .unwrap()
+                    .metadata
+                    .finalizers
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .any(|v| v == "other.example/keep")
+            );
         }
-        let state = fixture.facts.lock().unwrap();
-        let foreign = matches!(fault, Fault::Replacement | Fault::RetentionLost);
-        assert_eq!(state.accepted, usize::from(!foreign));
-        for (_, request) in state.calls.iter().filter(|(method, _)| method == "DELETE") {
-            assert_eq!(request["preconditions"]["uid"], "uid-a");
-            assert!(request["preconditions"]["resourceVersion"].is_string());
-        }
-        assert!(
-            state
-                .pod
-                .as_ref()
-                .unwrap()
-                .metadata
-                .finalizers
-                .as_ref()
-                .unwrap()
-                .iter()
-                .any(|v| v == "other.example/keep")
-        );
     }
 }
 
@@ -356,7 +444,7 @@ async fn independent_retry_survives_caller_loss_after_stop_acceptance() {
         fixture.stopper().request_stop(&binding).await.unwrap(),
         PodProcessTermination::Unknown
     );
-    fixture.facts.lock().unwrap().pod = Some(retained(terminal()));
+    fixture.exit();
     assert!(matches!(
         fixture.stopper().request_stop(&binding).await.unwrap(),
         PodProcessTermination::Observed(_)
