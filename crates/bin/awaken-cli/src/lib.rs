@@ -145,6 +145,7 @@ enum RuntimeModelServices {
 struct ControlServices {
     audit: Arc<dyn awaken_config_service::ManagementAuditRepository>,
     credentials: Arc<dyn awaken_session_application::SessionCredentialSource>,
+    repository_credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
     webhooks: Arc<dyn awaken_session_contract::LifecycleFactDelivery>,
     consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
 }
@@ -156,6 +157,7 @@ impl ControlServices {
         Self {
             audit: client.clone(),
             credentials: client.clone(),
+            repository_credentials: client.clone(),
             webhooks: client.clone(),
             consent: client,
         }

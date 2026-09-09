@@ -1761,6 +1761,7 @@ dependencies = [
  "rusqlite",
  "tempfile",
  "tokio",
+ "url",
  "uuid",
  "zip",
 ]

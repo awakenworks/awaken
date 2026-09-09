@@ -2,6 +2,54 @@ use super::*;
 use awaken_session_contract::SessionRealizationControl;
 
 #[test]
+fn lifecycle_cancellation_interrupts_a_held_recovery_scan() {
+    run_composed_async_test(|| async {
+        // Cover initial dispatch, recovery candidates and the final audit.
+        // No held read may prevent process shutdown; cancellation does not release any
+        // physical predecessor or commit a synthetic successful recovery.
+        for held_call in [1, 2, 3] {
+            let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+            );
+            let observed = Arc::new(FaultingSessionRepository::new(durable));
+            observed
+                .hold_recovery_scan_on_call
+                .store(held_call, Ordering::SeqCst);
+            let application = Arc::new(application(
+                observed.clone(),
+                Arc::new(RecordingEnvironmentSource::default()),
+            ));
+            let cancellation = awaken_runtime_contract::CancellationToken::new();
+            let task = tokio::spawn(
+                application
+                    .clone()
+                    .run_lifecycle_supervisor(cancellation.clone()),
+            );
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                observed.recovery_scan_entered.notified(),
+            )
+            .await
+            .expect("recovery reached the held read");
+            cancellation.cancel();
+            tokio::time::timeout(std::time::Duration::from_secs(1), task)
+                .await
+                .expect("cancellation must not wait for the held read")
+                .expect("supervisor did not panic")
+                .expect("cancelled cleanly");
+            assert_eq!(observed.recovery_scan_count(), held_call);
+            assert!(
+                application
+                    .run_lifecycle_supervisor(cancellation)
+                    .await
+                    .unwrap_err()
+                    .contains("already claimed")
+            );
+        }
+    });
+}
+
+#[test]
 fn terminal_cleanup_retains_exact_process_owner_requirements_through_dispose() {
     // TC1 trust x supervision x {Prepare,Dispose} is exhaustive. Every phase
     // retains the exact physical-owner requirement frozen by Environment.

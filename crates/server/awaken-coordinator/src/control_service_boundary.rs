@@ -28,6 +28,7 @@ const VAULT_EXISTS_PATH: &str = "/internal/v1/control/credentials/vault-exists";
 const MCP_SOURCE_PATH: &str = "/internal/v1/control/credentials/mcp-source";
 const MCP_ACCESS_PATH: &str = "/internal/v1/control/credentials/mcp-access";
 const CREDENTIAL_ACCESS_PATH: &str = "/internal/v1/control/credentials/access";
+const REPOSITORY_ADMISSION_PATH: &str = "/internal/v1/control/credentials/repository-admission";
 const WEBHOOK_DELIVER_PATH: &str = "/internal/v1/control/webhooks/deliver";
 const CONSENT_CEILING_PATH: &str = "/internal/v1/control/data-subjects/consent-ceiling";
 pub const DATA_SUBJECT_ERASE_PATH: &str = "/internal/v1/control/data-subjects/erase";
@@ -41,6 +42,7 @@ const RETRY_DELAY: Duration = Duration::from_millis(25);
 struct ControlServiceState {
     audit: ManagementAuditPlane,
     credentials: Arc<dyn SessionCredentialSource>,
+    repository_credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
     webhooks: Arc<dyn awaken_session_contract::LifecycleFactDelivery>,
     data_subjects: Arc<dyn awaken_runtime_contract::DataSubjectResolver>,
     organization_privacy: Arc<dyn awaken_runtime_contract::OrganizationPrivacyResolver>,
@@ -94,6 +96,21 @@ struct CredentialAccessCommand {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RepositoryAdmissionCommand {
+    workspace_id: String,
+    source_id: String,
+    remote_url: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RepositoryAdmission {
+    Admitted,
+    Rejected,
+}
+
+#[derive(Serialize, Deserialize)]
 struct ConsentCeilingCommand {
     subject: awaken_runtime_contract::DataSubjectId,
     purpose: awaken_runtime_contract::Purpose,
@@ -118,6 +135,7 @@ struct OrganizationExportCommand {
 pub fn router(
     audit: ManagementAuditPlane,
     credentials: Arc<dyn SessionCredentialSource>,
+    repository_credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
     webhooks: Arc<dyn awaken_session_contract::LifecycleFactDelivery>,
     data_subjects: Arc<dyn awaken_runtime_contract::DataSubjectResolver>,
     organization_privacy: Arc<dyn awaken_runtime_contract::OrganizationPrivacyResolver>,
@@ -126,6 +144,7 @@ pub fn router(
     Ok(router_with_authenticator(
         audit,
         credentials,
+        repository_credentials,
         webhooks,
         data_subjects,
         organization_privacy,
@@ -139,6 +158,7 @@ pub fn router(
 pub fn router_with_authenticator(
     audit: ManagementAuditPlane,
     credentials: Arc<dyn SessionCredentialSource>,
+    repository_credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
     webhooks: Arc<dyn awaken_session_contract::LifecycleFactDelivery>,
     data_subjects: Arc<dyn awaken_runtime_contract::DataSubjectResolver>,
     organization_privacy: Arc<dyn awaken_runtime_contract::OrganizationPrivacyResolver>,
@@ -147,6 +167,7 @@ pub fn router_with_authenticator(
     let state = ControlServiceState {
         audit,
         credentials,
+        repository_credentials,
         webhooks,
         data_subjects,
         organization_privacy,
@@ -160,6 +181,7 @@ pub fn router_with_authenticator(
         .route(MCP_SOURCE_PATH, post(mcp_source))
         .route(MCP_ACCESS_PATH, post(mcp_access))
         .route(CREDENTIAL_ACCESS_PATH, post(credential_access))
+        .route(REPOSITORY_ADMISSION_PATH, post(repository_admission))
         .route(WEBHOOK_DELIVER_PATH, post(deliver_webhook))
         .route(CONSENT_CEILING_PATH, post(consent_ceiling))
         .route(DATA_SUBJECT_ERASE_PATH, post(erase_data_subject))
@@ -297,6 +319,29 @@ async fn credential_access(
         )
         .await;
     response(result)
+}
+
+async fn repository_admission(
+    State(state): State<ControlServiceState>,
+    Json(command): Json<RepositoryAdmissionCommand>,
+) -> axum::response::Response {
+    let result = state
+        .repository_credentials
+        .validate(
+            &command.workspace_id,
+            &command.source_id,
+            &command.remote_url,
+        )
+        .await;
+    // Rejection is a successful read of an admission decision, not a transport
+    // failure. Never forward credential/storage diagnostics to another process.
+    response(match result {
+        Ok(()) => Ok(RepositoryAdmission::Admitted),
+        Err(awaken_resource_contract::ResourceRegistryError::Invalid(_)) => {
+            Ok(RepositoryAdmission::Rejected)
+        }
+        Err(_) => Err("Repository authorization service is unavailable".into()),
+    })
 }
 
 async fn deliver_webhook(
@@ -590,6 +635,40 @@ impl SessionCredentialSource for HttpControlServiceClient {
 }
 
 #[async_trait::async_trait]
+impl awaken_resource_contract::RepositoryCredentialValidator for HttpControlServiceClient {
+    async fn validate(
+        &self,
+        workspace_id: &str,
+        source_id: &str,
+        remote_url: &str,
+    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
+        use awaken_resource_contract::ResourceRegistryError;
+        let decision: RepositoryAdmission = self
+            .post(
+                REPOSITORY_ADMISSION_PATH,
+                &RepositoryAdmissionCommand {
+                    workspace_id: workspace_id.into(),
+                    source_id: source_id.into(),
+                    remote_url: remote_url.into(),
+                },
+            )
+            .await
+            .map_err(|_| {
+                ResourceRegistryError::Unavailable(
+                    "Repository authorization service is unavailable".into(),
+                )
+            })?;
+        match decision {
+            RepositoryAdmission::Admitted => Ok(()),
+            RepositoryAdmission::Rejected => Err(ResourceRegistryError::Invalid(
+                "Choose an active repository authorization in this Workspace for this Git server"
+                    .into(),
+            )),
+        }
+    }
+}
+
+#[async_trait::async_trait]
 impl awaken_session_contract::LifecycleFactDelivery for HttpControlServiceClient {
     async fn deliver(&self, fact: &ManagedLifecycleFact) -> Result<(), String> {
         self.post(WEBHOOK_DELIVER_PATH, fact).await
@@ -688,6 +767,34 @@ mod tests {
     #[derive(Default)]
     struct RecordingDelivery(Mutex<Vec<ManagedLifecycleFact>>);
 
+    #[derive(Default)]
+    struct RecordingRepositoryAdmission(Mutex<Vec<(String, String, String)>>);
+
+    #[async_trait::async_trait]
+    impl awaken_resource_contract::RepositoryCredentialValidator for RecordingRepositoryAdmission {
+        async fn validate(
+            &self,
+            workspace: &str,
+            source: &str,
+            remote: &str,
+        ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
+            use awaken_resource_contract::ResourceRegistryError;
+            self.0
+                .lock()
+                .unwrap()
+                .push((workspace.into(), source.into(), remote.into()));
+            match source {
+                "allowed" => Ok(()),
+                "outage" => Err(ResourceRegistryError::Unavailable(
+                    "private storage detail".into(),
+                )),
+                _ => Err(ResourceRegistryError::Invalid(
+                    "private credential detail".into(),
+                )),
+            }
+        }
+    }
+
     #[async_trait::async_trait]
     impl awaken_session_contract::LifecycleFactDelivery for RecordingDelivery {
         async fn deliver(&self, fact: &ManagedLifecycleFact) -> Result<(), String> {
@@ -746,9 +853,11 @@ mod tests {
         ));
         let delivery = Arc::new(RecordingDelivery::default());
         let token_source = Arc::new(RotatingTokenSource(RwLock::new(Arc::from("correct-token"))));
+        let repository_admission = Arc::new(RecordingRepositoryAdmission::default());
         let app = router_with_authenticator(
             audit,
             credentials,
+            repository_admission.clone(),
             delivery.clone(),
             Arc::new(awaken_runtime_contract::NullResolver),
             Arc::new(awaken_runtime_contract::NullResolver),
@@ -769,6 +878,46 @@ mod tests {
         )
         .unwrap();
         let scope = ScopeId::from("workspace-a");
+        // R10 exact metadata reaches Control; rejection is not retried, outage
+        // is retried, and invalid service authentication never reaches the port.
+        use awaken_resource_contract::{RepositoryCredentialValidator, ResourceRegistryError};
+        let remote = "https://github.com/example/workshop.git";
+        RepositoryCredentialValidator::validate(&client, "workspace-a", "allowed", remote)
+            .await
+            .unwrap();
+        assert_eq!(
+            repository_admission.0.lock().unwrap().as_slice(),
+            &[("workspace-a".into(), "allowed".into(), remote.into())]
+        );
+        assert!(matches!(
+            RepositoryCredentialValidator::validate(&client, "workspace-a", "denied", remote).await,
+            Err(ResourceRegistryError::Invalid(_))
+        ));
+        assert_eq!(
+            repository_admission.0.lock().unwrap().len(),
+            2,
+            "rejections are not transport retries"
+        );
+        let outage =
+            RepositoryCredentialValidator::validate(&client, "workspace-a", "outage", remote)
+                .await
+                .unwrap_err();
+        assert!(matches!(outage, ResourceRegistryError::Unavailable(_)));
+        assert!(!outage.to_string().contains("private storage detail"));
+        assert_eq!(repository_admission.0.lock().unwrap().len(), 5);
+        let unauthorized =
+            HttpControlServiceClient::new(format!("http://{address}"), "incorrect").unwrap();
+        assert!(
+            RepositoryCredentialValidator::validate(
+                &unauthorized,
+                "workspace-a",
+                "allowed",
+                remote
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(repository_admission.0.lock().unwrap().len(), 5);
         let record = ManagementAuditRecord {
             tool: "http:POST:/v1/sessions".into(),
             call_id: "call-1".into(),

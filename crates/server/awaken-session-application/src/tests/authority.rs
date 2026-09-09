@@ -347,6 +347,16 @@ impl FaultInjectingResourceRegistry {
 }
 
 impl awaken_resource_contract::ResourceInventory for FaultInjectingResourceRegistry {
+    fn list_repositories(
+        &self,
+        workspace_id: &str,
+    ) -> Result<
+        Vec<awaken_resource_contract::RepositoryDefinition>,
+        awaken_resource_contract::ResourceRegistryError,
+    > {
+        self.inner.list_repositories(workspace_id)
+    }
+
     fn find_memory_store(
         &self,
         workspace_id: &str,
@@ -406,6 +416,26 @@ impl awaken_resource_contract::ResourceInventory for FaultInjectingResourceRegis
 }
 
 impl awaken_resource_contract::ResourceAdministration for FaultInjectingResourceRegistry {
+    fn register_repository_idempotent(
+        &self,
+        command: awaken_resource_contract::RegisterRepository,
+    ) -> Result<
+        awaken_resource_contract::RepositoryDefinition,
+        awaken_resource_contract::ResourceRegistryError,
+    > {
+        self.inner.register_repository_idempotent(command)
+    }
+
+    fn register_memory_store_idempotent(
+        &self,
+        command: awaken_resource_contract::RegisterMemoryStore,
+    ) -> Result<
+        awaken_resource_contract::MemoryStoreDefinition,
+        awaken_resource_contract::ResourceRegistryError,
+    > {
+        self.inner.register_memory_store_idempotent(command)
+    }
+
     fn register_memory_store(
         &self,
         command: awaken_resource_contract::RegisterMemoryStore,

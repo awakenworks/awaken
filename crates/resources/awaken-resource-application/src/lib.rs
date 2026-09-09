@@ -11,6 +11,8 @@ mod execution_sources;
 mod files;
 mod reclamation;
 mod registry;
+mod repositories;
+pub use repositories::RepositoryApplication;
 mod skill_ingest;
 pub use authorities::ResourceAuthorities;
 mod skill_lifecycle;
@@ -116,6 +118,16 @@ impl ResourcesApplication {
         self.memories.clone()
     }
 
+    pub fn repositories(
+        &self,
+        credentials: Arc<dyn awaken_resource_contract::RepositoryCredentialValidator>,
+    ) -> Arc<dyn awaken_resource_contract::RepositoryApplicationService> {
+        Arc::new(RepositoryApplication::new(
+            self.authorities.resource_registry(),
+            credentials,
+        ))
+    }
+
     #[must_use]
     pub fn purge_scheduler(&self) -> Arc<dyn ResourcePurgeScheduler> {
         self.purge.clone()
@@ -182,14 +194,10 @@ fn required_store(
     })
 }
 
-#[async_trait::async_trait]
-impl MemoryStoreApplicationService for MemoryStoreApplication {
-    async fn create(
-        &self,
-        command: CreateMemoryStoreCommand,
-    ) -> Result<MemoryStoreDefinition, MemoryStoreApplicationError> {
-        let id = command.id.unwrap_or_else(|| mint_memory_store_id().into());
-        let definition = MemoryStoreDefinition {
+fn memory_store_registration(command: CreateMemoryStoreCommand) -> RegisterMemoryStore {
+    let id = command.id.unwrap_or_else(|| mint_memory_store_id().into());
+    RegisterMemoryStore {
+        definition: MemoryStoreDefinition {
             id: id.clone(),
             workspace_id: command.workspace_id,
             name: command.name,
@@ -198,15 +206,62 @@ impl MemoryStoreApplicationService for MemoryStoreApplication {
             state: command.initial_state,
             current_config_version: ConfigVersion::INITIAL,
             timestamps: ResourceTimestamps::created(now_nanos()),
-        };
-        self.registry.register_memory_store(RegisterMemoryStore {
-            definition: definition.clone(),
-            initial_config: MemoryStoreConfigVersion {
-                memory_store_id: id,
-                version: ConfigVersion::INITIAL,
-                retention_policy: command.retention_policy,
-            },
-        })?;
+        },
+        initial_config: MemoryStoreConfigVersion {
+            memory_store_id: id,
+            version: ConfigVersion::INITIAL,
+            retention_policy: command.retention_policy,
+        },
+    }
+}
+
+#[async_trait::async_trait]
+impl MemoryStoreApplicationService for MemoryStoreApplication {
+    async fn create_idempotent(
+        &self,
+        mut command: CreateMemoryStoreCommand,
+        request_key: &str,
+    ) -> Result<MemoryStoreDefinition, MemoryStoreApplicationError> {
+        if command.id.is_some()
+            || request_key.trim().is_empty()
+            || request_key.len() > 255
+            || !request_key
+                .bytes()
+                .all(|byte| (0x20..=0x7e).contains(&byte))
+        {
+            return Err(awaken_resource_contract::ResourceRegistryError::Invalid(
+                "idempotent MemoryStore creation requires a visible request key and no explicit id"
+                    .into(),
+            )
+            .into());
+        }
+        // Length framing keeps Workspace/key boundaries unambiguous. The
+        // opaque identity contains neither the raw key nor editable metadata.
+        let identity = format!(
+            "memory-store-create:{}:{}{}",
+            command.workspace_id.len(),
+            command.workspace_id,
+            request_key
+        );
+        command.id = Some(
+            format!(
+                "memstore_request_{}",
+                awaken_resource_contract::content_id(identity.as_bytes())
+            )
+            .into(),
+        );
+        Ok(self
+            .registry
+            .register_memory_store_idempotent(memory_store_registration(command))?)
+    }
+
+    async fn create(
+        &self,
+        command: CreateMemoryStoreCommand,
+    ) -> Result<MemoryStoreDefinition, MemoryStoreApplicationError> {
+        let registration = memory_store_registration(command);
+        let definition = registration.definition.clone();
+        self.registry.register_memory_store(registration)?;
         Ok(definition)
     }
 
@@ -372,6 +427,56 @@ mod tests {
             Arc::new(awaken_skill_store::InMemorySkillStore::new()),
             resources,
         ))
+    }
+
+    #[tokio::test]
+    async fn memory_store_creation_keys_are_workspace_scoped_and_optional() {
+        let application = application();
+        let stores = application.memory_stores();
+        let command = CreateMemoryStoreCommand {
+            workspace_id: "workspace".into(),
+            id: None,
+            name: "Workshop".into(),
+            description: String::new(),
+            metadata: Default::default(),
+            initial_state: ResourceState::Active,
+            retention_policy: Default::default(),
+        };
+        let first = stores
+            .create_idempotent(command.clone(), "same-key")
+            .await
+            .unwrap();
+        let retry = stores
+            .create_idempotent(command.clone(), "same-key")
+            .await
+            .unwrap();
+        assert_eq!(first, retry);
+        let mut foreign = command.clone();
+        foreign.workspace_id = "another-workspace".into();
+        let other = stores.create_idempotent(foreign, "same-key").await.unwrap();
+        assert_ne!(first.id, other.id);
+        assert_ne!(
+            first.id,
+            stores
+                .create_idempotent(command.clone(), "new-key")
+                .await
+                .unwrap()
+                .id
+        );
+        let unkeyed = stores.create(command.clone()).await.unwrap();
+        assert_ne!(unkeyed.id, stores.create(command.clone()).await.unwrap().id);
+        let mut explicit = command.clone();
+        explicit.id = Some("must-not-be-used".into());
+        assert!(stores.create_idempotent(explicit, "key").await.is_err());
+        for key in ["", " ", "line\nbreak", &"x".repeat(256)] {
+            assert!(
+                stores
+                    .create_idempotent(command.clone(), key)
+                    .await
+                    .is_err()
+            );
+        }
+        assert_eq!(stores.list("workspace").await.unwrap().len(), 4);
     }
 
     #[tokio::test]

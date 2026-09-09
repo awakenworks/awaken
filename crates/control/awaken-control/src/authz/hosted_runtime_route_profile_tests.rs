@@ -32,6 +32,7 @@ fn hosted_runtime_routes_are_projected_from_the_authorization_table() {
         ("prefix", "/v1/skills"),
         ("prefix", "/v1/memory_stores"),
         ("prefix", "/v1/models"),
+        ("prefix", "/v1/awaken/repositories"),
         ("prefix", "/v1/awaken/sessions"),
         ("prefix", "/v1/application-access-tokens"),
         ("prefix", "/v1/deployments"),

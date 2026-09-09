@@ -606,6 +606,32 @@ struct NotReadyResolver {
     calls: Arc<std::sync::atomic::AtomicUsize>,
 }
 
+struct RecoveringBackpressureResolver {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    worker: Arc<MemWorker>,
+}
+
+#[async_trait]
+impl WorkerResolver<MemoryDispatchStore> for RecoveringBackpressureResolver {
+    async fn worker_for(
+        &self,
+        _thread_id: &ThreadId,
+        _agent_id: Option<&str>,
+    ) -> Result<Arc<MemWorker>, Error> {
+        match self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => Err(Error::Execution(
+                awaken_runtime_contract::execution::Error::Execution(
+                    "synthetic transient resolution fault".into(),
+                ),
+            )),
+            1 => Err(Error::ResolutionNotReady(
+                "synthetic Environment pressure".into(),
+            )),
+            _ => Ok(self.worker.clone()),
+        }
+    }
+}
+
 #[async_trait]
 impl WorkerResolver<MemoryDispatchStore> for NotReadyResolver {
     async fn worker_for(
@@ -3154,6 +3180,77 @@ async fn session_work_backpressure_relinquishes_once_then_retries_with_a_floor()
         "B1 remains durable and immediately reclaimable"
     );
     pool.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn recovered_probe_with_session_backpressure_does_not_strand_the_pool() {
+    assert_recovered_probe_with_session_backpressure(1).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn recovered_probe_with_session_backpressure_preserves_multi_drain_progress() {
+    assert_recovered_probe_with_session_backpressure(4).await;
+}
+
+async fn assert_recovered_probe_with_session_backpressure(concurrency: usize) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // C1 a transient fault opens the single-probe error gate; C2 the recovery
+    // probe finds ordinary Environment pressure, not another fault; C3 the
+    // Environment becomes available. E1 C2 releases probe ownership; E2 C3
+    // executes the retained request exactly once without another enqueue,
+    // external wake, queue fallback, or forced lease/physical-slot release.
+    let store = Arc::new(MemoryDispatchStore::new());
+    store
+        .enqueue(RunDispatch::new(activation("recovered-pressure")))
+        .await
+        .unwrap();
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (runtime, inference_calls) = counting_text_runtime();
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(ManualClock::new(0)),
+        "pool",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(3600),
+            terminal_reconciliation_interval: None,
+            ..Default::default()
+        },
+        Arc::new(RecoveringBackpressureResolver {
+            calls: calls.clone(),
+            worker: worker_over(runtime, store.clone(), commit.clone()),
+        }),
+        concurrency,
+        Arc::new(BlackholeWake),
+    );
+    // Explicit virtual-clock steps allow runnable drain tasks to settle before
+    // each deadline. Test timing cannot be decided by host CPU load.
+    assert!(yield_until(|| calls.load(Ordering::SeqCst) == 1).await);
+    tokio::time::advance(Duration::from_millis(100)).await;
+    assert!(yield_until(|| calls.load(Ordering::SeqCst) == 2).await);
+    tokio::time::advance(Duration::from_millis(250)).await;
+    let completed = yield_until(|| store.dispatch_count() == 0).await;
+    pool.shutdown().await;
+    assert!(
+        completed,
+        "a NotReady recovery probe must release the error gate"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "only the third resolution executes"
+    );
+    assert_eq!(
+        inference_calls.load(Ordering::SeqCst),
+        1,
+        "one actual inference"
+    );
+    assert!(matches!(
+        commit.committed().latest_run.unwrap().state,
+        RunState::Ended(_)
+    ));
 }
 
 #[tokio::test]

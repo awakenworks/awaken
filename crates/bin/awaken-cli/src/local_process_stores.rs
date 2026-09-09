@@ -93,6 +93,9 @@ pub(super) fn in_memory_split_coordinator() -> (ProcessStores, ControlServices) 
         ControlServices {
             audit,
             credentials,
+            repository_credentials: Arc::new(awaken_control::CredentialRevisionValidator::new(
+                control.credentials,
+            )),
             webhooks,
             consent,
         },

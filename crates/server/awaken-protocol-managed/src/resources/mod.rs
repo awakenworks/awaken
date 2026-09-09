@@ -14,11 +14,13 @@ use crate::types::ErrorResponse;
 
 pub use files::files_router;
 pub use memory_stores::memory_stores_router;
+pub use repositories::repositories_router;
 pub use skills::skills_router;
 
 mod files;
 pub(crate) mod flavor;
 mod memory_stores;
+mod repositories;
 mod skills;
 
 fn managed_resource_error_type(status: StatusCode) -> &'static str {
@@ -48,6 +50,7 @@ pub(super) fn managed_resource_error(
 }
 
 pub struct ResourcesRouterInput {
+    pub repositories: Arc<dyn awaken_resource_contract::RepositoryApplicationService>,
     pub files: Arc<dyn FileApplicationService>,
     pub memories: Arc<dyn MemoryRepository>,
     pub memory_stores: Arc<dyn MemoryStoreApplicationService>,
@@ -64,6 +67,7 @@ pub fn resources_router(input: ResourcesRouterInput) -> Router {
                 .with_state(input.files),
         )
         .merge(memory_stores_router(input.memories, input.memory_stores))
+        .merge(repositories_router(input.repositories))
         .merge(skills_router(input.skills, input.purge))
 }
 
@@ -118,6 +122,9 @@ mod tests {
             ));
         let authorities = application.authorities();
         let router = resources_router(ResourcesRouterInput {
+            repositories: application.repositories(Arc::new(
+                awaken_resource_contract::UnavailableRepositoryCredentialValidator,
+            )),
             files: application.files(),
             memories: authorities.memory_repository(),
             memory_stores: application.memory_stores(),

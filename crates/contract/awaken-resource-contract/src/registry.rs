@@ -367,6 +367,10 @@ fn validate_publish(
 pub struct MemoryStoreAggregate {
     definition: MemoryStoreDefinition,
     configs: BTreeMap<ConfigVersion, MemoryStoreConfigVersion>,
+    /// Immutable creation receipt, committed in the same row as the identity.
+    /// It is not user-editable metadata and survives profile/config changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    creation_request_sha256: Option<String>,
 }
 
 impl MemoryStoreAggregate {
@@ -401,11 +405,41 @@ impl MemoryStoreAggregate {
         Ok(Self {
             definition,
             configs,
+            creation_request_sha256: None,
         })
     }
 
     pub fn validate_integrity(&self) -> Result<(), ResourceRegistryError> {
+        if self.creation_request_sha256.as_ref().is_some_and(|hash| {
+            hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }) {
+            return Err(ResourceRegistryError::CorruptData(
+                "MemoryStore creation receipt is invalid".into(),
+            ));
+        }
         validate_memory_store_integrity(&self.definition, &self.configs)
+    }
+
+    pub fn register_idempotent(
+        mut definition: MemoryStoreDefinition,
+        initial_config: MemoryStoreConfigVersion,
+    ) -> Result<Self, ResourceRegistryError> {
+        let timestamps = definition.timestamps;
+        definition.timestamps = ResourceTimestamps::default();
+        let request = serde_json::to_string(&(&definition, &initial_config))
+            .map_err(|error| ResourceRegistryError::Invalid(error.to_string()))?;
+        definition.timestamps = timestamps;
+        let mut aggregate = Self::register(definition, initial_config)?;
+        aggregate.creation_request_sha256 = Some(crate::memory_sha256_hex(&request));
+        Ok(aggregate)
+    }
+
+    #[must_use]
+    pub fn is_creation_replay_of(&self, candidate: &Self) -> bool {
+        self.creation_request_sha256.is_some()
+            && self.creation_request_sha256 == candidate.creation_request_sha256
+            && self.definition.id == candidate.definition.id
+            && self.definition.workspace_id == candidate.definition.workspace_id
     }
 
     #[must_use]
@@ -532,6 +566,9 @@ impl MemoryStoreAggregate {
 pub struct RepositoryAggregate {
     definition: RepositoryDefinition,
     configs: BTreeMap<ConfigVersion, RepositoryConfigVersion>,
+    /// Atomic, immutable creation receipt; never exposed as editable metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    creation_request_sha256: Option<String>,
 }
 
 impl RepositoryAggregate {
@@ -566,11 +603,41 @@ impl RepositoryAggregate {
         Ok(Self {
             definition,
             configs,
+            creation_request_sha256: None,
         })
     }
 
     pub fn validate_integrity(&self) -> Result<(), ResourceRegistryError> {
+        if self.creation_request_sha256.as_ref().is_some_and(|hash| {
+            hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        }) {
+            return Err(ResourceRegistryError::CorruptData(
+                "Repository creation receipt is invalid".into(),
+            ));
+        }
         validate_repository_integrity(&self.definition, &self.configs)
+    }
+
+    pub fn register_idempotent(
+        mut definition: RepositoryDefinition,
+        initial_config: RepositoryConfigVersion,
+    ) -> Result<Self, ResourceRegistryError> {
+        let timestamps = definition.timestamps;
+        definition.timestamps = ResourceTimestamps::default();
+        let request = serde_json::to_string(&(&definition, &initial_config))
+            .map_err(|error| ResourceRegistryError::Invalid(error.to_string()))?;
+        definition.timestamps = timestamps;
+        let mut aggregate = Self::register(definition, initial_config)?;
+        aggregate.creation_request_sha256 = Some(crate::memory_sha256_hex(&request));
+        Ok(aggregate)
+    }
+
+    #[must_use]
+    pub fn is_creation_replay_of(&self, candidate: &Self) -> bool {
+        self.creation_request_sha256.is_some()
+            && self.creation_request_sha256 == candidate.creation_request_sha256
+            && self.definition.id == candidate.definition.id
+            && self.definition.workspace_id == candidate.definition.workspace_id
     }
 
     #[must_use]
@@ -822,6 +889,10 @@ pub trait ResourceInventory: Send + Sync {
         workspace_id: &str,
         id: &str,
     ) -> Result<Option<RepositoryDefinition>, ResourceRegistryError>;
+    fn list_repositories(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<RepositoryDefinition>, ResourceRegistryError>;
     fn find_repository_config(
         &self,
         workspace_id: &str,
@@ -836,6 +907,12 @@ pub trait ResourceAdministration: Send + Sync {
         &self,
         command: RegisterMemoryStore,
     ) -> Result<(), ResourceRegistryError>;
+    /// Atomic registration with a retained request receipt. Exact retries return
+    /// the current active definition; changed payloads and retired stores fail.
+    fn register_memory_store_idempotent(
+        &self,
+        command: RegisterMemoryStore,
+    ) -> Result<MemoryStoreDefinition, ResourceRegistryError>;
     fn update_memory_store_profile(
         &self,
         command: UpdateMemoryStoreProfile,
@@ -850,6 +927,12 @@ pub trait ResourceAdministration: Send + Sync {
     ) -> Result<(), ResourceRegistryError>;
     fn register_repository(&self, command: RegisterRepository)
     -> Result<(), ResourceRegistryError>;
+    /// Exact creation retries return the current active definition, without
+    /// overwriting later versions or reviving a retired repository.
+    fn register_repository_idempotent(
+        &self,
+        command: RegisterRepository,
+    ) -> Result<RepositoryDefinition, ResourceRegistryError>;
     fn publish_repository_config(
         &self,
         command: PublishRepositoryConfig,
@@ -927,6 +1010,10 @@ pub trait ResourceRegistryRepository: Send + Sync {
         &self,
         id: &str,
     ) -> Result<Option<Stored<RepositoryAggregate>>, RegistryRepositoryError>;
+    fn list_repositories(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<Stored<RepositoryAggregate>>, RegistryRepositoryError>;
     fn insert_repository(
         &self,
         aggregate: &RepositoryAggregate,
@@ -941,6 +1028,81 @@ pub trait ResourceRegistryRepository: Send + Sync {
 #[cfg(test)]
 mod registry_tests {
     use super::*;
+
+    #[test]
+    fn repository_creation_receipts_preserve_legacy_compatibility_and_validate_integrity() {
+        let definition = RepositoryDefinition {
+            id: "repository".into(),
+            workspace_id: "workspace".into(),
+            name: "Repository".into(),
+            description: String::new(),
+            metadata: Default::default(),
+            state: ResourceState::Active,
+            current_config_version: ConfigVersion::INITIAL,
+            timestamps: Default::default(),
+        };
+        let config = RepositoryConfigVersion {
+            repository_id: definition.id.clone(),
+            version: ConfigVersion::INITIAL,
+            remote_url: "https://github.com/example/repository.git".into(),
+            credential_binding: None,
+            initial_branch: None,
+            initial_commit: None,
+            clone_policy: ClonePolicy::default(),
+        };
+        let ordinary = RepositoryAggregate::register(definition.clone(), config.clone()).unwrap();
+        let wire = serde_json::to_value(&ordinary).unwrap();
+        assert!(wire.get("creation_request_sha256").is_none());
+        let legacy: RepositoryAggregate = serde_json::from_value(wire).unwrap();
+        legacy.validate_integrity().unwrap();
+        let keyed = RepositoryAggregate::register_idempotent(definition, config).unwrap();
+        assert!(!keyed.is_creation_replay_of(&legacy));
+        let mut wire = serde_json::to_value(&keyed).unwrap();
+        let restored: RepositoryAggregate = serde_json::from_value(wire.clone()).unwrap();
+        assert!(keyed.is_creation_replay_of(&restored));
+        wire["creation_request_sha256"] = serde_json::json!("not-a-hash");
+        let corrupt: RepositoryAggregate = serde_json::from_value(wire).unwrap();
+        assert!(matches!(
+            corrupt.validate_integrity(),
+            Err(ResourceRegistryError::CorruptData(_))
+        ));
+    }
+
+    #[test]
+    fn memory_creation_receipt_is_optional_for_legacy_rows_but_validated_when_present() {
+        let definition = MemoryStoreDefinition {
+            id: "memory-a".into(),
+            workspace_id: "workspace-a".into(),
+            name: "Memory".into(),
+            description: String::new(),
+            metadata: Default::default(),
+            state: ResourceState::Active,
+            current_config_version: ConfigVersion::INITIAL,
+            timestamps: Default::default(),
+        };
+        let config = MemoryStoreConfigVersion {
+            memory_store_id: definition.id.clone(),
+            version: ConfigVersion::INITIAL,
+            retention_policy: Default::default(),
+        };
+        let ordinary = MemoryStoreAggregate::register(definition.clone(), config.clone()).unwrap();
+        let wire = serde_json::to_value(&ordinary).unwrap();
+        assert!(wire.get("creation_request_sha256").is_none());
+        let legacy: MemoryStoreAggregate = serde_json::from_value(wire).unwrap();
+        legacy.validate_integrity().unwrap();
+        let keyed = MemoryStoreAggregate::register_idempotent(definition, config).unwrap();
+        assert!(
+            !legacy.is_creation_replay_of(&keyed),
+            "a request cannot adopt an unrelated legacy row"
+        );
+        let mut wire = serde_json::to_value(&keyed).unwrap();
+        wire["creation_request_sha256"] = serde_json::json!("invalid");
+        let corrupt: MemoryStoreAggregate = serde_json::from_value(wire).unwrap();
+        assert!(matches!(
+            corrupt.validate_integrity(),
+            Err(ResourceRegistryError::CorruptData(_))
+        ));
+    }
 
     #[test]
     fn live_binding_decision_table_is_total_exact_and_fail_closed() {

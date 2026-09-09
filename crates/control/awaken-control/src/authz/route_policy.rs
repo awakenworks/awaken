@@ -52,6 +52,13 @@ pub(super) const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
             write: WORKSPACE_WRITE,
         },
     ),
+    RoutePolicyDescriptor::hosted_runtime(
+        "/v1/awaken/repositories",
+        RouteFamilyPolicy::Resource {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    ),
     RoutePolicyDescriptor::hosted_runtime("/v1/awaken/sessions", HOSTED_RUN_POLICY),
     RoutePolicyDescriptor::control("/v1/config/iam/tokens", RouteFamilyPolicy::TokenAdmin),
     RoutePolicyDescriptor::hosted_runtime("/v1/application-access-tokens", HOSTED_RUN_POLICY),

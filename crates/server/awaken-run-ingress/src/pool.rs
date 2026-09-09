@@ -257,7 +257,23 @@ impl DrainErrorGate {
     /// During an outage, admit exactly one recovery probe for the whole pool.
     /// Pool width must remain execution concurrency, never retry concurrency.
     async fn wait_cycle(&self, shutdown: &CancellationToken) -> bool {
+        self.wait_cycle_observed(shutdown, || {}).await
+    }
+
+    // The observer is synchronous and receives no authority. Tests use it to
+    // interleave a completed probe exactly between observation and suspension.
+    async fn wait_cycle_observed(
+        &self,
+        shutdown: &CancellationToken,
+        mut after_observation: impl FnMut(),
+    ) -> bool {
         loop {
+            // notify_waiters does not retain a permit for a future waiter.
+            // Register before reading state so a probe that returns after the
+            // read cannot strand every drain behind an already-open gate.
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
             let delay = {
                 let mut state = self.state.lock().await;
                 if state.consecutive_errors == 0 {
@@ -273,15 +289,16 @@ impl DrainErrorGate {
                 }
                 (!state.probe_in_flight).then(|| retry_not_before.duration_since(now))
             };
+            after_observation();
             match delay {
                 Some(delay) => tokio::select! {
                     _ = shutdown.cancelled() => return false,
-                    _ = self.changed.notified() => {},
+                    _ = &mut changed => {},
                     _ = tokio::time::sleep(delay) => {},
                 },
                 None => tokio::select! {
                     _ = shutdown.cancelled() => return false,
-                    _ = self.changed.notified() => {},
+                    _ = &mut changed => {},
                 },
             }
         }
@@ -703,6 +720,12 @@ async fn drain_loop<S: Dispatch + 'static>(
             // absorbs it as an already-done settle, so this only fires on genuine
             // faults.
             Err(err) if err.is_resolution_not_ready() => {
+                // A recovery probe has returned. Ordinary Environment pressure
+                // must release its pool-wide probe ownership just like an idle
+                // or successful cycle; otherwise every future drain waits for
+                // a probe that no longer exists. This changes only retry
+                // admission, never the retained Run or physical execution slot.
+                admission.error_gate.record_success().await;
                 // WorkQueue serializes Runs that share one Environment. A
                 // predecessor releasing that slot is normal backpressure, not a
                 // fault. The queue poll is only a missed-edge fallback (and may
@@ -1123,6 +1146,36 @@ mod in_flight_tests {
         .await;
         shutdown.cancel();
         assert!(!second.await, "shutdown releases the blocked sibling");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn completed_probe_between_observation_and_wait_cannot_strand_drains() {
+        // C1 the only recovery probe is in flight; C2 its successful completion
+        // occurs after a sibling observes C1, before that sibling awaits Notify.
+        // E1 the sibling must re-check the now-open gate without another wake,
+        // wall-clock polling, cancellation, model call, or new dispatch input.
+        let gate = DrainErrorGate::default();
+        let shutdown = CancellationToken::new();
+        gate.record_failure().await;
+        gate.state.lock().await.probe_in_flight = true;
+        let mut observed = false;
+        let waiter = gate.wait_cycle_observed(&shutdown, || {
+            assert!(!observed, "the reopened gate must admit on the next check");
+            observed = true;
+            // Same state transition and broadcast as record_success, performed
+            // synchronously at the otherwise cross-thread race boundary.
+            *gate
+                .state
+                .try_lock()
+                .expect("observation released the mutex") = DrainErrorState::default();
+            gate.changed.notify_waiters();
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), waiter)
+                .await
+                .expect("completion notification must survive before suspension")
+        );
+        assert!(observed);
     }
 
     struct ReconciliationResolver {

@@ -53,6 +53,12 @@ pub trait MemoryStoreApplicationService: Send + Sync {
         command: CreateMemoryStoreCommand,
     ) -> Result<MemoryStoreDefinition, MemoryStoreApplicationError>;
 
+    async fn create_idempotent(
+        &self,
+        command: CreateMemoryStoreCommand,
+        request_key: &str,
+    ) -> Result<MemoryStoreDefinition, MemoryStoreApplicationError>;
+
     async fn get(
         &self,
         workspace_id: &str,

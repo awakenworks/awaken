@@ -29,6 +29,12 @@ mod memory_application;
 mod memory_copy;
 pub use memory_copy::{MemoryCopyBase, MemoryCopyConflict};
 mod registry;
+mod repository_application;
+pub use repository_application::{
+    CreateRepositoryCommand, RepositoryApplicationService, RepositoryCredentialValidator,
+    RepositoryDetails, SESSION_REPOSITORY_OWNER_KIND, SESSION_REPOSITORY_OWNER_SESSION,
+    UnavailableRepositoryCredentialValidator, is_session_owned_repository,
+};
 
 pub use artifact_capture::{
     ArtifactCapture, ReplaceArtifactCapture, ReplaceArtifactCaptureOutcome,

@@ -399,6 +399,20 @@ impl SessionApplication {
         if !self.claim_lifecycle_supervisor() {
             return Err("Session lifecycle supervisor was already claimed".into());
         }
+        // Observe cancellation during initialization and a whole recovery pass,
+        // not only between passes. Dropping the loop also drops its owned
+        // JoinSets; durable lease/physical-quiescence authority is unchanged.
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => Ok(()),
+            result = self.run_lifecycle_loop(cancellation.clone()) => result,
+        }
+    }
+
+    async fn run_lifecycle_loop(
+        self: std::sync::Arc<Self>,
+        cancellation: awaken_runtime_contract::CancellationToken,
+    ) -> Result<(), String> {
         let mut recovery_failure_streak = 0_u32;
         let mut next_recovery = tokio::time::Instant::now();
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));

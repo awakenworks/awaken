@@ -553,6 +553,9 @@ pub fn build_unscoped_resource_router() -> Router {
     let (_host, resources) = platform.into_parts();
     let authorities = resources.authorities();
     awaken_protocol_managed::resources_router(awaken_protocol_managed::ResourcesRouterInput {
+        repositories: resources.repositories(Arc::new(
+            awaken_resource_contract::UnavailableRepositoryCredentialValidator,
+        )),
         files: resources.files(),
         memories: authorities.memory_repository(),
         memory_stores: resources.memory_stores(),

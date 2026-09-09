@@ -47,7 +47,8 @@ pub use common::with_unscoped_managed_response_context;
 pub use control::{ModelEntry, default_models, models_router, models_router_with_inventory};
 mod resources;
 pub use resources::{
-    ResourcesRouterInput, files_router, memory_stores_router, resources_router, skills_router,
+    ResourcesRouterInput, files_router, memory_stores_router, repositories_router,
+    resources_router, skills_router,
 };
 
 /// Managed Environment wire projection over the Control-owned

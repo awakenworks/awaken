@@ -1540,10 +1540,14 @@ fn resource_management_router_from_host(
                 .expect("resource management requires lifecycle persistence"),
         ));
     let memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService> = Arc::new(
-        awaken_resource_application::MemoryStoreApplication::new(catalog, purge.clone()),
+        awaken_resource_application::MemoryStoreApplication::new(catalog.clone(), purge.clone()),
     );
     (
         resources_router(ResourcesRouterInput {
+            repositories: Arc::new(awaken_resource_application::RepositoryApplication::new(
+                catalog,
+                Arc::new(awaken_resource_contract::UnavailableRepositoryCredentialValidator),
+            )),
             files: host
                 .file_application()
                 .expect("resource management requires the File application"),

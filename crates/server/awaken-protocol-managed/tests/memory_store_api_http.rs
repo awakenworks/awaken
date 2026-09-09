@@ -29,6 +29,63 @@ fn router() -> Router {
 }
 
 #[tokio::test]
+async fn memory_creation_replays_a_lost_response_and_rejects_changed_payloads() {
+    async fn create(
+        router: &Router,
+        workspace: &str,
+        key: &str,
+        body: Value,
+    ) -> (StatusCode, Value) {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/v1/memory_stores")
+            .header("content-type", "application/json")
+            .header("idempotency-key", key)
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(WorkspaceScope(workspace.into()));
+        let response = router.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+    let router = router();
+    let body = json!({"name": "Lost response", "description": "Keep exactly one", "metadata": {"owner": "workshop"}});
+    // The first POST reaches the real application. Discard its response as a
+    // disconnected client would, then submit the exact request again.
+    let first = create(&router, "test", "request-1", body.clone()).await;
+    assert_eq!(first.0, StatusCode::OK);
+    let retry = create(&router, "test", "request-1", body.clone()).await;
+    assert_eq!(first, retry);
+    let (_, inventory) = call_scoped(&router, "test", "GET", "/v1/memory_stores", None).await;
+    assert_eq!(inventory["data"].as_array().unwrap().len(), 1);
+    assert!(
+        inventory.to_string().find("creation_request").is_none(),
+        "internal receipts stay out of the public resource"
+    );
+    let mut changed = body.clone();
+    changed["description"] = json!("Different request");
+    let conflict = create(&router, "test", "request-1", changed).await;
+    assert_eq!(conflict.0, StatusCode::CONFLICT);
+    assert_eq!(conflict.1["error"]["type"], "conflict_error");
+    let other = create(&router, "other", "request-1", body.clone()).await;
+    assert_eq!(other.0, StatusCode::OK);
+    assert_ne!(first.1["id"], other.1["id"]);
+    for key in ["", " ", &"x".repeat(256)] {
+        assert_eq!(
+            create(&router, "test", key, body.clone()).await.0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let (_, inventory) = call_scoped(&router, "test", "GET", "/v1/memory_stores", None).await;
+    assert_eq!(inventory["data"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn retained_copy_candidates_use_store_visibility_and_explicit_content_view() {
     use awaken_resource_contract::{MemoryCopyBase, MemoryCopyConflict};
     // RC-API: store={owned,foreign,missing,archived}, view={basic,full,invalid},

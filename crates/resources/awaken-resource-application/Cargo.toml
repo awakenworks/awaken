@@ -16,6 +16,7 @@ awaken-resource-contract.workspace = true
 awaken-session-contract.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4"] }
+url.workspace = true
 # Skill import is an application trust-boundary operation, not persistence.
 zip = { version = "8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
