@@ -70,6 +70,7 @@ REQUIRED_RELEASE_COMMANDS = (
     "scripts/e2e/k8s_container_e2e.sh",
     "AWAKEN_K3D_REQUIRED=1 e2e/k3d/distributed_control_e2e.sh",
     "AWAKEN_K3D_REQUIRED=1 e2e/k3d/nats_wake_e2e.sh 12",
+    "e2e/k3d/nats_wake_e2e.sh --self-test",
     "scripts/ci/e2e-coverage.sh",
     'run frontend "browser-e2e" pnpm -C web test:e2e',
     "npm --prefix e2e run test:sdk-latest-canary",
