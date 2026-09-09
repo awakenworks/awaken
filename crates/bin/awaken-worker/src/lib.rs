@@ -1229,7 +1229,11 @@ impl WorkerNode {
             awaken_resource_worker_http::HttpMemoryMaterializationReferenceEncoder,
         ))
         .with_worker_stream_publisher(stream_publisher)
-        .with_worker_dispatch(dispatch)
+        .with_worker_dispatch(
+            dispatch,
+            std::num::NonZeroUsize::new(self.manifest.capacity.max_concurrent as usize)
+                .expect("Worker manifest capacity was validated before registration"),
+        )
         .with_skill_bundle_source(remote_skills)
         .with_web_search_provider_registry(self.web_search_providers)
         .with_admin_tools(self.admin_tools);

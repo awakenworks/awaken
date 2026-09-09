@@ -24,6 +24,15 @@ neutral attempt boundary to adapt product envelopes and results. It cannot
 replace Worker registration, dispatch, recovery, commit, Session realization,
 or backend selection.
 
+The validated registration manifest also owns the process execution capacity.
+`WorkerNode` passes its positive `max_concurrent` with the existing dispatch
+transport into the Host pool. A CPU quota bounds CPU consumption; it must not
+silently replace an explicitly configured concurrency for I/O-bound Session
+preparation. Unregistered local Hosts retain their CPU-derived default, and
+Coordinator-only Hosts still create no execution pool. Registry placement and
+the existing fixed-size pool enforce their original boundaries; this projection
+adds no queue, scheduler, lease, or second capacity configuration.
+
 Standalone bootstrap, embedded CLI Workers, examples and Scenario Host select
 standard Session Resource support through
 `WorkerNodeBuilder::with_remote_session_resource_support`. Registration then

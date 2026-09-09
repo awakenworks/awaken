@@ -621,6 +621,13 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         self.shutdown.is_cancelled()
     }
 
+    /// Actual number of execution slots installed in this process. This observes
+    /// the pool itself; the registry remains the placement-capacity authority.
+    #[must_use]
+    pub fn concurrency(&self) -> usize {
+        self.drains.len()
+    }
+
     /// Exact process-local number of claims currently being driven. The worker
     /// heartbeat reports this value; capacity enforcement remains server-side.
     #[must_use]
