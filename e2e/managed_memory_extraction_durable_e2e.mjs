@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { extractionRows } from './fixtures/memory_extraction_fixture.mjs';
 import Anthropic from '@anthropic-ai/sdk';
 import {
   assertPendingReceiptHasNoRuntimeEffects,
@@ -51,17 +51,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function extractionIntents(sessionId) {
   const database = path.join(STORE_DIR, 'sessions.db');
   if (!fs.existsSync(database)) return [];
-  const connection = new DatabaseSync(database, { readOnly: true });
-  let rows;
-  try {
-    rows = connection
-      .prepare('SELECT data FROM managed_memory_extraction ORDER BY intent_id')
-      .all();
-  } finally {
-    connection.close();
-  }
-  return rows
-    .map((row) => JSON.parse(row.data))
+  return extractionRows(database)
+    .map((row) => row.intent)
     .filter((intent) => intent.session_id === sessionId);
 }
 
