@@ -70,11 +70,8 @@ fi
 export AWAKEN_K8S_CONTROL_IMAGE="$CONTROL_IMAGE"
 
 log "creating k3d cluster ${CLUSTER}"
-# The nested node sees the host filesystem's total size. On a 3.8 TB host,
-# a 2% threshold rejects 23 GB of usable space and strands CoreDNS after import.
-# Reuse the distributed fixture's absolute reserve; the shared capacity preflight
-# separately requires enough actual bytes/inodes for the node and image copies.
-k3d_create_cluster "$CLUSTER" 0 128Mi
+# The shared harness owns nested-node reserve and actual capacity admission.
+k3d_create_cluster "$CLUSTER" 0
 k3d kubeconfig merge "${CLUSTER}" --output "$KUBECONFIG_FILE" --overwrite >/dev/null
 if [ "$(uname -s)" = "Darwin" ]; then
   # k3d may emit host.docker.internal on Docker Desktop. That address is for

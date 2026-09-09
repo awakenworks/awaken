@@ -344,7 +344,7 @@ def k8s_container_gate_errors(gate: str) -> list[str]:
         'build.sh" "$SESSION_IMAGE" ""' not in gate
     ):
         errors.append("Kubernetes gate cannot qualify the current source without an external image override")
-    if 'k3d_create_cluster "$CLUSTER" 0 128Mi' not in gate:
+    if not re.search(r'^k3d_create_cluster "\$CLUSTER" 0$', gate, re.MULTILINE):
         errors.append("Kubernetes gate must use the nested-node reserve with shared capacity admission")
     if 'k3d_import_storage_images "$CLUSTER" "$FIXTURE_IMAGE" "$SESSION_IMAGE" "$CONTROL_IMAGE"' not in gate:
         errors.append("Kubernetes gate does not import the exact control image")
@@ -925,7 +925,7 @@ def self_test() -> None:
         k8s_gate.replace('k3d_validate_image_digest "$CONTROL_IMAGE"', 'true', 1),
         k8s_gate.replace('CONTROL_IMAGE=$(k3d_image_digest "$SESSION_IMAGE")', 'CONTROL_IMAGE=old:tag', 1),
         k8s_gate.replace('build.sh" "$SESSION_IMAGE" ""', 'build.sh" --ensure-hand "$SESSION_IMAGE" ""', 1),
-        k8s_gate.replace('k3d_create_cluster "$CLUSTER" 0 128Mi', 'k3d_create_cluster "$CLUSTER" 0 2', 1),
+        k8s_gate.replace('k3d_create_cluster "$CLUSTER" 0', 'k3d_create_cluster "$CLUSTER" 0 2', 1),
         k8s_gate.replace(' "$CONTROL_IMAGE"\n', '\n', 1),
         k8s_gate.replace('AWAKEN_K8S_CONTROL_E2E=1', 'AWAKEN_K8S_CONTROL_E2E=0', 1),
     ):

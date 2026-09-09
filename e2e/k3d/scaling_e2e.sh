@@ -67,11 +67,8 @@ log "2/5 build the topology image (copy-in, no in-container rust build)"
 k3d_docker_build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile.server" "$DEPLOY_DIR" >/dev/null
 
 log "3/5 create MULTI-node k3d cluster $CLUSTER (server + $AGENTS agent(s))"
-# Relax the kubelet disk-eviction thresholds: on a busy dev host (docker images +
-# Rust target dir) the shared disk can sit past k3s's default nodefs/imagefs<10%,
-# which taints the node DiskPressure and refuses to schedule the postgres pod. This
-# is a test box, not a capacity test, so push eviction to ~2%.
-k3d_create_cluster "$CLUSTER" "$AGENTS" 2
+# The shared harness owns nested-node reserve and actual capacity admission.
+k3d_create_cluster "$CLUSTER" "$AGENTS"
 
 log "4/5 side-load images into the cluster (single-platform tars → all nodes)"
 k3d_import_images "$CLUSTER" "$IMAGE" postgres:16

@@ -76,7 +76,7 @@ k3d_docker_build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile.server" "$DEPL
 
 log "3/5 create MULTI-node k3d cluster $CLUSTER (server + 2 agents)"
 # 2 agents so the two anti-affinity'd brain replicas land on distinct nodes.
-k3d_create_cluster "$CLUSTER" 2 2
+k3d_create_cluster "$CLUSTER" 2
 
 log "4/5 side-load images into the cluster (k3d image import → all nodes)"
 k3d_import_images "$CLUSTER" "$IMAGE" postgres:16
