@@ -1732,6 +1732,7 @@ dependencies = [
  "awaken-environment-contract",
  "awaken-executable-environment-catalog",
  "awaken-provisioning-contract",
+ "awaken-resource-contract",
  "awaken-sandbox-policy-store",
  "awaken-session-contract",
  "awaken-tenancy",
