@@ -107,6 +107,14 @@ impl SessionDeleteCommand {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn at_for_test(session_id: &str, requested_at_unix_s: i64) -> Self {
+        Self {
+            session_id: session_id.into(),
+            requested_at_unix_s,
+        }
+    }
+
     fn lifecycle_fact(&self, owner_scope: &str) -> ManagedLifecycleFact {
         ManagedLifecycleFact {
             id: format!("session:{}:deleted", self.session_id),
@@ -682,14 +690,14 @@ impl SessionApplication {
                 .collect::<Vec<_>>();
             facts.push(command.lifecycle_fact(&owner_scope));
             match self
-                .commit_session_snapshot(&owner_scope, session, "delete-intent", facts)
+                .commit_session_snapshot_with_outcome(&owner_scope, session, "delete-intent", facts)
                 .await
             {
-                Ok(session) => {
+                Ok((session, transitioned)) => {
                     return Ok(SessionDispositionMutation {
                         owner_scope,
                         session,
-                        transitioned: true,
+                        transitioned,
                     });
                 }
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {

@@ -229,6 +229,30 @@ impl SessionApplication {
         operation: &str,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<PersistedSession, SessionMutationError> {
+        // Keep the newly shared aggregate-owning future off each caller's
+        // stack, as at the existing creation boundary. Polling/cancellation
+        // remain inline with this caller; no task or retry owner is detached.
+        Box::pin(self.commit_session_snapshot_with_outcome(
+            owner_scope,
+            session,
+            operation,
+            lifecycle_facts,
+        ))
+        .await
+        .map(|(session, _)| session)
+    }
+
+    /// Preserve the canonical Applied/Replayed distinction for commands whose
+    /// response reports whether this call actually changed the durable root.
+    /// This is the sole snapshot idempotency compiler; session-only callers
+    /// delegate here and retain their existing response contract.
+    pub(crate) async fn commit_session_snapshot_with_outcome(
+        &self,
+        owner_scope: &str,
+        session: PersistedSession,
+        operation: &str,
+        lifecycle_facts: Vec<ManagedLifecycleFact>,
+    ) -> Result<(PersistedSession, bool), SessionMutationError> {
         let expected_revision = session.revision;
         let payload = SessionMutationPayload::Replace(session.clone());
         let payload_hash = payload.stable_hash();
@@ -241,7 +265,6 @@ impl SessionApplication {
         };
         self.commit_session_snapshot_with_record(owner_scope, session, idempotency, lifecycle_facts)
             .await
-            .map(|(session, _)| session)
     }
 
     pub async fn commit_session_snapshot_with_record(

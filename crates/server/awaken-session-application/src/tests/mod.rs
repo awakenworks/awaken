@@ -1576,7 +1576,16 @@ impl SessionRuntime for RecordingCleanupRuntime {
     }
 }
 
+#[derive(Default)]
+struct PausedSessionMutation {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    candidate: Mutex<Option<awaken_session_contract::SessionMutation>>,
+    result: Mutex<Option<awaken_session_contract::SessionMutationResult>>,
+}
+
 struct FaultingSessionRepository {
+    pause_mutation_once: Mutex<Option<(String, Arc<PausedSessionMutation>)>>,
     create_crash_boundary: Mutex<Option<(bool, std::path::PathBuf)>>,
     inner: Arc<dyn ManagedSessionRepository>,
     applied_create_roots: Mutex<Vec<PersistedSession>>,
@@ -1626,6 +1635,7 @@ impl FaultingSessionRepository {
     fn new(inner: Arc<dyn ManagedSessionRepository>) -> Self {
         Self {
             inner,
+            pause_mutation_once: Mutex::new(None),
             create_crash_boundary: Mutex::new(None),
             applied_create_roots: Mutex::new(Vec::new()),
             get_override_once: Mutex::new(None),
@@ -1643,6 +1653,12 @@ impl FaultingSessionRepository {
             quarantine_recovery_scan_on_call: AtomicUsize::new(0),
             stall_recovery_cursor_on_call: AtomicUsize::new(0),
         }
+    }
+
+    fn pause_next_mutation(&self, operation: &str) -> Arc<PausedSessionMutation> {
+        let pause = Arc::new(PausedSessionMutation::default());
+        *self.pause_mutation_once.lock().unwrap() = Some((operation.into(), pause.clone()));
+        pause
     }
 
     fn fail_once(&self, operation: &str) {
@@ -1783,6 +1799,25 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         awaken_session_contract::SessionMutationResult,
         awaken_session_contract::SessionRepositoryError,
     > {
+        // One test scheduling cut before the real repository CAS. Consume the
+        // cut and capture the detached request under the lock, then release the
+        // lock before await. Other writers therefore reach the same real store.
+        let pause = {
+            let mut configured = self.pause_mutation_once.lock().unwrap();
+            if configured
+                .as_ref()
+                .is_some_and(|(operation, _)| mutation.idempotency.key.contains(operation))
+            {
+                configured.take().map(|(_, pause)| pause)
+            } else {
+                None
+            }
+        };
+        if let Some(pause) = &pause {
+            *pause.candidate.lock().unwrap() = Some(mutation.clone());
+            pause.entered.notify_one();
+            pause.release.notified().await;
+        }
         let should_fail = self
             .fail_operation_once
             .lock()
@@ -1927,7 +1962,11 @@ impl ManagedSessionRepository for FaultingSessionRepository {
             ));
             return Err(awaken_session_contract::SessionRepositoryError::NotFound);
         }
-        self.inner.commit_mutation(owner_scope, mutation).await
+        let result = self.inner.commit_mutation(owner_scope, mutation).await;
+        if let (Some(pause), Ok(result)) = (pause, &result) {
+            *pause.result.lock().unwrap() = Some(result.clone());
+        }
+        result
     }
 
     async fn append_lifecycle(
