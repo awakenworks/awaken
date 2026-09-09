@@ -33,10 +33,11 @@ pub use registry::{
     AssignmentRejection, DynamicEvidenceProbeState, RegisteredWorker, RegistryError,
     RegistryMutation, WorkerAssignment, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
     WorkerObservationPublicationAdmission, WorkerObservationPublicationCompletion,
-    WorkerObservationPublicationFence, WorkerObservationSource, WorkerRegistration, WorkerSnapshot,
-    WorkerState, assignment_recovery_rejection, can_assign, process_ready_after_startup,
-    worker_expiry_admission, worker_heartbeat_admission,
-    worker_observation_sequence_after_heartbeat, worker_slot_is_replaceable,
+    WorkerObservationPublicationFence, WorkerObservationSource, WorkerRegistration,
+    WorkerRegistrationHistoryAdmission, WorkerSnapshot, WorkerState, assignment_recovery_rejection,
+    can_assign, process_ready_after_startup, worker_expiry_admission, worker_heartbeat_admission,
+    worker_observation_sequence_after_heartbeat, worker_registration_history_admission,
+    worker_slot_is_replaceable,
 };
 #[cfg(any(test, kani))]
 pub(crate) use requirements::required_capability_is_admitted;

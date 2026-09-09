@@ -118,11 +118,14 @@ pub(crate) fn selected_registry_bundle(
 pub(crate) fn converged_registry_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         CONVERGED_BUNDLE_ID,
-        vec![Migration::new(
-            1,
-            "seal the converged worker registry history",
-            "SELECT 1",
-        )?],
+        vec![
+            Migration::new(1, "seal the converged worker registry history", "SELECT 1")?,
+            Migration::new(
+                2,
+                "retain every worker incarnation in the canonical registry",
+                include_str!("migrations/V0002__retain_incarnations.sql").trim(),
+            )?,
+        ],
     )
 }
 
@@ -138,10 +141,23 @@ mod tests {
         for bundle in [
             registry_bundle().unwrap(),
             relational_registry_bundle().unwrap(),
-            converged_registry_bundle().unwrap(),
         ] {
             awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).unwrap();
         }
+        // Same inherited-owner projection as Dispatch: the convergence stream
+        // continues this context's published table. Lint the real V2 body with
+        // the published relational schema declaring that owner. Both actual
+        // histories are executed in SQLite and PostgreSQL migration tests.
+        let converged = converged_registry_bundle().unwrap();
+        let mut lineage =
+            vec![Migration::new(1, "inherited worker authority", RELATIONAL_V1_SQL).unwrap()];
+        lineage.extend(converged.migrations()[1..].iter().cloned());
+        awaken_scoped_migration::lint(&[MigrationBundle::new(
+            "awaken.worker_registry.lineage_lint",
+            lineage,
+        )
+        .unwrap()])
+        .unwrap();
     }
 
     #[test]
@@ -378,3 +394,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "schema/history_tests.rs"]
+mod history_tests;

@@ -24,7 +24,7 @@ RunStates == {"Running", "Awaiting", "Ended"}
 ResponseStates == {"Idle", "Available", "Lost", "Acknowledged", "Rejected"}
 Signals == {"None", "Input", "Cancellation"}
 
-VARIABLES workerState, workerIncarnation,
+VARIABLES workerState, workerIncarnation, registrationHistory,
           dispatchState, owner, leaseEpoch, leaseLive,
           snapshotLoaded, snapshotEpoch, workerProjection, executing,
           committedLog, runState, endedOnce, receiptHash, receiptVersion,
@@ -33,7 +33,7 @@ VARIABLES workerState, workerIncarnation,
           pendingSignal, consumedSignalVersion, lastTruthWriter
 
 vars ==
-    <<workerState, workerIncarnation,
+    <<workerState, workerIncarnation, registrationHistory,
       dispatchState, owner, leaseEpoch, leaseLive,
       snapshotLoaded, snapshotEpoch, workerProjection, executing,
       committedLog, runState, endedOnce, receiptHash, receiptVersion,
@@ -44,6 +44,7 @@ vars ==
 Init ==
     /\ workerState = [w \in Workers |-> "Absent"]
     /\ workerIncarnation = [w \in Workers |-> 0]
+    /\ registrationHistory = [w \in Workers |-> <<>>]
     /\ dispatchState = "Pending"
     /\ owner = NoWorker
     /\ leaseEpoch = 0
@@ -67,12 +68,46 @@ Init ==
     /\ consumedSignalVersion = 0
     /\ lastTruthWriter = Coordinator
 
-Register(w) ==
+\* workerIncarnation is the allocated generation, not the caller's physical
+\* incarnation nonce. Zero denotes a discarded legacy predecessor. The same
+\* history is the Registry authority, never a synchronized blacklist.
+HistoryValues(w) == {registrationHistory[w][i] : i \in 1..Len(registrationHistory[w])}
+
+Register(w, physicalIncarnation) ==
     /\ w \in Workers
     /\ workerState[w] \in {"Absent", "Quiesced"}
     /\ workerIncarnation[w] < MaxIncarnation
+    /\ physicalIncarnation \in 1..MaxIncarnation
+    /\ physicalIncarnation \notin HistoryValues(w)
+    /\ 0 \notin HistoryValues(w)
+    /\ registrationHistory' = [registrationHistory EXCEPT ![w] = Append(@, physicalIncarnation)]
     /\ workerState' = [workerState EXCEPT ![w] = "Ready"]
     /\ workerIncarnation' = [workerIncarnation EXCEPT ![w] = @ + 1]
+    /\ UNCHANGED <<dispatchState, owner, leaseEpoch, leaseLive,
+                    snapshotLoaded, snapshotEpoch, workerProjection, executing,
+                    committedLog, runState, endedOnce, receiptHash,
+                    receiptVersion, pendingOperation, pendingHash, pendingEpoch,
+                    pendingExpectedVersion, responseState,
+                    acknowledgedVersion, pendingSignal, consumedSignalVersion,
+                    lastTruthWriter>>
+
+\* Valid bootstrap retries can arrive after any number of replacements.
+\* Current retries return the original record; historical ones are rejected.
+\* Both have no authority effect (wire outcome is tested through real HTTP).
+RegisterRetry(w, physicalIncarnation) ==
+    /\ w \in Workers
+    /\ physicalIncarnation \in HistoryValues(w) \ {0}
+    /\ UNCHANGED vars
+
+\* Existing overwrite-only schemas may preserve generation 2 but lose its
+\* predecessor. Import the known current record without inventing history;
+\* this slot must use a new Worker id for its next physical incarnation.
+ImportLegacy(w) ==
+    /\ w \in Workers /\ MaxIncarnation >= 2
+    /\ workerIncarnation[w] = 0
+    /\ workerState' = [workerState EXCEPT ![w] = "Quiesced"]
+    /\ workerIncarnation' = [workerIncarnation EXCEPT ![w] = 2]
+    /\ registrationHistory' = [registrationHistory EXCEPT ![w] = <<0, 1>>]
     /\ UNCHANGED <<dispatchState, owner, leaseEpoch, leaseLive,
                     snapshotLoaded, snapshotEpoch, workerProjection, executing,
                     committedLog, runState, endedOnce, receiptHash,
@@ -96,7 +131,7 @@ StaleHeartbeat(w, incarnation) ==
 Drain(w) ==
     /\ w \in Workers /\ workerState[w] = "Ready"
     /\ workerState' = [workerState EXCEPT ![w] = "Draining"]
-    /\ UNCHANGED <<workerIncarnation, dispatchState, owner, leaseEpoch,
+    /\ UNCHANGED <<workerIncarnation, registrationHistory, dispatchState, owner, leaseEpoch,
                     leaseLive, snapshotLoaded, snapshotEpoch, workerProjection,
                     executing, committedLog, runState, endedOnce, receiptHash,
                     receiptVersion, pendingOperation, pendingHash, pendingEpoch,
@@ -107,7 +142,7 @@ Drain(w) ==
 Quiesce(w) ==
     /\ w \in Workers /\ workerState[w] = "Draining" /\ w \notin executing
     /\ workerState' = [workerState EXCEPT ![w] = "Quiesced"]
-    /\ UNCHANGED <<workerIncarnation, dispatchState, owner, leaseEpoch,
+    /\ UNCHANGED <<workerIncarnation, registrationHistory, dispatchState, owner, leaseEpoch,
                     leaseLive, snapshotLoaded, snapshotEpoch, workerProjection,
                     executing, committedLog, runState, endedOnce, receiptHash,
                     receiptVersion, pendingOperation, pendingHash, pendingEpoch,
@@ -123,7 +158,7 @@ Claim(w) ==
     /\ leaseEpoch' = leaseEpoch + 1 /\ leaseLive' = TRUE
     /\ snapshotLoaded' = [snapshotLoaded EXCEPT ![w] = FALSE]
     /\ executing' = executing \ {w}
-    /\ UNCHANGED <<workerState, workerIncarnation, snapshotEpoch,
+    /\ UNCHANGED <<workerState, workerIncarnation, registrationHistory, snapshotEpoch,
                     workerProjection, committedLog, runState, endedOnce,
                     receiptHash, receiptVersion, pendingOperation, pendingHash,
                     pendingEpoch, pendingExpectedVersion, responseState,
@@ -133,7 +168,7 @@ Claim(w) ==
 Expire ==
     /\ dispatchState \in {"Leased", "TerminalLeased"} /\ leaseLive
     /\ leaseLive' = FALSE
-    /\ UNCHANGED <<workerState, workerIncarnation, dispatchState, owner,
+    /\ UNCHANGED <<workerState, workerIncarnation, registrationHistory, dispatchState, owner,
                     leaseEpoch, snapshotLoaded, snapshotEpoch, workerProjection,
                     executing, committedLog, runState, endedOnce, receiptHash,
                     receiptVersion, pendingOperation, pendingHash, pendingEpoch,
@@ -148,7 +183,7 @@ Reclaim(w) ==
     /\ owner' = w /\ leaseEpoch' = leaseEpoch + 1 /\ leaseLive' = TRUE
     /\ snapshotLoaded' = [snapshotLoaded EXCEPT ![w] = FALSE]
     /\ executing' = executing \ {w}
-    /\ UNCHANGED <<workerState, workerIncarnation, dispatchState, snapshotEpoch,
+    /\ UNCHANGED <<workerState, workerIncarnation, registrationHistory, dispatchState, snapshotEpoch,
                     workerProjection, committedLog, runState, endedOnce,
                     receiptHash, receiptVersion, pendingOperation, pendingHash,
                     pendingEpoch, pendingExpectedVersion, responseState,
@@ -168,7 +203,7 @@ ClaimTerminalRecovery(w) ==
     /\ leaseEpoch' = leaseEpoch + 1 /\ leaseLive' = TRUE
     /\ snapshotLoaded' = [snapshotLoaded EXCEPT ![w] = FALSE]
     /\ executing' = executing \ {w}
-    /\ UNCHANGED <<workerState, workerIncarnation, snapshotEpoch,
+    /\ UNCHANGED <<workerState, workerIncarnation, registrationHistory, snapshotEpoch,
                     workerProjection, committedLog, runState, endedOnce,
                     receiptHash, receiptVersion, pendingOperation, pendingHash,
                     pendingEpoch, pendingExpectedVersion, responseState,
@@ -179,7 +214,7 @@ Abandon ==
     /\ dispatchState = "Leased" /\ ~leaseLive /\ runState # "Ended"
     /\ dispatchState' = IF runState = "Awaiting" THEN "Awaiting" ELSE "Pending"
     /\ owner' = NoWorker
-    /\ UNCHANGED <<workerState, workerIncarnation, leaseEpoch, leaseLive,
+    /\ UNCHANGED <<workerState, workerIncarnation, registrationHistory, leaseEpoch, leaseLive,
                     snapshotLoaded, snapshotEpoch, workerProjection, executing,
                     committedLog, runState, endedOnce, receiptHash,
                     receiptVersion, pendingOperation, pendingHash, pendingEpoch,
@@ -194,7 +229,7 @@ Snapshot(w) ==
     /\ snapshotLoaded' = [snapshotLoaded EXCEPT ![w] = TRUE]
     /\ snapshotEpoch' = [snapshotEpoch EXCEPT ![w] = leaseEpoch]
     /\ workerProjection' = [workerProjection EXCEPT ![w] = committedLog]
-    /\ UNCHANGED <<workerState, workerIncarnation, dispatchState, owner,
+    /\ UNCHANGED <<workerState, workerIncarnation, registrationHistory, dispatchState, owner,
                     leaseEpoch, leaseLive, executing, committedLog, runState,
                     endedOnce, receiptHash, receiptVersion, pendingOperation,
                     pendingHash, pendingEpoch, pendingExpectedVersion,
@@ -208,7 +243,7 @@ Execute(w) ==
     /\ snapshotLoaded[w] /\ snapshotEpoch[w] = leaseEpoch
     /\ w \notin executing
     /\ executing' = executing \cup {w}
-    /\ UNCHANGED <<workerState, workerIncarnation, dispatchState, owner,
+    /\ UNCHANGED <<workerState, workerIncarnation, registrationHistory, dispatchState, owner,
                     leaseEpoch, leaseLive, snapshotLoaded, snapshotEpoch,
                     workerProjection, committedLog, runState, endedOnce,
                     receiptHash, receiptVersion, pendingOperation, pendingHash,
@@ -228,7 +263,7 @@ CommitRequest(w, operation, hash) ==
     /\ pendingEpoch' = [pendingEpoch EXCEPT ![w] = snapshotEpoch[w]]
     /\ pendingExpectedVersion' =
         [pendingExpectedVersion EXCEPT ![w] = Len(workerProjection[w])]
-    /\ UNCHANGED <<workerState, workerIncarnation, dispatchState, owner,
+    /\ UNCHANGED <<workerState, workerIncarnation, registrationHistory, dispatchState, owner,
                     leaseEpoch, leaseLive, snapshotLoaded, snapshotEpoch,
                     workerProjection, executing, committedLog, runState,
                     endedOnce, receiptHash, receiptVersion, responseState,
@@ -263,7 +298,7 @@ CommitApplyNew(w) ==
         ELSE consumedSignalVersion
     /\ responseState' = [responseState EXCEPT ![w] = "Available"]
     /\ lastTruthWriter' = Coordinator
-    /\ UNCHANGED <<workerState, workerIncarnation, dispatchState, owner,
+    /\ UNCHANGED <<workerState, workerIncarnation, registrationHistory, dispatchState, owner,
                     leaseEpoch, leaseLive, snapshotLoaded, snapshotEpoch,
                     workerProjection, executing, pendingOperation, pendingHash,
                     pendingEpoch, pendingExpectedVersion, acknowledgedVersion>>
@@ -274,7 +309,7 @@ CommitApplyReplay(w) ==
     /\ CurrentFence(w)
     /\ receiptHash[operation] = pendingHash[w]
     /\ responseState' = [responseState EXCEPT ![w] = "Available"]
-    /\ UNCHANGED <<workerState, workerIncarnation, dispatchState, owner,
+    /\ UNCHANGED <<workerState, workerIncarnation, registrationHistory, dispatchState, owner,
                     leaseEpoch, leaseLive, snapshotLoaded, snapshotEpoch,
                     workerProjection, executing, committedLog, runState,
                     endedOnce, receiptHash, receiptVersion, pendingOperation,
@@ -293,7 +328,7 @@ CommitReject(w) ==
        \/ Len(committedLog) = MaxVersion
     /\ responseState' = [responseState EXCEPT ![w] = "Rejected"]
     /\ executing' = executing \ {w}
-    /\ UNCHANGED <<workerState, workerIncarnation, dispatchState, owner,
+    /\ UNCHANGED <<workerState, workerIncarnation, registrationHistory, dispatchState, owner,
                     leaseEpoch, leaseLive, snapshotLoaded, snapshotEpoch,
                     workerProjection, committedLog, runState,
                     endedOnce, receiptHash, receiptVersion, pendingOperation,
@@ -308,7 +343,7 @@ CommitApply(w) ==
 ResponseLost(w) ==
     /\ w \in Workers /\ responseState[w] = "Available"
     /\ responseState' = [responseState EXCEPT ![w] = "Lost"]
-    /\ UNCHANGED <<workerState, workerIncarnation, dispatchState, owner,
+    /\ UNCHANGED <<workerState, workerIncarnation, registrationHistory, dispatchState, owner,
                     leaseEpoch, leaseLive, snapshotLoaded, snapshotEpoch,
                     workerProjection, executing, committedLog, runState,
                     endedOnce, receiptHash, receiptVersion, pendingOperation,
@@ -321,7 +356,7 @@ Retry(w) ==
     /\ w \in Workers /\ responseState[w] = "Lost"
     /\ receiptHash[operation] = pendingHash[w]
     /\ responseState' = [responseState EXCEPT ![w] = "Available"]
-    /\ UNCHANGED <<workerState, workerIncarnation, dispatchState, owner,
+    /\ UNCHANGED <<workerState, workerIncarnation, registrationHistory, dispatchState, owner,
                     leaseEpoch, leaseLive, snapshotLoaded, snapshotEpoch,
                     workerProjection, executing, committedLog, runState,
                     endedOnce, receiptHash, receiptVersion, pendingOperation,
@@ -343,7 +378,7 @@ DeliverResponse(w) ==
         [acknowledgedVersion EXCEPT
           ![w] = IF @ >= receiptVersion[operation]
                   THEN @ ELSE receiptVersion[operation]]
-    /\ UNCHANGED <<workerState, workerIncarnation, dispatchState, owner,
+    /\ UNCHANGED <<workerState, workerIncarnation, registrationHistory, dispatchState, owner,
                     leaseEpoch, leaseLive, snapshotLoaded, snapshotEpoch,
                     executing, committedLog, runState, endedOnce, receiptHash,
                     receiptVersion, pendingOperation, pendingHash, pendingEpoch,
@@ -362,7 +397,7 @@ ClearResponse(w) ==
     /\ pendingHash' = [pendingHash EXCEPT ![w] = NoHash]
     /\ pendingEpoch' = [pendingEpoch EXCEPT ![w] = 0]
     /\ pendingExpectedVersion' = [pendingExpectedVersion EXCEPT ![w] = 0]
-    /\ UNCHANGED <<workerState, workerIncarnation, dispatchState, owner,
+    /\ UNCHANGED <<workerState, workerIncarnation, registrationHistory, dispatchState, owner,
                     leaseEpoch, leaseLive, snapshotLoaded, snapshotEpoch,
                     workerProjection, executing, committedLog, runState,
                     endedOnce, receiptHash, receiptVersion,
@@ -382,7 +417,7 @@ Settle(w, epoch) ==
     /\ dispatchState' = IF runState = "Ended" THEN "Removed" ELSE "Awaiting"
     /\ owner' = NoWorker /\ leaseLive' = FALSE
     /\ executing' = executing \ {w}
-    /\ UNCHANGED <<workerState, workerIncarnation, leaseEpoch, snapshotLoaded,
+    /\ UNCHANGED <<workerState, workerIncarnation, registrationHistory, leaseEpoch, snapshotLoaded,
                     snapshotEpoch, workerProjection, committedLog, runState,
                     endedOnce, receiptHash, receiptVersion, pendingOperation,
                     pendingHash, pendingEpoch, pendingExpectedVersion,
@@ -400,7 +435,7 @@ SettleCommittedTerminal(w, epoch) ==
     /\ dispatchState' = "Removed"
     /\ owner' = NoWorker /\ leaseLive' = FALSE
     /\ executing' = executing \ {w}
-    /\ UNCHANGED <<workerState, workerIncarnation, leaseEpoch, snapshotLoaded,
+    /\ UNCHANGED <<workerState, workerIncarnation, registrationHistory, leaseEpoch, snapshotLoaded,
                     snapshotEpoch, workerProjection, committedLog, runState,
                     endedOnce, receiptHash, receiptVersion, pendingOperation,
                     pendingHash, pendingEpoch, pendingExpectedVersion,
@@ -411,7 +446,7 @@ SupplyInput ==
     /\ runState = "Awaiting" /\ dispatchState = "Awaiting"
     /\ pendingSignal = "None"
     /\ pendingSignal' = "Input"
-    /\ UNCHANGED <<workerState, workerIncarnation, dispatchState, owner,
+    /\ UNCHANGED <<workerState, workerIncarnation, registrationHistory, dispatchState, owner,
                     leaseEpoch, leaseLive, snapshotLoaded, snapshotEpoch,
                     workerProjection, executing, committedLog, runState,
                     endedOnce, receiptHash, receiptVersion, pendingOperation,
@@ -422,7 +457,7 @@ SupplyInput ==
 RequestCancellation ==
     /\ runState # "Ended" /\ pendingSignal = "None"
     /\ pendingSignal' = "Cancellation"
-    /\ UNCHANGED <<workerState, workerIncarnation, dispatchState, owner,
+    /\ UNCHANGED <<workerState, workerIncarnation, registrationHistory, dispatchState, owner,
                     leaseEpoch, leaseLive, snapshotLoaded, snapshotEpoch,
                     workerProjection, executing, committedLog, runState,
                     endedOnce, receiptHash, receiptVersion, pendingOperation,
@@ -431,7 +466,9 @@ RequestCancellation ==
                     lastTruthWriter>>
 
 Next ==
-    \/ \E w \in Workers : Register(w)
+    \/ \E w \in Workers, physicalIncarnation \in 1..MaxIncarnation :
+           Register(w, physicalIncarnation) \/ RegisterRetry(w, physicalIncarnation)
+    \/ \E w \in Workers : ImportLegacy(w)
     \/ \E w \in Workers, incarnation \in 0..MaxIncarnation :
            Heartbeat(w, incarnation) \/ StaleHeartbeat(w, incarnation)
     \/ \E w \in Workers : Drain(w) \/ Quiesce(w)
@@ -450,6 +487,7 @@ Next ==
 TypeOK ==
     /\ workerState \in [Workers -> WorkerStates]
     /\ workerIncarnation \in [Workers -> 0..MaxIncarnation]
+    /\ registrationHistory \in [Workers -> Seq(0..MaxIncarnation)]
     /\ dispatchState \in DispatchStates
     /\ owner \in Workers \cup {NoWorker}
     /\ leaseEpoch \in 0..MaxEpoch /\ leaseLive \in BOOLEAN
@@ -519,8 +557,22 @@ PendingSignalConsumedWithCommit ==
 
 CoordinatorOwnsCommittedTruth == lastTruthWriter = Coordinator
 
+RegistrationHistoryIsSingleUse ==
+    \A w \in Workers :
+      /\ Len(registrationHistory[w]) = workerIncarnation[w]
+      /\ \A i, j \in 1..Len(registrationHistory[w]) :
+           (registrationHistory[w][i] # 0 /\ registrationHistory[w][i] = registrationHistory[w][j]) => i = j
+      /\ (0 \in HistoryValues(w)) => registrationHistory[w] = <<0, 1>>
+
+\* Extra bounded exploration of this same model, without the unrelated Run
+\* state space. It does not constrain the ordinary protocol configuration.
+RegistrationOnly == leaseEpoch = 0
+RegistrationWitness == \E w \in Workers : workerIncarnation[w] = 3
+LegacyWitness == \E w \in Workers : 0 \in HistoryValues(w)
+
 Safety ==
     /\ TypeOK
+    /\ RegistrationHistoryIsSingleUse
     /\ OneLiveClaimOwner
     /\ TerminalRecoverySkipsExecution
     /\ StaleEpochNeverMutatesTruth

@@ -226,6 +226,37 @@ controller-synthesized Failed, synthetic ContainerStatusUnknown, missing legacy
 bindings and name reuse never establish termination. The subject-bound result
 has private fields and cannot be deserialized as an incoming receipt.
 
+Worker registration now retains every incarnation in the same Registry table;
+`current` and placement observations select only the highest generation. The
+shared transition rejects historical physical incarnations, even after another
+successor expires: an A/B/A bootstrap retry cannot mint generation three. Exact
+current-incarnation retries return the original record without extending its
+lease. Memory holds the same generation history; SQLite uses its existing
+immediate transaction and PostgreSQL its existing per-slot transaction lock.
+History lookup, admission and insertion share that transaction. There is no
+current-row cache or second blacklist to reconcile.
+
+The converged migration appends one portable table migration after either
+published history, preserving all fields and immutable migration receipts.
+Old overwrite-only binaries cannot use `ON CONFLICT(worker_id)` afterward, so
+Control must perform a coordinated migration/cutover. A legacy row above
+generation one has already lost predecessor identities: keep current retries
+and heartbeat/drain semantics, but reject any new incarnation on that slot with
+`IncompleteIncarnationHistory`. Move that Worker to a new configured Worker id;
+never fill the unknown past with invented identities. Retained histories are
+not garbage-collected while bootstrap replay remains possible. They are
+registration authority, not process-exit or remote-stop receipts.
+
+H1-H10 Registry test comments define the historical replay, state/expiry,
+projection, concurrent replacement and reopen matrix; M1-M6 execute both
+published migration streams in SQLite and PostgreSQL; T1-T5 follow the actual
+signed client/HTTP handler/Registry chain. The production Kani predicate covers
+seen identity and history completeness. `RemoteWorkerProtocol` separates those
+physical identities from allocated generations, with an additional bounded
+three-generation registration configuration, three semantic mutants and two
+positive witnesses. These checks do not prove arbitrary SQL histories, trusted
+bootstrap identity rotation, physical termination or the recovery join below.
+
 `PodProcessStopper` adds the independent provider command, not a second observer
 or cleanup owner. Trusted deployment must install
 `awaken.dev/worker-process-evidence` before binding; the opaque binding freezes

@@ -6,7 +6,7 @@ use awaken_worker_contract::{
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::{PgConnection, Row};
 
-use crate::codec::{EncodedWorkerRow, WORKER_COLUMNS, decode, encode_json};
+use crate::codec::{EncodedWorkerRow, WORKER_COLUMNS, current_workers_query, decode, encode_json};
 use crate::durable_i64;
 use crate::schema::{BUNDLE_ID, NS, converged_registry_bundle, selected_registry_bundle};
 use crate::transition;
@@ -129,7 +129,7 @@ impl PostgresWorkerDirectory {
         worker_id: &str,
     ) -> Result<Option<RegisteredWorker>, RegistryError> {
         let row = sqlx::query(&format!(
-            "SELECT {WORKER_COLUMNS} FROM worker_registry_worker WHERE worker_id = $1 FOR UPDATE"
+            "SELECT {WORKER_COLUMNS} FROM worker_registry_worker WHERE worker_id = $1 ORDER BY generation DESC LIMIT 1 FOR UPDATE"
         ))
         .bind(worker_id)
         .fetch_optional(conn)
@@ -153,8 +153,7 @@ impl PostgresWorkerDirectory {
                  expires_at_ms, heartbeat_sequence, observation_sequence, registered_at_ms, \
                  heartbeat_at_ms, drain_deadline_ms) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
-             ON CONFLICT(worker_id) DO UPDATE SET \
-                incarnation_id = excluded.incarnation_id, generation = excluded.generation, \
+             ON CONFLICT(worker_id, generation) DO UPDATE SET \
                 state = excluded.state, manifest_json = excluded.manifest_json, \
                 capability_fingerprint = excluded.capability_fingerprint, \
                 in_flight = excluded.in_flight, \
@@ -246,12 +245,10 @@ fn persist(error: impl std::fmt::Display) -> RegistryError {
 #[async_trait]
 impl WorkerObservationSource for PostgresWorkerDirectory {
     async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
-        let rows = sqlx::query(&format!(
-            "SELECT {WORKER_COLUMNS} FROM worker_registry_worker ORDER BY worker_id"
-        ))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(persist)?;
+        let rows = sqlx::query(&current_workers_query())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(persist)?;
         rows.into_iter()
             .map(|row| decode(encoded_row(&row)))
             .collect()
@@ -270,8 +267,17 @@ impl WorkerDirectory for PostgresWorkerDirectory {
         let mut tx = self.pool.begin().await.map_err(persist)?;
         Self::lock_slot(&mut tx, &worker_id).await?;
         let current = Self::read(&mut tx, &worker_id).await?;
+        let (incarnation_seen, complete): (bool, bool) = sqlx::query_as(
+            "SELECT EXISTS(SELECT 1 FROM worker_registry_worker WHERE worker_id=$1 AND incarnation_id=$2), \
+             EXISTS(SELECT 1 FROM worker_registry_worker WHERE worker_id=$1 AND generation=1)",
+        ).bind(&worker_id).bind(&registration.incarnation_id)
+            .fetch_one(&mut *tx).await.map_err(persist)?;
+        let history = transition::RegistrationHistory {
+            incarnation_seen,
+            complete,
+        };
         let (record, changed) =
-            transition::register(current.as_ref(), registration, now_ms, ttl_ms)?;
+            transition::register(current.as_ref(), history, registration, now_ms, ttl_ms)?;
         if changed {
             Self::write(&mut tx, &record).await?;
         }
@@ -322,7 +328,7 @@ impl WorkerDirectory for PostgresWorkerDirectory {
 
     async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
         let row = sqlx::query(&format!(
-            "SELECT {WORKER_COLUMNS} FROM worker_registry_worker WHERE worker_id = $1"
+            "SELECT {WORKER_COLUMNS} FROM worker_registry_worker WHERE worker_id = $1 ORDER BY generation DESC LIMIT 1"
         ))
         .bind(worker_id)
         .fetch_optional(&self.pool)
