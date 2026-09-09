@@ -2,6 +2,7 @@
 
 import copy
 import contextlib
+import hashlib
 import io
 import json
 import re
@@ -332,27 +333,50 @@ class ProfileTests(unittest.TestCase):
                     runpy.run_path(str(checker), run_name="__main__")
                 self.assertEqual(raised.exception.code, 1)
 
-    def test_checked_tree_profiles_bind_runtime_and_checker(self):
-        # P1 known profile + exact package + unique allowed harnesses => the
-        # runner and checker consume identical literal checked loop bounds.
-        # P2 unknown/dynamic profile, foreign package/harness, duplicate/empty
-        # selection, appended CBMC/check/solver flags or repeated profile =>
-        # explicit rejection before Cargo. P3 missing opt-in or mutated loop,
-        # bound, order, count or trailing flags => backend-tail rejection.
-        # Exercise the actual shell function with only its Cargo/deadline port
-        # replaced by an argument recorder: expansion failure must return 2,
-        # never disappear inside process substitution or launch default Kani.
+    def test_checked_profiles_bind_runtime_and_checker(self):
+        # Cause/effect rules: P1 known profile + exact package + nonempty unique
+        # allowed harnesses => one canonical argv, including the profile's fixed
+        # solver and each literal loop bound. P2 unknown/dynamic profile, foreign
+        # package/harness, duplicate/empty selection, appended check/solver flags
+        # or repeated profile => reject before Cargo. P3 missing opt-in, changed
+        # solver, loop, bound, order, count or flags => reject the raw argv too.
+        # P4 the new fixed-solver harness cannot drop swap/solver and escape via
+        # legacy memcmp-only acceptance, even under the wrong package. P5 old
+        # Activity argv and all existing nonreserved memcmp calls stay accepted.
+        # Execute the actual shell function with only its Cargo/deadline port
+        # replaced by an argument recorder: rejection must return 2, never be
+        # lost inside process substitution or launch a default solver.
         import formal_kani_options as options
         root = Path(__file__).resolve().parents[2]
         gate = (root / "scripts/ci/check_formal.sh").read_text()
         runner = gate[gate.index("  run_kani() {"):gate.index("  run_kani awaken-agent-contract")]
-        for profile, (package, allowed, loops) in options.PROFILES.items():
+        # Frozen pre-change argv, with all allowed harnesses in sorted order.
+        # Digest fixtures avoid duplicating the production loop-name catalog.
+        activity_argv = {
+            "activity-admission-height-v1": "43400d2bbd24a23fbed10c3df4106452cacfd4450a06a03dd6afe437112e5453",
+            "activity-terminal-height-v1": "822f8abb16731f681e025f929052e43963707021ce2bdc4aab18febc50217a12",
+        }
+        for profile, (package, allowed, loops, solver) in options.PROFILES.items():
             harness = sorted(allowed)[0]
             selected = ["--checked-loop-profile", profile, "--harness", harness]
             expanded = options.expand_options(package, selected)
             cut = expanded.index("--cbmc-args")
-            self.assertTrue(options.checked_loop_override(package, expanded[:cut], expanded[cut:], True))
-            self.assertEqual(expanded[-1], ",".join(name + ":1" for name in loops))
+            prefix, tail = expanded[:cut], expanded[cut:]
+            self.assertTrue(options.checked_loop_override(package, prefix, tail, True))
+            self.assertEqual(expanded[-1], ",".join(f"{name}:{bound}" for name, bound in loops))
+            self.assertEqual(prefix[:4] if solver else prefix[:2],
+                             ["-Z", "unstable-options", "--solver", solver] if solver
+                             else ["-Z", "unstable-options"])
+            for names in (sorted(allowed), sorted(allowed, reverse=True)):
+                selections = [piece for name in names for piece in ("--harness", name)]
+                all_argv = options.expand_options(package, selected[:2] + selections)
+                all_cut = all_argv.index("--cbmc-args")
+                self.assertTrue(options.checked_loop_override(
+                    package, all_argv[:all_cut], all_argv[all_cut:], True))
+                self.assertEqual(all_argv[4 if solver else 2:all_cut], selections)
+                if profile in activity_argv and names == sorted(allowed):
+                    self.assertEqual(hashlib.sha256(json.dumps(
+                        all_argv, separators=(",", ":")).encode()).hexdigest(), activity_argv[profile])
             invalid = [
                 ("foreign-package", "another-package", selected),
                 ("unknown-profile", package, [selected[0], "unknown", *selected[2:]]),
@@ -368,31 +392,42 @@ class ProfileTests(unittest.TestCase):
                 with self.subTest(profile=profile, rule=label):
                     with self.assertRaises(ValueError):
                         options.expand_options(candidate_package, candidate)
-            tail = expanded[cut:]
-            for candidate in (
-                tail[:2] + [tail[2].replace(":1", ":0", 1)],
-                tail[:2] + [tail[2].replace(":1", ":2", 1)],
-                tail[:2] + [tail[2].replace(":1", ":$BOUND", 1)],
-                tail[:2] + [",".join(tail[2].split(",")[1:])],
-                tail[:2] + [tail[2] + "," + tail[2].split(",")[0]],
-                tail[:2] + [tail[2].replace(loops[0], "foreign.0", 1)],
+            entries = tail[2].split(",")
+            tail_mutations = [
+                [*tail[:2], ",".join(entries + entries[:1])],
+                [*tail[:2], ",".join(reversed(entries))],
                 tail + ["--no-assertions"],
                 ["--cbmc-args", "--no-unwinding-checks"],
-            ):
+                ["foreign", *tail[1:]],
+            ]
+            for index, (loop, bound) in enumerate(loops):
+                tail_mutations.append([*tail[:2], ",".join(entries[:index] + entries[index + 1:])])
+                for replacement in (f"foreign.0:{bound}", f"{loop}:0", f"{loop}:{bound - 1}",
+                                    f"{loop}:{bound + 1}", f"{loop}:$BOUND"):
+                    changed = entries.copy()
+                    changed[index] = replacement
+                    tail_mutations.append([*tail[:2], ",".join(changed)])
+            for candidate in tail_mutations:
                 with self.subTest(profile=profile, tail=candidate):
-                    self.assertFalse(options.checked_loop_override(package, expanded[:cut], candidate, True))
-            # Each individual loop identity and bound is binding, not only
-            # the first entry or vector length. Ordering is canonical too.
-            for index, loop in enumerate(loops):
-                for replacement in ("foreign.0:1", loop + ":0", loop + ":2", loop + ":$BOUND"):
-                    entries = tail[2].split(",")
-                    entries[index] = replacement
-                    with self.subTest(profile=profile, index=index, replacement=replacement):
+                    self.assertFalse(options.checked_loop_override(package, prefix, candidate, True))
+            prefix_mutations = [prefix[2:], prefix + ["--no-assertions"],
+                                prefix[:-1] + ["foreign"], prefix + ["--harness", harness],
+                                prefix + ["--solver", "z3"]]
+            if solver:
+                prefix_mutations += [prefix[:2] + prefix[4:],
+                                     prefix[:3] + ["minisat"] + prefix[4:],
+                                     prefix[:3] + ["$SOLVER"] + prefix[4:]]
+            for candidate in prefix_mutations:
+                with self.subTest(profile=profile, prefix=candidate):
+                    self.assertFalse(options.checked_loop_override(package, candidate, tail, True))
+            self.assertFalse(options.checked_loop_override("foreign-package", prefix, tail, True))
+            self.assertFalse(options.checked_loop_override(package, prefix, tail, False))
+            if solver:
+                legacy_tail = ["--cbmc-args", "--unwindset", "memcmp.0:2"]
+                for candidate_package in (package, "foreign-package"):
+                    for candidate_prefix in (prefix, prefix[:2] + prefix[4:]):
                         self.assertFalse(options.checked_loop_override(
-                            package, expanded[:cut], [*tail[:2], ",".join(entries)], True))
-            self.assertFalse(options.checked_loop_override(
-                package, expanded[:cut], [*tail[:2], ",".join(reversed(tail[2].split(",")))], True))
-            self.assertFalse(options.checked_loop_override(package, expanded[:cut], tail, False))
+                            candidate_package, candidate_prefix, legacy_tail, True), "P4")
             shell = ("kani_jobs=1; kani_batch_timeout_seconds=600; CARGO_TARGET_DIR=/tmp/checked-profile-test\n"
                      "run_with_deadline() { printf '%s\\n' \"$@\"; }\n" + runner + '\nrun_kani "$@"')
             good = subprocess.run(["bash", "-c", shell, "profile-test", package, *selected],
@@ -406,6 +441,17 @@ class ProfileTests(unittest.TestCase):
                     self.assertEqual(bad.returncode, 2, bad.stderr)
                     self.assertEqual(bad.stdout, "")
                     self.assertIn("formal Kani options:", bad.stderr)
+        legacy_count = 0
+        for command in gate.replace("\\\n", " ").splitlines():
+            tokens = shlex.split(command, comments=True)
+            if not tokens or tokens[0] != "run_kani" or "--unwindset" not in tokens:
+                continue
+            cut = tokens.index("--cbmc-args")
+            if re.fullmatch(r"memcmp\.0:[1-9][0-9]*", tokens[-1]):
+                self.assertTrue(options.checked_loop_override(tokens[1], tokens[2:cut], tokens[cut:], True), "P5")
+                self.assertEqual(options.expand_options(tokens[1], tokens[2:]), tokens[2:])
+                legacy_count += 1
+        self.assertGreater(legacy_count, 0)
 
     def test_live_checker_and_release_consume_the_same_qualification(self):
         # One real ledger is consumed through the CLI and release imports.
