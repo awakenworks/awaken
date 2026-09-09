@@ -43,6 +43,18 @@ Erase(r, e) == /\ processUp[r]
                /\ UNCHANGED <<durableCompleted, durableRemoved, durableSeen,
                               revision, baseRevision, stamped, finished, processUp>>
 
+\* Repository callers may propose a fresh revision with regressive content.
+\* This adversarial candidate changes only replica-local data; the existing
+\* Checkpoint relation must reject it. The runtime's ordinary Erase still grows
+\* targets, and no second durable state/erasure workflow is introduced.
+ProposeSubset(r, completed) ==
+  /\ processUp[r]
+  /\ completed \subseteq durableCompleted
+  /\ localCompleted' = [localCompleted EXCEPT ![r] = completed]
+  /\ localRemoved' = [localRemoved EXCEPT ![r] = Cardinality(completed)]
+  /\ UNCHANGED <<durableCompleted, durableRemoved, durableSeen, revision,
+                 baseRevision, effected, stamped, finished, processUp>>
+
 \* compare_and_swap_progress: only a replica that loaded the current revision
 \* may publish, and it may only extend the durable target set.
 Checkpoint(r) ==
@@ -88,6 +100,7 @@ Restart(r) == /\ ~processUp[r]
 Next == (\E r \in Replicas: Load(r))
         \/ (\E r \in Replicas, e \in Erasers: Erase(r, e))
         \/ (\E r \in Replicas: Checkpoint(r))
+        \/ (\E r \in Replicas, completed \in SUBSET Erasers: ProposeSubset(r, completed))
         \/ Stamp \/ Finish
         \/ (\E r \in Replicas: Crash(r) \/ Restart(r))
 
@@ -105,6 +118,12 @@ CheckpointRequiresEffect == durableCompleted \subseteq effected
 NoEraserIsCountedTwice == durableRemoved = Cardinality(durableCompleted)
 StampRequiresEveryEraser == stamped => durableCompleted = Erasers
 CompletionRequiresAccountability == finished => stamped
+
+\* Mutation-only reachability witness: a loaded exact revision can propose a
+\* missing target, even though that proposal can never become durable.
+NoFreshRegressiveProposal ==
+  \A r \in Replicas:
+    baseRevision[r] = revision => durableCompleted \subseteq localCompleted[r]
 
 Spec == Init /\ [][Next]_vars
 =============================================================================
