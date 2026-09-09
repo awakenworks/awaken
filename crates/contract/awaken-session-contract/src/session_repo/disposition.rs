@@ -62,10 +62,9 @@ impl From<&SessionDisposition> for SessionDeleteDispositionClass {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct SessionDeleteRequestPlan {
-    pub(super) transition_to_deleting: bool,
-    pub(super) terminalize_execution: bool,
-    pub(super) request_cleanup: bool,
+pub(super) enum SessionDeleteRequestPlan {
+    Commit { terminalize_execution: bool },
+    Replay,
 }
 
 /// Closed reducer plan for the durable Delete-intent transaction. Deleting and
@@ -76,14 +75,15 @@ pub(super) const fn session_delete_request_plan(
     disposition: SessionDeleteDispositionClass,
     execution_terminal: bool,
 ) -> SessionDeleteRequestPlan {
-    let transition_to_deleting = matches!(
-        disposition,
-        SessionDeleteDispositionClass::Active | SessionDeleteDispositionClass::Archived
-    );
-    SessionDeleteRequestPlan {
-        transition_to_deleting,
-        terminalize_execution: transition_to_deleting && !execution_terminal,
-        request_cleanup: transition_to_deleting,
+    match disposition {
+        SessionDeleteDispositionClass::Active | SessionDeleteDispositionClass::Archived => {
+            SessionDeleteRequestPlan::Commit {
+                terminalize_execution: !execution_terminal,
+            }
+        }
+        SessionDeleteDispositionClass::Deleting | SessionDeleteDispositionClass::Deleted => {
+            SessionDeleteRequestPlan::Replay
+        }
     }
 }
 

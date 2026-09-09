@@ -262,6 +262,37 @@
       "fail_closed_behavior": "Fence the lost owner and keep work pending/actionable until replacement is authenticated."
     },
     {
+      "id": "external.async_runtime_synchronization_and_scheduling",
+      "obligation": "external.async_runtime_synchronization_and_scheduling",
+      "kind": "infrastructure",
+      "integration_evidence": [
+        "crates/server/awaken-session-executor/src/session_slot/realization_permit.rs",
+        "crates/server/awaken-session-executor/src/application/realization_control_deadline.rs",
+        "crates/server/awaken-session-executor/src/host/tests.rs"
+      ],
+      "runtime_evidence": [],
+      "status": "evidenced",
+      "reliability_objective": {
+        "indicator": "runtime mutex and semaphore behavior preserves typed owner and permit boundaries",
+        "target": 1.0,
+        "window_days": 30,
+        "max_burn_rate": 1.0,
+        "recovery_time_seconds": 300,
+        "recovery_point_seconds": 0,
+        "scope": "release_qualification_not_customer_sla",
+        "drill_evidence": [
+          "crates/server/awaken-session-executor/src/host/tests.rs"
+        ]
+      },
+      "version_and_configuration_contract": "Rust standard library, Tokio runtime and operating-system scheduler exact versions and configuration fingerprint.",
+      "dependency_contract": "Owned mutex and semaphore guards remain exclusive, release their capacity on drop, and eventually wake eligible waiters under the configured runtime.",
+      "evidence_validity": {
+        "maximum_age_seconds": 2592000,
+        "requires_exact_runtime_fingerprint": true
+      },
+      "fail_closed_behavior": "Remove direct concurrency qualification when the configured runtime cannot be authenticated; never infer scheduling progress from the pure permit kernel alone."
+    },
+    {
       "id": "external.performance_and_long_run_stability",
       "obligation": "external.performance_and_long_run_stability",
       "kind": "operational",

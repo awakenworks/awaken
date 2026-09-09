@@ -150,8 +150,7 @@ impl ManagedHost {
         expected_mcp_generations: &[awaken_session_contract::McpGenerationRef],
     ) -> Result<awaken_session_contract::QuiescenceReceipt, RunError> {
         self.continuation_effect_fence(thread, operation)?;
-        let realization = self.host.session_slots.realization_lock(thread);
-        let _realization = realization.lock().await;
+        let _realization = self.host.session_slots.acquire_realization(thread).await;
         let lifecycle = self
             .host
             .session_slots

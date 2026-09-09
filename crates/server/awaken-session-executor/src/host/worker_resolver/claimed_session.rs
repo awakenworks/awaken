@@ -5,29 +5,6 @@ use super::realization_failure::{
 };
 use super::*;
 
-async fn acquire_session_realization_admission(
-    host: &SharedHost,
-    session_id: &str,
-    claim: &awaken_dispatch::RunClaim,
-) -> tokio::sync::OwnedMutexGuard<()> {
-    loop {
-        let realization = host.session_slots.realization_lock(session_id);
-        let guard = realization.clone().lock_owned().await;
-        // Retirement may clear the claim or remove an empty slot while this
-        // entrant waits. An old Arc never authorizes a replacement slot.
-        let installed = host.session_slots.modify(session_id, |slot| {
-            if !Arc::ptr_eq(&slot.realization, &realization) {
-                return false;
-            }
-            slot.dispatch_claim = Some(claim.clone());
-            true
-        });
-        if installed == Some(true) {
-            return guard;
-        }
-    }
-}
-
 /// A co-located dispatch pool has no outbound Control client because its
 /// Session application already drives the same Runtime Host. It may consume a
 /// claimed Managed Run only after that application has installed the complete
@@ -81,7 +58,12 @@ pub(super) async fn install_claimed_session_projection(
     dispatched_resources: Option<&awaken_session_contract::SessionResourceManifest>,
 ) -> Result<(), awaken_dispatch::Error> {
     let claim = awaken_dispatch::RunClaim::from(&claimed.lease);
-    let _realization = acquire_session_realization_admission(host, &thread_id.0, &claim).await;
+    let (_realization, ()) = host
+        .session_slots
+        .acquire_realization_with(&thread_id.0, |slot| {
+            slot.dispatch_claim = Some(claim.clone());
+        })
+        .await;
     if claimed.request.session_thread_id.is_none() {
         if let Some(manifest) = dispatched_resources {
             host.install_dispatched_resources(&thread_id.0, manifest, Some(&claim))
@@ -172,6 +154,7 @@ pub(super) async fn install_claimed_session_projection(
         directive,
         Some(claimed),
         request_started,
+        &_realization,
     )
     .await
 }
@@ -389,16 +372,24 @@ mod tests {
                 epoch: 2,
                 ..old.clone()
             };
-            let first = acquire_session_realization_admission(&host, "shared-session", &old).await;
+            let (first, ()) = host
+                .session_slots
+                .acquire_realization_with("shared-session", |slot| {
+                    slot.dispatch_claim = Some(old.clone());
+                })
+                .await;
             let second_entered = Arc::new(AtomicBool::new(false));
             let waiting = {
                 let host = host.clone();
                 let entered = second_entered.clone();
                 let claim = new.clone();
                 tokio::spawn(async move {
-                    let guard =
-                        acquire_session_realization_admission(&host, "shared-session", &claim)
-                            .await;
+                    let (guard, ()) = host
+                        .session_slots
+                        .acquire_realization_with("shared-session", |slot| {
+                            slot.dispatch_claim = Some(claim.clone());
+                        })
+                        .await;
                     entered.store(true, Ordering::SeqCst);
                     guard
                 })
