@@ -310,6 +310,25 @@ async fn admit_attempt(
         awaken_dispatch::DispatchError::Conflict(message) => HostError::conflict(message),
         error => HostError::internal(error.to_string()),
     })?;
+    if admission == awaken_dispatch::AttemptAdmission::Blocked
+        && let Some(source) = &service.execution_stops
+    {
+        let observation = tokio::time::timeout(
+            std::time::Duration::from_millis(authority.lease_ms.max(1)),
+            awaken_dispatch::stop_expired_predecessor(
+                service.dispatch.as_ref(),
+                directory(service)?.as_ref(),
+                source.as_ref(),
+                &request.claim,
+                service.clock.now_ms(),
+            ),
+        )
+        .await
+        .map_err(|_| HostError::unavailable("predecessor process stop observation timed out"))??;
+        // Local exit cannot discharge remote work. Keep the original Blocked
+        // result; existing Worker retries drive observation without a new task.
+        tracing::debug!(?observation, "blocked predecessor process stop observation");
+    }
     Ok(json!({ "admission": admission }))
 }
 

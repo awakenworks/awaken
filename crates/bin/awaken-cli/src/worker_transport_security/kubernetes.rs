@@ -2,9 +2,12 @@
 
 use super::*;
 use awaken_dispatch::{
-    ApplicationError, AttemptExecutionBinding, WorkerExecutionBindingSource, WorkerIdentity,
+    ApplicationError, AttemptExecutionBinding, ClosedWorkerExecution, WorkerExecutionBindingSource,
+    WorkerExecutionStopSource, WorkerIdentity, WorkerProcessStopStatus,
 };
-use awaken_sandbox_container::k8s::PodProcessObserver;
+use awaken_sandbox_container::k8s::{
+    PodProcessBinding, PodProcessObserver, PodProcessStopper, PodProcessTermination,
+};
 use awaken_worker_transport_security::kubernetes::{
     KubernetesPodIdentity, KubernetesWorkerAuthenticator,
 };
@@ -20,12 +23,20 @@ pub(super) fn assemble(
         &policy.audience,
         std::time::Duration::from_secs(5),
     )?;
-    let observer =
-        PodProcessObserver::new(client, &policy.namespace).map_err(|error| error.to_string())?;
+    let observer = PodProcessObserver::new(client.clone(), &policy.namespace)
+        .map_err(|error| error.to_string())?;
+    let stopper = PodProcessStopper::new(
+        PodProcessObserver::new(client, &policy.namespace).map_err(|error| error.to_string())?,
+    );
     Ok(WorkerTransport {
         authenticator: Arc::new(authenticator),
         bindings: Some(Arc::new(KubernetesWorkerBindings {
             observer,
+            namespace: policy.namespace.clone(),
+            provider_id: policy.provider_id.clone(),
+        })),
+        stops: Some(Arc::new(KubernetesWorkerStops {
+            stopper,
             namespace: policy.namespace.clone(),
             provider_id: policy.provider_id.clone(),
         })),
@@ -60,10 +71,54 @@ impl WorkerExecutionBindingSource for KubernetesWorkerBindings {
             .map_err(|_| {
                 ApplicationError::unavailable("exact Kubernetes Worker process is unavailable")
             })?;
+        if !binding.evidence_was_retained() {
+            return Err(ApplicationError::unavailable(
+                "Kubernetes Worker process evidence must be retained before admission",
+            ));
+        }
         let reference = serde_json::to_string(&binding)
             .map_err(|_| ApplicationError::internal("Worker process binding encoding failed"))?;
         AttemptExecutionBinding::new(worker.clone(), &self.provider_id, reference)
             .map_err(|error| ApplicationError::invalid(error.to_string()))
+    }
+}
+
+struct KubernetesWorkerStops {
+    stopper: PodProcessStopper,
+    namespace: String,
+    provider_id: String,
+}
+
+#[async_trait::async_trait]
+impl WorkerExecutionStopSource for KubernetesWorkerStops {
+    async fn stop_closed_worker(
+        &self,
+        execution: &ClosedWorkerExecution,
+    ) -> Result<WorkerProcessStopStatus, ApplicationError> {
+        let binding = execution.binding();
+        let pod = KubernetesPodIdentity::from_worker_id(&binding.worker().worker_id)
+            .map_err(ApplicationError::invalid)?;
+        let process: PodProcessBinding = serde_json::from_str(binding.execution_ref())
+            .map_err(|_| ApplicationError::invalid("invalid persisted Worker process binding"))?;
+        if binding.provider_id() != self.provider_id
+            || pod.namespace() != self.namespace
+            || !pod.matches_worker(binding.worker())
+            || !process.matches_pod(pod.namespace(), pod.name(), pod.uid())
+        {
+            return Err(ApplicationError::invalid(
+                "closed Worker binding does not belong to this Kubernetes execution domain",
+            ));
+        }
+        // Uses Coordinator credentials, not the dead Pod's now-revoked token.
+        // Exact UID/resourceVersion CAS and retention are owned by the provider.
+        match self.stopper.request_stop(&process).await.map_err(|_| {
+            ApplicationError::unavailable("exact Kubernetes Worker stop observation is unavailable")
+        })? {
+            PodProcessTermination::Unknown => Ok(WorkerProcessStopStatus::Unknown),
+            PodProcessTermination::Observed(receipt) => {
+                execution.observed_exit(receipt.resource_version())
+            }
+        }
     }
 }
 

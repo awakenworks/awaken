@@ -15,10 +15,12 @@ struct Facts {
     pod: Mutex<(StatusCode, Value)>,
     reviews: AtomicUsize,
     reads: AtomicUsize,
+    deletes: Mutex<Vec<Value>>,
 }
 
 fn running() -> Value {
-    json!({"metadata":{"namespace":"workers","name":"worker-a","uid":"uid-a","resourceVersion":"7"},
+    json!({"metadata":{"namespace":"workers","name":"worker-a","uid":"uid-a","resourceVersion":"7",
+        "finalizers":["awaken.dev/worker-process-evidence"]},
     "spec":{"nodeName":"node-a","restartPolicy":"Never","containers":[{
         "name":"worker","image":"fixture","securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}
     }]},"status":{"phase":"Running","containerStatuses":[{
@@ -41,6 +43,7 @@ fn fixture() -> (WorkerTransport, Arc<Facts>) {
         pod: Mutex::new((StatusCode::OK, running())),
         reviews: AtomicUsize::new(0),
         reads: AtomicUsize::new(0),
+        deletes: Mutex::new(Vec::new()),
     });
     async fn review(State(facts): State<Arc<Facts>>, Json(body): Json<Value>) -> Json<Value> {
         assert_eq!(body["spec"]["token"], "fixture-token");
@@ -61,11 +64,20 @@ fn fixture() -> (WorkerTransport, Arc<Facts>) {
         let (status, body) = facts.pod.lock().unwrap().clone();
         (status, Json(body))
     }
-    // One actual kube Client over an in-process API transport. Unexpected Pod
-    // writes/NetworkPolicy calls have no route and fail; no live cluster implied.
+    async fn delete(State(facts): State<Arc<Facts>>, Json(body): Json<Value>) -> Json<Value> {
+        facts.deletes.lock().unwrap().push(body);
+        facts.pod.lock().unwrap().1["metadata"]["deletionTimestamp"] =
+            json!("2026-09-09T00:01:00Z");
+        Json(json!({"kind":"Status","apiVersion":"v1","status":"Success"}))
+    }
+    // One actual kube Client over an in-process API transport. Only the exact
+    // Pod stop is writable; unrelated provisioning has no route. Not k3d proof.
     let router = Router::new()
         .route("/apis/authentication.k8s.io/v1/tokenreviews", post(review))
-        .route("/api/v1/namespaces/workers/pods/worker-a", get(pod))
+        .route(
+            "/api/v1/namespaces/workers/pods/worker-a",
+            get(pod).delete(delete),
+        )
         .with_state(facts.clone());
     let transport = assemble(&policy(), kube::Client::new(router, "workers")).unwrap();
     (transport, facts)
@@ -80,7 +92,13 @@ async fn authenticated_pod_is_bound_through_the_same_client_without_a_second_ide
     // cannot change independently of its immutable UID.
     // Authentication proves the caller, not termination or replay authority.
     let (transport, facts) = fixture();
-    let (auth, bindings) = transport.into_parts();
+    let auth = transport.authenticator();
+    let bindings = transport.binding_source();
+    let stops = transport.stop_source();
+    assert!(
+        stops.is_some(),
+        "production selection installs independent stop control"
+    );
     let bindings = bindings.expect("Kubernetes selection cannot lose its binding source");
     for generation in [1, 2] {
         let worker = WorkerIdentity::new("k8s:workers:worker-a:uid-a", "uid-a", generation);
@@ -114,6 +132,10 @@ async fn authenticated_pod_is_bound_through_the_same_client_without_a_second_ide
     }
     assert_eq!(facts.reviews.load(Ordering::SeqCst), 2);
     assert_eq!(facts.reads.load(Ordering::SeqCst), 2);
+    assert!(
+        facts.deletes.lock().unwrap().is_empty(),
+        "binding is read-only"
+    );
 }
 
 #[tokio::test]
@@ -124,10 +146,11 @@ async fn pod_replacement_and_unobservable_processes_never_degrade_to_unbound_adm
     // never None. R5 malformed/cross-namespace Worker => reject before Pod IO.
     // Each mutation starts from the valid R1 witness (MC/DC).
     let (transport, facts) = fixture();
-    let source = transport.into_parts().1.unwrap();
+    let source = transport.binding_source().unwrap();
     let worker = WorkerIdentity::new("k8s:workers:worker-a:uid-a", "uid-a", 1);
     for (pointer, value) in [
         ("/metadata/uid", json!("uid-replacement")),
+        ("/metadata/finalizers", json!([])),
         ("/spec/restartPolicy", json!("Always")),
         (
             "/spec/containers/0/securityContext/allowPrivilegeEscalation",
@@ -182,4 +205,183 @@ async fn pod_replacement_and_unobservable_processes_never_degrade_to_unbound_adm
         );
     }
     assert_eq!(facts.reads.load(Ordering::SeqCst), before, "R5 no API read");
+}
+
+#[tokio::test]
+async fn independent_stop_consumes_only_original_closed_binding_and_preserves_dispatch_veto() {
+    use awaken_dispatch::{DispatchQueue, WorkerDirectory};
+    // S1 current successor + persisted old binding + exact expired Registry
+    // => independent UID/resourceVersion stop with Coordinator client (no token
+    // from the dead Worker). S2 accepted/delete-in-progress => Unknown. S3 exact
+    // local exit => Exited, STILL occupied; remote effects are not inferred.
+    // S4 provider/Worker/opaque-coordinate mismatch => no API read/write.
+    // S5 absent/name-reused Pod => Unknown; old late query never stops replacement.
+    for rule in [
+        "valid",
+        "foreign-provider",
+        "foreign-coordinate",
+        "missing",
+        "replaced",
+    ] {
+        let (transport, facts) = fixture();
+        let bindings = transport.binding_source();
+        let stops = transport.stop_source();
+        let directory = awaken_worker_registry::MemoryWorkerDirectory::new();
+        let mut manifest = awaken_dispatch::WorkerManifest::default();
+        manifest.runtime_protocol.min = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+        manifest.runtime_protocol.max = awaken_dispatch::CURRENT_RUNTIME_PROTOCOL_VERSION;
+        let old = directory
+            .register(
+                awaken_dispatch::WorkerRegistration {
+                    worker_id: "k8s:workers:worker-a:uid-a".into(),
+                    incarnation_id: "uid-a".into(),
+                    manifest,
+                },
+                100,
+                50,
+            )
+            .await
+            .unwrap();
+        let worker = old.snapshot.identity.clone();
+        let original = bindings.unwrap().binding_for(&worker).await.unwrap();
+        let bound = if rule == "foreign-provider" {
+            AttemptExecutionBinding::new(worker.clone(), "other-cluster", original.execution_ref())
+                .unwrap()
+        } else if rule == "foreign-coordinate" {
+            let mut coordinate: Value = serde_json::from_str(original.execution_ref()).unwrap();
+            coordinate["uid"] = json!("uid-foreign");
+            AttemptExecutionBinding::new(
+                worker.clone(),
+                original.provider_id(),
+                coordinate.to_string(),
+            )
+            .unwrap()
+        } else {
+            original.clone()
+        };
+        let store = awaken_dispatch::MemoryDispatchStore::new();
+        let request = awaken_dispatch::RunDispatch::new(
+            awaken_dispatch_testkit::worker_http::activation("cli-stop"),
+        )
+        .with_placement(awaken_dispatch::PlacementRequirements::remote_required());
+        store.enqueue(request).await.unwrap();
+        let mut snapshot = old.snapshot;
+        snapshot.state = awaken_dispatch::WorkerState::Ready;
+        let old_claim = awaken_dispatch::RunClaim::from(
+            &store
+                .claim_compatible(&snapshot, 50, 100)
+                .await
+                .unwrap()
+                .unwrap()
+                .lease,
+        );
+        store
+            .begin_attempt(&old_claim, 100, Some(&bound))
+            .await
+            .unwrap();
+        snapshot.identity = WorkerIdentity::new("successor", "successor-boot", 1);
+        snapshot.expires_at_ms = 10_000;
+        let next = awaken_dispatch::RunClaim::from(
+            &store
+                .claim_compatible(&snapshot, 10_000, 200)
+                .await
+                .unwrap()
+                .unwrap()
+                .lease,
+        );
+        if rule == "missing" {
+            *facts.pod.lock().unwrap() = (
+                StatusCode::NOT_FOUND,
+                json!({"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","code":404}),
+            );
+        } else if rule == "replaced" {
+            facts.pod.lock().unwrap().1["metadata"]["uid"] = json!("new-uid");
+        }
+        let reads = facts.reads.load(Ordering::SeqCst);
+        let stop = stops.unwrap();
+        let result = awaken_dispatch::stop_expired_predecessor(
+            &store,
+            &directory,
+            stop.as_ref(),
+            &next,
+            200,
+        )
+        .await;
+        if rule.starts_with("foreign") {
+            assert!(result.is_err(), "S4/{rule}");
+            assert_eq!(facts.reads.load(Ordering::SeqCst), reads);
+        } else {
+            assert_eq!(
+                result.unwrap(),
+                Some(WorkerProcessStopStatus::Unknown),
+                "S2/S5/{rule}"
+            );
+        }
+        if rule == "valid" {
+            assert_eq!(
+                facts.deletes.lock().unwrap()[0]["preconditions"],
+                json!({"uid":"uid-a","resourceVersion":"7"})
+            );
+            assert_eq!(
+                awaken_dispatch::stop_expired_predecessor(
+                    &store,
+                    &directory,
+                    stop.as_ref(),
+                    &next,
+                    200
+                )
+                .await
+                .unwrap(),
+                Some(WorkerProcessStopStatus::Unknown)
+            );
+            {
+                let mut pod = facts.pod.lock().unwrap();
+                pod.1["status"]["phase"] = json!("Failed");
+                pod.1["status"]["containerStatuses"][0]["state"] = json!({"terminated":{
+                    "exitCode":137,"reason":"Error","containerID":"containerd://exact",
+                    "startedAt":"2026-09-09T00:00:00Z","finishedAt":"2026-09-09T00:01:00Z"
+                }});
+            }
+            let observation = awaken_dispatch::stop_expired_predecessor(
+                &store,
+                &directory,
+                stop.as_ref(),
+                &next,
+                200,
+            )
+            .await
+            .unwrap();
+            let Some(WorkerProcessStopStatus::Exited(receipt)) = observation else {
+                panic!("S3 exact local exit")
+            };
+            assert_eq!(receipt.binding(), &bound);
+            assert_eq!(receipt.evidence_ref(), "7");
+            assert_eq!(
+                facts.deletes.lock().unwrap().len(),
+                1,
+                "S2 no duplicate delete while pending or exited"
+            );
+        } else {
+            assert!(facts.deletes.lock().unwrap().is_empty());
+        }
+        assert_eq!(
+            facts.reviews.load(Ordering::SeqCst),
+            0,
+            "S1 dead Worker token is unnecessary"
+        );
+        assert_eq!(
+            store
+                .load_physical_attempt(&old_claim.run_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .claim,
+            old_claim
+        );
+        assert_eq!(
+            store.begin_attempt(&next, 200, None).await.unwrap(),
+            awaken_dispatch::AttemptAdmission::Blocked,
+            "S3 remote veto"
+        );
+    }
 }
