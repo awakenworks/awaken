@@ -4,6 +4,172 @@
 //! Keeping the single fake Runtime here avoids parallel fake implementations in
 //! those behavior modules while leaving each test beside the behavior it covers.
 
+mod read_control;
+#[cfg(test)]
+mod session_repository {
+    //! Existing real-SQLite conflict fixture, shared with controlled refresh reads.
+    //! Every operation still delegates to SQLite except the explicitly armed CAS
+    //! conflict or read failure. This is the sole repository decorator for both.
+
+    use super::ReadControl;
+    use async_trait::async_trait;
+    use awaken_session_contract::{ManagedSessionRepository, PersistedSession};
+    use awaken_session_store::SqliteManagedSessionRepository;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+
+    pub(crate) struct ConflictInjectingRepo {
+        inner: Arc<SqliteManagedSessionRepository>,
+        conflicts: AtomicU64,
+        reads: ReadControl,
+    }
+
+    impl ConflictInjectingRepo {
+        pub(crate) fn new(
+            inner: Arc<SqliteManagedSessionRepository>,
+            conflicts: u64,
+            reads: ReadControl,
+        ) -> Self {
+            Self {
+                inner,
+                conflicts: AtomicU64::new(conflicts),
+                reads,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ManagedSessionRepository for ConflictInjectingRepo {
+        async fn create(
+            &self,
+            owner_scope: &str,
+            session: PersistedSession,
+            idempotency: awaken_session_contract::IdempotencyRecord,
+            facts: Vec<awaken_session_contract::ManagedLifecycleFact>,
+        ) -> Result<
+            awaken_session_contract::SessionCreateResult,
+            awaken_session_contract::SessionRepositoryError,
+        > {
+            self.inner
+                .create(owner_scope, session, idempotency, facts)
+                .await
+        }
+
+        async fn replay_create(
+            &self,
+            owner_scope: &str,
+            session_id: &str,
+            idempotency: &awaken_session_contract::IdempotencyRecord,
+        ) -> Result<Option<PersistedSession>, awaken_session_contract::SessionRepositoryError>
+        {
+            self.inner
+                .replay_create(owner_scope, session_id, idempotency)
+                .await
+        }
+
+        async fn commit_mutation(
+            &self,
+            owner_scope: &str,
+            mutation: awaken_session_contract::SessionMutation,
+        ) -> Result<
+            awaken_session_contract::SessionMutationResult,
+            awaken_session_contract::SessionRepositoryError,
+        > {
+            if self
+                .conflicts
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                    count.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Ok(awaken_session_contract::SessionMutationResult::Conflict {
+                    current_revision: mutation.expected_revision,
+                });
+            }
+            self.inner.commit_mutation(owner_scope, mutation).await
+        }
+
+        async fn append_lifecycle(
+            &self,
+            fact: awaken_session_contract::ManagedLifecycleFact,
+        ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
+            self.inner.append_lifecycle(fact).await
+        }
+
+        async fn pending_lifecycle(
+            &self,
+        ) -> Result<
+            Vec<awaken_session_contract::ManagedLifecycleFact>,
+            awaken_session_contract::SessionRepositoryError,
+        > {
+            self.inner.pending_lifecycle().await
+        }
+
+        async fn complete_lifecycle(
+            &self,
+            fact_id: &str,
+        ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
+            self.inner.complete_lifecycle(fact_id).await
+        }
+
+        async fn get(
+            &self,
+            session_id: &str,
+        ) -> Result<PersistedSession, awaken_session_contract::SessionRepositoryError> {
+            self.reads.on_read("session").await.map_err(|port| {
+                awaken_session_contract::SessionRepositoryError::Unavailable(format!(
+                    "scripted {port} read failure"
+                ))
+            })?;
+            self.inner.get(session_id).await
+        }
+
+        async fn reconcilable_sessions_page(
+            &self,
+            after: Option<&awaken_session_contract::SessionRecoveryCursor>,
+        ) -> Result<
+            awaken_session_contract::SessionRecoveryScan,
+            awaken_session_contract::SessionRepositoryError,
+        > {
+            self.inner.reconcilable_sessions_page(after).await
+        }
+
+        async fn sessions_referencing_credential_source(
+            &self,
+            workspace_id: &str,
+            source_id: &awaken_credential_contract::CredentialSourceId,
+        ) -> Result<Vec<PersistedSession>, awaken_session_contract::SessionRepositoryError>
+        {
+            self.inner
+                .sessions_referencing_credential_source(workspace_id, source_id)
+                .await
+        }
+
+        async fn idempotency_receipt(
+            &self,
+            session_id: &str,
+            key: &str,
+        ) -> Result<
+            Option<awaken_session_contract::SessionIdempotencyReceipt>,
+            awaken_session_contract::SessionRepositoryError,
+        > {
+            self.inner.idempotency_receipt(session_id, key).await
+        }
+
+        async fn owner(
+            &self,
+            session_id: &str,
+        ) -> Result<String, awaken_session_contract::SessionRepositoryError> {
+            self.inner.owner(session_id).await
+        }
+    }
+}
+
+pub(crate) use read_control::ReadControl;
+pub(crate) use session_repository::ConflictInjectingRepo;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -14,6 +180,10 @@ use awaken_session_contract::{ManagedSessionRepository, PersistedSession, ToolPe
 use awaken_session_store::SqliteManagedSessionRepository;
 
 use super::{DelegatedRun, OutcomeDrive, RunError, SessionRuntime, StepOutcome};
+
+fn scripted_read_failure(port: &'static str) -> RunError {
+    RunError::unavailable(format!("scripted {port} read failure"))
+}
 
 pub(super) fn ephemeral_session_repo() -> SqliteManagedSessionRepository {
     SqliteManagedSessionRepository::open_in_memory()
@@ -60,6 +230,7 @@ pub(super) type ChildCommitAfterHistorySnapshot = (
 /// never establish Session existence by itself.
 #[derive(Clone, Default)]
 pub(crate) struct RehydrateFake {
+    pub(crate) reads: ReadControl,
     pub(super) commit_times_by_thread: Arc<
         std::sync::Mutex<std::collections::HashMap<String, std::collections::BTreeMap<u64, u64>>>,
     >,
@@ -377,6 +548,10 @@ impl SessionRuntime for RehydrateFake {
         thread: &str,
         outcome_id: &str,
     ) -> Result<Option<awaken_session_contract::CommittedOutcomeProjection>, RunError> {
+        self.reads
+            .on_read("outcome")
+            .await
+            .map_err(scripted_read_failure)?;
         Ok(self
             .outcome_projections
             .lock()
@@ -389,6 +564,10 @@ impl SessionRuntime for RehydrateFake {
         &self,
         thread: &str,
     ) -> Result<awaken_session_contract::SessionUsage, RunError> {
+        self.reads
+            .on_read("usage")
+            .await
+            .map_err(scripted_read_failure)?;
         Ok(self
             .usage_by_thread
             .lock()
@@ -403,6 +582,10 @@ impl SessionRuntime for RehydrateFake {
         _session_id: &str,
         thread_id: &str,
     ) -> Result<awaken_session_contract::SessionUsage, RunError> {
+        self.reads
+            .on_read("child_usage")
+            .await
+            .map_err(scripted_read_failure)?;
         Ok(self
             .usage_by_thread
             .lock()
@@ -416,6 +599,10 @@ impl SessionRuntime for RehydrateFake {
         &self,
         _session_id: &str,
     ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
+        self.reads
+            .on_read("coordination")
+            .await
+            .map_err(scripted_read_failure)?;
         self.order.lock().unwrap().push("coordination");
         Ok(self.coordinated.lock().unwrap().clone())
     }
@@ -426,6 +613,14 @@ impl SessionRuntime for RehydrateFake {
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
+        self.reads
+            .on_read(if thread_id == session_id {
+                "root_snapshot"
+            } else {
+                "child_snapshot"
+            })
+            .await
+            .map_err(scripted_read_failure)?;
         self.order.lock().unwrap().push(if thread_id == session_id {
             "root_snapshot"
         } else {
@@ -790,6 +985,10 @@ impl SessionRuntime for RehydrateFake {
         cursor: awaken_agent_contract::RunLifecycleCursor,
         limit: usize,
     ) -> Result<awaken_agent_contract::RunLifecyclePage, RunError> {
+        self.reads
+            .on_read("lifecycle")
+            .await
+            .map_err(scripted_read_failure)?;
         let events = self
             .lifecycle
             .lock()

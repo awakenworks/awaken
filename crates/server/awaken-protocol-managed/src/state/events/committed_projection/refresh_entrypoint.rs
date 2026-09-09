@@ -21,12 +21,31 @@ impl ManagedState {
         &self,
         session_id: &str,
     ) -> Result<(), StateError> {
-        const PREFIX_RETRIES: usize = 4;
-        for _ in 0..PREFIX_RETRIES {
-            if self.refresh_committed_projection_once(session_id).await? {
-                return Ok(());
+        // One ordinary turn may commit more than four source versions while a
+        // reader is in flight. Bound elapsed read work, not the number of valid
+        // concurrent commits. Every retry still rebuilds and validates the full
+        // candidate; the delay gives the writer time without a database hot loop.
+        const READ_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
+        let mut attempts = 0_u32;
+        let refreshed = tokio::time::timeout(READ_BUDGET, async {
+            loop {
+                attempts += 1;
+                if self.refresh_committed_projection_once(session_id).await? {
+                    return Ok(());
+                }
+                tokio::time::sleep(RETRY_DELAY).await;
             }
+        })
+        .await;
+        if let Ok(result) = refreshed {
+            return result;
         }
+        tracing::warn!(
+            session_id,
+            attempts,
+            "Managed projection read budget exhausted"
+        );
         Err(StateError::Run(RunError::unavailable(
             "Managed projection sources changed while reading one committed prefix",
         )))

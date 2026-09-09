@@ -7,8 +7,6 @@
 //! command boundary can reverse to the Runtime's batch-local call id.
 
 use std::sync::Arc;
-#[cfg(test)]
-use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use tokio::sync::broadcast;
@@ -31,8 +29,6 @@ use awaken_session_contract::ManagedSessionRepository;
 #[cfg(test)]
 use awaken_session_contract::SessionDisposition;
 use awaken_session_contract::{ManagedLifecycleFact, PersistedSession, SessionExecutionState};
-#[cfg(test)]
-use awaken_session_store::SqliteManagedSessionRepository;
 
 mod application;
 pub(crate) use application::agent_mcp_candidate;
