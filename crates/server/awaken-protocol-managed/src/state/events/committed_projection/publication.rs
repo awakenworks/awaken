@@ -74,8 +74,18 @@ impl ManagedState {
         ) {
             ProjectionPublishDecision::Apply => {}
             ProjectionPublishDecision::AlreadyCurrent => return Ok(true),
-            ProjectionPublishDecision::RetryStaleCache
-            | ProjectionPublishDecision::RejectSourceRegression => return Ok(false),
+            decision @ (ProjectionPublishDecision::RetryStaleCache
+            | ProjectionPublishDecision::RejectSourceRegression) => {
+                tracing::debug!(
+                    session_id,
+                    reason = ?decision,
+                    base_cache_revision,
+                    current_cache_revision = current.cache_revision,
+                    projection_changed,
+                    "Managed projection retry"
+                );
+                return Ok(false);
+            }
         }
         candidate.advance_cache_revision()?;
         *current = candidate;

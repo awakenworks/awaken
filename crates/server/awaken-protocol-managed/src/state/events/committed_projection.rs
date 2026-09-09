@@ -335,11 +335,23 @@ impl ManagedState {
                     )
                 })
             {
+                tracing::debug!(
+                    session_id,
+                    reason = "coordinated_prefix",
+                    "Managed projection retry"
+                );
                 return Ok(false);
             }
             let final_root_snapshot = self.recovery_snapshot(session_id, session_id).await?;
             if !same_thread_projection_prefix(root_snapshot.as_ref(), final_root_snapshot.as_ref())
             {
+                tracing::debug!(
+                    session_id,
+                    reason = "root_thread_prefix",
+                    initial_version = ?root_snapshot.as_ref().map(|snapshot| snapshot.thread_version),
+                    final_version = ?final_root_snapshot.as_ref().map(|snapshot| snapshot.thread_version),
+                    "Managed projection retry"
+                );
                 return Ok(false);
             }
 
@@ -351,6 +363,13 @@ impl ManagedState {
             if final_persisted.session_id != persisted.session_id
                 || final_persisted.revision != persisted.revision
             {
+                tracing::debug!(
+                    session_id,
+                    reason = "session_revision",
+                    initial_revision = ?persisted.revision,
+                    final_revision = ?final_persisted.revision,
+                    "Managed projection retry"
+                );
                 return Ok(false);
             }
         }
