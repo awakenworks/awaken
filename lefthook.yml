@@ -22,6 +22,17 @@ pre-commit:
     repository-hygiene:
       run: python3 scripts/ci/check_repository_hygiene.py --staged
 
+    # An evidence link replaces its former standalone source classification.
+    # Metadata/checker changes must pass the same strict validators as CI:
+    # duplicate ownership or missing coverage rejects the commit; no solver is
+    # started here. The existing formal-surface L4 test owns that decision table.
+    formal-evidence:
+      glob: "{lefthook.yml,formal/*.json,scripts/ci/*formal*.py,scripts/ci/check_formal.sh}"
+      run: |
+        set -e
+        python3 scripts/ci/check_formal_coverage.py --require-evidence-complete
+        python3 scripts/ci/check_formal_surface.py --require-complete
+
     # 2. High-signal credential scanner. Generic secret assignments only fail
     #    in source/config files, so design examples can stay readable.
     secrets:
