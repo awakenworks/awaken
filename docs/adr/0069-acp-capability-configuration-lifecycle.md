@@ -969,8 +969,8 @@ the remaining external/reconciliation gates:
 | Lifecycle slice | Current state | Remaining work |
 |---|---|---|
 | adapter catalog | authoritative `AcpCli` plus neutral ACP capability contract | keep protocol-external descriptors versioned with adapter changes |
-| installation/login probe | `awaken-acp-application` owns PATH/HOME-only process I/O and classification; startup, bounded periodic probing and `POST /admin/refresh-observations` share one coalescing atomic refresh operation | retain adapter-specific remediation text and the explicit refresh trigger |
-| reusable CLI/Flow preparation | CLI and Flow call the same application service, binding use case, resolver and atomic launch-plan projection | no parallel inventory or composition path remains |
+| installation/login probe | `awaken-run-executor-acp::host` owns PATH/HOME-only process I/O and classification; startup, bounded periodic probing and `POST /admin/refresh-observations` share one coalescing atomic refresh operation | retain adapter-specific remediation text and the explicit refresh trigger |
+| reusable CLI/Flow preparation | CLI and Flow reuse Worker host preparation, resolver and launch-plan projection; `awaken-acp-application` wraps the same host result with Coordinator-owned registration | no parallel inventory or composition path remains |
 | capability negotiation | bounded Worker probe invokes the canonical prompt-free protocol operation; periodic and explicit event refreshes coalesce through the same Worker observation cache; all local launch paths share descendant-aware process-group reaping | retain protocol and process-group conformance tests |
 | effective profile/fingerprint | typed profile and SHA-256 evidence are published dynamically with TTL and pinned by publication/placement/launch fences | retain exact-version compatibility tests |
 | Agent ACP mode/options | generated discriminated selection carries default/exact model, native mode and arbitrary native option values; publication validates them | add richer widgets only as presentation concerns |

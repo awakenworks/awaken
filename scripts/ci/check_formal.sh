@@ -125,6 +125,11 @@ cargo test -p awaken-worker-registry --features loom --lib loom_tests
 # Work rows, token digests and lease snapshots use the actual implementation;
 # only their mutexes are substituted for the bounded Loom schedules.
 cargo test -p awaken-work-store --features loom --lib loom_tests
+# The actual ACP batch constructor, admission and publication share the same
+# native/Loom case table. Only its mutex is instrumented; a later accepted
+# same-revision status update may replace an earlier accepted value.
+cargo test -p awaken-run-executor-acp --features loom --lib binding_batch_tests
+cargo test -p awaken-acp-application --lib binding_batch_
 # Exercise the production BackgroundTask projection under callback/replacement
 # races. Only its single mutex is instrumented; durable commits remain outside
 # this bounded lock-interleaving claim.

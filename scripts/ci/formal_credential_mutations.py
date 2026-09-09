@@ -30,35 +30,62 @@ def check_acp_projection_model_mutants(tlc_jar: Path) -> None:
     print("ACP projected bindings: 4/4 mutants killed; 3/3 positive witnesses reachable")
 
 def check_acp_binding_model_mutants(tlc_jar: Path) -> None:
-    # B1 rejected batch publishes its exclusive prefix => rejected-action failure;
-    # B2 check outside the publication lock => two stale checks accept conflicting
-    # shared revisions; B3 accepted batch omits a key => incomplete publication.
-    # Independent positive witnesses require a compatible union, a genuine
-    # conflicting race, and an accepted status update. Parser/tool failure is not
-    # evidence: the existing runner requires the exact exit and named property.
+    # B1 reject after publishing a prefix; B2 check outside the retained lock;
+    # B3 omit a final key; B4 observe without the lock; B5 overwrite unrelated
+    # committed state; B6 reject legal same-revision status replacement.
+    # Each checks a named action/invariant. Both writer orders and a reader
+    # between commits must remain reachable: old successes need not stay current.
     source = (ROOT / "formal/tla/AcpLocalBindingBatch.tla").read_text()
     config = (ROOT / "formal/tla/AcpLocalBindingBatch.cfg").read_text()
     header = "SPECIFICATION Spec\nCHECK_DEADLOCK FALSE\n"
     mutations = []
-    for anchor, replacement, property_name in (
-        ("ELSE bindings\n", "ELSE [bindings EXCEPT ![Own(i)] = Requested(i, Own(i))]\n",
-         "action:RejectedBatchHasNoEffect"),
-        (r'/\ phase[i] = "idle" /\ mutex = 0', r'/\ phase[i] = "idle"',
-         "AcceptedBatchComplete"),
-        ("IF k \\in BatchKeys(i) THEN Requested(i, k)", "IF k = Own(i) THEN Requested(i, k)",
-         "AcceptedBatchComplete"),
-    ):
-        if source.count(anchor) != 1:
-            raise SystemExit(f"ACP binding mutation anchor drifted: {property_name}")
-        action = property_name.startswith("action:")
+
+    def change(action: str, following: str, replacements: list[tuple[str, str]],
+               property_name: str) -> None:
+        start, end = source.index(action), source.index(following)
+        original = source[start:end]
+        modified = original
+        for anchor, replacement in replacements:
+            if modified.count(anchor) != 1:
+                raise SystemExit(f"ACP binding mutation anchor drifted: {property_name}")
+            modified = modified.replace(anchor, replacement)
+        action_property = property_name.startswith("action:")
         selected = property_name.removeprefix("action:")
-        keyword = "PROPERTIES" if action else "INVARIANTS"
-        mutations.append((source.replace(anchor, replacement),
+        keyword = "PROPERTIES" if action_property else "INVARIANTS"
+        mutations.append((source[:start] + modified + source[end:],
                           header + f"{keyword} {selected}\n", property_name))
-    for witness in ("NoCompatibleUnion", "NoConflictingRace", "NoStatusUpdate"):
+
+    change("Reject(i) ==", "Observe ==", [
+        (r"bindings, permitted, before, committed, observed, observedOrder, observationDone>>",
+         r"permitted, before, committed, observed, observedOrder, observationDone>>"),
+        (r'/\ phase[i] = "checked" /\ ~permitted[i]',
+         r'/\ phase[i] = "checked" /\ ~permitted[i]' + "\n" +
+         r"    /\ bindings' = [bindings EXCEPT ![Own(i)] = Requested(i, Own(i))]"),
+    ], "action:RejectedBatchHasNoEffect")
+    change("Check(i) ==", "WriteFirst(i) ==", [
+        (r'/\ phase[i] = "idle" /\ mutex = 0', r'/\ phase[i] = "idle"'),
+    ], "VisibleStateIsSerial")
+    change("WriteLast(i) ==", "Commit(i) ==", [
+        ("bindings' = [bindings EXCEPT ![\"z\"] = Requested(i, \"z\")]", "bindings' = bindings"),
+    ], "VisibleStateIsSerial")
+    change("Observe ==", "Next ==", [
+        (r"/\ ~observationDone /\ mutex = 0", r"/\ ~observationDone"),
+    ], "ObservationIsCommittedPrefix")
+    change("WriteFirst(i) ==", "WriteLast(i) ==", [
+        (r"[bindings EXCEPT ![Own(i)] = Requested(i, Own(i))]",
+         r"[InitialMap EXCEPT ![Own(i)] = Requested(i, Own(i))]"),
+    ], "action:SuccessfulCommitIsExact")
+    change("Check(i) ==", "WriteFirst(i) ==", [
+        ("CompatibleAt(bindings, i)", "(CompatibleAt(bindings, i) /\\ "
+         "(\\A k \\in BatchKeys(i): bindings[k].revision = 0 \\/ "
+         "bindings[k].status = Requested(i, k).status))"),
+    ], "action:DecisionIsExact")
+    for witness in ("NoCompatibleUnion", "NoConflictingRace", "NoStatusUpdate",
+                    "NoForwardStatusReplacement", "NoReverseStatusReplacement",
+                    "NoObserverBetweenCommits"):
         mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
     check_tlc_model_mutations(tlc_jar, "AcpLocalBindingBatch", source, config, mutations)
-    print("ACP binding batches: 3/3 mutants killed; 3/3 positive witnesses reachable")
+    print("ACP binding batches: 6/6 mutants killed; 6/6 complete-update/observer witnesses reachable")
 
 
 def check_acp_observation_model_mutants(tlc_jar: Path) -> None:
