@@ -133,7 +133,10 @@ async fn publish_never_installs_an_artifact_from_a_stale_source_revision() {
     // revision -> the bounded current-state command returns StaleRevision and
     // registers nothing; P2 one concurrent advance from revision 7 to 8 -> the
     // command recompiles revision 8, persists it once, and registers only that
-    // current artifact. This test owns P1; the next test owns P2.
+    // current artifact. This test owns P1; the next test owns P2. Both registry
+    // fixtures assert that the canonical caller passes publication.source_revision
+    // as the expected CAS revision. The SQL method alone cannot establish that
+    // pairing; this test covers the caller seam, not database transaction behavior.
     let (service, catalog) = test_service_and_catalog();
     let err = service
         .publish(&scope(DEFAULT_SCOPE), &StalePublishRegistry, "a", &[])

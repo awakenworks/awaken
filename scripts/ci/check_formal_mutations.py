@@ -21,7 +21,7 @@ import unittest
 from unittest.mock import patch
 
 from formal_model_mutation_runner import check_tlc_model_mutations
-from formal_config_mutations import check_config_cas_model_mutant
+from formal_config_mutations import check_config_cas_model_mutant, check_config_activation_model_mutants
 from formal_worker_registration_mutations import check_worker_registration_model_mutants
 from formal_realization_capacity_mutations import check_realization_capacity_observation_mutants
 from formal_event_batch_mutations import check_event_batch_model_mutants, check_event_batch_observation_mutants
@@ -339,7 +339,7 @@ class MutationOracleTests(unittest.TestCase):
             "resource-preparation-model-mutant", "realization-renewal-model-mutant",
             "resolution-failure-model-mutant", "terminal-scan-model-mutants", "config-cas-model-mutant",
             "background-completion-model-mutant", "sandbox-control-model-mutants",
-            "audit-commit-model-mutants", "effect-retirement-model-mutant",
+            "audit-commit-model-mutants", "effect-retirement-model-mutant", "config-activation-model-mutants",
             "credential-creation-model-mutants", "verified-admission-model-mutants",
             "session-network-model-mutant", "work-queue-stop-model-mutants",
             "managed-projection-model-mutants", "session-observation-model-mutants",
@@ -559,6 +559,7 @@ def main() -> None:
         "terminal-scan-model-mutants": check_terminal_scan_model_mutants,
         "k8s-process-observation-model-mutants": check_k8s_process_observation_model_mutants,
         "config-cas-model-mutant": check_config_cas_model_mutant,
+        "config-activation-model-mutants": check_config_activation_model_mutants,
         "background-completion-model-mutant": check_background_completion_model_mutant,
         "sandbox-control-model-mutants": check_sandbox_control_model_mutants,
         "memory-invalidation-model-mutants": check_memory_invalidation_model_mutants,

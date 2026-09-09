@@ -66,6 +66,28 @@ INVARIANTS OnlyMatchingResultIsAccepted
     check_tlc_model_mutations(tlc_jar, "ToolResultProtocol", source, call_config,
                              [(witness, call_config.replace("OnlyMatchingResultIsAccepted", "NoAcceptedCall"), "NoAcceptedCall")])
     print("Tool result: 2 coordinate-guard mutants and 1 exact-call witness qualified")
+    # Terminal cause/effect table: End must clear both ticket coordinates;
+    # a later consumer must not treat terminal truth as delivery authority.
+    # Exact retained receipts must remain replayable after End. Use the SAME
+    # model/runner; mutation CFGs isolate the intended semantic oracle.
+    terminal_config = call_config.replace("INVARIANTS OnlyMatchingResultIsAccepted", "INVARIANTS TerminalRejectsLateResults ExactResultReceiptReplayRemainsEnabled\nPROPERTIES TerminalConsumptionNeverChanges")
+    end = source[source.index("End =="):source.index("Next ==")]
+    stale = end.replace("       /\\ awaiting' = None", "       /\\ awaiting' = awaiting", 1)
+    guards = "    /\\ ~terminal\n    /\\ awaiting = call\n    /\\ awaitingCommit = pendingCommit"
+    assert deliver.count(guards) == 1, "one result-consumption admission owner"
+    reopened = deliver.replace(guards, "    /\\ (terminal \\/ (awaiting = call /\\ awaitingCommit = pendingCommit))", 1)
+    terminal_mutants = [
+        (source.replace(end, stale, 1), terminal_config, "TerminalRejectsLateResults"),
+        (source.replace(deliver, reopened, 1), terminal_config, "action:TerminalConsumptionNeverChanges"),
+    ]
+    check_tlc_model_mutations(tlc_jar, "ToolResultProtocol", source, terminal_config, terminal_mutants)
+    # A green replay-enabled invariant alone is vacuous if no consumed receipt
+    # survives End. This witness requires such a reachable terminal state.
+    witness = source.replace("Spec == Init", "NoTerminalReceipt == ~(terminal /\\ completed # {})\n\nSpec == Init", 1)
+    witness_config = terminal_config.replace("INVARIANTS TerminalRejectsLateResults ExactResultReceiptReplayRemainsEnabled", "INVARIANTS NoTerminalReceipt")
+    check_tlc_model_mutations(tlc_jar, "ToolResultProtocol", source, terminal_config,
+                             [(witness, witness_config, "NoTerminalReceipt")])
+    print("Tool result: 2 terminal mutants and 1 terminal receipt replay witness qualified")
 
 
 def check_event_batch_observation_mutants(tlc_jar: Path, trace_dir: Path) -> None:
