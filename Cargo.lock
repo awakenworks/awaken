@@ -711,6 +711,7 @@ dependencies = [
  "awaken-run-ingress",
  "awaken-run-ingress-http",
  "awaken-run-ingress-testkit",
+ "awaken-runtime",
  "awaken-runtime-contract",
  "awaken-runtime-host",
  "awaken-sandbox-local",
