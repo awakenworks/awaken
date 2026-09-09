@@ -1410,6 +1410,191 @@ async fn a_panicking_tool_is_isolated_but_cannot_authorize_reinference_or_ack() 
     );
 }
 
+#[tokio::test]
+async fn returned_tool_cannot_hide_an_inline_participants_quiescence_veto() {
+    // Causes: C1 an inline participant shares this attempt's monotonic veto;
+    // C2 the outer tool returns success or an ordinary model-visible error;
+    // C3 the previous MODEL operation has positive terminal evidence.
+    // R1 !C1 + either C2 -> normal second inference and NaturalEnd.
+    // R2 C1 + either C2 + C3 -> Indeterminate, one inference, retained veto.
+    // The previous model's positive receipt cannot certify a different child.
+    // Exercise real Native tool/step dispatch and committed model evidence;
+    // do not substitute a failed tool Future for the independent child veto.
+    struct InlineParticipant {
+        evidence: awaken_runtime_contract::runtime_context::AttemptQuiescence,
+        uncertain: bool,
+        ordinary_error: bool,
+    }
+    struct AdmissionCounter(AtomicUsize);
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::llm::ModelRequestGate for AdmissionCounter {
+        async fn admit_model_request(
+            &self,
+            _: awaken_runtime_contract::llm::ModelRequestAdmissionRequest,
+        ) -> Result<awaken_runtime_contract::llm::ModelRequestAdmission, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(awaken_runtime_contract::llm::ModelRequestAdmission::Admit)
+        }
+    }
+    #[async_trait::async_trait]
+    impl RawTool for InlineParticipant {
+        fn id(&self) -> &str {
+            "echo"
+        }
+        async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+            if self.uncertain {
+                self.evidence.mark_uncertain();
+            }
+            if self.ordinary_error {
+                Err(ToolError::Execution("outer tool returned an error".into()))
+            } else {
+                Ok(ToolOutput::ok(call.call_id, "outer tool returned"))
+            }
+        }
+    }
+    for uncertain in [false, true] {
+        for ordinary_error in [false, true] {
+            let model = Arc::new(ToolThenText::new());
+            let commit = Arc::new(MemoryCommitCoordinator::new());
+            let admissions = Arc::new(AdmissionCounter(AtomicUsize::new(0)));
+            let context = RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_reader(commit.clone())
+                .with_model_request_gate(admissions.clone());
+            let evidence = context.physical_quiescence.clone();
+            let runtime = Runtime::new()
+                .with_llm(model.clone())
+                .with_tool(Arc::new(InlineParticipant {
+                    evidence: evidence.clone(),
+                    uncertain,
+                    ordinary_error,
+                }))
+                .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+            let result = runtime.execute(activation(), context).await.unwrap();
+            assert_eq!(
+                model.calls.load(Ordering::SeqCst),
+                if uncertain { 1 } else { 2 },
+                "R1/R2 uncertain={uncertain}, ordinary_error={ordinary_error}"
+            );
+            assert_eq!(
+                result,
+                RunState::Ended(if uncertain {
+                    EndCause::Indeterminate
+                } else {
+                    EndCause::NaturalEnd
+                })
+            );
+            assert_eq!(evidence.can_acknowledge_return(), !uncertain);
+            assert_eq!(
+                admissions.0.load(Ordering::SeqCst),
+                if uncertain { 1 } else { 2 },
+                "R2 must not admit another logical request or hide uncertainty behind quota pause"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn participant_veto_during_model_admission_waits_prevents_actual_provider_entry() {
+    use awaken_agent_contract::agent::state::StateKey;
+    use awaken_runtime_contract::model_operation::{
+        ActiveModelOperation, ModelExecutionEvidence, ModelOperationPhase,
+    };
+    use awaken_runtime_contract::runtime_context::{
+        AttemptOwnershipError, AttemptOwnershipVerifier, AttemptQuiescence,
+    };
+    // Decision table: V0 no veto -> normal inference; V1 veto present before
+    // Runtime recovery; V2 first ownership await (before intent); V3 ownership
+    // await after the Entered intent committed. V1-V3 -> zero provider entries,
+    // logical Indeterminate and no ACK. V3 retains Entered/Unknown rather than
+    // inventing a return receipt. The gate inspects actual committed evidence,
+    // not an assumed number of scheduler polls, sleeps or ownership calls.
+    struct Ownership {
+        at: u8,
+        commit: Arc<MemoryCommitCoordinator>,
+        evidence: AttemptQuiescence,
+        triggered: AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl AttemptOwnershipVerifier for Ownership {
+        async fn verify_current(&self) -> Result<(), AttemptOwnershipError> {
+            let operation = ActiveModelOperation::load(&awaken_store_inmem::replay_state(
+                &self.commit.committed(),
+            ))
+            .unwrap();
+            if self.at == 2
+                || (self.at == 3
+                    && operation.is_some_and(|op| op.phase == ModelOperationPhase::Entered))
+            {
+                tokio::task::yield_now().await;
+                self.triggered.fetch_add(1, Ordering::SeqCst);
+                self.evidence.mark_uncertain();
+            }
+            Ok(()) // ownership and physical evidence are independent facts
+        }
+    }
+    for at in 0..=3 {
+        let model = Arc::new(ToolThenText::new());
+        let commit = Arc::new(MemoryCommitCoordinator::new());
+        let mut context = RuntimeRunContext::new()
+            .with_commit(commit.clone())
+            .with_reader(commit.clone());
+        let evidence = context.physical_quiescence.clone();
+        if at == 1 {
+            evidence.mark_uncertain();
+        }
+        let ownership = Arc::new(Ownership {
+            at,
+            commit: commit.clone(),
+            evidence: evidence.clone(),
+            triggered: AtomicUsize::new(0),
+        });
+        context.ownership = Some(ownership.clone());
+        let runtime = Runtime::new()
+            .with_llm(model.clone())
+            .with_tool(Arc::new(EchoTool {
+                ran: Arc::new(AtomicUsize::new(0)),
+            }))
+            .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+        let result = runtime.execute(activation(), context).await.unwrap();
+        assert_eq!(
+            result,
+            RunState::Ended(if at == 0 {
+                EndCause::NaturalEnd
+            } else {
+                EndCause::Indeterminate
+            }),
+            "V{at}"
+        );
+        assert_eq!(
+            model.calls.load(Ordering::SeqCst),
+            if at == 0 { 2 } else { 0 },
+            "V{at}"
+        );
+        assert_eq!(evidence.can_acknowledge_return(), at == 0, "V{at}");
+        assert_eq!(
+            ownership.triggered.load(Ordering::SeqCst) > 0,
+            at >= 2,
+            "V{at} boundary actually reached"
+        );
+        let operation =
+            ActiveModelOperation::load(&awaken_store_inmem::replay_state(&commit.committed()))
+                .unwrap();
+        match at {
+            0 => assert_eq!(
+                operation.unwrap().execution,
+                ModelExecutionEvidence::Terminated
+            ),
+            3 => {
+                let operation = operation.unwrap();
+                assert_eq!(operation.phase, ModelOperationPhase::Entered);
+                assert_eq!(operation.execution, ModelExecutionEvidence::Unknown);
+            }
+            _ => assert!(operation.is_none()),
+        }
+    }
+}
+
 /// Captures the tool schemas the model receives so we can assert the real
 /// descriptor schema (not a placeholder) reaches inference (A2).
 struct CaptureTools {

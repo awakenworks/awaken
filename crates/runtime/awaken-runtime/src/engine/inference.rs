@@ -360,6 +360,14 @@ async fn infer_with_retry_inner(
                     awaken_runtime_contract::llm::Error::Unauthorized(error.to_string())
                 })?;
         }
+        // Journal persistence and ownership verification both await. A sibling
+        // may have vetoed this attempt during either wait; its old model receipt
+        // is not proof that every participant stopped. Recheck at actual entry.
+        if !quiescence.can_acknowledge_return() {
+            return Err(awaken_runtime_contract::llm::Error::Provider(
+                "attempt participant termination remains unconfirmed".into(),
+            ));
+        }
         let outcome = model_read(
             cancellation,
             tokio::time::timeout(
