@@ -31,6 +31,7 @@ import {
 } from './harness.mjs';
 import { nativeProviderCandidateFixture } from './fixtures/provider_candidate_fixture.mjs';
 import { sqliteExec, sqliteRows } from './sqlite.mjs';
+import { extractionRows } from './fixtures/memory_extraction_fixture.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38244);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -49,13 +50,6 @@ function sqlQuote(value) {
 
 function sqlite(database, sql) {
   return sqliteExec(database, sql);
-}
-
-function extractionRows(database) {
-  return sqliteRows(
-    database,
-    'SELECT intent_id, status, data FROM managed_memory_extraction ORDER BY intent_id',
-  ).map((row) => ({ ...row, intent: JSON.parse(row.data) }));
 }
 
 function persistIntent(database, intent, insert) {
