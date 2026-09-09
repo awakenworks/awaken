@@ -7,7 +7,6 @@ pub fn awaken_work_store::LeaseBook::is_leased(&self, &str, u64) -> bool
 pub fn awaken_work_store::LeaseBook::is_leased_with_reclaim_age(&self, &str, u64, u64) -> bool
 pub fn awaken_work_store::LeaseBook::is_owned_at_epoch(&self, &str, &str, u64) -> bool
 pub fn awaken_work_store::LeaseBook::is_owned_by(&self, &str, &str) -> bool
-pub fn awaken_work_store::LeaseBook::is_released_at_epoch(&self, &str, u64) -> bool
 pub fn awaken_work_store::LeaseBook::lease(&self, &str, u64)
 pub fn awaken_work_store::LeaseBook::lease_for(&self, &str, u64, u64)
 pub fn awaken_work_store::LeaseBook::record_poll(&self, &str, &str, u64)
