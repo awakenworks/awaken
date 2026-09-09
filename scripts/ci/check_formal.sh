@@ -310,6 +310,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness deleted_admission_one_retained_absent_two_30 \
     --harness deleted_admission_one_retained_closed_two_31 \
     --cbmc-args --unwindset memcmp.0:2
+  # Real two-ID output reversal swaps three 8-byte chunks of each String.
+  # The bound and solver are owned by the same checked profile as the ledger.
+  run_kani awaken-session-contract --checked-loop-profile retained-accepted-two-replay-v1 \
+    --harness deleted_admission_one_retained_accepted_two_27
   # The complete 64-byte conflict message also needs its loop-exit check.
   run_kani awaken-session-contract -Z unstable-options \
     --harness deleted_admission_one_retained_conflict_none_01 \
