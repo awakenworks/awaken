@@ -95,10 +95,8 @@ log "3/6 create MULTI-node k3d cluster $CLUSTER (server + agent)"
 # The server is schedulable, so one server plus one agent is the smallest topology
 # that still proves cross-node worker replacement. Keeping this fixture minimal also
 # avoids consuming a third k3s node's inotify/cAdvisor budget on shared CI hosts.
-# This is a correctness gate rather than a capacity test. Busy developer hosts can
-# have ample absolute space while falling below kubelet's default percentage-based
-# eviction threshold, so use a conservative 1% floor on both node roles.
-k3d_create_cluster "$CLUSTER" 1 1
+# The shared harness owns nested-node reserve and actual capacity admission.
+k3d_create_cluster "$CLUSTER" 1
 
 log "4/6 side-load single-platform images into every node"
 k3d_import_images "$CLUSTER" "$IMAGE" postgres:16
