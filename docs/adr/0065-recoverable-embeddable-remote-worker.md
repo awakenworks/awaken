@@ -350,12 +350,28 @@ The one read owner rejects rebinding, damaged/erased records and invalid commit
 coordinates. It returns the latest observation of each recorded invocation;
 duplicates do not create new identities and receipts beyond the selected prefix
 cannot change it. Managed root/child cancellation diagnostics consume this same
-inventory, so a later completed invocation cannot hide an older Unknown. The
-production fold has a bounded two-record Kani harness; native tests additionally
-cover 1026 records and warm/repeated/cold event projection. This is neither a
+inventory, so a later completed invocation cannot hide an older Unknown. Native
+recovery now consumes the same fold before model, tool approval or delegation
+effects, including logical cancel/stop and repeated tool interruption. Any
+recorded Unknown retains the attempt veto; damaged history fails closed even if
+the latest cell is valid. A late lower-ordinal receipt can resolve only its own
+invocation and cannot rewind the allocator. Recovery reads one explicit committed
+view; the validated Store flows through tool/delegation resume instead of being
+rebuilt again from a potentially stale context reader. No second state log,
+receipt table, or replay policy is added.
+
+The production fold has a bounded two-record Kani harness covering subject
+preservation, the all-records veto and maximum ordinal. Executable tests cover
+1026 records, damage hidden by later writes, foreign Runs, delayed receipts,
+Native/tool-batch resume with absent/current/stale context readers, and
+warm/repeated/cold event projection. This is neither a
 complete enrollment certificate nor a provider query: an empty inventory and
 legacy unowned records cannot prove historical execution stopped. Dispatch
-retirement and Runtime replay permissions are unchanged by this read-only work.
+retirement is unchanged; Native replay admission is tightened to retain uncertainty
+from every recorded invocation. The SessionRunStopEvidence composition still
+owns the separate multi-Worker/epoch stop-and-retirement protocol: this read-path
+change introduces no new distributed transition to model. These tests and the
+bounded fold proof do not establish production enrollment or remote termination.
 
 The gated CLI live test additionally composes the actual Kubernetes API's
 Pod-bound TokenRequest/TokenReview, production Worker HTTP clients, and SQLite

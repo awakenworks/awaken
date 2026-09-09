@@ -93,9 +93,10 @@ pub(crate) async fn interrupt_awaiting_tools(
             "interrupting an awaiting tool batch requires committed history".to_string(),
         )
     })?;
-    let store = store_from_run_commands(reader.committed_state(&thread_id), &run_id);
+    let committed_state = reader.committed_state(&thread_id);
     // Even terminal replay is only a logical observation, not stop evidence.
-    let _ = model_operation::recover_checkpoint(&store, &context, &run_id, &thread_id).await;
+    let (store, _) =
+        model_operation::recover_checkpoint(committed_state, &context, &run_id, &thread_id).await;
     match reader.run_state(&run_id) {
         Some(state @ RunState::Ended(_)) => return Ok(state),
         Some(RunState::Awaiting) => {}
@@ -212,15 +213,12 @@ async fn finish_control(
     run_id: RunId,
     step: RunStepResult,
 ) -> Result<RunState> {
-    let store = store_from_run_commands(
-        context
-            .reader
-            .as_ref()
-            .map(|reader| reader.committed_state(thread_id))
-            .unwrap_or_default(),
-        &run_id,
-    );
-    let _ = model_operation::recover_checkpoint(&store, context, &run_id, thread_id).await;
+    let committed_state = context
+        .reader
+        .as_ref()
+        .map(|reader| reader.committed_state(thread_id))
+        .unwrap_or_default();
+    let _ = model_operation::recover_checkpoint(committed_state, context, &run_id, thread_id).await;
     finish(runtime, context, thread_id, run_id, step).await
 }
 
@@ -341,16 +339,15 @@ async fn resume_with_continuation(
         &reader.committed_messages(&command.thread_id),
         command.context_messages,
     )?;
-    let store =
-        store_from_run_commands(reader.committed_state(&command.thread_id), &command.run_id);
-    let resume_checkpoint = match model_operation::recover_checkpoint(
-        &store,
+    let committed_state = reader.committed_state(&command.thread_id);
+    let (store, recovery) = model_operation::recover_checkpoint(
+        committed_state,
         &context,
         &command.run_id,
         &command.thread_id,
     )
-    .await?
-    {
+    .await;
+    let resume_checkpoint = match recovery? {
         model_operation::RecoveryObservation::Ready(checkpoint) => checkpoint,
         model_operation::RecoveryObservation::End(cause) => {
             return finalize::finish_with_reader(
@@ -415,6 +412,7 @@ async fn resume_with_continuation(
             reader,
             &context,
             resume_checkpoint,
+            store,
         )
         .await;
     }
@@ -434,6 +432,7 @@ async fn resume_with_continuation(
         &context,
         continuation,
         resume_checkpoint,
+        store,
     )
     .await
 }

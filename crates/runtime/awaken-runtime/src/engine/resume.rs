@@ -61,6 +61,7 @@ pub(super) async fn drive_resumed(
     context: &RuntimeRunContext,
     continuation: ResumeContinuation,
     resume_checkpoint: Option<StreamCheckpoint>,
+    mut store: Store,
 ) -> Result<RunState> {
     let resume_applied = resume_operation_id.map(|operation_id| {
         RunEvent::ResumeApplied {
@@ -87,7 +88,10 @@ pub(super) async fn drive_resumed(
         &resolved.spec.instructions,
     );
     transcript.extend(fresh_context.iter().cloned());
-    let mut store = store_from_run_commands(reader.committed_state(thread_id), run_id);
+    // Keep the state already validated at recovery admission, including model
+    // history and any child result committed by resume_delegation. Rebuilding
+    // from the reader here would discard both the validated ordinal and local
+    // projection updates when the reader is a frozen Worker snapshot.
     // A tool resume has exactly one durable execution authority. Validate every
     // ticket/batch axis before permission pre-commit or any tool/delegation
     // effect; non-tool pauses keep the direct resume path.
