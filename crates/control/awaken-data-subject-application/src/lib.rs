@@ -351,7 +351,41 @@ pub struct ErasureProgress {
     pub complete: bool,
 }
 
+// A transient projection of the one checkpoint, never a second stored state.
+#[derive(Debug, PartialEq, Eq)]
+enum ErasureAction<T> {
+    InvalidCheckpoint,
+    Replay,
+    Erase(ErasureTarget, T),
+    Stamp,
+    Complete,
+}
+
 impl ErasureProgress {
+    // Validate the loaded shape before replay or any effect. The checkpoint has
+    // no historical adapter inventory: adding a bound target can therefore make
+    // a prior terminal checkpoint inconsistent. Reject it without reopening or
+    // repairing it, rather than returning a receipt that omits the new target.
+    fn next_action<T>(&self, targets: [(ErasureTarget, Option<T>); 2]) -> ErasureAction<T> {
+        let pending = self.pending_target(targets);
+        if (self.complete && !self.accountability_stamped)
+            || (self.accountability_stamped && pending.is_some())
+        {
+            return ErasureAction::InvalidCheckpoint;
+        }
+        if self.complete {
+            return ErasureAction::Replay;
+        }
+        if let Some((target, Some(eraser))) = pending {
+            return ErasureAction::Erase(target, eraser);
+        }
+        if self.accountability_stamped {
+            ErasureAction::Complete
+        } else {
+            ErasureAction::Stamp
+        }
+    }
+
     // The resolver supplies its two stable target/adapter slots in order. Keep
     // selection here with the checkpoint it observes; adapter calls remain in
     // the resolver and an absent adapter never becomes a pending effect.
@@ -1225,60 +1259,46 @@ impl awaken_runtime_contract::DataSubjectResolver for RepoDataSubjectResolver {
                 .map_err(|error| awaken_runtime_contract::ErasureError(error.to_string()))?;
             let expected_revision = loaded.as_ref().map(|progress| progress.revision);
             let mut progress = loaded.unwrap_or_default();
-            if progress.complete {
-                return Ok(ErasureReceipt {
-                    records_removed: progress.records_removed,
-                });
-            }
-
-            let pending_target = progress.pending_target([
+            let completing = match progress.next_action([
                 (ErasureTarget::Coordinator, self.coordinator.as_ref()),
                 (ErasureTarget::Resources, self.resources.as_ref()),
-            ]);
-            if let Some((target, Some(eraser))) = pending_target {
-                progress.record_target(target, eraser.erase_subject(subject).await?)?;
-                advance_erasure_progress(&mut progress, expected_revision)?;
-                match self
-                    .jobs
-                    .compare_and_swap_progress(subject, expected_revision, &progress)
-                    .await
-                {
-                    Ok(()) | Err(DataSubjectError::Conflict(_)) => continue,
-                    Err(error) => {
-                        return Err(awaken_runtime_contract::ErasureError(error.to_string()));
-                    }
+            ]) {
+                ErasureAction::InvalidCheckpoint => {
+                    return Err(awaken_runtime_contract::ErasureError(
+                        "invalid erasure checkpoint".into(),
+                    ));
                 }
-            }
-
-            if !progress.accountability_stamped {
-                self.stamp_accountability(subject).await?;
-                progress.accountability_stamped = true;
-                advance_erasure_progress(&mut progress, expected_revision)?;
-                match self
-                    .jobs
-                    .compare_and_swap_progress(subject, expected_revision, &progress)
-                    .await
-                {
-                    Ok(()) | Err(DataSubjectError::Conflict(_)) => continue,
-                    Err(error) => {
-                        return Err(awaken_runtime_contract::ErasureError(error.to_string()));
-                    }
+                ErasureAction::Replay => {
+                    return Ok(ErasureReceipt {
+                        records_removed: progress.records_removed,
+                    });
                 }
-            }
-
-            progress.complete = true;
+                ErasureAction::Erase(target, eraser) => {
+                    progress.record_target(target, eraser.erase_subject(subject).await?)?;
+                    false
+                }
+                ErasureAction::Stamp => {
+                    self.stamp_accountability(subject).await?;
+                    progress.accountability_stamped = true;
+                    false
+                }
+                ErasureAction::Complete => {
+                    progress.complete = true;
+                    true
+                }
+            };
             advance_erasure_progress(&mut progress, expected_revision)?;
             match self
                 .jobs
                 .compare_and_swap_progress(subject, expected_revision, &progress)
                 .await
             {
-                Ok(()) => {
+                Ok(()) if completing => {
                     return Ok(ErasureReceipt {
                         records_removed: progress.records_removed,
                     });
                 }
-                Err(DataSubjectError::Conflict(_)) => continue,
+                Ok(()) | Err(DataSubjectError::Conflict(_)) => continue,
                 Err(error) => {
                     return Err(awaken_runtime_contract::ErasureError(error.to_string()));
                 }

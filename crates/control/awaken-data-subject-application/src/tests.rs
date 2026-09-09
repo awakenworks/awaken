@@ -5,6 +5,9 @@ use std::sync::Mutex;
 struct InMemoryDataSubjectRepo {
     subjects: Mutex<BTreeMap<String, DataSubject>>,
     erasures: Mutex<BTreeMap<String, ErasureProgress>>,
+    subject_reads: std::sync::atomic::AtomicUsize,
+    subject_cas: std::sync::atomic::AtomicUsize,
+    progress_cas: std::sync::atomic::AtomicUsize,
 }
 
 impl InMemoryDataSubjectRepo {
@@ -29,6 +32,8 @@ impl DataSubjectRepo for InMemoryDataSubjectRepo {
         expected_revision: u64,
         subject: DataSubject,
     ) -> Result<(), DataSubjectError> {
+        self.subject_cas
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let mut subjects = self.subjects.lock().expect("test subjects");
         match subjects.get(&subject.id.0) {
             Some(current)
@@ -43,6 +48,8 @@ impl DataSubjectRepo for InMemoryDataSubjectRepo {
     }
 
     async fn get(&self, id: &DataSubjectId) -> Result<DataSubject, DataSubjectError> {
+        self.subject_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.subjects
             .lock()
             .expect("test subjects")
@@ -80,6 +87,8 @@ impl ErasureJobRepo for InMemoryDataSubjectRepo {
         expected_revision: Option<u64>,
         progress: &ErasureProgress,
     ) -> Result<(), DataSubjectError> {
+        self.progress_cas
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if !progress.follows(expected_revision) {
             return Err(DataSubjectError::Conflict(id.0.clone()));
         }
@@ -1198,4 +1207,159 @@ async fn organization_privacy_reuses_subject_inventory_and_resolver() {
         *subjects.0.lock().unwrap(),
         ["subject-a", "subject-b", "subject-a", "subject-b"]
     );
+}
+
+#[tokio::test]
+async fn restored_erasure_checkpoint_is_validated_before_replay_or_effects() {
+    use awaken_runtime_contract::ContentEraser;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct ObservedEraser(Arc<AtomicUsize>);
+    #[async_trait]
+    impl ContentEraser for ObservedEraser {
+        async fn erase_subject(
+            &self,
+            _: &DataSubjectId,
+        ) -> Result<usize, awaken_runtime_contract::ErasureError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(7)
+        }
+    }
+
+    // Cause/effect rules: R1 terminal without stamp -> error; R2 stamped or
+    // terminal with a missing bound target -> error, including a newly bound
+    // Resources adapter. R3 valid terminal -> exact durable receipt, no work;
+    // R4 unstamped partial checkpoint -> resume its missing target then stamp and
+    // complete. Decode real JSON (legacy omitted revision defaults to zero),
+    // persist it through the existing repo, and call the real resolver twice.
+    // R1/R2 preserve the complete checkpoint/subject and perform zero content
+    // calls, accountability reads/writes or checkpoint CAS; no implicit repair.
+    // R3 covers absent adapters as well as both completed targets. R4's retry
+    // replays its new receipt without repeating any effect or CAS.
+    let cases = [
+        (
+            r#"{"completed_targets":["coordinator","resources"],"records_removed":17,"accountability_stamped":false,"complete":true}"#,
+            [true, true],
+            false,
+            false,
+        ),
+        (
+            r#"{"completed_targets":["coordinator"],"records_removed":17,"accountability_stamped":true,"complete":true}"#,
+            [true, true],
+            false,
+            false,
+        ),
+        (
+            r#"{"completed_targets":["coordinator"],"records_removed":17,"accountability_stamped":true,"complete":false}"#,
+            [true, true],
+            false,
+            false,
+        ),
+        (
+            r#"{"completed_targets":[],"records_removed":17,"accountability_stamped":true,"complete":true}"#,
+            [true, true],
+            false,
+            false,
+        ),
+        (
+            r#"{"completed_targets":["coordinator"],"records_removed":17,"accountability_stamped":true,"complete":true}"#,
+            [true, false],
+            true,
+            false,
+        ),
+        (
+            r#"{"completed_targets":[],"records_removed":17,"accountability_stamped":true,"complete":true}"#,
+            [false, false],
+            true,
+            false,
+        ),
+        (
+            r#"{"completed_targets":["coordinator","resources"],"records_removed":17,"accountability_stamped":true,"complete":true}"#,
+            [true, true],
+            true,
+            false,
+        ),
+        (
+            r#"{"completed_targets":["coordinator"],"records_removed":17,"accountability_stamped":false,"complete":false}"#,
+            [true, true],
+            true,
+            true,
+        ),
+    ];
+    for (wire, enabled, valid, resumes) in cases {
+        let progress: ErasureProgress = serde_json::from_str(wire).unwrap();
+        assert_eq!(progress.revision, 0);
+        let repo = Arc::new(InMemoryDataSubjectRepo::new());
+        let id = DataSubjectId("restored-erasure".into());
+        let subject = DataSubject::new(id.clone(), "org", 0);
+        repo.create(subject.clone()).await.unwrap();
+        repo.compare_and_swap_progress(&id, None, &progress)
+            .await
+            .unwrap();
+        repo.progress_cas.store(0, Ordering::SeqCst);
+        let effects = Arc::new(AtomicUsize::new(0));
+        let mut resolver = RepoDataSubjectResolver::new(repo.clone(), repo.clone());
+        for (target, bound) in [
+            (ErasureTarget::Coordinator, enabled[0]),
+            (ErasureTarget::Resources, enabled[1]),
+        ] {
+            if bound {
+                resolver = resolver.with_target(target, Arc::new(ObservedEraser(effects.clone())));
+            }
+        }
+        let mut first_subject = None;
+        for _ in 0..2 {
+            let result = resolver.erase(&id).await;
+            if valid {
+                assert_eq!(
+                    result.unwrap().records_removed,
+                    if resumes { 24 } else { 17 }
+                );
+            } else {
+                assert_eq!(result.unwrap_err().0, "invalid erasure checkpoint");
+            }
+            assert_eq!(effects.load(Ordering::SeqCst), usize::from(resumes));
+            assert_eq!(
+                repo.subject_reads.load(Ordering::SeqCst),
+                usize::from(resumes)
+            );
+            assert_eq!(
+                repo.subject_cas.load(Ordering::SeqCst),
+                usize::from(resumes)
+            );
+            assert_eq!(
+                repo.progress_cas.load(Ordering::SeqCst),
+                if resumes { 3 } else { 0 }
+            );
+            // Inspect the fixture's stored subject directly so the witness read
+            // does not increment the resolver's subject-read counter. Assert the
+            // full durable frame after each call, including the replay call.
+            let observed_subject = repo.subjects.lock().unwrap().get(&id.0).unwrap().clone();
+            let restored = repo.load(&id).await.unwrap().unwrap();
+            if resumes {
+                assert_eq!(
+                    restored,
+                    ErasureProgress {
+                        revision: 3,
+                        completed_targets: vec![
+                            ErasureTarget::Coordinator,
+                            ErasureTarget::Resources
+                        ],
+                        records_removed: 24,
+                        accountability_stamped: true,
+                        complete: true,
+                    }
+                );
+                assert!(observed_subject.erased_at.is_some());
+            } else {
+                assert_eq!(restored, progress);
+                assert_eq!(observed_subject, subject);
+            }
+            if let Some(first) = &first_subject {
+                assert_eq!(&observed_subject, first);
+            } else {
+                first_subject = Some(observed_subject);
+            }
+        }
+    }
 }

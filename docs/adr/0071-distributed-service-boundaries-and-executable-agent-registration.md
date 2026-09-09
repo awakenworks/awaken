@@ -193,6 +193,13 @@ and stable receipt, preventing both late-write resurrection and receipt loss on
 an ambiguous retry. AllInOne replaces both HTTP adapters with the same local
 ports; neither role opens the other's database.
 
+Control validates the one erasure checkpoint before replay or any effect:
+completion requires its accountability stamp, and a stamped or completed
+checkpoint must contain every currently bound target. Inconsistent decoded
+checkpoints fail closed with an erasure error and remain unchanged. In particular,
+binding an additional target can make an older terminal checkpoint ineligible for
+replay; Control does not silently reopen or repair that checkpoint.
+
 ### D7: Projection freshness uses one durable high-water mechanism
 
 The executable-Agent and executable-Environment command logs each append a

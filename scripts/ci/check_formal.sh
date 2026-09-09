@@ -467,7 +467,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness erasure_withdrawal_is_absorbing_and_idempotent \
     --harness revision_advance_is_strict_or_explicitly_exhausted
   run_kani awaken-data-subject-application --checked-loop-profile erasure-progress-selection-v1 \
-    --harness erasure_progress_selects_exact_first_pending_target
+    --harness erasure_progress_selects_exact_first_pending_target \
+    --harness erasure_checkpoint_action_requires_all_targets_and_accountability
   run_kani awaken-data-subject-application --checked-loop-profile erasure-progress-count-v1 \
     --harness erasure_progress_counts_selected_target_once_or_preserves_overflow
   run_kani awaken-credential-vault \
