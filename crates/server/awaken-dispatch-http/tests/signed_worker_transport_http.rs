@@ -733,8 +733,12 @@ impl WorkerDirectory for TestWorkerDirectory {
             .filter(|record| record.snapshot.identity.worker_id == worker_id))
     }
 
-    async fn expire(&self, _now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError> {
-        Ok(Vec::new())
+    async fn expire_incarnation(
+        &self,
+        _identity: &WorkerIdentity,
+        _now_ms: u64,
+    ) -> Result<RegistryMutation, RegistryError> {
+        Ok(RegistryMutation::InvalidTransition)
     }
 }
 

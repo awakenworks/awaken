@@ -237,6 +237,27 @@ pub const fn worker_slot_is_replaceable(
     matches!(state, WorkerState::Quiesced | WorkerState::Dead) || expires_at_ms <= now_ms
 }
 
+/// Exact targeted retirement uses the same half-open lifetime as replacement
+/// and heartbeat. Applied closes execution authority, never physical execution.
+#[must_use]
+pub const fn worker_expiry_admission(
+    record_present: bool,
+    identity_matches: bool,
+    state: WorkerState,
+    expires_at_ms: u64,
+    now_ms: u64,
+) -> RegistryMutation {
+    if !record_present {
+        RegistryMutation::NotFound
+    } else if !identity_matches {
+        RegistryMutation::StaleIncarnation
+    } else if worker_slot_is_replaceable(state, expires_at_ms, now_ms) {
+        RegistryMutation::Applied
+    } else {
+        RegistryMutation::InvalidTransition
+    }
+}
+
 /// Closed admission table for a Worker heartbeat read from one atomic registry
 /// snapshot. `Applied` is the sole result that permits a record rewrite.
 #[must_use]
@@ -402,7 +423,15 @@ pub trait WorkerDirectory: WorkerObservationSource {
 
     async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError>;
 
-    async fn expire(&self, now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError>;
+    /// Atomically close only this expired incarnation. Already closed exact
+    /// records return Applied without rewriting them; missing, live or replaced
+    /// records grant no retirement. Late heartbeat/register retries cannot
+    /// reopen an Applied incarnation. This is not a physical stop receipt.
+    async fn expire_incarnation(
+        &self,
+        identity: &WorkerIdentity,
+        now_ms: u64,
+    ) -> Result<RegistryMutation, RegistryError>;
 }
 
 impl WorkerSnapshot {
@@ -621,6 +650,31 @@ fn worker_replacement_and_heartbeat_share_one_non_resurrection_boundary() {
     );
     if worker_slot_is_replaceable(state, expires_at_ms, now_ms) {
         assert_ne!(admission, RegistryMutation::Applied);
+    }
+    // E1 missing => NotFound; E2 mismatched => StaleIncarnation; E3 exact
+    // closed/expired => Applied; E4 exact live => InvalidTransition. No state
+    // admits both a targeted expiry and heartbeat at the same linearization
+    // snapshot, including equality and every u64 deadline. Once persisted as
+    // Dead, even a delayed heartbeat carrying an older time cannot reopen it.
+    let present: bool = kani::any();
+    let expiry = worker_expiry_admission(present, identity_matches, state, expires_at_ms, now_ms);
+    assert_eq!(expiry == RegistryMutation::NotFound, !present);
+    assert_eq!(
+        expiry == RegistryMutation::StaleIncarnation,
+        present && !identity_matches
+    );
+    assert_eq!(
+        expiry == RegistryMutation::Applied,
+        present
+            && identity_matches
+            && (matches!(state, WorkerState::Quiesced | WorkerState::Dead) || !live)
+    );
+    if expiry == RegistryMutation::Applied {
+        assert_ne!(admission, RegistryMutation::Applied);
+        assert_ne!(
+            worker_heartbeat_admission(true, true, true, true, WorkerState::Dead),
+            RegistryMutation::Applied
+        );
     }
 }
 

@@ -205,18 +205,31 @@ pub(crate) fn deregister(
     (Some(next), RegistryMutation::Applied)
 }
 
-pub(crate) fn expire(current: &RegisteredWorker, now_ms: u64) -> Option<RegisteredWorker> {
-    if current.snapshot.expires_at_ms > now_ms
-        || matches!(
-            current.snapshot.state,
-            WorkerState::Quiesced | WorkerState::Dead
-        )
-    {
-        return None;
+pub(crate) fn expire(
+    current: Option<&RegisteredWorker>,
+    identity: &WorkerIdentity,
+    now_ms: u64,
+) -> (Option<RegisteredWorker>, RegistryMutation) {
+    let outcome = awaken_worker_contract::worker_expiry_admission(
+        current.is_some(),
+        current.is_some_and(|record| identity_matches(record, identity)),
+        current.map_or(WorkerState::Dead, |record| record.snapshot.state),
+        current.map_or(0, |record| record.snapshot.expires_at_ms),
+        now_ms,
+    );
+    if outcome != RegistryMutation::Applied {
+        return (None, outcome);
+    }
+    let current = current.expect("Applied requires an exact persisted incarnation");
+    if matches!(
+        current.snapshot.state,
+        WorkerState::Quiesced | WorkerState::Dead
+    ) {
+        return (None, outcome);
     }
     let mut next = current.clone();
     next.snapshot.state = WorkerState::Dead;
-    Some(next)
+    (Some(next), outcome)
 }
 
 pub(crate) const fn state_name(state: WorkerState) -> &'static str {
