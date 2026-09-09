@@ -94,6 +94,7 @@ def check_retired_attempt_model_mutants(tlc_jar: Path) -> None:
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
     check_retired_attempt_model_mutants(tlc_jar)
+    check_stop_evidence_model_mutants(tlc_jar)
     # R1 remove the conflict execution gate -> exact safety violation. R2 the
     # original model must REACH a settled conflict, guarding against a vacuous
     # green configuration (e.g. no live Work lease can ever be acquired).
@@ -141,6 +142,58 @@ def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
             "INVARIANTS NoCancelledPeerClaim Safety"), "NoCancelledPeerClaim"),
     ], dependencies=("RunIngressKernel", "SessionActivityKernel", "WorkQueueKernel"))
     print("Thread exclusion: cancelled peer claim reachable; missing physical guard mutant killed")
+
+
+def check_stop_evidence_model_mutants(tlc_jar: Path) -> None:
+    # Cause/effect graph: exact subject AND every participant's terminal receipt
+    # AND irreversible local launch closure -> aggregate return -> original
+    # exact Dispatch retirement. Lease expiry, logical Ended, local-only stop,
+    # missing delivery and receipts belonging to an older epoch cannot satisfy
+    # that conjunction. Duplicate delivery is idempotent; delayed delivery may
+    # arrive in any order. R1-R6 below each negate one conjunct/subject check.
+    # Positive witnesses additionally require partial, complete, historical and
+    # terminal-with-outstanding-work states so "always block" cannot pass.
+    source = (ROOT / "formal/tla/SessionRunStopEvidence.tla").read_text()
+    config = (ROOT / "formal/tla/SessionRunStopEvidence.cfg").read_text()
+    dependencies = ("SessionRunProtocol", "RunIngressKernel", "SessionActivityKernel", "WorkQueueKernel")
+    name = "SessionRunStopEvidence"
+    changes = [
+        (r"    /\ CompleteEvidence(attempt)", "    /\\ TRUE", "AggregateRetirementRequiresAllReceipts"),
+        (r"    /\ participant \notin activeParticipants", "    /\\ TRUE", "ReceiptIsSound"),
+        (r'    /\ participant[4] = "local" => Subject(participant) \in closedAttempts',
+         "    /\\ TRUE", "ReceiptIsSound"),
+        (r"    /\ attempt \notin closedAttempts", "    /\\ TRUE", "ReceiptIsSound"),
+        (r"    /\ CompleteEvidence(attempt)",
+         r"    /\ Local(attempt) \in returnedParticipants", "AggregateRetirementRequiresAllReceipts"),
+        (r"    /\ CompleteEvidence(attempt)",
+         r"    /\ \E old \in issuedAttempts: CompleteEvidence(old)", "AggregateRetirementRequiresAllReceipts"),
+    ]
+    mutations = []
+    for anchor, broken, oracle in changes:
+        if source.count(anchor) != 1:
+            raise SystemExit(f"Stop evidence mutation anchor drifted: {anchor}")
+        mutations.append((source.replace(anchor, broken), config.replace(
+            "INVARIANTS StopEvidenceSafety", f"INVARIANTS {oracle} StopEvidenceSafety"), oracle))
+    witnesses = ("NoLocalOnlyStop", "NoRemoteOnlyStop", "NoCompleteEvidenceBeforeClear",
+                 "NoSuccessorWithOldReceipt", "NoTerminalWithOutstandingWork", "NoEmptyOpenDomain")
+    mutations.extend((source, config.replace("INVARIANTS StopEvidenceSafety",
+        f"INVARIANTS StopEvidenceSafety {witness}"), witness) for witness in witnesses)
+    check_tlc_model_mutations(tlc_jar, name, source, config, mutations,
+        dependencies=dependencies, heap_mb=1024, timeout_seconds=300)
+    # R7 conditional liveness has a deliberately separate one-epoch slice:
+    # fairness only for receipt delivery and exact retirement, not remote stop.
+    # Dropping delivery fairness must give a temporal counterexample, never a
+    # timeout/parser failure. The three-epoch safety bound above is unchanged.
+    live = config.replace("StopEvidenceSpec", "StopEvidenceLiveSpec").replace(
+        "MaxEpoch = 3", "MaxEpoch = 1").replace("MaxTime = 2", "MaxTime = 1")
+    live += "PROPERTIES CompletePhysicalStopEventuallyRetires\n"
+    anchor = "         WF_stopVars(ObserveParticipantReceipt(participant))"
+    if source.count(anchor) != 1:
+        raise SystemExit("Stop evidence delivery fairness anchor drifted")
+    check_tlc_model_mutations(tlc_jar, name, source, live,
+        [(source.replace(anchor, "         TRUE"), live, "temporal:CompletePhysicalStopEventuallyRetires")],
+        dependencies=dependencies, heap_mb=1024, timeout_seconds=300)
+    print("Participant stop evidence: 6 safety mutants + 1 fairness mutant killed; 6 positive witnesses reached")
 
 
 def check_maintenance_observation_mutants(tlc_jar: Path, trace_dir: Path) -> None:
