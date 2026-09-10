@@ -1,5 +1,5 @@
 use awaken_dispatch_contract::{WorkerHeartbeat, WorkerIdentity, WorkerManifest};
-use awaken_coordinator_client::WorkerControlClient;
+use awaken_coordinator_client::{WorkerControlClient, WorkerRegistrationError};
 use awaken_worker_transport_security::WorkerUpstream;
 use axum::extract::State;
 use axum::routing::post;
@@ -42,6 +42,66 @@ async fn spawn_server() -> String {
     let address = listener.local_addr().expect("fixture address");
     tokio::spawn(async move { axum::serve(listener, app).await.expect("serve fixture") });
     format!("http://{address}")
+}
+
+async fn spawn_registration_status(status: axum::http::StatusCode) -> String {
+    let app = Router::new().route(
+        "/v1/worker/register",
+        post(move || async move { (status, Json(json!({ "error": "fixture rejection" }))) }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind registration fixture");
+    let address = listener.local_addr().expect("fixture address");
+    tokio::spawn(async move { axum::serve(listener, app).await.expect("serve fixture") });
+    format!("http://{address}")
+}
+
+#[tokio::test]
+async fn registration_retries_only_unknown_or_temporarily_unavailable_admission() {
+    // Cause/effect decision table for startup admission:
+    // C1 no TCP listener; C2 Coordinator 503; C3 Coordinator 429; C4 explicit
+    // 400; C5 malformed local endpoint. E1 C1-C3 preserve the same Worker
+    // incarnation for retry; E2 C4-C5 terminate startup without retrying an
+    // invalid request. Registry 409 remains the existing SlotOccupied branch.
+    let register =
+        |base| WorkerControlClient::new(WorkerUpstream::new(base).with_worker_id("worker-a"));
+
+    let unavailable = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("reserve refused coordinate")
+        .local_addr()
+        .unwrap();
+    assert!(matches!(
+        register(format!("http://{unavailable}"))
+            .register_classified("inc-a", WorkerManifest::default())
+            .await,
+        Err(WorkerRegistrationError::Unavailable(_))
+    ));
+
+    for status in [
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+    ] {
+        assert!(matches!(
+            register(spawn_registration_status(status).await)
+                .register_classified("inc-a", WorkerManifest::default())
+                .await,
+            Err(WorkerRegistrationError::Unavailable(_))
+        ));
+    }
+    assert!(matches!(
+        register(spawn_registration_status(axum::http::StatusCode::BAD_REQUEST).await)
+            .register_classified("inc-a", WorkerManifest::default())
+            .await,
+        Err(WorkerRegistrationError::Rejected(_))
+    ));
+    assert!(matches!(
+        register("://invalid".to_owned())
+            .register_classified("inc-a", WorkerManifest::default())
+            .await,
+        Err(WorkerRegistrationError::Rejected(_))
+    ));
 }
 
 #[tokio::test]

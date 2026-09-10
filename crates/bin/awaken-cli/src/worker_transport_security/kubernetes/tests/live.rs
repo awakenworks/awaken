@@ -1,11 +1,22 @@
 //! Actual TokenReview + HTTP + reopened SQLite + independently assembled stop.
 //! The shared k3d harness owns the isolated cluster; no fake provider receipts.
 use super::*;
+use awaken_agent_contract::agent::run::EndCause;
+use awaken_agent_contract::agent::state::StateKey;
 use awaken_dispatch::{
     AttemptAdmission, DispatchQueue, RunClaim, RunDispatch, SqliteDispatchStore, WorkerDirectory,
     WorkerHeartbeat, WorkerManifest,
 };
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_runtime_contract::attempt_termination::{
+    ActiveNativeAttemptCoverage, NativeAttemptCoverage,
+};
+use awaken_runtime_contract::model_operation::{
+    ActiveModelOperation, ModelExecutionEvidence, ModelOperation, ModelOperationPhase,
+};
+use awaken_runtime_contract::resolved::ModelBinding;
+use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
+use awaken_store_sqlite::SqliteCommitCoordinator;
 use awaken_worker_registry::SqliteWorkerDirectory;
 use awaken_coordinator_client::{WorkerControlClient, dispatch_transport_with_upstream};
 use awaken_worker_transport_security::kubernetes::KubernetesWorkerRequestAuthorizer;
@@ -15,6 +26,7 @@ use awaken_worker_transport_security::{
 use k8s_openapi::api::authentication::v1::TokenRequest;
 use k8s_openapi::api::core::v1::{Namespace, Pod, ServiceAccount};
 use kube::api::{DeleteParams, Patch, PatchParams, PostParams};
+use std::num::NonZeroU64;
 use std::time::Duration;
 
 const TTL: u64 = 60_000;
@@ -110,6 +122,9 @@ async fn coordinator(
             ))),
     );
     let directory = Arc::new(SqliteWorkerDirectory::open(files.join("registry.sqlite")).unwrap());
+    let recovery = Arc::new(
+        SqliteCommitCoordinator::open(files.join("runtime.sqlite").to_str().unwrap()).unwrap(),
+    );
     let service = WorkerDispatchService::new(
         store.clone(),
         transport.authenticator(),
@@ -117,6 +132,7 @@ async fn coordinator(
         Arc::new(FixedWorkerLeasePolicy::new(TTL)),
     )
     .with_worker_directory(directory, TTL)
+    .with_recovery_source(recovery)
     .with_execution_binding_source(transport.binding_source().unwrap())
     .with_execution_stop_source(transport.stop_source().unwrap());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -135,17 +151,19 @@ async fn coordinator(
 }
 
 #[tokio::test]
-async fn real_pod_identity_survives_reopen_and_independent_stop_without_false_retirement() {
+async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_attempt() {
     // Causes: C1 actual Pod-bound token / wrong audience / substituted UID;
     // C2 nonce retry / exact registry expiry; C3 binding committed before stop;
-    // C4 Coordinator restart; C5 local exit, remote obligations still unknown.
+    // C4 Coordinator restart; C5 local exit plus a persisted model-only coverage
+    // barrier and terminal model operation; C6 exact successor retry.
     // Rules: L1 exact token => same immutable UID incarnation despite new nonce;
     // L2 wrong audience or UID => reject, zero new binding; L3 C3+C4 => exact
     // frozen binding survives database reopen; L4 expiry + current successor =>
     // stop OLD Pod using independent Coordinator credentials, no old token;
-    // L5 C5 => original physical slot persists, successor still Blocked.
-    // This covers real identity/retention/stop composition, NOT Native execution,
-    // provider computation termination, or a complete crash takeover claim.
+    // L5 C5 => the original physical slot is retired through the canonical exact
+    // finish transition; L6 C6 => successor enters only on a fresh admission.
+    // This covers real identity/retention/stop/retirement composition, NOT an
+    // actual Native Worker process crash; the distributed k3d scenario owns that.
     if std::env::var("AWAKEN_K8S_E2E").as_deref() != Ok("1") {
         eprintln!("skipping live Worker identity: AWAKEN_K8S_E2E=1 is required");
         return;
@@ -295,12 +313,12 @@ async fn real_pod_identity_survives_reopen_and_independent_stop_without_false_re
             .is_err(),
         "L2 UID"
     );
+    let activation = awaken_dispatch_testkit::worker_http::activation("live-pod-stop");
+    let thread_id = activation.thread_id.clone();
     store
         .enqueue(
-            RunDispatch::new(awaken_dispatch_testkit::worker_http::activation(
-                "live-pod-stop",
-            ))
-            .with_placement(awaken_dispatch::PlacementRequirements::remote_required()),
+            RunDispatch::new(activation)
+                .with_placement(awaken_dispatch::PlacementRequirements::remote_required()),
         )
         .await
         .unwrap();
@@ -333,6 +351,29 @@ async fn real_pod_identity_survives_reopen_and_independent_stop_without_false_re
         original.binding.as_ref().unwrap().worker(),
         &worker.snapshot.identity
     );
+    let recovery =
+        SqliteCommitCoordinator::open(files.path().join("runtime.sqlite").to_str().unwrap())
+            .unwrap();
+    recovery
+        .commit(ThreadCommit::assemble(
+            thread_id,
+            RunDisposition::ended(old_claim.run_id.clone(), EndCause::NaturalEnd),
+            true,
+            Vec::new(),
+            vec![
+                ActiveNativeAttemptCoverage::write(&NativeAttemptCoverage::ModelOnlyV1),
+                ActiveModelOperation::write(&Some(ModelOperation {
+                    ordinal: NonZeroU64::MIN,
+                    binding: ModelBinding::new("test", "model", "native"),
+                    phase: ModelOperationPhase::Returned,
+                    execution: ModelExecutionEvidence::Terminated,
+                })),
+            ],
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    drop(recovery);
     // L3 must drop the old authority, not just its listening task while pooled
     // HTTP connections retain the old service/store. Drain connections first.
     server.stop().await;
@@ -419,6 +460,9 @@ async fn real_pod_identity_survives_reopen_and_independent_stop_without_false_re
         "L4 authority closed before stop"
     );
     let stop = transport.stop_source().unwrap();
+    let recovery =
+        SqliteCommitCoordinator::open(files.path().join("runtime.sqlite").to_str().unwrap())
+            .unwrap();
     let receipt = tokio::time::timeout(Duration::from_secs(60), async {
         loop {
             if let Some(WorkerProcessStopStatus::Exited(receipt)) =
@@ -426,6 +470,7 @@ async fn real_pod_identity_survives_reopen_and_independent_stop_without_false_re
                     store.as_ref(),
                     &directory,
                     stop.as_ref(),
+                    Some(&recovery),
                     &next,
                     100 + TTL + 1,
                 )
@@ -446,7 +491,7 @@ async fn real_pod_identity_survives_reopen_and_independent_stop_without_false_re
             .load_physical_attempt(&old_claim.run_id)
             .await
             .unwrap(),
-        Some(original),
+        None,
         "L5"
     );
     assert_eq!(
@@ -454,8 +499,8 @@ async fn real_pod_identity_survives_reopen_and_independent_stop_without_false_re
             .begin_attempt(&next, 100 + TTL + 1, None)
             .await
             .unwrap(),
-        AttemptAdmission::Blocked,
-        "L5"
+        AttemptAdmission::Applied,
+        "L6"
     );
     assert!(
         pods.get("next")

@@ -2,6 +2,10 @@
 //! fixtures here; this suite does not claim Kubernetes or remote termination.
 use std::sync::{Arc, Mutex};
 
+use awaken_agent_contract::agent::run::{Record as RunRecord, RunState};
+use awaken_agent_contract::thread::read::recovery::{
+    RecoveryError, RunRecoverySnapshot, RunRecoverySource,
+};
 use awaken_dispatch::{
     ApplicationError, AttemptAdmission, AttemptExecutionBinding, AttemptStopStatus,
     ClosedAttemptExecution, ClosedWorkerExecution, DispatchQueue, MemoryDispatchStore,
@@ -71,6 +75,7 @@ impl WorkerExecutionStopSource for StopSource {
     async fn observe_attempt_termination(
         &self,
         command: &ClosedAttemptExecution,
+        recovery: &RunRecoverySnapshot,
     ) -> Result<AttemptStopStatus, ApplicationError> {
         let probe = self.attempt.lock().unwrap().clone();
         let Some(probe) = probe else {
@@ -81,6 +86,11 @@ impl WorkerExecutionStopSource for StopSource {
             Some(command.process_exit().binding())
         );
         assert!(!command.process_exit().evidence_ref().is_empty());
+        assert_eq!(recovery.claimed_run_id, command.attempt().claim.run_id);
+        assert_eq!(
+            Some(&recovery.thread_id),
+            command.attempt().thread_id.as_ref()
+        );
         probe.calls.lock().unwrap().push(command.attempt().clone());
         probe.entered.add_permits(1);
         probe.release.acquire().await.unwrap().forget();
@@ -99,6 +109,27 @@ impl WorkerExecutionStopSource for StopSource {
         };
         *probe.last.lock().unwrap() = Some(observed.clone());
         Ok(observed)
+    }
+}
+
+struct StaticRecoverySource {
+    snapshot: RunRecoverySnapshot,
+}
+
+#[async_trait::async_trait]
+impl RunRecoverySource for StaticRecoverySource {
+    async fn recovery_snapshot(
+        &self,
+        thread_id: &awaken_agent_contract::agent::thread::Id,
+        claimed_run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<RunRecoverySnapshot, RecoveryError> {
+        if thread_id != &self.snapshot.thread_id || claimed_run_id != &self.snapshot.claimed_run_id
+        {
+            return Err(RecoveryError::Rejected(
+                "requested recovery subject does not match fixture".into(),
+            ));
+        }
+        Ok(self.snapshot.clone())
     }
 }
 
@@ -178,6 +209,8 @@ struct Fixture {
     old: RunClaim,
     next: RunClaim,
     binding: AttemptExecutionBinding,
+    recovery: Arc<dyn RunRecoverySource>,
+    thread_id: awaken_agent_contract::agent::thread::Id,
     address: String,
     worker: WorkerIdentity,
     server: tokio::task::JoinHandle<()>,
@@ -286,6 +319,29 @@ impl Fixture {
             release: Semaphore::new(0),
             attempt: Mutex::new(None),
         });
+        let thread_id = request_thread_id(&tag);
+        let recovery: Arc<dyn RunRecoverySource> = Arc::new(StaticRecoverySource {
+            snapshot: RunRecoverySnapshot {
+                thread_id: thread_id.clone(),
+                claimed_run_id: old.run_id.clone(),
+                runs: vec![RunRecord {
+                    id: old.run_id.clone(),
+                    thread_id: thread_id.clone(),
+                    state: RunState::Running,
+                }],
+                latest_run_id: None,
+                messages: Vec::new(),
+                message_commit_cursors: Vec::new(),
+                commit_timestamps: Default::default(),
+                state: Vec::new(),
+                state_commit_cursors: Vec::new(),
+                events: Vec::new(),
+                resume_tickets: Vec::new(),
+                thread_version: 1,
+                store_cursor: 1,
+                next_commit_ordinal: 1,
+            },
+        });
         let service = WorkerDispatchService::new(
             store.clone(),
             Arc::new(HeaderWorkerAuthenticator),
@@ -293,7 +349,8 @@ impl Fixture {
             Arc::new(FixedWorkerLeasePolicy::new(budget)),
         )
         .with_worker_directory(directory.clone(), 10_000)
-        .with_execution_stop_source(stop.clone());
+        .with_execution_stop_source(stop.clone())
+        .with_recovery_source(recovery.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
         let router = dispatch_transport_router_with_service(Arc::new(service));
@@ -305,6 +362,8 @@ impl Fixture {
             old,
             next,
             binding,
+            recovery,
+            thread_id,
             address,
             worker,
             server,
@@ -316,6 +375,23 @@ impl Fixture {
             .post(format!("{}/v1/worker/dispatch/attempt/begin", self.address))
             .header("x-awaken-worker-id", &self.worker.worker_id)
             .json(&json!({"identity": self.worker, "claim": self.next}))
+            .send()
+            .await
+            .unwrap();
+        (response.status(), response.json().await.unwrap())
+    }
+
+    async fn settle(&self) -> (reqwest::StatusCode, Value) {
+        let response = reqwest::Client::new()
+            .post(format!("{}/v1/worker/dispatch/settle", self.address))
+            .header("x-awaken-worker-id", &self.worker.worker_id)
+            .json(&json!({
+                "identity": self.worker,
+                "run_id": self.next.run_id.0,
+                "epoch": self.next.epoch,
+                "outcome": "Done",
+                "consumed": []
+            }))
             .send()
             .await
             .unwrap();
@@ -338,6 +414,10 @@ impl Fixture {
             AttemptAdmission::Blocked
         );
     }
+}
+
+fn request_thread_id(tag: &str) -> awaken_agent_contract::agent::thread::Id {
+    awaken_agent_contract::agent::thread::Id(format!("thread-{tag}"))
 }
 
 #[tokio::test]
@@ -495,6 +575,7 @@ async fn stop_admission_rejects_live_replaced_historical_and_noncurrent_subjects
                 f.store.as_ref(),
                 f.directory.as_ref(),
                 f.stop.as_ref(),
+                Some(f.recovery.as_ref()),
                 &successor,
                 200
             )
@@ -541,6 +622,7 @@ async fn local_exit_receipt_keeps_its_subject_and_rejects_empty_provider_evidenc
         first.store.as_ref(),
         first.directory.as_ref(),
         first.stop.as_ref(),
+        Some(first.recovery.as_ref()),
         &first.next,
         200,
     )
@@ -560,6 +642,7 @@ async fn local_exit_receipt_keeps_its_subject_and_rejects_empty_provider_evidenc
             second.store.as_ref(),
             second.directory.as_ref(),
             second.stop.as_ref(),
+            Some(second.recovery.as_ref()),
             &second.next,
             200
         )
@@ -574,6 +657,7 @@ async fn local_exit_receipt_keeps_its_subject_and_rejects_empty_provider_evidenc
             second.store.as_ref(),
             second.directory.as_ref(),
             second.stop.as_ref(),
+            Some(second.recovery.as_ref()),
             &second.next,
             200
         )
@@ -618,7 +702,9 @@ async fn complete_stop_uses_exact_retirement_and_requires_fresh_successor_admiss
         .await;
         let probe = AttemptStopProbe::install(&f);
         f.stop.release.add_permits(1);
-        assert_eq!(f.begin().await.1["admission"], "blocked");
+        let (status, body) = f.begin().await;
+        assert_eq!(status, reqwest::StatusCode::OK, "R18: {body}");
+        assert_eq!(body["admission"], "blocked", "R18: {body}");
         assert!(probe.calls.lock().unwrap().is_empty(), "R18");
         f.assert_occupied().await;
 
@@ -640,11 +726,13 @@ async fn complete_stop_uses_exact_retirement_and_requires_fresh_successor_admiss
         *probe.result.lock().unwrap() = Ok(Some("all-participants-terminal-v7".into()));
         f.stop.release.add_permits(1);
         probe.release.add_permits(1);
+        let (status, body) = f.begin().await;
         assert_eq!(
-            f.begin().await.1["admission"],
-            "blocked",
-            "R22 is not admission"
+            status,
+            reqwest::StatusCode::OK,
+            "R22 unexpected response: {body}"
         );
+        assert_eq!(body["admission"], "blocked", "R22 is not admission");
         assert_eq!(
             f.store.load_physical_attempt(&f.old.run_id).await.unwrap(),
             None
@@ -677,6 +765,8 @@ async fn complete_stop_uses_exact_retirement_and_requires_fresh_successor_admiss
                 PhysicalAttempt {
                     claim: f.old.clone(),
                     binding: Some(f.binding.clone()),
+                    thread_id: Some(f.thread_id.clone()),
+                    session_thread_id: None,
                 };
                 4
             ]
@@ -688,6 +778,47 @@ async fn complete_stop_uses_exact_retirement_and_requires_fresh_successor_admiss
         assert_eq!(receipt.evidence_ref(), "all-participants-terminal-v7");
         assert_eq!(receipt.attempt().claim, f.old);
     }
+}
+
+#[tokio::test]
+async fn terminal_recovery_settlement_progresses_the_same_exact_predecessor_stop() {
+    // Cause/effect decision table: C1 a successor owns the recovered terminal
+    // claim; C2 the predecessor's exact bound slot remains; C3 independent local
+    // and complete-attempt evidence both match. R1=C1+C2+C3 => the first settle
+    // invokes the canonical stop application service, retires only the old slot,
+    // and still reports unsettled. R2=R1+same command retry => the existing
+    // guarded settle removes the row without entering model/tool execution.
+    let f = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 50, 5_000).await;
+    let probe = AttemptStopProbe::install(&f);
+    *f.stop.result.lock().unwrap() = Ok(Some("local-exit".into()));
+    *probe.result.lock().unwrap() = Ok(Some("all-participants-terminal".into()));
+    f.stop.release.add_permits(1);
+    probe.release.add_permits(1);
+
+    let (status, body) = f.settle().await;
+    assert_eq!(status, reqwest::StatusCode::OK, "R1: {body}");
+    assert_eq!(body["settled"], false, "R1 retries through ordinary settle");
+    assert_eq!(
+        f.store.load_physical_attempt(&f.old.run_id).await.unwrap(),
+        None,
+        "R1 exact predecessor retired"
+    );
+    assert_eq!(*f.stop.calls.lock().unwrap(), vec![f.binding.clone()], "R1");
+    assert_eq!(
+        *probe.calls.lock().unwrap(),
+        vec![PhysicalAttempt {
+            claim: f.old.clone(),
+            binding: Some(f.binding.clone()),
+            thread_id: Some(f.thread_id.clone()),
+            session_thread_id: None,
+        }],
+        "R1"
+    );
+
+    let (status, body) = f.settle().await;
+    assert_eq!(status, reqwest::StatusCode::OK, "R2: {body}");
+    assert_eq!(body["settled"], true, "R2");
+    assert!(f.store.list_dispatches().await.unwrap().is_empty(), "R2");
 }
 
 #[tokio::test]
@@ -718,6 +849,8 @@ async fn complete_stop_timeout_retains_occupancy_and_retries_the_same_subject() 
             PhysicalAttempt {
                 claim: f.old.clone(),
                 binding: Some(f.binding.clone()),
+                thread_id: Some(f.thread_id.clone()),
+                session_thread_id: None,
             };
             2
         ]

@@ -716,6 +716,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness created_tool_handle_validation_never_invents_termination \
     --harness model_operation_history_preserves_distinct_subjects
   run_kani awaken-runtime-contract \
+    --harness native_attempt_termination_requires_every_closed_surface_fact \
     --harness credential_realization_receipt_requires_every_exact_binding_coordinate \
     --harness model_operation_ordinal_never_wraps_or_reuses_a_coordinate \
     --harness model_execution_reentry_requires_positive_evidence \

@@ -1539,6 +1539,8 @@ impl DispatchQueue for MemoryDispatchStore {
             row.active_attempt.as_ref().map(|claim| PhysicalAttempt {
                 claim: claim.clone(),
                 binding: row.active_attempt_binding.clone(),
+                thread_id: Some(row.request.thread_id().clone()),
+                session_thread_id: row.request.session_thread_id.clone(),
             })
         }))
     }

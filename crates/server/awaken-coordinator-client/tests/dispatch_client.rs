@@ -447,6 +447,31 @@ async fn spawn_scripted_idempotent_server(
     (format!("http://{address}"), state)
 }
 
+async fn always_unavailable(State(calls): State<Arc<AtomicUsize>>) -> StatusCode {
+    calls.fetch_add(1, Ordering::SeqCst);
+    StatusCode::SERVICE_UNAVAILABLE
+}
+
+async fn spawn_unavailable_finish_server() -> (String, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let app = Router::new()
+        .route(
+            "/v1/worker/dispatch/attempt/finish",
+            post(always_unavailable),
+        )
+        .with_state(calls.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind unavailable transport");
+    let address = listener.local_addr().expect("unavailable address");
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("serve unavailable finish");
+    });
+    (format!("http://{address}"), calls)
+}
+
 async fn stalled_bind(State(state): State<Arc<ScriptedBindState>>) -> Json<Value> {
     state.calls.fetch_add(1, Ordering::SeqCst);
     std::future::pending::<Json<Value>>().await
@@ -561,6 +586,28 @@ async fn transport_deadline_and_caller_cancellation_bound_body_stalls() {
     )
     .await;
     assert!(cancelled.is_err(), "D2 caller cancellation wins promptly");
+}
+
+#[tokio::test]
+async fn exhausted_finish_transport_remains_retryable_for_the_physical_ack_loop() {
+    // Cause/effect decision table: C1 the executor has physically returned;
+    // C2 every bounded HTTP attempt receives 503; C3 the exact finish command
+    // is idempotent. R1=C1+C2+C3 => the transport exhausts its local attempts
+    // and returns Unavailable, so DispatchWorker retains the observed-return
+    // responsibility and retries the same ACK. It must not return Rejected,
+    // which would abandon the occupied slot and enter logical settlement.
+    let claim = RunClaim {
+        run_id: RunId("finish-unavailable".into()),
+        owner: "worker-A:1:boot-A".into(),
+        epoch: 1,
+    };
+    let (base, calls) = spawn_unavailable_finish_server().await;
+    let queue = HttpDispatchQueue::new(base, WorkerIdentity::new("worker-A", "boot-A", 1));
+    assert!(matches!(
+        queue.finish_attempt(&claim).await,
+        Err(DispatchError::Unavailable(_))
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 3, "R1 bounded local retry");
 }
 
 /// Sandbox-bind transport cause graph:

@@ -210,13 +210,28 @@ async fn pod_replacement_and_unobservable_processes_never_degrade_to_unbound_adm
 
 #[tokio::test]
 async fn independent_stop_consumes_only_original_closed_binding_and_preserves_dispatch_veto() {
+    use awaken_agent_contract::agent::run::EndCause;
+    use awaken_agent_contract::agent::state::StateKey;
     use awaken_dispatch::{DispatchQueue, WorkerDirectory};
+    use awaken_runtime_contract::attempt_termination::{
+        ActiveNativeAttemptCoverage, NativeAttemptCoverage,
+    };
+    use awaken_runtime_contract::model_operation::{
+        ActiveModelOperation, ModelExecutionEvidence, ModelOperation, ModelOperationPhase,
+    };
+    use awaken_runtime_contract::resolved::ModelBinding;
+    use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
+    use awaken_store_inmem::MemoryCommitCoordinator;
+    use std::num::NonZeroU64;
     // S1 current successor + persisted old binding + exact expired Registry
     // => independent UID/resourceVersion stop with Coordinator client (no token
     // from the dead Worker). S2 accepted/delete-in-progress => Unknown. S3 exact
     // local exit => Exited, STILL occupied; remote effects are not inferred.
-    // S4 provider/Worker/opaque-coordinate mismatch => no API read/write.
-    // S5 absent/name-reused Pod => Unknown; old late query never stops replacement.
+    // S4 exact local exit + complete model-only ThreadCommit evidence => the
+    // existing exact finish transition clears only the old slot, after which a
+    // fresh successor admission applies. S5 provider/Worker/opaque-coordinate
+    // mismatch => no API read/write. S6 absent/name-reused Pod => Unknown; an
+    // old late query never stops the replacement.
     for rule in [
         "valid",
         "foreign-provider",
@@ -261,10 +276,10 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
             original.clone()
         };
         let store = awaken_dispatch::MemoryDispatchStore::new();
-        let request = awaken_dispatch::RunDispatch::new(
-            awaken_dispatch_testkit::worker_http::activation("cli-stop"),
-        )
-        .with_placement(awaken_dispatch::PlacementRequirements::remote_required());
+        let activation = awaken_dispatch_testkit::worker_http::activation("cli-stop");
+        let thread_id = activation.thread_id.clone();
+        let request = awaken_dispatch::RunDispatch::new(activation)
+            .with_placement(awaken_dispatch::PlacementRequirements::remote_required());
         store.enqueue(request).await.unwrap();
         let mut snapshot = old.snapshot;
         snapshot.state = awaken_dispatch::WorkerState::Ready;
@@ -304,6 +319,7 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
             &store,
             &directory,
             stop.as_ref(),
+            None,
             &next,
             200,
         )
@@ -328,6 +344,7 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
                     &store,
                     &directory,
                     stop.as_ref(),
+                    None,
                     &next,
                     200
                 )
@@ -343,10 +360,31 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
                     "startedAt":"2026-09-09T00:00:00Z","finishedAt":"2026-09-09T00:01:00Z"
                 }});
             }
+            let recovery = MemoryCommitCoordinator::new();
+            recovery
+                .commit(ThreadCommit::assemble(
+                    thread_id,
+                    RunDisposition::ended(old_claim.run_id.clone(), EndCause::NaturalEnd),
+                    true,
+                    Vec::new(),
+                    vec![
+                        ActiveNativeAttemptCoverage::write(&NativeAttemptCoverage::ModelOnlyV1),
+                        ActiveModelOperation::write(&Some(ModelOperation {
+                            ordinal: NonZeroU64::MIN,
+                            binding: ModelBinding::new("test", "model", "native"),
+                            phase: ModelOperationPhase::Returned,
+                            execution: ModelExecutionEvidence::Terminated,
+                        })),
+                    ],
+                    Vec::new(),
+                ))
+                .await
+                .unwrap();
             let observation = awaken_dispatch::stop_expired_predecessor(
                 &store,
                 &directory,
                 stop.as_ref(),
+                Some(&recovery),
                 &next,
                 200,
             )
@@ -370,19 +408,35 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
             0,
             "S1 dead Worker token is unnecessary"
         );
-        assert_eq!(
-            store
-                .load_physical_attempt(&old_claim.run_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .claim,
-            old_claim
-        );
-        assert_eq!(
-            store.begin_attempt(&next, 200, None).await.unwrap(),
-            awaken_dispatch::AttemptAdmission::Blocked,
-            "S3 remote veto"
-        );
+        if rule == "valid" {
+            assert_eq!(
+                store
+                    .load_physical_attempt(&old_claim.run_id)
+                    .await
+                    .unwrap(),
+                None,
+                "S4 complete evidence clears exactly the old slot"
+            );
+            assert_eq!(
+                store.begin_attempt(&next, 200, None).await.unwrap(),
+                awaken_dispatch::AttemptAdmission::Applied,
+                "S4 successor retries through fresh admission"
+            );
+        } else {
+            assert_eq!(
+                store
+                    .load_physical_attempt(&old_claim.run_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .claim,
+                old_claim
+            );
+            assert_eq!(
+                store.begin_attempt(&next, 200, None).await.unwrap(),
+                awaken_dispatch::AttemptAdmission::Blocked,
+                "S3 remote veto"
+            );
+        }
     }
 }

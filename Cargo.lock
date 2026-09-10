@@ -487,6 +487,7 @@ dependencies = [
  "awaken-session-executor",
  "awaken-session-store",
  "awaken-store-inmem",
+ "awaken-store-sqlite",
  "awaken-tenancy",
  "awaken-webhook-managed",
  "awaken-work-store",

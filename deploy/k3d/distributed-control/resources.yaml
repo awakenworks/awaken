@@ -29,6 +29,14 @@ data:
       fastcgi_temp_path /tmp/fastcgi_temp;
       uwsgi_temp_path /tmp/uwsgi_temp;
       scgi_temp_path /tmp/scgi_temp;
+      # Test-only failure injection: the final k3d stage uses one exact
+      # non-restarting Pod name. Its terminal ThreadCommit must become durable
+      # before the Worker can acknowledge physical return. All ordinary signed
+      # Workers and the replacement Pod continue through the same proxy path.
+      map "$uri|$http_x_awaken_worker_id" $reject_old_native_finish {
+        default 0;
+        ~^/v1/worker/dispatch/attempt/finish\|k8s:awaken-adr71:native-crash-old: 1;
+      }
       server {
         listen 3443 ssl;
         ssl_certificate /etc/awaken-worker-tls/tls.crt;
@@ -37,6 +45,7 @@ data:
         client_max_body_size 16m;
         proxy_buffering off;
         proxy_request_buffering off;
+        if ($reject_old_native_finish) { return 503; }
         location / {
           proxy_pass http://127.0.0.1:3001;
           proxy_http_version 1.1;
@@ -266,6 +275,44 @@ spec:
     - { name: internal, port: 3001, targetPort: 3001 }
     - { name: worker-tls, port: 3443, targetPort: 3443 }
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: coordinator-runtime }
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: { name: adr71-coordinator-token-review }
+subjects:
+  - kind: ServiceAccount
+    name: coordinator-runtime
+    namespace: awaken-adr71
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: coordinator-worker-process }
+rules:
+  # TokenReview establishes the Pod UID; this namespace-scoped capability then
+  # freezes and stops only that exact retained process domain.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: coordinator-worker-process }
+subjects:
+  - kind: ServiceAccount
+    name: coordinator-runtime
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: coordinator-worker-process
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata: { name: coordinator, labels: { app: coordinator } }
@@ -275,6 +322,7 @@ spec:
   template:
     metadata: { labels: { app: coordinator } }
     spec:
+      serviceAccountName: coordinator-runtime
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:

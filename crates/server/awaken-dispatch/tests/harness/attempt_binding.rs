@@ -1,3 +1,4 @@
+use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_dispatch::{
     AttemptAdmission as A, AttemptExecutionBinding, PhysicalAttempt, SettleOutcome as S,
 };
@@ -79,6 +80,8 @@ pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
     let expected_a = Some(PhysicalAttempt {
         claim: a.clone(),
         binding: Some(binding_a.clone()),
+        thread_id: Some(ThreadId("bound-attempt".into())),
+        session_thread_id: None,
     });
     assert_eq!(
         store.load_physical_attempt(&a.run_id).await.unwrap(),
@@ -202,7 +205,9 @@ pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
         store.load_physical_attempt(&c.run_id).await.unwrap(),
         Some(PhysicalAttempt {
             claim: c.clone(),
-            binding: Some(binding_c.clone())
+            binding: Some(binding_c.clone()),
+            thread_id: Some(ThreadId("bound-attempt".into())),
+            session_thread_id: None,
         })
     );
     assert_eq!(store.finish_attempt(&b).await.unwrap(), S::Fenced);
@@ -292,7 +297,9 @@ pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
         store.load_physical_attempt(&race.run_id).await.unwrap(),
         Some(PhysicalAttempt {
             claim: race.clone(),
-            binding: Some(winner.clone())
+            binding: Some(winner.clone()),
+            thread_id: Some(ThreadId("binding-race".into())),
+            session_thread_id: None,
         })
     );
     let (a, b) = tokio::join!(
@@ -302,4 +309,48 @@ pub async fn assert_binding_lifecycle(store: &impl DispatchQueue) {
     assert_eq!(a.unwrap(), A::AlreadyApplied, "B15");
     assert_eq!(b.unwrap(), A::AlreadyApplied, "B15");
     assert_eq!(store.finish_attempt(&race).await.unwrap(), S::Applied);
+
+    // B16 a Session-affined child freezes both its logical Thread and physical
+    // Session partition from the canonical RunDispatch payload. B17 all store
+    // adapters reconstruct the same coordinates without a parallel schema
+    // column; the ordinary exact ACK still clears the one physical slot.
+    store
+        .enqueue(
+            RunDispatch::new(super::activation_on(
+                "partitioned-attempt",
+                "logical-thread",
+            ))
+            .for_session(ThreadId("session-thread".into()))
+            .with_placement(PlacementRequirements::remote_required()),
+        )
+        .await
+        .unwrap();
+    let partitioned = store
+        .claim_compatible(&worker_c, 60_000, 3)
+        .await
+        .unwrap()
+        .unwrap();
+    let partitioned = RunClaim::from(&partitioned.lease);
+    assert_eq!(
+        store.begin_attempt(&partitioned, 3, None).await.unwrap(),
+        A::Applied,
+        "B16"
+    );
+    assert_eq!(
+        store
+            .load_physical_attempt(&partitioned.run_id)
+            .await
+            .unwrap(),
+        Some(PhysicalAttempt {
+            claim: partitioned.clone(),
+            binding: None,
+            thread_id: Some(ThreadId("logical-thread".into())),
+            session_thread_id: Some(ThreadId("session-thread".into())),
+        }),
+        "B16/B17"
+    );
+    assert_eq!(
+        store.finish_attempt(&partitioned).await.unwrap(),
+        S::Applied
+    );
 }

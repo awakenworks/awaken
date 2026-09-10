@@ -1111,18 +1111,21 @@ impl WorkerNode {
             std::io::Error::other(format!("generate Worker incarnation: {error}"))
         })?;
         let mut shutdown = std::pin::pin!(shutdown);
-        let mut occupied_attempts = 0_u64;
+        let mut registration_wait_attempts = 0_u64;
         let registration_receipt = loop {
             let attempt = bootstrap_control
                 .register_classified(incarnation_id.clone(), self.manifest.clone())
                 .await;
             match attempt {
                 Ok(registration) => break registration,
-                Err(awaken_coordinator_client::WorkerRegistrationError::SlotOccupied(error)) => {
-                    if occupied_attempts.is_multiple_of(10) {
-                        eprintln!("worker registration waiting for the prior lease: {error}");
+                Err(
+                    error @ (awaken_coordinator_client::WorkerRegistrationError::SlotOccupied(_)
+                    | awaken_coordinator_client::WorkerRegistrationError::Unavailable(_)),
+                ) => {
+                    if registration_wait_attempts.is_multiple_of(10) {
+                        eprintln!("worker registration waiting for Coordinator: {error}");
                     }
-                    occupied_attempts = occupied_attempts.saturating_add(1);
+                    registration_wait_attempts = registration_wait_attempts.saturating_add(1);
                     tokio::select! {
                         () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
                         shutdown = &mut shutdown => {

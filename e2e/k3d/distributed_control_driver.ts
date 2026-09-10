@@ -290,6 +290,27 @@ function assertProviderResponsesAreUnique(events: any[]) {
   assert.deepEqual(duplicates, [], `duplicate Provider responses: ${JSON.stringify(duplicates)}`);
 }
 
+export function nativeCrashHistoryErrors(
+  events: any[],
+  marker: string,
+  requireIdle: boolean,
+) {
+  // Crash-observation decision table: N1 zero Provider markers => execution did
+  // not cross the terminal model boundary; N2 two markers => replay occurred;
+  // N3 one marker without later idle => the terminal commit exists but queue
+  // settlement is still blocked; N4 one marker plus later idle => successor
+  // completed the existing lifecycle. Preparation accepts N3/N4, while final
+  // verification accepts only N4. Older history is excluded by the caller's
+  // receipt-scoped delta, so it cannot satisfy either phase.
+  const errors: string[] = [];
+  const count = providerResponseCounts(events).get(`ADR71-PROVIDER:${marker}`) ?? 0;
+  if (count !== 1) errors.push(`Provider response count ${count} != 1`);
+  if (requireIdle && !hasCompletedProviderMarker(events, marker)) {
+    errors.push('Provider response has no later idle event');
+  }
+  return errors;
+}
+
 async function bootstrap(base: string) {
   // Cause/effect decision table:
   // B1 private route through the public endpoint -> 404 and no mutation;
@@ -454,6 +475,62 @@ async function verifyDurable(
   assertProviderResponseCount(events, marker);
   assertProviderResponsesAreUnique(events);
   console.log(`OK durable flow ${marker}`);
+}
+
+async function prepareNativeCrash(base: string, environmentId: string, marker: string) {
+  // The final k3d phase must use a genuinely closed Native surface: no tools,
+  // Skills, Resources or authored plugins. One public Event receipt anchors the
+  // command and is never resent. The shell injects failure only after the one
+  // Provider call and the old Worker's rejected finish prove that Runtime
+  // returned after committing its response. Public history is intentionally not
+  // awaited here: its projection follows settlement, which this fault holds.
+  const agentId = 'adr71-native-crash-agent';
+  await expectRawStatus(base, 'PUT', `/v1/config/agents/${agentId}`, 200, {
+    name: 'ADR-0071 Native crash recovery Agent',
+    system: 'Return the configured provider response.',
+    model: { id: 'adr71-echo' },
+    tools: [],
+    skills: [],
+  });
+  await expectRawStatus(base, 'POST', `/v1/config/agents/${agentId}/publish`, 200);
+  const client = clientFor(base);
+  const session = await client.beta.sessions.create({
+    agent: agentId,
+    environment_id: environmentId,
+    betas: BETAS,
+  });
+  const receipt = await client.beta.sessions.events.send(session.id, {
+    events: [{ type: 'user.message', content: [{ type: 'text', text: marker }] }],
+    betas: BETAS,
+  });
+  assert.equal(receipt.data?.length, 1, 'one Native crash Event receipt');
+  const receiptId = receipt.data?.[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'Native crash Event receipt id');
+  console.log(`OK ${session.id} ${receiptId}`);
+}
+
+async function verifyNativeCrash(
+  base: string,
+  sessionId: string,
+  receiptId: string,
+  marker: string,
+) {
+  // No command is resent here. The successor must consume the original durable
+  // Run, exact process-stop receipt and terminal ThreadCommit, then publish idle
+  // without a second Provider response.
+  const client = clientFor(base);
+  const observation = await waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receiptId,
+    BETAS,
+    ({ delta }: { delta: any[] }) => nativeCrashHistoryErrors(delta, marker, true).length === 0,
+    `Native crash Event ${marker} to settle after exact predecessor retirement`,
+    { timeoutMs: 240_000, pollMs: 500, retryReadError: (error: unknown) => retryableReadStatus(error) !== null },
+  );
+  assert.deepEqual(nativeCrashHistoryErrors(observation.delta, marker, true), []);
+  assertProviderResponsesAreUnique(observation.events);
+  console.log(`OK Native crash recovery ${marker}`);
 }
 
 async function createParallelSessions(client: Anthropic, environmentId: string, count: number) {
@@ -657,6 +734,8 @@ async function main() {
     case 'unavailable-publication': return unavailablePublication(base);
     case 'retry-publication': return retryPublication(base);
     case 'verify-durable': return verifyDurable(base, args[0], args[1], args[2]);
+    case 'prepare-native-crash': return prepareNativeCrash(base, args[0], args[1]);
+    case 'verify-native-crash': return verifyNativeCrash(base, args[0], args[1], args[2]);
     case 'batch': return batch(base, args[0], args[1], args[2], Number(args[3]));
     case 'dispose-batch': return disposeBatch(base, args[0]);
     case 'load': return load(base, args[0]);

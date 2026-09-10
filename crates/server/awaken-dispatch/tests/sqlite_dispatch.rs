@@ -26,6 +26,10 @@ async fn sqlite_execution_binding_survives_reopen_without_the_worker() {
     let expected = Some(awaken_dispatch::PhysicalAttempt {
         claim: claim.clone(),
         binding: Some(binding.clone()),
+        thread_id: Some(awaken_agent_contract::agent::thread::Id(
+            "reopened-binding".into(),
+        )),
+        session_thread_id: None,
     });
     assert_eq!(
         reopened.load_physical_attempt(&claim.run_id).await.unwrap(),

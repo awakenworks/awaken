@@ -1267,12 +1267,13 @@ impl DispatchQueue for PostgresDispatchStore {
     ) -> Result<Option<PhysicalAttempt>, DispatchError> {
         let p = NS;
         let row = sqlx::query(&format!(
-            "SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding FROM {p}_dispatch WHERE run_id = $1"
+            "SELECT active_attempt_owner, active_attempt_epoch, active_attempt_binding, request FROM {p}_dispatch WHERE run_id = $1"
         )).bind(&run_id.0).fetch_optional(&self.pool).await.map_err(store_error)?;
         let Some(row) = row else {
             return Ok(None);
         };
         let epoch: Option<i64> = row.try_get("active_attempt_epoch").map_err(store_error)?;
+        let Json(request): Json<RunDispatch> = row.try_get("request").map_err(store_error)?;
         crate::dispatch::decode_physical_attempt(
             run_id,
             row.try_get("active_attempt_owner").map_err(store_error)?,
@@ -1281,6 +1282,13 @@ impl DispatchQueue for PostgresDispatchStore {
                 .transpose()?,
             row.try_get("active_attempt_binding").map_err(store_error)?,
         )
+        .map(|attempt| {
+            attempt.map(|mut attempt| {
+                attempt.thread_id = Some(request.thread_id().clone());
+                attempt.session_thread_id = request.session_thread_id.clone();
+                attempt
+            })
+        })
     }
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
