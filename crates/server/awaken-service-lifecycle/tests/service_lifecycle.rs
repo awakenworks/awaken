@@ -191,6 +191,8 @@ async fn concurrent_shutdown_cannot_return_before_the_active_drain_finishes() {
     // after cancellation is visible but before the leader's deadline. E1 the
     // follower remains blocked; E2 the leader reports/aborts the stuck task;
     // E3 only then may the follower observe the drained registry and return.
+    // Decision rules: R1=C1+C2+active deadline -> E1; R2=R1+deadline ->
+    // E2+E3. The cooperative-success and multiple-follower row is separate.
     // The old check-and-take implementation violated E1 by returning Ok from
     // the follower while the task was still live in the leader's local set.
     let group = ServiceLifecycle::new();
@@ -227,6 +229,62 @@ async fn concurrent_shutdown_cannot_return_before_the_active_drain_finishes() {
         .await
         .expect("follower task")
         .expect("follower returns only after the registry is drained");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_shutdown_followers_wait_for_successful_active_drain() {
+    // Causes: C1 the leader has transferred one cooperative task and that task
+    // has observed cancellation but is held before returning; C2 two followers
+    // independently call shutdown while C1 holds; C3 the task is released.
+    // Effects: E1 neither follower returns during the active drain; E2 release
+    // lets the leader join the task and return Ok; E3 both followers then acquire
+    // the same guard in turn, observe the drained registry, and return Ok.
+    // Decision rules: R1=C1+C2+!C3 -> E1; R2=C1+C2+C3 -> E2+E3. Together with
+    // the timeout row above this crosses both leader terminal outcomes without
+    // introducing a second lifecycle state or test-only drain owner.
+    let group = ServiceLifecycle::new();
+    let (cancelled_tx, cancelled_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    group.spawn("cooperative", move |cancel| async move {
+        cancel.cancelled().await;
+        let _ = cancelled_tx.send(());
+        let _ = release_rx.await;
+        Ok(())
+    });
+
+    let leader_group = group.clone();
+    let leader = tokio::spawn(async move { leader_group.shutdown(Duration::from_secs(1)).await });
+    cancelled_rx
+        .await
+        .expect("R1 leader transferred and cancelled the task set");
+
+    let mut followers = Vec::new();
+    for _ in 0..2 {
+        let follower_group = group.clone();
+        followers.push(tokio::spawn(async move {
+            follower_group.shutdown(Duration::from_secs(1)).await
+        }));
+    }
+    for follower in &mut followers {
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), follower)
+                .await
+                .is_err(),
+            "R1/E1 every follower remains behind the active drain"
+        );
+    }
+
+    release_tx.send(()).expect("R2 release cooperative task");
+    leader
+        .await
+        .expect("R2 leader task")
+        .expect("R2 cooperative drain succeeds");
+    for follower in followers {
+        follower
+            .await
+            .expect("R3 follower task")
+            .expect("R3 follower returns after the drained registry");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
