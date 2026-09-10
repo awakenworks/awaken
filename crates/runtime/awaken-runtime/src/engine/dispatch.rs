@@ -417,12 +417,7 @@ pub(super) async fn run_tool_calls(
     batch
         .finalize()
         .map_err(|error| Error::Execution(error.to_string()))?;
-    for entry in batch.calls() {
-        ledger.staged_state.extend(entry.result_state.clone());
-        for message in &entry.result_messages {
-            ledger.push_message(message.clone());
-        }
-    }
+    stage_batch_publication(&batch, ledger)?;
     // Publication barrier: Finalized and every ordered tool-result message are one
     // commit, so the model never observes a partial parallel/sequential batch.
     persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
@@ -718,12 +713,7 @@ async fn run_concurrent_tool_calls(
     batch
         .finalize()
         .map_err(|error| Error::Execution(error.to_string()))?;
-    for entry in batch.calls() {
-        ledger.staged_state.extend(entry.result_state.clone());
-        for message in &entry.result_messages {
-            ledger.push_message(message.clone());
-        }
-    }
+    stage_batch_publication(&batch, ledger)?;
     persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
     Ok(None)
 }
@@ -1189,12 +1179,7 @@ pub(super) async fn recover_tool_batch(
     batch
         .finalize()
         .map_err(|error| Error::Execution(error.to_string()))?;
-    for entry in batch.calls() {
-        ledger.staged_state.extend(entry.result_state.clone());
-        for message in &entry.result_messages {
-            ledger.push_message(message.clone());
-        }
-    }
+    stage_batch_publication(&batch, ledger)?;
     persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
     Ok(None)
 }
@@ -1326,6 +1311,22 @@ fn stage_batch(batch: &ToolBatch, ledger: &mut StepLedger, store: &mut Store) {
     let command = ActiveToolBatch::write(&Some(batch.clone()));
     store.apply(&command);
     ledger.staged_state.push(command);
+}
+
+/// Stage the one ordered publication admitted by the finalized ToolBatch.
+/// Fresh sequential, compatible concurrent, and recovery paths share this
+/// adapter; the aggregate remains the sole lifecycle and ordering authority.
+fn stage_batch_publication(batch: &ToolBatch, ledger: &mut StepLedger) -> Result<()> {
+    let publication = batch
+        .publication()
+        .map_err(|error| Error::Execution(error.to_string()))?;
+    ledger
+        .staged_state
+        .extend(publication.result_state().cloned());
+    for message in publication.messages() {
+        ledger.push_message(message.clone());
+    }
+    Ok(())
 }
 
 /// A delegation whose durable request can no longer be recovered must end its

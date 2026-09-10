@@ -83,6 +83,7 @@ async fn claimed_dispatch(
 /// | S4 | stale incarnation | yes | exact | exact | deny before Skill source |
 /// | S5 | valid incarnation | stale epoch | exact | any | reject without bundle |
 /// | S6 | valid | yes | exact | substituted bytes | Worker rejects bundle |
+/// | S7 | valid | yes | exact | foreign Workspace | Worker rejects bundle |
 #[tokio::test]
 async fn exact_skill_bundle_is_scope_claim_and_incarnation_fenced_and_digest_verified() {
     let stored = version("review", 1, b"---\ndescription: exact\n---\nREVIEW");
@@ -178,12 +179,18 @@ async fn exact_skill_bundle_is_scope_claim_and_incarnation_fenced_and_digest_ver
         .expect_err("S5 stale claim must be rejected");
     assert!(stale_claim.to_string().contains("409"), "S5");
 
-    let substituted = version("review", 1, b"SUBSTITUTED");
+    let mut substituted = version("review", 1, b"SUBSTITUTED");
+    substituted.bundle_sha256 = frozen.bundle_sha256.clone();
     let substituted_router = axum::Router::new().route(
         "/v1/worker/resources/skills/bundle",
         axum::routing::post(move || {
             let substituted = substituted.clone();
-            async move { axum::Json(substituted) }
+            async move {
+                axum::Json(serde_json::json!({
+                    "workspace_id": "workspace-skill",
+                    "version": substituted
+                }))
+            }
         }),
     );
     let substituted_address = support::serve(substituted_router).await;
@@ -196,6 +203,30 @@ async fn exact_skill_bundle_is_scope_claim_and_incarnation_fenced_and_digest_ver
             .await
             .is_err(),
         "S6"
+    );
+
+    let foreign_router = axum::Router::new().route(
+        "/v1/worker/resources/skills/bundle",
+        axum::routing::post(move || {
+            let stored = stored.clone();
+            async move {
+                axum::Json(serde_json::json!({
+                    "workspace_id": "workspace-foreign",
+                    "version": stored
+                }))
+            }
+        }),
+    );
+    let foreign_address = support::serve(foreign_router).await;
+    let foreign_source = HttpSkillBundleSource::new(
+        WorkerUpstream::new(format!("http://{foreign_address}")).with_worker_id("worker-skill"),
+    );
+    assert!(
+        foreign_source
+            .load("workspace-skill", &frozen, Some(&fence))
+            .await
+            .is_err(),
+        "S7"
     );
 }
 
