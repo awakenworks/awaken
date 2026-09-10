@@ -154,7 +154,8 @@ pub use run_admission::{
     SessionProjectionRecoveryError, SessionRunApplication,
 };
 pub use runtime_commands::{
-    ConfiguredSessionRepository, SessionRepositoryOwner, SessionRepositoryResourceInput,
+    ConfiguredSessionRepository, SessionExecutionObservation, SessionModelRequestObservation,
+    SessionRepositoryOwner, SessionRepositoryResourceInput, SessionRunExecutionObservation,
 };
 mod update;
 pub use update::{

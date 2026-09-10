@@ -36,10 +36,12 @@ use crate::types::{
 use crate::types::{Event, StreamFrame};
 
 mod event_admission;
+mod execution_evidence;
 mod pagination;
 mod profiled_run;
 
 pub use event_admission::close_event_admission;
+pub use execution_evidence::get_session_execution_evidence;
 use pagination::{SessionListPage, parse_session_list, session_list_page};
 pub use profiled_run::submit_profiled_session_run;
 
@@ -481,6 +483,20 @@ fn versioned_session_response_at_revision(
 }
 
 type WireErr = (StatusCode, Json<ErrorResponse>);
+
+fn session_projection_error(
+    error: awaken_session_application::SessionProjectionRecoveryError,
+) -> WireErr {
+    use awaken_session_application::SessionProjectionRecoveryError as Error;
+
+    match error {
+        Error::NotFound => error_response(StateError::NotFound),
+        Error::Rejected(error) => error_response(StateError::Run(error)),
+        Error::Unavailable(message) => {
+            error_response(StateError::Run(RunError::unavailable(message)))
+        }
+    }
+}
 
 /// `GET /v1/sessions` — a cursor page of the request scope's sessions (ADR-0051:
 /// tenancy-fenced, so a workspace never lists another's).

@@ -265,6 +265,7 @@ pub async fn awaken_session_application::SessionApplication::resume_custom(&self
 pub async fn awaken_session_application::SessionApplication::run_streaming_attributed(&self, &str, &str, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>, core::option::Option<alloc::string::String>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::result::Result<awaken_session_contract::session::StepOutcome, awaken_session_contract::session::RunError>
 pub async fn awaken_session_application::SessionApplication::runtime_owns_thread(&self, &str) -> core::result::Result<bool, awaken_session_contract::session::RunError>
 pub async fn awaken_session_application::SessionApplication::session(&self, &str) -> core::result::Result<awaken_session_contract::session_repo::persisted_session::PersistedSession, awaken_session_contract::session_repo::repository_port::SessionRepositoryError>
+pub async fn awaken_session_application::SessionApplication::session_execution_observation(&self, &str, &str) -> core::result::Result<awaken_session_application::SessionExecutionObservation, awaken_session_application::SessionProjectionRecoveryError>
 pub fn awaken_session_application::SessionApplication::session_memory_store(&self, &str, &str) -> core::result::Result<awaken_resource_contract::registry::MemoryStoreDefinition, awaken_session_contract::session::RunError>
 pub fn awaken_session_application::SessionApplication::session_profile(&self, &str, &str) -> core::option::Option<awaken_executable_agent_contract::session_profile::ExecutableAgentSessionProfile>
 pub fn awaken_session_application::SessionApplication::session_profile_at_revision(&self, &str, &str, u64) -> core::option::Option<awaken_executable_agent_contract::session_profile::ExecutableAgentSessionProfile>
@@ -434,6 +435,20 @@ pub awaken_session_application::SessionEventBatchCutoverValidationSnapshot::term
 pub struct awaken_session_application::SessionEventBatchCutoverValidationSource
 impl awaken_session_application::SessionEventBatchCutoverValidationSource
 pub fn awaken_session_application::SessionEventBatchCutoverValidationSource::snapshot(&self) -> core::option::Option<awaken_session_application::SessionEventBatchCutoverValidationSnapshot>
+pub struct awaken_session_application::SessionExecutionObservation
+pub awaken_session_application::SessionExecutionObservation::agent_id: alloc::string::String
+pub awaken_session_application::SessionExecutionObservation::agent_revision: core::option::Option<u64>
+pub awaken_session_application::SessionExecutionObservation::backend_ref: core::option::Option<alloc::string::String>
+pub awaken_session_application::SessionExecutionObservation::execution: awaken_session_contract::session_repo::execution_state::SessionExecutionState
+pub awaken_session_application::SessionExecutionObservation::execution_model_ref: alloc::string::String
+pub awaken_session_application::SessionExecutionObservation::model: alloc::string::String
+pub awaken_session_application::SessionExecutionObservation::runs: alloc::vec::Vec<awaken_session_application::SessionRunExecutionObservation>
+pub awaken_session_application::SessionExecutionObservation::session_id: alloc::string::String
+pub awaken_session_application::SessionExecutionObservation::session_revision: u64
+pub struct awaken_session_application::SessionModelRequestObservation
+pub awaken_session_application::SessionModelRequestObservation::is_error: bool
+pub awaken_session_application::SessionModelRequestObservation::retry_count: u32
+pub awaken_session_application::SessionModelRequestObservation::sequence: u64
 pub struct awaken_session_application::SessionReconciliation
 pub awaken_session_application::SessionReconciliation::failures: alloc::vec::Vec<awaken_session_application::SessionReconciliationFailure>
 pub awaken_session_application::SessionReconciliation::pending: usize
@@ -481,6 +496,12 @@ impl awaken_session_contract::run_application::SessionRunBackgroundApplication f
 pub fn awaken_session_application::SessionRunApplication::submit_session_run_background<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, core::option::Option<alloc::string::String>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::agent::run::Id, awaken_session_contract::run_application::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 impl awaken_session_contract::run_application::SessionRunReplacementApplication for awaken_session_application::SessionRunApplication
 pub fn awaken_session_application::SessionRunApplication::supersede_session_run<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session::StepOutcome, awaken_session_contract::run_application::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub struct awaken_session_application::SessionRunExecutionObservation
+pub awaken_session_application::SessionRunExecutionObservation::idempotency_key: core::option::Option<alloc::string::String>
+pub awaken_session_application::SessionRunExecutionObservation::model_requests: alloc::vec::Vec<awaken_session_application::SessionModelRequestObservation>
+pub awaken_session_application::SessionRunExecutionObservation::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_session_application::SessionRunExecutionObservation::state: awaken_agent_contract::agent::run::RunState
+pub awaken_session_application::SessionRunExecutionObservation::tool_use_ids: alloc::vec::Vec<alloc::string::String>
 pub struct awaken_session_application::SessionUpdateChanges
 pub awaken_session_application::SessionUpdateChanges::budget: bool
 pub awaken_session_application::SessionUpdateChanges::mcp: bool

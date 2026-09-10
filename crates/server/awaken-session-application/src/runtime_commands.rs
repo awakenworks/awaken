@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
+use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::stream::sink::Sink;
 use awaken_agent_contract::thread::read::lifecycle::{RunLifecycleCursor, RunLifecyclePage};
 use awaken_session_contract::{
@@ -22,6 +23,43 @@ use crate::{
 };
 
 use awaken_resource_contract::{SESSION_REPOSITORY_OWNER_KIND, SESSION_REPOSITORY_OWNER_SESSION};
+
+/// Read-only application projection joining one Session's immutable execution
+/// selection to committed Run/model-request facts. It owns no status or audit
+/// state: every field is rebuilt from the Session aggregate and the Runtime's
+/// one internally consistent Thread recovery prefix.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionExecutionObservation {
+    pub session_id: String,
+    pub session_revision: u64,
+    pub agent_id: String,
+    pub agent_revision: Option<u64>,
+    pub model: String,
+    pub execution_model_ref: String,
+    pub backend_ref: Option<String>,
+    pub execution: awaken_session_contract::SessionExecutionState,
+    pub runs: Vec<SessionRunExecutionObservation>,
+}
+
+/// One committed Run and only the model-request completion coordinates that
+/// belong to it. The Run record and audit log remain the authorities.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionRunExecutionObservation {
+    pub run_id: RunId,
+    pub idempotency_key: Option<String>,
+    pub state: RunState,
+    pub tool_use_ids: Vec<String>,
+    pub model_requests: Vec<SessionModelRequestObservation>,
+}
+
+/// Minimal proof that one logical model request reached a committed completion
+/// boundary. Usage remains on the existing Managed Events projection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SessionModelRequestObservation {
+    pub sequence: u64,
+    pub is_error: bool,
+    pub retry_count: u32,
+}
 
 /// Closed owner namespace for a Repository definition created exclusively for
 /// one Session. Platform and Agent-default Repository definitions never carry
@@ -217,6 +255,119 @@ impl SessionApplication {
             })?
             .ok_or_else(|| RunError::bad_request("Session was not found"))?;
         self.committed_messages(session_id).await
+    }
+
+    /// Observe one Session's frozen execution selection and committed primary
+    /// Thread Runs without driving realization or execution. A completed model
+    /// request is included only when its audit record and Run coexist in the
+    /// same Runtime recovery snapshot.
+    pub async fn session_execution_observation(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+    ) -> Result<SessionExecutionObservation, crate::SessionProjectionRecoveryError> {
+        use awaken_runtime_contract::llm::ModelRequestObservation as RuntimeModelRequestObservation;
+
+        let recovered = self
+            .read_session_projection(session_id, Some(workspace_id))
+            .await?
+            .ok_or(crate::SessionProjectionRecoveryError::NotFound)?;
+        let baseline = recovered.session.frozen_baseline().ok_or_else(|| {
+            crate::SessionProjectionRecoveryError::Unavailable(
+                "Session creation finalization is incomplete".into(),
+            )
+        })?;
+        let snapshot = self
+            .runtime
+            .session_thread_recovery_snapshot(session_id, session_id)
+            .await
+            .map_err(crate::SessionProjectionRecoveryError::Rejected)?;
+        let runs = snapshot
+            .map(|snapshot| {
+                snapshot
+                    .runs
+                    .into_iter()
+                    .map(|run| {
+                        let idempotency_key = recovered
+                            .session
+                            .user_run_idempotency_key(&run.id)
+                            .map_err(|error| {
+                                crate::SessionProjectionRecoveryError::Rejected(RunError::internal(
+                                    format!(
+                                        "resolve Session Event provenance for Run `{}`: {error}",
+                                        run.id.0
+                                    ),
+                                ))
+                            })?
+                            .map(str::to_owned);
+                        let mut observed_tool_use_ids = std::collections::BTreeSet::new();
+                        let mut tool_use_ids = Vec::new();
+                        for message in snapshot.messages.iter().filter(|message| {
+                            message.role == awaken_agent_contract::agent::message::Role::Assistant
+                                && message.id.assistant_step_of(&run.id).is_some()
+                        }) {
+                            for block in &message.content {
+                                if let ContentBlock::ToolUse { id, .. } = block {
+                                    if id.trim().is_empty()
+                                        || !observed_tool_use_ids.insert(id.as_str())
+                                    {
+                                        return Err(
+                                            crate::SessionProjectionRecoveryError::Rejected(
+                                                RunError::internal(format!(
+                                                    "invalid committed tool-use identity for Run `{}`",
+                                                    run.id.0
+                                                )),
+                                            ),
+                                        );
+                                    }
+                                    tool_use_ids.push(id.clone());
+                                }
+                            }
+                        }
+                        let model_requests = snapshot
+                            .events
+                            .iter()
+                            .filter(|event| event.run_id == run.id)
+                            .try_fold(Vec::new(), |mut observations, event| {
+                                if let Some(observation) =
+                                    RuntimeModelRequestObservation::from_record(event)?
+                                {
+                                    observations.push(SessionModelRequestObservation {
+                                        sequence: event.sequence,
+                                        is_error: observation.is_error,
+                                        retry_count: observation.retry_count,
+                                    });
+                                }
+                                Ok::<_, serde_json::Error>(observations)
+                            })
+                            .map_err(|error| {
+                                crate::SessionProjectionRecoveryError::Rejected(RunError::internal(
+                                    format!("decode committed model request observation: {error}"),
+                                ))
+                            })?;
+                        Ok(SessionRunExecutionObservation {
+                            run_id: run.id,
+                            idempotency_key,
+                            state: run.state,
+                            tool_use_ids,
+                            model_requests,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, crate::SessionProjectionRecoveryError>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        Ok(SessionExecutionObservation {
+            session_id: recovered.session.session_id.clone(),
+            session_revision: recovered.session.revision.0,
+            agent_id: baseline.agent_id.clone(),
+            agent_revision: baseline.agent_revision,
+            model: baseline.model.clone(),
+            execution_model_ref: baseline.execution_model_ref.clone(),
+            backend_ref: baseline.runtime.clone(),
+            execution: recovered.session.execution,
+            runs,
+        })
     }
 
     pub async fn session(
