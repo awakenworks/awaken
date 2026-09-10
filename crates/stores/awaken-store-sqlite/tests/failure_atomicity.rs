@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
+use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy, Scope};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
@@ -32,7 +33,20 @@ fn terminal_commit(text: String) -> ThreadCommit {
             Role::Assistant,
             text,
         )],
-        state: Vec::new(),
+        state: vec![
+            StateCommand::set(
+                Scope::Thread,
+                MergePolicy::Disjoint,
+                "failure.first",
+                serde_json::json!(1),
+            ),
+            StateCommand::set(
+                Scope::Thread,
+                MergePolicy::Commutative,
+                "failure.second",
+                serde_json::json!({"complete": true}),
+            ),
+        ],
         events: Vec::new(),
     }
 }
@@ -53,6 +67,17 @@ fn run_uncommitted_child_if_requested() -> Result<bool, Box<dyn std::error::Erro
             format!("partial-thread-{sequence}"),
             format!("partial-run-{sequence}")
         ],
+    )?;
+    let partial_thread = format!("partial-thread-{sequence}");
+    let partial_state = serde_json::to_string(&StateCommand::set(
+        Scope::Thread,
+        MergePolicy::Disjoint,
+        "partial.state",
+        serde_json::json!(sequence),
+    ))?;
+    connection.execute(
+        "INSERT INTO runtime_state_command(commit_sequence,thread_id,data) VALUES (?1,?2,?3)",
+        rusqlite::params![sequence, partial_thread, partial_state],
     )?;
     std::fs::write(ready, b"transaction-open")?;
     std::thread::sleep(Duration::from_secs(60));
@@ -80,10 +105,13 @@ fn crash_uncommitted_child(
 async fn uncommitted_transaction_is_rolled_back_after_process_kill()
 -> Result<(), Box<dyn std::error::Error>> {
     // Cause/effect graph: C1=the schema is durable; C2=a separate process owns
-    // BEGIN IMMEDIATE and has written a commit row; C3=the process dies before
-    // COMMIT. Effects: E1=reopen observes no commit/projection fact; E2=a later
-    // valid commit obtains sequence one. This exercises SQLite's actual WAL/
-    // rollback boundary rather than an in-process error stub.
+    // BEGIN IMMEDIATE and has written both commit and state-command rows; C3=the
+    // process dies before COMMIT; C4=a later complete two-command ThreadCommit
+    // succeeds. Effects: E1=reopen observes neither partial row; E2=the later
+    // commit obtains sequence one; E3=its exact ordered state batch survives a
+    // second reopen. Decision table: R1=C1+C2+C3 -> E1; R2=R1+C4 -> E2+E3.
+    // This exercises SQLite's actual WAL/rollback boundary rather than an
+    // in-process error stub.
     if run_uncommitted_child_if_requested()? {
         return Ok(());
     }
@@ -102,12 +130,23 @@ async fn uncommitted_transaction_is_rolled_back_after_process_kill()
 
     let store = SqliteCommitCoordinator::open(path_text(&database)?)?;
     assert_eq!(store.commit_count(), 0, "uncommitted row is invisible");
+    assert!(
+        store
+            .committed_state(&ThreadId("partial-thread-1".into()))
+            .is_empty(),
+        "uncommitted state row is invisible"
+    );
     let record = store.commit(terminal_commit("committed".into())).await?;
     assert_eq!(record.sequence, 1);
     drop(store);
+    let reopened = SqliteCommitCoordinator::open(path_text(&database)?)?;
+    assert_eq!(reopened.commit_count(), 1);
+    let replayed = reopened.committed_state(&ThreadId("failure-thread".into()));
+    assert_eq!(replayed.len(), 2, "complete state batch replays");
+    assert_eq!(replayed[0].key.0, "failure.first", "commit order is stable");
     assert_eq!(
-        SqliteCommitCoordinator::open(path_text(&database)?)?.commit_count(),
-        1
+        replayed[1].key.0, "failure.second",
+        "commit order is stable"
     );
     Ok(())
 }
@@ -115,9 +154,10 @@ async fn uncommitted_transaction_is_rolled_back_after_process_kill()
 #[tokio::test]
 async fn sqlite_read_only_rolls_back_the_complete_domain_commit()
 -> Result<(), Box<dyn std::error::Error>> {
-    // Error-guessing plus atomicity oracle: PRAGMA query_only deterministically
-    // produces SQLITE_READONLY on the same live connection. The attempted
-    // multi-table domain commit must leave no durable commit or projection row.
+    // Cause/effect table: R1=query_only + a complete two-command ThreadCommit ->
+    // SQLITE_READONLY and no commit, message, or state-command row after reopen.
+    // This deterministic adapter error checks that a failure before durable
+    // completion cannot publish any region of the staged aggregate.
     let directory = tempfile::tempdir()?;
     let database = directory.path().join("read-only.db");
     let store = SqliteCommitCoordinator::open(path_text(&database)?)?;
@@ -137,16 +177,22 @@ async fn sqlite_read_only_rolls_back_the_complete_domain_commit()
             .committed_messages(&ThreadId("failure-thread".into()))
             .is_empty()
     );
+    assert!(
+        reopened
+            .committed_state(&ThreadId("failure-thread".into()))
+            .is_empty(),
+        "failed domain commit publishes no state commands"
+    );
     Ok(())
 }
 
 #[tokio::test]
 async fn corrupt_uncommitted_wal_never_projects_a_partial_commit()
 -> Result<(), Box<dyn std::error::Error>> {
-    // Recovery-oracle design: one valid commit is the durable prefix; a second
-    // process writes an uncommitted WAL frame, dies, and that tail is corrupted.
-    // Reopen may recover the prefix or fail closed, but must never expose the
-    // second fence or its partial domain rows.
+    // Cause/effect table: R1=complete commit A -> durable message and both state
+    // commands; R2=R1 + uncommitted commit/state rows B + process death + corrupt
+    // WAL tail -> reopen either fails closed or exposes exactly A and none of B.
+    // This distinguishes complete-prefix recovery from partial-state replay.
     if run_uncommitted_child_if_requested()? {
         return Ok(());
     }
@@ -188,6 +234,19 @@ async fn corrupt_uncommitted_wal_never_projects_a_partial_commit()
         let messages = reopened.committed_messages(&ThreadId("failure-thread".into()));
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].text_content(), "durable-prefix");
+        assert_eq!(
+            reopened
+                .committed_state(&ThreadId("failure-thread".into()))
+                .len(),
+            2,
+            "only the complete durable state batch is visible"
+        );
+        assert!(
+            reopened
+                .committed_state(&ThreadId("partial-thread-2".into()))
+                .is_empty(),
+            "the corrupt uncommitted state tail is never projected"
+        );
     }
     Ok(())
 }
@@ -196,8 +255,9 @@ async fn corrupt_uncommitted_wal_never_projects_a_partial_commit()
 async fn sqlite_full_rolls_back_the_complete_domain_commit()
 -> Result<(), Box<dyn std::error::Error>> {
     // Cause/effect graph: C1=current database has no free growth pages;
-    // C2=one staged commit needs additional pages. Effect: SQLite reports FULL
-    // and every commit/message/run projection remains absent after reopen.
+    // C2=one staged commit carries a large message and two state commands.
+    // Effect: SQLite reports FULL and every commit/message/state/run projection
+    // remains absent after reopen. Decision rule R1=C1+C2 -> complete stutter.
     // A backend-specific capacity error therefore refines the common atomic
     // rejection result instead of exposing a partially committed Thread.
     let directory = tempfile::tempdir()?;
@@ -219,6 +279,12 @@ async fn sqlite_full_rolls_back_the_complete_domain_commit()
         reopened
             .committed_messages(&ThreadId("failure-thread".into()))
             .is_empty()
+    );
+    assert!(
+        reopened
+            .committed_state(&ThreadId("failure-thread".into()))
+            .is_empty(),
+        "capacity failure publishes no state commands"
     );
     Ok(())
 }
