@@ -538,6 +538,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-memory-store \
     --harness memory_head_update_admission_preserves_stale_and_idempotent_heads \
     --harness memory_conditional_delete_admission_is_exact
+  run_kani awaken-skill-store \
+    --harness skill_version_retirement_is_visibility_only_and_total
   run_kani awaken-agent-config \
     --harness management_audit_admission_requires_exact_intent_and_closed_state \
     --harness management_effect_confirmation_requires_positive_exact_readback \

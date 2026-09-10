@@ -121,6 +121,13 @@ async fn aggregate_lifecycle(store: &dyn SkillStore) {
         store.list_versions("ws-a", "skill-a").await.unwrap().len(),
         2
     );
+    let pinned_v2 = store.version("ws-a", "skill-a", 2).await.unwrap().unwrap();
+
+    // Retirement cause/effect table over the real adapter transition:
+    // R1 present visible v2 with another visible version -> hide v2, move the
+    // latest pointer, preserve the exact pinned v2 bundle; R2 repeat retired v2
+    // -> false and preserve the same bundle; R3 absent ordinal -> false and no
+    // history change; R4 only visible version -> reject and preserve it.
     assert!(store.delete_version("ws-a", "skill-a", 2).await.unwrap());
     assert_eq!(
         store.snapshot_latest_versions("ws-a").await.unwrap()[0].version,
@@ -137,15 +144,22 @@ async fn aggregate_lifecycle(store: &dyn SkillStore) {
         1
     );
     assert_eq!(
-        store
-            .version("ws-a", "skill-a", 2)
-            .await
-            .unwrap()
-            .unwrap()
-            .files[1]
-            .content,
-        b"v2"
+        store.list_versions("ws-a", "skill-a").await.unwrap(),
+        vec![store.version("ws-a", "skill-a", 1).await.unwrap().unwrap()],
+        "R1 hides only the retired version"
     );
+    assert_eq!(
+        store.version("ws-a", "skill-a", 2).await.unwrap(),
+        Some(pinned_v2.clone()),
+        "R1 retains exact pinned bytes"
+    );
+    assert!(!store.delete_version("ws-a", "skill-a", 2).await.unwrap());
+    assert_eq!(
+        store.version("ws-a", "skill-a", 2).await.unwrap(),
+        Some(pinned_v2),
+        "R2 remains byte-exact"
+    );
+    assert!(!store.delete_version("ws-a", "skill-a", 99).await.unwrap());
     store
         .append_version("ws-a", "skill-a", version("skill-a", 3, b"v3"))
         .await
@@ -163,6 +177,16 @@ async fn aggregate_lifecycle(store: &dyn SkillStore) {
         store.delete_version("ws-a", "skill-a", 1).await,
         Ok(true)
     ));
+    let pinned_v3 = store.version("ws-a", "skill-a", 3).await.unwrap().unwrap();
+    assert!(matches!(
+        store.delete_version("ws-a", "skill-a", 3).await,
+        Err(SkillStoreError::Invalid(_))
+    ));
+    assert_eq!(
+        store.version("ws-a", "skill-a", 3).await.unwrap(),
+        Some(pinned_v3),
+        "R4 preserves the only visible version"
+    );
     assert!(store.delete_skill("ws-a", "skill-a").await.unwrap());
     assert!(!store.delete_skill("ws-a", "skill-a").await.unwrap());
     assert!(store.definition("ws-b", "skill-a").await.unwrap().is_some());
@@ -179,6 +203,17 @@ async fn filesystem_conforms_and_survives_reopen() {
     let directory = tempfile::tempdir().unwrap();
     aggregate_lifecycle(&FsSkillStore::open(directory.path()).unwrap()).await;
     let store = FsSkillStore::open(directory.path()).unwrap();
+    assert_eq!(
+        store
+            .version("ws-a", "skill-a", 2)
+            .await
+            .unwrap()
+            .unwrap()
+            .files[1]
+            .content,
+        b"v2",
+        "retired pinned bytes survive a filesystem reopen"
+    );
     store
         .create(
             definition("persist", "binary"),
@@ -336,6 +371,46 @@ async fn filesystem_processes_do_not_lose_a_concurrent_version() {
 #[tokio::test]
 async fn sqlite_conforms() {
     aggregate_lifecycle(&awaken_skill_store::SqliteSkillStore::open_in_memory().unwrap()).await;
+}
+
+#[cfg(all(feature = "sqlite", feature = "test-support"))]
+#[tokio::test]
+async fn sqlite_retired_pin_survives_reopen() {
+    // Persistence decision rule: a committed visible-version retirement (C1)
+    // followed by connection loss/reopen (C2) must keep the retired ordinal out
+    // of listings (E1) and return the identical pinned bundle by exact version
+    // (E2). This crosses the adapter serialization boundary omitted by the pure
+    // retirement proof; SQLite transaction/durability correctness remains TCB.
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("skills.sqlite");
+    let path = path.to_str().unwrap();
+    let store = awaken_skill_store::SqliteSkillStore::open(path).unwrap();
+    store
+        .create(
+            definition("persist", "retired"),
+            version("retired", 1, b"v1"),
+        )
+        .await
+        .unwrap();
+    let pinned = version("retired", 2, b"pinned-v2");
+    store
+        .append_version("persist", "retired", pinned.clone())
+        .await
+        .unwrap();
+    assert!(store.delete_version("persist", "retired", 2).await.unwrap());
+    drop(store);
+
+    let reopened = awaken_skill_store::SqliteSkillStore::open(path).unwrap();
+    assert_eq!(
+        reopened.list_versions("persist", "retired").await.unwrap(),
+        vec![version("retired", 1, b"v1")],
+        "C1+C2 -> E1"
+    );
+    assert_eq!(
+        reopened.version("persist", "retired", 2).await.unwrap(),
+        Some(pinned),
+        "C1+C2 -> E2"
+    );
 }
 
 #[cfg(feature = "postgres")]

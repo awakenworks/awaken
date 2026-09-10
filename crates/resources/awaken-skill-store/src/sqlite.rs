@@ -345,7 +345,13 @@ impl SkillStore for SqliteSkillStore {
                 return Ok(false);
             };
             let mut aggregate = decode_aggregate(data.as_bytes(), &ws, &id)?;
-            let removed = remove_version_from(&mut aggregate, version)?;
+            let removed = remove_version_from(
+                &mut aggregate.definition,
+                &aggregate.versions,
+                &mut aggregate.retired_versions,
+                aggregate.deleted,
+                version,
+            )?;
             if removed {
                 let data = serde_json::to_string(&aggregate).map_err(storage)?;
                 transaction

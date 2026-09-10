@@ -178,36 +178,97 @@ pub(crate) fn append_to(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkillVersionRetirementDecision {
+    Unchanged,
+    RejectOnlyVisible,
+    RetireVisibility,
+}
+
+const fn skill_version_retirement_decision(
+    deleted: bool,
+    version_present: bool,
+    already_retired: bool,
+    visible_versions: usize,
+) -> SkillVersionRetirementDecision {
+    if deleted || !version_present || already_retired {
+        SkillVersionRetirementDecision::Unchanged
+    } else if visible_versions <= 1 {
+        SkillVersionRetirementDecision::RejectOnlyVisible
+    } else {
+        SkillVersionRetirementDecision::RetireVisibility
+    }
+}
+
+/// Apply the sole Skill-version retirement transition. `versions` is shared for
+/// the complete transition: Rust's borrow checker prevents this owner from
+/// changing or removing immutable history while it changes only visibility.
 pub(crate) fn remove_version_from(
-    aggregate: &mut SkillAggregate,
+    definition: &mut SkillDefinition,
+    versions: &BTreeMap<u64, SkillVersion>,
+    retired_versions: &mut std::collections::BTreeSet<u64>,
+    deleted: bool,
     version: u64,
 ) -> Result<bool, SkillStoreError> {
-    if aggregate.deleted {
-        return Ok(false);
-    }
-    if !aggregate.versions.contains_key(&version) || aggregate.retired_versions.contains(&version) {
-        return Ok(false);
-    }
-    let visible = aggregate
-        .versions
+    let visible_versions = versions
         .keys()
-        .filter(|candidate| !aggregate.retired_versions.contains(candidate))
+        .filter(|candidate| !retired_versions.contains(candidate))
         .count();
-    if visible == 1 {
-        return Err(SkillStoreError::Invalid(
-            "the only Skill version cannot be deleted; delete the Skill instead".into(),
-        ));
+    match skill_version_retirement_decision(
+        deleted,
+        versions.contains_key(&version),
+        retired_versions.contains(&version),
+        visible_versions,
+    ) {
+        SkillVersionRetirementDecision::Unchanged => return Ok(false),
+        SkillVersionRetirementDecision::RejectOnlyVisible => {
+            return Err(SkillStoreError::Invalid(
+                "the only Skill version cannot be deleted; delete the Skill instead".into(),
+            ));
+        }
+        SkillVersionRetirementDecision::RetireVisibility => {}
     }
-    aggregate.retired_versions.insert(version);
-    if aggregate.definition.latest_version == version {
-        aggregate.definition.latest_version = *aggregate
-            .versions
+
+    retired_versions.insert(version);
+    if definition.latest_version == version {
+        definition.latest_version = *versions
             .keys()
             .rev()
-            .find(|candidate| !aggregate.retired_versions.contains(candidate))
+            .find(|candidate| !retired_versions.contains(candidate))
             .expect("at least one visible version remains");
     }
     Ok(true)
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn skill_version_retirement_is_visibility_only_and_total() {
+    // Causes: C1 aggregate deleted; C2 target is stored; C3 target already
+    // retired; C4 visible count is zero/one/many. Effects: E1 unchanged, E2
+    // reject, E3 retire visibility. C1/!C2/C3 -> E1; !C1+C2+!C3+C4<=1 ->
+    // E2; !C1+C2+!C3+C4>1 -> E3. No assumption or bounded collection model is
+    // used; the production transition's shared history borrow supplies the
+    // separate no-byte-removal guarantee.
+    let deleted: bool = kani::any();
+    let version_present: bool = kani::any();
+    let already_retired: bool = kani::any();
+    let visible_versions: usize = kani::any();
+    let expected = if deleted || !version_present || already_retired {
+        SkillVersionRetirementDecision::Unchanged
+    } else if visible_versions <= 1 {
+        SkillVersionRetirementDecision::RejectOnlyVisible
+    } else {
+        SkillVersionRetirementDecision::RetireVisibility
+    };
+    assert_eq!(
+        skill_version_retirement_decision(
+            deleted,
+            version_present,
+            already_retired,
+            visible_versions,
+        ),
+        expected
+    );
 }
 
 /// In-memory [`SkillStore`] for tests and scenario fixtures.
@@ -386,7 +447,13 @@ impl SkillStore for InMemorySkillStore {
         else {
             return Ok(false);
         };
-        remove_version_from(aggregate, version)
+        remove_version_from(
+            &mut aggregate.definition,
+            &aggregate.versions,
+            &mut aggregate.retired_versions,
+            aggregate.deleted,
+            version,
+        )
     }
 
     async fn delete_skill(
@@ -746,7 +813,13 @@ impl SkillStore for FsSkillStore {
         let Some(mut aggregate) = self.read_aggregate(workspace_id, skill_id)? else {
             return Ok(false);
         };
-        let removed = remove_version_from(&mut aggregate, version)?;
+        let removed = remove_version_from(
+            &mut aggregate.definition,
+            &aggregate.versions,
+            &mut aggregate.retired_versions,
+            aggregate.deleted,
+            version,
+        )?;
         if removed {
             self.write_aggregate(&aggregate)?;
         }
@@ -804,6 +877,39 @@ fn sync_skill_directory(path: &Path) -> Result<(), SkillStoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skill_version_retirement_decision_table_is_total_and_fail_closed() {
+        // Causes: C1 aggregate deleted; C2 target stored; C3 target already
+        // retired; C4 visible count 0/1/>1. Effects: E1 unchanged, E2 reject,
+        // E3 retire visibility. Rules: C1|!C2|C3 -> E1;
+        // !C1+C2+!C3+C4<=1 -> E2; !C1+C2+!C3+C4>1 -> E3. Counts 0 and
+        // usize::MAX cross corrupt/limit edges without weakening the oracle.
+        for deleted in [false, true] {
+            for version_present in [false, true] {
+                for already_retired in [false, true] {
+                    for visible_versions in [0, 1, 2, usize::MAX] {
+                        let expected = if deleted || !version_present || already_retired {
+                            SkillVersionRetirementDecision::Unchanged
+                        } else if visible_versions <= 1 {
+                            SkillVersionRetirementDecision::RejectOnlyVisible
+                        } else {
+                            SkillVersionRetirementDecision::RetireVisibility
+                        };
+                        assert_eq!(
+                            skill_version_retirement_decision(
+                                deleted,
+                                version_present,
+                                already_retired,
+                                visible_versions,
+                            ),
+                            expected
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     fn aggregate(workspace: &str, id: &str) -> (SkillDefinition, SkillVersion) {
         let files = vec![SkillBundleFile {
