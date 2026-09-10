@@ -39,16 +39,25 @@ use shared::{
 //     serialize concurrent writers exactly one winner deep. ---
 
 async fn conditional_delete_never_removes_a_changed_or_recreated_head(fs: &dyn MemoryRepository) {
+    // Causes: C1 path absent/present; C2 present id matches; C3 present hash
+    // matches; C4 a deleted path is recreated with equal content but fresh id.
+    // Effects: E1 absent returns false and leaves history unchanged; E2 either
+    // mismatch conflicts and leaves head/history unchanged; E3 exact id+hash
+    // returns true, removes that head and appends its one deletion version.
+    // Decision rules: D1=!C1=>E1; D2=C1&&(!C2||!C3)=>E2;
+    // D3=C1&&C2&&C3=>E3; D4=C4 implies !C2 and therefore E2.
     let first = fs.create("guarded", "/note.md", "v1").await.unwrap();
     let changed = fs
         .update("guarded", &first.id, "v2", &first.content_sha256)
         .await
         .unwrap();
+    let before_stale = fs.list_versions("guarded").await.unwrap();
     assert!(matches!(
         fs.delete_if_match("guarded", "/note.md", &first.id, &first.content_sha256)
             .await,
         Err(MemErr::Conflict { .. })
     ));
+    assert_eq!(fs.list_versions("guarded").await.unwrap(), before_stale);
     assert_eq!(
         fs.get_by_path("guarded", "/note.md")
             .await
@@ -63,20 +72,41 @@ async fn conditional_delete_never_removes_a_changed_or_recreated_head(fs: &dyn M
             .await
             .unwrap()
     );
+    let after_delete = fs.list_versions("guarded").await.unwrap();
+    assert_eq!(after_delete.len(), before_stale.len() + 1);
+    assert_eq!(
+        after_delete.last().unwrap().operation,
+        awaken_memory_store::MemoryVersionOperation::Deleted
+    );
+    assert_eq!(after_delete.last().unwrap().memory_id, changed.id);
     assert!(
         !fs.delete_if_match("guarded", "/note.md", &changed.id, &changed.content_sha256)
             .await
             .unwrap(),
         "an already absent head is an idempotent no-op"
     );
+    assert_eq!(fs.list_versions("guarded").await.unwrap(), after_delete);
 
     let recreated = fs.create("guarded", "/note.md", "v2").await.unwrap();
     assert_ne!(recreated.id, changed.id);
+    let before_recreated_stale = fs.list_versions("guarded").await.unwrap();
     assert!(matches!(
         fs.delete_if_match("guarded", "/note.md", &changed.id, &changed.content_sha256)
             .await,
         Err(MemErr::Conflict { .. })
     ));
+    assert_eq!(
+        fs.get_by_path("guarded", "/note.md")
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        recreated.id
+    );
+    assert_eq!(
+        fs.list_versions("guarded").await.unwrap(),
+        before_recreated_stale
+    );
 }
 
 #[cfg(feature = "test-support")]

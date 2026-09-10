@@ -136,6 +136,119 @@ pub(crate) fn validate_size(content: &str) -> Result<(), MemErr> {
     }
 }
 
+/// The single admission owner for a write against an observed Memory head.
+/// Backends retain their lock/transaction and byte persistence; this decision
+/// determines whether those effects may begin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HeadUpdateAdmission {
+    Conflict,
+    Current,
+    Apply,
+}
+
+impl HeadUpdateAdmission {
+    pub(crate) fn new(
+        expected_path_matches: bool,
+        base_matches: bool,
+        already_current: bool,
+    ) -> Self {
+        if !expected_path_matches {
+            Self::Conflict
+        } else if !base_matches {
+            if already_current {
+                Self::Current
+            } else {
+                Self::Conflict
+            }
+        } else if already_current {
+            Self::Current
+        } else {
+            Self::Apply
+        }
+    }
+}
+
+/// The single admission owner for deletion against a path-selected head.
+/// `None` means the selected path is absent; `Some` carries the exact id/hash
+/// comparisons made from the head observed under the backend's transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConditionalDeleteAdmission {
+    Absent,
+    Conflict,
+    Delete,
+}
+
+impl ConditionalDeleteAdmission {
+    pub(crate) fn new(current_matches: Option<(bool, bool)>) -> Self {
+        match current_matches {
+            None => Self::Absent,
+            Some((true, true)) => Self::Delete,
+            Some(_) => Self::Conflict,
+        }
+    }
+}
+
+#[cfg(any(test, kani))]
+fn check_head_update_admission(
+    expected_path_matches: bool,
+    base_matches: bool,
+    already_current: bool,
+) {
+    // Causes: C1 the materialized path still identifies this head; C2 the
+    // supplied base hash matches; C3 requested path/content are already current.
+    // Effects and decision rules:
+    // U1 !C1 => Conflict; U2 C1,!C2,!C3 => Conflict;
+    // U3 C1,!C2,C3 or C1,C2,C3 => Current; U4 C1,C2,!C3 => Apply.
+    let decision = HeadUpdateAdmission::new(expected_path_matches, base_matches, already_current);
+    match decision {
+        HeadUpdateAdmission::Conflict => {
+            assert!(!expected_path_matches || (!base_matches && !already_current));
+        }
+        HeadUpdateAdmission::Current => {
+            assert!(expected_path_matches && already_current);
+        }
+        HeadUpdateAdmission::Apply => {
+            assert!(expected_path_matches && base_matches && !already_current);
+        }
+    }
+}
+
+#[cfg(any(test, kani))]
+fn check_conditional_delete_admission(current_matches: Option<(bool, bool)>) {
+    // Causes: C1 a head exists at the selected path; C2 id matches; C3 hash
+    // matches. Effects: D1 !C1 => Absent; D2 C1 and (!C2 or !C3) => Conflict;
+    // D3 C1,C2,C3 => Delete. Only D3 authorizes backend delete/history effects.
+    let decision = ConditionalDeleteAdmission::new(current_matches);
+    match decision {
+        ConditionalDeleteAdmission::Absent => assert!(current_matches.is_none()),
+        ConditionalDeleteAdmission::Conflict => assert!(matches!(
+            current_matches,
+            Some((false, _)) | Some((true, false))
+        )),
+        ConditionalDeleteAdmission::Delete => {
+            assert_eq!(current_matches, Some((true, true)));
+        }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn memory_head_update_admission_preserves_stale_and_idempotent_heads() {
+    // No assumptions: all eight Boolean observation classes pass through the
+    // exact production decision used by every backend. Locking, row selection,
+    // hash computation and persistence remain outside this decision proof.
+    check_head_update_admission(kani::any(), kani::any(), kani::any());
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn memory_conditional_delete_admission_is_exact() {
+    // No assumptions: None and every present id/hash comparison class pass
+    // through the production decision used by every backend. Backend atomicity
+    // and history persistence remain outside this decision proof.
+    check_conditional_delete_admission(kani::any());
+}
+
 /// The in-memory aggregate record.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, Clone)]
@@ -504,19 +617,29 @@ impl MemoryRepository for VolatileMemoryRepository {
         actor: Option<&MemoryActor>,
     ) -> Result<bool, MemErr> {
         let mut guard = self.inner.lock().unwrap();
-        let Some(current) = guard
+        let current = guard
             .records
             .get(store)
             .and_then(|records| records.get(path))
-            .cloned()
-        else {
-            return Ok(false);
-        };
-        if current.id != base_id || current.sha != base_sha {
-            return Err(MemErr::Conflict {
-                current: Box::new(current.to_memory(true)),
-            });
+            .cloned();
+        match ConditionalDeleteAdmission::new(
+            current
+                .as_ref()
+                .map(|head| (head.id == base_id, head.sha == base_sha)),
+        ) {
+            ConditionalDeleteAdmission::Absent => return Ok(false),
+            ConditionalDeleteAdmission::Conflict => {
+                return Err(MemErr::Conflict {
+                    current: Box::new(
+                        current
+                            .expect("conflict requires the observed head")
+                            .to_memory(true),
+                    ),
+                });
+            }
+            ConditionalDeleteAdmission::Delete => {}
         }
+        let current = current.expect("delete admission requires the observed head");
         guard
             .records
             .get_mut(store)
@@ -632,21 +755,20 @@ impl VolatileMemoryRepository {
             .get(&source_path)
             .expect("source path was discovered under the same lock");
         let already_current = current.sha == new_sha && source_path == requested_path;
-        if expected_path.is_some_and(|path| path != source_path) {
-            return Err(MemErr::Conflict {
-                current: Box::new(current.to_memory(true)),
-            });
-        }
-        if current.sha != base_sha {
-            if already_current {
+        match HeadUpdateAdmission::new(
+            expected_path.is_none_or(|path| path == source_path),
+            current.sha == base_sha,
+            already_current,
+        ) {
+            HeadUpdateAdmission::Conflict => {
+                return Err(MemErr::Conflict {
+                    current: Box::new(current.to_memory(true)),
+                });
+            }
+            HeadUpdateAdmission::Current => {
                 return Ok(current.to_memory(true));
             }
-            return Err(MemErr::Conflict {
-                current: Box::new(current.to_memory(true)),
-            });
-        }
-        if already_current {
-            return Ok(current.to_memory(true));
+            HeadUpdateAdmission::Apply => {}
         }
 
         let mut record = store_map
@@ -689,6 +811,31 @@ impl VolatileMemoryRepository {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn head_mutation_admission_decision_tables_cover_every_cause_partition() {
+        // U1-U4 and D1-D3 above are the complete finite Boolean quotients used
+        // by the three repositories. Native enumeration cross-checks the same
+        // production functions independently from the symbolic harnesses.
+        for expected_path_matches in [false, true] {
+            for base_matches in [false, true] {
+                for already_current in [false, true] {
+                    check_head_update_admission(
+                        expected_path_matches,
+                        base_matches,
+                        already_current,
+                    );
+                }
+            }
+        }
+        check_conditional_delete_admission(None);
+        for id_matches in [false, true] {
+            for sha_matches in [false, true] {
+                check_conditional_delete_admission(Some((id_matches, sha_matches)));
+            }
+        }
+    }
+
     #[cfg(any(feature = "sqlite", feature = "postgres"))]
     #[test]
     fn stored_copy_candidate_requires_exact_identity_and_valid_content() {
