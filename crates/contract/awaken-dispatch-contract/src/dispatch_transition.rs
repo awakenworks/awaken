@@ -1021,25 +1021,29 @@ mod proofs {
     #[kani::proof]
     fn stale_dispatch_claim_cannot_modify_authoritative_state() {
         let state = arbitrary_transition();
-        let stale_epoch = kani::any();
-        kani::assume(stale_epoch != state.lease_epoch);
-        assert_eq!(
-            state.settle(stale_epoch, kani::any(), PhysicalAttemptSlot::Empty),
-            GuardedTransition::Fenced
-        );
-        assert_eq!(
-            state.relinquish(
-                stale_epoch,
-                kani::any(),
-                PhysicalAttemptSlot::Empty,
-                kani::any(),
-            ),
-            RelinquishTransition::Fenced
-        );
-        assert_eq!(
-            state.exhaust_retries(stale_epoch, kani::any()),
-            GuardedTransition::Fenced
-        );
+        let candidate_epoch = kani::any();
+        let slot = arbitrary_physical_slot();
+        // Cause/effect table: C1 the supplied epoch is current/stale; C2 the
+        // logical action is settle/relinquish/exhaust; C3 the physical slot is
+        // empty/exact/other/corrupt. E1 stale is fenced for every action and
+        // slot; E2 current remains owned by each action's dedicated harness.
+        // Constraint: epoch inequality is evaluated by the production reducer
+        // without constraining Kani's input domain. Rule SF1=C1(stale) x
+        // C2(any) x C3(any) -> E1; C1(current) -> E2.
+        if candidate_epoch != state.lease_epoch {
+            assert_eq!(
+                state.settle(candidate_epoch, kani::any(), slot),
+                GuardedTransition::Fenced
+            );
+            assert_eq!(
+                state.relinquish(candidate_epoch, kani::any(), slot, kani::any()),
+                RelinquishTransition::Fenced
+            );
+            assert_eq!(
+                state.exhaust_retries(candidate_epoch, kani::any()),
+                GuardedTransition::Fenced
+            );
+        }
     }
 
     #[kani::proof]

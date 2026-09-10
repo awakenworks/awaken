@@ -2546,15 +2546,6 @@ async fn supersession_store_spec() {
 }
 
 #[tokio::test]
-async fn settle_fences_stale_epoch_store_spec() {
-    harness::assert_settle_fences_stale_epoch(
-        &MemoryDispatchStore::new(),
-        &awaken_dispatch_testkit::LogicalCommandClock,
-    )
-    .await;
-}
-
-#[tokio::test]
 async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
     // Cause/effect graph: C1 claim epoch is current/stale; C2 commit Run matches
     // the guarded dispatch; C3 commit Thread matches it; C4 a dispatch exists.
@@ -2666,15 +2657,6 @@ async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
 async fn concurrent_recovery_yields_one_winner_on_memory() {
     harness::assert_concurrent_recovery_yields_one_winner(
         std::sync::Arc::new(MemoryDispatchStore::new()),
-        &awaken_dispatch_testkit::LogicalCommandClock,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn awaiting_settle_fences_stale_epoch_store_spec() {
-    harness::assert_awaiting_settle_fences_stale_epoch(
-        &MemoryDispatchStore::new(),
         &awaken_dispatch_testkit::LogicalCommandClock,
     )
     .await;

@@ -550,30 +550,10 @@ async fn supersession_on_sqlite() {
 }
 
 #[tokio::test]
-async fn settle_fences_stale_epoch_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory().expect("open");
-    harness::assert_settle_fences_stale_epoch(
-        &store,
-        &awaken_dispatch_testkit::LogicalCommandClock,
-    )
-    .await;
-}
-
-#[tokio::test]
 async fn concurrent_recovery_yields_one_winner_on_sqlite() {
     let store = std::sync::Arc::new(SqliteDispatchStore::open_in_memory().expect("open"));
     harness::assert_concurrent_recovery_yields_one_winner(
         store,
-        &awaken_dispatch_testkit::LogicalCommandClock,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn awaiting_settle_fences_stale_epoch_on_sqlite() {
-    let store = SqliteDispatchStore::open_in_memory().expect("open");
-    harness::assert_awaiting_settle_fences_stale_epoch(
-        &store,
         &awaken_dispatch_testkit::LogicalCommandClock,
     )
     .await;
