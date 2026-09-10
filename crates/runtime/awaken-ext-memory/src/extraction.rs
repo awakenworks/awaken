@@ -403,7 +403,7 @@ impl MemoryExtractionIntent {
                 "claim owner and positive lease are required".into(),
             ));
         }
-        if self.status.is_terminal() {
+        if !self.status.is_recoverable() {
             return Err(MemoryExtractionError::InvalidTransition {
                 from: self.status,
                 to: MemoryExtractionStatus::Claimed,

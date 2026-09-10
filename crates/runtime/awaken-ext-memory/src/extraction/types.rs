@@ -86,12 +86,45 @@ pub enum MemoryExtractionStatus {
 }
 
 impl MemoryExtractionStatus {
+    /// The complete fail-closed scheduling set. Repository adapters bind these
+    /// names instead of maintaining their own terminal-state exclusions.
+    pub const RECOVERABLE: [Self; 4] =
+        [Self::Pending, Self::Claimed, Self::Extracted, Self::Stored];
+
     #[must_use]
-    pub fn is_terminal(self) -> bool {
+    pub const fn storage_name(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Claimed => "claimed",
+            Self::Extracted => "extracted",
+            Self::Stored => "stored",
+            Self::Completed => "completed",
+            Self::ExecutionIndeterminate => "execution_indeterminate",
+            Self::TerminalFailed => "terminal_failed",
+        }
+    }
+
+    #[must_use]
+    pub const fn recoverable_storage_names() -> [&'static str; 4] {
+        [
+            Self::RECOVERABLE[0].storage_name(),
+            Self::RECOVERABLE[1].storage_name(),
+            Self::RECOVERABLE[2].storage_name(),
+            Self::RECOVERABLE[3].storage_name(),
+        ]
+    }
+
+    #[must_use]
+    pub const fn is_recoverable(self) -> bool {
         matches!(
             self,
-            Self::Completed | Self::ExecutionIndeterminate | Self::TerminalFailed
+            Self::Pending | Self::Claimed | Self::Extracted | Self::Stored
         )
+    }
+
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        !self.is_recoverable()
     }
 }
 
