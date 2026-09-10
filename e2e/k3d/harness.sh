@@ -24,6 +24,19 @@ k3d_validate_image_digest() {
   [[ "$1" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]]
 }
 
+# Nested k3d nodes observe the host filesystem size. Produce one absolute
+# kubelet eviction policy so a large host cannot turn ample free bytes into a
+# percentage-based DiskPressure taint. Callers still own capacity admission.
+k3d_eviction_hard() {
+  local eviction="${1:-}"
+  [[ "$eviction" =~ ^[1-9][0-9]*(Ki|Mi|Gi|Ti)$ ]] || {
+    echo "invalid k3d eviction threshold: $eviction" >&2
+    return 2
+  }
+  printf 'eviction-hard=imagefs.available<%s,nodefs.available<%s\n' \
+    "$eviction" "$eviction"
+}
+
 # Resolve the manifest identity of the image just built by the canonical image
 # builder. Docker's config ID is not a registry/OCI manifest digest. Never
 # synthesize a digest from a tag or substitute another published release.
@@ -43,6 +56,23 @@ print(sorted(set(values))[0])
     return 2
   }
   printf '%s\n' "$digest"
+}
+
+# Render one deployment-owned Kubernetes Sandbox image placeholder with the
+# exact manifest identity admitted and imported by the caller. Runtime rejects
+# mutable control-forwarder images, so a missing or duplicated binding must fail
+# before Kubernetes sees any workload.
+k3d_render_sandbox_image() {
+  local overlay="${1:-}" image="${2:-}" manifest marker_count
+  [[ -n "$overlay" && "$overlay" != -* ]] || return 2
+  k3d_validate_image_digest "$image" || return 2
+  manifest=$(kubectl kustomize "$overlay") || return "$?"
+  marker_count=$( { grep -oF '__AWAKEN_SANDBOX_IMAGE__' <<<"$manifest" || true; } | wc -l)
+  [[ "$marker_count" = "1" ]] || {
+    echo "Kubernetes deployment must contain exactly one Sandbox image pin" >&2
+    return 2
+  }
+  printf '%s\n' "${manifest/__AWAKEN_SANDBOX_IMAGE__/$image}"
 }
 
 k3d_capacity_preflight() {
@@ -277,10 +307,8 @@ k3d_create_cluster() {
     echo "invalid k3d agent count: $agents" >&2
     return 2
   }
-  [[ "$eviction" =~ ^[1-9][0-9]*(Ki|Mi|Gi|Ti)$ ]] || {
-    echo "invalid k3d eviction threshold: $eviction" >&2
-    return 2
-  }
+  local threshold
+  threshold=$(k3d_eviction_hard "$eviction") || return "$?"
   [[ -z "$registry" || "$registry" =~ ^[a-zA-Z0-9.-]+:[0-9]+$ ]] || {
     echo "invalid k3d Registry coordinate: $registry" >&2
     return 2
@@ -299,7 +327,6 @@ k3d_create_cluster() {
   fi
   k3d_capacity_preflight "$((agents + 1))" "${images[@]}" || return "$?"
   k3d_delete_cluster "$cluster" || return "$?"
-  local threshold="eviction-hard=imagefs.available<${eviction},nodefs.available<${eviction}"
   local args=(
     cluster create "$cluster" --agents "$agents" --wait --timeout 180s
     --runtime-ulimit "nofile=65536:65536"
@@ -511,6 +538,34 @@ k3d_harness_selftest() (
     for document in '[]' 'null' '{}' 'invalid-json' '[null]' '["tag:latest"]' '["repo@sha256:short"]'; do
       ! k3d_image_digest exact:built >/dev/null 2>&1
     done
+  )
+  # Render-binding cause/effect table: C1 one deployment placeholder + C2 one
+  # validated immutable image + C3 successful Kustomize render => the exact
+  # image appears once and no marker remains. Missing/duplicate markers, a
+  # mutable reference, option-shaped input, or a render failure must produce no
+  # usable manifest; Kubernetes apply is deliberately outside this function.
+  (
+    local digest="registry.test/sandbox@sha256:$(printf 'b%.0s' {1..64})"
+    local document result=0 rendered
+    kubectl() {
+      [[ "$*" = "kustomize fixture" ]] || return 99
+      printf '%s\n' "$document"
+      return "$result"
+    }
+    document='container_image = "__AWAKEN_SANDBOX_IMAGE__"'
+    rendered=$(k3d_render_sandbox_image fixture "$digest")
+    [[ "$rendered" = "container_image = \"$digest\"" ]]
+    for document in \
+      'container_image = "tag:latest"' \
+      'first = "__AWAKEN_SANDBOX_IMAGE__" second = "__AWAKEN_SANDBOX_IMAGE__"'; do
+      ! k3d_render_sandbox_image fixture "$digest" >/dev/null 2>&1
+    done
+    document='container_image = "__AWAKEN_SANDBOX_IMAGE__"'
+    ! k3d_render_sandbox_image fixture tag:latest >/dev/null 2>&1
+    ! k3d_render_sandbox_image --fixture "$digest" >/dev/null 2>&1
+    ! k3d_render_sandbox_image >/dev/null 2>&1
+    result=7
+    ! k3d_render_sandbox_image fixture "$digest" >/dev/null 2>&1
   )
   # Cause/effect decision table:
   # H1 canonical name/count/quantity -> one delete + create with server and agent
@@ -743,6 +798,12 @@ print(json.dumps(value))
   # or removed percentage input => no cluster effects. T4 capacity failure with
   # otherwise valid arguments => no deletion/create. Other negative rows retain
   # a valid quantity so an unrelated error cannot mask missing validation.
+  [[ "$(k3d_eviction_hard 2Gi)" = \
+    "eviction-hard=imagefs.available<2Gi,nodefs.available<2Gi" ]]
+  local invalid_eviction
+  for invalid_eviction in "" 0Gi 2% low -1Gi; do
+    ! k3d_eviction_hard "$invalid_eviction" >/dev/null 2>&1
+  done
   k3d_calls=()
   k3d_create_cluster "awaken-test-1" 1 2Gi
   [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<2Gi,nodefs.available<2Gi@server:*"* ]]
