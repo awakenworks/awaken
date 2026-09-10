@@ -1591,8 +1591,9 @@ def check_observation_trace_mutants(tlc_jar: Path, trace_dir: Path) -> None:
 
 def check_acp_boundary_model_mutants(tlc_jar: Path) -> None:
     # One baseline and mutation owner for the strict Cowork gate and focused
-    # checks: observer drop, fabricated ACK, duplex deadlock, failed-TERM
-    # escalation veto, and reachable error-then-KILL / timeout-then-exit witnesses.
+    # checks: prompt-before-handshake, observer drop, fabricated ACK, duplex
+    # deadlock, failed-TERM escalation veto, and reachable error-then-KILL /
+    # timeout-then-exit witnesses.
     # Cause/effect: retained owner + timeout + actual exit must permit ACK; the
     # deliberately false invariant must fail, preventing vacuous recovery claims.
     source = (ROOT / "formal/tla/AcpBoundary.tla").read_text()
@@ -1600,6 +1601,9 @@ def check_acp_boundary_model_mutants(tlc_jar: Path) -> None:
     timeout = source[source.index("CleanupTimeout =="):source.index("ObserveExit(code) ==")]
     mutant_timeout = timeout.replace("killSent, observing, ack", "killSent, ack") + "  /\\ observing' = FALSE\n"
     check_tlc_model_mutations(tlc_jar, "AcpBoundary", source, config, [
+        (source.replace("/\\ handshake\n  /\\ ~permissionCall", "/\\ ~permissionCall", 1),
+         config.replace("INVARIANTS Safety", "INVARIANTS HandshakeBeforePrompt"),
+         "HandshakeBeforePrompt"),
         (source.replace(timeout, mutant_timeout), config.replace("INVARIANTS Safety", "INVARIANTS CleanupObserverRetained Safety"), "CleanupObserverRetained"),
         (source.replace("/\\ exitCode # 0 /\\ observing /\\ ~ack", "/\\ termSent /\\ observing /\\ ~ack"), config.replace("INVARIANTS Safety", "INVARIANTS NoFabricatedQuiescence Safety"), "NoFabricatedQuiescence"),
         (source.replace('/\\ wireOutcome = "Active" /\\ downlink > 0', '/\\ wireOutcome = "Active" /\\ downlink > 0 /\\ hostLeft = 0'), config.replace("INVARIANTS Safety", "INVARIANTS WireCanAdvance Safety"), "WireCanAdvance"),
@@ -1654,9 +1658,10 @@ def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
         (source.replace('!.quiesced = (shutdown.active = {})', '!.quiesced = TRUE', 1),
          config, "NoFabricatedQuiescence"),
     ])
-    # C1 restore timeout-as-observer-drop; C2 TERM-as-ACK; C3 crash-as-ACK;
-    # C4 first-target-as-complete-fanout. Each mutant must fail its independent
-    # invariant after a green baseline, never a syntax/build/infrastructure error.
+    # C1 permit prompt before handshake; C2 restore timeout-as-observer-drop;
+    # C3 TERM-as-ACK; C4 crash-as-ACK; C5 first-target-as-complete-fanout. Each
+    # mutant must fail its independent invariant after a green baseline, never a
+    # syntax/build/infrastructure error.
     check_acp_boundary_model_mutants(tlc_jar)
     source = (ROOT / "formal/tla/SessionThreadToolComposition.tla").read_text()
     config = (ROOT / "formal/tla/SessionThreadToolComposition.cfg").read_text()
@@ -1705,7 +1710,7 @@ def check_cowork_lifecycle_model_mutants(tlc_jar: Path) -> None:
         (source.replace("projectedVersion' = OpeningChoice", "projectedVersion' = 0", 1),
          opening_config, "OpeningIdentityStable"),
     ])
-    print("Cowork lifecycle mutation score: 21/21 killed (worker evidence 3, drain 4, ACP/composition/rollout 5, cleanup evidence 4, presentation/admission 2, opening identity 3); drain ACK witness reachable")
+    print("Cowork lifecycle mutation score: 22/22 killed (worker evidence 3, drain 4, ACP/composition/rollout 6, cleanup evidence 4, presentation/admission 2, opening identity 3); drain ACK witness reachable")
 
 
 def check_observation_rule_mutants(trace_dir: Path, manifest: dict) -> None:

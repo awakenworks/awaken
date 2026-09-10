@@ -404,6 +404,9 @@ pub struct SessionConfigOptionSelection {
 /// but nothing (it has no session/permission concept).
 pub struct TurnConfig<'a> {
     pub tool_aliases: std::collections::BTreeMap<String, String>,
+    /// Project the Run's existing max_steps budget into adapters whose SDK owns
+    /// an opaque provider loop (Claude Code supports this as maxTurns).
+    pub max_turn_requests: Option<usize>,
     /// Authorizes the agent's mid-turn tool requests (the neutral `ToolPermissionPolicy`
     /// behind an executor adapter).
     pub resolver: &'a dyn PermissionResolver,
@@ -439,8 +442,9 @@ pub struct TurnConfig<'a> {
     /// handshake must reproduce before any configured option or prompt is sent.
     pub expected_capability: Option<AcpCapabilityExpectation>,
     /// Per-step wall-clock bound for the prompt-free ACP handshake. This is not
-    /// the turn/job deadline: it only fences `initialize` and `session/new|load`
-    /// so a live child that never answers cannot retain a Run claim forever.
+    /// the turn/job deadline: it fences `initialize` (including optional auth),
+    /// `session/new|load`, and every selected Session configuration step so a live
+    /// child that never answers cannot retain a Run claim forever.
     pub handshake_step_deadline: std::time::Duration,
     /// Bounded protocol cancellation drain after an Await boundary. The pending
     /// ticket remains authoritative even if the adapter does not acknowledge.
@@ -462,6 +466,7 @@ impl<'a> TurnConfig<'a> {
         Self {
             resolver,
             tool_aliases: Default::default(),
+            max_turn_requests: None,
             mcp_servers: Vec::new(),
             session_id: None,
             session_model: None,

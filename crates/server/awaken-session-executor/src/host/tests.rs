@@ -3358,7 +3358,8 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
     // reservation caller evicts it; C4 the admitted Namespace provider preserves
     // one path for arbitrary ACP processes; C5 the direct live-authored Skill
     // source exists while initially empty and therefore requires the canonical
-    // ACP tool-export adapter; C6 the publication selects one Hand descriptor.
+    // ACP tool-export adapter; C6 the publication selects one Hand descriptor;
+    // C7 it also selects one ClientExecuted descriptor.
     // Effects: E1 execution replaces that context; E2 the replacement owns a
     // physical Environment; E3 the coordination envelope performs no ACP MCP
     // export; E4 execution exports the exact descriptor/executor set once.
@@ -3379,6 +3380,7 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
                 .find(|descriptor| descriptor.id == "read")
                 .expect("canonical read descriptor"),
         )
+        .tool(crate::config::client_tool_descriptor("desktop_search"))
         .build();
     let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
         .expect("one exact ACP publication");
@@ -3424,8 +3426,11 @@ async fn acp_execution_rebuilds_an_envelope_only_reservation_context() {
     );
     assert_eq!(
         exporter.0.lock().unwrap().as_slice(),
-        &[("awaken_session".into(), vec!["read".into()])],
-        "E4 exact execution-owned export"
+        &[(
+            "awaken_session".into(),
+            vec!["read".into(), "desktop_search".into()],
+        )],
+        "E4 exact execution-owned Hand and ClientExecuted export"
     );
 }
 

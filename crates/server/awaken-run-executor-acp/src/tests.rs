@@ -80,6 +80,81 @@ async fn acp_permission_titles_use_the_canonical_mcp_tool_identity() {
 }
 
 #[tokio::test]
+async fn owned_client_result_uses_the_shared_tool_batch_before_reopening_acp() {
+    // Cause/effect decision table: C1 a RuntimeToolBatch ticket names the
+    // continuation's ClientExecution tool; C2 the Session supplies the exact
+    // ToolResult. Effect: the unchanged command reaches the existing owned port
+    // once and ACP is not opened. C3 a permission result or wrong tool is
+    // rejected by ticket validation/routing in the surrounding matrix tests.
+    let committed = Arc::new(RecordingCoordinator::default());
+    let activation = activation_without_session_home();
+    let ticket = ResumeTicket::new(
+        "client-execution:wire-client",
+        activation.run_id.clone(),
+        activation.thread_id.clone(),
+        activation.snapshot.id.0.clone(),
+        activation.snapshot.fingerprint.0.clone(),
+        AwaitTarget::ToolCall {
+            authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
+            reason: ToolAwaitReason::ClientExecution,
+            call_id: "client-call".into(),
+            tool: PendingTool {
+                tool_id: "desktop_search".into(),
+                arguments: serde_json::json!({"query":"customer"}),
+            },
+        },
+    );
+    super::commit::commit(
+        &RuntimeRunContext::new().with_commit(committed.clone()),
+        None,
+        &activation.thread_id,
+        RunDisposition::awaiting(ticket.clone()),
+        vec![Message::new(
+            MessageId::assistant(&activation.run_id, 0),
+            Role::Assistant,
+            vec![ContentBlock::tool_use(
+                "client-call",
+                "desktop_search",
+                serde_json::json!({"query":"customer"}),
+            )],
+        )],
+        Vec::new(),
+    )
+    .await
+    .expect("C1 commits one ExternalResult batch");
+    let command = ResumeCommand::from_ticket(
+        &ticket,
+        ResumeResult::ToolResult(awaken_runtime_contract::tool::ToolOutput::ok(
+            "client-call",
+            "found",
+        )),
+        0,
+    )
+    .with_operation_id("client-result-operation");
+    let probe = Arc::new(OwnedContinuationProbe {
+        resumes: Default::default(),
+        recoveries: AtomicUsize::new(0),
+        fail: false,
+    });
+    let (executor, opens, _, _) = counting_executor();
+    assert_eq!(
+        executor
+            .with_owned_tool_continuation(Some(probe.clone()))
+            .resume(
+                activation,
+                command.clone(),
+                RuntimeRunContext::new()
+                    .with_commit(committed.clone())
+                    .with_reader(committed),
+            )
+            .await
+            .expect("C2 reaches the shared continuation"),
+        RunState::Awaiting
+    );
+    assert_eq!(*probe.resumes.lock().unwrap(), vec![command]);
+    assert_eq!(opens.load(Ordering::SeqCst), 0);
+}
+#[tokio::test]
 async fn acp_mcp_server_name_drift_uses_only_conservative_session_alias_consensus() {
     // Cause/effect graph: C1 the ACP server name matches a Session alias; C2 it
     // drifts to the MCP implementation's advertised name; C3 all configured
@@ -1683,6 +1758,49 @@ async fn streaming_call_refinements_preserve_one_staged_use_and_terminal_argumen
     );
 }
 
+#[tokio::test]
+async fn opaque_acp_tool_loop_is_bounded_by_the_run_step_budget() {
+    // Cause/effect decision table: B1 refinements of one ACP call consume one
+    // slot; B2 distinct calls through max_steps are accepted; B3 the next
+    // distinct call fails before allocation. Effects: no false charge for
+    // streaming updates and a deterministic bound on messages retained while an
+    // opaque SDK controls its own provider loop. max_steps remains the one budget
+    // authority; this adapter only projects it into the hidden loop.
+    let mut appender =
+        CollectingAppender::new(RunId("bounded".into()), "0".into(), 0, None, None, None)
+            .with_tool_call_limit(2);
+    for (seq, id, input) in [
+        (1, "one", serde_json::json!({})),
+        (2, "one", serde_json::json!({"refined":true})),
+        (3, "two", serde_json::json!({})),
+    ] {
+        appender
+            .append(
+                seq,
+                &AcpProjectedEvent::ToolCall {
+                    id: id.into(),
+                    name: "desktop_search".into(),
+                    input,
+                },
+            )
+            .await
+            .expect("B1/B2 stay within the budget");
+    }
+    let error = appender
+        .append(
+            4,
+            &AcpProjectedEvent::ToolCall {
+                id: "three".into(),
+                name: "desktop_search".into(),
+                input: serde_json::json!({}),
+            },
+        )
+        .await
+        .expect_err("B3 rejects the first excess call");
+    assert!(error.to_string().contains("max_steps budget of 2"));
+    assert_eq!(appender.messages.len(), 2, "B3 allocates no third ToolUse");
+}
+
 /// Records every lifecycle event the executor emits during bring-up.
 #[derive(Default)]
 struct RecordingObserver {
@@ -3103,7 +3221,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
     // original ThreadCommit. AS2 pending target still has no result and the
     // original ticket/batch owner survives; projection must not borrow the
     // sibling result as proof that the awaiting operation executed.
-    for tool_name in ["write", "bash"] {
+    for tool_name in ["write", "desktop_search", "bash"] {
         let source = Arc::new(PermissionSource {
             changed: false,
             settling_sibling: true,
@@ -3164,15 +3282,20 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
             &committed.committed_state(&ticket.thread_id),
         ))
         .unwrap();
-        assert_eq!(
-            batch.is_some(),
-            tool_name == "write",
-            "AO owner {tool_name}"
-        );
+        assert_eq!(batch.is_some(), tool_name != "bash", "AO owner {tool_name}");
         if let Some(batch) = batch {
             batch
                 .validate_awaiting_ticket(&ticket.thread_id, &ticket)
                 .unwrap();
+            assert_eq!(
+                ticket.reason(),
+                if tool_name == "desktop_search" {
+                    AwaitReason::ExternalEvent
+                } else {
+                    AwaitReason::ToolPermission
+                },
+                "AO wait reason {tool_name}"
+            );
         } else {
             assert_eq!(
                 ticket.tool_call_authority(),
@@ -5011,8 +5134,12 @@ struct OwnedContinuationProbe {
 
 #[async_trait]
 impl awaken_runtime_contract::resume::OwnedToolContinuation for OwnedContinuationProbe {
-    fn owns_tool(&self, tool_id: &str) -> bool {
-        tool_id == "write"
+    fn tool_await_reason(&self, tool_id: &str) -> Option<ToolAwaitReason> {
+        match tool_id {
+            "write" => Some(ToolAwaitReason::Permission),
+            "desktop_search" => Some(ToolAwaitReason::ClientExecution),
+            _ => None,
+        }
     }
 
     async fn resume(
