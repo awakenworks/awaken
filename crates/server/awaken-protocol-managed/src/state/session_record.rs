@@ -155,6 +155,11 @@ pub(super) struct SessionRecord {
     /// Process-local compare-and-swap coordinate. It is advanced by every
     /// visible cache mutation and is never persisted or treated as domain truth.
     pub(super) cache_revision: u64,
+    /// True only after the sole committed-prefix reducer has completed and its
+    /// candidate passed the canonical cache/source CAS. A base record recovered
+    /// from the Session aggregate alone is not a complete cross-source prefix
+    /// and therefore cannot be served as stale Event/Thread history.
+    pub(super) committed_projection_ready: bool,
     pub(super) agent_id: String,
     pub(super) session: Session,
     /// Durable source of truth for the runtime's currently applied input projection.
@@ -216,6 +221,7 @@ impl SessionRecord {
         ))
         .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
         Ok(self.agent_id == other.agent_id
+            && self.committed_projection_ready == other.committed_projection_ready
             && self.resource_state == other.resource_state
             && self.checkpoint == other.checkpoint
             && self.overlay.anchors == other.overlay.anchors
@@ -331,6 +337,7 @@ impl SessionRecord {
         };
         Self {
             cache_revision: 0,
+            committed_projection_ready: false,
             agent_id,
             session,
             resource_state,

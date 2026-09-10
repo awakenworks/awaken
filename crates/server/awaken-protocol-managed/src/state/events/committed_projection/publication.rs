@@ -23,6 +23,7 @@ impl ProjectionRefreshCandidate {
         children: &HashMap<String, RunRecoverySnapshot>,
     ) -> Self {
         stamp_source(&mut record, session_revision, root, children);
+        record.committed_projection_ready = true;
         Self {
             base_cache_revision,
             record,
@@ -247,6 +248,29 @@ fn projection_refresh_failure_stutters_and_success_preserves_one_pair() {
         assert_eq!(visible, candidate);
         assert_eq!(visible.checkpoint, observed_checkpoint);
     }
+
+    // The read-only observation wrapper may expose that unchanged warm pair
+    // after a changed-prefix retry, but only when an earlier complete candidate
+    // established its availability. Errors never enter this decision kernel.
+    let prior_complete = kani::any();
+    let refresh_complete = kani::any();
+    let observation = super::refresh_entrypoint::projection_observation_decision(
+        prior_complete,
+        refresh_complete,
+    );
+    use super::refresh_entrypoint::ProjectionObservationDecision;
+    assert_eq!(
+        observation == ProjectionObservationDecision::UseRefreshed,
+        refresh_complete
+    );
+    assert_eq!(
+        observation == ProjectionObservationDecision::ServePrior,
+        !refresh_complete && prior_complete
+    );
+    assert_eq!(
+        observation == ProjectionObservationDecision::Retry,
+        !refresh_complete && !prior_complete
+    );
 }
 
 #[cfg(kani)]

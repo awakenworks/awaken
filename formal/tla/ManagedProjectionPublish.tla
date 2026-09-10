@@ -28,6 +28,11 @@ Dominates(left, right) ==
       ELSE IF left[component] = Absent THEN FALSE
       ELSE left[component] >= right[component]
 
+ProjectionObservationDecision(priorComplete, refreshComplete) ==
+    IF refreshComplete THEN "fresh"
+    ELSE IF priorComplete THEN "prior"
+    ELSE "retry"
+
 Init ==
     /\ source = ZeroFence
     /\ cacheRevision = 0
@@ -202,6 +207,16 @@ AlreadyCurrentIsARead ==
          /\ resultFence = previousResultFence
 BroadcastIffPublished == lastBroadcast = (lastOutcome = "applied")
 
+PriorProjectionFallbackIsExact ==
+    lastOutcome = "none" \/
+      \A priorComplete \in BOOLEAN, refreshComplete \in BOOLEAN:
+        /\ (ProjectionObservationDecision(priorComplete, refreshComplete) = "fresh")
+             <=> refreshComplete
+        /\ (ProjectionObservationDecision(priorComplete, refreshComplete) = "prior")
+             <=> (~refreshComplete /\ priorComplete)
+        /\ (ProjectionObservationDecision(priorComplete, refreshComplete) = "retry")
+             <=> (~refreshComplete /\ ~priorComplete)
+
 MixedSourceNeverBuilds ==
     lastOutcome = "mixed_source"
       => writerPhase[lastWriter] = "idle"
@@ -271,6 +286,7 @@ Safety ==
     /\ ChangedCandidateIsRequiredForPublish
     /\ AlreadyCurrentIsARead
     /\ BroadcastIffPublished
+    /\ PriorProjectionFallbackIsExact
     /\ MixedSourceNeverBuilds
 
 Spec == Init /\ [][Next]_vars

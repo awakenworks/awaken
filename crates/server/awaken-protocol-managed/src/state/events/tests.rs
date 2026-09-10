@@ -4059,6 +4059,80 @@ async fn projection_read_budget_handles_commit_bursts_and_bounds_nonconvergence(
 }
 
 #[tokio::test]
+async fn read_only_observation_serves_the_last_complete_prefix_during_continuous_commits() {
+    // Cause/effect graph: C1 the canonical reducer has published one complete
+    // warm prefix; C2 a later root Thread commit advances between both reads of
+    // every new candidate; C3 this caller is a read-only API observation.
+    // Effects: E1 C1+C2+C3 returns the prior complete prefix without a 503;
+    // E2 it performs one real refresh attempt, publishes/broadcasts nothing,
+    // and leaves the entire warm frame unchanged. Cold reads and lifecycle
+    // delivery keep the strict bounded-retry behavior in the adjacent budget
+    // table, so this fallback cannot acknowledge an undelivered lifecycle fact.
+    let runtime = LifecycleRuntime::default();
+    let state = ManagedState::new(runtime.clone());
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent":"coder", "environment_id":"env_local"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    runtime.lifecycle.lock().unwrap().push(lifecycle(
+        1,
+        &session.id,
+        &RunId("observation-continuous-run".into()),
+        RunLifecycleEventKind::Running,
+        RunState::Running,
+    ));
+    state.refresh_committed_events(&session.id).await.unwrap();
+    let before = state
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&session.id)
+        .unwrap()
+        .clone();
+    assert!(
+        before.committed_projection_ready,
+        "C1 requires a successfully published complete prefix"
+    );
+    let (_, mut live) = state.stream_subscribe(&session.id).unwrap();
+    runtime.reads.reset();
+    runtime
+        .projection_version_changes
+        .store(usize::MAX, Ordering::SeqCst);
+
+    state
+        .refresh_committed_events_for_observation(&session.id)
+        .await
+        .expect("E1 warm observation must remain available while the tail advances");
+
+    let after = state
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&session.id)
+        .unwrap()
+        .clone();
+    refresh_failure::assert_record_frame_eq(&after, &before);
+    assert_eq!(
+        runtime.reads.count("recovery"),
+        2,
+        "E2 one candidate reads the root prefix before and after its other sources"
+    );
+    assert!(
+        matches!(
+            live.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "E2 stale observation must not manufacture a publication"
+    );
+}
+
+#[tokio::test]
 async fn stale_session_root_cannot_roll_back_the_managed_cache() {
     // Cause/effect graph: C1 cache contains Session revision N; C2 a delayed
     // reader supplies revision N-1; C3 the exact revision N is replayed.
