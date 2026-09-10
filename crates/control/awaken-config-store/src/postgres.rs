@@ -148,9 +148,8 @@ async fn write_config_revision(
     conn: &mut sqlx::PgConnection,
     scope: &ScopeId,
     config: &AgentConfig,
-    expected: u64,
+    plan: crate::ConfigRevisionWritePlan,
 ) -> Result<Option<u64>, ConfigStoreError> {
-    let plan = crate::ConfigRevisionWritePlan::new(expected).map_err(reject)?;
     let statement = if plan.kind == crate::ConfigRevisionWriteKind::Insert {
         format!(
             "INSERT INTO {NS}_agent (id, data, scope_id, generation) \
@@ -273,9 +272,15 @@ impl ScopedConfigRegistry for PostgresConfigStore {
             .transpose()?
             .map(domain_generation)
             .transpose()?;
-        if current_revision.unwrap_or(0) != expected_generation {
-            return Ok(AuditedConfigWrite::Conflict { current_revision });
-        }
+        let plan =
+            match crate::ConfigRevisionWritePlan::admit(current_revision, expected_generation)
+                .map_err(reject)?
+            {
+                crate::ConfigRevisionAdmission::Apply(plan) => plan,
+                crate::ConfigRevisionAdmission::Conflict { current_revision } => {
+                    return Ok(AuditedConfigWrite::Conflict { current_revision });
+                }
+            };
         let current_config = current
             .map(|row| {
                 let Json(config): Json<AgentConfig> = row.try_get("data").map_err(reject)?;
@@ -317,7 +322,7 @@ impl ScopedConfigRegistry for PostgresConfigStore {
                 .map_err(reject)?;
             }
         }
-        let applied = write_config_revision(&mut tx, scope, &config, expected_generation).await?;
+        let applied = write_config_revision(&mut tx, scope, &config, plan).await?;
         if applied.is_none() {
             let current_revision = sqlx::query_scalar::<_, i64>(&format!(
                 "SELECT generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2"
@@ -502,10 +507,28 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         config: &AgentConfig,
         expected_generation: u64,
     ) -> Result<ConfigWrite, ConfigStoreError> {
-        let mut conn = self.pool.acquire().await.map_err(reject)?;
-        if let Some(revision) =
-            write_config_revision(&mut conn, scope, config, expected_generation).await?
-        {
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let current_revision = sqlx::query_scalar::<_, i64>(&format!(
+            "SELECT generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2 FOR UPDATE"
+        ))
+        .bind(&config.id)
+        .bind(&scope.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(reject)?
+        .map(domain_generation)
+        .transpose()?;
+        let plan =
+            match crate::ConfigRevisionWritePlan::admit(current_revision, expected_generation)
+                .map_err(reject)?
+            {
+                crate::ConfigRevisionAdmission::Apply(plan) => plan,
+                crate::ConfigRevisionAdmission::Conflict { current_revision } => {
+                    return Ok(ConfigWrite::Conflict { current_revision });
+                }
+            };
+        if let Some(revision) = write_config_revision(&mut tx, scope, config, plan).await? {
+            tx.commit().await.map_err(reject)?;
             return Ok(ConfigWrite::Applied { revision });
         }
         let current_revision = sqlx::query_scalar::<_, i64>(&format!(
@@ -513,7 +536,7 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         ))
         .bind(&config.id)
         .bind(&scope.0)
-        .fetch_optional(&mut *conn)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(reject)?
         .map(domain_generation)
