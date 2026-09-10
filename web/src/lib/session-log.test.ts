@@ -49,9 +49,11 @@ describe("Session presentation projections", () => {
   });
 
   it("aggregates tool outcomes only from exact committed result pairs", () => {
-    // Cause graph: C1 repeated tool calls, C2 success/failure/pending result,
-    // C3 valid/invalid anchors. Effects: E1 exact counts, E2 failures stay
-    // distinct from pending, E3 median uses only valid completed durations.
+    // Cause graph: C1 repeated host/client tool calls, C2 server/client
+    // success/failure/pending result, C3 valid/invalid anchors. Effects: E1
+    // exact counts, E2 failures stay distinct from pending, E3 median uses only
+    // valid completed durations. Rule D1: custom call + exact committed custom
+    // result is complete; an orphan result never completes another call.
     const rows = toolDiagnostics([
       ev({ id: "a1", type: "agent.tool_use", name: "search", processed_at: "2020-01-01T00:00:00.000Z" }),
       ev({ id: "a2", type: "agent.tool_use", name: "search", processed_at: "2020-01-01T00:00:01.000Z" }),
@@ -60,10 +62,11 @@ describe("Session presentation projections", () => {
       ev({ id: "r1", type: "agent.tool_result", tool_use_id: "a1", processed_at: "2020-01-01T00:00:00.100Z" }),
       ev({ id: "r2", type: "agent.tool_result", tool_use_id: "a2", is_error: true, processed_at: "2020-01-01T00:00:01.300Z" }),
       ev({ id: "r3", type: "agent.tool_result", tool_use_id: "a3", processed_at: "2020-01-01T00:00:02.000Z" }),
+      ev({ id: "r4", type: "user.custom_tool_result", custom_tool_use_id: "a4", processed_at: "2020-01-01T00:00:03.400Z" }),
       ev({ id: "orphan", type: "agent.tool_result", tool_use_id: "missing", is_error: true }),
     ]);
     expect(rows).toEqual([
-      { name: "publish", calls: 1, completed: 0, failures: 0, medianDurationMs: undefined },
+      { name: "publish", calls: 1, completed: 1, failures: 0, medianDurationMs: 400 },
       { name: "search", calls: 3, completed: 3, failures: 1, medianDurationMs: 200 },
     ]);
   });
