@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,7 +9,8 @@ import {assertContainerFixtureReachable, ensureCanonicalSandboxImage} from './sa
 
 test('canonical image admission verifies selected ACP runtimes on reuse and after build', async () => {
   // Causes: C1=image exists; C2=environment label; C3=Hand contracts;
-  // C4=quality tools; C5=selected runtime negotiates; C6=build repairs C1-C5.
+  // C4=quality tools; C5=selected runtime negotiates; C6=current inputs match;
+  // C7=build repairs C1-C6.
   // Rules: I1 all required checks pass => no build; I2 any required check
   // fails + C6 => build once and recheck; I3 !C5+!C6 => reject even after
   // build. Empty selection requires no ACP; Claude requires a real handshake.
@@ -18,6 +20,9 @@ test('canonical image admission verifies selected ACP runtimes on reuse and afte
   const previous = { ...process.env };
   try {
     for (const relative of ['deploy/images/sandbox/build.sh', 'deploy/images/sandbox/stage-binary.sh',
+      'deploy/images/sandbox/Dockerfile', 'deploy/images/sandbox/Dockerfile.dockerignore',
+      'deploy/images/sandbox/hermes-acp-bootstrap.py', 'deploy/images/sandbox/install-acp-runtimes.py',
+      'deploy/images/sandbox/verify-acp-runtimes.py',
       'scripts/ci/_deadline.sh', 'scripts/ci/deadline.py',
       'e2e/cargo_binary.mjs', 'e2e/executable_snapshot.mjs']) {
       const destination = path.join(root, relative);
@@ -35,28 +40,53 @@ else if(args[0]==='metadata') console.log(JSON.stringify({build_directory:proces
 else console.log('{}');
 `, { mode:0o755 });
     await fs.writeFile(path.join(bin, 'docker'), `#!${process.execPath}
-const fs=require('node:fs'),args=process.argv.slice(2),mode=process.env.ADMISSION_MODE;
+const fs=require('node:fs'),crypto=require('node:crypto'),args=process.argv.slice(2),mode=process.env.ADMISSION_MODE;
 fs.appendFileSync(process.env.ADMISSION_CALLS,JSON.stringify(args)+'\\n');
 const repaired=fs.existsSync(process.env.ADMISSION_STATE);
 if(args[0]==='build'){fs.writeFileSync(process.env.ADMISSION_STATE,'built');process.exit(0);}
 if(args[0]==='image'){
  if(!repaired&&mode==='absent')process.exit(1);
- if(args.includes('--format'))console.log(!repaired&&mode==='label'?'old':'2');
+ if(args.includes('--format')){
+  const format=args[args.indexOf('--format')+1];
+  if(format.includes('build-input-fingerprint'))console.log(!repaired&&mode==='current'?'0'.repeat(64):process.env.ADMISSION_FINGERPRINT);
+  else console.log(!repaired&&mode==='label'?'old':'2');
+ }
+}else if(args.includes('sha256sum')){
+ const target=args.at(-1),bytes=target.includes('acp-runtimes')?Buffer.from('{}\\n'):fs.readFileSync(process.env.ADMISSION_BINARY);
+ const digest=!repaired&&mode==='current'?'0'.repeat(64):crypto.createHash('sha256').update(bytes).digest('hex');
+ console.log(digest+'  '+target);
 }else if(args.includes('/usr/local/bin/awaken-verify-acp-runtimes')){
  if(mode==='unrepairable'||(!repaired&&mode==='runtime'))process.exit(1);
 }else if(!repaired&&((mode==='hand'&&args.includes('hand'))||(mode==='publish'&&args.includes('repository-publish-noreplace'))||(mode==='reader'&&args.includes('read-tree-nofollow'))||(mode==='tools'&&args.includes('/bin/sh'))))process.exit(1);
 `, { mode:0o755 });
     Object.assign(process.env, { PATH:bin + path.delimiter + previous.PATH,
-      ADMISSION_CALLS:calls, ADMISSION_STATE:state, ADMISSION_BINARY:executable, ADMISSION_CACHE:path.join(root, 'cache') });
-    for (const [runtimeIds, mode] of [['','ok'], ['claude','ok'], ['all','ok'], ['claude,codex','ok'], ['', 'runtime'],
+      ADMISSION_CALLS:calls, ADMISSION_STATE:state, ADMISSION_BINARY:executable, ADMISSION_CACHE:path.join(root, 'cache'),
+      AWAKEN_SANDBOX_RUST_TOOLCHAIN_IMAGE:'verified-toolchain-seed' });
+    const staticInputs = ['Dockerfile', 'Dockerfile.dockerignore', 'hermes-acp-bootstrap.py',
+      'install-acp-runtimes.py', 'verify-acp-runtimes.py'];
+    const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+    const inputHashes = await Promise.all(staticInputs.map(name => fs.readFile(path.join(root, 'deploy/images/sandbox', name)).then(hash)));
+    inputHashes.push(hash(await fs.readFile(executable)), hash(Buffer.from('{}\n')));
+    for (const [runtimeIds, mode] of [['','ok'], ['claude','ok'], ['all','ok'], ['claude,codex','ok'], ['', 'runtime'], ['', 'current'],
       ...['absent','label','hand','publish','reader','tools','runtime','unrepairable'].map(mode=>['claude', mode])]) {
       await fs.writeFile(calls, ''); await fs.rm(state, { force:true });
       process.env.ADMISSION_MODE = mode;
+      process.env.ADMISSION_FINGERPRINT = hash(Buffer.from(`runtime_ids=${runtimeIds}\n${inputHashes.join('\n')}\n`));
       const run = () => ensureCanonicalSandboxImage({engine:'docker',image:'exact-fixture',repoRoot:root,runtimeIds});
       if (mode === 'unrepairable') assert.throws(run); else run();
       const commands = (await fs.readFile(calls,'utf8')).trim().split('\n').map(JSON.parse);
       const mustBuild = mode !== 'ok' && !(runtimeIds === '' && mode === 'runtime');
-      assert.equal(commands.filter(args=>args[0] === 'build').length, Number(mustBuild), `${runtimeIds}/${mode}`);
+      const builds = commands.filter(args=>args[0] === 'build');
+      assert.equal(builds.length, Number(mustBuild), `${runtimeIds}/${mode}`);
+      for (const args of builds) {
+        const toolchain = args.indexOf('RUST_TOOLCHAIN_IMAGE=verified-toolchain-seed');
+        assert.ok(toolchain > 0 && args[toolchain - 1] === '--build-arg', 'toolchain seed is one data-only build argument');
+        const generated = args.indexOf('--build-context');
+        assert.match(args[generated + 1], /^awaken_generated=.+/, 'current-source artifacts use one isolated named context');
+        const fingerprint = args.find(arg => arg.startsWith('AWAKEN_BUILD_INPUT_FINGERPRINT='));
+        assert.equal(fingerprint, `AWAKEN_BUILD_INPUT_FINGERPRINT=${process.env.ADMISSION_FINGERPRINT}`);
+        assert.equal(args.at(-1), 'deploy/images/sandbox', 'unrelated repository bytes never enter the Sandbox context');
+      }
       const probes = commands.filter(args=>args.includes('/usr/local/bin/awaken-verify-acp-runtimes'));
       assert.equal(probes.length, runtimeIds ? (['runtime','unrepairable'].includes(mode) ? 2 : 1) : 0);
       for (const args of probes) assert.deepEqual(args.slice(args.indexOf('exact-fixture') + 1),
