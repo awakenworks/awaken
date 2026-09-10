@@ -796,6 +796,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness unsettled_running_is_always_rejected_and_settled_kinds_never_interchange \
     --harness settled_step_projection_cannot_invent_pending_or_observations
   run_kani awaken-config-service \
+    --harness publication_resolution_invokes_exactly_one_owner \
     --harness only_the_reserved_scope_selects_admin_catalog_membership \
     --harness every_non_reserved_scope_selects_strictly_global_membership
   run_kani awaken-service-lifecycle \

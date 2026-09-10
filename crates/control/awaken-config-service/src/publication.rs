@@ -63,6 +63,37 @@ pub(crate) struct AgentPublicationDraft {
     pub(crate) advisor: Option<awaken_runtime_contract::resolved::ResolvedModelCandidate>,
 }
 
+/// Enter the injected publication resolver exactly once for one authored model
+/// pool. `FnOnce` makes a second catalog/credential selection unavailable inside
+/// this call boundary; outer publication retries and a separately authored
+/// advisor remain separate resolution operations.
+fn invoke_publication_resolution_once<R>(resolve: impl FnOnce() -> R) -> R {
+    resolve()
+}
+
+#[cfg(any(test, kani))]
+fn check_publication_resolution_invocation(succeeds: bool) {
+    let calls = std::cell::Cell::new(0_u8);
+    let observed = invoke_publication_resolution_once(|| {
+        calls.set(calls.get() + 1);
+        if succeeds { Ok(7_u8) } else { Err(9_u8) }
+    });
+
+    assert_eq!(calls.get(), 1);
+    assert_eq!(observed, if succeeds { Ok(7) } else { Err(9) });
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn publication_resolution_invokes_exactly_one_owner() {
+    // Cause/effect decision table: R1 resolver succeeds -> invoke once and
+    // return its exact success; R2 resolver fails -> invoke once and return its
+    // exact failure. No assumptions: both result classes enter the production
+    // FnOnce seam. Future polling, cancellation and command-level retry remain
+    // outside this synchronous invocation boundary.
+    check_publication_resolution_invocation(kani::any());
+}
+
 fn validate_candidate_scope_and_proof(
     workspace: &awaken_tenancy::ScopeId,
     candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
@@ -123,10 +154,11 @@ pub(crate) async fn prepare_agent_publication(
     let source_revision = source.revision;
     let mut config = source.config;
     let authored_model_selection = config.model_binding.clone();
-    let models = model_resolver
-        .resolve_models(workspace, &config.model_binding, &config.model_fallbacks)
-        .await
-        .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
+    let models = invoke_publication_resolution_once(|| {
+        model_resolver.resolve_models(workspace, &config.model_binding, &config.model_fallbacks)
+    })
+    .await
+    .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
     let mut bindings = std::collections::BTreeSet::new();
     for candidate in std::iter::once(&models.primary).chain(models.candidates.iter()) {
         validate_candidate_scope_and_proof(workspace, candidate)?;
@@ -147,10 +179,11 @@ pub(crate) async fn prepare_agent_publication(
         Some(model) => {
             let selection = crate::parse_managed_model_id(model)
                 .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
-            let resolved = model_resolver
-                .resolve_models(workspace, &selection, &[])
-                .await
-                .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
+            let resolved = invoke_publication_resolution_once(|| {
+                model_resolver.resolve_models(workspace, &selection, &[])
+            })
+            .await
+            .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
             if !resolved.candidates.is_empty() {
                 return Err(PublishError::Unresolvable(
                     "advisor resolution must return exactly one model candidate".into(),
@@ -314,6 +347,14 @@ mod tests {
         CredentialRef, InferenceEndpoint,
         resolved::{BackendModelSelection, ModelBinding, ResolvedModelCandidate},
     };
+
+    #[test]
+    fn publication_resolution_invocation_decision_table() {
+        // R1/R2 are defined beside the production seam and cover its complete
+        // success/failure cause partition without duplicating the oracle here.
+        check_publication_resolution_invocation(true);
+        check_publication_resolution_invocation(false);
+    }
 
     fn revision(selection: ModelSelection, fallbacks: Vec<ModelBinding>) -> AgentConfigRevision {
         AgentConfigRevision {

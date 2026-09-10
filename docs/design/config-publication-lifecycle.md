@@ -196,6 +196,25 @@ changes a frozen baseline.
 
 ## Verification
 
+Publication retains one injected `ModelPublicationResolver` and its sole Control
+implementation, `CatalogModelPublicationResolver`. Each authored model pool
+enters that owner through a private `FnOnce` seam. Kani exhausts success and
+failure and proves one callback invocation with its exact result; the ordinary
+SQLite-backed publication test records the real async resolver call and checks
+the resulting Workspace credential pin in the fingerprinted snapshot. Existing
+runtime-contract proofs independently show that fallback returns the original
+published member and that exact route identity includes every binding and
+provisioning axis. No second resolver, access metadata source, or runtime catalog
+reader is introduced.
+
+That direct proof covers one local resolution call boundary and immutable
+selection. A separately authored advisor is a separate pool, while preview,
+validation, and Session override are separate commands through the same owner.
+An outer publication CAS conflict can rerun preparation. Future polling and
+cancellation, Catalog and Credential repository consistency, Agent Card and
+provider observations, persistence and fingerprinting, async transport,
+materialization, and executor behavior remain native evidence or explicit TCB.
+
 The cause/effect design for implementation tests is:
 
 | Rule | Causes | Effects |
