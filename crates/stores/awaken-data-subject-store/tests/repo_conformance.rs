@@ -53,12 +53,47 @@ async fn missing_is_not_found(repo: &dyn DataSubjectRepo) {
 }
 
 async fn create_and_cas_fence_stale_writers(repo: &dyn DataSubjectRepo) {
+    // Cause/effect decision table: C1 row={absent,present}; C2 caller expected
+    // revision={current,stale,future}; C3 candidate revision={exact successor,
+    // equal,jump}. E1 only present+current+successor replaces the whole row;
+    // E2 every other rule returns Conflict and preserves the exact durable row.
+    // The backend wrappers below apply the same rules to memory, SQLite and PG.
+    let mut missing = subject("dsub_cas_missing", "org_1");
+    missing.revision = 1;
+    assert!(matches!(
+        repo.compare_and_swap(0, missing).await,
+        Err(awaken_data_subject_application::DataSubjectError::Conflict(
+            _
+        ))
+    ));
+    assert!(
+        repo.get(&DataSubjectId("dsub_cas_missing".into()))
+            .await
+            .is_err()
+    );
+
     let original = subject("dsub_cas", "org_1");
     repo.create(original.clone()).await.unwrap();
     assert!(matches!(
         repo.create(original.clone()).await,
         Err(awaken_data_subject_application::DataSubjectError::AlreadyExists(_))
     ));
+
+    for (expected, revision) in [(0, 0), (0, 2), (1, 2)] {
+        let mut rejected = original.clone();
+        rejected.revision = revision;
+        rejected.external_id = Some(format!("rejected-{expected}-{revision}"));
+        assert!(matches!(
+            repo.compare_and_swap(expected, rejected).await,
+            Err(awaken_data_subject_application::DataSubjectError::Conflict(
+                _
+            ))
+        ));
+        assert_eq!(
+            repo.get(&DataSubjectId("dsub_cas".into())).await.unwrap(),
+            original
+        );
+    }
 
     let mut first = original.clone();
     first.revision = 1;

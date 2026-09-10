@@ -116,7 +116,7 @@ impl DataSubjectRepo for PgDataSubjectRepo {
         expected_revision: u64,
         subject: DataSubject,
     ) -> Result<(), DataSubjectError> {
-        if expected_revision.checked_add(1) != Some(subject.revision) {
+        if !subject.is_successor_of(expected_revision) {
             return Err(DataSubjectError::Conflict(subject.id.0));
         }
         let stored_revision = i64::try_from(subject.revision)
@@ -124,6 +124,25 @@ impl DataSubjectRepo for PgDataSubjectRepo {
         let stored_expected = i64::try_from(expected_revision)
             .map_err(|_| DataSubjectError::RevisionExhausted(subject.id.0.clone()))?;
         let p = NS;
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let current = sqlx::query(&format!(
+            "SELECT data, revision FROM {p}_subject WHERE id = $1 FOR UPDATE"
+        ))
+        .bind(&subject.id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(storage)?;
+        let Some(current) = current else {
+            return Err(DataSubjectError::Conflict(subject.id.0));
+        };
+        let Json(current_subject): Json<DataSubject> = current.try_get("data").map_err(storage)?;
+        let current_revision: i64 = current.try_get("revision").map_err(storage)?;
+        if i64::try_from(current_subject.revision).ok() != Some(current_revision) {
+            return Err(storage("data subject revision mismatch"));
+        }
+        if !subject.follows_revision(expected_revision, current_subject.revision) {
+            return Err(DataSubjectError::Conflict(subject.id.0));
+        }
         let result = sqlx::query(&format!(
             "UPDATE {p}_subject SET org = $1, data = $2, revision = $3 \
              WHERE id = $4 AND revision = $5"
@@ -133,10 +152,11 @@ impl DataSubjectRepo for PgDataSubjectRepo {
         .bind(stored_revision)
         .bind(&subject.id.0)
         .bind(stored_expected)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(storage)?;
         if result.rows_affected() == 1 {
+            tx.commit().await.map_err(storage)?;
             Ok(())
         } else {
             Err(DataSubjectError::Conflict(subject.id.0))

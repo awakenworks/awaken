@@ -99,7 +99,7 @@ The named harnesses in the strict gate invoke production pure functions directly
   - any withdrawal vetoes full-content capture;
   - purpose upsert retains exactly one incoming-purpose row;
   - erasure withdrawal is absorbing and idempotent.
-  - revision advance is strict or explicitly exhausted; it never saturates.
+  - revision advance is strict or explicitly exhausted; subject replacement requires the exact stored/caller revision and its non-wrapping successor through one admission rule shared by the application fixture and all three repository adapters.
 - `awaken-credential-vault`
   - disabled, cooling, and exhausted pool members remain ineligible;
   - a pool with no eligible member fails closed.

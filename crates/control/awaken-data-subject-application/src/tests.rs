@@ -36,10 +36,7 @@ impl DataSubjectRepo for InMemoryDataSubjectRepo {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let mut subjects = self.subjects.lock().expect("test subjects");
         match subjects.get(&subject.id.0) {
-            Some(current)
-                if current.revision == expected_revision
-                    && expected_revision.checked_add(1) == Some(subject.revision) =>
-            {
+            Some(current) if subject.follows_revision(expected_revision, current.revision) => {
                 subjects.insert(subject.id.0.clone(), subject);
                 Ok(())
             }
