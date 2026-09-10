@@ -8,7 +8,7 @@ export function ensureCanonicalSandboxImage({
   timeoutMs = 30_000,
   runtimeIds = '',
 }) {
-  execFileSync('bash', ['deploy/images/sandbox/build.sh', '--ensure', image, runtimeIds], {
+  execFileSync('bash', ['deploy/images/sandbox/build.sh', '--ensure-current', image, runtimeIds], {
     cwd: repoRoot,
     env: { ...process.env, CONTAINER_ENGINE: engine },
     stdio: 'inherit',

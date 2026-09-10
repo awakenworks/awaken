@@ -9,6 +9,7 @@ cd "$REPO_ROOT"
 source "$REPO_ROOT/e2e/k3d/harness.sh"
 CLUSTER="awaken-adr71"
 IMAGE="awaken-roles:latest"
+SANDBOX_BUILD_IMAGE="${ADR71_SANDBOX_BUILD_IMAGE:-awaken-sandbox:local}"
 NS="awaken-adr71"
 API_PORT="${ADR71_API_PORT:-38801}"
 DEPLOY_DIR="$REPO_ROOT/deploy/k3d"
@@ -247,6 +248,12 @@ YAML
 log "1/11 build production roles and the protocol-only Provider fixture"
 # The canonical Cargo/Docker caches own incremental reuse. An existing tag
 # alone cannot establish that any of these four binaries matches this tree.
+# Build the Sandbox before staging the four disposable role binaries inside the
+# same Docker context. Those role bytes are not Sandbox inputs; staging them
+# first invalidates BuildKit's otherwise reusable environment layers.
+"$REPO_ROOT/deploy/images/sandbox/build.sh" --ensure-current "$SANDBOX_BUILD_IMAGE" ""
+SANDBOX_IMAGE=$(k3d_image_digest "$SANDBOX_BUILD_IMAGE")
+echo "using immutable Sandbox image $SANDBOX_IMAGE"
 CONTROL_BIN=$(resolve_cargo_executable awaken-cli awaken-control)
 COORDINATOR_BIN=$(resolve_cargo_executable awaken-cli awaken-coordinator --features container-k8s)
 WORKER_BIN=$(resolve_cargo_executable awaken-worker awaken-worker --features container-k8s)
@@ -263,9 +270,6 @@ cp "$SCENARIO_BIN" "$DEPLOY_DIR/awaken-server"
 strip --strip-unneeded "$DEPLOY_DIR/awaken-control" "$DEPLOY_DIR/awaken-coordinator" "$DEPLOY_DIR/awaken-worker" "$DEPLOY_DIR/awaken-server"
 
 log "2/11 create three K3S worker nodes and import immutable test images"
-"$REPO_ROOT/deploy/images/sandbox/build.sh" awaken-sandbox:local ""
-SANDBOX_IMAGE=$(k3d_image_digest awaken-sandbox:local)
-echo "using immutable Sandbox image $SANDBOX_IMAGE"
 k3d_docker_build --load -q -t "$IMAGE" \
   --build-arg AUXILIARY_EXECUTABLE=awaken-control \
   -f "$DEPLOY_DIR/Dockerfile" "$DEPLOY_DIR" >/dev/null

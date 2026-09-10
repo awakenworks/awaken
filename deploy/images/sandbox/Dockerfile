@@ -17,8 +17,12 @@
 # Fully qualified sources are the single Docker/Podman contract: Docker may
 # resolve short names implicitly, while a secure Podman host has no ambient
 # unqualified-search registry and must still build these exact public images.
-FROM docker.io/library/rust:1.96-bookworm AS rust-toolchain
-RUN rustup component add clippy rustfmt
+ARG RUST_TOOLCHAIN_SERIES=1.96
+ARG RUST_TOOLCHAIN_IMAGE=docker.io/library/rust:${RUST_TOOLCHAIN_SERIES}-bookworm
+FROM ${RUST_TOOLCHAIN_IMAGE} AS rust-toolchain
+ARG RUST_TOOLCHAIN_SERIES
+RUN rustc --version | grep -Eq "^rustc ${RUST_TOOLCHAIN_SERIES}\\." \
+    && rustup component add clippy rustfmt
 
 FROM docker.io/library/node:22-trixie-slim
 
@@ -50,27 +54,28 @@ ENV CARGO_HOME="/usr/local/cargo" \
 # mistaken for a complete Environment base.
 LABEL org.awaken.environment-packages="2" \
       org.awaken.acp-runtime-contract="1"
+ARG AWAKEN_BUILD_INPUT_FINGERPRINT
+LABEL org.awaken.build-input-fingerprint="${AWAKEN_BUILD_INPUT_FINGERPRINT}"
 
 # Pre-bake every catalogued ACP adapter/native CLI from one immutable contract.
 # `all` is the production default; a deliberately specialized Worker pool may
 # pass a comma-separated subset, while an empty value creates a transport-only
 # hermetic test fixture. No Session startup installs or downloads an Agent.
 ARG ACP_RUNTIME_IDS=all
-ARG ACP_RUNTIME_CONTRACT=deploy/images/sandbox/.acp-runtimes.generated.json
-COPY ${ACP_RUNTIME_CONTRACT} /usr/local/share/awaken/acp-runtimes.json
-COPY deploy/images/sandbox/install-acp-runtimes.py /tmp/install-acp-runtimes.py
+COPY --from=awaken_generated .acp-runtimes.generated.json /usr/local/share/awaken/acp-runtimes.json
+COPY install-acp-runtimes.py /tmp/install-acp-runtimes.py
 RUN /usr/bin/python3 /tmp/install-acp-runtimes.py \
       /usr/local/share/awaken/acp-runtimes.json "${ACP_RUNTIME_IDS}" \
     && rm -f /tmp/install-acp-runtimes.py \
     && npm cache clean --force
-COPY deploy/images/sandbox/hermes-acp-bootstrap.py /tmp/hermes-acp-bootstrap.py
+COPY hermes-acp-bootstrap.py /tmp/hermes-acp-bootstrap.py
 RUN if [ -x /opt/awaken-python/bin/hermes-acp ]; then \
       mv /opt/awaken-python/bin/hermes-acp /opt/awaken-python/bin/hermes-acp.real \
       && install -m 0755 /tmp/hermes-acp-bootstrap.py /opt/awaken-python/bin/hermes-acp \
       && /opt/awaken-python/bin/hermes-acp --self-test; \
     fi \
     && rm -f /tmp/hermes-acp-bootstrap.py
-COPY deploy/images/sandbox/verify-acp-runtimes.py /usr/local/bin/awaken-verify-acp-runtimes
+COPY verify-acp-runtimes.py /usr/local/bin/awaken-verify-acp-runtimes
 RUN chmod 0755 /usr/local/bin/awaken-verify-acp-runtimes \
     && /usr/local/bin/awaken-verify-acp-runtimes --self-test
 
@@ -78,8 +83,7 @@ RUN chmod 0755 /usr/local/bin/awaken-verify-acp-runtimes \
 # the Session's attached `hand --stdio` process, the internal atomic Repository
 # publisher, and the nofollow terminal tree reader validated by `build.sh`
 # before an image is accepted.
-ARG BIN=deploy/images/sandbox/.awaken-sandbox.bin
-COPY --chmod=0755 ${BIN} /usr/local/bin/awaken-sandbox
+COPY --from=awaken_generated --chmod=0755 .awaken-sandbox.bin /usr/local/bin/awaken-sandbox
 
 # Non-root; the workspace + outputs are tmpfs mounts the pod spec provides.
 RUN useradd -u 10001 -m agent \

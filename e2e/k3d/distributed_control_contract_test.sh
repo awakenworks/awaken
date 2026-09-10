@@ -11,7 +11,12 @@ grep -Fq "import('@anthropic-ai/sdk')" "$REPO_ROOT/e2e/k3d/distributed_control_e
 grep -Fq 'npm ci --prefix e2e' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq 'COORDINATOR_BIN=$(resolve_cargo_executable awaken-cli awaken-coordinator --features container-k8s)' \
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
-grep -Fq 'SANDBOX_IMAGE=$(k3d_image_digest awaken-sandbox:local)' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'SANDBOX_BUILD_IMAGE="${ADR71_SANDBOX_BUILD_IMAGE:-awaken-sandbox:local}"' \
+  "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq '"$REPO_ROOT/deploy/images/sandbox/build.sh" --ensure-current "$SANDBOX_BUILD_IMAGE" ""' \
+  "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'SANDBOX_IMAGE=$(k3d_image_digest "$SANDBOX_BUILD_IMAGE")' \
+  "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq 'k3d_create_cluster "$CLUSTER" 3 "" "" --shared-volume "$CONTINUATION_VOLUME" "$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq 'k3d_import_storage_images "$CLUSTER" "$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 # D12 host build failure occurs before cluster creation and must not query an
