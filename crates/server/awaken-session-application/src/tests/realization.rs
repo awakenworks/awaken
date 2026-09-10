@@ -1391,6 +1391,92 @@ async fn lease_renewal_is_a_projection_free_root_cas() {
 }
 
 #[tokio::test]
+async fn terminal_root_renewal_preserves_frozen_mcp_cleanup_identity() {
+    // TR1: an active MCP generation was published under execution epoch 7,
+    // then terminal cleanup acquired root epoch 8. Renewing that cleanup lease
+    // extends only root authority: rewriting or validating the frozen MCP claim
+    // against epoch 8 would deadlock cleanup forever. Nonterminal propagation
+    // remains covered by `lease_renewal_is_a_projection_free_root_cas` and the
+    // MCP aggregate decision table.
+    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("terminal renewal Session repository"),
+    );
+    let prior_expiry = u64::MAX - 3;
+    let current = awaken_session_contract::SessionRealizationLease {
+        owner: "terminal-worker".into(),
+        runtime_incarnation: "terminal-worker/boot-2".into(),
+        epoch: 8,
+        expires_at_unix_ms: u64::MAX - 2,
+    };
+    let mut session = persisted("terminal-mcp-renewal", true, "terminated");
+    assert!(
+        session
+            .terminal_cleanup
+            .request(&session.session_id.clone())
+    );
+    session.realization = Some(current.clone());
+    session.mcp = awaken_session_contract::SessionMcpAttachmentSet::from_initial(
+        vec![awaken_session_contract::McpAttachmentDraft {
+            name: "browser".into(),
+            target: awaken_session_contract::McpTarget::parse_http(
+                "https://browser.example.test/mcp",
+            )
+            .unwrap(),
+            prompts_as_skills: false,
+            credential: None,
+            origin: awaken_session_contract::McpAttachmentOrigin::Session,
+        }],
+        None,
+    )
+    .unwrap();
+    let attachment_id = session.mcp.attachments[0].attachment_id.clone();
+    session
+        .mcp
+        .claim_realization(
+            &attachment_id,
+            awaken_session_contract::McpGeneration(1),
+            awaken_session_contract::McpRealizationClaim {
+                realization_id: "browser-realization".into(),
+                runtime_incarnation: "terminal-worker/boot-1".into(),
+                lease_epoch: 7,
+                lease_expires_at_unix_ms: prior_expiry,
+                stage_idempotency_key: "browser-stage".into(),
+            },
+        )
+        .unwrap();
+    session
+        .mcp
+        .activate(
+            &attachment_id,
+            awaken_session_contract::McpGeneration(1),
+            "browser-realization",
+        )
+        .unwrap();
+    let frozen_mcp = session.mcp.clone();
+    create(repo.as_ref(), session).await;
+    let application = application(
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    let renewed = application
+        .renew_session_realization(awaken_session_contract::RenewSessionRealization {
+            session_id: "terminal-mcp-renewal".into(),
+            asserted_lease: current,
+            requested_expires_at_unix_ms: u64::MAX - 1,
+        })
+        .await
+        .expect("TR1 terminal root renewal does not claim MCP ownership");
+    assert_eq!(renewed.lease.expires_at_unix_ms, u64::MAX - 1);
+    assert_eq!(
+        repo.get("terminal-mcp-renewal").await.unwrap().mcp,
+        frozen_mcp,
+        "TR1 frozen MCP cleanup identity is unchanged"
+    );
+}
+
+#[tokio::test]
 async fn local_realization_uses_stable_owner_and_process_incarnation() {
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()

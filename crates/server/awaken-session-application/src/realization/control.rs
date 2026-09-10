@@ -176,14 +176,21 @@ impl SessionApplication {
             }
             let mut renewed = current;
             renewed.expires_at_unix_ms = command.requested_expires_at_unix_ms;
-            session
-                .mcp
-                .extend_active_realization_leases(
-                    &renewed.runtime_incarnation,
-                    renewed.epoch,
-                    renewed.expires_at_unix_ms,
-                )
-                .map_err(unavailable)?;
+            // A terminal root lease authorizes cleanup; it is not the lease
+            // that originally published still-active MCP generations. Those
+            // frozen claims remain exact cleanup identity until their own
+            // drains complete, so advancing them to a newer terminal epoch
+            // would either fail forever or manufacture false ownership.
+            if !session.is_terminal() {
+                session
+                    .mcp
+                    .extend_active_realization_leases(
+                        &renewed.runtime_incarnation,
+                        renewed.epoch,
+                        renewed.expires_at_unix_ms,
+                    )
+                    .map_err(unavailable)?;
+            }
             session.realization = Some(renewed);
             match self
                 .commit_session_snapshot(

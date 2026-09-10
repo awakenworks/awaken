@@ -7,6 +7,52 @@
 use super::*;
 use crate::PreparedContainer;
 
+fn unmaterialized_absence_shape_is_closed(
+    has_packages: bool,
+    has_binds: bool,
+    has_memory: bool,
+    has_continuation_claim: bool,
+) -> bool {
+    !(has_packages || has_binds || has_memory || has_continuation_claim)
+}
+
+impl K8sRuntime {
+    async fn admit_observed_creation_attempt(
+        &self,
+        context: &ContainerRealizationContext<'_>,
+        plan: &ContainerPlan,
+    ) -> Result<Option<tokio::sync::OwnedRwLockReadGuard<()>>, RuntimeError> {
+        let Some(fence) = context.effect_fence else {
+            return Ok(None);
+        };
+        if !unmaterialized_absence_shape_is_closed(
+            !plan.packages.is_empty(),
+            !plan.binds.is_empty(),
+            !plan.memory_mounts.is_empty(),
+            continuation::claim_required(plan, self.continuation_volume.is_some()),
+        ) {
+            return Ok(None);
+        }
+        let gate = self.observed_creation_attempt(context.scope, fence);
+        let guard = gate.barrier.clone().read_owned().await;
+        if gate.closed.load(Ordering::Acquire) {
+            return Err(RuntimeError::EffectFenceExpired);
+        }
+        Ok(Some(guard))
+    }
+
+    async fn close_observed_creation_attempt(
+        &self,
+        scope: &str,
+        fence: &ContainerEffectFence,
+    ) -> Option<tokio::sync::OwnedRwLockWriteGuard<()>> {
+        let gate = self.existing_creation_attempt(scope, fence)?;
+        let guard = gate.barrier.clone().write_owned().await;
+        gate.closed.store(true, Ordering::Release);
+        Some(guard)
+    }
+}
+
 pub(super) fn deletion_incarnation(
     runtime_handle: Option<&pc::ContainerContinuationHandle>,
 ) -> Result<(Option<&str>, Option<&str>), RuntimeError> {
@@ -158,10 +204,60 @@ impl ContainerRuntime for K8sRuntime {
         plan: &ContainerPlan,
         realization_fingerprint: Option<&pc::SandboxRealizationFingerprint>,
     ) -> Result<(), RuntimeError> {
+        let _attempt = self.admit_observed_creation_attempt(context, plan).await?;
         self.admit_plan(plan).await?;
         self.create_decision(context, plan, realization_fingerprint)
             .await
             .map(drop)
+    }
+
+    async fn prove_unmaterialized_absence(
+        &self,
+        scope: &str,
+        plan: &ContainerPlan,
+        expected_effect_fence: Option<&ContainerEffectFence>,
+    ) -> Result<bool, RuntimeError> {
+        // Kubernetes creates the Pod before ConfigMaps, Secrets, Memory
+        // projection, or control sidecars. For this deliberately narrow shape,
+        // therefore, absence of the canonical Pod and PVC proves that no
+        // independently governed participant was ever published. Richer plans
+        // retain the fail-closed handle requirement.
+        if !unmaterialized_absence_shape_is_closed(
+            !plan.packages.is_empty(),
+            !plan.binds.is_empty(),
+            !plan.memory_mounts.is_empty(),
+            continuation::claim_required(plan, self.continuation_volume.is_some()),
+        ) {
+            return Ok(false);
+        }
+        let Some(expected_effect_fence) = expected_effect_fence else {
+            return Ok(false);
+        };
+        let Some(_closed_attempt) = self
+            .close_observed_creation_attempt(scope, expected_effect_fence)
+            .await
+        else {
+            // A replacement process cannot infer closure of a request it never
+            // joined. Keep recovery pending until a durable primitive exists.
+            return Ok(false);
+        };
+        self.admit_plan(plan).await?;
+        let runtime_id = self.realization_runtime_id(scope)?;
+        let runtime_pod_name = pod_name(&runtime_id);
+        let pod = self
+            .pods()
+            .get_opt(&runtime_pod_name)
+            .await
+            .map_err(backend)?;
+        if pod.is_some() {
+            return Ok(false);
+        }
+        let claim = self
+            .persistent_volume_claims()
+            .get_opt(&continuation_claim_for_pod(&runtime_pod_name)?)
+            .await
+            .map_err(backend)?;
+        Ok(claim.is_none())
     }
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
@@ -178,6 +274,7 @@ impl ContainerRuntime for K8sRuntime {
         plan: &ContainerPlan,
         realization_fingerprint: &pc::SandboxRealizationFingerprint,
     ) -> Result<PreparedContainer, RuntimeError> {
+        let _attempt = self.admit_observed_creation_attempt(context, plan).await?;
         self.admit_plan(plan).await?;
         if !plan.memory_mounts.is_empty() && context.effect_fence.is_none() {
             return Err(backend(
@@ -253,6 +350,7 @@ impl ContainerRuntime for K8sRuntime {
         realization_fingerprint: &pc::SandboxRealizationFingerprint,
         prepared_locator: &str,
     ) -> Result<String, RuntimeError> {
+        let _attempt = self.admit_observed_creation_attempt(context, plan).await?;
         self.admit_plan(plan).await?;
         let runtime_id = self.realization_runtime_id(context.scope)?;
         if context.effect_fence.is_none() {
@@ -765,5 +863,106 @@ impl ContainerRuntime for K8sRuntime {
             Some((authorization, authority)),
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod unmaterialized_absence_tests {
+    use super::*;
+
+    fn ephemeral_plan() -> ContainerPlan {
+        ContainerPlan {
+            image: "sandbox:1".into(),
+            command: vec!["sleep".into(), "30".into()],
+            env: Vec::new(),
+            control_services: Default::default(),
+            packages: Default::default(),
+            binds: Vec::new(),
+            outputs_volume: "/mnt/session/outputs".into(),
+            network: crate::NetworkMode::Open,
+            egress_identity: Default::default(),
+            requests: pc::ResourceRequests::default(),
+            limits: pc::ResourceLimits::default(),
+            filesystem_continuity: pc::FilesystemContinuity::Ephemeral,
+            memory_mounts: Vec::new(),
+            rootfs: crate::RootfsPlan::Image("sandbox:1".into()),
+        }
+    }
+
+    #[test]
+    fn proof_shape_decision_table_is_total_and_non_widening() {
+        // UA1: enumerate the complete four-cause state space. Only the row with
+        // no independently governed participant may proceed to live Pod/PVC
+        // observation; every richer topology remains handle-fenced.
+        for bits in 0_u8..16 {
+            let causes = [bits & 1 != 0, bits & 2 != 0, bits & 4 != 0, bits & 8 != 0];
+            assert_eq!(
+                unmaterialized_absence_shape_is_closed(causes[0], causes[1], causes[2], causes[3]),
+                bits == 0,
+                "UA1 row {bits:04b}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn exact_attempt_close_joins_in_flight_calls_and_rejects_late_reentry() {
+        // UA2: no observation creates closure evidence. Once the exact effect
+        // has entered the runtime, close waits for its read-side critical
+        // section, installs a process-lifetime tombstone, and every late retry
+        // is rejected before another backend call.
+        let runtime = K8sRuntime::for_test("127.0.0.1:1".parse().unwrap());
+        let fence = ContainerEffectFence::new(
+            "create-operation",
+            "worker-owner",
+            "worker-boot",
+            7,
+            u64::MAX,
+        )
+        .unwrap();
+        assert!(
+            runtime
+                .close_observed_creation_attempt("scope", &fence)
+                .await
+                .is_none(),
+            "unseen attempt has no closure witness"
+        );
+        let fingerprint: pc::SandboxRealizationFingerprint =
+            serde_json::from_value(serde_json::json!("fingerprint")).unwrap();
+        let intent = ContainerRealizationIntent::Create;
+        let attempt = ContainerCreateAttempt::fresh();
+        let context = ContainerRealizationContext::new(
+            "scope",
+            &fingerprint,
+            Some(&fence),
+            &intent,
+            &attempt,
+        );
+        let plan = ephemeral_plan();
+        let admitted = runtime
+            .admit_observed_creation_attempt(&context, &plan)
+            .await
+            .unwrap()
+            .expect("exact attempt is tracked");
+        let mut closing = Box::pin(runtime.close_observed_creation_attempt("scope", &fence));
+        std::future::poll_fn(|cx| {
+            assert!(
+                std::future::Future::poll(closing.as_mut(), cx).is_pending(),
+                "close cannot pass the in-flight call"
+            );
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(admitted);
+        let closed = closing.await.expect("observed attempt closes");
+        drop(closed);
+        assert!(
+            matches!(
+                runtime
+                    .admit_observed_creation_attempt(&context, &plan)
+                    .await,
+                Err(RuntimeError::EffectFenceExpired)
+            ),
+            "late retry cannot cross the closed attempt"
+        );
     }
 }
