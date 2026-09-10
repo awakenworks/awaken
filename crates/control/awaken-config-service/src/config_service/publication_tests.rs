@@ -1,15 +1,33 @@
 #[tokio::test]
 async fn publish_resolves_scope_access_once_into_the_persisted_snapshot() {
-    // Structural extraction rationale: C1 the same inherent publication method
-    // remains callable through ConfigService; C2 the same registry and registrar
-    // dependencies are injected. E1 the exact persisted snapshot and credential
-    // projection remain unchanged. No decision table applies because the module
-    // move introduces no runtime condition or outcome.
+    // Cause/effect decision table: R1 one ordinary model pool, no advisor, and
+    // successful resolution -> the injected resolver is invoked exactly once
+    // and its exact scope/credential pin enters the persisted fingerprinted
+    // snapshot. R2 resolver failure -> one invocation and no snapshot; the
+    // complete result partition is exercised by the publication-module table.
+    struct CountingProviderResolver {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl ModelPublicationResolver for CountingProviderResolver {
+        async fn resolve_models(
+            &self,
+            workspace: &ScopeId,
+            selection: &ModelSelection,
+            candidates: &[ModelBinding],
+        ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            FakeProviderResolver
+                .resolve_models(workspace, selection, candidates)
+                .await
+        }
+    }
+
     let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
-    let service = Arc::new(ConfigService::new(
-        Arc::new(FakeProviderResolver),
-        test_registrar(),
-    ));
+    let resolver = Arc::new(CountingProviderResolver {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let service = Arc::new(ConfigService::new(resolver.clone(), test_registrar()));
     let plane = ConfigPlane::new(
         service,
         store,
@@ -30,6 +48,11 @@ async fn publish_resolves_scope_access_once_into_the_persisted_snapshot() {
     assert_eq!(scope_id.as_str(), "workspace-a");
     assert_eq!(credential.credential.id, "credential-workspace-a");
     assert_eq!(publication.fingerprint, publication.snapshot.fingerprint.0);
+    assert_eq!(
+        resolver.calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "R1 one publication resolver invocation"
+    );
 }
 
 #[tokio::test]
