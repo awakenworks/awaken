@@ -5808,13 +5808,17 @@ async fn profiled_run_commits_into_the_existing_managed_read_projection() {
     // activity receipt; C2 Runtime then commits the Run lifecycle, output, and
     // usage facts; C3 the application settles that exact activity; C4 the
     // product retries after completion.
-    // Effects: E1 ordinary Managed GET projects Running during C1; E2 the same
-    // GET projects Idle after C2+C3; E3 ordinary Managed SSE backfills Running,
-    // output, usage, then terminal truth in commit order; E4 C4 returns the same
-    // receipt without another activity. Decision rules R10a=C1=>E1,
-    // R10b=C1+C2+C3=>E2+E3, and R2c=C4=>E4. The shared Runtime fake implements
-    // the existing SessionRuntime commit ports; this route adds no Event
-    // fallback, projector, transcript, or status owner.
+    // C5 that Run commits a batch-local tool call projected through the Managed
+    // Event codec. Effects: E1 ordinary Managed GET projects Running during C1;
+    // E2 the same GET projects Idle after C2+C3; E3 ordinary Managed SSE
+    // backfills Running, output, usage, then terminal truth in commit order; E4
+    // C4 returns the same receipt without another activity; E5 the Awaken
+    // execution-evidence endpoint names that tool use with the exact same
+    // qualified public identity as ordinary Managed Events. Decision rules
+    // R10a=C1=>E1, R10b=C1+C2+C3=>E2+E3, R2c=C4=>E4, and
+    // R10c=C2+C5=>E5. The shared Runtime fake implements the existing
+    // SessionRuntime commit ports; this route adds no Event fallback, projector,
+    // transcript, identity codec, or status owner.
     let runtime = CoordinatedRuntimeFake::default();
     runtime.hold_next_user_run_activation();
     let sessions = std::sync::Arc::new(
@@ -5920,6 +5924,64 @@ async fn profiled_run_commits_into_the_existing_managed_read_projection() {
             .active_activity_epochs
             .is_empty(),
         "R2c/E4 completed replay starts no activity"
+    );
+
+    let (status, events) = call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{session_id}/events"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "R10c events: {events}");
+    let public_tool_ids = events["data"]
+        .as_array()
+        .expect("R10c Managed Event page")
+        .iter()
+        .filter(|event| {
+            matches!(
+                event["type"].as_str(),
+                Some("agent.tool_use" | "agent.custom_tool_use" | "agent.mcp_tool_use")
+            )
+        })
+        .map(|event| {
+            event["id"]
+                .as_str()
+                .expect("R10c Managed tool-use event identity")
+                .to_owned()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(!public_tool_ids.is_empty(), "R10c/C5");
+
+    let (status, evidence) = call(
+        &app,
+        "GET",
+        &format!("/v1/awaken/sessions/{session_id}/execution-evidence"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "R10c evidence: {evidence}");
+    let evidence_tool_ids = evidence["runs"]
+        .as_array()
+        .expect("R10c execution-evidence Runs")
+        .iter()
+        .flat_map(|run| {
+            run["tool_use_ids"]
+                .as_array()
+                .expect("R10c Run tool-use identities")
+        })
+        .map(|id| {
+            id.as_str()
+                .expect("R10c execution-evidence tool-use identity")
+                .to_owned()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(evidence_tool_ids, public_tool_ids, "R10c/E5");
+    assert!(
+        evidence_tool_ids
+            .iter()
+            .all(|id| id.starts_with("mtool_v1_")),
+        "R10c/E5 raw Runtime-local call ids must not escape"
     );
 }
 

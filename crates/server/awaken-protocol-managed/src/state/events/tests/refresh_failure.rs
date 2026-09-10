@@ -12,6 +12,7 @@ use crate::state::test_support::ConflictInjectingRepo;
 pub(super) fn assert_record_frame_eq(actual: &SessionRecord, expected: &SessionRecord) {
     let SessionRecord {
         cache_revision,
+        committed_projection_ready,
         agent_id,
         session,
         resource_state,
@@ -24,6 +25,10 @@ pub(super) fn assert_record_frame_eq(actual: &SessionRecord, expected: &SessionR
         primary_thread_usage,
     } = actual;
     assert_eq!(*cache_revision, expected.cache_revision, "frame: cache CAS");
+    assert_eq!(
+        *committed_projection_ready, expected.committed_projection_ready,
+        "frame: complete committed-prefix availability"
+    );
     assert_eq!(agent_id, &expected.agent_id, "frame: agent identity");
     assert!(
         resource_state == &expected.resource_state,

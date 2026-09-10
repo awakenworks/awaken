@@ -370,11 +370,17 @@ def check_managed_projection_model_mutants(tlc_jar: Path) -> None:
     zero_mutant = original.replace(anchor, "Dominates(ZeroFilled(candidateFence[writer]), ZeroFilled(checkpointFence))")
     cases.append((source[:start] + zero_filled + zero_mutant + source[end:],
                   header + "INVARIANTS DecisionIsExact\n", "DecisionIsExact"))
+    fallback_anchor = 'ELSE IF priorComplete THEN "prior"'
+    if source.count(fallback_anchor) != 1:
+        raise SystemExit(f"Managed observation fallback mutation anchor drifted: {fallback_anchor}")
+    cases.append((source.replace(fallback_anchor, 'ELSE IF TRUE THEN "prior"', 1),
+                  header + "INVARIANTS PriorProjectionFallbackIsExact\n",
+                  "PriorProjectionFallbackIsExact"))
     for witness in ("NoApply", "NoRetry", "NoRegressionRejection", "NoCompletedRead",
                     "NoZeroChildAddition", "NoZeroChildRemovalRejection"):
         cases.append((source, header + f"INVARIANTS {witness}\n", witness))
     check_tlc_model_mutations(tlc_jar, "ManagedProjectionPublish", source, config, cases)
-    print("Managed projection publication: 9/9 semantic mutants killed; 6/6 decision/topology witnesses reachable")
+    print("Managed projection publication: 10/10 semantic mutants killed; 6/6 decision/topology witnesses reachable")
     check_managed_projection_refresh_failure_mutants(tlc_jar)
 
 

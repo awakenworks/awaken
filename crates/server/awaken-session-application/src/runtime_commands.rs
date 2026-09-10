@@ -48,8 +48,16 @@ pub struct SessionRunExecutionObservation {
     pub run_id: RunId,
     pub idempotency_key: Option<String>,
     pub state: RunState,
-    pub tool_use_ids: Vec<String>,
+    pub tool_uses: Vec<SessionToolUseObservation>,
     pub model_requests: Vec<SessionModelRequestObservation>,
+}
+
+/// Neutral coordinates for one committed tool use. Protocol adapters retain
+/// ownership of their public event identity codecs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionToolUseObservation {
+    pub source_message_id: String,
+    pub call_id: String,
 }
 
 /// Minimal proof that one logical model request reached a committed completion
@@ -300,8 +308,8 @@ impl SessionApplication {
                                 ))
                             })?
                             .map(str::to_owned);
-                        let mut observed_tool_use_ids = std::collections::BTreeSet::new();
-                        let mut tool_use_ids = Vec::new();
+                        let mut observed_tool_uses = std::collections::BTreeSet::new();
+                        let mut tool_uses = Vec::new();
                         for message in snapshot.messages.iter().filter(|message| {
                             message.role == awaken_agent_contract::agent::message::Role::Assistant
                                 && message.id.assistant_step_of(&run.id).is_some()
@@ -309,7 +317,8 @@ impl SessionApplication {
                             for block in &message.content {
                                 if let ContentBlock::ToolUse { id, .. } = block {
                                     if id.trim().is_empty()
-                                        || !observed_tool_use_ids.insert(id.as_str())
+                                        || !observed_tool_uses
+                                            .insert((message.id.0.as_str(), id.as_str()))
                                     {
                                         return Err(
                                             crate::SessionProjectionRecoveryError::Rejected(
@@ -320,7 +329,10 @@ impl SessionApplication {
                                             ),
                                         );
                                     }
-                                    tool_use_ids.push(id.clone());
+                                    tool_uses.push(SessionToolUseObservation {
+                                        source_message_id: message.id.0.clone(),
+                                        call_id: id.clone(),
+                                    });
                                 }
                             }
                         }
@@ -349,7 +361,7 @@ impl SessionApplication {
                             run_id: run.id,
                             idempotency_key,
                             state: run.state,
-                            tool_use_ids,
+                            tool_uses,
                             model_requests,
                         })
                     })

@@ -3052,6 +3052,97 @@ async fn pending_child_reply_fixture(
 }
 
 #[tokio::test]
+async fn client_result_index_is_occurrence_exact_when_runtime_call_ids_repeat() {
+    // Cause/effect graph: C1 one custom tool occurrence has a qualified public
+    // id and an admitted client result; C2 a later server-executed occurrence
+    // reuses the same Runtime-local call id but has a different source id.
+    // Effects: E1 C1's neutral Runtime result is suppressed; E2 C2's result is
+    // retained and binds to C2, never C1. Decision table: R1=C1+!C2=>E1;
+    // R2=C1+C2=>E2. This is the alias boundary omitted by family-only tests:
+    // settlement is indexed by full public occurrence identity, not raw call id.
+    let state = ManagedState::new(RehydrateFake::default());
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent": "coder", "environment_id": "env_local"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let first = managed_tool_event_id(&session.id, "source-1", "same-call");
+    let second = managed_tool_event_id(&session.id, "source-2", "same-call");
+    let mut record = {
+        let mut records = state.sessions.lock().unwrap();
+        let record = records.get_mut(&session.id).unwrap();
+        record.events.extend([
+            Event {
+                id: first.clone(),
+                kind: OutboundKind::AgentCustomToolUse {
+                    name: "client_tool".into(),
+                    input: serde_json::json!({}),
+                    session_thread_id: None,
+                },
+                processed_at: Some(LEGACY_UNRECORDED_AT.into()),
+            },
+            Event {
+                id: "client-result".into(),
+                kind: OutboundKind::UserCustomToolResult {
+                    custom_tool_use_id: first.clone(),
+                    content: Some(vec![ContentBlock::text("client result")]),
+                    is_error: false,
+                    session_thread_id: None,
+                },
+                processed_at: Some(LEGACY_UNRECORDED_AT.into()),
+            },
+        ]);
+        record.clone()
+    };
+    let result = || ProjectedEvent {
+        id: None,
+        kind: OutboundKind::AgentToolResult {
+            tool_use_id: "same-call".into(),
+            content: vec![ContentBlock::text("result")],
+            is_error: Some(false),
+        },
+    };
+    let mut first_result = vec![result()];
+    state
+        .qualify_tool_projection(&record, None, &[], None, &mut first_result)
+        .unwrap();
+    assert!(
+        first_result.is_empty(),
+        "R1/E1 exact client result owns the wire"
+    );
+
+    record.events.push(Event {
+        id: second.clone(),
+        kind: OutboundKind::AgentToolUse {
+            name: "bash".into(),
+            input: serde_json::json!({}),
+            evaluated_permission: Some(EvaluatedPermission::Allow),
+            session_thread_id: None,
+        },
+        processed_at: Some(LEGACY_UNRECORDED_AT.into()),
+    });
+    let mut second_result = vec![result()];
+    state
+        .qualify_tool_projection(&record, None, &[], None, &mut second_result)
+        .unwrap();
+    assert!(
+        matches!(
+            &second_result[..],
+            [ProjectedEvent {
+                kind: OutboundKind::AgentToolResult { tool_use_id, .. },
+                ..
+            }] if tool_use_id == &second
+        ),
+        "R2/E2 reused Runtime id binds only to its latest public occurrence"
+    );
+}
+
+#[tokio::test]
 async fn terminal_tool_reply_rejects_new_admission_but_replays_exact_receipt() {
     // Cause/effect table: C1 an exact reply to a current Awaiting child passes
     // strict admission and is retained under one request key; C2 that Run ends
@@ -3305,15 +3396,18 @@ async fn qualified_event_id_routes_every_child_tool_reply_variant() {
     // E2=the canonical child id is echoed into parent/child projections;
     // E3=C5 is rejected before another matching receipt or delivery,
     // independently of C6; E4=C7 makes the exact child tool-use visible in
-    // both primary list and live projection; E5=C8 remains child-private.
+    // both primary list and live projection; E5=C8 remains child-private;
+    // E6=a subsequently committed Runtime ToolResult is public only for the
+    // server-executed confirmation path, because custom/generic client results
+    // already have one exact public receipt.
     // Primary activity ownership is covered directly
     // by the resolver decision table above; total event count is not a reply
     // atomicity oracle because the sole committed projector remains live.
     // Decision table:
-    // | Rule | Frozen family | Pending kind | Reply event | Qualified id | Replay | Projection read | Effects |
-    // | R1 | Agent/ask | permission | confirmation | T | F | any | E1,E2,E4 |
-    // | R2 | custom | client | custom result | T | F | any | E1,E2,E4 |
-    // | R3 | Agent/allow | client | generic result | T | F | any | E1,E2,E4 |
+    // | Rule | Frozen family | Pending kind | Reply event | Qualified id | Replay | Runtime result | Effects |
+    // | R1 | Agent/ask | permission | confirmation | T | F | public | E1,E2,E4,E6 |
+    // | R2 | custom | client | custom result | T | F | suppressed duplicate | E1,E2,E4,E6 |
+    // | R3 | Agent/allow | client | generic result | T | F | suppressed duplicate | E1,E2,E4,E6 |
     // | R4 | matching frozen family | matching prior kind | matching reply | T | T | any | E3 |
     // | R5 | Agent/allow | client | none | T | F | any | E5 |
     for (label, client_executed, declared_custom) in [
@@ -3491,6 +3585,57 @@ async fn qualified_event_id_routes_every_child_tool_reply_variant() {
             runtime.thread_tool_replies.lock().unwrap().len(),
             1,
             "R4/E3 one delivery {label}"
+        );
+
+        runtime.pending_by_thread.lock().unwrap().remove(&child_id);
+        runtime
+            .committed_by_thread
+            .lock()
+            .unwrap()
+            .get_mut(&child_id)
+            .expect("R1-R3 child transcript")
+            .push(Message::new(
+                MessageId(format!("result-route-{label}")),
+                Role::Tool,
+                vec![ContentBlock::tool_result(
+                    format!("call-route-{label}"),
+                    vec![ContentBlock::text(format!("{label} result"))],
+                )],
+            ));
+        runtime.lifecycle.lock().unwrap().extend([
+            lifecycle(
+                3,
+                &child_id,
+                &RunId(format!("run-route-{label}")),
+                RunLifecycleEventKind::Resumed,
+                RunState::Running,
+            ),
+            lifecycle(
+                4,
+                &child_id,
+                &RunId(format!("run-route-{label}")),
+                RunLifecycleEventKind::Completed,
+                RunState::Ended(EndCause::NaturalEnd),
+            ),
+        ]);
+        state.refresh_committed_events(&session_id).await.unwrap();
+        let public_result_count = state
+            .list_thread_events(&session_id, &child_id, None, None)
+            .unwrap()
+            .data
+            .iter()
+            .filter(|event| {
+                matches!(
+                    &event.kind,
+                    OutboundKind::AgentToolResult { tool_use_id, .. }
+                        if tool_use_id == &public_event_id
+                )
+            })
+            .count();
+        assert_eq!(
+            public_result_count,
+            usize::from(label == "confirmation"),
+            "R1-R3/E6 {label}"
         );
     }
 
@@ -4056,6 +4201,80 @@ async fn projection_read_budget_handles_commit_bursts_and_bounds_nonconvergence(
             }
         }
     }
+}
+
+#[tokio::test]
+async fn read_only_observation_serves_the_last_complete_prefix_during_continuous_commits() {
+    // Cause/effect graph: C1 the canonical reducer has published one complete
+    // warm prefix; C2 a later root Thread commit advances between both reads of
+    // every new candidate; C3 this caller is a read-only API observation.
+    // Effects: E1 C1+C2+C3 returns the prior complete prefix without a 503;
+    // E2 it performs one real refresh attempt, publishes/broadcasts nothing,
+    // and leaves the entire warm frame unchanged. Cold reads and lifecycle
+    // delivery keep the strict bounded-retry behavior in the adjacent budget
+    // table, so this fallback cannot acknowledge an undelivered lifecycle fact.
+    let runtime = LifecycleRuntime::default();
+    let state = ManagedState::new(runtime.clone());
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent":"coder", "environment_id":"env_local"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    runtime.lifecycle.lock().unwrap().push(lifecycle(
+        1,
+        &session.id,
+        &RunId("observation-continuous-run".into()),
+        RunLifecycleEventKind::Running,
+        RunState::Running,
+    ));
+    state.refresh_committed_events(&session.id).await.unwrap();
+    let before = state
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&session.id)
+        .unwrap()
+        .clone();
+    assert!(
+        before.committed_projection_ready,
+        "C1 requires a successfully published complete prefix"
+    );
+    let (_, mut live) = state.stream_subscribe(&session.id).unwrap();
+    runtime.reads.reset();
+    runtime
+        .projection_version_changes
+        .store(usize::MAX, Ordering::SeqCst);
+
+    state
+        .refresh_committed_events_for_observation(&session.id)
+        .await
+        .expect("E1 warm observation must remain available while the tail advances");
+
+    let after = state
+        .sessions
+        .lock()
+        .unwrap()
+        .get(&session.id)
+        .unwrap()
+        .clone();
+    refresh_failure::assert_record_frame_eq(&after, &before);
+    assert_eq!(
+        runtime.reads.count("recovery"),
+        2,
+        "E2 one candidate reads the root prefix before and after its other sources"
+    );
+    assert!(
+        matches!(
+            live.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "E2 stale observation must not manufacture a publication"
+    );
 }
 
 #[tokio::test]

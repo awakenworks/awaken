@@ -664,12 +664,19 @@ async fn outcome_graded_by_a_judge_subagent() {
 
 #[tokio::test]
 async fn custom_tool_use_through_real_kernel() {
-    // Causes: the fixtures below establish `custom tool use through real kernel` with the concrete
-    // inputs, state, dependencies, and failure triggers used by this case.
-    // Effects: the observable result `all output, state, side-effect, error, and terminal
-    // assertions below hold together` and every asserted state transition or side effect must hold.
-    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
-    // delivery is best-effort and cannot replace committed replay truth.
+    // Cause/effect graph: C1 a published Agent declares one client-owned custom
+    // tool; C2 the model calls it and reaches RequiresAction; C3 the client
+    // submits the exact matching custom result; C4 Runtime commits the neutral
+    // ToolResult needed by the next model request. Effects: E1 the call is one
+    // `agent.custom_tool_use`; E2 the accepted input remains one
+    // `user.custom_tool_result`; E3 the internal C4 fact is not duplicated onto
+    // the wire as an incompatible `agent.tool_result`; E4 the model receives the
+    // result and ends normally. Rule R1=C1+C2+C3+C4=>E1+E2+E3+E4. Mismatched
+    // identity/family rules are covered by the adjacent rejection tests; built-in
+    // and MCP result projection are covered by their own protocol tests.
+    // Invariant: Runtime transcript truth and public Managed wire vocabulary have
+    // one projection owner; the adapter never asks consumers to reconcile two
+    // result families for one tool occurrence.
     let app = build_custom_router();
     let id = create_session(&app).await;
 
@@ -734,6 +741,24 @@ async fn custom_tool_use_through_real_kernel() {
         .filter(|e| e["type"] == "agent.message")
         .map(|e| e["content"][0]["text"].as_str().unwrap())
         .collect();
+    let events = list["data"].as_array().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| {
+                event["type"] == "user.custom_tool_result"
+                    && event["custom_tool_use_id"] == tool_use_id
+            })
+            .count(),
+        1,
+        "R1/E2 one admitted custom result"
+    );
+    assert!(
+        events.iter().all(|event| {
+            event["type"] != "agent.tool_result" || event["tool_use_id"] != tool_use_id
+        }),
+        "R1/E3 a custom result is not re-published as an Agent-tool result"
+    );
     assert!(
         msgs.iter().any(|m| m.contains("got: 42")),
         "the client's result reached the model: {msgs:?}"
