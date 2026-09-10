@@ -1,11 +1,89 @@
 use super::*;
-use awaken_agent_contract::agent::state::Scope;
+use awaken_agent_contract::agent::state::{MergePolicy, Scope};
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointError;
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
     ToolPresentation, ToolPresentationOverride,
 };
 use awaken_runtime_contract::tool::{RawTool, ToolOutputSpiller};
+
+struct RejectingWatermarkCommit;
+
+#[async_trait]
+impl awaken_runtime_contract::CommitCoordinator for RejectingWatermarkCommit {
+    async fn commit(
+        &self,
+        _commit: ThreadCommit,
+    ) -> std::result::Result<
+        awaken_agent_contract::thread::commit::staged::CommitRecord,
+        awaken_runtime_contract::CommitError,
+    > {
+        Err(awaken_runtime_contract::CommitError::Rejected(
+            "injected watermark commit failure".to_string(),
+        ))
+    }
+}
+
+#[test]
+fn durable_watermark_successor_decision_table_is_total() {
+    // Causes: C1 staged is below, equal to, or above the current durable
+    // watermark. Effects: E1 a lower candidate is rejected; E2 equal and higher
+    // candidates return their exact value without rollback. Decision rules:
+    // R1=below=>E1, R2=equal=>E2, R3=above=>E2. Boundary rows cover zero and
+    // usize::MAX; Kani exhausts the same production kernel over all usize pairs.
+    for (current, staged, expected) in [
+        (1, 0, Err(WatermarkRegression)),
+        (0, 0, Ok(0)),
+        (1, 1, Ok(1)),
+        (0, 1, Ok(1)),
+        (usize::MAX - 1, usize::MAX, Ok(usize::MAX)),
+        (usize::MAX, usize::MAX, Ok(usize::MAX)),
+    ] {
+        assert_eq!(advance_durable_watermark(current, staged), expected);
+    }
+}
+
+#[tokio::test]
+async fn failed_step_commit_retains_every_uncommitted_tail() {
+    // Causes: C1 message/state/audit each have one staged item; C2 the existing
+    // CommitCoordinator accepts or rejects the atomic commit. Effects: E1 an
+    // accepted commit advances all three watermarks (covered by per-step commit
+    // integration tests); E2 rejection returns Commit error and all three tails
+    // remain pending for final/recovery handling. Rule R2=C1+reject=>E2.
+    // Constraint: no adapter success or durability is inferred from this fault.
+    let state = StateCommand::set(
+        Scope::Thread,
+        MergePolicy::Commutative,
+        "watermark-test",
+        serde_json::json!(true),
+    );
+    let audit = EventDraft {
+        kind: awaken_agent_contract::audit::kind::Kind::RunStateChanged,
+        payload: serde_json::json!({"state": "running"}),
+    };
+    let mut ledger = StepLedger::new(
+        Vec::new(),
+        vec![user_message()],
+        vec![state.clone()],
+        vec![audit.clone()],
+    );
+    let run_id = RunId("watermark-run".to_string());
+    let error = ledger
+        .commit_delta(
+            &RuntimeRunContext::new().with_commit(Arc::new(RejectingWatermarkCommit)),
+            &ThreadId("watermark-thread".to_string()),
+            &run_id,
+        )
+        .await
+        .expect_err("R2/E2 rejects the staged delta");
+    assert!(matches!(error, Error::Commit(message) if message.contains("injected watermark")));
+    assert!(ledger.has_uncommitted(), "R2/E2 retains pending truth");
+
+    let tail = ledger.into_step_result(RunDisposition::ended(run_id, EndCause::NaturalEnd));
+    assert_eq!(tail.new_messages, vec![user_message()], "R2/E2 message");
+    assert_eq!(tail.staged_state, vec![state], "R2/E2 state");
+    assert_eq!(tail.audit, vec![audit], "R2/E2 audit");
+}
 
 #[test]
 fn runtime_operation_ids_are_one_closed_exact_match_table() {

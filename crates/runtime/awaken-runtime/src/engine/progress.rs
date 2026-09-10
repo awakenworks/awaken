@@ -50,6 +50,23 @@ impl RunStepResult {
 /// returned checkpoint is only the tail beyond it. The model-facing `transcript`
 /// (seeded with committed history) and the durable `new_messages` (only this
 /// attempt's messages) grow together but stay distinct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct WatermarkRegression;
+
+/// Validate the only admissible successor of one durable prefix watermark.
+/// The caller computes the candidate before slicing, then publishes it locally
+/// only after the asynchronous commit succeeds.
+pub(super) const fn advance_durable_watermark(
+    current: usize,
+    staged: usize,
+) -> std::result::Result<usize, WatermarkRegression> {
+    if staged < current {
+        Err(WatermarkRegression)
+    } else {
+        Ok(staged)
+    }
+}
+
 pub(super) struct StepLedger {
     pub(super) transcript: Vec<Message>,
     pub(super) new_messages: Vec<Message>,
@@ -110,6 +127,17 @@ impl StepLedger {
         thread_id: &ThreadId,
         run_id: &RunId,
     ) -> Result<()> {
+        // Validate every candidate before indexing a tail. A corrupted local
+        // watermark must fail closed rather than panic or reinterpret an older
+        // staged prefix as new durable work.
+        let next_messages =
+            advance_durable_watermark(self.committed_messages, self.new_messages.len())
+                .map_err(|_| Error::Execution("message commit watermark regressed".to_string()))?;
+        let next_state =
+            advance_durable_watermark(self.committed_state, self.staged_state.len())
+                .map_err(|_| Error::Execution("state commit watermark regressed".to_string()))?;
+        let next_audit = advance_durable_watermark(self.committed_audit, self.audit.len())
+            .map_err(|_| Error::Execution("audit commit watermark regressed".to_string()))?;
         commit_step_delta(
             context,
             thread_id,
@@ -120,9 +148,9 @@ impl StepLedger {
             !self.running_committed,
         )
         .await?;
-        self.committed_messages = self.new_messages.len();
-        self.committed_state = self.staged_state.len();
-        self.committed_audit = self.audit.len();
+        self.committed_messages = next_messages;
+        self.committed_state = next_state;
+        self.committed_audit = next_audit;
         self.running_committed = true;
         Ok(())
     }
@@ -135,6 +163,29 @@ impl StepLedger {
             staged_state: self.staged_state.split_off(self.committed_state),
             audit: self.audit.split_off(self.committed_audit),
             disposition,
+        }
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::{WatermarkRegression, advance_durable_watermark};
+
+    #[kani::proof]
+    fn durable_watermark_successor_is_exact_or_rejected_without_rollback() {
+        let current = kani::any::<usize>();
+        let staged = kani::any::<usize>();
+
+        match advance_durable_watermark(current, staged) {
+            Ok(next) => {
+                assert!(staged >= current);
+                assert_eq!(next, staged);
+                assert!(next >= current);
+            }
+            Err(error) => {
+                assert_eq!(error, WatermarkRegression);
+                assert!(staged < current);
+            }
         }
     }
 }
