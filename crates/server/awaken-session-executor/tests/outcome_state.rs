@@ -224,9 +224,40 @@ async fn sqlite_restart_recovers_the_extension_aggregate() {
 
 #[test]
 fn identities_are_deterministic_and_role_separated() {
+    // Cause/effect graph: C1 the same Outcome/role/iteration is derived again;
+    // C2 Outcome id changes; C3 iteration changes; C4 role changes among Worker,
+    // Grader Thread, Grader Run and final acknowledgment. Effects: E1 C1 returns
+    // the byte-identical Run/Thread id; E2 each C2/C3/C4 partition stays
+    // distinct. Constraints: these are the extension's production identity
+    // functions and acknowledgment has no iteration because it occurs once after
+    // the capped final Grade. Decision rules I1=C1=>E1 and
+    // I2=C2 or C3 or C4=>E2.
     let id = Id("abc".into());
-    assert_eq!(worker_run_id(&id, 2).0, "outcome/abc/worker/2");
-    assert_eq!(grader_thread_id(&id, 2).0, "outcome/abc/grader/2");
-    assert_eq!(grader_run_id(&id, 2).0, "outcome/abc/grader/2/run");
-    assert_eq!(acknowledgment_run_id(&id).0, "outcome/abc/ack");
+    let worker = worker_run_id(&id, 2);
+    let grader_thread = grader_thread_id(&id, 2);
+    let grader_run = grader_run_id(&id, 2);
+    let acknowledgment = acknowledgment_run_id(&id);
+    assert_eq!(worker.0, "outcome/abc/worker/2", "I1/E1");
+    assert_eq!(worker_run_id(&id, 2), worker, "I1/E1");
+    assert_eq!(grader_thread.0, "outcome/abc/grader/2", "I1/E1");
+    assert_eq!(grader_thread_id(&id, 2), grader_thread, "I1/E1");
+    assert_eq!(grader_run.0, "outcome/abc/grader/2/run", "I1/E1");
+    assert_eq!(grader_run_id(&id, 2), grader_run, "I1/E1");
+    assert_eq!(acknowledgment.0, "outcome/abc/ack", "I1/E1");
+    assert_eq!(acknowledgment_run_id(&id), acknowledgment, "I1/E1");
+
+    let different_outcome = Id("def".into());
+    let identities = [
+        worker.0,
+        grader_thread.0,
+        grader_run.0,
+        acknowledgment.0,
+        worker_run_id(&id, 1).0,
+        worker_run_id(&different_outcome, 2).0,
+        grader_thread_id(&different_outcome, 2).0,
+        grader_run_id(&different_outcome, 2).0,
+        acknowledgment_run_id(&different_outcome).0,
+    ];
+    let unique = identities.iter().collect::<std::collections::HashSet<_>>();
+    assert_eq!(unique.len(), identities.len(), "I2/E2");
 }
