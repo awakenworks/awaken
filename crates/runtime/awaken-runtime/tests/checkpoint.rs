@@ -9,6 +9,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+use awaken_agent_contract::agent::state::StateKey;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::{
     StreamCheckpoint, StreamCheckpointError, StreamCheckpointStore,
@@ -96,39 +97,9 @@ impl LlmExecutor for AlwaysLlm {
 const RUN_ID: &str = "run-1";
 const THREAD_ID: &str = "thread-1";
 
-async fn drive(
-    llm: Arc<dyn LlmExecutor>,
-    checkpoints: Arc<dyn StreamCheckpointStore>,
-) -> (RunState, MemoryCommitCoordinator) {
-    let (state, commit) = drive_result(llm, checkpoints).await;
-    (state.expect("runs"), commit)
-}
-
-async fn drive_result(
-    llm: Arc<dyn LlmExecutor>,
-    checkpoints: Arc<dyn StreamCheckpointStore>,
-) -> (
-    awaken_runtime_contract::execution::Result<RunState>,
-    MemoryCommitCoordinator,
-) {
-    // A single retry with no backoff keeps the in-process recovery instant.
-    let runtime = Runtime::new()
-        .with_llm(llm)
-        .with_retry_policy(awaken_runtime::LlmRetryPolicy {
-            max_retries: 1,
-            backoff_base_ms: 0,
-            overloaded_backoff_base_ms: 0,
-            attempt_timeout: std::time::Duration::from_secs(5),
-        });
+fn activation() -> RunActivation {
     let fingerprint = CatalogFingerprint("catalog-a".to_string());
-
-    let commit = Arc::new(MemoryCommitCoordinator::new());
-    let context = RuntimeRunContext::new()
-        .with_commit(commit.clone())
-        .with_stream_sink(Arc::new(MemoryStreamSink::new()))
-        .with_stream_checkpoint(checkpoints);
-
-    let activation = RunActivation {
+    RunActivation {
         run_id: RunId(RUN_ID.to_string()),
         thread_id: ThreadId(THREAD_ID.to_string()),
         snapshot: ExecutableAgentSnapshot {
@@ -165,8 +136,45 @@ async fn drive_result(
         model_ref_override: None,
         data_subject_id: None,
         tool_capability_narrowing: Default::default(),
-    };
-    let state = runtime.execute(activation, context).await;
+    }
+}
+
+fn runtime_with(llm: Arc<dyn LlmExecutor>) -> Runtime {
+    // A single retry with no backoff keeps the in-process recovery instant.
+    Runtime::new()
+        .with_llm(llm)
+        .with_retry_policy(awaken_runtime::LlmRetryPolicy {
+            max_retries: 1,
+            backoff_base_ms: 0,
+            overloaded_backoff_base_ms: 0,
+            attempt_timeout: std::time::Duration::from_secs(5),
+        })
+}
+
+async fn drive(
+    llm: Arc<dyn LlmExecutor>,
+    checkpoints: Arc<dyn StreamCheckpointStore>,
+) -> (RunState, MemoryCommitCoordinator) {
+    let (state, commit) = drive_result(llm, checkpoints).await;
+    (state.expect("runs"), commit)
+}
+
+async fn drive_result(
+    llm: Arc<dyn LlmExecutor>,
+    checkpoints: Arc<dyn StreamCheckpointStore>,
+) -> (
+    awaken_runtime_contract::execution::Result<RunState>,
+    MemoryCommitCoordinator,
+) {
+    let runtime = runtime_with(llm);
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new()
+        .with_commit(commit.clone())
+        .with_stream_sink(Arc::new(MemoryStreamSink::new()))
+        .with_stream_checkpoint(checkpoints);
+
+    let state = runtime.execute(activation(), context).await;
     (state, Arc::try_unwrap(commit).unwrap_or_default())
 }
 
@@ -335,4 +343,107 @@ async fn a_historical_checkpoint_without_invocation_evidence_cannot_resume() {
             .expect("checkpoint read")
             .is_some()
     );
+}
+
+#[tokio::test]
+async fn filesystem_recovery_waits_for_reopened_committed_predecessor() {
+    use awaken_agent_contract::thread::commit::coordinator::Coordinator;
+    use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+    use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+    use awaken_runtime_contract::model_operation::{
+        ActiveModelOperation, ModelExecutionEvidence, ModelOperation, ModelOperationPhase,
+    };
+    use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
+
+    // Causes: C1 the exact checkpoint survives a fresh store instance; C2 the
+    // same reopened commit log contains no predecessor / a Terminated
+    // predecessor; C3 Runtime receives both reopened ports. Effects: E1 no
+    // predecessor vetoes recovery with zero model calls and retains the partial;
+    // E2 committed termination admits one continuation, commits the stitched
+    // output and retires the partial. Decision rules R1=C1+!C2+C3=>E1 and
+    // R2=C1+C2+C3=>E2. The positive row prevents a vacuous fail-closed test.
+    // Constraint: this is real filesystem persistence and adapter replay, not a
+    // power-loss, arbitrary crash-point, kernel/fsync or universal refinement
+    // proof; the direct production evidence gate has an independent Kani proof.
+    for predecessor_committed in [false, true] {
+        let root = tempfile::tempdir().expect("temporary persistence root");
+        let commit_dir = root.path().join("commits");
+        let checkpoint_dir = root.path().join("checkpoints");
+        {
+            let checkpoint = FsStreamCheckpointStore::open(&checkpoint_dir).expect("checkpoint");
+            checkpoint
+                .put(StreamCheckpoint {
+                    run_id: RUN_ID.to_string(),
+                    thread_id: THREAD_ID.to_string(),
+                    model: "m".to_string(),
+                    partial_text: "Resumed ".to_string(),
+                    partial_tools: Vec::new(),
+                    retry_count: 0,
+                })
+                .await
+                .expect("durable checkpoint");
+        }
+        {
+            let commit = FsCommitCoordinator::open(&commit_dir)
+                .await
+                .expect("initial commit store");
+            if predecessor_committed {
+                let mut operation =
+                    ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
+                operation.phase = ModelOperationPhase::Returned;
+                operation.execution = ModelExecutionEvidence::Terminated;
+                commit
+                    .commit(ThreadCommit::assemble(
+                        ThreadId(THREAD_ID.to_string()),
+                        awaken_runtime_contract::RunDisposition::running(RunId(RUN_ID.to_string())),
+                        true,
+                        Vec::new(),
+                        vec![ActiveModelOperation::write(&Some(operation))],
+                        Vec::new(),
+                    ))
+                    .await
+                    .expect("acknowledged predecessor commit");
+            }
+        }
+
+        let commit = Arc::new(
+            FsCommitCoordinator::open(&commit_dir)
+                .await
+                .expect("reopened commit store"),
+        );
+        let checkpoints = Arc::new(
+            FsStreamCheckpointStore::open(&checkpoint_dir).expect("reopened checkpoint store"),
+        );
+        let model = Arc::new(AlwaysLlm {
+            text: "and done",
+            calls: Default::default(),
+        });
+        let context = RuntimeRunContext::new()
+            .with_commit(commit.clone())
+            .with_reader(commit.clone())
+            .with_stream_checkpoint(checkpoints.clone());
+        let state = runtime_with(model.clone())
+            .execute(activation(), context)
+            .await
+            .expect("bounded recovery outcome");
+
+        if predecessor_committed {
+            assert_eq!(state, RunState::Ended(EndCause::NaturalEnd), "R2/E2");
+            assert_eq!(model.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(
+                commit
+                    .committed_messages(&ThreadId(THREAD_ID.to_string()))
+                    .into_iter()
+                    .find(|message| message.role == Role::Assistant)
+                    .expect("R2/E2 committed assistant")
+                    .text_content(),
+                "Resumed and done"
+            );
+            assert!(checkpoints.get(RUN_ID).await.unwrap().is_none(), "R2/E2");
+        } else {
+            assert_eq!(state, RunState::Ended(EndCause::Indeterminate), "R1/E1");
+            assert_eq!(model.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert!(checkpoints.get(RUN_ID).await.unwrap().is_some(), "R1/E1");
+        }
+    }
 }
