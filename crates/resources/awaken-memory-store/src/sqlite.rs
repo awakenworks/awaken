@@ -59,7 +59,10 @@ fn migrate_guarded(conn: &awaken_sqlite_pool::SharedSqliteConnection) -> Result<
     migrate_conn(&guard)
 }
 
-use crate::repository::{now_nanos, under_prefix, validate_path, validate_size};
+use crate::repository::{
+    ConditionalDeleteAdmission, HeadUpdateAdmission, now_nanos, under_prefix, validate_path,
+    validate_size,
+};
 use crate::{
     MemErr, Memory, MemoryActor, MemoryEntry, MemoryPurgeSummary, MemoryRepository, MemoryVersion,
     MemoryVersionOperation, VersionAppend, sha256_hex,
@@ -774,15 +777,22 @@ impl MemoryRepository for SqliteMemoryRepository {
                 )
                 .optional()
                 .map_err(mem_err)?;
-            let Some((id, content, sha, version, created, updated)) = row else {
-                return Ok(false);
-            };
-            if id != base_id || sha != base_sha {
-                return Err(MemErr::Conflict {
-                    current: Box::new(row_memory(
-                        id, path, content, sha, version, created, updated,
-                    )?),
-                });
+            let admission = ConditionalDeleteAdmission::new(
+                row.as_ref()
+                    .map(|(id, _, sha, _, _, _)| (id == &base_id, sha == &base_sha)),
+            );
+            match admission {
+                ConditionalDeleteAdmission::Absent => return Ok(false),
+                ConditionalDeleteAdmission::Conflict => {
+                    let (id, content, sha, version, created, updated) =
+                        row.expect("conflict requires the observed head");
+                    return Err(MemErr::Conflict {
+                        current: Box::new(row_memory(
+                            id, path, content, sha, version, created, updated,
+                        )?),
+                    });
+                }
+                ConditionalDeleteAdmission::Delete => {}
             }
             tx.execute(
                 &format!("DELETE FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
@@ -970,34 +980,24 @@ impl SqliteMemoryRepository {
             let requested_path = target_path.unwrap_or_else(|| path.clone());
             let new_sha = sha256_hex(&content);
             let already_current = cur_sha == new_sha && path == requested_path;
-            if expected_path
-                .as_deref()
-                .is_some_and(|expected| expected != path)
-            {
-                return Err(MemErr::Conflict {
-                    current: Box::new(row_memory(
-                        id,
-                        path,
-                        cur_content,
-                        cur_sha,
-                        version,
-                        created,
-                        updated,
-                    )?),
-                });
-            }
-            if cur_sha != base_sha {
-                if already_current {
+            match HeadUpdateAdmission::new(
+                expected_path
+                    .as_deref()
+                    .is_none_or(|expected| expected == path),
+                cur_sha == base_sha,
+                already_current,
+            ) {
+                HeadUpdateAdmission::Conflict => {
+                    let current =
+                        row_memory(id, path, cur_content, cur_sha, version, created, updated)?;
+                    return Err(MemErr::Conflict {
+                        current: Box::new(current),
+                    });
+                }
+                HeadUpdateAdmission::Current => {
                     return row_memory(id, path, cur_content, cur_sha, version, created, updated);
                 }
-                let current =
-                    row_memory(id, path, cur_content, cur_sha, version, created, updated)?;
-                return Err(MemErr::Conflict {
-                    current: Box::new(current),
-                });
-            }
-            if already_current {
-                return row_memory(id, path, cur_content, cur_sha, version, created, updated);
+                HeadUpdateAdmission::Apply => {}
             }
             let now = now_nanos() as i64;
             let displaced_id = if requested_path == path {

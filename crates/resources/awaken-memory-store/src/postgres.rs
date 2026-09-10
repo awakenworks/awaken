@@ -86,7 +86,10 @@ async fn selected_bundles(
     ))
 }
 
-use crate::repository::{now_nanos, under_prefix, validate_path, validate_size};
+use crate::repository::{
+    ConditionalDeleteAdmission, HeadUpdateAdmission, now_nanos, under_prefix, validate_path,
+    validate_size,
+};
 use crate::{
     MemErr, Memory, MemoryActor, MemoryEntry, MemoryPurgeSummary, MemoryRepository, MemoryVersion,
     MemoryVersionOperation, VersionAppend, sha256_hex,
@@ -752,23 +755,28 @@ impl MemoryRepository for PostgresMemoryRepository {
         .fetch_optional(&mut *tx)
         .await
         .map_err(mem_err)?;
-        let Some(row) = row else {
-            return Ok(false);
-        };
-        let id: String = row.get("id");
-        let sha: String = row.get("sha");
-        if id != base_id || sha != base_sha {
-            return Err(MemErr::Conflict {
-                current: Box::new(to_memory(
-                    id,
-                    path.to_string(),
-                    row.get("content"),
-                    sha,
-                    row.get("version"),
-                    row.get("created"),
-                    row.get("updated"),
-                )?),
-            });
+        let admission = ConditionalDeleteAdmission::new(row.as_ref().map(|row| {
+            let id: String = row.get("id");
+            let sha: String = row.get("sha");
+            (id == base_id, sha == base_sha)
+        }));
+        match admission {
+            ConditionalDeleteAdmission::Absent => return Ok(false),
+            ConditionalDeleteAdmission::Conflict => {
+                let row = row.expect("conflict requires the observed head");
+                return Err(MemErr::Conflict {
+                    current: Box::new(to_memory(
+                        row.get("id"),
+                        path.to_string(),
+                        row.get("content"),
+                        row.get("sha"),
+                        row.get("version"),
+                        row.get("created"),
+                        row.get("updated"),
+                    )?),
+                });
+            }
+            ConditionalDeleteAdmission::Delete => {}
         }
         sqlx::query(&format!(
             "DELETE FROM {NS}_memories WHERE store_id = $1 AND path = $2"
@@ -949,9 +957,13 @@ impl PostgresMemoryRepository {
         let requested_path = target_path.unwrap_or(&path);
         let new_sha = sha256_hex(content);
         let already_current = cur_sha == new_sha && path == requested_path;
-        if expected_path.is_some_and(|expected| expected != path) {
-            return Err(MemErr::Conflict {
-                current: Box::new(to_memory(
+        match HeadUpdateAdmission::new(
+            expected_path.is_none_or(|expected| expected == path),
+            cur_sha == base_sha,
+            already_current,
+        ) {
+            HeadUpdateAdmission::Conflict => {
+                let current = to_memory(
                     id.into(),
                     path,
                     cur_content,
@@ -959,11 +971,12 @@ impl PostgresMemoryRepository {
                     version,
                     created,
                     updated,
-                )?),
-            });
-        }
-        if cur_sha != base_sha {
-            if already_current {
+                )?;
+                return Err(MemErr::Conflict {
+                    current: Box::new(current),
+                });
+            }
+            HeadUpdateAdmission::Current => {
                 return to_memory(
                     id.into(),
                     path,
@@ -974,29 +987,7 @@ impl PostgresMemoryRepository {
                     updated,
                 );
             }
-            let current = to_memory(
-                id.into(),
-                path,
-                cur_content,
-                cur_sha,
-                version,
-                created,
-                updated,
-            )?;
-            return Err(MemErr::Conflict {
-                current: Box::new(current),
-            });
-        }
-        if already_current {
-            return to_memory(
-                id.into(),
-                path,
-                cur_content,
-                cur_sha,
-                version,
-                created,
-                updated,
-            );
+            HeadUpdateAdmission::Apply => {}
         }
         let now = now_nanos() as i64;
         let displaced_id = if requested_path == path {
