@@ -1061,6 +1061,51 @@ impl LlmExecutor for FlakyStreamLlm {
     }
 }
 
+/// Returns one terminal but unusable response, then a typed tool call. This is
+/// distinct from `FlakyStreamLlm`: protocol-invalid output owns no resumable
+/// partial even though the remote invocation itself terminated.
+struct InvalidResponseThenToolLlm {
+    requests: std::sync::Mutex<Vec<ChatRequest>>,
+}
+
+#[async_trait]
+impl LlmExecutor for InvalidResponseThenToolLlm {
+    async fn infer(&self, _request: ChatRequest) -> LlmResult<ChatResponse> {
+        unreachable!("protocol-recovery path is streaming-only")
+    }
+
+    async fn infer_streaming(
+        &self,
+        request: ChatRequest,
+        sink: &dyn DeltaSink,
+    ) -> LlmResult<ChatResponse> {
+        let attempt = {
+            let mut requests = self.requests.lock().unwrap();
+            requests.push(request);
+            requests.len()
+        };
+        if attempt == 1 {
+            sink.on_text("<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name=\"publish\">")
+                .await;
+            return Err(LlmError::InvalidResponse(
+                "model serialized a tool call as assistant text".into(),
+            )
+            .with_execution_evidence(
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated,
+            ));
+        }
+        Ok(ChatResponse {
+            output: AssistantOutput::from_blocks(vec![ContentBlock::tool_use(
+                "publish-1",
+                "publish",
+                serde_json::json!({ "path": "/workspace/material" }),
+            )]),
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+        })
+    }
+}
+
 /// Succeeds on every call, streaming a fixed text — used to prove a resumed
 /// call continues from the recovered prefix (R1 resume).
 struct SucceedingLlm {
@@ -1693,6 +1738,63 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
         *sink.chunks.lock().unwrap(),
         vec!["The ans".to_string(), "wer is 42".to_string()]
     );
+}
+
+#[tokio::test]
+async fn invalid_terminal_response_retries_clean_without_reusing_its_wire_text() {
+    // Protocol-recovery decision table. Causes: C1 a provider terminal response
+    // contains only text-serialized tool wire syntax; C2 termination evidence
+    // permits a bounded retry; C3 the retry returns one typed tool call. Effects:
+    // E1 invoke the provider exactly twice; E2 the retry is the unchanged original
+    // request, with no assistant prefix or continuation prompt; E3 return only the
+    // typed tool call; E4 a crash checkpoint contains none of the invalid bytes.
+    // Rule P1=C1+C2+C3=>E1+E2+E3+E4. Contrast: ordinary partial transport
+    // continuation remains covered by `interrupted_text_stream_is_continued...`.
+    // Constraints/invariants: no DSML parsing, no synthesized ToolCall, and the
+    // existing retry budget plus execution-evidence gate remain authoritative.
+    let provider = Arc::new(InvalidResponseThenToolLlm {
+        requests: Default::default(),
+    });
+    let llm: Arc<dyn LlmExecutor> = provider.clone();
+    let store = SpyCheckpointStore::default();
+    let checkpoint = CheckpointCtx {
+        store: &store,
+        run_id: "protocol-run".to_string(),
+        thread_id: "protocol-thread".to_string(),
+        model: "m".to_string(),
+    };
+    let observed = infer_with_retry_observed(
+        &llm,
+        one_step_request(),
+        &policy(1),
+        &crate::circuit_breaker::CircuitBreaker::default(),
+        &recording(),
+        Some(&checkpoint),
+        None,
+        &awaken_runtime_contract::CaptureDecision::default(),
+        None,
+        &awaken_runtime_contract::metrics::NoopRecorder,
+        None,
+        None,
+    )
+    .await
+    .expect("checkpoint writes remain available");
+    let response = observed
+        .result
+        .expect("clean retry obtains typed tool data");
+
+    assert_eq!(observed.observation.retry_count, 1, "P1/E1");
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2, "P1/E1");
+    assert_eq!(requests[1].messages, requests[0].messages, "P1/E2");
+    assert!(assistant_prefixes(&requests[1]).is_empty(), "P1/E2");
+    let calls = response.output.tool_calls();
+    assert_eq!(calls.len(), 1, "P1/E3");
+    assert_eq!(calls[0].tool_id, "publish", "P1/E3");
+    let puts = store.puts.lock().unwrap();
+    assert_eq!(puts.len(), 1, "P1/E4");
+    assert!(puts[0].partial_text.is_empty(), "P1/E4");
+    assert!(puts[0].partial_tools.is_empty(), "P1/E4");
 }
 
 #[tokio::test]

@@ -468,11 +468,25 @@ async fn infer_with_retry_inner(
                 );
                 tracing::debug!(?disposition, ?classified, "inference attempt failed");
                 let snapshot = sink.snapshot();
-                // The whole text so far: prior confirmed prefix + this attempt.
-                let combined_text = format!("{prefix}{}", snapshot.text);
+                // A transport interruption may leave a confirmed partial. A
+                // terminal but invalid response does not: retaining its text or
+                // tool fragments would poison every retry with the protocol
+                // violation we are trying to recover from. Preserve only a
+                // prefix confirmed by an earlier attempt in that case.
+                let retain_attempt_output = err.retry_preserves_attempt_output();
+                let combined_text = if retain_attempt_output {
+                    format!("{prefix}{}", snapshot.text)
+                } else {
+                    prefix.clone()
+                };
+                let partial_tools = if retain_attempt_output {
+                    snapshot.tools
+                } else {
+                    Vec::new()
+                };
 
                 if retryable {
-                    let completed = parse_completed(&snapshot.tools);
+                    let completed = parse_completed(&partial_tools);
                     // Boundary flush (Phase 3): persist the whole in-flight partial
                     // so a crash during recovery resumes here. The runtime still
                     // degrades deliberately, but the backend error is observable.
@@ -481,7 +495,7 @@ async fn infer_with_retry_inner(
                             .store
                             .put(ctx.checkpoint(
                                 combined_text.clone(),
-                                snapshot.tools.clone(),
+                                partial_tools.clone(),
                                 if completed.is_empty() {
                                     retry_count.saturating_add(1)
                                 } else {

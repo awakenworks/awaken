@@ -430,8 +430,9 @@ mod thread_usage_key_tests {
 /// A classified inference failure. The variant is the classification: it
 /// decides both the retry policy (`is_retryable`) and the stable code
 /// (`code`) a run that cannot recover reports in its terminal failure.
-/// Retryable: `Provider`, `RateLimited`, `Overloaded`, `Timeout`. Permanent:
-/// everything else — retrying an identical request cannot succeed.
+/// Retryable: `Provider`, `InvalidResponse`, `RateLimited`, `Overloaded`,
+/// `Timeout`. Permanent: everything else — retrying an identical request cannot
+/// succeed.
 #[derive(Debug, Error)]
 pub enum Error {
     /// The adapter's independent execution evidence. Unannotated failures are
@@ -451,6 +452,12 @@ pub enum Error {
     /// transport error). Retryable with backoff.
     #[error("provider error: {0}")]
     Provider(String),
+    /// The remote operation reached a terminal response, but that response
+    /// cannot enter the neutral protocol. Retryable from the original request;
+    /// unlike a transport interruption, streamed bytes from this attempt are
+    /// not a confirmed prefix and must never steer the next attempt.
+    #[error("invalid provider response: {0}")]
+    InvalidResponse(String),
     /// The provider rate-limited the request (429). Retryable; honors the
     /// server's `Retry-After` hint when present.
     #[error("rate limited: {message}")]
@@ -542,10 +549,19 @@ impl Error {
         matches!(
             self.classification(),
             Error::Provider(_)
+                | Error::InvalidResponse(_)
                 | Error::RateLimited { .. }
                 | Error::Overloaded { .. }
                 | Error::Timeout(_)
         )
+    }
+
+    /// Whether a retry may continue from text/tool fragments streamed by the
+    /// failed attempt. A terminal but invalid response owns no reusable partial;
+    /// transport failures retain the existing interruption-recovery behavior.
+    #[must_use]
+    pub fn retry_preserves_attempt_output(&self) -> bool {
+        !matches!(self.classification(), Error::InvalidResponse(_))
     }
 
     /// The server's `Retry-After` hint, when the provider sent one.
@@ -577,7 +593,7 @@ impl Error {
         match self {
             Error::Observed { source, .. } => source.code(),
             Error::Binding(_) => "binding_rejected",
-            Error::Provider(_) => "provider_error",
+            Error::Provider(_) | Error::InvalidResponse(_) => "provider_error",
             Error::RateLimited { .. } => "rate_limited",
             Error::Overloaded { .. } => "overloaded",
             Error::Timeout(_) => "timeout",
@@ -737,8 +753,12 @@ mod error_classification_tests {
         // everything else is permanent. `code()` is the stable per-variant fault class
         // a terminal failure records. Assert both axes together so a new variant or a
         // reclassification cannot silently drift.
-        let retryable: [(Error, &str); 4] = [
+        let retryable: [(Error, &str); 5] = [
             (Error::Provider("5xx".into()), "provider_error"),
+            (
+                Error::InvalidResponse("tool call was serialized as text".into()),
+                "provider_error",
+            ),
             (
                 Error::RateLimited {
                     message: "429".into(),
@@ -783,6 +803,34 @@ mod error_classification_tests {
                 reset_after: None
             }
             .is_retryable()
+        );
+    }
+
+    #[test]
+    fn only_an_invalid_terminal_response_discards_its_attempt_output() {
+        // Causes: C1 a terminal provider response is structurally unusable; C2
+        // a transport/provider failure may have ended after a confirmed partial;
+        // C3 execution evidence wraps either classification. Effects: E1 C1
+        // retries the original request without the invalid bytes; E2 C2 retains
+        // the established partial-continuation behavior; E3 wrapping does not
+        // change either decision. Rules O1=C1=>E1, O2=C2=>E2,
+        // O3=(C1|C2)+C3=>same decision. This is recovery input policy only;
+        // execution evidence remains the independent re-entry gate.
+        let invalid = Error::InvalidResponse("invalid".into());
+        assert!(!invalid.retry_preserves_attempt_output(), "O1/E1");
+        assert!(
+            Error::Provider("drop".into()).retry_preserves_attempt_output(),
+            "O2/E2"
+        );
+        assert!(
+            Error::Timeout("drop".into()).retry_preserves_attempt_output(),
+            "O2/E2"
+        );
+        assert!(
+            !invalid
+                .with_execution_evidence(crate::model_operation::ModelExecutionEvidence::Terminated)
+                .retry_preserves_attempt_output(),
+            "O3/E3"
         );
     }
 
