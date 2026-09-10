@@ -23,6 +23,16 @@ mod audit_identity;
 mod effect_retirement;
 
 #[tokio::test]
+async fn postgres_publication_source_admission_preserves_rejected_frame() {
+    let Some(pool) = schema_pool("t_publication_source_admission").await else {
+        return;
+    };
+    // Same P1-P4 effects through the real transaction and explicit rollback.
+    revision_cas::publication_source_table(&PostgresConfigStore::with_pool(pool).await.unwrap())
+        .await;
+}
+
+#[tokio::test]
 async fn postgres_management_effect_stale_completion_preserves_replacement() {
     let Some(pool) = schema_pool("t_effect_retirement_aba").await else {
         return;

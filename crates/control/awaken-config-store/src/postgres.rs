@@ -671,7 +671,9 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         .map_err(reject)?
         .map(domain_generation)
         .transpose()?;
-        if current_revision != Some(expected_generation) {
+        if let crate::PublicationSourceAdmission::Conflict { current_revision } =
+            crate::PublicationSourceAdmission::new(current_revision, expected_generation)
+        {
             tx.rollback().await.map_err(reject)?;
             return Ok(ConfigWrite::Conflict { current_revision });
         }
