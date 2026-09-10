@@ -1091,8 +1091,8 @@ mod visible_response_tests {
     /// it. Rules T1=C1=>E1, T2=!C1&C2=>E2, and T3=!C1&!C2=>E1. FMECA: committing
     /// serialized tool syntax is critical because an expected external effect
     /// never occurs while the Session looks successful; this sole provider seam
-    /// detects it even on the tool-free reserved final step, and deliberately
-    /// avoids a second, injection-prone tool parser.
+    /// detects it even when capability narrowing legitimately removes tools, and
+    /// deliberately avoids a second, injection-prone tool parser.
     /// Constraints/invariants: only structured provider tool data is executable;
     /// sentinel text is detected but never parsed as a second tool authority.
     #[test]

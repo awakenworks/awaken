@@ -1697,12 +1697,13 @@ impl LlmExecutor for ToolUntilFinalRequest {
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
-        let output = if request.tools.is_empty() {
+        let final_request = request.messages.iter().any(|message| {
+            message.role == Role::System
+                && extract_text(&message.content).contains("final inference step")
+        });
+        let output = if final_request {
             self.saw_final_request.fetch_add(1, Ordering::SeqCst);
-            assert!(request.messages.iter().any(|message| {
-                message.role == Role::System
-                    && extract_text(&message.content).contains("final inference step")
-            }));
+            assert!(!request.tools.is_empty(), "T2/E1 typed tool protocol");
             AssistantOutput::text("final evidence")
         } else {
             AssistantOutput::from_tool_calls(vec![ToolCall {
@@ -1753,6 +1754,11 @@ fn activation_with_steps(max_steps: usize) -> RunActivation {
 
 #[tokio::test]
 async fn the_configured_step_ceiling_is_honored() {
+    // Final-step protocol decision table. Causes: C1 a bounded Run reaches its
+    // last inference with configured tools; C2 the model attempts one more typed
+    // tool call. Effects: E1 preserve the typed protocol; E2 execute no final
+    // call; E3 end exactly as MaxSteps. Rule T1=C1+C2=>E1+E2+E3. Hiding schemas
+    // is forbidden because providers may serialize the same intent as text.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = Runtime::new()
         .with_llm(Arc::new(AlwaysToolCall))
@@ -1776,6 +1782,9 @@ async fn the_configured_step_ceiling_is_honored() {
 
 #[tokio::test]
 async fn the_last_step_is_reserved_for_a_natural_final_response() {
+    // C3 the model follows the final instruction. E4 the advertised tool schema
+    // remains protocol-visible while text closes naturally. Rule
+    // T2=C1+C3=>E1+E4, with no tool execution on the final step.
     let ran = Arc::new(AtomicUsize::new(0));
     let llm = Arc::new(ToolUntilFinalRequest {
         calls: AtomicUsize::new(0),

@@ -266,16 +266,18 @@ async fn infer_step(
             &ledger.transcript,
             &env.dynamic_descriptors(),
             discovery,
-            !final_step
-                && context.tool_capability_narrowing
-                    == awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured,
+            context.tool_capability_narrowing
+                == awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured,
         )?;
         if final_step {
             // `max_steps` is a runaway bound, but a run that spends its last
             // allowance on another tool call cannot report the evidence it has
             // already gathered. Reserve the last inference for a natural final
-            // response: hide every tool and make the boundary explicit without
-            // mutating the durable transcript.
+            // response and make the boundary explicit without mutating the
+            // durable transcript. Keep configured tool schemas visible so a
+            // non-compliant provider still serializes any attempted call through
+            // the one typed protocol; the boundary below rejects that call as
+            // MaxSteps without executing it.
             request.messages.push(ChatMessage {
                 role: Role::System,
                 content: vec![ContentBlock::text(
@@ -840,9 +842,9 @@ pub(super) async fn drive(
             break;
         }
 
-        // A non-compliant model can still emit a tool call even though the
-        // reserved final request advertised no tools. Never execute that call:
-        // the hard ceiling remains authoritative and the run ends MaxSteps.
+        // A non-compliant model can still emit a typed tool call despite the
+        // reserved-final instruction. Never execute that call: the hard ceiling
+        // remains authoritative and the run ends MaxSteps.
         if final_step && !calls.is_empty() {
             disposition = Some(RunDisposition::ended(run_id.clone(), EndCause::MaxSteps));
             break;
