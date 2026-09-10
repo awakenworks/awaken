@@ -155,6 +155,33 @@ mod verification {
         }
     }
 
+    fn symbolic_policy(enabled: bool, ask: bool) -> ToolExecutionPolicy {
+        ToolExecutionPolicy {
+            enabled,
+            permission: symbolic_permission(!ask),
+        }
+    }
+
+    #[kani::proof]
+    fn toolset_policy_exact_override_replaces_only_the_matching_default() {
+        // Cause/effect decision table: C1 lookup is the exact "search" name or
+        // the distinct "fetch" name; C2 default and override independently
+        // range over enabled x allow/ask. E1 exact returns the override; E2 the
+        // foreign name returns the default. The fixed non-empty names prove the
+        // production lookup's selection priority; arbitrary names and override
+        // counts remain outside this scalar harness.
+        let default = symbolic_policy(kani::any(), kani::any());
+        let exact = symbolic_policy(kani::any(), kani::any());
+        let policy = ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default,
+            overrides: vec![ToolPolicyOverride::new("search", exact)],
+        };
+
+        assert_eq!(policy.policy_for("search"), exact);
+        assert_eq!(policy.policy_for("fetch"), default);
+    }
+
     #[kani::proof]
     fn tool_policy_selector_fails_closed_for_unregistered_widened_or_mismatched_calls() {
         let registered: bool = kani::any();

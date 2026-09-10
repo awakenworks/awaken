@@ -567,12 +567,12 @@ type checking are valuable executable evidence, but are not formal proofs.
   admission. The model does not prove model intent, Worker availability,
   scheduler fairness, or delivery to an external side effect.
 - Tool permission defaults and exact overrides share the neutral
-  `ToolExecutionPolicy`. `ToolPermissionPolicy.tla` exhaustively checks Agent
-  default-allow, MCP default-ask, exact allow/ask/disabled configuration, and
-  disabled fail-closed behavior. The existing Kani selector proves that an
-  unregistered, mismatched, disabled, or widened execution request is rejected;
-  provider documentation compatibility and the correctness of external tool
-  effects remain evidence boundaries.
+  `ToolExecutionPolicy`; one resolver owns Managed normalization and MCP-policy
+  completion. Kani exhausts both sources and all optional default axes, and proves
+  one exact override replaces only its matching default. `ToolPermissionPolicy.tla`
+  checks the same abstract rules; runtime tests cross-check shared Native/ACP
+  authorization. Wire admission, arbitrary names/counts, assembly, external effects,
+  and universal Rust-to-TLA refinement remain evidence boundaries.
 - Runtime output harvest publishes ordinary Files through the single
   Resources-owned `ArtifactPublication`/receipt path. Kani proves every receipt
   identity axis is mandatory. The generic harvester deliberately does not claim

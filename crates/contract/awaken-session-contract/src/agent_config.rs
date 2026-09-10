@@ -128,6 +128,31 @@ pub struct AgentToolDefaultConfig {
     pub permission_policy: Option<AgentToolPermissionPolicy>,
 }
 
+/// Resolve the Managed wire's source-specific default into the neutral policy.
+/// This is the sole owner of the Agent-default-allow and MCP-default-ask rule;
+/// callers may replace either authored axis without changing the other one.
+fn managed_toolset_default_policy(
+    source: &awaken_agent_contract::ToolsetSource,
+    configured: Option<&AgentToolDefaultConfig>,
+) -> awaken_agent_contract::ToolExecutionPolicy {
+    use awaken_agent_contract::{ToolExecutionPolicy, ToolPermissionRequirement, ToolsetSource};
+
+    let source_permission = match source {
+        ToolsetSource::Agent => ToolPermissionRequirement::AlwaysAllow,
+        ToolsetSource::Mcp { .. } => ToolPermissionRequirement::AlwaysAsk,
+    };
+    ToolExecutionPolicy {
+        enabled: configured.and_then(|value| value.enabled).unwrap_or(true),
+        permission: configured
+            .and_then(|value| value.permission_policy)
+            .map(|value| match value {
+                AgentToolPermissionPolicy::AlwaysAllow => ToolPermissionRequirement::AlwaysAllow,
+                AgentToolPermissionPolicy::AlwaysAsk => ToolPermissionRequirement::AlwaysAsk,
+            })
+            .unwrap_or(source_permission),
+    }
+}
+
 /// Closed discriminant for the official versioned Runtime capability surface.
 /// The finite enum keeps symbolic proofs away from unbounded string comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -296,9 +321,7 @@ pub fn ensure_typed_mcp_toolset_policies(
     mcp_servers: &[awaken_runtime_contract::agent_bindings::AgentMcpServerBinding],
     has_legacy_permission: bool,
 ) -> Result<(), String> {
-    use awaken_agent_contract::{
-        ToolExecutionPolicy, ToolPermissionRequirement, ToolsetPolicy, ToolsetSource,
-    };
+    use awaken_agent_contract::{ToolsetPolicy, ToolsetSource};
 
     let typed_servers = toolsets
         .iter()
@@ -318,12 +341,10 @@ pub fn ensure_typed_mcp_toolset_policies(
         ));
     }
     for server_name in missing {
+        let source = ToolsetSource::Mcp { server_name };
         toolsets.push(ToolsetPolicy {
-            source: ToolsetSource::Mcp { server_name },
-            default: ToolExecutionPolicy {
-                enabled: true,
-                permission: ToolPermissionRequirement::AlwaysAsk,
-            },
+            default: managed_toolset_default_policy(&source, None),
+            source,
             overrides: Vec::new(),
         });
     }
@@ -673,12 +694,6 @@ pub fn toolset_policies(tools: &[AgentTool]) -> Vec<awaken_agent_contract::Tools
         Some(AgentToolPermissionPolicy::AlwaysAsk) => ToolPermissionRequirement::AlwaysAsk,
         None => fallback,
     };
-    let default_permission = |source: &ToolsetSource| match source {
-        ToolsetSource::Agent => ToolPermissionRequirement::AlwaysAllow,
-        // Managed Agents defaults MCP to confirmation so a tool added later by
-        // the remote server cannot silently gain execution authority.
-        ToolsetSource::Mcp { .. } => ToolPermissionRequirement::AlwaysAsk,
-    };
     tools
         .iter()
         .filter_map(|tool| {
@@ -700,15 +715,7 @@ pub fn toolset_policies(tools: &[AgentTool]) -> Vec<awaken_agent_contract::Tools
                 ),
                 AgentTool::Custom { .. } => return None,
             };
-            let default = ToolExecutionPolicy {
-                enabled: default_config
-                    .and_then(|value| value.enabled)
-                    .unwrap_or(true),
-                permission: permission(
-                    default_config.and_then(|value| value.permission_policy),
-                    default_permission(&source),
-                ),
-            };
+            let default = managed_toolset_default_policy(&source, default_config);
             let overrides = match &source {
                 ToolsetSource::Agent => agent_toolset_members()
                     .map(|name| {
@@ -751,6 +758,54 @@ pub fn toolset_policies(tools: &[AgentTool]) -> Vec<awaken_agent_contract::Tools
             })
         })
         .collect()
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn managed_toolset_default_resolution_is_source_exact_and_configurable() {
+    use awaken_agent_contract::{ToolPermissionRequirement, ToolsetSource};
+
+    // Cause/effect decision table: five symbolic booleans encode source,
+    // enabled presence/value, and permission presence/value (2^5 paths, with
+    // absent-value duplicates). They collapse to the 2 x 3 x 3 = 18 semantic
+    // rules: absent axes inherit source defaults, while present axes replace
+    // only their exact enabled or permission result.
+    let mcp_source: bool = kani::any();
+    let enabled_present: bool = kani::any();
+    let enabled_value: bool = kani::any();
+    let permission_present: bool = kani::any();
+    let permission_ask: bool = kani::any();
+    let source = if mcp_source {
+        ToolsetSource::Mcp {
+            server_name: String::new(),
+        }
+    } else {
+        ToolsetSource::Agent
+    };
+    let configured = (enabled_present || permission_present).then_some(AgentToolDefaultConfig {
+        enabled: enabled_present.then_some(enabled_value),
+        permission_policy: permission_present.then_some(if permission_ask {
+            AgentToolPermissionPolicy::AlwaysAsk
+        } else {
+            AgentToolPermissionPolicy::AlwaysAllow
+        }),
+    });
+
+    let resolved = managed_toolset_default_policy(&source, configured.as_ref());
+    let expected_permission = if permission_present {
+        if permission_ask {
+            ToolPermissionRequirement::AlwaysAsk
+        } else {
+            ToolPermissionRequirement::AlwaysAllow
+        }
+    } else if mcp_source {
+        ToolPermissionRequirement::AlwaysAsk
+    } else {
+        ToolPermissionRequirement::AlwaysAllow
+    };
+
+    assert_eq!(resolved.enabled, !enabled_present || enabled_value);
+    assert_eq!(resolved.permission, expected_permission);
 }
 
 #[cfg(kani)]
@@ -1236,6 +1291,46 @@ mod tests {
         // Constraints/invariants: exact-tool overrides outrank toolset defaults,
         // and an absent MCP policy remains fail-closed as always-ask.
         use awaken_agent_contract::ToolPermissionRequirement::{AlwaysAllow, AlwaysAsk};
+
+        // Rules D1-D18 exhaust source x optional enabled x optional permission.
+        // Each explicit axis replaces only itself; both absent axes retain the
+        // exact source default. This native table cross-checks the same pure
+        // production resolver as the finite Kani harness.
+        for (source, inherited_permission) in [
+            (awaken_agent_contract::ToolsetSource::Agent, AlwaysAllow),
+            (
+                awaken_agent_contract::ToolsetSource::Mcp {
+                    server_name: "matrix".into(),
+                },
+                AlwaysAsk,
+            ),
+        ] {
+            for enabled in [None, Some(false), Some(true)] {
+                for permission_policy in [
+                    None,
+                    Some(AgentToolPermissionPolicy::AlwaysAllow),
+                    Some(AgentToolPermissionPolicy::AlwaysAsk),
+                ] {
+                    let configured = (enabled.is_some() || permission_policy.is_some()).then_some(
+                        AgentToolDefaultConfig {
+                            enabled,
+                            permission_policy,
+                        },
+                    );
+                    let resolved = managed_toolset_default_policy(&source, configured.as_ref());
+                    let expected_permission = match permission_policy {
+                        Some(AgentToolPermissionPolicy::AlwaysAllow) => AlwaysAllow,
+                        Some(AgentToolPermissionPolicy::AlwaysAsk) => AlwaysAsk,
+                        None => inherited_permission,
+                    };
+                    assert_eq!(resolved.enabled, enabled.unwrap_or(true), "D1-D18 enabled");
+                    assert_eq!(
+                        resolved.permission, expected_permission,
+                        "D1-D18 permission"
+                    );
+                }
+            }
+        }
 
         let policies = toolset_policies(&[
             AgentTool::AgentToolset20260401 {
