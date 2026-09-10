@@ -35,6 +35,12 @@ mod audit_identity;
 mod effect_retirement;
 
 #[tokio::test]
+async fn sqlite_publication_source_admission_preserves_rejected_frame() {
+    // P1-P4 share one actual adapter decision table; no substitute CAS model.
+    revision_cas::publication_source_table(&SqliteConfigStore::open_in_memory().unwrap()).await;
+}
+
+#[tokio::test]
 async fn sqlite_management_effect_stale_completion_preserves_replacement() {
     effect_retirement::stale_completion_preserves_replacement(
         &SqliteConfigStore::open_in_memory().unwrap(),

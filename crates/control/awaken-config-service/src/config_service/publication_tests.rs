@@ -137,13 +137,45 @@ async fn publish_never_installs_an_artifact_from_a_stale_source_revision() {
     // fixtures assert that the canonical caller passes publication.source_revision
     // as the expected CAS revision. The SQL method alone cannot establish that
     // pairing; this test covers the caller seam, not database transaction behavior.
-    let (service, catalog) = test_service_and_catalog();
+    // A call counter distinguishes "never invoked" from a registrar that was
+    // invoked and happened to leave the current projection empty.
+    struct ObservedRegistrar {
+        inner: LocalExecutableAgentRegistrar,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl ExecutableAgentRegistrar for ObservedRegistrar {
+        async fn register(
+            &self,
+            command: ExecutableAgentRegistration,
+        ) -> Result<ExecutableAgentRegistrationOutcome, ExecutableAgentRegistrationError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.register(command).await
+        }
+        async fn withdraw(
+            &self,
+            command: ExecutableAgentWithdrawal,
+        ) -> Result<ExecutableAgentWithdrawalOutcome, ExecutableAgentRegistrationError> {
+            self.inner.withdraw(command).await
+        }
+    }
+    let catalog = Arc::new(ExecutableAgentCatalog::new());
+    let registrar = Arc::new(ObservedRegistrar {
+        inner: LocalExecutableAgentRegistrar::new(catalog.clone()),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let service = ConfigService::new(Arc::new(FakeResolver), registrar.clone());
     let err = service
         .publish(&scope(DEFAULT_SCOPE), &StalePublishRegistry, "a", &[])
         .await
         .unwrap_err();
 
     assert!(matches!(err, PublishError::StaleRevision(Some(8))));
+    assert_eq!(
+        registrar.calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "P1 zero registrar calls"
+    );
     assert!(
         catalog.current(DEFAULT_SCOPE, "a").is_none(),
         "a stale publication must not enter the live catalog"
