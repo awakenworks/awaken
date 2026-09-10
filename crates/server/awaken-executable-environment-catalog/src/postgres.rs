@@ -449,6 +449,7 @@ mod tests {
         commands: StdMutex<Vec<Sequenced<CatalogCommand>>>,
         drop_incremental_tail_once: AtomicBool,
         load_after_calls: StdMutex<Vec<u64>>,
+        commit_after_next_high_water: StdMutex<Option<CatalogCommand>>,
         gate_next_high_water: AtomicBool,
         high_water_calls: AtomicUsize,
         high_water_entered: Notify,
@@ -495,12 +496,15 @@ mod tests {
                 self.high_water_entered.notify_one();
                 self.release_high_water.notified().await;
             }
-            Ok(self
-                .commands
-                .lock()
-                .unwrap()
-                .last()
-                .map_or(0, |command| command.sequence))
+            let mut commands = self.commands.lock().unwrap();
+            let through = commands.last().map_or(0, |command| command.sequence);
+            if let Some(command) = self.commit_after_next_high_water.lock().unwrap().take() {
+                commands.push(Sequenced {
+                    sequence: through.saturating_add(2),
+                    command,
+                });
+            }
+            Ok(through)
         }
 
         async fn load_range(
@@ -653,6 +657,51 @@ mod tests {
             catalog.current("env-a").unwrap().definition.name,
             "Environment A",
             "R3"
+        );
+    }
+
+    #[tokio::test]
+    async fn environment_command_above_captured_high_water_waits_for_next_refresh() {
+        // Causes: C1 the registrar starts at cursor 0 with revision 1 committed
+        // at sequence 2; C2 revision 2 commits at sequence 4 after high_water
+        // captures 2 but before load_range runs; C3 a second refresh observes 4.
+        // Effects: R1 the first bounded load installs only revision 1 and leaves
+        // cursor 2 while durable authority is already 4; R2 the second refresh
+        // loads after 2 through 4 and installs revision 2 with cursor 4.
+        // Rules: C1+C2 => R1; R1+C3 => R2. This binds the shared stable-range
+        // contract to the canonical Environment replay/install path.
+        let log = Arc::new(MemoryCommandLog::default());
+        let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        let registrar = registrar(log.clone(), catalog.clone()).await;
+        log.load_after_calls.lock().unwrap().clear();
+        log.append(&CatalogCommand::Registration(Box::new(registration())))
+            .await
+            .unwrap();
+        *log.commit_after_next_high_water.lock().unwrap() = Some(CatalogCommand::Registration(
+            Box::new(registration_at(2, "Environment B")),
+        ));
+
+        registrar.refresh_projection().await.unwrap();
+        assert_eq!(registrar.cursor.applied(), 2, "R1");
+        assert_eq!(
+            log.commands.lock().unwrap().last().unwrap().sequence,
+            4,
+            "R1"
+        );
+        assert_eq!(*log.load_after_calls.lock().unwrap(), vec![0], "R1");
+        assert_eq!(
+            catalog.current("env-a").unwrap().definition.name,
+            "Environment A",
+            "R1"
+        );
+
+        registrar.refresh_projection().await.unwrap();
+        assert_eq!(registrar.cursor.applied(), 4, "R2");
+        assert_eq!(*log.load_after_calls.lock().unwrap(), vec![0, 2], "R2");
+        assert_eq!(
+            catalog.current("env-a").unwrap().definition.name,
+            "Environment B",
+            "R2"
         );
     }
 

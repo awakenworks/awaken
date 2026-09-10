@@ -479,6 +479,12 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   replay and restores the previous cursor on an ordinary install error. Kani
   exhausts all prior/target `u64` pairs and both installer outcomes; the native
   decision table cross-checks lower, equal, and higher targets.
+  Separate Agent and Environment registrar tests capture a stable high-water,
+  commit a higher command before the bounded range load, and require the first
+  refresh to install only the captured prefix while the second refresh installs
+  the later command. This binds the model's installed-at-most-authority invariant
+  to both canonical replay/install paths without treating the in-memory source
+  as proof of PostgreSQL isolation or cross-process behavior.
 - `WebhookOutbox.tla`, `RegistrationIntent.tla`, `ErasureSaga.tla`, and
   `CredentialCreation.tla` cover atomic lifecycle/outbox commit, atomic
   Environment revision+intent commit with crash-window replay and
