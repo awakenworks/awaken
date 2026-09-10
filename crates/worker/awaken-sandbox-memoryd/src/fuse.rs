@@ -66,16 +66,80 @@ struct InvalidationListener {
     handle: Option<JoinHandle<()>>,
 }
 
+fn stop_and_join_owned_listener<T>(
+    handle: &mut Option<T>,
+    request_stop: impl FnOnce(),
+    join: impl FnOnce(T),
+) {
+    request_stop();
+    if let Some(handle) = handle.take() {
+        join(handle);
+    }
+}
+
 impl Drop for InvalidationListener {
     fn drop(&mut self) {
         // Own the thread from creation, before the fallible kernel mount. The
         // same destructor covers setup failure, explicit unmount and owner Drop;
         // dropping a bare JoinHandle would only detach the still-live subscriber.
-        self.stop.store(true, Ordering::SeqCst);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
+        stop_and_join_owned_listener(
+            &mut self.handle,
+            || self.stop.store(true, Ordering::SeqCst),
+            |handle| {
+                let _ = handle.join();
+            },
+        );
     }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn listener_cleanup_requests_stop_then_joins_the_owned_handle_exactly_once() {
+    use std::cell::Cell;
+
+    // This calls the exact production cleanup action with a symbolic owned
+    // handle. std::thread::JoinHandle blocking and scheduler progress remain
+    // outside this local ownership/order proof.
+    let handle_present: bool = kani::any();
+    let handle_id: u64 = kani::any();
+    let mut handle = handle_present.then_some(handle_id);
+    let phase = Cell::new(0_u8);
+    let stop_calls = Cell::new(0_u8);
+    let join_calls = Cell::new(0_u8);
+
+    stop_and_join_owned_listener(
+        &mut handle,
+        || {
+            assert_eq!(phase.get(), 0);
+            stop_calls.set(1);
+            phase.set(1);
+        },
+        |joined| {
+            assert_eq!(phase.get(), 1);
+            assert_eq!(joined, handle_id);
+            join_calls.set(1);
+            phase.set(2);
+        },
+    );
+    assert!(handle.is_none());
+    assert_eq!(stop_calls.get(), 1);
+    assert_eq!(join_calls.get(), u8::from(handle_present));
+    assert_eq!(phase.get(), if handle_present { 2 } else { 1 });
+
+    phase.set(0);
+    stop_and_join_owned_listener(
+        &mut handle,
+        || {
+            assert_eq!(phase.get(), 0);
+            stop_calls.set(2);
+            phase.set(1);
+        },
+        |_| panic!("a consumed listener handle cannot be joined twice"),
+    );
+    assert!(handle.is_none());
+    assert_eq!(stop_calls.get(), 2);
+    assert_eq!(join_calls.get(), u8::from(handle_present));
+    assert_eq!(phase.get(), 1);
 }
 
 /// Drain `rx`, dropping any invalidated path for `store_id` from `cache`, until

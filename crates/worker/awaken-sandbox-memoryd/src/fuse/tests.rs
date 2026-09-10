@@ -23,6 +23,56 @@ fn memory(path: &str, content: &str) -> Memory {
 }
 
 #[test]
+fn listener_cleanup_action_covers_owned_absent_and_repeated_decision_rows() {
+    // Cause/effect graph: C1 an owned handle is present; C2 the owner has no
+    // handle; C3 cleanup is repeated after C1. E1 every call requests stop;
+    // E2 C1 joins the exact handle after E1 and consumes it; E3 C2/C3 never
+    // join; E4 cleanup returns only after the join callback returns. Decision
+    // table: R1=C1 -> E1+E2+E4; R2=C2 -> E1+E3; R3=C1+C3 -> E1+E2 once,
+    // then E1+E3. Removing/reordering stop, detaching instead of invoking join,
+    // retaining the Option or invoking join twice must break these rows.
+    for initial in [Some(41_u64), None] {
+        let had_handle = initial.is_some();
+        let mut handle = initial;
+        let events = std::cell::RefCell::new(Vec::new());
+        stop_and_join_owned_listener(
+            &mut handle,
+            || events.borrow_mut().push("stop"),
+            |joined| {
+                assert_eq!(joined, 41, "R1/E2 exact owned handle");
+                events.borrow_mut().push("join");
+            },
+        );
+        assert!(handle.is_none(), "R1-R2 ownership consumed or absent");
+        assert_eq!(
+            *events.borrow(),
+            if had_handle {
+                vec!["stop", "join"]
+            } else {
+                vec!["stop"]
+            },
+            "R1-R2/E1-E4"
+        );
+
+        stop_and_join_owned_listener(
+            &mut handle,
+            || events.borrow_mut().push("stop"),
+            |_| panic!("R3/E3 consumed or absent handle cannot join"),
+        );
+        assert!(handle.is_none(), "R3 keeps the handle consumed");
+        assert_eq!(
+            *events.borrow(),
+            if had_handle {
+                vec!["stop", "join", "stop"]
+            } else {
+                vec!["stop", "stop"]
+            },
+            "R3/E1+E3"
+        );
+    }
+}
+
+#[test]
 fn failed_kernel_mount_releases_only_its_invalidation_listener() {
     // R1: listener started + kernel setup error + live bus/peer => error returns
     // only after this subscriber exits; peer remains usable. Repeated failures
