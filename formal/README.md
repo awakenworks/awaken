@@ -411,6 +411,9 @@ obligation when the development host is Linux.
   Production instead serializes the complete drain with one Tokio mutex; timeout
   requests task abort, aborts and joins its watcher, then returns without claiming
   that a non-yielding task Future or opaque physical work has already stopped.
+  The strict native cross-check holds both one timeout leader and one successful
+  cooperative leader inside that guard, requiring every concurrent follower to
+  wait; the successful row exercises two followers before releasing the task.
 - `BackgroundTask.tla` covers the Thread-state-owned background aggregate:
   one fenced owner/epoch/lease, waiting and cancellation, exact heartbeat and
   finish fences, expiry reclaim that preserves Waiting/Cancelling phase and
