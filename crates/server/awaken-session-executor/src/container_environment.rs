@@ -42,6 +42,19 @@ struct BuiltContainerEnvironment {
 ))]
 const RESIDENT_HAND_PORT: u16 = 7777;
 
+#[cfg(feature = "container-k8s")]
+fn k8s_sandbox_control_forwarder(
+    image: Option<&str>,
+    settings: &crate::deployment_config::SandboxSettings,
+) -> Result<awaken_sandbox_container::k8s::K8sSandboxControlForwarder, String> {
+    awaken_sandbox_container::k8s::K8sSandboxControlForwarder::new(
+        container_image(image)?,
+        settings.container_hand_bin.clone(),
+        awaken_sandbox_container::k8s::DEFAULT_REPOSITORY_GIT_CONTROL_PORT,
+    )
+    .map_err(|error| format!("Kubernetes Sandbox control forwarder: {error}"))
+}
+
 /// The one container-environment realization assembled from a deployment.
 ///
 /// A downstream composition may decorate `provider` while retaining the exact
@@ -360,6 +373,8 @@ pub async fn build_container_environment_for_realization(
             .await
             .map_err(|error| format!("k8s runtime: {error}"))?
             .with_image_pull_secrets(settings.k8s_image_pull_secrets.clone());
+            runtime = runtime
+                .with_sandbox_control_forwarder(k8s_sandbox_control_forwarder(image, settings)?);
             if let Some(continuation) = settings.k8s_continuation_volume.clone() {
                 runtime = runtime.with_continuation_volume(continuation);
             }
@@ -500,5 +515,42 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[cfg(feature = "container-k8s")]
+    #[test]
+    fn kubernetes_control_forwarder_reuses_the_exact_sandbox_artifact() {
+        /*
+         * Production composition decision table:
+         * C1=Kubernetes Session provider; C2=base image is digest-pinned;
+         * C3=the configured companion path is absolute. E1=C1+C2+C3 installs
+         * the RepositoryGitCredential control forwarder from the same artifact;
+         * E2=C1+(!C2||!C3) rejects before Worker registration. This closes the
+         * gap where protocol and fake-runtime tests passed while the production
+         * Worker advertised no control service and every Repository Run stayed
+         * Pending. Docker/Podman remain unchanged because they cannot publish
+         * this Kubernetes sidecar transport.
+         */
+        let pinned = "registry.invalid/awaken-sandbox@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let settings = crate::deployment_config::SandboxSettings::default();
+        assert!(
+            k8s_sandbox_control_forwarder(Some(pinned), &settings).is_ok(),
+            "E1 exact image and companion path"
+        );
+        let mutable = k8s_sandbox_control_forwarder(
+            Some("registry.invalid/awaken-sandbox:latest"),
+            &settings,
+        )
+        .expect_err("E2 mutable forwarder image must fail closed");
+        assert!(
+            mutable.contains("digest-pinned operator image"),
+            "{mutable}"
+        );
+
+        let mut relative = settings;
+        relative.container_hand_bin = "awaken-sandbox".into();
+        let relative = k8s_sandbox_control_forwarder(Some(pinned), &relative)
+            .expect_err("E2 relative executable must fail closed");
+        assert!(relative.contains("absolute executable"), "{relative}");
     }
 }

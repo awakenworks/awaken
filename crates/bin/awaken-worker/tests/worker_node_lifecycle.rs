@@ -89,6 +89,7 @@ struct ExternalSessionProvider {
     probe_fault: Option<(usize, ProbeFault)>,
     probe_calls: AtomicUsize,
     active_probes: AtomicUsize,
+    repository_control: bool,
 }
 
 struct ActiveProbe<'a>(&'a AtomicUsize);
@@ -117,6 +118,13 @@ impl ExternalSessionProvider {
     fn stalling_after_startup() -> Self {
         Self {
             probe_fault: Some((1, ProbeFault::Stall)),
+            ..Self::default()
+        }
+    }
+
+    fn with_repository_control() -> Self {
+        Self {
+            repository_control: true,
             ..Self::default()
         }
     }
@@ -190,6 +198,11 @@ impl awaken_session_executor::HandExecutorFactory for NoHandFactory {
 #[async_trait::async_trait]
 impl awaken_sandbox_container::ContainerEnvironmentProvider for ExternalSessionProvider {
     fn sandbox_capabilities(&self) -> awaken_provisioning_contract::SandboxCapabilities {
+        let control_services = self.repository_control.then(|| {
+            std::collections::BTreeSet::from([
+                awaken_sandbox_container::SandboxControlServiceKind::RepositoryGitCredential,
+            ])
+        });
         awaken_provisioning_contract::SandboxCapabilities {
             process_tree_supervision: false,
             isolation: awaken_provisioning_contract::IsolationClass::Container,
@@ -202,7 +215,7 @@ impl awaken_sandbox_container::ContainerEnvironmentProvider for ExternalSessionP
             resource_limits: true,
             custom_rootfs: true,
             package_provisioning: false,
-            control_services: Default::default(),
+            control_services: control_services.unwrap_or_default(),
         }
     }
 
@@ -345,6 +358,42 @@ fn external_session_provider_requires_its_hand_channel_port() {
         .err()
         .expect("E2 provider identity is required");
     assert!(empty_backend.to_string().contains("backend"));
+}
+
+#[test]
+fn standard_manifest_preserves_repository_control_from_the_installed_provider() {
+    // Production composition complement for Runtime Host's K8s builder test.
+    // C1 the installed provider proves RepositoryGitCredential; C2 standard
+    // manifest derivation reads that exact provider. E1 the immutable Worker
+    // manifest retains the service; E2 ordinary placement accepts a matching
+    // Repository Session. A deployment-only projection or capability string is
+    // insufficient: the sandbox capability itself is the admission authority.
+    let worker = WorkerNodeBuilder::new(WorkerUpstream::new("http://control"))
+        .with_session_container_provider(
+            "k8s",
+            Arc::new(ExternalSessionProvider::with_repository_control()),
+        )
+        .with_hand_executor_factory(Arc::new(NoHandFactory))
+        .with_standard_manifest(Default::default())
+        .build()
+        .expect("provider-backed standard manifest");
+    let service = awaken_sandbox_container::SandboxControlServiceKind::RepositoryGitCredential;
+    assert!(
+        worker
+            .manifest()
+            .sandbox
+            .control_services
+            .contains(&service),
+        "E1 provider evidence reaches the Worker manifest"
+    );
+
+    let mut requirements = awaken_worker_contract::PlacementRequirements::remote_required();
+    requirements.sandbox.control_services.insert(service);
+    assert_eq!(
+        awaken_worker_contract::can_claim(worker.manifest(), &requirements),
+        Ok(()),
+        "E2 matching Repository Session is claimable"
+    );
 }
 
 #[test]
