@@ -131,6 +131,9 @@ cargo test -p awaken-deployment-application --lib scheduler_refresh_failure_prec
 # and leave its observable business handler untouched on repository failure.
 cargo test -p awaken-control --lib \
   durable_audit_failure_blocks_business_through_canonical_management_router
+# Bind successful completion and its failure window to the same public router,
+# canonical repository port, and real SQLite durable audit owner.
+cargo test -p awaken-control --lib management_audit_completion_
 cargo test -p awaken-durable-projection --lib install_reconciliation_covers_forward_equal_and_rollback_outcomes
 cargo test -p awaken-executable-agent-catalog --lib active_active_peer_refreshes_the_durable_command_projection
 cargo test -p awaken-executable-environment-catalog --lib active_active_peer_refreshes_the_durable_environment_projection

@@ -70,40 +70,62 @@ async fn stamp_workspace(mut request: Request<Body>, next: Next) -> Response {
     next.run(request).await
 }
 
-#[derive(Default)]
-struct FailingAuditRepository {
+struct FaultInjectingAuditRepository {
+    inner: ManagementAuditPlane,
+    fail_record: bool,
+    fail_mark: bool,
     record_calls: AtomicUsize,
     mark_calls: AtomicUsize,
 }
 
+impl FaultInjectingAuditRepository {
+    fn new(inner: ManagementAuditPlane, fail_record: bool, fail_mark: bool) -> Self {
+        Self {
+            inner,
+            fail_record,
+            fail_mark,
+            record_calls: AtomicUsize::new(0),
+            mark_calls: AtomicUsize::new(0),
+        }
+    }
+}
+
 #[async_trait::async_trait]
-impl ManagementAuditRepository for FailingAuditRepository {
+impl ManagementAuditRepository for FaultInjectingAuditRepository {
     async fn record(
         &self,
-        _scope: &ScopeId,
-        _audit: &ManagementAuditRecord,
+        scope: &ScopeId,
+        audit: &ManagementAuditRecord,
     ) -> Result<AuditedConfigWrite, String> {
         self.record_calls.fetch_add(1, Ordering::SeqCst);
-        Err("injected durable audit failure".into())
+        if self.fail_record {
+            Err("injected durable audit failure".into())
+        } else {
+            self.inner.record(scope, audit).await
+        }
     }
 
     async fn get(
         &self,
-        _scope: &ScopeId,
-        _tool: &str,
-        _call_id: &str,
+        scope: &ScopeId,
+        tool: &str,
+        call_id: &str,
     ) -> Result<Option<awaken_agent_config::ManagementAuditEntry>, String> {
-        Ok(None)
+        self.inner.get(scope, tool, call_id).await
     }
 
     async fn mark_committed(
         &self,
-        _scope: &ScopeId,
-        _tool: &str,
-        _call_id: &str,
+        scope: &ScopeId,
+        tool: &str,
+        call_id: &str,
     ) -> Result<(), String> {
         self.mark_calls.fetch_add(1, Ordering::SeqCst);
-        Err("an unrecorded audit cannot be committed".into())
+        if self.fail_mark {
+            Err("injected durable audit completion failure".into())
+        } else {
+            self.inner.mark_committed(scope, tool, call_id).await
+        }
     }
 }
 
@@ -116,7 +138,11 @@ async fn durable_audit_failure_blocks_business_through_canonical_management_rout
     // once; E3 the handler and audit completion are never entered. Decision rule:
     // C1+C2+C3 => E1+E2+E3. Applied/replay/conflict/body-limit and IAM rules stay
     // owned by the adjacent tests instead of creating another audit workflow.
-    let repository = Arc::new(FailingAuditRepository::default());
+    let repository = Arc::new(FaultInjectingAuditRepository::new(
+        audit_plane(),
+        true,
+        false,
+    ));
     let plane = ManagementAuditPlane::from_repository(repository.clone());
     let business_calls = Arc::new(AtomicUsize::new(0));
     let app = protect_management_router(
@@ -153,20 +179,50 @@ async fn durable_audit_failure_blocks_business_through_canonical_management_rout
 }
 
 #[tokio::test]
-async fn authenticated_workspace_selects_the_durable_audit_partition() {
-    let plane = audit_plane();
-    let app = Router::new()
-        .route("/v1/mutate", post(|| async { StatusCode::NO_CONTENT }))
-        .layer(axum::middleware::from_fn_with_state(
-            plane.clone(),
-            durable_management_audit,
-        ))
-        .layer(axum::middleware::from_fn(stamp_workspace));
+async fn management_audit_completion_marks_successful_write_in_authenticated_partition() {
+    // Causes: C1 an authenticated non-read request is admitted as Applied by
+    // the real SQLite audit repository; C2 the business handler returns 204;
+    // C3 the handler has an observable write counter. Effects: E1 business is
+    // entered exactly once and audit record/completion are each attempted once;
+    // E2 the exact audit is marked committed in the authenticated partition;
+    // E3 no default-partition record is created.
+    // Decision rule: C1+C2+C3 => E1+E2+E3 through protect_management_router.
+    let durable = audit_plane();
+    let repository = Arc::new(FaultInjectingAuditRepository::new(
+        durable.clone(),
+        false,
+        false,
+    ));
+    let plane = ManagementAuditPlane::from_repository(repository.clone());
+    let business_calls = Arc::new(AtomicUsize::new(0));
+    let app = protect_management_router(
+        Router::new().route(
+            "/v1/mutate",
+            post({
+                let business_calls = business_calls.clone();
+                move || {
+                    let business_calls = business_calls.clone();
+                    async move {
+                        business_calls.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::NO_CONTENT
+                    }
+                }
+            }),
+        ),
+        plane.clone(),
+        None,
+        None,
+        None,
+    )
+    .layer(axum::middleware::from_fn(stamp_workspace));
 
     let response = app.oneshot(mutation("scope-1", "{}")).await.unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(business_calls.load(Ordering::SeqCst), 1, "E1");
+    assert_eq!(repository.record_calls.load(Ordering::SeqCst), 1, "E1");
+    assert_eq!(repository.mark_calls.load(Ordering::SeqCst), 1, "E1");
 
-    let entry = plane
+    let entry = durable
         .get(
             &ScopeId::from("ws_authenticated"),
             "http:POST:/v1/mutate",
@@ -175,9 +231,9 @@ async fn authenticated_workspace_selects_the_durable_audit_partition() {
         .await
         .unwrap()
         .expect("authenticated workspace audit");
-    assert!(entry.business_committed);
+    assert!(entry.business_committed, "E2");
     assert!(
-        plane
+        durable
             .get(
                 &ScopeId::from(DEFAULT_SCOPE),
                 "http:POST:/v1/mutate",
@@ -185,8 +241,66 @@ async fn authenticated_workspace_selects_the_durable_audit_partition() {
             )
             .await
             .unwrap()
-            .is_none()
+            .is_none(),
+        "E3"
     );
+}
+
+#[tokio::test]
+async fn management_audit_completion_failure_keeps_successful_write_pending() {
+    // Causes: C1 the real SQLite repository durably admits a new audit; C2 the
+    // business handler returns 204 after one observable write; C3 the delegated
+    // completion call fails. Effects: E1 the original 204 remains observable;
+    // E2 record, business, and completion are each attempted once; E3 the exact
+    // durable audit remains pending. Decision rule: C1+C2+C3 => E1+E2+E3. The
+    // pending record is ambiguous and does not authorize blind business replay.
+    let durable = audit_plane();
+    let repository = Arc::new(FaultInjectingAuditRepository::new(
+        durable.clone(),
+        false,
+        true,
+    ));
+    let plane = ManagementAuditPlane::from_repository(repository.clone());
+    let business_calls = Arc::new(AtomicUsize::new(0));
+    let app = protect_management_router(
+        Router::new().route(
+            "/v1/mutate",
+            post({
+                let business_calls = business_calls.clone();
+                move || {
+                    let business_calls = business_calls.clone();
+                    async move {
+                        business_calls.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::NO_CONTENT
+                    }
+                }
+            }),
+        ),
+        plane,
+        None,
+        None,
+        None,
+    );
+
+    let response = app
+        .oneshot(mutation("completion-fails-1", "{}"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT, "E1");
+    assert_eq!(repository.record_calls.load(Ordering::SeqCst), 1, "E2");
+    assert_eq!(business_calls.load(Ordering::SeqCst), 1, "E2");
+    assert_eq!(repository.mark_calls.load(Ordering::SeqCst), 1, "E2");
+
+    let entry = durable
+        .get(
+            &ScopeId::from(DEFAULT_SCOPE),
+            "http:POST:/v1/mutate",
+            "completion-fails-1",
+        )
+        .await
+        .unwrap()
+        .expect("durable pending audit");
+    assert!(!entry.business_committed, "E3");
 }
 
 #[tokio::test]
