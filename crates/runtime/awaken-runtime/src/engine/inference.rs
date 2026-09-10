@@ -10,6 +10,17 @@ use awaken_runtime_contract::resilience::{
     Classify, RETRY_ACTIVE_STATE, RetryDecision, bounded_retry_decision,
 };
 
+/// Sole admission gate for retiring a spent interrupted-stream checkpoint.
+/// The async store effect remains with the caller; this kernel only decides
+/// whether the completed local observation is safe to acknowledge.
+pub(super) const fn should_clear_spent_checkpoint(
+    cancelled: bool,
+    journal_failed: bool,
+    can_acknowledge_return: bool,
+) -> bool {
+    !cancelled && !journal_failed && can_acknowledge_return
+}
+
 /// Cancellation may discard a read/provider future, never an in-flight durable
 /// evidence write. This is the model seam's one cancellable-await boundary.
 pub(super) async fn model_read<T>(
@@ -117,6 +128,7 @@ pub(super) async fn infer_with_retry(
         None,
     )
     .await
+    .expect("test checkpoint retirement succeeds")
     .result
 }
 
@@ -157,7 +169,10 @@ pub(super) async fn infer_with_retry_observed(
     metrics: &dyn awaken_runtime_contract::metrics::MetricsRecorder,
     ownership: Option<&dyn awaken_runtime_contract::AttemptOwnershipVerifier>,
     mut journal: Option<&mut super::model_operation::ModelOperationJournal<'_>>,
-) -> ObservedModelRequest {
+) -> std::result::Result<
+    ObservedModelRequest,
+    awaken_agent_contract::stream::checkpoint::StreamCheckpointError,
+> {
     let cancellation = journal
         .as_deref()
         .and_then(|journal| journal.context.cancellation.clone());
@@ -207,15 +222,19 @@ pub(super) async fn infer_with_retry_observed(
     // A cancelled observation or failed evidence write has not concluded
     // recovery. Preserve its prior checkpoint instead of deleting the only
     // retained partial merely because the enclosing Rust future returned.
-    if let Some(ctx) = checkpoint
-        && !cancellation
+    if should_clear_spent_checkpoint(
+        cancellation
             .as_ref()
-            .is_some_and(|token| token.is_cancelled())
-        && !journal.as_deref().is_some_and(|journal| journal.failed())
-        && quiescence.can_acknowledge_return()
-        && let Err(error) = ctx.store.delete(&ctx.run_id).await
+            .is_some_and(|token| token.is_cancelled()),
+        journal.as_deref().is_some_and(|journal| journal.failed()),
+        quiescence.can_acknowledge_return(),
+    ) && let Some(ctx) = checkpoint
     {
-        tracing::warn!(run_id = %ctx.run_id, %error, "failed to delete spent stream checkpoint");
+        // Terminal inference truth must not outrun retirement of its resumable
+        // partial. The outer loop maps this storage failure to its existing
+        // evidence-unavailable/commit path, which bypasses inference tolerance
+        // and terminal `finish`; the unchanged checkpoint remains recoverable.
+        ctx.store.delete(&ctx.run_id).await?;
     }
     match &result {
         Ok(response) => {
@@ -275,10 +294,10 @@ pub(super) async fn infer_with_retry_observed(
             .unwrap_or_default(),
         retry_count,
     };
-    ObservedModelRequest {
+    Ok(ObservedModelRequest {
         result,
         observation,
-    }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -726,5 +745,22 @@ impl CheckpointCtx<'_> {
             partial_tools: tools,
             retry_count,
         }
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::should_clear_spent_checkpoint;
+
+    #[kani::proof]
+    fn checkpoint_clear_requires_unvetoed_terminal_completion() {
+        let cancelled = kani::any::<bool>();
+        let journal_failed = kani::any::<bool>();
+        let can_acknowledge_return = kani::any::<bool>();
+
+        assert_eq!(
+            should_clear_spent_checkpoint(cancelled, journal_failed, can_acknowledge_return),
+            !cancelled && !journal_failed && can_acknowledge_return
+        );
     }
 }
