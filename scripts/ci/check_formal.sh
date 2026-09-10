@@ -126,6 +126,18 @@ cargo test -p awaken-session-application --lib realization::publication::collect
 cargo test -p awaken-coordinator --lib failed_refresh_never_enters_shared_inventory_or_warmup_handlers
 cargo test -p awaken-session-application --lib admission_surfaces_dispatch_failure_and_preserves_retryable_intent
 cargo test -p awaken-deployment-application --lib scheduler_refresh_failure_precedes_candidate_mutation_and_launch
+# The WebhookOutbox model treats a committed fact as recoverable across crash.
+# Bind that premise to a real post-commit process kill and fresh SQLite reopen;
+# delivery/settlement remains covered by the separate notifier kernel below.
+cargo test -p awaken-session-store --test process_crash_outbox \
+  session_commit_survives_process_kill_before_notification
+# The atomic-commit claim also requires the opposite terminal outcome: a real
+# outbox INSERT failure must roll back create, replace and delete root writes,
+# their receipts, and the outbox itself through the production SQLite adapter.
+# Live PostgreSQL executes the same table in the required database gate.
+cargo test -p awaken-session-store --features test-support \
+  --test session_repo_conformance \
+  sqlite_lifecycle_outbox_insert_failure_rolls_back_every_root_path -- --exact
 
 # Explore the production in-memory worker registry's lock interleavings. This
 # feature swaps only its mutex for Loom's instrumented mutex; the transition
