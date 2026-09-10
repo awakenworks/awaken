@@ -112,7 +112,9 @@ impl Classify for Error {
         match self {
             Error::Observed { source, .. } => source.disposition(),
             // Transient: retrying the same binding may succeed.
-            Error::Provider(_) | Error::Timeout(_) => Disposition::Transient,
+            Error::Provider(_) | Error::InvalidResponse(_) | Error::Timeout(_) => {
+                Disposition::Transient
+            }
             // Quota: a rate/quota signal against the identity. `Overloaded` is a
             // provider-capacity 429/529 — treated as a (short) quota signal so a
             // router spreads off the hot endpoint rather than hammering it.
@@ -205,6 +207,10 @@ mod tests {
         );
         assert_eq!(
             Error::Timeout("slow".into()).disposition(),
+            Disposition::Transient
+        );
+        assert_eq!(
+            Error::InvalidResponse("malformed completion".into()).disposition(),
             Disposition::Transient
         );
         assert!(Disposition::Transient.is_retryable());

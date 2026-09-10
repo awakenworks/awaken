@@ -1012,7 +1012,7 @@ fn require_usable_response(response: ChatResponse) -> Result<ChatResponse> {
         if response.stop_reason == Some(StopReason::MaxTokens) && response.output.has_reasoning() {
             return Ok(response);
         }
-        return Err(Error::Provider(
+        return Err(Error::InvalidResponse(
             "model returned no visible assistant content or tool call".into(),
         ));
     }
@@ -1028,7 +1028,7 @@ fn require_usable_response(response: ChatResponse) -> Result<ChatResponse> {
             .text_content()
             .contains("<｜｜DSML｜｜tool_calls>")
     {
-        return Err(Error::Provider(
+        return Err(Error::InvalidResponse(
             "model serialized a tool call as assistant text instead of structured tool data".into(),
         ));
     }
@@ -1063,7 +1063,7 @@ mod visible_response_tests {
         let error =
             require_usable_response(response(Some("reasoning"), Some(StopReason::NaturalEnd)))
                 .unwrap_err();
-        assert!(matches!(error, Error::Provider(_)));
+        assert!(matches!(error, Error::InvalidResponse(_)));
         assert!(error.is_retryable());
         let truncated =
             require_usable_response(response(Some("reasoning"), Some(StopReason::MaxTokens)))
@@ -1078,7 +1078,7 @@ mod visible_response_tests {
             ] {
                 let error = require_usable_response(response(reasoning, stop_reason))
                     .expect_err("V3/E1 blank private output is never usable");
-                assert!(matches!(error, Error::Provider(_)), "V3/E1");
+                assert!(matches!(error, Error::InvalidResponse(_)), "V3/E1");
                 assert!(error.is_retryable(), "V3/E1");
             }
         }
@@ -1091,8 +1091,8 @@ mod visible_response_tests {
     /// it. Rules T1=C1=>E1, T2=!C1&C2=>E2, and T3=!C1&!C2=>E1. FMECA: committing
     /// serialized tool syntax is critical because an expected external effect
     /// never occurs while the Session looks successful; this sole provider seam
-    /// detects it even on the tool-free reserved final step, and deliberately
-    /// avoids a second, injection-prone tool parser.
+    /// detects it even when capability narrowing legitimately removes tools, and
+    /// deliberately avoids a second, injection-prone tool parser.
     /// Constraints/invariants: only structured provider tool data is executable;
     /// sentinel text is detected but never parsed as a second tool authority.
     #[test]
@@ -1106,7 +1106,7 @@ mod visible_response_tests {
         };
 
         let error = require_usable_response(serialized()).expect_err("T2/E2");
-        assert!(matches!(error, Error::Provider(_)), "T2/E2");
+        assert!(matches!(error, Error::InvalidResponse(_)), "T2/E2");
         assert!(error.is_retryable(), "T2/E2");
 
         let ordinary = ChatResponse {
