@@ -223,6 +223,21 @@ impl DataSubject {
         }
     }
 
+    /// Whether this aggregate is the exact non-wrapping successor of the
+    /// revision observed by a compare-and-swap caller.
+    #[must_use]
+    pub fn is_successor_of(&self, expected_revision: u64) -> bool {
+        expected_revision.checked_add(1) == Some(self.revision)
+    }
+
+    /// The sole revision admission rule for replacing an existing subject row.
+    /// Adapters supply the revision read under their lock or transaction; the
+    /// row key is always this aggregate's `id`.
+    #[must_use]
+    pub fn follows_revision(&self, expected_revision: u64, current_revision: u64) -> bool {
+        current_revision == expected_revision && self.is_successor_of(expected_revision)
+    }
+
     /// Mark erasure (Art. 17): withdraw every consent grant (kept as audit proof,
     /// not deleted) and stamp `erased_at`. The subject record is retained for
     /// accountability; only the content it pointed to is deleted (by the erasers).
@@ -321,6 +336,32 @@ mod verification {
         match next_revision(current) {
             Some(next) => assert!(next > current),
             None => assert_eq!(current, u64::MAX),
+        }
+    }
+
+    #[kani::proof]
+    fn stale_data_subject_writer_is_never_admitted() {
+        // Cause/effect decision table: C1 stored revision equals/differs from
+        // the caller expectation; C2 candidate is exact successor/equal/jump/
+        // wrapped. E1 admission occurs exactly for C1=equal and C2=successor;
+        // E2 every stale, future, equal, skipped or exhausted candidate is
+        // rejected. Arbitrary u64 values exhaust both causes without assumes.
+        let expected_revision = kani::any::<u64>();
+        let current_revision = kani::any::<u64>();
+        let candidate_revision = kani::any::<u64>();
+        let mut candidate = DataSubject::new(DataSubjectId(String::new()), String::new(), 0);
+        candidate.revision = candidate_revision;
+
+        let admitted = candidate.follows_revision(expected_revision, current_revision);
+        let exact_successor = expected_revision
+            .checked_add(1)
+            .is_some_and(|next| next == candidate_revision);
+        assert_eq!(
+            admitted,
+            current_revision == expected_revision && exact_successor
+        );
+        if current_revision != expected_revision {
+            assert!(!admitted);
         }
     }
 }
