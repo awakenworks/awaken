@@ -188,6 +188,26 @@ pub type awaken_runtime_contract::agent_bindings::ResolvedConfiguration::Target 
 pub fn awaken_runtime_contract::agent_bindings::ResolvedConfiguration::deref(&self) -> &Self::Target
 impl core::ops::deref::DerefMut for awaken_runtime_contract::agent_bindings::ResolvedConfiguration
 pub fn awaken_runtime_contract::agent_bindings::ResolvedConfiguration::deref_mut(&mut self) -> &mut Self::Target
+pub mod awaken_runtime_contract::attempt_termination
+pub enum awaken_runtime_contract::attempt_termination::NativeAttemptCoverage
+pub awaken_runtime_contract::attempt_termination::NativeAttemptCoverage::ModelOnlyV1
+pub awaken_runtime_contract::attempt_termination::NativeAttemptCoverage::Unspecified
+pub enum awaken_runtime_contract::attempt_termination::NativeAttemptTermination
+pub awaken_runtime_contract::attempt_termination::NativeAttemptTermination::AllExecutionStopped
+pub awaken_runtime_contract::attempt_termination::NativeAttemptTermination::Unknown
+pub enum awaken_runtime_contract::attempt_termination::NativeAttemptTerminationError
+pub awaken_runtime_contract::attempt_termination::NativeAttemptTerminationError::InvalidCommitCoordinates
+pub awaken_runtime_contract::attempt_termination::NativeAttemptTerminationError::InvalidCoverage
+pub awaken_runtime_contract::attempt_termination::NativeAttemptTerminationError::InvalidModelHistory(alloc::string::String)
+pub awaken_runtime_contract::attempt_termination::NativeAttemptTerminationError::InvalidToolHistory(alloc::string::String)
+pub awaken_runtime_contract::attempt_termination::NativeAttemptTerminationError::RunMismatch
+pub struct awaken_runtime_contract::attempt_termination::ActiveNativeAttemptCoverage
+impl awaken_agent_contract::agent::state::StateKey for awaken_runtime_contract::attempt_termination::ActiveNativeAttemptCoverage
+pub type awaken_runtime_contract::attempt_termination::ActiveNativeAttemptCoverage::Value = awaken_runtime_contract::attempt_termination::NativeAttemptCoverage
+pub const awaken_runtime_contract::attempt_termination::ActiveNativeAttemptCoverage::KEY: &'static str
+pub const awaken_runtime_contract::attempt_termination::ActiveNativeAttemptCoverage::MERGE: awaken_agent_contract::agent::state::MergePolicy
+pub const awaken_runtime_contract::attempt_termination::ActiveNativeAttemptCoverage::SCOPE: awaken_agent_contract::agent::state::Scope
+pub fn awaken_runtime_contract::attempt_termination::classify_native_attempt_termination(&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot) -> core::result::Result<awaken_runtime_contract::attempt_termination::NativeAttemptTermination, awaken_runtime_contract::attempt_termination::NativeAttemptTerminationError>
 pub mod awaken_runtime_contract::authority_lease
 pub struct awaken_runtime_contract::authority_lease::AuthorityLeaseTiming
 impl awaken_runtime_contract::authority_lease::AuthorityLeaseTiming
@@ -987,6 +1007,7 @@ pub fn awaken_runtime_contract::ResolvedExecutionEnv::dynamic_descriptors(&self)
 pub fn awaken_runtime_contract::ResolvedExecutionEnv::dynamic_tool(&self, &str) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
 pub fn awaken_runtime_contract::ResolvedExecutionEnv::dynamic_tool_state_bound(&self, &str) -> core::option::Option<&awaken_runtime_contract::IdBound>
 pub fn awaken_runtime_contract::ResolvedExecutionEnv::hooks_for(&self, awaken_runtime_contract::PhaseHookPoint) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::PhaseHook>>
+pub fn awaken_runtime_contract::ResolvedExecutionEnv::is_model_only_execution_surface(&self) -> bool
 pub fn awaken_runtime_contract::ResolvedExecutionEnv::merge(alloc::vec::Vec<(awaken_runtime_contract::PluginManifest, awaken_runtime_contract::Contributions)>) -> core::result::Result<Self, awaken_runtime_contract::plugin::MergeError>
 pub fn awaken_runtime_contract::ResolvedExecutionEnv::permits_action_kind(&self, &str) -> bool
 pub fn awaken_runtime_contract::ResolvedExecutionEnv::run_end_guards(&self) -> &[alloc::sync::Arc<dyn awaken_runtime_contract::RunEndGuard>]
@@ -1781,6 +1802,7 @@ pub awaken_runtime_contract::tool_batch::ToolBatchError::InvalidBatchId
 pub awaken_runtime_contract::tool_batch::ToolBatchError::InvalidPersistedState(alloc::string::String)
 pub awaken_runtime_contract::tool_batch::ToolBatchError::InvalidTransition
 pub awaken_runtime_contract::tool_batch::ToolBatchError::MultipleAwaitingCalls
+pub awaken_runtime_contract::tool_batch::ToolBatchError::Unfinalized
 pub awaken_runtime_contract::tool_batch::ToolBatchError::UnknownCall(alloc::string::String)
 pub awaken_runtime_contract::tool_batch::ToolBatchError::WaitMismatch
 pub enum awaken_runtime_contract::tool_batch::ToolBatchPhase
@@ -1808,6 +1830,10 @@ pub awaken_runtime_contract::tool_batch::ToolCallPhase::Indeterminate::reason: a
 pub awaken_runtime_contract::tool_batch::ToolCallPhase::Requested
 impl awaken_runtime_contract::tool_batch::ToolCallPhase
 pub fn awaken_runtime_contract::tool_batch::ToolCallPhase::is_terminal(&self) -> bool
+pub enum awaken_runtime_contract::tool_batch::ToolRecoveryAction
+pub awaken_runtime_contract::tool_batch::ToolRecoveryAction::Entered
+pub awaken_runtime_contract::tool_batch::ToolRecoveryAction::Entered::attempt: u16
+pub awaken_runtime_contract::tool_batch::ToolRecoveryAction::Indeterminate
 pub enum awaken_runtime_contract::tool_batch::ToolWaitKind
 pub awaken_runtime_contract::tool_batch::ToolWaitKind::Delegation
 pub awaken_runtime_contract::tool_batch::ToolWaitKind::ExternalResult
@@ -1841,6 +1867,8 @@ pub fn awaken_runtime_contract::tool_batch::ToolBatch::operation_id(&self, &str)
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(&awaken_agent_contract::agent::run::Id, usize, &str) -> alloc::string::String
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::output(&self, &str) -> core::option::Option<awaken_runtime_contract::tool::ToolOutput>
 pub const fn awaken_runtime_contract::tool_batch::ToolBatch::phase(&self) -> awaken_runtime_contract::tool_batch::ToolBatchPhase
+pub fn awaken_runtime_contract::tool_batch::ToolBatch::publication(&self) -> core::result::Result<awaken_runtime_contract::tool_batch::ToolBatchPublication<'_>, awaken_runtime_contract::tool_batch::ToolBatchError>
+pub fn awaken_runtime_contract::tool_batch::ToolBatch::recover_execution(&mut self, &str, awaken_runtime_contract::tool::ToolRecoveryCapability) -> core::result::Result<awaken_runtime_contract::tool_batch::ToolRecoveryAction, awaken_runtime_contract::tool_batch::ToolBatchError>
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::resume_executing(&mut self, &str, awaken_runtime_contract::tool_batch::ToolWaitKind, &str) -> core::result::Result<u16, awaken_runtime_contract::tool_batch::ToolBatchError>
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::run_id(&self) -> &awaken_agent_contract::agent::run::Id
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::seal_on_run_end(&mut self, &str)
@@ -1853,6 +1881,10 @@ pub fn awaken_runtime_contract::tool_batch::ToolBatch::deserialize<D: serde_core
 pub struct awaken_runtime_contract::tool_batch::ToolBatchId(_)
 impl awaken_runtime_contract::tool_batch::ToolBatchId
 pub fn awaken_runtime_contract::tool_batch::ToolBatchId::as_str(&self) -> &str
+pub struct awaken_runtime_contract::tool_batch::ToolBatchPublication<'a>
+impl awaken_runtime_contract::tool_batch::ToolBatchPublication<'_>
+pub fn awaken_runtime_contract::tool_batch::ToolBatchPublication<'_>::messages(&self) -> impl core::iter::traits::iterator::Iterator<Item = &awaken_agent_contract::agent::message::Message>
+pub fn awaken_runtime_contract::tool_batch::ToolBatchPublication<'_>::result_state(&self) -> impl core::iter::traits::iterator::Iterator<Item = &awaken_agent_contract::agent::state::Command>
 pub struct awaken_runtime_contract::tool_batch::ToolWait
 pub awaken_runtime_contract::tool_batch::ToolWait::correlation_id: alloc::string::String
 pub awaken_runtime_contract::tool_batch::ToolWait::kind: awaken_runtime_contract::tool_batch::ToolWaitKind
@@ -2393,6 +2425,7 @@ pub fn awaken_runtime_contract::ResolvedExecutionEnv::dynamic_descriptors(&self)
 pub fn awaken_runtime_contract::ResolvedExecutionEnv::dynamic_tool(&self, &str) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
 pub fn awaken_runtime_contract::ResolvedExecutionEnv::dynamic_tool_state_bound(&self, &str) -> core::option::Option<&awaken_runtime_contract::IdBound>
 pub fn awaken_runtime_contract::ResolvedExecutionEnv::hooks_for(&self, awaken_runtime_contract::PhaseHookPoint) -> alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::PhaseHook>>
+pub fn awaken_runtime_contract::ResolvedExecutionEnv::is_model_only_execution_surface(&self) -> bool
 pub fn awaken_runtime_contract::ResolvedExecutionEnv::merge(alloc::vec::Vec<(awaken_runtime_contract::PluginManifest, awaken_runtime_contract::Contributions)>) -> core::result::Result<Self, awaken_runtime_contract::plugin::MergeError>
 pub fn awaken_runtime_contract::ResolvedExecutionEnv::permits_action_kind(&self, &str) -> bool
 pub fn awaken_runtime_contract::ResolvedExecutionEnv::run_end_guards(&self) -> &[alloc::sync::Arc<dyn awaken_runtime_contract::RunEndGuard>]
@@ -2546,6 +2579,8 @@ pub fn awaken_runtime_contract::tool_batch::ToolBatch::operation_id(&self, &str)
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(&awaken_agent_contract::agent::run::Id, usize, &str) -> alloc::string::String
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::output(&self, &str) -> core::option::Option<awaken_runtime_contract::tool::ToolOutput>
 pub const fn awaken_runtime_contract::tool_batch::ToolBatch::phase(&self) -> awaken_runtime_contract::tool_batch::ToolBatchPhase
+pub fn awaken_runtime_contract::tool_batch::ToolBatch::publication(&self) -> core::result::Result<awaken_runtime_contract::tool_batch::ToolBatchPublication<'_>, awaken_runtime_contract::tool_batch::ToolBatchError>
+pub fn awaken_runtime_contract::tool_batch::ToolBatch::recover_execution(&mut self, &str, awaken_runtime_contract::tool::ToolRecoveryCapability) -> core::result::Result<awaken_runtime_contract::tool_batch::ToolRecoveryAction, awaken_runtime_contract::tool_batch::ToolBatchError>
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::resume_executing(&mut self, &str, awaken_runtime_contract::tool_batch::ToolWaitKind, &str) -> core::result::Result<u16, awaken_runtime_contract::tool_batch::ToolBatchError>
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::run_id(&self) -> &awaken_agent_contract::agent::run::Id
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::seal_on_run_end(&mut self, &str)

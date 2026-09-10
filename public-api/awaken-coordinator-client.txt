@@ -2,6 +2,7 @@ pub mod awaken_coordinator_client
 pub enum awaken_coordinator_client::WorkerRegistrationError
 pub awaken_coordinator_client::WorkerRegistrationError::Rejected(alloc::string::String)
 pub awaken_coordinator_client::WorkerRegistrationError::SlotOccupied(alloc::string::String)
+pub awaken_coordinator_client::WorkerRegistrationError::Unavailable(alloc::string::String)
 pub struct awaken_coordinator_client::HttpDispatchQueue
 impl awaken_coordinator_client::HttpDispatchQueue
 pub fn awaken_coordinator_client::HttpDispatchQueue::new(impl core::convert::Into<alloc::string::String>, awaken_worker_contract::registry::WorkerIdentity) -> Self

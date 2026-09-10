@@ -42,7 +42,11 @@ pub awaken_ext_memory::extraction::MemoryExtractionStatus::Pending
 pub awaken_ext_memory::extraction::MemoryExtractionStatus::Stored
 pub awaken_ext_memory::extraction::MemoryExtractionStatus::TerminalFailed
 impl awaken_ext_memory::extraction::MemoryExtractionStatus
-pub fn awaken_ext_memory::extraction::MemoryExtractionStatus::is_terminal(self) -> bool
+pub const awaken_ext_memory::extraction::MemoryExtractionStatus::RECOVERABLE: [Self; 4]
+pub const fn awaken_ext_memory::extraction::MemoryExtractionStatus::is_recoverable(self) -> bool
+pub const fn awaken_ext_memory::extraction::MemoryExtractionStatus::is_terminal(self) -> bool
+pub const fn awaken_ext_memory::extraction::MemoryExtractionStatus::recoverable_storage_names() -> [&'static str; 4]
+pub const fn awaken_ext_memory::extraction::MemoryExtractionStatus::storage_name(self) -> &'static str
 pub enum awaken_ext_memory::extraction::PutMemoryExtractionOutcome
 pub awaken_ext_memory::extraction::PutMemoryExtractionOutcome::Existing
 pub awaken_ext_memory::extraction::PutMemoryExtractionOutcome::Inserted
@@ -267,7 +271,11 @@ pub awaken_ext_memory::MemoryExtractionStatus::Pending
 pub awaken_ext_memory::MemoryExtractionStatus::Stored
 pub awaken_ext_memory::MemoryExtractionStatus::TerminalFailed
 impl awaken_ext_memory::extraction::MemoryExtractionStatus
-pub fn awaken_ext_memory::extraction::MemoryExtractionStatus::is_terminal(self) -> bool
+pub const awaken_ext_memory::extraction::MemoryExtractionStatus::RECOVERABLE: [Self; 4]
+pub const fn awaken_ext_memory::extraction::MemoryExtractionStatus::is_recoverable(self) -> bool
+pub const fn awaken_ext_memory::extraction::MemoryExtractionStatus::is_terminal(self) -> bool
+pub const fn awaken_ext_memory::extraction::MemoryExtractionStatus::recoverable_storage_names() -> [&'static str; 4]
+pub const fn awaken_ext_memory::extraction::MemoryExtractionStatus::storage_name(self) -> &'static str
 pub enum awaken_ext_memory::PutMemoryExtractionOutcome
 pub awaken_ext_memory::PutMemoryExtractionOutcome::Existing
 pub awaken_ext_memory::PutMemoryExtractionOutcome::Inserted
