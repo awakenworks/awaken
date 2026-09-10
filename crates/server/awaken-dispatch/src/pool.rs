@@ -212,13 +212,48 @@ enum AdmissionState {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct DrainAdmission {
-    state: AdmissionState,
-    generation: u64,
+enum AdmissionCommand {
+    Suspend,
+    Resume { shutdown_cancelled: bool },
+    Drain,
+}
+
+impl AdmissionState {
+    /// Sole process-local claim-admission transition. Keeping temporary
+    /// suspension and permanent drain in one closed table prevents any caller
+    /// from inventing a resume edge out of `Draining`.
+    const fn transition(self, command: AdmissionCommand) -> Self {
+        match (self, command) {
+            (Self::Draining, _) | (_, AdmissionCommand::Drain) => Self::Draining,
+            (Self::Open, AdmissionCommand::Suspend) => Self::Suspended,
+            (
+                Self::Suspended,
+                AdmissionCommand::Resume {
+                    shutdown_cancelled: false,
+                },
+            ) => Self::Open,
+            (Self::Open, AdmissionCommand::Resume { .. })
+            | (Self::Suspended, AdmissionCommand::Suspend)
+            | (
+                Self::Suspended,
+                AdmissionCommand::Resume {
+                    shutdown_cancelled: true,
+                },
+            ) => self,
+        }
+    }
+
+    const fn accepts_claim(self) -> bool {
+        matches!(self, Self::Open)
+    }
+
+    const fn can_resume(self) -> bool {
+        !matches!(self, Self::Draining)
+    }
 }
 
 struct PoolAdmission {
-    gate: tokio::sync::RwLock<DrainAdmission>,
+    gate: tokio::sync::RwLock<AdmissionState>,
     error_gate: DrainErrorGate,
     in_flight: Arc<AtomicU32>,
     wake: Notify,
@@ -336,20 +371,11 @@ impl Default for PoolAdmission {
 impl PoolAdmission {
     fn new(max_attempts: u64) -> Self {
         Self {
-            gate: tokio::sync::RwLock::new(DrainAdmission::default()),
+            gate: tokio::sync::RwLock::new(AdmissionState::Open),
             error_gate: DrainErrorGate::default(),
             in_flight: Arc::new(AtomicU32::new(0)),
             wake: Notify::new(),
             max_attempts,
-        }
-    }
-}
-
-impl Default for DrainAdmission {
-    fn default() -> Self {
-        Self {
-            state: AdmissionState::Open,
-            generation: 0,
         }
     }
 }
@@ -575,10 +601,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
     /// Worker cannot refresh its registry authority inside the local proof window.
     pub async fn suspend_admission(&self) {
         let mut admission = self.admission.gate.write().await;
-        if admission.state == AdmissionState::Open {
-            admission.state = AdmissionState::Suspended;
-            admission.generation = admission.generation.saturating_add(1);
-        }
+        *admission = admission.transition(AdmissionCommand::Suspend);
     }
 
     /// Reopen claims after registry authority is proven again. A graceful drain
@@ -586,30 +609,29 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
     #[must_use]
     pub async fn resume_admission(&self) -> bool {
         let mut admission = self.admission.gate.write().await;
-        match admission.state {
-            AdmissionState::Open => true,
-            AdmissionState::Suspended if !self.shutdown.is_cancelled() => {
-                admission.state = AdmissionState::Open;
-                admission.generation = admission.generation.saturating_add(1);
-                drop(admission);
-                publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;
-                true
-            }
-            AdmissionState::Suspended | AdmissionState::Draining => false,
+        let previous = *admission;
+        *admission = admission.transition(AdmissionCommand::Resume {
+            shutdown_cancelled: self.shutdown.is_cancelled(),
+        });
+        let accepting = admission.accepts_claim();
+        if previous != *admission && accepting {
+            drop(admission);
+            publish_dispatch_hint(self.wake.as_ref(), &self.shutdown).await;
         }
+        accepting
     }
 
     /// Whether the pool currently accepts new claims.
     #[must_use]
     pub async fn is_accepting(&self) -> bool {
-        self.admission.gate.read().await.state == AdmissionState::Open
+        self.admission.gate.read().await.accepts_claim()
     }
 
     /// Whether a fresh authority proof may reopen this pool. This remains true
     /// while temporarily suspended and false once graceful drain is absorbing.
     #[must_use]
     pub async fn can_resume(&self) -> bool {
-        self.admission.gate.read().await.state != AdmissionState::Draining
+        self.admission.gate.read().await.can_resume()
     }
 
     /// Begin a graceful drain WITHOUT consuming the pool: cancel the drain tasks so
@@ -624,13 +646,10 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
     pub async fn begin_drain(&self) {
         // The write lock linearizes drain against the short read-side claim
         // critical section. Once this returns, every claim either completed
-        // before the drain generation advanced (and is now in-flight), or saw
-        // a non-open state and did not touch the store.
+        // before the state became absorbing (and is now in-flight), or saw a
+        // non-open state and did not touch the store.
         let mut admission = self.admission.gate.write().await;
-        if admission.state != AdmissionState::Draining {
-            admission.state = AdmissionState::Draining;
-            admission.generation = admission.generation.saturating_add(1);
-        }
+        *admission = admission.transition(AdmissionCommand::Drain);
         self.shutdown.cancel();
         drop(admission);
     }
@@ -768,6 +787,51 @@ fn drain_error_backoff(consecutive_errors: u32) -> Duration {
 }
 
 #[cfg(kani)]
+mod drain_admission_proofs {
+    use super::{AdmissionCommand, AdmissionState};
+
+    fn symbolic_state() -> AdmissionState {
+        match kani::any::<u8>() % 3 {
+            0 => AdmissionState::Open,
+            1 => AdmissionState::Suspended,
+            _ => AdmissionState::Draining,
+        }
+    }
+
+    fn symbolic_command() -> AdmissionCommand {
+        match kani::any::<u8>() % 3 {
+            0 => AdmissionCommand::Suspend,
+            1 => AdmissionCommand::Resume {
+                shutdown_cancelled: kani::any(),
+            },
+            _ => AdmissionCommand::Drain,
+        }
+    }
+
+    #[kani::proof]
+    fn pool_draining_state_is_absorbing_and_claim_closed() {
+        let initial = symbolic_state();
+        let command = symbolic_command();
+        let next = initial.transition(command);
+
+        assert_eq!(next.accepts_claim(), matches!(next, AdmissionState::Open));
+        assert_eq!(next.can_resume(), !matches!(next, AdmissionState::Draining));
+
+        if matches!(initial, AdmissionState::Draining) {
+            assert_eq!(next, AdmissionState::Draining);
+            assert!(!next.accepts_claim());
+            assert!(!next.can_resume());
+        }
+
+        let drained = initial.transition(AdmissionCommand::Drain);
+        assert_eq!(drained, AdmissionState::Draining);
+        assert!(!drained.accepts_claim());
+        assert!(!drained.can_resume());
+        assert_eq!(drained.transition(command), drained);
+    }
+}
+
+#[cfg(kani)]
 mod drain_error_proofs {
     use super::{DrainErrorState, drain_error_backoff};
     use std::time::Duration;
@@ -847,7 +911,7 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     let now = clock.now_ms();
     let (claimed, retry_exhausted) = {
         let gate = admission.gate.read().await;
-        if gate.state != AdmissionState::Open {
+        if !gate.accepts_claim() {
             return Ok(false);
         }
         if let Some(claimed) = store
@@ -1101,6 +1165,84 @@ mod in_flight_tests {
 
     use crate::{ManualClock, MemoryDispatchStore};
     use awaken_agent_contract::agent::run::EndCause;
+
+    #[test]
+    fn pool_admission_transition_is_total_and_drain_absorbing() {
+        // Cause/effect graph: C1 current state is Open, Suspended, or Draining;
+        // C2 command is Suspend, Resume, or Drain; C3 shutdown is cancelled for
+        // Resume. Effects: E1 Open admits claims, E2 Suspended denies claims but
+        // may resume, and E3 Draining denies claims and every later command.
+        //
+        // | Rule | Current | Command | Shutdown | Next/effect |
+        // |---|---|---|---|---|
+        // | A1 | Open | Suspend | any | Suspended/E2 |
+        // | A2 | Open | Resume | any | Open/E1 |
+        // | A3 | Suspended | Resume | false | Open/E1 |
+        // | A4 | Suspended | Resume | true | Suspended/E2 |
+        // | A5 | Open/Suspended | Drain | any | Draining/E3 |
+        // | A6 | Draining | any | any | Draining/E3 |
+        // Constraint: shutdown is consulted only by Resume; Drain is the sole
+        // absorbing transition. Enumerating all 18 combinations covers every
+        // closed enum input without mirroring the production match structure.
+        for shutdown_cancelled in [false, true] {
+            for (current, command, expected) in [
+                (
+                    AdmissionState::Open,
+                    AdmissionCommand::Suspend,
+                    AdmissionState::Suspended,
+                ),
+                (
+                    AdmissionState::Open,
+                    AdmissionCommand::Resume { shutdown_cancelled },
+                    AdmissionState::Open,
+                ),
+                (
+                    AdmissionState::Open,
+                    AdmissionCommand::Drain,
+                    AdmissionState::Draining,
+                ),
+                (
+                    AdmissionState::Suspended,
+                    AdmissionCommand::Suspend,
+                    AdmissionState::Suspended,
+                ),
+                (
+                    AdmissionState::Suspended,
+                    AdmissionCommand::Resume { shutdown_cancelled },
+                    if shutdown_cancelled {
+                        AdmissionState::Suspended
+                    } else {
+                        AdmissionState::Open
+                    },
+                ),
+                (
+                    AdmissionState::Suspended,
+                    AdmissionCommand::Drain,
+                    AdmissionState::Draining,
+                ),
+                (
+                    AdmissionState::Draining,
+                    AdmissionCommand::Suspend,
+                    AdmissionState::Draining,
+                ),
+                (
+                    AdmissionState::Draining,
+                    AdmissionCommand::Resume { shutdown_cancelled },
+                    AdmissionState::Draining,
+                ),
+                (
+                    AdmissionState::Draining,
+                    AdmissionCommand::Drain,
+                    AdmissionState::Draining,
+                ),
+            ] {
+                let next = current.transition(command);
+                assert_eq!(next, expected, "current={current:?} command={command:?}");
+                assert_eq!(next.accepts_claim(), next == AdmissionState::Open);
+                assert_eq!(next.can_resume(), next != AdmissionState::Draining);
+            }
+        }
+    }
 
     #[test]
     fn drain_failures_back_off_exponentially_and_cap() {
