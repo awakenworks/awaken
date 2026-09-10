@@ -60,8 +60,8 @@ fn migrate_guarded(conn: &awaken_sqlite_pool::SharedSqliteConnection) -> Result<
 }
 
 use crate::repository::{
-    ConditionalDeleteAdmission, HeadUpdateAdmission, now_nanos, under_prefix, validate_path,
-    validate_size,
+    ConditionalDeleteAdmission, HeadUpdateAdmission, now_nanos, rename_replace_identity,
+    under_prefix, validate_path, validate_size,
 };
 use crate::{
     MemErr, Memory, MemoryActor, MemoryEntry, MemoryPurgeSummary, MemoryRepository, MemoryVersion,
@@ -626,6 +626,7 @@ impl MemoryRepository for SqliteMemoryRepository {
                 )
                 .optional()
                 .map_err(mem_err)?;
+            let id = rename_replace_identity(id, displaced_id.as_ref());
             tx.execute(
                 &format!("DELETE FROM {NS}_memories WHERE store_id = ?1 AND path = ?2"),
                 params![store, to],

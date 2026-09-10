@@ -2,6 +2,85 @@
 
 use super::*;
 
+/// Exact accepted durable resume carried until the first successful commit.
+/// This is commit metadata, not another receipt store: after a successful
+/// commit the value is dropped and committed `ResumeApplied` remains authority.
+#[derive(Debug, Clone)]
+pub(super) struct ResumeCommit {
+    operation_id: String,
+    answered_ticket: ResumeTicket,
+}
+
+impl ResumeCommit {
+    pub(super) fn for_operation(
+        operation_id: Option<String>,
+        answered_ticket: &ResumeTicket,
+    ) -> Option<Self> {
+        operation_id.map(|operation_id| Self {
+            operation_id,
+            answered_ticket: answered_ticket.clone(),
+        })
+    }
+}
+
+/// A resume receipt can commit only with a disposition that has replaced the
+/// exact answered ticket. Identity observations are supplied by the production
+/// constructor below; keeping the decision heap-free makes the full partition
+/// directly checkable.
+const fn resume_commit_is_coherent(
+    same_thread: bool,
+    same_run: bool,
+    retains_answered_ticket: bool,
+) -> bool {
+    same_thread && same_run && !retains_answered_ticket
+}
+
+/// The sole Runtime constructor for a commit which may consume an accepted
+/// resume. When a durable operation is present, the exact `ResumeApplied` fact
+/// and the disposition which replaces its answered ticket inhabit one
+/// `ThreadCommit`; no caller can commit either half through this owner alone.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn assemble_attempt_commit(
+    thread_id: ThreadId,
+    disposition: RunDisposition,
+    state_changed: bool,
+    messages: Vec<Message>,
+    state: Vec<StateCommand>,
+    mut audit: Vec<EventDraft>,
+    resume: Option<&ResumeCommit>,
+) -> Result<ThreadCommit> {
+    if let Some(resume) = resume {
+        let answered = &resume.answered_ticket;
+        let retains_answered_ticket = disposition
+            .resume_ticket()
+            .is_some_and(|next| next.correlation_id == answered.correlation_id);
+        if !resume_commit_is_coherent(
+            answered.thread_id == thread_id,
+            disposition.run_id() == &answered.run_id,
+            retains_answered_ticket,
+        ) {
+            return Err(Error::Execution(
+                "resume receipt commit does not replace the exact answered ticket".into(),
+            ));
+        }
+        audit.push(
+            RunEvent::ResumeApplied {
+                operation_id: resume.operation_id.clone(),
+                correlation_id: answered.correlation_id.clone(),
+            }
+            .into(),
+        );
+    }
+    Ok(ThreadCommit::assemble(
+        thread_id,
+        disposition,
+        state_changed,
+        messages,
+        state,
+        audit,
+    ))
+}
+
 /// What one attempt at driving the loop resolved to, ready to commit: the new
 /// messages, the staged state, and where the run goes next.
 pub(super) struct RunStepResult {
@@ -10,6 +89,9 @@ pub(super) struct RunStepResult {
     /// Permission-audit drafts produced this attempt, committed with the run's
     /// facts so an authorization decision is explainable (ADR-0030).
     pub(super) audit: Vec<EventDraft>,
+    /// Uncommitted durable resume receipt, if this attempt was entered by a
+    /// named delivery operation. The first successful commit consumes it.
+    pub(super) resume: Option<ResumeCommit>,
     pub(super) disposition: RunDisposition,
 }
 
@@ -39,8 +121,14 @@ impl RunStepResult {
             new_messages,
             staged_state: Vec::new(),
             audit: Vec::new(),
+            resume: None,
             disposition: RunDisposition::ended(run_id, cause),
         }
+    }
+
+    pub(super) fn with_resume(mut self, resume: Option<ResumeCommit>) -> Self {
+        self.resume = resume;
+        self
     }
 }
 
@@ -73,6 +161,7 @@ pub(super) struct StepLedger {
     pub(super) staged_state: Vec<StateCommand>,
     /// Permission-audit drafts accumulated across the attempt's gate decisions.
     pub(super) audit: Vec<EventDraft>,
+    resume: Option<ResumeCommit>,
     committed_messages: usize,
     committed_state: usize,
     committed_audit: usize,
@@ -91,11 +180,16 @@ impl StepLedger {
             new_messages,
             staged_state: seed_state,
             audit: seed_audit,
+            resume: None,
             committed_messages: 0,
             committed_state: 0,
             committed_audit: 0,
             running_committed: false,
         }
+    }
+
+    pub(super) fn attach_resume(&mut self, resume: Option<ResumeCommit>) {
+        self.resume = resume;
     }
 
     /// Append one message to both the model-facing transcript and the durable
@@ -146,11 +240,13 @@ impl StepLedger {
             self.staged_state[self.committed_state..].to_vec(),
             self.audit[self.committed_audit..].to_vec(),
             !self.running_committed,
+            self.resume.as_ref(),
         )
         .await?;
         self.committed_messages = next_messages;
         self.committed_state = next_state;
         self.committed_audit = next_audit;
+        self.resume = None;
         self.running_committed = true;
         Ok(())
     }
@@ -162,6 +258,7 @@ impl StepLedger {
             new_messages: self.new_messages.split_off(self.committed_messages),
             staged_state: self.staged_state.split_off(self.committed_state),
             audit: self.audit.split_off(self.committed_audit),
+            resume: self.resume,
             disposition,
         }
     }
@@ -169,7 +266,7 @@ impl StepLedger {
 
 #[cfg(kani)]
 mod verification {
-    use super::{WatermarkRegression, advance_durable_watermark};
+    use super::{WatermarkRegression, advance_durable_watermark, resume_commit_is_coherent};
 
     #[kani::proof]
     fn durable_watermark_successor_is_exact_or_rejected_without_rollback() {
@@ -188,6 +285,22 @@ mod verification {
             }
         }
     }
+
+    #[kani::proof]
+    fn a_resume_receipt_requires_consumption_of_the_exact_ticket() {
+        // Causes: exact/foreign Thread, exact/foreign Run and retention/removal
+        // of the answered ticket. Effect: admission exactly for the one rule
+        // exact Thread + exact Run + answered ticket removed. This is the full
+        // Boolean partition consumed by `assemble_attempt_commit` and needs no
+        // assumptions or bounded heap model.
+        let same_thread = kani::any::<bool>();
+        let same_run = kani::any::<bool>();
+        let retains_answered_ticket = kani::any::<bool>();
+        assert_eq!(
+            resume_commit_is_coherent(same_thread, same_run, retains_answered_ticket),
+            same_thread && same_run && !retains_answered_ticket
+        );
+    }
 }
 
 /// Commit one step's staged delta under a `Running` fact — the durable record
@@ -195,6 +308,7 @@ mod verification {
 /// commit also records the state transition into `Running`; terminal and
 /// awaiting outcomes never come through here (they ride `finish`, where the
 /// state and any awaiting ticket commit atomically).
+#[allow(clippy::too_many_arguments)]
 async fn commit_step_delta(
     context: &RuntimeRunContext,
     thread_id: &ThreadId,
@@ -203,6 +317,7 @@ async fn commit_step_delta(
     state: Vec<StateCommand>,
     audit: Vec<EventDraft>,
     first: bool,
+    resume: Option<&ResumeCommit>,
 ) -> Result<()> {
     let Some(coordinator) = &context.commit else {
         return Ok(());
@@ -210,14 +325,15 @@ async fn commit_step_delta(
     // `first` is the per-step boundary's state transition (nothing → Running); a
     // later increment stays Running and emits no RunStateChanged.
     coordinator
-        .commit(ThreadCommit::assemble(
+        .commit(assemble_attempt_commit(
             thread_id.clone(),
             RunDisposition::running(run_id.clone()),
             first,
             messages,
             state,
             audit,
-        ))
+            resume,
+        )?)
         .await
         .map_err(|err| Error::Commit(err.to_string()))?;
     Ok(())
@@ -264,4 +380,86 @@ pub(super) fn merge_thread_usage(
         "thread usage state drifted; skipping sub-agent rollup",
         |usage| usage.merge(delta),
     );
+}
+
+#[cfg(test)]
+mod resume_commit_tests {
+    use super::*;
+    use awaken_agent_contract::agent::awaiting::{AwaitTarget, PauseReason};
+    use awaken_agent_contract::audit::kind::Kind;
+
+    fn ticket(correlation: &str) -> ResumeTicket {
+        ResumeTicket::new(
+            correlation,
+            RunId("run".into()),
+            ThreadId("thread".into()),
+            "snapshot",
+            "catalog",
+            AwaitTarget::Pause(PauseReason::Manual),
+        )
+    }
+
+    #[test]
+    fn resume_commit_contains_exact_receipt_only_after_answered_ticket_replacement() {
+        // Causes: C1 exact/foreign Thread; C2 exact/foreign Run; C3 the next
+        // disposition removes, replaces, or retains the answered correlation.
+        // Effects: E1 exact identity + removal/replacement constructs one commit
+        // with the exact ResumeApplied fact; E2 foreign identity or retained
+        // answered ticket rejects construction. Rules R1=C1+C2+!C3=>E1 and
+        // R2=!C1|!C2|C3=>E2. The Kani proof covers the complete Boolean kernel;
+        // this test cross-checks real ResumeTicket, RunDisposition and Draft.
+        let answered = ticket("answered");
+        let resume = ResumeCommit::for_operation(Some("operation".into()), &answered).unwrap();
+        for disposition in [
+            RunDisposition::running(RunId("run".into())),
+            RunDisposition::awaiting(ticket("next")),
+        ] {
+            let commit = assemble_attempt_commit(
+                ThreadId("thread".into()),
+                disposition,
+                true,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Some(&resume),
+            )
+            .expect("R1 exact replacement");
+            let receipt = commit
+                .events
+                .iter()
+                .find(|event| event.kind == Kind::ResumeApplied)
+                .expect("R1 exact receipt");
+            assert_eq!(receipt.payload["operation_id"], "operation");
+            assert_eq!(receipt.payload["correlation_id"], "answered");
+        }
+
+        for (thread, disposition) in [
+            (
+                ThreadId("other".into()),
+                RunDisposition::running(RunId("run".into())),
+            ),
+            (
+                ThreadId("thread".into()),
+                RunDisposition::running(RunId("other".into())),
+            ),
+            (
+                ThreadId("thread".into()),
+                RunDisposition::awaiting(answered),
+            ),
+        ] {
+            assert!(
+                assemble_attempt_commit(
+                    thread,
+                    disposition,
+                    true,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                    Some(&resume),
+                )
+                .is_err(),
+                "R2 incoherent commit is unconstructible"
+            );
+        }
+    }
 }

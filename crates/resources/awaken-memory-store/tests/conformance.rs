@@ -237,6 +237,7 @@ mod postgres {
         conditional_delete_never_removes_a_changed_or_recreated_head(&fs).await;
         shared::materialized_path_cas(&fs).await;
         shared::materialized_update_races_rename(&fs).await;
+        shared::rename_replace_orphans_the_destination_id(&fs).await;
     }
 
     /// Shared concurrency cause/effect table for the real Postgres adapter:

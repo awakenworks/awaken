@@ -165,29 +165,33 @@ fn reply_anchor_selection_covers_every_admission_cause_and_competing_order() {
 
 #[cfg(kani)]
 #[kani::proof]
-#[kani::unwind(5)]
 fn managed_reply_anchor_selects_exact_fenced_commit() {
-    // Same R1..R4 cause/effect table as the native test. All Thread/Run equality
-    // classes, seven lifecycle kinds, u64 commit/cursor/fence values and 0..3
-    // entries are symbolic. The finite identity alphabet represents exact
-    // equality only; arbitrary String codecs, async prefix collection and
-    // durable admission/publication are outside this direct selector proof.
-    let input = || {
-        let kind: u8 = kani::any();
-        kani::assume(kind < 7);
-        Input {
-            same_thread: kani::any(),
-            same_run: kani::any(),
-            kind,
-            commit: kani::any(),
-            cursor: kani::any(),
-        }
+    // Same R1..R4 table as the native selector test. One symbolic fold step
+    // covers every Boolean eligibility partition and every u64 current,
+    // candidate and fence. The equality below is the induction step for an
+    // arbitrary lifecycle prefix: ineligible evidence stutters; eligible
+    // evidence replaces the accumulator exactly when it is greater. No
+    // assumptions, heap values or bounded list length are needed.
+    let selected = if kani::any() {
+        Some(kani::any::<u64>())
+    } else {
+        None
     };
-    let inputs = [input(), input(), input()];
-    let events = [event(inputs[0]), event(inputs[1]), event(inputs[2])];
-    let length: usize = kani::any();
-    kani::assume(length <= 3);
-    check(&inputs[..length], &events[..length], kani::any());
+    let same_thread = kani::any::<bool>();
+    let same_run = kani::any::<bool>();
+    let awaiting = kani::any::<bool>();
+    let commit = kani::any::<u64>();
+    let fence = kani::any::<u64>();
+    let eligible = same_thread && same_run && awaiting && commit != 0 && commit <= fence;
+    let expected = if eligible && selected.is_none_or(|current| commit > current) {
+        Some(commit)
+    } else {
+        selected
+    };
+    assert_eq!(
+        advance_answered_pending_commit(selected, same_thread, same_run, awaiting, commit, fence,),
+        expected
+    );
 }
 
 fn selected_run_state(kind: u8) -> Option<awaken_agent_contract::agent::run::RunState> {

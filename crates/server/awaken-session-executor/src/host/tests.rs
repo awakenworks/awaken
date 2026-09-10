@@ -8324,7 +8324,7 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
             capacity.get(),
             "R2 actual slots"
         );
-        worker.begin_pool_drain().await;
+        let _local_fence = worker.begin_pool_drain().await;
         let coordinator = Arc::new(
             SharedHost::new(Arc::new(OkModel), "stub")
                 .with_worker_dispatch(

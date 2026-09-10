@@ -147,6 +147,35 @@ pub struct ToolBatchPublication<'a> {
     calls: &'a [DurableToolCall],
 }
 
+/// Borrowed proof that one call in the canonical durable batch is in its
+/// `Executing` phase. Runtime obtains this view only after the corresponding
+/// `ThreadCommit` returns successfully, then consumes its operation identity at
+/// the executor boundary. The private fields prevent callers from fabricating
+/// an admission for a Requested, Awaiting, or terminal call.
+#[derive(Debug, Clone, Copy)]
+pub struct ToolExecutionAdmission<'a> {
+    batch_id: &'a ToolBatchId,
+    call_id: &'a str,
+    attempt: u16,
+}
+
+impl ToolExecutionAdmission<'_> {
+    #[must_use]
+    pub fn call_id(&self) -> &str {
+        self.call_id
+    }
+
+    #[must_use]
+    pub const fn attempt(&self) -> u16 {
+        self.attempt
+    }
+
+    #[must_use]
+    pub fn operation_id(&self) -> String {
+        self.batch_id.operation_id(self.call_id)
+    }
+}
+
 impl ToolBatchPublication<'_> {
     /// Tool-owned state in the original model call order.
     pub fn result_state(&self) -> impl Iterator<Item = &StateCommand> {
@@ -269,6 +298,30 @@ enum CallTransition {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompletionDisposition {
+    Apply,
+    Replay,
+    Reject,
+}
+
+/// Classify completion through the same phase guard used by the aggregate.
+/// An exact terminal result is an inert replay; no terminal predecessor can
+/// ever apply a second result to the durable call.
+const fn completion_disposition(
+    phase: CallPhaseView,
+    transition: CallTransition,
+    exact_completed_output: bool,
+) -> CompletionDisposition {
+    if matches!(phase, CallPhaseView::Completed) && exact_completed_output {
+        CompletionDisposition::Replay
+    } else if permits_call_transition(phase, transition) {
+        CompletionDisposition::Apply
+    } else {
+        CompletionDisposition::Reject
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecoveryTransition {
     Enter(u16),
     NeverReplay,
@@ -329,6 +382,16 @@ fn phase_view(phase: &ToolCallPhase) -> CallPhaseView {
         ToolCallPhase::Awaiting { wait } => CallPhaseView::Awaiting(wait.kind),
         ToolCallPhase::Completed(_) => CallPhaseView::Completed,
         ToolCallPhase::Indeterminate { .. } => CallPhaseView::Indeterminate,
+    }
+}
+
+const fn executor_entry_attempt(phase: CallPhaseView) -> Option<u16> {
+    match phase {
+        CallPhaseView::Executing(attempt) => Some(attempt),
+        CallPhaseView::Requested
+        | CallPhaseView::Awaiting(_)
+        | CallPhaseView::Completed
+        | CallPhaseView::Indeterminate => None,
     }
 }
 
@@ -461,6 +524,29 @@ impl ToolBatch {
     #[must_use]
     pub const fn phase(&self) -> ToolBatchPhase {
         self.phase
+    }
+
+    /// Project the exact executor-entry capability from this aggregate.
+    ///
+    /// This does not persist the transition. Runtime first commits the mutated
+    /// batch, then asks the same value for this borrowed proof immediately
+    /// before invoking the executor.
+    pub fn execution_admission(
+        &self,
+        call_id: &str,
+    ) -> Result<ToolExecutionAdmission<'_>, ToolBatchError> {
+        let call = self
+            .calls
+            .iter()
+            .find(|entry| entry.call.call_id == call_id)
+            .ok_or_else(|| ToolBatchError::UnknownCall(call_id.to_string()))?;
+        let attempt = executor_entry_attempt(phase_view(&call.phase))
+            .ok_or(ToolBatchError::InvalidTransition)?;
+        Ok(ToolExecutionAdmission {
+            batch_id: &self.id,
+            call_id: &call.call.call_id,
+            attempt,
+        })
     }
 
     /// Validate the complete persisted aggregate before recovery can act on it.
@@ -698,18 +784,17 @@ impl ToolBatch {
     pub fn complete(&mut self, output: ToolOutput) -> Result<(), ToolBatchError> {
         self.ensure_open()?;
         let call = self.call_mut(&output.call_id)?;
-        match &call.phase {
-            ToolCallPhase::Completed(existing) if existing == &output => return Ok(()),
-            phase
-                if permits_call_transition(
-                    phase_view(phase),
-                    CallTransition::CompleteFromExecutionOrWait,
-                ) => {}
-            _ => {
-                return Err(ToolBatchError::InvalidTransition);
-            }
+        let exact_completed_output =
+            matches!(&call.phase, ToolCallPhase::Completed(existing) if existing == &output);
+        match completion_disposition(
+            phase_view(&call.phase),
+            CallTransition::CompleteFromExecutionOrWait,
+            exact_completed_output,
+        ) {
+            CompletionDisposition::Apply => call.phase = ToolCallPhase::Completed(output),
+            CompletionDisposition::Replay => {}
+            CompletionDisposition::Reject => return Err(ToolBatchError::InvalidTransition),
         }
-        call.phase = ToolCallPhase::Completed(output);
         Ok(())
     }
 
@@ -718,16 +803,17 @@ impl ToolBatch {
     pub fn complete_immediate(&mut self, output: ToolOutput) -> Result<(), ToolBatchError> {
         self.ensure_open()?;
         let call = self.call_mut(&output.call_id)?;
-        match &call.phase {
-            ToolCallPhase::Completed(existing) if existing == &output => return Ok(()),
-            phase
-                if permits_call_transition(
-                    phase_view(phase),
-                    CallTransition::CompleteImmediate,
-                ) => {}
-            _ => return Err(ToolBatchError::InvalidTransition),
+        let exact_completed_output =
+            matches!(&call.phase, ToolCallPhase::Completed(existing) if existing == &output);
+        match completion_disposition(
+            phase_view(&call.phase),
+            CallTransition::CompleteImmediate,
+            exact_completed_output,
+        ) {
+            CompletionDisposition::Apply => call.phase = ToolCallPhase::Completed(output),
+            CompletionDisposition::Replay => {}
+            CompletionDisposition::Reject => return Err(ToolBatchError::InvalidTransition),
         }
-        call.phase = ToolCallPhase::Completed(output);
         Ok(())
     }
 
@@ -986,13 +1072,82 @@ mod tests {
     }
 
     #[test]
+    fn executor_entry_admission_follows_the_complete_phase_table() {
+        // Causes: C1 the exact call is Requested, Executing, Awaiting,
+        // Completed, or Indeterminate; C2 the requested call identity is exact
+        // or absent. Effects: E1 only Executing yields a borrowed admission
+        // carrying its exact attempt and batch-owned operation identity; E2
+        // every other known phase rejects; E3 an absent identity rejects.
+        // Decision rules: R1=(C1 Executing)+C2 exact -> E1;
+        // R2=(C1 other)+C2 exact -> E2; R3=!C2 -> E3. The aggregate remains the
+        // sole phase and identity owner in all rules.
+        let mut awaiting = batch();
+        assert!(matches!(
+            awaiting.execution_admission("c"),
+            Err(ToolBatchError::InvalidTransition)
+        ));
+        assert!(matches!(
+            awaiting.execution_admission("missing"),
+            Err(ToolBatchError::UnknownCall(call_id)) if call_id == "missing"
+        ));
+
+        assert_eq!(awaiting.mark_executing("c"), Ok(1));
+        let admitted = awaiting.execution_admission("c").expect("R1/E1");
+        assert_eq!(admitted.call_id(), "c", "R1/E1 exact call");
+        assert_eq!(admitted.attempt(), 1, "R1/E1 exact attempt");
+        assert_eq!(
+            admitted.operation_id(),
+            "tool-batch:r:0:c",
+            "R1/E1 canonical operation identity"
+        );
+
+        awaiting
+            .mark_awaiting("c", ToolWaitKind::ExternalResult, "wait")
+            .expect("build Awaiting row");
+        assert!(matches!(
+            awaiting.execution_admission("c"),
+            Err(ToolBatchError::InvalidTransition)
+        ));
+        awaiting
+            .complete(ToolOutput::ok("c", "done"))
+            .expect("build Completed row");
+        assert!(matches!(
+            awaiting.execution_admission("c"),
+            Err(ToolBatchError::InvalidTransition)
+        ));
+
+        let mut indeterminate = batch();
+        indeterminate
+            .mark_indeterminate("c", "unknown")
+            .expect("build Indeterminate row");
+        assert!(matches!(
+            indeterminate.execution_admission("c"),
+            Err(ToolBatchError::InvalidTransition)
+        ));
+    }
+
+    #[test]
     fn terminal_output_is_idempotent_and_finalization_requires_completion() {
+        // Causes: C1 completion source is executor/wait or immediate; C2 the
+        // predecessor is its one admissible nonterminal phase or Completed;
+        // C3 a Completed replay has the exact or changed output. Effects: E1 an
+        // admissible nonterminal result applies once; E2 exact Completed replay
+        // is a no-op; E3 changed Completed replay rejects without mutation.
+        // Rules C1+C2=>E1, Completed+C3(exact)=>E2, Completed+!C3=>E3.
         let mut batch = batch();
         assert_eq!(batch.finalize(), Err(ToolBatchError::Incomplete));
         batch.mark_executing("c").unwrap();
         let output = ToolOutput::ok("c", "done");
         batch.complete(output.clone()).unwrap();
+        let completed = batch.clone();
         batch.complete(output).unwrap();
+        assert_eq!(batch, completed, "E2 exact replay is inert");
+        assert_eq!(
+            batch.complete(ToolOutput::ok("c", "changed")),
+            Err(ToolBatchError::InvalidTransition),
+            "E3 changed replay is rejected"
+        );
+        assert_eq!(batch, completed, "E3 rejection preserves the aggregate");
         batch.finalize().unwrap();
         assert_eq!(batch.phase, ToolBatchPhase::Finalized);
         assert_eq!(batch.mark_executing("c"), Err(ToolBatchError::Finalized));
@@ -1613,6 +1768,23 @@ mod verification {
         }
     }
 
+    #[kani::proof]
+    fn executor_entry_admission_requires_exactly_executing_phase() {
+        // Causes: every durable phase tag and every u16 attempt. Effect: the
+        // production admission kernel returns that exact attempt iff the phase
+        // is Executing. No heap, assumptions, stubs, or reduced integer domain
+        // is used.
+        let phase = symbolic_phase(kani::any());
+        let admitted = executor_entry_attempt(phase);
+        match phase {
+            CallPhaseView::Executing(attempt) => assert_eq!(admitted, Some(attempt)),
+            CallPhaseView::Requested
+            | CallPhaseView::Awaiting(_)
+            | CallPhaseView::Completed
+            | CallPhaseView::Indeterminate => assert_eq!(admitted, None),
+        }
+    }
+
     fn symbolic_recovery_mode(tag: u8) -> ToolRecoveryMode {
         match tag % 4 {
             0 => ToolRecoveryMode::NeverReplay,
@@ -1703,6 +1875,38 @@ mod verification {
             ),
         };
         assert_eq!(permits_call_transition(phase, transition), expected);
+    }
+
+    #[kani::proof]
+    fn a_tool_call_completion_is_applied_at_most_once() {
+        // Complete cause/effect partition: every durable call phase, both
+        // completion sources and exact/changed replay. Apply is possible only
+        // from the source's one legal nonterminal predecessor; Completed exact
+        // is Replay, and every other terminal combination is Reject. Thus no
+        // terminal predecessor can apply another result. This is the production
+        // classifier called by both ToolBatch completion methods.
+        let phase = symbolic_phase(kani::any());
+        let transition = if kani::any() {
+            CallTransition::CompleteFromExecutionOrWait
+        } else {
+            CallTransition::CompleteImmediate
+        };
+        let exact_completed_output = kani::any::<bool>();
+        let decision = completion_disposition(phase, transition, exact_completed_output);
+        let expected = if phase == CallPhaseView::Completed && exact_completed_output {
+            CompletionDisposition::Replay
+        } else if permits_call_transition(phase, transition) {
+            CompletionDisposition::Apply
+        } else {
+            CompletionDisposition::Reject
+        };
+        assert_eq!(decision, expected);
+        if matches!(
+            phase,
+            CallPhaseView::Completed | CallPhaseView::Indeterminate
+        ) {
+            assert_ne!(decision, CompletionDisposition::Apply);
+        }
     }
 
     #[kani::proof]

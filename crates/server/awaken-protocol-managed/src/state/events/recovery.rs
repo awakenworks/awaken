@@ -58,6 +58,33 @@ fn pending_ticket_admission(
     }
 }
 
+/// Fold one lifecycle fact into the exact Awaiting commit selected for a
+/// reply. This is the heap-free production owner for the fenced maximum; the
+/// surrounding method supplies real Thread/Run/kind equality observations.
+const fn advance_answered_pending_commit(
+    selected: Option<u64>,
+    same_thread: bool,
+    same_run: bool,
+    awaiting: bool,
+    source_commit_cursor: u64,
+    snapshot_store_cursor: u64,
+) -> Option<u64> {
+    if same_thread
+        && same_run
+        && awaiting
+        && source_commit_cursor != 0
+        && source_commit_cursor <= snapshot_store_cursor
+        && match selected {
+            Some(current) => source_commit_cursor > current,
+            None => true,
+        }
+    {
+        Some(source_commit_cursor)
+    } else {
+        selected
+    }
+}
+
 impl ManagedState {
     /// Resolve the one current Run coordinate carried by a recovery prefix.
     /// Strict admission, lenient projection, and interruption must not each
@@ -582,19 +609,16 @@ impl ManagedState {
     ) -> Result<u64, StateError> {
         lifecycle_events
             .iter()
-            .filter(|event| {
-                &event.thread_id == thread_id
-                    && &event.run_id == run_id
-                    && event.kind == RunLifecycleEventKind::Awaiting
-                    && event.source_commit_cursor != 0
-                    && event.source_commit_cursor <= snapshot_store_cursor
+            .fold(None, |selected, event| {
+                advance_answered_pending_commit(
+                    selected,
+                    &event.thread_id == thread_id,
+                    &event.run_id == run_id,
+                    event.kind == RunLifecycleEventKind::Awaiting,
+                    event.source_commit_cursor,
+                    snapshot_store_cursor,
+                )
             })
-            .max_by(|left, right| {
-                left.source_commit_cursor
-                    .cmp(&right.source_commit_cursor)
-                    .then_with(|| left.cursor.cmp(&right.cursor))
-            })
-            .map(|event| event.source_commit_cursor)
             .ok_or_else(|| {
                 StateError::Run(RunError::unavailable(
                     "committed pending lifecycle is not yet visible",

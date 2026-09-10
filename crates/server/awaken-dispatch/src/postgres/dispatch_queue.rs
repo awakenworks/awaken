@@ -1288,7 +1288,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
         let mut tx = self.pool.begin().await.map_err(store_error)?;
         let current = sqlx::query(&format!(
-            "SELECT status, lease_owner, lease_epoch, cancel_requested, active_attempt_owner, active_attempt_epoch \
+            "SELECT status, lease_owner, lease_epoch, cancel_requested, attempt_count, active_attempt_owner, active_attempt_epoch \
              FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
         ))
         .bind(&claim.run_id.0)
@@ -1305,6 +1305,10 @@ impl DispatchQueue for PostgresDispatchStore {
             current.try_get("lease_owner").map_err(store_error)?;
         let cancellation_requested: i64 =
             current.try_get("cancel_requested").map_err(store_error)?;
+        let attempt_count = durable_u64(
+            "dispatch attempt count",
+            current.try_get("attempt_count").map_err(store_error)?,
+        )?;
         let active_attempt_owner: Option<String> = current
             .try_get("active_attempt_owner")
             .map_err(store_error)?;
@@ -1325,15 +1329,20 @@ impl DispatchQueue for PostgresDispatchStore {
             persisted_epoch,
             cancellation_requested != 0,
         )?;
-        let (next, lease_until) = match transition.relinquish(
+        let (next, lease_until, attempt_count) = match transition.relinquish(
             claim.epoch,
             persisted_owner.as_deref() == Some(&claim.owner),
             slot,
+            attempt_count,
         ) {
-            awaken_dispatch_contract::RelinquishTransition::Pending(next) => (next, None),
-            awaken_dispatch_contract::RelinquishTransition::Recovering(next) => {
-                (next, Some(0_i64))
-            }
+            awaken_dispatch_contract::RelinquishTransition::Pending {
+                state,
+                attempt_count,
+            } => (state, None, attempt_count),
+            awaken_dispatch_contract::RelinquishTransition::Recovering {
+                state,
+                attempt_count,
+            } => (state, Some(0_i64), attempt_count),
             awaken_dispatch_contract::RelinquishTransition::Fenced => {
                 let _ = tx.rollback().await;
                 return Ok(SettleOutcome::Fenced);
@@ -1345,10 +1354,11 @@ impl DispatchQueue for PostgresDispatchStore {
                 ));
             }
         };
+        let attempt_count = durable_i64("dispatch attempt count", attempt_count)?;
         let changed = sqlx::query(&format!(
             "UPDATE {p}_dispatch SET status = $4, \
              lease_owner = CASE WHEN $5 IS NULL THEN NULL ELSE lease_owner END, \
-             lease_until = $5, created_at = clock_timestamp() \
+             lease_until = $5, attempt_count = $6, created_at = clock_timestamp() \
              WHERE run_id = $1 AND status = 'running' \
              AND lease_owner = $2 AND lease_epoch = $3"
         ))
@@ -1357,6 +1367,7 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(epoch)
         .bind(crate::dispatch_state_db(next.state))
         .bind(lease_until)
+        .bind(attempt_count)
         .execute(&mut *tx)
         .await
         .map_err(store_error)?;

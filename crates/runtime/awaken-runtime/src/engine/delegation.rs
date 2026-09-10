@@ -528,6 +528,7 @@ pub(super) async fn resume_delegation(
                     new_messages: context_messages,
                     staged_state,
                     audit: Vec::new(),
+                    resume: None,
                     disposition: RunDisposition::awaiting(next_ticket),
                 },
             )

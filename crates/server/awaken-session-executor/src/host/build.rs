@@ -939,7 +939,7 @@ impl SharedHost {
     /// its pool capacity, so draining auxiliary work first can miss that task.
     pub async fn drain_runtime(&self, timeout: std::time::Duration) -> bool {
         let deadline = tokio::time::Instant::now() + timeout;
-        self.begin_pool_drain().await;
+        let _local_fence = self.begin_pool_drain().await;
         while self.pool_in_flight() != 0 {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
@@ -1570,9 +1570,10 @@ impl SharedHost {
     /// claiming new runs while the in-flight ones finish. A no-op when no pool is
     /// running (a direct/non-durable host, or a worker whose pool never started).
     /// Idempotent. The admin surface calls this on `POST /admin/drain`.
-    pub async fn begin_pool_drain(&self) {
-        if let Some(pool) = self.dispatch_pool.get() {
-            pool.begin_drain().await;
+    pub async fn begin_pool_drain(&self) -> Option<awaken_dispatch::PoolDrainFence> {
+        match self.dispatch_pool.get() {
+            Some(pool) => Some(pool.begin_drain().await),
+            None => None,
         }
     }
 
