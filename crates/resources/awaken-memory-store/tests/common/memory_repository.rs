@@ -305,23 +305,38 @@ pub(crate) async fn materialized_update_races_rename(fs: &dyn MemoryRepository) 
 }
 
 pub(crate) async fn rename_replace_orphans_the_destination_id(fs: &dyn MemoryRepository) {
-    let dst = fs.create("s", "/dst.md", "old-dst").await.unwrap();
-    let src = fs.create("s", "/src.md", "src").await.unwrap();
+    // Rename-replace cause/effect table: R1 source+different destination ->
+    // source id/content survive at destination, both old paths cease naming the
+    // displaced identity; R2 now-absent source -> NotFound and the committed
+    // destination stays unchanged. Pure move and same-path success are covered
+    // by extended_conformance, so all path-presence partitions reuse this owner.
+    let store = "rename_replace_identity";
+    let dst = fs.create(store, "/dst.md", "old-dst").await.unwrap();
+    let src = fs.create(store, "/src.md", "src").await.unwrap();
     assert_ne!(dst.id, src.id);
-    let moved = fs.rename("s", "/src.md", "/dst.md").await.unwrap();
-    assert_eq!(moved.id, src.id, "the surviving memory keeps the source id");
+    let moved = fs.rename(store, "/src.md", "/dst.md").await.unwrap();
+    assert_eq!(moved.id, src.id, "R1 keeps the source id");
     assert_eq!(moved.content.as_deref(), Some("src"));
-    // The replaced destination's id no longer addresses anything.
     assert!(
         matches!(
-            fs.update("s", &dst.id, "zombie", &dst.content_sha256).await,
+            fs.update(store, &dst.id, "zombie", &dst.content_sha256)
+                .await,
             Err(MemErr::NotFound(_))
         ),
-        "the replaced destination id must be unaddressable after the move"
+        "R1 orphans the displaced destination id"
     );
-    let at_dst = fs.get_by_path("s", "/dst.md").await.unwrap().unwrap();
+    let at_dst = fs.get_by_path(store, "/dst.md").await.unwrap().unwrap();
     assert_eq!(at_dst.id, src.id);
     assert_eq!(at_dst.content.as_deref(), Some("src"));
+    assert!(matches!(
+        fs.rename(store, "/src.md", "/dst.md").await,
+        Err(MemErr::NotFound(_))
+    ));
+    assert_eq!(
+        fs.get_by_path(store, "/dst.md").await.unwrap(),
+        Some(at_dst),
+        "R2 leaves the committed survivor unchanged"
+    );
 }
 
 pub(crate) async fn ids_stay_monotonic_across_delete(fs: &dyn MemoryRepository) {
@@ -730,6 +745,13 @@ pub(crate) async fn concurrent_cas_one_winner<F>(fs: Arc<F>)
 where
     F: MemoryRepository + Send + Sync + 'static,
 {
+    // CAS concurrency cause/effect table: C1 eight writers share one observed
+    // id/hash generation; C2 every candidate differs. Under the backend's one
+    // lock/transaction serialization boundary, E1 exactly one state-changing
+    // Apply wins, E2 generation advances exactly once, E3 every loser returns
+    // Conflict carrying that winner, E4 exactly one Modified history row is
+    // appended. This is real adapter cross-evidence; mutex/SQL atomicity remains
+    // TCB and is not promoted by the scalar HeadUpdateAdmission proof.
     let m = fs.create("s", "/c.md", "v0").await.unwrap();
     let mut handles = Vec::new();
     for i in 0..8u32 {
@@ -738,14 +760,32 @@ where
             fs.update("s", &id, &format!("w{i}"), &base).await
         }));
     }
-    let (mut oks, mut conflicts) = (0, 0);
+    let mut winner = None;
+    let mut conflicts = Vec::new();
     for h in handles {
         match h.await.unwrap() {
-            Ok(_) => oks += 1,
-            Err(MemErr::Conflict { .. }) => conflicts += 1,
+            Ok(memory) => assert!(winner.replace(memory).is_none(), "E1"),
+            Err(MemErr::Conflict { current }) => conflicts.push(*current),
             other => panic!("unexpected: {other:?}"),
         }
     }
-    assert_eq!(oks, 1, "exactly one CAS write wins; none clobbers");
-    assert_eq!(conflicts, 7);
+    let winner = winner.expect("E1 exactly one CAS write wins");
+    assert_eq!(winner.version, m.version + 1, "E2");
+    assert!(
+        (0..8u32)
+            .map(|i| format!("w{i}"))
+            .any(|candidate| winner.content.as_deref() == Some(candidate.as_str())),
+        "E1"
+    );
+    assert_eq!(conflicts, vec![winner.clone(); 7], "E3");
+    assert_eq!(
+        fs.get_by_path("s", "/c.md").await.unwrap(),
+        Some(winner.clone()),
+        "E1/E2"
+    );
+    let history = fs.list_versions("s").await.unwrap();
+    assert_eq!(history.len(), 2, "E4");
+    assert_eq!(history[1].memory_id, winner.id, "E4");
+    assert_eq!(history[1].operation, MemoryVersionOperation::Modified, "E4");
+    assert_eq!(history[1].content, winner.content, "E4");
 }

@@ -537,7 +537,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness recovery_replay_preserves_complete_entry_and_time
   run_kani awaken-memory-store \
     --harness memory_head_update_admission_preserves_stale_and_idempotent_heads \
-    --harness memory_conditional_delete_admission_is_exact
+    --harness memory_conditional_delete_admission_is_exact \
+    --harness memory_rename_replace_preserves_source_identity
   run_kani awaken-skill-store \
     --harness skill_version_retirement_is_visibility_only_and_total
   run_kani awaken-agent-config \
