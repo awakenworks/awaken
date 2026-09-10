@@ -444,9 +444,17 @@ type checking are valuable executable evidence, but are not formal proofs.
 - Workspace path projection now has one provider-independent logical root.
   `WorkspacePathProjection.tla` proves that only path-fidelitous providers may
   satisfy Repository admission and that read/edit/bash/Git observations cannot
-  contain the provider host path. The real Linux Namespace/Hand conformance test
-  exercises those four consumers against `/workspace`; mount namespace, kernel,
-  Git, and filesystem correctness remain environmental evidence.
+  contain the provider host path. Kani exhausts the production path-fidelity
+  requirement/advertisement gate. The contract's native decision table checks
+  the exact root, child, prefix-lookalike, traversal, provider-host and
+  runtime-owned path classes. The real Linux Namespace/Hand conformance test
+  exercises successful and failing filesystem
+  tools, Bash and Git against `/workspace`, including Debug and serialized wire
+  outcomes; `HandToolContext` diagnostics expose only shape, never provider
+  roots, environment values or launcher data. Provider bind construction, mount
+  namespace, kernel, Git, filesystem, arbitrary process output, serialization
+  correctness and unobserved operator diagnostics remain executable or
+  environmental boundaries rather than consequences of the decision kernel.
 - The Session application has one internal acceptance point that returns only
   after the complete root and idempotency receipt are durable; the existing
   lifecycle supervisor then resumes realization from that root without a Job

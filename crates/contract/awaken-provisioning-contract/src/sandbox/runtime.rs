@@ -1253,6 +1253,28 @@ mod verification {
             assert!(isolation_rank(actual) >= isolation_rank(required));
         }
     }
+
+    #[kani::proof]
+    fn workspace_path_projection_requires_exact_fidelity_admission() {
+        let provider_has_path_fidelity: bool = kani::any();
+        let workload_requires_path_fidelity: bool = kani::any();
+        let mut capabilities = SandboxCapabilities::default();
+        capabilities.path_fidelity = provider_has_path_fidelity;
+        let mut requirements = SandboxRequirements::default();
+        requirements.path_fidelity = workload_requires_path_fidelity;
+
+        // Admission cause/effect table (all four rows are symbolic):
+        // A1 !required + !provided -> admit; A2 !required + provided -> admit;
+        // A3 required + !provided -> reject; A4 required + provided -> admit.
+        // Effect E1 is exact fail-closed selection before any provider bind or
+        // workload launch can expose a physical path. Constraint: every other
+        // requirement/capability axis is the same default value, isolating the
+        // complete path-fidelity decision rather than bypassing another cause.
+        assert_eq!(
+            capabilities.satisfies_requirements(&requirements),
+            !workload_requires_path_fidelity || provider_has_path_fidelity
+        );
+    }
 }
 
 /// Realizes environments. The local impl lives in `awaken-sandbox-local`; a

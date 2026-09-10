@@ -248,16 +248,22 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
      * /mnt/session/uploads/file-1; C3=the real Hand is launched by the Namespace
      * provider; C4=read/glob/bash/edit/git address sandbox-absolute paths; C5=write
      * attempts to mutate the same mount; C6=the provider adopts the durable
-     * handle and reconciles the frozen mount. Effects: E1=all read-capable tools
+     * handle and reconciles the frozen mount; C7=success, execution failure,
+     * Debug and serialized wire outcomes may render an observation. Effects:
+     * E1=all read-capable tools
      * see the exact same token/path; E2=no host projection path leaks; E3=the OS
      * rejects mutation and the original bytes remain authoritative; E4=the
      * adopted Hand sees the same sandbox path; E5=every cooperating tool and
      * the opaque Git subprocess observe `/workspace`, never the provider's
-     * physical realization directory.
+     * physical realization directory; E6=error/Debug/wire surfaces contain only
+     * sandbox-logical paths and diagnostics.
      * Rules: P1 !C1=>qualification failure, never a passing skip;
      * P2 C1+C2+C3+C4=>E1+E2;
      * P3 C1+C2+C3+C5=>E3; P4 C1+C2+C6=>E4;
-     * P5 C1+C3+C4 on writable workspace=>E1+E2+E5.
+     * P5 C1+C3+C4 on writable workspace=>E1+E2+E5;
+     * P6 C1+C3+C7=>E2+E6.
+     * Constraint: only provider-generated paths are in scope; a caller can
+     * deliberately echo a path string it already supplied to Bash.
      */
     let base = tempfile::tempdir().expect("sandbox root");
     let provider = NamespaceProvider::new(base.path());
@@ -394,6 +400,10 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
         glob.contains("/mnt/session/uploads/file-1"),
         "P2/E1: {glob}"
     );
+    assert!(
+        !glob.contains(base.path().to_string_lossy().as_ref()),
+        "P2/E2: {glob}"
+    );
 
     let bash = rendered(
         executor
@@ -408,6 +418,10 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
             .expect("request reached the dispatch boundary"),
     );
     assert!(bash.contains("namespace-hand-token"), "P2/E1: {bash}");
+    assert!(
+        !bash.contains(base.path().to_string_lossy().as_ref()),
+        "P2/E2: {bash}"
+    );
 
     let write = executor
         .call_hand(&ToolCall {
@@ -422,7 +436,7 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
         .expect("request reached the dispatch boundary");
     assert!(
         matches!(
-            write,
+            &write,
             HandResult::Err { .. }
                 | HandResult::Ok {
                     output: awaken_runtime_contract::tool::ToolOutput { is_error: true, .. }
@@ -430,6 +444,37 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
         ),
         "P3/E3: {write:?}"
     );
+    for rendered_failure in [format!("{write:?}"), serde_json::to_string(&write).unwrap()] {
+        assert!(
+            !rendered_failure.contains(base.path().to_string_lossy().as_ref()),
+            "P6/E2+E6: {rendered_failure}"
+        );
+    }
+
+    let missing = executor
+        .call_hand(&ToolCall {
+            call_id: "workspace-missing".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({
+                "path": "/workspace/repository/missing.txt"
+            }),
+        })
+        .await
+        .expect("request reached the dispatch boundary");
+    assert!(
+        matches!(&missing, HandResult::Err { error }
+        if error.message.contains("/workspace/repository/missing.txt")),
+        "P6/E6: {missing:?}"
+    );
+    for rendered_failure in [
+        format!("{missing:?}"),
+        serde_json::to_string(&missing).unwrap(),
+    ] {
+        assert!(
+            !rendered_failure.contains(base.path().to_string_lossy().as_ref()),
+            "P6/E2+E6: {rendered_failure}"
+        );
+    }
 
     let unchanged = rendered(
         executor
@@ -466,6 +511,12 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
         matches!(failed, HandResult::Err { ref error }
         if error.message.contains("exit 1") && error.message.contains("original-diagnostic")),
         "B2 {failed:?}"
+    );
+    assert!(
+        !serde_json::to_string(&failed)
+            .unwrap()
+            .contains(base.path().to_string_lossy().as_ref()),
+        "P6/E2+E6: {failed:?}"
     );
     let resumed = rendered(executor.call_hand(&ToolCall {
         call_id: "bash-after-exit".into(), tool_id: "bash".into(),

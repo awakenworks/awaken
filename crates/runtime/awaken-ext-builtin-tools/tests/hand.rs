@@ -15,6 +15,40 @@ fn tool_at(id: &str, root: &std::path::Path) -> Arc<dyn RawTool> {
         .unwrap_or_else(|| panic!("no builtin tool {id}"))
 }
 
+#[test]
+fn hand_context_debug_exposes_shape_without_provider_values() {
+    // Diagnostic cause/effect table: D1 physical roots only; D2 root plus Bash
+    // environment; D3 root plus launcher. Every row may expose counts/booleans
+    // (E1) but never the provider path, environment value or launcher argv
+    // (E2). Rules: D1=>E1+E2; D1+D2=>E1+E2; D1+D3=>E1+E2.
+    // Constraint: Debug is the logging surface; HandToolContext has no serde
+    // surface, and the tool-result wire remains covered by the Namespace test.
+    let provider_root = "/provider/private/session-9";
+    let mut bash_env = std::collections::BTreeMap::new();
+    bash_env.insert("PRIVATE_VALUE".into(), "provider-env-sentinel".into());
+    let context = HandToolContext::new(format!("{provider_root}/workspace"))
+        .with_allowed_root(format!("{provider_root}/mnt"))
+        .with_path_projection("/workspace", format!("{provider_root}/workspace"))
+        .with_bash_env(bash_env)
+        .with_bash_launcher(
+            format!("{provider_root}/bin/bash"),
+            ["provider-argv-sentinel".into()],
+        );
+
+    let debug = format!("{context:?}");
+    assert!(debug.contains("allowed_root_count: 1"), "D1/E1: {debug}");
+    assert!(debug.contains("path_projection_count: 1"), "D1/E1: {debug}");
+    assert!(debug.contains("has_bash_env: true"), "D2/E1: {debug}");
+    assert!(debug.contains("has_bash_launcher: true"), "D3/E1: {debug}");
+    for private in [
+        provider_root,
+        "provider-env-sentinel",
+        "provider-argv-sentinel",
+    ] {
+        assert!(!debug.contains(private), "D1-D3/E2: {debug}");
+    }
+}
+
 fn call(id: &str, args: serde_json::Value) -> ToolCall {
     ToolCall {
         call_id: "c1".to_string(),
