@@ -143,6 +143,13 @@ cargo test -p awaken-executable-agent-catalog --lib \
   concurrent_agent_refreshes_are_serialized_by_the_domain_registrar
 cargo test -p awaken-executable-environment-catalog --lib \
   concurrent_environment_refreshes_are_serialized_by_the_domain_registrar
+# Cross-check the theorem's installed <= authority invariant at the stable-range
+# boundary in both production registrar types. A command committed above the
+# captured high-water must wait for the next refresh rather than enter this one.
+cargo test -p awaken-executable-agent-catalog --lib \
+  agent_command_above_captured_high_water_waits_for_next_refresh
+cargo test -p awaken-executable-environment-catalog --lib \
+  environment_command_above_captured_high_water_waits_for_next_refresh
 # The WebhookOutbox model treats a committed fact as recoverable across crash.
 # Bind that premise to a real post-commit process kill and fresh SQLite reopen;
 # delivery/settlement remains covered by the separate notifier kernel below.
