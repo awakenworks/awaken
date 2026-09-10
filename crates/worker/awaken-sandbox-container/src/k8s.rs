@@ -14,7 +14,8 @@
 //! out) — all via [`crate::net`]. Compile-verified here; running requires a cluster.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, SplitChannel};
@@ -536,6 +537,35 @@ pub struct K8sRuntime {
     pod_channel_port: Option<u16>,
     sandbox_control_forwarder: Option<K8sSandboxControlForwarder>,
     continuation_volume: Option<crate::K8sContinuationVolume>,
+    creation_attempts:
+        Mutex<std::collections::HashMap<K8sCreationAttemptKey, Arc<K8sCreationAttemptGate>>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct K8sCreationAttemptKey {
+    scope: String,
+    operation_id: String,
+    owner: String,
+    runtime_incarnation: String,
+    epoch: u64,
+}
+
+impl K8sCreationAttemptKey {
+    fn new(scope: &str, fence: &ContainerEffectFence) -> Self {
+        Self {
+            scope: scope.to_owned(),
+            operation_id: fence.operation_id.clone(),
+            owner: fence.owner.clone(),
+            runtime_incarnation: fence.runtime_incarnation.clone(),
+            epoch: fence.epoch,
+        }
+    }
+}
+
+#[derive(Default)]
+struct K8sCreationAttemptGate {
+    barrier: Arc<tokio::sync::RwLock<()>>,
+    closed: AtomicBool,
 }
 
 impl K8sRuntime {
@@ -573,6 +603,7 @@ impl K8sRuntime {
             pod_channel_port: None,
             sandbox_control_forwarder: None,
             continuation_volume: None,
+            creation_attempts: Mutex::new(Default::default()),
         };
         runtime
             .network_policy_attestation
@@ -651,7 +682,33 @@ impl K8sRuntime {
             pod_channel_port: None,
             sandbox_control_forwarder: None,
             continuation_volume: None,
+            creation_attempts: Mutex::new(Default::default()),
         }
+    }
+
+    fn observed_creation_attempt(
+        &self,
+        scope: &str,
+        fence: &ContainerEffectFence,
+    ) -> Arc<K8sCreationAttemptGate> {
+        self.creation_attempts
+            .lock()
+            .expect("Kubernetes creation attempt registry lock poisoned")
+            .entry(K8sCreationAttemptKey::new(scope, fence))
+            .or_default()
+            .clone()
+    }
+
+    fn existing_creation_attempt(
+        &self,
+        scope: &str,
+        fence: &ContainerEffectFence,
+    ) -> Option<Arc<K8sCreationAttemptGate>> {
+        self.creation_attempts
+            .lock()
+            .expect("Kubernetes creation attempt registry lock poisoned")
+            .get(&K8sCreationAttemptKey::new(scope, fence))
+            .cloned()
     }
 
     fn pods(&self) -> Api<Pod> {

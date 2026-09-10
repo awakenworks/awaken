@@ -162,4 +162,4 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0075-unified-managed-session-worker-execution.md` | Implemented Session Worker, complete-profiled-creation, effect-fenced replay, and terminal Repository publication placement decision | Not required | n/a |
 | `adr/0076-session-owned-background-tool-execution.md` | Implemented Native BackgroundTask decision | Not required | n/a |
 | `adr/0077-iam-directory-product-space-placement.md` | Implemented product-space placement decision | Not required | n/a |
-| `adr/0078-terminal-recovery-retains-the-existing-session-authority.md` | Implemented terminal Resource projection and terminal-only release; physical join remains Target | Not required | n/a |
+| `adr/0078-terminal-recovery-retains-the-existing-session-authority.md` | Implemented terminal Resource projection, terminal-only release, and bounded same-process Kubernetes physical join | Not required | n/a |

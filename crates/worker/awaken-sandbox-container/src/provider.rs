@@ -1028,13 +1028,23 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         &self,
         spec: &pc::SandboxSpec,
         handle: Option<&pc::SandboxHandle>,
-        _expected_effect_fence: Option<&pc::SandboxEffectFence>,
+        expected_effect_fence: Option<&pc::SandboxEffectFence>,
         terminal_effect_fence: &pc::SandboxEffectFence,
         authority: &dyn pc::CurrentExecutionAuthority,
     ) -> Result<Option<ContainerSandbox<R>>, pc::SandboxError> {
         let admit = || pc::with_current_sandbox_effect(terminal_effect_fence, authority, || Ok(()));
         admit()?;
         let Some(handle) = handle else {
+            let (plan, _) = self.adoption_plan(spec)?;
+            let absent = self
+                .runtime
+                .prove_unmaterialized_absence(&spec.scope, &plan, expected_effect_fence)
+                .await
+                .map_err(err)?;
+            admit()?;
+            if absent {
+                return Ok(None);
+            }
             return Err(pc::SandboxError::new(
                 "container provider cannot dispose an in-flight restore without a durable handle",
             ));
