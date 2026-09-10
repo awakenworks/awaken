@@ -88,6 +88,8 @@ pub awaken_data_subject_application::DataSubject::trust_grants: alloc::collectio
 pub awaken_data_subject_application::DataSubject::updated_at: i64
 impl awaken_data_subject_application::DataSubject
 pub fn awaken_data_subject_application::DataSubject::consent_ceiling(&self, awaken_runtime_contract::data_subject::Purpose) -> awaken_runtime_contract::capture::ContentCapture
+pub fn awaken_data_subject_application::DataSubject::follows_revision(&self, u64, u64) -> bool
+pub fn awaken_data_subject_application::DataSubject::is_successor_of(&self, u64) -> bool
 pub fn awaken_data_subject_application::DataSubject::mark_erased(&mut self, i64)
 pub fn awaken_data_subject_application::DataSubject::new(awaken_runtime_contract::data_subject::DataSubjectId, impl core::convert::Into<alloc::string::String>, i64) -> Self
 pub fn awaken_data_subject_application::DataSubject::upsert_consent(&mut self, awaken_data_subject_application::ConsentGrant)

@@ -187,6 +187,7 @@ fn provider_model_candidate_provisioning_is_pinned() {
                 "policy": {
                     "allowed_plaintext_holders": [
                         { "boundary": "workload", "trust_domain": "awaken.workload.acp" },
+                        { "boundary": "workload", "trust_domain": "awaken.workload.sandbox" },
                         { "boundary": "worker", "trust_domain": "awaken.worker" }
                     ],
                     "model_exposure": "forbidden"
