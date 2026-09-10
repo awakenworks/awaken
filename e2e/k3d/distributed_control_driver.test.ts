@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { auditLoadResults, disposeFixtureSessions } from './distributed_control_driver.ts';
+import {
+  auditLoadResults,
+  disposeFixtureSessions,
+  nativeCrashHistoryErrors,
+} from './distributed_control_driver.ts';
 
 const response = (marker: string) => ({ type: 'agent.message', content: [{ type: 'text', text: `ADR71-PROVIDER:${marker}` }] });
 
@@ -64,4 +68,21 @@ test('temporary batch cleanup joins every independent terminal request', async (
     'B3',
   );
   assert.deepEqual(rejectedCalls, ['aux-c', 'aux-d'], 'B3/E3');
+});
+
+test('Native crash history separates terminal model evidence from final settlement', () => {
+  // N1 missing, N2 duplicate, N3 terminal-before-idle and N4 settled are the
+  // pure oracle used by both phases of the live crash scenario. Preparation may
+  // observe N3; final verification cannot. An idle before the marker is never a
+  // completion witness for that receipt.
+  const idle = { type: 'session.status_idle' };
+  assert.ok(nativeCrashHistoryErrors([], 'one', false).length, 'N1');
+  assert.ok(
+    nativeCrashHistoryErrors([response('one'), response('one')], 'one', false).length,
+    'N2',
+  );
+  assert.deepEqual(nativeCrashHistoryErrors([response('one')], 'one', false), [], 'N3 prepare');
+  assert.ok(nativeCrashHistoryErrors([response('one')], 'one', true).length, 'N3 final');
+  assert.ok(nativeCrashHistoryErrors([idle, response('one')], 'one', true).length, 'N3 ordering');
+  assert.deepEqual(nativeCrashHistoryErrors([response('one'), idle], 'one', true), [], 'N4');
 });

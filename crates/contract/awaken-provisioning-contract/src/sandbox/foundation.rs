@@ -236,6 +236,19 @@ pub struct MemoryMaterializationEvidence {
     pub heads: Vec<MemoryMaterializationHead>,
 }
 
+/// Project one Session-authored Memory path into the canonical path recorded
+/// by every Sandbox materialization. Runtime mount creation and later Session
+/// terminal validation must share this identity mapping.
+#[must_use]
+pub fn memory_materialization_mount_path(requested: &str) -> String {
+    let logical = requested.trim_start_matches('/');
+    if logical.starts_with("mnt/") {
+        format!("/{logical}")
+    } else {
+        format!("/mnt/{logical}")
+    }
+}
+
 impl MemoryMaterializationEvidence {
     /// Construct the one canonical durable representation for a copy-backed
     /// mount. Providers call this before physical create so malformed mounter

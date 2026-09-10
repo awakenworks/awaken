@@ -1,4 +1,5 @@
 use super::{DispatchError, RunClaim, WorkerIdentity};
+use awaken_agent_contract::agent::thread::Id as ThreadId;
 use serde::{Deserialize, Serialize};
 
 /// Non-secret, provider-scoped coordinate frozen before executor entry.
@@ -72,6 +73,13 @@ impl AttemptExecutionBinding {
 pub struct PhysicalAttempt {
     pub claim: RunClaim,
     pub binding: Option<AttemptExecutionBinding>,
+    /// Logical Thread whose committed prefix contains this Run's execution
+    /// evidence. Internal admission comparisons may omit it; the authoritative
+    /// `load_physical_attempt` read freezes it from the same Dispatch row.
+    pub thread_id: Option<ThreadId>,
+    /// Physical Session partition used by child-Thread recovery. `None` means
+    /// the logical Thread is also its storage partition.
+    pub session_thread_id: Option<ThreadId>,
 }
 
 /// Response-loss retry must preserve even the absence of a binding. In

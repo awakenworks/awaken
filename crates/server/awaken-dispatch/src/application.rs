@@ -127,10 +127,10 @@ impl ClosedAttemptExecution {
                 "complete attempt termination requires provider evidence",
             ));
         }
-        Ok(AttemptStopStatus::Stopped(ObservedAttemptStop {
+        Ok(AttemptStopStatus::Stopped(Box::new(ObservedAttemptStop {
             attempt: self.attempt.clone(),
             evidence_ref,
-        }))
+        })))
     }
 }
 
@@ -156,7 +156,7 @@ impl ObservedAttemptStop {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttemptStopStatus {
     Unknown,
-    Stopped(ObservedAttemptStop),
+    Stopped(Box<ObservedAttemptStop>),
 }
 
 /// Trusted, independent infrastructure control, selected by Coordinator startup.
@@ -180,6 +180,7 @@ pub trait WorkerExecutionStopSource: Send + Sync {
     async fn observe_attempt_termination(
         &self,
         _execution: &ClosedAttemptExecution,
+        _recovery: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
     ) -> Result<AttemptStopStatus, ApplicationError> {
         Ok(AttemptStopStatus::Unknown)
     }
@@ -195,6 +196,7 @@ pub async fn stop_expired_predecessor(
     dispatch: &dyn DispatchQueue,
     directory: &dyn crate::WorkerDirectory,
     source: &dyn WorkerExecutionStopSource,
+    recovery: Option<&dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>,
     successor: &crate::RunClaim,
     now_ms: u64,
 ) -> Result<Option<WorkerProcessStopStatus>, ApplicationError> {
@@ -266,11 +268,27 @@ pub async fn stop_expired_predecessor(
         {
             return Ok(Some(observation));
         }
+        let (Some(recovery), Some(thread_id)) = (recovery, predecessor.thread_id.as_ref()) else {
+            return Ok(Some(observation));
+        };
+        let session_thread_id = predecessor.session_thread_id.as_ref().unwrap_or(thread_id);
+        let snapshot = recovery
+            .recovery_snapshot_in_session(session_thread_id, thread_id, &predecessor.claim.run_id)
+            .await
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
+        if snapshot.thread_id != *thread_id || snapshot.claimed_run_id != predecessor.claim.run_id {
+            return Err(ApplicationError::internal(
+                "recovery source returned another physical attempt subject",
+            ));
+        }
         let stopped = source
-            .observe_attempt_termination(&ClosedAttemptExecution {
-                attempt: predecessor.clone(),
-                process_exit: process_exit.clone(),
-            })
+            .observe_attempt_termination(
+                &ClosedAttemptExecution {
+                    attempt: predecessor.clone(),
+                    process_exit: process_exit.clone(),
+                },
+                &snapshot,
+            )
             .await?;
         if let AttemptStopStatus::Stopped(receipt) = &stopped {
             if receipt.attempt() != &predecessor {
@@ -501,8 +519,9 @@ mod tests {
     #[test]
     fn complete_receipt_freezes_all_physical_identity_coordinates() {
         // R28 exact typed assertion => equal; independently vary Run, owner,
-        // epoch, optional binding, Worker id/incarnation/generation, provider and
-        // execution reference => unequal. This is the same derived equality the
+        // epoch, optional binding, logical/Session Thread, Worker
+        // id/incarnation/generation, provider and execution reference =>
+        // unequal. This is the same derived equality the
         // application uses before finish_attempt, not string concatenation or a
         // Run-only comparison. Blank evidence rejects. Constructor privacy is
         // covered by the compile-fail doctest; provider truth is outside this test.
@@ -516,6 +535,8 @@ mod tests {
                 epoch: 1,
             },
             binding: Some(binding.clone()),
+            thread_id: Some(awaken_agent_contract::agent::thread::Id("thread".into())),
+            session_thread_id: Some(awaken_agent_contract::agent::thread::Id("session".into())),
         };
         let command = ClosedAttemptExecution {
             attempt: attempt.clone(),
@@ -536,6 +557,8 @@ mod tests {
             "owner",
             "epoch",
             "missing-binding",
+            "thread",
+            "session-thread",
             "worker",
             "boot",
             "generation",
@@ -549,12 +572,23 @@ mod tests {
                 "owner" => other.claim.owner.push('2'),
                 "epoch" => other.claim.epoch += 1,
                 "missing-binding" => other.binding = None,
+                "thread" => other.thread_id.as_mut().unwrap().0.push('2'),
+                "session-thread" => other.session_thread_id.as_mut().unwrap().0.push('2'),
                 "worker" => other_worker.worker_id.push('2'),
                 "boot" => other_worker.incarnation_id.push('2'),
                 "generation" => other_worker.generation += 1,
                 _ => {}
             }
-            if !["run", "owner", "epoch", "missing-binding"].contains(&coordinate) {
+            if ![
+                "run",
+                "owner",
+                "epoch",
+                "missing-binding",
+                "thread",
+                "session-thread",
+            ]
+            .contains(&coordinate)
+            {
                 other.binding = Some(
                     crate::AttemptExecutionBinding::new(
                         other_worker,

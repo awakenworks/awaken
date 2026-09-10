@@ -82,6 +82,12 @@ async fn distributed_provider_message(
         .and_then(|message| message.get("content"))
         .map(message_text)
         .unwrap_or_default();
+    // Scenario-only arrival evidence for the k3d crash test. JSON encoding keeps
+    // one request on one log line; durable product truth remains ThreadCommit.
+    eprintln!(
+        "ADR71_PROVIDER_REQUEST {}",
+        serde_json::to_string(&text).expect("Provider fixture text encoding")
+    );
     let reply = format!("ADR71-PROVIDER:{text}");
     if request.get("stream").and_then(serde_json::Value::as_bool) == Some(true) {
         return anthropic_text_stream(&request, &reply);

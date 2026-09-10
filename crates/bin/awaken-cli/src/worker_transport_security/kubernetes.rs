@@ -2,8 +2,12 @@
 
 use super::*;
 use awaken_dispatch::{
-    ApplicationError, AttemptExecutionBinding, ClosedWorkerExecution, WorkerExecutionBindingSource,
-    WorkerExecutionStopSource, WorkerIdentity, WorkerProcessStopStatus,
+    ApplicationError, AttemptExecutionBinding, AttemptStopStatus, ClosedAttemptExecution,
+    ClosedWorkerExecution, WorkerExecutionBindingSource, WorkerExecutionStopSource, WorkerIdentity,
+    WorkerProcessStopStatus,
+};
+use awaken_runtime_contract::attempt_termination::{
+    NativeAttemptTermination, classify_native_attempt_termination,
 };
 use awaken_sandbox_container::k8s::{
     PodProcessBinding, PodProcessObserver, PodProcessStopper, PodProcessTermination,
@@ -118,6 +122,24 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
             PodProcessTermination::Observed(receipt) => {
                 execution.observed_exit(receipt.resource_version())
             }
+        }
+    }
+
+    async fn observe_attempt_termination(
+        &self,
+        execution: &ClosedAttemptExecution,
+        recovery: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+    ) -> Result<AttemptStopStatus, ApplicationError> {
+        match classify_native_attempt_termination(recovery)
+            .map_err(|error| ApplicationError::internal(error.to_string()))?
+        {
+            NativeAttemptTermination::Unknown => Ok(AttemptStopStatus::Unknown),
+            NativeAttemptTermination::AllExecutionStopped => execution
+                .observed_all_execution_stopped(format!(
+                    "{};thread-commit:{}",
+                    execution.process_exit().evidence_ref(),
+                    recovery.store_cursor
+                )),
         }
     }
 }

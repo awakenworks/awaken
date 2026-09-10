@@ -274,6 +274,22 @@ impl ResolvedExecutionEnv {
             .collect()
     }
 
+    /// Whether this resolved environment contributes no asynchronous execution
+    /// boundary of its own. The Native runtime uses this only to publish its
+    /// narrow model-only crash-coverage marker before the first effect. It does
+    /// not imply that an arbitrary plugin is process-bound: any hook, guard,
+    /// gate, dynamic tool, action or constraint keeps the profile unsupported
+    /// until that boundary has its own durable termination evidence.
+    #[must_use]
+    pub fn is_model_only_execution_surface(&self) -> bool {
+        self.phase_hooks.is_empty()
+            && self.action_kinds.is_empty()
+            && self.run_end_guards.is_empty()
+            && self.tool_gates.is_empty()
+            && self.tool_constraints.is_empty()
+            && self.dynamic_tools.is_empty()
+    }
+
     /// Run-end continuation guards, in dependency order.
     pub fn run_end_guards(&self) -> &[Arc<dyn RunEndGuard>] {
         &self.run_end_guards

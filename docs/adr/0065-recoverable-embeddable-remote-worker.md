@@ -137,7 +137,9 @@ Native response-only inference uses the same evidence rule from ADR-0024:
 discarding a response prevents proposed tools from executing, but does not prove
 provider computation or billing stopped. Cancellation retains the physical veto
 even after the local executor returns; it does not permit an exact ACK. Hard
-process loss likewise leaves the physical slot occupied.
+process loss likewise leaves the physical slot occupied unless the exact Run
+committed a supported closed execution-surface marker before effects and every
+participant allowed by that surface has durable terminal evidence.
 
 All five Native phase-hook points also use the same `AttemptQuiescence`
 return observer as model/tool invocation. Fresh, batch-recovered and resumed
@@ -332,13 +334,27 @@ Retirement neither grants the old Worker commit rights nor upgrades Runtime's
 replay policy or journal evidence. Unknown model results and NeverReplay tools
 still need their own supported recovery decisions.
 
-This implements the complete-evidence consumption seam, not a production Native
-termination provider or complete crash recovery. Kubernetes still has only local
-process evidence, and Native still lacks complete durable participant enrollment
-and provider-query integration. The complete-assertion HTTP tests use a trusted
-deterministic provider fixture, with Memory/SQLite/real PostgreSQL Dispatch,
-response-loss deadlines, concurrent replies, successor admission between replies,
-foreign receipts and invented Worker JSON. They do not prove a real model stopped.
+The Kubernetes adapter now implements one deliberately closed Native profile:
+`ModelOnlyV1`. A fresh Native Run with no model-visible tools, authored or
+Session plugins, phase hooks, actions, guards, gates, constraints or dynamic
+tools commits that Run-scoped marker through the existing ThreadCommit path
+before the first model invocation. Recovery rejects a widened surface. After
+independent exact Pod exit, the adapter reads the same committed Run view and
+accepts complete termination only when the marker precedes every model record,
+every recorded model operation is terminal or was not dispatched, commit
+coordinates are aligned, and no ToolBatch exists. Empty model history is
+meaningful only behind that pre-effect marker. Invalid, legacy, incomplete,
+tool-bearing, plugin-bearing or unknown-model history remains Unknown.
+
+This is production Native crash recovery for that closed model-only profile,
+not a general provider cancellation protocol. It proves that no execution the
+profile permits remains after the owning Pod exits; it does not prove remote
+provider computation or billing stopped. Native with tools, Skills, Resources,
+plugins or hooks, ACP, A2A and opaque remote operations retain their existing
+evidence and handoff rules. The complete-assertion HTTP tests use the production
+classifier or a trusted deterministic provider fixture, with Memory/SQLite/real
+PostgreSQL Dispatch, response-loss deadlines, concurrent replies, successor
+admission between replies, foreign receipts and invented Worker JSON.
 The HTTP decision
 matrix crosses Registry adapters and old-response races; production CLI tests
 exercise the assembled stop source against a mock Kubernetes API. Neither is
@@ -383,12 +399,10 @@ with a newly assembled Coordinator adapter. The successor's ordinary blocked
 admission closes the expired predecessor and requests its exact Pod stop.
 Independent observation then returns the frozen local-process subject, while
 Dispatch remains occupied because no remote-operation evidence was supplied.
-This qualifies durable identity and independent stop composition; the Pod runs
-a sleep fixture, not the Native Runtime, and server restart is a task restart,
-not an OS process crash. The separate container live test injects actual CRI
-SIGKILL and checks partial-domain exit, name reuse and stale deletion. Both tests
-use the existing isolated k3d harness; neither proves remote termination or
-complete Native crash takeover.
+This qualifies durable identity and independent stop composition. The separate
+container live test injects actual CRI SIGKILL and checks partial-domain exit,
+name reuse and stale deletion. The distributed k3d acceptance below owns the
+real Native Runtime hard-crash and successor-settlement composition.
 
 On 2026-09-09 both gated cases actually passed at `a62b3895b` on a disposable
 rootful k3d 5.8.3 / k3s v1.31.5-k3s1 cluster: the container case executed
@@ -400,8 +414,20 @@ The fixture was `busybox:1.36`; no real model was called. Initial attempts
 failed at disk admission and rootless cpuset bootstrap, and one targeted run
 correctly rejected missing NetworkPolicy before the canonical setup was applied.
 These results establish the two local identity/stop boundaries described above;
-complete Native participant enrollment, remote termination and safe takeover
-remain unverified and unimplemented by the production Kubernetes adapter.
+they do not by themselves establish the later closed-profile Native takeover.
+
+On 2026-09-10 the full eleven-stage distributed k3d suite additionally passed
+with a real Pod-bound Native Worker. It committed `ModelOnlyV1`, completed one
+model request, then lost its finish acknowledgement and was hard-stopped through
+CRI. A new Pod UID/incarnation recovered the same Run, the Session-boundary retry
+invoked the single predecessor-stop application service, Kubernetes proved the
+old retained Pod fully exited, the production classifier proved the committed
+closed surface terminal, and the existing exact `finish_attempt` transition
+retired only epoch 1. The successor settled the already committed result without
+another provider request. The same run also passed PostgreSQL primary hard
+failure/promotion and 48/48 concurrent public requests at concurrency 12. This
+is executable local-k3d evidence, not a proof of Kubernetes control-plane,
+container-runtime, database or remote-provider correctness.
 
 Configuration is explicit and role-owned:
 
@@ -418,11 +444,11 @@ Configuration is explicit and role-owned:
   authenticator rejects. Missing build features, malformed policy and wrong-role
   configuration reject rather than silently selecting an unbound transport.
 
-This is not completed Kubernetes crash recovery. Complete remote-participant
-evidence, exact Dispatch retirement and the Native hard-crash k3d E2E are not established by its
-mock-API tests. No historical binding or remote termination can be inferred from
-successful caller authentication. Existing restartable/privileged Worker Pod
-profiles do not meet the observer's non-restarting private-process contract.
+Kubernetes crash recovery is complete only for the closed `ModelOnlyV1` profile
+and the non-restarting, retained, private-process Pod contract above. No
+historical binding, tool/hook termination or opaque remote termination can be
+inferred from successful caller authentication. Existing restartable or
+privileged Worker Pod profiles do not meet that contract.
 
 The attached tests own the cause/effect matrices for TokenReview, projection
 rotation, transport posture and redirect/CA rejection. The existing Kani

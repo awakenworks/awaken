@@ -7,6 +7,10 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # A tag-existence bypass can pass against old binaries, so no diagnostic reuse
 # switch may bypass either build. Incremental caching stays Cargo/Docker-owned.
 ! grep -q 'ADR71_REUSE_IMAGE\|--ensure-hand' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq "import('@anthropic-ai/sdk')" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'npm ci --prefix e2e' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'COORDINATOR_BIN=$(resolve_cargo_executable awaken-cli awaken-coordinator --features container-k8s)' \
+  "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq 'k3d_create_cluster "$CLUSTER" 3 "" "" --shared-volume "$CONTINUATION_VOLUME" "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 # D12 host build failure occurs before cluster creation and must not query an
 # ambient kubectl context; after creation every diagnostic uses the harness's
@@ -66,6 +70,13 @@ kubectl kustomize "$REPO_ROOT/deploy/k3d/distributed-control" >"$RENDERED"
 # ContainerRealizationNamespace; E2 no unproduced platform-workspace-id can gate
 # startup. D11-D1=C1+C2+C3=>E1+E2. The Kani harness owns C3 for all SandboxTier
 # variants; this rendered contract owns absence of the redundant deployment path.
+# D12 Pod-bound hard-crash recovery: C1 Coordinator owns TokenReview plus exact
+# namespace Pod get/delete; C2 the test Pod is non-restarting, retained and
+# projected from one ServiceAccount token/Downward API identity; C3 the TLS edge
+# blocks only its predecessor finish ACK; C4 the live script hard-stops its CRI
+# container and never force-deletes the evidence object. E1 C1+C2+C3+C4 drives
+# the existing ThreadCommit -> stop receipt -> Dispatch finish chain without a
+# second recovery controller or replaying the public Event.
 # Each assertion owns one observable terminal effect; the manifest remains the
 # sole deployment source of truth.
 grep -q '/usr/local/bin/awaken-worker' "$RENDERED"
@@ -130,6 +141,13 @@ grep -q 'k8s_namespace = "awaken-adr71"' "$RENDERED"
 grep -q 'container_image = "awaken-sandbox:local"' "$RENDERED"
 grep -q 'serviceAccountName: worker-runtime' "$RENDERED"
 grep -q 'name: worker-runtime' "$RENDERED"
+grep -q 'serviceAccountName: coordinator-runtime' "$RENDERED"
+grep -q 'name: adr71-coordinator-token-review' "$RENDERED"
+COORDINATOR_PROCESS_ROLE="$(sed -n '/metadata: { name: coordinator-worker-process }/,/^---$/p' \
+  "$REPO_ROOT/deploy/k3d/distributed-control/resources.yaml" | head -12)"
+grep -q 'resources: \["pods"\]' <<<"$COORDINATOR_PROCESS_ROLE"
+grep -q 'verbs: \["get", "delete"\]' <<<"$COORDINATOR_PROCESS_ROLE"
+! grep -Eq '"(create|list|watch|update|patch)"' <<<"$COORDINATOR_PROCESS_ROLE"
 # Continuation-RBAC table: a retained Session needs C1 PVC create, C2 exact UID
 # observation, and C3 terminal delete. E1 all three render in one PVC-only rule;
 # E2 update/list/watch remain absent from that rule. KRB1=C1+C2+C3=>E1+E2.
@@ -142,13 +160,15 @@ grep -q -- '- delete' <<<"$WORKER_PVC_RULE"
 grep -q 'path: /admin/drain' "$RENDERED"
 grep -q 'terminationGracePeriodSeconds: 20' "$RENDERED"
 # Cause/effect rule: adopted Pod owner transfer requires update in addition to
-# create/delete. Kustomize renders flow-style source verbs as a block list, so
-# assert each capability inside the first Worker Role rule instead of coupling
-# the contract to YAML presentation.
-WORKER_OBJECT_RULE="$(sed -n '8,25p' "$RENDERED")"
-grep -q -- '- create' <<<"$WORKER_OBJECT_RULE"
-grep -q -- '- update' <<<"$WORKER_OBJECT_RULE"
-grep -q -- '- delete' <<<"$WORKER_OBJECT_RULE"
+# create/delete. Select the named Worker Role and its first object rule; document
+# order may change when another least-privilege Role is added.
+WORKER_ROLE="$(awk 'BEGIN { RS="---" } /kind: Role/ && /metadata: \{ name: worker-runtime \}/ { print }' \
+  "$REPO_ROOT/deploy/k3d/distributed-control/resources.yaml")"
+WORKER_OBJECT_RULE="$(sed -n '/resources: \["pods", "configmaps"\]/,/^  - apiGroups:/p' \
+  <<<"$WORKER_ROLE")"
+grep -q '"create"' <<<"$WORKER_OBJECT_RULE"
+grep -q '"update"' <<<"$WORKER_OBJECT_RULE"
+grep -q '"delete"' <<<"$WORKER_OBJECT_RULE"
 ! grep -q 'sandbox_allow_local_fallback = true' "$RENDERED"
 ! grep -q 'cidr: 0.0.0.0/0' "$RENDERED"
 COORDINATOR_NETWORK_POLICY="$(sed -n '/metadata: { name: coordinator }/,/^---$/p' "$REPO_ROOT/deploy/k3d/distributed-control/network-policies.yaml")"
@@ -160,7 +180,9 @@ grep -q 'port: 3443' <<<"$WORKER_NETWORK_POLICY"
 grep -q 'tls_identity_fixture.mjs' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'create configmap adr71-worker-upstream-ca' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'create secret tls adr71-worker-upstream-tls' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
-grep -q 'name: worker-kube-api' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q 'name: runtime-kube-api' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q 'real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_attempt' \
+  "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q "ALTER SYSTEM SET synchronous_commit = 'remote_apply';" "$RENDERED"
 grep -q "ALTER SYSTEM SET synchronous_standby_names = 'FIRST 1 (awaken_standby)';" "$RENDERED"
 ! grep -q -- '- synchronous_commit=remote_apply' "$RENDERED"
@@ -169,19 +191,30 @@ grep -q 'application_name=awaken_standby' "$RENDERED"
 grep -q 'connect_timeout=2' "$RENDERED"
 grep -q 'crictl stop --timeout 0 "$PRIMARY_CONTAINER"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q "sync_state = 'sync'" "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
-# Crash-semantics ownership rule: the distributed black-box lane may prove
-# Worker incarnation replacement, but it must not demand replay of an opaque
-# in-flight provider call without the terminal receipt required by ADR-0024.
-# The dedicated physical-attempt suites own that fail-closed decision table.
+# Crash-semantics ownership rule: the ordinary opaque in-flight request remains
+# excluded. The new case starts only after one terminal model record and an
+# intentionally rejected finish ACK prove the complete ThreadCommit boundary.
 ! grep -q 'ADR71-CHAOS-SLOW' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
-! grep -q 'WORKER_ZERO_CONTAINER' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q 'NATIVE_CRASH_MARKER="ADR71-NATIVE-HARD-CRASH"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q 'worker_kubernetes_identity_directory' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q 'restartPolicy: Never' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q 'awaken.dev/worker-process-evidence' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q 'prepare-native-crash' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q 'verify-native-crash' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q 'NATIVE_PROVIDER_BEFORE_CRASH' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q 'coordinator_worker_log_count' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+! grep -q 'logs -l app=coordinator -c worker-tls' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q 'observe_expired_predecessor' "$REPO_ROOT/crates/server/awaken-dispatch-http/src/worker_dispatch/session_coordination.rs"
+grep -q 'crictl stop --timeout 0 "$NATIVE_OLD_CONTAINER"' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -q 'reject_old_native_finish' "$RENDERED"
+grep -q 'ADR71_PROVIDER_REQUEST' "$REPO_ROOT/crates/devtools/awaken-scenario-host/src/distributed_control.rs"
 # Stage-boundary capacity table: C1 the fault batch owns temporary retained
 # Session Pods/PVCs; C2 later node/database checks retain only the original
 # Session; C3 public disposal is followed by exact backend deletion joins.
 # E1 C1+C2+C3 removes the dead fixture load before Stage 8, while missing either
 # terminal intent or one physical join rejects the static scenario contract.
 # The live lane establishes that these commands actually converge.
-STAGE7="$(sed -n '/log "7\/10/,/log "8\/10/p' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")"
+STAGE7="$(sed -n '/log "7\/11/,/log "8\/11/p' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")"
 grep -q 'dispose-batch' <<<"$STAGE7"
 grep -Fq 'wait --for=delete "${BATCH_AUXILIARY_POD_TARGETS[@]}"' <<<"$STAGE7"
 grep -Fq 'wait --for=delete "${BATCH_AUXILIARY_CLAIM_TARGETS[@]}"' <<<"$STAGE7"

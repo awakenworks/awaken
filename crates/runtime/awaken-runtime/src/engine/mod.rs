@@ -32,6 +32,9 @@ use awaken_agent_contract::stream::event::{
 use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime_contract::activation::RunActivation;
+use awaken_runtime_contract::attempt_termination::{
+    ActiveNativeAttemptCoverage, NativeAttemptCoverage,
+};
 use awaken_runtime_contract::boundary::{BoundaryOutcome, evaluate_boundary};
 use awaken_runtime_contract::delegation::{
     ChildRunResult, DelegationExecutionError, DelegationRequest, DelegationResume, DelegationStep,

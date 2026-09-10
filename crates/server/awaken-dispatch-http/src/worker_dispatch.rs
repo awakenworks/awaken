@@ -401,6 +401,32 @@ async fn claim_authority(
     })
 }
 
+/// Progress one exact blocked claim through the canonical independent-stop
+/// application service. Both physical admission and terminal recovery use this
+/// helper so HTTP routing cannot grow two subtly different stop protocols.
+async fn observe_expired_predecessor(
+    service: &WorkerDispatchService,
+    successor: &RunClaim,
+    request_budget_ms: u64,
+) -> Result<Option<awaken_dispatch::WorkerProcessStopStatus>, HostError> {
+    let Some(source) = &service.execution_stops else {
+        return Ok(None);
+    };
+    tokio::time::timeout(
+        std::time::Duration::from_millis(request_budget_ms.max(1)),
+        awaken_dispatch::stop_expired_predecessor(
+            service.dispatch.as_ref(),
+            directory(service)?.as_ref(),
+            source.as_ref(),
+            service.recovery.as_deref(),
+            successor,
+            service.clock.now_ms(),
+        ),
+    )
+    .await
+    .map_err(|_| HostError::unavailable("predecessor stop observation timed out"))?
+}
+
 pub struct RegisteredDispatchDependencies {
     pub execution_bindings: Option<Arc<dyn awaken_dispatch::WorkerExecutionBindingSource>>,
     pub execution_stops: Option<Arc<dyn awaken_dispatch::WorkerExecutionStopSource>>,
@@ -1163,6 +1189,17 @@ async fn settle(
                 .release()
                 .await
                 .map_err(|error| RealizationHttpError::from(HostError::unavailable(error)))?;
+            // A committed-terminal recovery claim never re-enters physical
+            // admission. Give it the same independent predecessor-stop
+            // progression as a blocked begin, then require the ordinary settle
+            // retry to reacquire and observe the exact slot as empty.
+            let observation = observe_expired_predecessor(&service, &claim, authority.lease_ms)
+                .await
+                .map_err(RealizationHttpError::from)?;
+            tracing::debug!(
+                ?observation,
+                "blocked settlement predecessor stop observation"
+            );
             return Ok(json!({ "settled": false }));
         }
         let thread_id = guard.request().thread_id().clone();

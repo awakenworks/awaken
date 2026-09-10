@@ -55,7 +55,12 @@ pub(crate) fn decode_physical_attempt(
             if let Some(binding) = &binding {
                 binding.validate_for(&claim)?;
             }
-            Ok(Some(PhysicalAttempt { claim, binding }))
+            Ok(Some(PhysicalAttempt {
+                claim,
+                binding,
+                thread_id: None,
+                session_thread_id: None,
+            }))
         }
         _ => Err(corrupt_physical_attempt()),
     }

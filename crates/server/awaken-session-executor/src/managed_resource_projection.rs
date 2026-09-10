@@ -1014,15 +1014,6 @@ pub(super) fn managed_file_mount_path(requested: &str) -> String {
     }
 }
 
-pub(super) fn managed_resource_mount_path(requested: &str) -> String {
-    let logical = requested.trim_start_matches('/');
-    if logical.starts_with("mnt/") {
-        format!("/{logical}")
-    } else {
-        format!("/mnt/{logical}")
-    }
-}
-
 pub(crate) struct ManagedMountMetadata {
     mount_id: String,
     mount_path: String,
@@ -1162,7 +1153,9 @@ fn project_managed_input_layout(view: ManagedInputLayoutView<'_>) -> ManagedLayo
         ManagedInputKind::Memory(store_id) => {
             ManagedLayoutProjection::Mount(ManagedMountMetadata {
                 mount_id: view.binding_id.to_string(),
-                mount_path: managed_resource_mount_path(view.mount_path),
+                mount_path: awaken_provisioning_contract::memory_materialization_mount_path(
+                    view.mount_path,
+                ),
                 access,
                 validation_source: ManagedMountValidationSource::MemoryStore(store_id.to_string()),
             })

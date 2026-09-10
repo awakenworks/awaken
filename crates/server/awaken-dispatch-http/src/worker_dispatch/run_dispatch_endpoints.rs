@@ -310,21 +310,9 @@ async fn admit_attempt(
         awaken_dispatch::DispatchError::Conflict(message) => HostError::conflict(message),
         error => HostError::internal(error.to_string()),
     })?;
-    if admission == awaken_dispatch::AttemptAdmission::Blocked
-        && let Some(source) = &service.execution_stops
-    {
-        let observation = tokio::time::timeout(
-            std::time::Duration::from_millis(authority.lease_ms.max(1)),
-            awaken_dispatch::stop_expired_predecessor(
-                service.dispatch.as_ref(),
-                directory(service)?.as_ref(),
-                source.as_ref(),
-                &request.claim,
-                service.clock.now_ms(),
-            ),
-        )
-        .await
-        .map_err(|_| HostError::unavailable("predecessor stop observation timed out"))??;
+    if admission == awaken_dispatch::AttemptAdmission::Blocked {
+        let observation =
+            observe_expired_predecessor(service, &request.claim, authority.lease_ms).await?;
         // This request was not admitted. Even after independently confirmed
         // retirement, return its original Blocked result: the ordinary retry
         // must reacquire current authority and atomically install its own slot.

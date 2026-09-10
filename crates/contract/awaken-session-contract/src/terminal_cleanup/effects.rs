@@ -284,7 +284,8 @@ impl SessionTerminalMemoryIntent {
             ));
         };
         if memory_store_id.as_str() != materialization.store_id
-            || input.mount_path != materialization.mount_path
+            || awaken_provisioning_contract::memory_materialization_mount_path(&input.mount_path)
+                != materialization.mount_path
         {
             return Err(SessionMemoryReconciliationError::ResourceMismatch);
         }
@@ -374,7 +375,8 @@ impl SessionTerminalMemoryIntent {
     #[must_use]
     pub fn matches_input(&self, input: &crate::ResolvedInput) -> bool {
         input.binding_id == self.binding_id
-            && input.mount_path == self.materialization.mount_path
+            && awaken_provisioning_contract::memory_materialization_mount_path(&input.mount_path)
+                == self.materialization.mount_path
             && input.access == self.access
             && matches!(
                 &input.source,
@@ -581,9 +583,10 @@ fn join_memory_materializations<'input, 'materialization>(
         .map_err(|error| SessionMemoryReconciliationError::InvalidIntent(error.to_string()))?;
     let mut joined = Vec::with_capacity(materializations.len());
     for materialization in materializations {
-        let mut at_mount = inputs
-            .iter()
-            .filter(|input| input.mount_path == materialization.mount_path);
+        let mut at_mount = inputs.iter().filter(|input| {
+            awaken_provisioning_contract::memory_materialization_mount_path(&input.mount_path)
+                == materialization.mount_path
+        });
         let input = at_mount
             .next()
             .ok_or(SessionMemoryReconciliationError::ResourceMismatch)?;
