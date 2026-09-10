@@ -48,6 +48,27 @@ pub struct WebhookOutboxNotifier {
 
 const RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Borrow one fact returned by the durable lifecycle outbox. The same borrow is
+/// used for delivery and, only after delivery succeeds, for the completion key;
+/// the notifier therefore cannot mint a second retry or receipt identity.
+struct PendingLifecycleFact<'a, T> {
+    fact: &'a T,
+}
+
+impl<'a, T> PendingLifecycleFact<'a, T> {
+    fn from_repository(fact: &'a T) -> Self {
+        Self { fact }
+    }
+
+    fn delivery_fact(&self) -> &'a T {
+        self.fact
+    }
+
+    fn completion_fact(&self, delivery_succeeded: bool) -> Option<&'a T> {
+        delivery_succeeded.then_some(self.fact)
+    }
+}
+
 impl WebhookOutboxNotifier {
     #[must_use]
     pub fn with_delivery(
@@ -145,10 +166,12 @@ impl WebhookOutboxNotifier {
             }
         };
         for row in rows {
-            if delivery.deliver(&row).await.is_ok()
-                && let Err(error) = session_outbox.complete_lifecycle(&row.id).await
+            let pending = PendingLifecycleFact::from_repository(&row);
+            let delivery_succeeded = delivery.deliver(pending.delivery_fact()).await.is_ok();
+            if let Some(delivered) = pending.completion_fact(delivery_succeeded)
+                && let Err(error) = session_outbox.complete_lifecycle(&delivered.id).await
             {
-                tracing::warn!(fact_id = %row.id, %error, "Session lifecycle receipt remains pending");
+                tracing::warn!(fact_id = %delivered.id, %error, "Session lifecycle receipt remains pending");
             }
         }
     }
@@ -157,5 +180,55 @@ impl WebhookOutboxNotifier {
 impl LifecycleFactNotifier for WebhookOutboxNotifier {
     fn notify(&self) {
         self.wake.notify_one();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PendingLifecycleFact;
+
+    #[test]
+    fn pending_fact_completion_uses_the_delivered_identity_only_after_success() {
+        // Cause/effect graph: C1 one repository-returned pending identity enters
+        // the notifier; C2 delivery succeeds; C3 delivery fails; C4 the failed
+        // fact is retried. E1 every attempt borrows the exact pending identity;
+        // E2 success selects that same identity for completion; E3 failure and
+        // repeated failure select no completion. Decision table:
+        // R1=C1+C2 -> E1+E2; R2=C1+C3 -> E1+E3;
+        // R3=C1+C3+C4 -> E1+E3 on both attempts.
+        // Mutation targets: making failure complete or success retain must break
+        // R2/R3 or R1 respectively; replacing the borrowed identity breaks E1/E2.
+        let identity = 41_u64;
+        let pending = PendingLifecycleFact::from_repository(&identity);
+
+        assert!(std::ptr::eq(pending.delivery_fact(), &identity), "R1-R3/E1");
+        let completed = pending
+            .completion_fact(true)
+            .expect("R1 success selects completion");
+        assert!(std::ptr::eq(completed, &identity), "R1/E2");
+        assert!(pending.completion_fact(false).is_none(), "R2/E3");
+        assert!(pending.completion_fact(false).is_none(), "R3/E3");
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn pending_lifecycle_fact_completes_iff_delivery_succeeds_with_the_exact_identity() {
+    // The production admission/settlement owner is exhausted over both delivery
+    // outcomes and an arbitrary identity. No assumptions, stubs or domain
+    // restrictions are required.
+    let identity: u64 = kani::any();
+    let delivery_succeeded: bool = kani::any();
+    let pending = PendingLifecycleFact::from_repository(&identity);
+
+    assert!(std::ptr::eq(pending.delivery_fact(), &identity));
+    let completion = pending.completion_fact(delivery_succeeded);
+    assert_eq!(completion.is_some(), delivery_succeeded);
+    if let Some(completed) = completion {
+        assert!(std::ptr::eq(completed, &identity));
+        assert_eq!(*completed, identity);
+    } else {
+        assert!(!delivery_succeeded);
+        assert!(pending.completion_fact(false).is_none());
     }
 }

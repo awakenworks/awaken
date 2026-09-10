@@ -430,6 +430,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness activity_terminal_transition_clears_real_members
   run_kani awaken-session-store \
     --harness session_identity_and_create_shapes_require_one_owned_live_row
+  run_kani awaken-webhook-managed \
+    --harness pending_lifecycle_fact_completes_iff_delivery_succeeds_with_the_exact_identity
   run_kani awaken-service-auth-contract \
     --harness service_token_retry_is_enabled_only_for_an_exact_changed_token
   run_kani awaken-session-application \
