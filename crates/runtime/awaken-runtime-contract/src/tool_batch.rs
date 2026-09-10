@@ -147,6 +147,35 @@ pub struct ToolBatchPublication<'a> {
     calls: &'a [DurableToolCall],
 }
 
+/// Borrowed proof that one call in the canonical durable batch is in its
+/// `Executing` phase. Runtime obtains this view only after the corresponding
+/// `ThreadCommit` returns successfully, then consumes its operation identity at
+/// the executor boundary. The private fields prevent callers from fabricating
+/// an admission for a Requested, Awaiting, or terminal call.
+#[derive(Debug, Clone, Copy)]
+pub struct ToolExecutionAdmission<'a> {
+    batch_id: &'a ToolBatchId,
+    call_id: &'a str,
+    attempt: u16,
+}
+
+impl ToolExecutionAdmission<'_> {
+    #[must_use]
+    pub fn call_id(&self) -> &str {
+        self.call_id
+    }
+
+    #[must_use]
+    pub const fn attempt(&self) -> u16 {
+        self.attempt
+    }
+
+    #[must_use]
+    pub fn operation_id(&self) -> String {
+        self.batch_id.operation_id(self.call_id)
+    }
+}
+
 impl ToolBatchPublication<'_> {
     /// Tool-owned state in the original model call order.
     pub fn result_state(&self) -> impl Iterator<Item = &StateCommand> {
@@ -356,6 +385,16 @@ fn phase_view(phase: &ToolCallPhase) -> CallPhaseView {
     }
 }
 
+const fn executor_entry_attempt(phase: CallPhaseView) -> Option<u16> {
+    match phase {
+        CallPhaseView::Executing(attempt) => Some(attempt),
+        CallPhaseView::Requested
+        | CallPhaseView::Awaiting(_)
+        | CallPhaseView::Completed
+        | CallPhaseView::Indeterminate => None,
+    }
+}
+
 /// Heap-free production transition kernel shared by the aggregate methods and
 /// Kani. It is the single authority for entering an executor attempt.
 fn next_execution_attempt(
@@ -485,6 +524,29 @@ impl ToolBatch {
     #[must_use]
     pub const fn phase(&self) -> ToolBatchPhase {
         self.phase
+    }
+
+    /// Project the exact executor-entry capability from this aggregate.
+    ///
+    /// This does not persist the transition. Runtime first commits the mutated
+    /// batch, then asks the same value for this borrowed proof immediately
+    /// before invoking the executor.
+    pub fn execution_admission(
+        &self,
+        call_id: &str,
+    ) -> Result<ToolExecutionAdmission<'_>, ToolBatchError> {
+        let call = self
+            .calls
+            .iter()
+            .find(|entry| entry.call.call_id == call_id)
+            .ok_or_else(|| ToolBatchError::UnknownCall(call_id.to_string()))?;
+        let attempt = executor_entry_attempt(phase_view(&call.phase))
+            .ok_or(ToolBatchError::InvalidTransition)?;
+        Ok(ToolExecutionAdmission {
+            batch_id: &self.id,
+            call_id: &call.call.call_id,
+            attempt,
+        })
     }
 
     /// Validate the complete persisted aggregate before recovery can act on it.
@@ -1007,6 +1069,61 @@ mod tests {
             "O1/E1 deterministic reconstruction from the durable coordinate"
         );
         assert_ne!(operation_id, batch.operation_id("call-2"), "O2/E2");
+    }
+
+    #[test]
+    fn executor_entry_admission_follows_the_complete_phase_table() {
+        // Causes: C1 the exact call is Requested, Executing, Awaiting,
+        // Completed, or Indeterminate; C2 the requested call identity is exact
+        // or absent. Effects: E1 only Executing yields a borrowed admission
+        // carrying its exact attempt and batch-owned operation identity; E2
+        // every other known phase rejects; E3 an absent identity rejects.
+        // Decision rules: R1=(C1 Executing)+C2 exact -> E1;
+        // R2=(C1 other)+C2 exact -> E2; R3=!C2 -> E3. The aggregate remains the
+        // sole phase and identity owner in all rules.
+        let mut awaiting = batch();
+        assert!(matches!(
+            awaiting.execution_admission("c"),
+            Err(ToolBatchError::InvalidTransition)
+        ));
+        assert!(matches!(
+            awaiting.execution_admission("missing"),
+            Err(ToolBatchError::UnknownCall(call_id)) if call_id == "missing"
+        ));
+
+        assert_eq!(awaiting.mark_executing("c"), Ok(1));
+        let admitted = awaiting.execution_admission("c").expect("R1/E1");
+        assert_eq!(admitted.call_id(), "c", "R1/E1 exact call");
+        assert_eq!(admitted.attempt(), 1, "R1/E1 exact attempt");
+        assert_eq!(
+            admitted.operation_id(),
+            "tool-batch:r:0:c",
+            "R1/E1 canonical operation identity"
+        );
+
+        awaiting
+            .mark_awaiting("c", ToolWaitKind::ExternalResult, "wait")
+            .expect("build Awaiting row");
+        assert!(matches!(
+            awaiting.execution_admission("c"),
+            Err(ToolBatchError::InvalidTransition)
+        ));
+        awaiting
+            .complete(ToolOutput::ok("c", "done"))
+            .expect("build Completed row");
+        assert!(matches!(
+            awaiting.execution_admission("c"),
+            Err(ToolBatchError::InvalidTransition)
+        ));
+
+        let mut indeterminate = batch();
+        indeterminate
+            .mark_indeterminate("c", "unknown")
+            .expect("build Indeterminate row");
+        assert!(matches!(
+            indeterminate.execution_admission("c"),
+            Err(ToolBatchError::InvalidTransition)
+        ));
     }
 
     #[test]
@@ -1648,6 +1765,23 @@ mod verification {
             1 => CallTransition::CompleteImmediate,
             2 => CallTransition::MarkIndeterminate,
             _ => CallTransition::StageResult,
+        }
+    }
+
+    #[kani::proof]
+    fn executor_entry_admission_requires_exactly_executing_phase() {
+        // Causes: every durable phase tag and every u16 attempt. Effect: the
+        // production admission kernel returns that exact attempt iff the phase
+        // is Executing. No heap, assumptions, stubs, or reduced integer domain
+        // is used.
+        let phase = symbolic_phase(kani::any());
+        let admitted = executor_entry_attempt(phase);
+        match phase {
+            CallPhaseView::Executing(attempt) => assert_eq!(admitted, Some(attempt)),
+            CallPhaseView::Requested
+            | CallPhaseView::Awaiting(_)
+            | CallPhaseView::Completed
+            | CallPhaseView::Indeterminate => assert_eq!(admitted, None),
         }
     }
 

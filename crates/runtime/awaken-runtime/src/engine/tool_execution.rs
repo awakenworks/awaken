@@ -180,6 +180,7 @@ pub(super) struct ResumeExecutionContext<'a> {
     pub resolved: &'a ResolvedRun,
     pub env: &'a ResolvedExecutionEnv,
     pub context: &'a RuntimeRunContext,
+    pub execution_admission: Option<ToolExecutionAdmission<'a>>,
 }
 
 pub(super) async fn resume_into_messages(
@@ -194,6 +195,7 @@ pub(super) async fn resume_into_messages(
         resolved,
         env,
         context,
+        execution_admission,
     } = execution;
     // The pending call, when the ticket carries one, so a tool-outcome hook can
     // advance a machine on the replayed result exactly like a first-time call.
@@ -221,12 +223,22 @@ pub(super) async fn resume_into_messages(
                 Error::Execution("permission resumed a ticket without a pending tool".to_string())
             })?;
             if matches!(decision, PermissionDecision::Allow { .. }) {
+                let admission = execution_admission.ok_or_else(|| {
+                    Error::Execution(
+                        "approved tool resume has no committed executor admission".to_string(),
+                    )
+                })?;
+                if admission.call_id() != call_id {
+                    return Err(Error::Execution(
+                        "approved tool resume executor admission names another call".to_string(),
+                    ));
+                }
                 let call = ToolCall {
                     call_id: call_id.to_string(),
                     tool_id: pending.tool_id.clone(),
                     arguments: pending.arguments.clone(),
                 };
-                let operation_id = format!("tool-resume:{}:{}", run_id.0, call.call_id);
+                let operation_id = admission.operation_id();
                 let output = execute_tool(
                     runtime,
                     Some(env),

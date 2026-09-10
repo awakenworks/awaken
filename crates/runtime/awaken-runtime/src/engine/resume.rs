@@ -292,12 +292,34 @@ pub(super) async fn drive_resumed(
     } else {
         result
     };
+    let execution_admission = if matches!(
+        &result,
+        ResumeResult::Permission(PermissionDecision::Allow { .. })
+    ) {
+        let call_id = ticket.call_id().ok_or_else(|| {
+            Error::Execution("approved tool resume has no pending call".to_string())
+        })?;
+        Some(
+            waiting_batch
+                .as_ref()
+                .ok_or_else(|| {
+                    Error::Execution(
+                        "approved tool resume lost its committed tool batch".to_string(),
+                    )
+                })?
+                .execution_admission(call_id)
+                .map_err(|error| Error::Execution(error.to_string()))?,
+        )
+    } else {
+        None
+    };
     let (resumed, mut seed_state, resumed_output) = resume_into_messages(
         ResumeExecutionContext {
             runtime,
             resolved,
             env,
             context,
+            execution_admission,
         },
         run_id,
         ticket,

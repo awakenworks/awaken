@@ -724,6 +724,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness unanchored_legacy_context_never_hides_transcript_messages \
     --harness terminal_calls_are_never_reentered \
     --harness only_the_matching_approval_ticket_enters_execution \
+    --harness executor_entry_admission_requires_exactly_executing_phase \
     --harness every_tool_call_transition_has_the_unique_documented_precondition \
     --harness a_tool_call_completion_is_applied_at_most_once \
     --harness terminal_tool_calls_only_accept_result_staging \
