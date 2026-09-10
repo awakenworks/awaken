@@ -1839,9 +1839,10 @@ fn deployment_fact(id: &str) -> DeploymentLifecycleFact {
 
 async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionRepository>(
     repo: &R,
+    replicas: [&dyn DeploymentRepository; 3],
 ) {
     // Deployment repository cause/effect graph:
-    // C1=create or two writers share revision r; C2=row is scheduled; C3=the
+    // C1=create or three writers share revision r; C2=row is scheduled; C3=the
     // capacity limit is already occupied; C4=scheduler presents current or
     // stale revision. Effects: E1=one CAS write advances r exactly once;
     // E2=the loser conflicts without a lifecycle fact; E3=capacity admission
@@ -1851,7 +1852,7 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
     // | Rule | C1                | C2 | C3 | C4      | Effect       |
     // | D1   | create            | F  | F  | -       | applied      |
     // | D2   | jump/reuse r      | F  | F  | -       | E2 reject   |
-    // | D3   | two writers at r  | F  | F  | -       | E1 + E2     |
+    // | D3   | three writers at r| F  | F  | -       | E1 + E2     |
     // | D4   | create            | T  | T  | -       | E3 reject   |
     // | D5   | scheduler at r    | -  | -  | current | E4          |
     // | D6   | scheduler at r-1  | -  | -  | stale   | E5          |
@@ -1886,11 +1887,18 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
     left.record.name = "left".into();
     let mut right = left.clone();
     right.record.name = "right".into();
-    let (left_outcome, right_outcome) = tokio::join!(
-        repo.write_deployment(left, Some(0), 1, Some(deployment_fact("left-writer")),),
-        repo.write_deployment(right, Some(0), 1, Some(deployment_fact("right-writer")),)
+    let mut third = right.clone();
+    third.record.name = "third".into();
+    let (left_outcome, right_outcome, third_outcome) = tokio::join!(
+        replicas[0].write_deployment(left, Some(0), 1, Some(deployment_fact("left-writer")),),
+        replicas[1].write_deployment(right, Some(0), 1, Some(deployment_fact("right-writer")),),
+        replicas[2].write_deployment(third, Some(0), 1, Some(deployment_fact("third-writer")),)
     );
-    let outcomes = [left_outcome.unwrap(), right_outcome.unwrap()];
+    let outcomes = [
+        left_outcome.unwrap(),
+        right_outcome.unwrap(),
+        third_outcome.unwrap(),
+    ];
     assert_eq!(
         outcomes
             .iter()
@@ -1904,9 +1912,33 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
             .iter()
             .filter(|outcome| **outcome == DeploymentWriteOutcome::Conflict)
             .count(),
-        1,
+        2,
         "D3/E2"
     );
+    let committed = replicas[0]
+        .deployments()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|deployment| deployment.id == "depl_cas")
+        .expect("D3 committed Deployment");
+    assert_eq!(committed.record.revision, 1, "D3/E1 exact successor");
+    assert!(
+        ["left", "right", "third"].contains(&committed.record.name.as_str()),
+        "D3/E1 exact candidate"
+    );
+    for (index, replica) in replicas.iter().enumerate() {
+        assert_eq!(
+            replica
+                .deployments()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|deployment| deployment.id == "depl_cas"),
+            Some(committed.clone()),
+            "D3 replica {index} exact winner"
+        );
+    }
     let facts = repo.pending_lifecycle().await.unwrap();
     assert_eq!(facts.len(), baseline_facts + 2, "D1/D3 lifecycle atomicity");
     assert!(
@@ -1915,7 +1947,8 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
     );
     assert_eq!(
         usize::from(facts.iter().any(|fact| fact.id == "left-writer"))
-            + usize::from(facts.iter().any(|fact| fact.id == "right-writer")),
+            + usize::from(facts.iter().any(|fact| fact.id == "right-writer"))
+            + usize::from(facts.iter().any(|fact| fact.id == "third-writer")),
         1,
         "D3/E2 only winner fact"
     );
@@ -2018,10 +2051,43 @@ fn sqlite_backend_conforms() {
             SqliteManagedSessionRepository::open_in_memory().expect("sqlite phase-count repo"),
         ))
         .await;
-        deployment_cas_decision_table(
-            &SqliteManagedSessionRepository::open_in_memory().expect("sqlite deployment repo"),
-        )
-        .await;
+        // SQLite refinement rule D7: C5 three independently opened adapters
+        // share one file and race D3; C6 every handle closes after the later D5
+        // claim. Effects: E6 D3 still has one exact winner; E7 reopen retains
+        // the exact revision-two Deployment frame and its one atomic run.
+        let directory = tempfile::tempdir().expect("SQLite Deployment CAS directory");
+        let database = directory.path().join("deployment-cas.db");
+        let database_path = database.to_str().expect("UTF-8 Deployment CAS path");
+        let left = SqliteManagedSessionRepository::open(database_path)
+            .expect("left SQLite Deployment replica");
+        let right = SqliteManagedSessionRepository::open(database_path)
+            .expect("right SQLite Deployment replica");
+        let third = SqliteManagedSessionRepository::open(database_path)
+            .expect("third SQLite Deployment replica");
+        deployment_cas_decision_table(&left, [&left, &right, &third]).await;
+        drop(third);
+        drop(right);
+        drop(left);
+        let reopened = SqliteManagedSessionRepository::open(database_path)
+            .expect("reopen SQLite Deployment authority");
+        let deployment = reopened
+            .deployments()
+            .await
+            .expect("read reopened Deployments")
+            .into_iter()
+            .find(|deployment| deployment.id == "depl_cas")
+            .expect("reopened CAS winner");
+        assert_eq!(deployment.record.revision, 2, "D5 persisted successor");
+        assert_eq!(deployment.record.name, "advanced", "D5 persisted frame");
+        assert_eq!(
+            reopened
+                .deployment_runs()
+                .await
+                .expect("read reopened DeploymentRuns")
+                .len(),
+            1,
+            "D5 claim/run survived reopen"
+        );
     });
 }
 
@@ -2144,10 +2210,20 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
         .await
         .expect("connect Session CAS schema");
     let repo = std::sync::Arc::new(
-        PostgresManagedSessionRepository::with_pool(pool)
+        PostgresManagedSessionRepository::with_pool(pool.clone())
             .await
             .expect("open Postgres Session repository"),
     );
+    // PostgreSQL refinement rule D8: C7 three repository clients share one
+    // migrated pool/schema and race D3. Effect E8 is the same one-winner frame
+    // and lifecycle result as SQLite. An unavailable unconfigured endpoint
+    // skips this entire rule and is never reported as live PostgreSQL evidence.
+    let second_deployment_replica = PostgresManagedSessionRepository::with_pool(pool.clone())
+        .await
+        .expect("open second Postgres Deployment replica");
+    let third_deployment_replica = PostgresManagedSessionRepository::with_pool(pool)
+        .await
+        .expect("open third Postgres Deployment replica");
     global_environment_phase_count_has_no_recovery_batch_limit(repo.as_ref()).await;
     tombstone_requires_hidden_completed_cleanup(repo.as_ref()).await;
     deleted_event_admission_decision_table(repo.as_ref()).await;
@@ -2157,5 +2233,13 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
     concurrent_root_cas_has_one_authoritative_winner(repo.clone()).await;
     concurrent_phase_transition_has_one_count_snapshot(repo.clone()).await;
     credential_source_dependency_decision_table(repo.as_ref()).await;
-    deployment_cas_decision_table(repo.as_ref()).await;
+    deployment_cas_decision_table(
+        repo.as_ref(),
+        [
+            repo.as_ref(),
+            &second_deployment_replica,
+            &third_deployment_replica,
+        ],
+    )
+    .await;
 }
