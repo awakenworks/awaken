@@ -262,20 +262,47 @@ struct Inner {
     first_failure: Arc<Mutex<Option<TaskFailure>>>,
     failure_tx: mpsc::UnboundedSender<TaskFailure>,
     failure_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<TaskFailure>>,
-    registry: Mutex<TaskRegistry>,
+    registry: Mutex<TaskRegistry<TaskHandle>>,
     shutdown_guard: tokio::sync::Mutex<()>,
 }
 
-struct TaskRegistry {
+struct TaskRegistry<T> {
     accepting: bool,
-    tasks: Vec<TaskHandle>,
+    tasks: Vec<T>,
+}
+
+impl<T> TaskRegistry<T> {
+    fn new() -> Self {
+        Self {
+            accepting: true,
+            tasks: Vec::new(),
+        }
+    }
+
+    /// Register through the one lifecycle admission boundary. The builder is
+    /// deliberately retained behind the accepting check so rejection cannot
+    /// construct or detach work.
+    fn register_with(&mut self, build: impl FnOnce() -> T) -> bool {
+        if !self.accepting {
+            return false;
+        }
+        self.tasks.push(build());
+        true
+    }
+
+    /// Close registration and transfer the complete owned task set exactly
+    /// once. Closing is absorbing; every later transfer is empty.
+    fn close_and_take(&mut self) -> Vec<T> {
+        self.accepting = false;
+        mem::take(&mut self.tasks)
+    }
 }
 
 impl Drop for Inner {
     fn drop(&mut self) {
         self.cancellation.cancel();
         if let Ok(registry) = self.registry.get_mut() {
-            for task in registry.tasks.drain(..) {
+            for task in registry.close_and_take() {
                 task.task_abort.abort();
                 task.watcher.abort();
             }
@@ -306,10 +333,7 @@ impl ServiceLifecycle {
                 first_failure: Arc::new(Mutex::new(None)),
                 failure_tx,
                 failure_rx: tokio::sync::Mutex::new(failure_rx),
-                registry: Mutex::new(TaskRegistry {
-                    accepting: true,
-                    tasks: Vec::new(),
-                }),
+                registry: Mutex::new(TaskRegistry::new()),
                 shutdown_guard: tokio::sync::Mutex::new(()),
             }),
         }
@@ -332,48 +356,50 @@ impl ServiceLifecycle {
             .registry
             .lock()
             .expect("service lifecycle registry lock poisoned");
-        if !registry.accepting {
+        let registered = registry.register_with(|| {
+            let name = name.into();
+            let cancellation = self.inner.cancellation.child_token();
+            let task_cancellation = cancellation.clone();
+            let task = tokio::spawn(build(task_cancellation));
+            let task_abort = task.abort_handle();
+            let healthy = self.inner.healthy.clone();
+            let first_failure = self.inner.first_failure.clone();
+            let failure_tx = self.inner.failure_tx.clone();
+            let task_name = name.clone();
+            let watcher = tokio::spawn(async move {
+                let outcome = task.await;
+                if cancellation.is_cancelled() {
+                    return;
+                }
+                let cause = match outcome {
+                    Ok(Ok(())) => "completed unexpectedly".to_owned(),
+                    Ok(Err(error)) => error,
+                    Err(error) if error.is_panic() => format!("panicked: {error}"),
+                    Err(error) => format!("stopped unexpectedly: {error}"),
+                };
+                let failure = TaskFailure {
+                    task: task_name,
+                    cause,
+                };
+                healthy.store(false, Ordering::Release);
+                let mut first = first_failure
+                    .lock()
+                    .expect("service lifecycle failure lock poisoned");
+                if first.is_none() {
+                    *first = Some(failure.clone());
+                    let _ = failure_tx.send(failure);
+                }
+            });
+            TaskHandle {
+                name,
+                task_abort,
+                watcher,
+            }
+        });
+        if !registered {
             drop(registry);
             panic!("cannot add a service task after shutdown began");
         }
-        let name = name.into();
-        let cancellation = self.inner.cancellation.child_token();
-        let task_cancellation = cancellation.clone();
-        let task = tokio::spawn(build(task_cancellation));
-        let task_abort = task.abort_handle();
-        let healthy = self.inner.healthy.clone();
-        let first_failure = self.inner.first_failure.clone();
-        let failure_tx = self.inner.failure_tx.clone();
-        let task_name = name.clone();
-        let watcher = tokio::spawn(async move {
-            let outcome = task.await;
-            if cancellation.is_cancelled() {
-                return;
-            }
-            let cause = match outcome {
-                Ok(Ok(())) => "completed unexpectedly".to_owned(),
-                Ok(Err(error)) => error,
-                Err(error) if error.is_panic() => format!("panicked: {error}"),
-                Err(error) => format!("stopped unexpectedly: {error}"),
-            };
-            let failure = TaskFailure {
-                task: task_name,
-                cause,
-            };
-            healthy.store(false, Ordering::Release);
-            let mut first = first_failure
-                .lock()
-                .expect("service lifecycle failure lock poisoned");
-            if first.is_none() {
-                *first = Some(failure.clone());
-                let _ = failure_tx.send(failure);
-            }
-        });
-        registry.tasks.push(TaskHandle {
-            name,
-            task_abort,
-            watcher,
-        });
     }
 
     #[must_use]
@@ -416,9 +442,8 @@ impl ServiceLifecycle {
                 .registry
                 .lock()
                 .expect("service lifecycle registry lock poisoned");
-            registry.accepting = false;
             self.inner.cancellation.cancel();
-            std::mem::take(&mut registry.tasks)
+            registry.close_and_take()
         };
         if tasks.is_empty() {
             return Ok(());
@@ -454,9 +479,35 @@ impl ServiceLifecycle {
 #[cfg(test)]
 mod tests {
     use super::{
-        COMPOSED_ASYNC_TEST_STACK_BYTES, ProcessRole, StartupComponent, block_on_service,
-        run_composed_async_test,
+        COMPOSED_ASYNC_TEST_STACK_BYTES, ProcessRole, StartupComponent, TaskRegistry,
+        block_on_service, run_composed_async_test,
     };
+
+    #[test]
+    fn task_registry_closes_absorbingly_and_transfers_the_exact_prefix() {
+        // Cause/effect graph: C1 the registry is open; C2 two ordered builders
+        // are supplied; C3 close occurs; C4 a later builder is supplied; C5 close
+        // repeats. Effects: E1 each open builder runs exactly once and appends in
+        // order; E2 close transfers exactly that sequence and empties the owner;
+        // E3 closure is absorbing; E4 the late builder is not invoked; E5 repeat
+        // close transfers nothing. Decision table: R1=C1+C2 -> E1;
+        // R2=R1+C3 -> E2+E3; R3=R2+C4 -> E3+E4; R4=R2+C5 -> E3+E5.
+        let mut registry = TaskRegistry::new();
+        assert!(registry.register_with(|| 11_u8), "R1 first builder");
+        assert!(registry.register_with(|| 29_u8), "R1 second builder");
+        assert_eq!(registry.close_and_take(), vec![11, 29], "R2");
+
+        let late_builder_called = std::cell::Cell::new(false);
+        assert!(
+            !registry.register_with(|| {
+                late_builder_called.set(true);
+                u8::MAX
+            }),
+            "R3"
+        );
+        assert!(!late_builder_called.get(), "R3/R4");
+        assert!(registry.close_and_take().is_empty(), "R4");
+    }
 
     #[test]
     fn process_role_owns_one_exact_startup_manifest() {
@@ -573,6 +624,90 @@ mod verification {
             2 => StartupComponent::Coordinator,
             _ => StartupComponent::LocalWorker,
         }
+    }
+
+    struct ExpectedRegistry {
+        tasks: [u8; 3],
+        len: usize,
+        closed: bool,
+    }
+
+    fn assert_task_prefix(actual: &[u8], expected: &ExpectedRegistry) {
+        assert_eq!(actual.len(), expected.len);
+        if expected.len > 0 {
+            assert_eq!(actual[0], expected.tasks[0]);
+        }
+        if expected.len > 1 {
+            assert_eq!(actual[1], expected.tasks[1]);
+        }
+        if expected.len > 2 {
+            assert_eq!(actual[2], expected.tasks[2]);
+        }
+    }
+
+    fn exercise_registry_step(
+        registry: &mut TaskRegistry<u8>,
+        expected: &mut ExpectedRegistry,
+        close: bool,
+        task: u8,
+    ) {
+        if close {
+            let transferred = registry.close_and_take();
+            assert_task_prefix(&transferred, expected);
+            expected.len = 0;
+            expected.closed = true;
+        } else {
+            let builder_called = std::cell::Cell::new(false);
+            let admitted = registry.register_with(|| {
+                builder_called.set(true);
+                task
+            });
+            assert_eq!(admitted, !expected.closed);
+            assert_eq!(builder_called.get(), !expected.closed);
+            if admitted {
+                expected.tasks[expected.len] = task;
+                expected.len += 1;
+            }
+        }
+        assert_eq!(registry.accepting, !expected.closed);
+        assert_task_prefix(&registry.tasks, expected);
+    }
+
+    #[kani::proof]
+    fn shutdown_registry_fences_registration_and_transfers_exactly_once() {
+        // Cause/effect graph: C1 the registry is open; C2 any of three ordered
+        // registration/close operations closes it; C3 a registration builder
+        // has an observable effect. Effects: E1 open registration constructs
+        // exactly once and appends in order; E2 close transfers the complete
+        // current sequence and leaves it empty; E3 close is absorbing; E4 every
+        // post-close registration is rejected without invoking its builder.
+        // Decision table: R1=C1+register -> E1; R2=C1+close -> E2+E3;
+        // R3=!C1+register+C3 -> E4; R4=!C1+close -> E2(empty)+E3.
+        // Three symbolic operation positions cover every close placement while
+        // the final forced close and late registration close both terminal rows.
+        let closes: [bool; 3] = kani::any();
+        let mut registry = TaskRegistry::<u8>::new();
+        let mut expected = ExpectedRegistry {
+            tasks: [0; 3],
+            len: 0,
+            closed: false,
+        };
+        exercise_registry_step(&mut registry, &mut expected, closes[0], 0);
+        exercise_registry_step(&mut registry, &mut expected, closes[1], 1);
+        exercise_registry_step(&mut registry, &mut expected, closes[2], 2);
+
+        let transferred = registry.close_and_take();
+        assert_task_prefix(&transferred, &expected);
+        assert!(!registry.accepting);
+        assert!(registry.tasks.is_empty());
+
+        let late_builder_called = std::cell::Cell::new(false);
+        assert!(!registry.register_with(|| {
+            late_builder_called.set(true);
+            u8::MAX
+        }));
+        assert!(!late_builder_called.get());
+        assert!(registry.close_and_take().is_empty());
     }
 
     #[kani::proof]
