@@ -55,7 +55,7 @@ pub(super) async fn drive_resumed(
     thread_id: &ThreadId,
     ticket: &ResumeTicket,
     result: ResumeResult,
-    resume_operation_id: Option<String>,
+    mut resume_commit: Option<ResumeCommit>,
     fresh_context: Vec<Message>,
     reader: &dyn CommittedThreadView,
     context: &RuntimeRunContext,
@@ -63,13 +63,6 @@ pub(super) async fn drive_resumed(
     resume_checkpoint: Option<StreamCheckpoint>,
     mut store: Store,
 ) -> Result<RunState> {
-    let resume_applied = resume_operation_id.map(|operation_id| {
-        RunEvent::ResumeApplied {
-            operation_id,
-            correlation_id: ticket.correlation_id.clone(),
-        }
-        .into()
-    });
     let committed = reader.committed_messages(thread_id);
     // Cause/effect decision table for resumed assistant ids:
     // R1 no prior assistant for this Run -> start at step 0;
@@ -181,27 +174,25 @@ pub(super) async fn drive_resumed(
         approval_state.push(command.clone());
         if let Some(coordinator) = &context.commit {
             coordinator
-                .commit(ThreadCommit::assemble(
+                .commit(assemble_attempt_commit(
                     thread_id.clone(),
                     RunDisposition::running(run_id.clone()),
                     true,
                     Vec::new(),
                     approval_state,
-                    {
-                        let mut events = vec![
-                            RunEvent::PermissionDecided {
-                                tool_id: pending.tool_id.clone(),
-                                call_id: call_id.to_string(),
-                                decision: "approved".to_string(),
-                            }
-                            .into(),
-                        ];
-                        events.extend(resume_applied.clone());
-                        events
-                    },
-                ))
+                    vec![
+                        RunEvent::PermissionDecided {
+                            tool_id: pending.tool_id.clone(),
+                            call_id: call_id.to_string(),
+                            decision: "approved".to_string(),
+                        }
+                        .into(),
+                    ],
+                    resume_commit.as_ref(),
+                )?)
                 .await
                 .map_err(|error| Error::Commit(error.to_string()))?;
+            resume_commit = None;
         }
         store.apply(&command);
         decision_precommitted = true;
@@ -277,6 +268,7 @@ pub(super) async fn drive_resumed(
                         new_messages: fresh_context,
                         staged_state: delegation_state,
                         audit: Vec::new(),
+                        resume: None,
                         disposition: RunDisposition::awaiting(next_ticket),
                     },
                 )
@@ -300,12 +292,34 @@ pub(super) async fn drive_resumed(
     } else {
         result
     };
+    let execution_admission = if matches!(
+        &result,
+        ResumeResult::Permission(PermissionDecision::Allow { .. })
+    ) {
+        let call_id = ticket.call_id().ok_or_else(|| {
+            Error::Execution("approved tool resume has no pending call".to_string())
+        })?;
+        Some(
+            waiting_batch
+                .as_ref()
+                .ok_or_else(|| {
+                    Error::Execution(
+                        "approved tool resume lost its committed tool batch".to_string(),
+                    )
+                })?
+                .execution_admission(call_id)
+                .map_err(|error| Error::Execution(error.to_string()))?,
+        )
+    } else {
+        None
+    };
     let (resumed, mut seed_state, resumed_output) = resume_into_messages(
         ResumeExecutionContext {
             runtime,
             resolved,
             env,
             context,
+            execution_admission,
         },
         run_id,
         ticket,
@@ -314,7 +328,7 @@ pub(super) async fn drive_resumed(
     )
     .await?;
     seed_state.splice(0..0, delegation_state);
-    let mut seed_audit = if decision_precommitted {
+    let seed_audit = if decision_precommitted {
         Vec::new()
     } else if let (Some(decision), Some((call_id, pending))) =
         (permission_decision, ticket.tool_call())
@@ -330,9 +344,6 @@ pub(super) async fn drive_resumed(
     } else {
         Vec::new()
     };
-    if !decision_precommitted {
-        seed_audit.extend(resume_applied);
-    }
     // The resumed tool's own state is folded into the store so a later step in
     // this resume observes the advanced state; it also seeds the attempt's batch
     // (kept first) so step commits and conflict validation cover it too.
@@ -370,6 +381,8 @@ pub(super) async fn drive_resumed(
     let mut new_messages = fresh_context;
     new_messages.extend(resumed_new_messages);
     if continuation == ResumeContinuation::ToolBatch {
+        let mut ledger = StepLedger::new(transcript, new_messages, seed_state, seed_audit);
+        ledger.attach_resume(resume_commit);
         return drive_tool_batch(
             runtime,
             resolved,
@@ -378,7 +391,7 @@ pub(super) async fn drive_resumed(
             thread_id,
             ticket.delegation_origin.as_ref(),
             context,
-            StepLedger::new(transcript, new_messages, seed_state, seed_audit),
+            ledger,
             store,
         )
         .await;
@@ -398,6 +411,7 @@ pub(super) async fn drive_resumed(
         store,
         seed_state,
         seed_audit,
+        resume_commit,
         resume_checkpoint,
     )
     .await?;

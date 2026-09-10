@@ -69,9 +69,11 @@ async fn permission_resume_checks_recovery_before_approval_and_tool_entry() {
     // Causes: C1 Native/tool-batch continuation; C2 unknown prior model /
     // older Unknown hidden by later Terminated /
     // terminated prior with failed/stalled checkpoint; C3 context reader absent/current/stale.
-    // Effects: Indeterminate, physical veto, sealed batch, no approval/
-    // ResumeApplied event and zero real tool effects. The explicit resume reader
-    // must own both recovery and terminal sealing, even without context.reader.
+    // Effects: Indeterminate, physical veto, sealed batch, no approval or real
+    // tool effect. Because the terminal commit consumes the validated ticket,
+    // that same commit owns one exact ResumeApplied receipt; a response-loss
+    // retry therefore cannot reinterpret the terminalized delivery. The
+    // explicit resume reader must own recovery and sealing without context.reader.
     // R1..R24=C1 x C2 x C3. Existing handoff and Native permission tests supply the
     // positive controls with committed Terminated evidence and readable absence.
     for native in [false, true] {
@@ -139,10 +141,25 @@ async fn permission_resume_checks_recovery_before_approval_and_tool_entry() {
             assert!(
                 fixture
                     .commit
-                    .committed()
-                    .events
-                    .iter()
-                    .all(|event| event.kind != EventKind::ResumeApplied)
+                    .resume_ticket_for(&fixture.command.run_id)
+                    .is_none(),
+                "terminal recovery consumes the answered ticket"
+            );
+            let receipts = fixture
+                .commit
+                .committed()
+                .events
+                .into_iter()
+                .filter(|event| event.kind == EventKind::ResumeApplied)
+                .collect::<Vec<_>>();
+            assert_eq!(receipts.len(), 1, "one consumed delivery has one receipt");
+            assert_eq!(
+                receipts[0].payload["operation_id"],
+                fixture.command.operation_id.as_deref().unwrap()
+            );
+            assert_eq!(
+                receipts[0].payload["correlation_id"],
+                fixture.command.correlation_id
             );
         }
     }

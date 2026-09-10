@@ -1349,21 +1349,22 @@ impl DispatchQueue for SqliteDispatchStore {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(store_error)?;
-            let current: Option<(String, Option<String>, i64, i64, Option<String>, Option<i64>)> = tx
+            let current: Option<(String, Option<String>, i64, i64, i64, Option<String>, Option<i64>)> = tx
                 .query_row(
                     &format!(
-                        "SELECT status, lease_owner, lease_epoch, cancel_requested, active_attempt_owner, active_attempt_epoch \
+                        "SELECT status, lease_owner, lease_epoch, cancel_requested, attempt_count, active_attempt_owner, active_attempt_epoch \
                          FROM {p}_dispatch WHERE run_id = ?1"
                     ),
                     params![claim.run_id.0],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
                 )
                 .optional()
                 .map_err(store_error)?;
-            let Some((status, owner, persisted_epoch, cancellation_requested, active_attempt_owner, active_attempt_epoch)) = current else {
+            let Some((status, owner, persisted_epoch, cancellation_requested, attempt_count, active_attempt_owner, active_attempt_epoch)) = current else {
                 let _ = tx.rollback();
                 return Ok(SettleOutcome::Fenced);
             };
+            let attempt_count = durable_u64("dispatch attempt count", attempt_count)?;
             let active_attempt_epoch = active_attempt_epoch
                 .map(|value| durable_u64("dispatch attempt epoch", value))
                 .transpose()?;
@@ -1378,15 +1379,20 @@ impl DispatchQueue for SqliteDispatchStore {
                 persisted_epoch,
                 cancellation_requested != 0,
             )?;
-            let (next, lease_until) = match transition.relinquish(
+            let (next, lease_until, attempt_count) = match transition.relinquish(
                 claim.epoch,
                 owner.as_deref() == Some(&claim.owner),
                 slot,
+                attempt_count,
             ) {
-                awaken_dispatch_contract::RelinquishTransition::Pending(next) => (next, None),
-                awaken_dispatch_contract::RelinquishTransition::Recovering(next) => {
-                    (next, Some(0_i64))
-                }
+                awaken_dispatch_contract::RelinquishTransition::Pending {
+                    state,
+                    attempt_count,
+                } => (state, None, attempt_count),
+                awaken_dispatch_contract::RelinquishTransition::Recovering {
+                    state,
+                    attempt_count,
+                } => (state, Some(0_i64), attempt_count),
                 awaken_dispatch_contract::RelinquishTransition::Fenced => {
                     let _ = tx.rollback();
                     return Ok(SettleOutcome::Fenced);
@@ -1398,12 +1404,13 @@ impl DispatchQueue for SqliteDispatchStore {
                     ));
                 }
             };
+            let attempt_count = durable_i64("dispatch attempt count", attempt_count)?;
             let changed = tx
                 .execute(
                     &format!(
                         "UPDATE {p}_dispatch SET status = ?4, \
                          lease_owner = CASE WHEN ?5 IS NULL THEN NULL ELSE lease_owner END, \
-                         lease_until = ?5, created_at = strftime('%Y-%m-%d %H:%M:%f', 'now') \
+                         lease_until = ?5, attempt_count = ?6, created_at = strftime('%Y-%m-%d %H:%M:%f', 'now') \
                          WHERE run_id = ?1 AND status = 'running' \
                          AND lease_owner = ?2 AND lease_epoch = ?3"
                     ),
@@ -1413,6 +1420,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         epoch,
                         crate::dispatch_state_db(next.state),
                         lease_until,
+                        attempt_count,
                     ],
                 )
                 .map_err(store_error)?;

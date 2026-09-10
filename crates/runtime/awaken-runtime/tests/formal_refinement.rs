@@ -46,7 +46,7 @@ use awaken_runtime_contract::snapshot::{
 };
 use awaken_runtime_contract::tool::{
     RawTool, ToolError, ToolOutput, ToolOutputSpiller, ToolRecoveryCapability, ToolRecoveryMode,
-    ToolRecoveryPolicy,
+    ToolRecoveryPolicy, current_tool_operation_context,
 };
 use awaken_runtime_contract::tool_batch::{
     ActiveToolBatch, ToolBatch, ToolBatchPhase, ToolCallPhase,
@@ -149,6 +149,17 @@ fn assert_execution_was_committed(trace: &TracingCoordinator, call_id: &str) {
     );
 }
 
+fn assert_tool_executor_admission(trace: &TracingCoordinator, call_id: &str) {
+    assert_execution_was_committed(trace, call_id);
+    let batch = trace.latest_batch().expect("a durable batch before invoke");
+    let context = current_tool_operation_context().expect("Runtime scopes executor identity");
+    assert_eq!(
+        context.operation_id,
+        batch.operation_id(call_id),
+        "executor entry consumes the committed batch's sole operation identity"
+    );
+}
+
 struct TraceTool {
     id: String,
     trace: TracingCoordinator,
@@ -167,7 +178,7 @@ impl RawTool for TraceTool {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        assert_execution_was_committed(&self.trace, &call.call_id);
+        assert_tool_executor_admission(&self.trace, &call.call_id);
         self.invocations.fetch_add(1, Ordering::SeqCst);
         Ok(ToolOutput::ok(call.call_id, "ok"))
     }
@@ -1005,6 +1016,12 @@ async fn parallel_child_runs_produce_a_refinement_trace() {
 
 #[tokio::test]
 async fn approval_resume_produces_a_refinement_trace() {
+    // Causes: C1 the tool is fresh or resumes an exact approval ticket; C2 the
+    // Awaiting -> Executing commit succeeds before executor entry. Effects: E1
+    // both entries use the same batch/run/step/call operation identity; E2 no
+    // legacy resume-only identity survives. Decision rules: fresh+C1 -> E1;
+    // approved+C1+C2 -> E1+E2. `TraceTool` checks the identity against the
+    // latest committed ActiveToolBatch at the actual executor boundary.
     let trace = TracingCoordinator::default();
     let snapshot = snapshot(&["approved_tool"]);
     let (tool, _) = trace_tool("approved_tool", &trace);
@@ -1182,7 +1199,7 @@ impl RawTool for ResponseLossTool {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        assert_execution_was_committed(&self.trace, &call.call_id);
+        assert_tool_executor_admission(&self.trace, &call.call_id);
         let first = {
             let mut calls = self.calls.lock().unwrap();
             calls.push(call.call_id.clone());

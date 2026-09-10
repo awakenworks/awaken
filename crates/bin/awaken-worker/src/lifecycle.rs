@@ -20,6 +20,7 @@ pub(crate) use authority::WorkerAuthorityProof;
 pub(crate) use authority::authority_proof_started;
 
 const SESSION_REALIZATION_LEASE_TTL_MS: u64 = 20_000;
+const WORKER_REVOCATION_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
 #[derive(Clone)]
 enum WarmCapacityDemand {
@@ -102,6 +103,28 @@ pub enum WorkerShutdown {
     Graceful,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkerRevocationStage {
+    LocalFenceAndInterrupt,
+    RuntimeReturn,
+    SessionRetirement,
+}
+
+/// Result of the bounded local revocation observer. `Unconfirmed` deliberately
+/// carries no quiescence authority: timeout, cancellation delivery, and cleanup
+/// failure cannot manufacture an executor-return receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WorkerRevocationOutcome {
+    Completed {
+        interrupted: usize,
+    },
+    Unconfirmed {
+        stage: WorkerRevocationStage,
+        interrupted: Option<usize>,
+        detail: Option<String>,
+    },
+}
+
 #[derive(Clone)]
 pub(crate) struct WorkerSupervisor {
     pub(crate) authority: Arc<WorkerAuthorityProof>,
@@ -128,16 +151,29 @@ pub(crate) struct WorkerSupervisor {
 }
 
 impl WorkerSupervisor {
+    async fn publish_registry_drain(
+        &self,
+        _local_fence: awaken_session_executor::PoolDrainFence,
+        deadline_ms: Option<u64>,
+    ) -> Result<(), String> {
+        match self
+            .control
+            .begin_drain(&self.identity, deadline_ms)
+            .await?
+        {
+            RegistryMutation::Applied => Ok(()),
+            other => Err(format!("worker drain rejected: {other:?}")),
+        }
+    }
+
     pub(crate) async fn begin_drain(&self, deadline_ms: Option<u64>) -> Result<(), String> {
         // The process-local claim gate is the drain linearization point. Fence it
         // before publishing Draining to the Registry so no still-open claim loop
         // can race the remote state transition and receive a predictable rejection.
-        self.host.begin_pool_drain().await;
-        let remote = self.control.begin_drain(&self.identity, deadline_ms).await;
-        match remote? {
-            RegistryMutation::Applied => Ok(()),
-            other => Err(format!("worker drain rejected: {other:?}")),
-        }
+        let local_fence = self.host.begin_pool_drain().await.ok_or_else(|| {
+            "worker drain rejected: local claim pool is not installed".to_string()
+        })?;
+        self.publish_registry_drain(local_fence, deadline_ms).await
     }
 
     /// Trigger the canonical atomic observation operation immediately.
@@ -291,7 +327,12 @@ pub(crate) fn spawn_heartbeat(
                 }
             }
             .boxed(),
-            || revoke_worker_session_authority(&lifecycle).boxed(),
+            || {
+                async {
+                    let _outcome = revoke_worker_session_authority(&lifecycle).await;
+                }
+                .boxed()
+            },
         )
         .await;
     })
@@ -652,34 +693,119 @@ pub(crate) fn spawn_environment_warmup_reconciliation(
     })
 }
 
-pub(crate) async fn revoke_worker_session_authority(lifecycle: &WorkerSupervisor) {
+async fn complete_worker_revocation_before<Fence, Observe, ObserveFuture, Retire>(
+    deadline: tokio::time::Instant,
+    fence_and_interrupt: Fence,
+    observe_return: Observe,
+    retire_realizations: Retire,
+) -> WorkerRevocationOutcome
+where
+    Fence: std::future::Future<Output = Result<usize, String>>,
+    Observe: FnOnce(std::time::Duration) -> ObserveFuture,
+    ObserveFuture: std::future::Future<Output = bool>,
+    Retire: std::future::Future<Output = Result<(), String>>,
+{
+    let interrupted = match tokio::time::timeout_at(deadline, fence_and_interrupt).await {
+        Ok(Ok(interrupted)) => interrupted,
+        Ok(Err(detail)) => {
+            return WorkerRevocationOutcome::Unconfirmed {
+                stage: WorkerRevocationStage::LocalFenceAndInterrupt,
+                interrupted: None,
+                detail: Some(detail),
+            };
+        }
+        Err(_) => {
+            return WorkerRevocationOutcome::Unconfirmed {
+                stage: WorkerRevocationStage::LocalFenceAndInterrupt,
+                interrupted: None,
+                detail: None,
+            };
+        }
+    };
+
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let returned = match tokio::time::timeout_at(deadline, observe_return(remaining)).await {
+        Ok(returned) => returned,
+        Err(_) => {
+            return WorkerRevocationOutcome::Unconfirmed {
+                stage: WorkerRevocationStage::RuntimeReturn,
+                interrupted: Some(interrupted),
+                detail: None,
+            };
+        }
+    };
+
+    let retirement = tokio::time::timeout_at(deadline, retire_realizations).await;
+    match (returned, retirement) {
+        (true, Ok(Ok(()))) => WorkerRevocationOutcome::Completed { interrupted },
+        (false, _) => WorkerRevocationOutcome::Unconfirmed {
+            stage: WorkerRevocationStage::RuntimeReturn,
+            interrupted: Some(interrupted),
+            detail: None,
+        },
+        (true, Ok(Err(detail))) => WorkerRevocationOutcome::Unconfirmed {
+            stage: WorkerRevocationStage::SessionRetirement,
+            interrupted: Some(interrupted),
+            detail: Some(detail),
+        },
+        (true, Err(_)) => WorkerRevocationOutcome::Unconfirmed {
+            stage: WorkerRevocationStage::SessionRetirement,
+            interrupted: Some(interrupted),
+            detail: None,
+        },
+    }
+}
+
+pub(crate) async fn revoke_worker_session_authority(
+    lifecycle: &WorkerSupervisor,
+) -> WorkerRevocationOutcome {
     // Root guard closes before selecting slots or awaiting any drain/owner lock.
     // A late/new Session cannot install authority outside this selected cohort.
     lifecycle.authority.close();
     awaken_observability::set_worker_authority_proof_remaining(std::time::Duration::ZERO);
     let revocation = lifecycle.host.begin_session_realization_revocation();
-    lifecycle.host.begin_pool_drain().await;
+    let deadline = tokio::time::Instant::now() + WORKER_REVOCATION_BUDGET;
     // Fail closed without racing terminal sandbox disposal against in-flight
-    // native tools. Request cancellation and observe bounded executor return
-    // before detaching local projections. Unknown external effects retain their
-    // physical Dispatch slot; durable Session environments are not disposed.
-    let interrupted = lifecycle.host.interrupt_all_session_runs().await;
-    let returned = lifecycle
-        .host
-        .drain_runtime(std::time::Duration::from_secs(20))
-        .await;
-    if !returned {
+    // native tools. Every await shares one absolute deadline: cancellation and
+    // return observation retain the existing owner for the whole budget, while
+    // a stalled adapter can no longer prevent process exit indefinitely.
+    let outcome = complete_worker_revocation_before(
+        deadline,
+        async {
+            let _local_fence = lifecycle.host.begin_pool_drain().await.ok_or_else(|| {
+                "Worker revocation could not install the local claim fence".to_string()
+            })?;
+            Ok(lifecycle.host.interrupt_all_session_runs().await)
+        },
+        |remaining| lifecycle.host.drain_runtime(remaining),
+        async {
+            lifecycle
+                .host
+                .finish_session_realization_revocation(revocation)
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        },
+    )
+    .await;
+    if let WorkerRevocationOutcome::Unconfirmed {
+        stage,
+        interrupted,
+        detail,
+    } = &outcome
+    {
         eprintln!(
-            "Worker cancellation drain expired after interrupting {interrupted} local Sessions; unconfirmed physical attempts remain fenced"
+            "Worker cancellation cleanup remained unconfirmed at {stage:?} after interrupting {} local Sessions{}; unconfirmed physical attempts remain fenced",
+            interrupted.map_or_else(
+                || "an unknown number of".to_string(),
+                |count| count.to_string()
+            ),
+            detail
+                .as_deref()
+                .map_or_else(String::new, |detail| format!(": {detail}")),
         );
     }
-    if let Err(error) = lifecycle
-        .host
-        .finish_session_realization_revocation(revocation)
-        .await
-    {
-        eprintln!("Session realization revocation remains incomplete: {error}");
-    }
+    outcome
 }
 
 /// The grace policy (pure): a SIGTERM (orchestrator scale-in) waits `configured` or
@@ -697,7 +823,153 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use super::{supervise_session_realization_reconciliation, supervise_worker_authority};
+    use super::{
+        WorkerRevocationOutcome, WorkerRevocationStage, complete_worker_revocation_before,
+        supervise_session_realization_reconciliation, supervise_worker_authority,
+    };
+
+    #[tokio::test(start_paused = true)]
+    async fn bounded_revocation_retains_observation_and_never_converts_timeout_to_completion() {
+        // Cause/effect decision table for the one bounded revocation owner:
+        // C1 local fence/interruption completes; C2 Runtime return is observed;
+        // C3 Session retirement completes; C4 the absolute deadline expires.
+        // E1 Completed is emitted only for C1+C2+C3 before C4; E2 any failed or
+        // stalled phase emits typed Unconfirmed; E3 a pending return observer is
+        // retained until C4; E4 retirement still runs after an explicit false
+        // return observation, but cannot convert it to completion.
+        //
+        // | Rule | C1 | C2 | C3 | C4 | Effect |
+        // |---|---|---|---|---|---|
+        // | R1 | yes | yes | yes | no | E1 |
+        // | R2 | pending | - | - | yes | E2/Fence |
+        // | R3 | yes | pending | - | yes | E2+E3/Return |
+        // | R4 | yes | false | yes | no | E2+E4/Return |
+        // | R5 | yes | yes | pending | yes | E2/Retirement |
+        let budget = std::time::Duration::from_secs(5);
+        let completed = complete_worker_revocation_before(
+            tokio::time::Instant::now() + budget,
+            async { Ok(2) },
+            |_| async { true },
+            async { Ok(()) },
+        )
+        .await;
+        assert_eq!(
+            completed,
+            WorkerRevocationOutcome::Completed { interrupted: 2 },
+            "R1/E1"
+        );
+
+        let fence_timeout = complete_worker_revocation_before(
+            tokio::time::Instant::now() + budget,
+            std::future::pending(),
+            |_| async { true },
+            async { Ok(()) },
+        )
+        .await;
+        assert!(
+            matches!(
+                fence_timeout,
+                WorkerRevocationOutcome::Unconfirmed {
+                    stage: WorkerRevocationStage::LocalFenceAndInterrupt,
+                    interrupted: None,
+                    ..
+                }
+            ),
+            "R2/E2"
+        );
+
+        let observer_dropped = Arc::new(AtomicBool::new(false));
+        let observer_started = Arc::new(tokio::sync::Notify::new());
+        let deadline = tokio::time::Instant::now() + budget;
+        let task = tokio::spawn(complete_worker_revocation_before(
+            deadline,
+            async { Ok(3) },
+            {
+                let observer_dropped = observer_dropped.clone();
+                let observer_started = observer_started.clone();
+                move |_| async move {
+                    struct ObserverDrop(Arc<AtomicBool>);
+                    impl Drop for ObserverDrop {
+                        fn drop(&mut self) {
+                            self.0.store(true, Ordering::SeqCst);
+                        }
+                    }
+                    let _observer = ObserverDrop(observer_dropped);
+                    observer_started.notify_one();
+                    std::future::pending().await
+                }
+            },
+            async { Ok(()) },
+        ));
+        observer_started.notified().await;
+        tokio::time::advance(budget - std::time::Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !task.is_finished(),
+            "R3/E3 observer retained before deadline"
+        );
+        assert!(!observer_dropped.load(Ordering::SeqCst), "R3/E3");
+        tokio::time::advance(std::time::Duration::from_millis(1)).await;
+        let return_timeout = task.await.unwrap();
+        assert!(observer_dropped.load(Ordering::SeqCst), "R3/E3");
+        assert!(
+            matches!(
+                return_timeout,
+                WorkerRevocationOutcome::Unconfirmed {
+                    stage: WorkerRevocationStage::RuntimeReturn,
+                    interrupted: Some(3),
+                    ..
+                }
+            ),
+            "R3/E2"
+        );
+
+        let retired = Arc::new(AtomicBool::new(false));
+        let explicit_unknown = complete_worker_revocation_before(
+            tokio::time::Instant::now() + budget,
+            async { Ok(4) },
+            |_| async { false },
+            {
+                let retired = retired.clone();
+                async move {
+                    retired.store(true, Ordering::SeqCst);
+                    Ok(())
+                }
+            },
+        )
+        .await;
+        assert!(retired.load(Ordering::SeqCst), "R4/E4");
+        assert!(
+            matches!(
+                explicit_unknown,
+                WorkerRevocationOutcome::Unconfirmed {
+                    stage: WorkerRevocationStage::RuntimeReturn,
+                    interrupted: Some(4),
+                    ..
+                }
+            ),
+            "R4/E2"
+        );
+
+        let retirement_timeout = complete_worker_revocation_before(
+            tokio::time::Instant::now() + budget,
+            async { Ok(5) },
+            |_| async { true },
+            std::future::pending(),
+        )
+        .await;
+        assert!(
+            matches!(
+                retirement_timeout,
+                WorkerRevocationOutcome::Unconfirmed {
+                    stage: WorkerRevocationStage::SessionRetirement,
+                    interrupted: Some(5),
+                    ..
+                }
+            ),
+            "R5/E2"
+        );
+    }
 
     #[tokio::test]
     async fn heartbeat_exit_owns_one_revocation_before_completion_even_after_unwind() {

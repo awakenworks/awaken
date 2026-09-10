@@ -537,7 +537,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness recovery_replay_preserves_complete_entry_and_time
   run_kani awaken-memory-store \
     --harness memory_head_update_admission_preserves_stale_and_idempotent_heads \
-    --harness memory_conditional_delete_admission_is_exact
+    --harness memory_conditional_delete_admission_is_exact \
+    --harness memory_rename_replace_preserves_source_identity
   run_kani awaken-skill-store \
     --harness skill_version_retirement_is_visibility_only_and_total
   run_kani awaken-agent-config \
@@ -573,6 +574,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness claim_credential_binding_revalidation_rejects_missing_widened_reordered_or_stale_wire \
     --harness only_awaiting_or_already_superseded_is_replacement_safe \
     --harness stale_dispatch_claim_cannot_modify_authoritative_state \
+    --harness relinquish_requires_exact_current_claim_and_preserves_retry_budget \
     --harness exact_dispatch_settlement_is_terminal_or_awaiting_only \
     --harness dispatch_cancel_revokes_old_epoch_and_is_idempotent \
     --harness dispatch_claim_mints_exactly_one_epoch_and_never_reopens_closed_rows \
@@ -629,13 +631,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
     echo "skipped Z3: install the pinned solver on PATH (TLAPS bundles it)"
     missing=1
   fi
-  # The reply selector visits at most three lifecycle facts; comparing the
-  # exact retryable error code needs a separate builtin memcmp budget.
-  run_kani awaken-protocol-managed -Z unstable-options --solver kissat \
-    --harness managed_reply_anchor_selects_exact_fenced_commit \
-    --cbmc-args --unwindset memcmp.0:16
-  # One production ticket-admission owner; snapshot lookup stays at the edge.
+  # The production reply selector folds every lifecycle fact through a
+  # heap-free one-step induction kernel; prefix collection stays at the edge.
   run_kani awaken-protocol-managed --solver cadical \
+    --harness managed_reply_anchor_selects_exact_fenced_commit \
     --harness managed_ticket_admission_preserves_terminal_and_identity_priority
   run_kani awaken-protocol-managed \
     --harness projection_publish_decision_is_total_exact_and_fail_closed \
@@ -707,7 +706,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness circuit_admission_is_capacity_bounded_nonwrapping_and_rejection_stutters \
     --harness circuit_completion_requires_exact_phase_and_generation_for_every_outcome \
     --harness checkpoint_clear_requires_unvetoed_terminal_completion \
-    --harness durable_watermark_successor_is_exact_or_rejected_without_rollback
+    --harness durable_watermark_successor_is_exact_or_rejected_without_rollback \
+    --harness a_resume_receipt_requires_consumption_of_the_exact_ticket
   run_kani awaken-runtime-contract --checked-loop-profile resume-validator-empty-object-v1 \
     --harness resume_validator_preserves_complete_binding_decision_table
   run_kani awaken-runtime-contract --solver kissat \
@@ -724,7 +724,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness unanchored_legacy_context_never_hides_transcript_messages \
     --harness terminal_calls_are_never_reentered \
     --harness only_the_matching_approval_ticket_enters_execution \
+    --harness executor_entry_admission_requires_exactly_executing_phase \
     --harness every_tool_call_transition_has_the_unique_documented_precondition \
+    --harness a_tool_call_completion_is_applied_at_most_once \
     --harness terminal_tool_calls_only_accept_result_staging \
     --harness run_end_sealing_targets_exactly_nonterminal_calls \
     --harness a_second_wait_is_never_admitted \
@@ -736,6 +738,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness boundary_priority_is_pause_then_input_then_idle \
     --harness rejected_live_inbox_reorder_is_an_atomic_stutter \
     --harness live_inbox_identity_advances_strictly_or_exhausts \
+    --harness retired_live_inbox_identity_is_never_reissued \
+    --harness live_inbox_replace_preserves_identity_and_order \
+    --harness live_inbox_boundary_drain_retires_exactly_the_queue \
     --harness advisor_never_substitutes_for_primary_model_admission \
     --harness fallback_selection_preserves_the_complete_publication_pin \
     --harness every_route_pin_axis_participates_in_exact_identity \

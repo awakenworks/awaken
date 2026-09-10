@@ -87,8 +87,8 @@ async fn selected_bundles(
 }
 
 use crate::repository::{
-    ConditionalDeleteAdmission, HeadUpdateAdmission, now_nanos, under_prefix, validate_path,
-    validate_size,
+    ConditionalDeleteAdmission, HeadUpdateAdmission, now_nanos, rename_replace_identity,
+    under_prefix, validate_path, validate_size,
 };
 use crate::{
     MemErr, Memory, MemoryActor, MemoryEntry, MemoryPurgeSummary, MemoryRepository, MemoryVersion,
@@ -618,6 +618,7 @@ impl MemoryRepository for PostgresMemoryRepository {
         .fetch_optional(&mut *tx)
         .await
         .map_err(mem_err)?;
+        let id = rename_replace_identity(id, displaced_id.as_ref());
         sqlx::query(&format!(
             "DELETE FROM {NS}_memories WHERE store_id = $1 AND path = $2"
         ))

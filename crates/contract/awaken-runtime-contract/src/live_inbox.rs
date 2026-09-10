@@ -205,6 +205,30 @@ impl LiveInbox {
         true
     }
 
+    /// Replace one payload selected by its stable key. This is the sole queue
+    /// mutation used by [`Self::replace`], so selection, peer preservation and
+    /// the miss-as-stutter rule cannot drift apart from the checked kernel.
+    fn replace_payload_exactly<T, K: Copy + Eq, V>(
+        entries: &mut VecDeque<T>,
+        id: K,
+        key: impl Fn(&T) -> K,
+        payload: impl Fn(&mut T) -> &mut V,
+        replacement: V,
+    ) -> bool {
+        let Some(entry) = entries.iter_mut().find(|entry| key(entry) == id) else {
+            return false;
+        };
+        *payload(entry) = replacement;
+        true
+    }
+
+    /// Move the complete FIFO queue across a boundary exactly once. Boundary
+    /// drain and close share this owner instead of maintaining parallel
+    /// drain-to-`Vec` implementations.
+    fn take_all_in_order<T>(entries: &mut VecDeque<T>) -> Vec<T> {
+        entries.drain(..).collect()
+    }
+
     /// Queue a message for the run as the run's own input
     /// ([`MessageOrigin::Run`]). Best-effort: `Closed` means this inbox can no
     /// longer issue an identity (the attempt closed or the finite identity
@@ -278,12 +302,15 @@ impl LiveInbox {
         if !state.lifecycle.admits_mutation() {
             return Err(EditError::Closed);
         }
-        let entry = state
-            .entries
-            .iter_mut()
-            .find(|entry| entry.id == id)
-            .ok_or(EditError::UnknownMessage)?;
-        entry.message = message;
+        if !Self::replace_payload_exactly(
+            &mut state.entries,
+            id,
+            |entry| entry.id,
+            |entry| &mut entry.message,
+            message,
+        ) {
+            return Err(EditError::UnknownMessage);
+        }
         Self::bump_and_notify(&mut state, &self.shared.notify);
         Ok(())
     }
@@ -308,7 +335,7 @@ impl LiveInbox {
     /// messages leave the editable window, and the engine folds them into
     /// the transcript, where the commit — not the queue — makes them true.
     pub fn drain_at_boundary(&self) -> Vec<LiveInboxMessage> {
-        self.state().entries.drain(..).collect()
+        Self::take_all_in_order(&mut self.state().entries)
     }
 
     /// Current change version. Bumped by every offer/wake/edit and by close,
@@ -354,7 +381,7 @@ impl LiveInbox {
             return Vec::new();
         }
         state.lifecycle = state.lifecycle.close();
-        let leftovers = state.entries.drain(..).collect();
+        let leftovers = Self::take_all_in_order(&mut state.entries);
         Self::bump_and_notify(&mut state, &self.shared.notify);
         leftovers
     }
@@ -436,12 +463,30 @@ mod tests {
     }
 
     #[test]
-    fn ids_are_never_reused_across_drains() {
+    fn retired_ids_are_never_reissued_after_remove_or_drain() {
+        // Causes: C1 an issued id is retired by remove; C2 an issued id is
+        // retired by boundary drain; C3 the identity frontier is exhausted.
+        // Effects: E1/E2 every later accepted id is strictly beyond both
+        // retired ids; E3 exhaustion rejects without wrapping or changing the
+        // queue/frontier. Close is covered by the lifecycle table because it
+        // absorbs every later offer rather than issuing another id.
+        //
+        // | Rule | retirement/exhaustion | later offer | effect |
+        // |---|---|---|---|
+        // | I1 | remove(id) | accepted | new id > retired id |
+        // | I2 | drain(id) | accepted | new id > retired id |
+        // | I3 | frontier = u64::MAX | rejected | exact state stutter |
         let inbox = LiveInbox::new();
         let first = offered(&inbox, "one");
-        let _ = inbox.drain_at_boundary();
         let second = offered(&inbox, "two");
-        assert!(second.0 > first.0);
+        inbox.remove(first).expect("I1 retires first id");
+        let drained = inbox.drain_at_boundary();
+        assert_eq!(drained[0].id, second, "I2 retires second id");
+
+        let third = offered(&inbox, "three");
+        let fourth = offered(&inbox, "four");
+        assert!(third.0 > first.0 && third.0 > second.0, "I1+I2/E1+E2");
+        assert!(fourth.0 > third.0, "I1+I2/E1+E2 monotonic frontier");
     }
 
     #[test]
@@ -785,5 +830,83 @@ mod verification {
             }
             None => assert_eq!(current, u64::MAX),
         }
+    }
+
+    #[kani::proof]
+    fn retired_live_inbox_identity_is_never_reissued() {
+        // Causes: R1 retired <= current frontier and current < MAX; R2 retired
+        // <= current = MAX; R3 retired > current (not a reachable State
+        // invariant). Effects: R1 issues strictly above retired; R2 refuses;
+        // R3 makes no claim. These three rules partition the complete u64 pair
+        // domain without an assumption or reduced symbolic range.
+        let retired = kani::any::<u64>();
+        let current = kani::any::<u64>();
+
+        // Every retired identity was issued at or before the current private
+        // frontier. Express the complete u64 relation as an implication rather
+        // than constraining the symbolic domain with an assumption.
+        if retired <= current {
+            match LiveInbox::next_message_id(current) {
+                Some(next) => {
+                    assert!(next.0 > retired);
+                    assert_ne!(next.0, retired);
+                }
+                None => assert_eq!(current, u64::MAX),
+            }
+        }
+    }
+
+    #[kani::proof]
+    fn live_inbox_replace_preserves_identity_and_order() {
+        // Causes: P1 target is key 1/2/3; P2 target is every other u8. Effects:
+        // P1 changes only that position's payload while all keys, provenance,
+        // peers and length remain; P2 rejects and exactly stutters. The tuple
+        // fields are the production helper's key, provenance and payload axes;
+        // the three hit positions plus complete miss partition cover its rules.
+        let mut entries = VecDeque::from([
+            (1_u8, kani::any::<u8>(), kani::any::<u8>()),
+            (2_u8, kani::any::<u8>(), kani::any::<u8>()),
+            (3_u8, kani::any::<u8>(), kani::any::<u8>()),
+        ]);
+        let target = kani::any::<u8>();
+        let replacement = kani::any::<u8>();
+        let before = entries.clone();
+
+        let replaced = LiveInbox::replace_payload_exactly(
+            &mut entries,
+            target,
+            |entry| entry.0,
+            |entry| &mut entry.2,
+            replacement,
+        );
+        let expected_hit = (1..=3).contains(&target);
+        assert_eq!(replaced, expected_hit);
+        assert_eq!(entries.len(), before.len());
+        for index in 0..3 {
+            assert_eq!(entries[index].0, before[index].0);
+            assert_eq!(entries[index].1, before[index].1);
+            if entries[index].0 == target {
+                assert_eq!(entries[index].2, replacement);
+            } else {
+                assert_eq!(entries[index].2, before[index].2);
+            }
+        }
+        if !expected_hit {
+            assert_eq!(entries, before);
+        }
+    }
+
+    #[kani::proof]
+    fn live_inbox_boundary_drain_retires_exactly_the_queue() {
+        // Cause: D1 the bounded non-empty queue contains three arbitrary
+        // values. Effects: D1 returns those values once in exact FIFO order and
+        // leaves no editable entry. Empty-queue behavior is the same transition
+        // with zero iterations and is cross-checked by native tests.
+        let mut entries = VecDeque::from([kani::any::<u8>(), kani::any::<u8>(), kani::any::<u8>()]);
+        let before = entries.iter().copied().collect::<Vec<_>>();
+        let drained = LiveInbox::take_all_in_order(&mut entries);
+
+        assert_eq!(drained, before);
+        assert!(entries.is_empty());
     }
 }

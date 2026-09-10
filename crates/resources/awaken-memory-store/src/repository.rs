@@ -168,6 +168,16 @@ impl HeadUpdateAdmission {
     }
 }
 
+/// Select the surviving identity for the sole rename-replace transition.
+///
+/// `T` has no trait bound, so this owner cannot inspect, derive, or substitute
+/// either identity. It moves the source identity through unchanged regardless
+/// of whether a destination was displaced. Every backend consumes this result
+/// for its stored head, version history, and returned [`Memory`].
+pub(crate) fn rename_replace_identity<T>(source_id: T, _displaced_id: Option<&T>) -> T {
+    source_id
+}
+
 /// The single admission owner for deletion against a path-selected head.
 /// `None` means the selected path is absent; `Some` carries the exact id/hash
 /// comparisons made from the head observed under the backend's transaction.
@@ -247,6 +257,21 @@ fn memory_conditional_delete_admission_is_exact() {
     // through the production decision used by every backend. Backend atomicity
     // and history persistence remain outside this decision proof.
     check_conditional_delete_admission(kani::any());
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn memory_rename_replace_preserves_source_identity() {
+    // Causes: C1 arbitrary source identity; C2 destination absent/present; C3
+    // arbitrary displaced identity. Effect: the survivor is exactly C1 for
+    // every row. No assumption, String model, collection bound, or backend stub
+    // is used; the no-trait-bound production owner is representation agnostic.
+    let source_id: u64 = kani::any();
+    let displaced_id: Option<u64> = kani::any();
+    assert_eq!(
+        rename_replace_identity(source_id, displaced_id.as_ref()),
+        source_id
+    );
 }
 
 /// The in-memory aggregate record.
@@ -543,6 +568,7 @@ impl MemoryRepository for VolatileMemoryRepository {
         // Atomic replace of the destination (POSIX rename). Preserve a deletion
         // version for the displaced memory before recording the moved head.
         let displaced = store_map.remove(to);
+        record.id = rename_replace_identity(record.id, displaced.as_ref().map(|head| &head.id));
         record.path = to.to_string();
         record.version += 1;
         record.updated = now_nanos();
@@ -832,6 +858,20 @@ pub(crate) mod tests {
         for id_matches in [false, true] {
             for sha_matches in [false, true] {
                 check_conditional_delete_admission(Some((id_matches, sha_matches)));
+            }
+        }
+    }
+
+    #[test]
+    fn rename_replace_identity_decision_table_keeps_only_the_source() {
+        // Causes: C1 source id at zero/ordinary/u64::MAX; C2 destination absent;
+        // C3 destination present with the same/different id. Effect E1 always
+        // returns exactly C1. R1=C2->E1; R2=C3+same->E1;
+        // R3=C3+different->E1. The production function is type-parametric;
+        // these boundary values independently cross-check its Kani instance.
+        for source in [0, 7, u64::MAX] {
+            for displaced in [None, Some(source), Some(source.wrapping_add(1))] {
+                assert_eq!(rename_replace_identity(source, displaced.as_ref()), source);
             }
         }
     }

@@ -342,7 +342,7 @@ async fn dispatch_shutdown_does_not_depend_on_non_authoritative_publication() {
                         1,
                         wake.clone(),
                     );
-                    pool.begin_drain().await;
+                    let _local_fence = pool.begin_drain().await;
                     pool.shutdown().await;
                 }
                 _ => {
@@ -1410,7 +1410,7 @@ async fn pool_stops_its_only_renewal_guard_after_resolution_failure() {
         .await,
         "RG3 resolver failure relinquished the exact claim"
     );
-    pool.begin_drain().await;
+    let _local_fence = pool.begin_drain().await;
     for _ in 0..10 {
         tokio::task::yield_now().await;
     }
@@ -3611,7 +3611,7 @@ async fn begin_drain_stops_claiming_new_work() {
 
     // Begin draining: the pool reports draining and its claim loops stop.
     assert!(!pool.is_draining(), "not draining before the request");
-    pool.begin_drain().await;
+    let _local_fence = pool.begin_drain().await;
     assert!(pool.is_draining(), "draining after begin_drain");
 
     // A run submitted AFTER the drain is never claimed — it sits in the queue.
@@ -3688,7 +3688,7 @@ async fn authority_suspension_is_reversible_but_drain_is_absorbing() {
         wait_for(|| commit.run_state(&RunId("run-paused".into())).is_some()).await,
         "A2"
     );
-    pool.begin_drain().await;
+    let _local_fence = pool.begin_drain().await;
     assert!(!pool.can_resume().await, "A3");
     assert!(!pool.resume_admission().await, "A4");
     assert!(!pool.is_accepting().await, "A4");

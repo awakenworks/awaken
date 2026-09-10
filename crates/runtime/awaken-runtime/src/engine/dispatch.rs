@@ -305,9 +305,12 @@ pub(super) async fn run_tool_calls(
                             }
                             Some(Err(error)) => delegation_error_output(resolved, &call, error)?,
                             None => {
+                                let admission = batch
+                                    .execution_admission(&call.call_id)
+                                    .map_err(|error| Error::Execution(error.to_string()))?;
                                 execute_regular_or_unavailable_advisor(
                                     runtime, resolved, env, &call, context, run_id, thread_id,
-                                    &batch, store,
+                                    admission, store,
                                 )
                                 .await?
                             }
@@ -606,20 +609,26 @@ async fn run_concurrent_tool_calls(
                                 .await,
                         )
                     } else {
-                        ConcurrentInvocation::Regular(
-                            execute_regular_or_unavailable_advisor(
-                                runtime,
-                                resolved,
-                                env,
-                                call,
-                                context,
-                                run_id,
-                                thread_id,
-                                executing_batch,
-                                committed_view,
-                            )
-                            .await,
-                        )
+                        let admission = executing_batch
+                            .execution_admission(&call.call_id)
+                            .map_err(|error| Error::Execution(error.to_string()));
+                        ConcurrentInvocation::Regular(match admission {
+                            Ok(admission) => {
+                                execute_regular_or_unavailable_advisor(
+                                    runtime,
+                                    resolved,
+                                    env,
+                                    call,
+                                    context,
+                                    run_id,
+                                    thread_id,
+                                    admission,
+                                    committed_view,
+                                )
+                                .await
+                            }
+                            Err(error) => Err(error),
+                        })
                     }
                 }),
         )
@@ -1100,8 +1109,11 @@ pub(super) async fn recover_tool_batch(
                 }
                 Some(Err(error)) => delegation_error_output(resolved, &call, error)?,
                 None => {
+                    let admission = batch
+                        .execution_admission(&call.call_id)
+                        .map_err(|error| Error::Execution(error.to_string()))?;
                     execute_regular_or_unavailable_advisor(
-                        runtime, resolved, env, &call, context, run_id, thread_id, &batch, store,
+                        runtime, resolved, env, &call, context, run_id, thread_id, admission, store,
                     )
                     .await?
                 }
@@ -1146,7 +1158,7 @@ async fn execute_regular_or_unavailable_advisor(
     context: &RuntimeRunContext,
     run_id: &RunId,
     thread_id: &ThreadId,
-    batch: &ToolBatch,
+    admission: ToolExecutionAdmission<'_>,
     state: &Store,
 ) -> Result<ToolOutput> {
     if is_resolved_advisor_call(resolved, call) {
@@ -1155,7 +1167,8 @@ async fn execute_regular_or_unavailable_advisor(
             awaken_runtime_contract::resolved::ADVISOR_UNAVAILABLE_NOTICE,
         ));
     }
-    let operation_id = batch.operation_id(&call.call_id);
+    debug_assert_eq!(admission.call_id(), call.call_id);
+    let operation_id = admission.operation_id();
     execute_tool(
         runtime,
         Some(env),

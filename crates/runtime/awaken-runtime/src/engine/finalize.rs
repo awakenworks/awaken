@@ -18,6 +18,7 @@ pub(super) async fn finalize(
             new_messages: step.new_messages,
             staged_state: Vec::new(),
             audit: step.audit,
+            resume: step.resume,
             disposition: RunDisposition::ended(
                 run_id.clone(),
                 EndCause::Error(Failure::StateConflict),
@@ -81,6 +82,7 @@ pub(super) async fn finish_with_reader(
         new_messages,
         mut staged_state,
         audit,
+        resume,
         disposition,
     } = step;
 
@@ -135,14 +137,15 @@ pub(super) async fn finish_with_reader(
 
     let committed = if let Some(coordinator) = &context.commit {
         coordinator
-            .commit(ThreadCommit::assemble(
+            .commit(assemble_attempt_commit(
                 thread_id.clone(),
                 disposition,
                 true,
                 new_messages,
                 staged_state,
                 audit,
-            ))
+                resume.as_ref(),
+            )?)
             .await
             .map_err(|error| Error::Commit(error.to_string()))?;
         true
