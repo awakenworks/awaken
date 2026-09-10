@@ -2034,6 +2034,7 @@ dependencies = [
  "awaken-ext-background-task",
  "awaken-ext-compact",
  "awaken-runtime-contract",
+ "awaken-store-fs",
  "awaken-store-inmem",
  "futures-util",
  "jsonschema",
