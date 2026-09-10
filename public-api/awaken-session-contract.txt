@@ -40,6 +40,8 @@ pub enum awaken_session_contract::work_queue::SessionWorkOwnership
 pub awaken_session_contract::work_queue::SessionWorkOwnership::Leased(awaken_session_contract::work_queue::SessionWorkLease)
 pub awaken_session_contract::work_queue::SessionWorkOwnership::NotRequired
 pub awaken_session_contract::work_queue::SessionWorkOwnership::Unowned
+impl awaken_session_contract::work_queue::SessionWorkOwnership
+pub fn awaken_session_contract::work_queue::SessionWorkOwnership::permits_effect_for(&self, &str) -> bool
 pub enum awaken_session_contract::work_queue::SessionWorkReleaseAdmission
 pub awaken_session_contract::work_queue::SessionWorkReleaseAdmission::AlreadyReleased
 pub awaken_session_contract::work_queue::SessionWorkReleaseAdmission::Apply

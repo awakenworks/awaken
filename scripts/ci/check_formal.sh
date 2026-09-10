@@ -482,6 +482,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness only_active_work_accepts_lease_extension \
     --harness stop_is_absorbing_for_every_work_state \
     --harness work_lease_mutation_requires_present_exact_authority_and_matching_condition \
+    --harness session_work_effect_requires_not_required_scope_or_exact_owner \
     --harness session_work_release_requires_exact_owner_and_epoch \
     --harness first_heartbeat_is_authorized_exactly_once \
     --harness matching_heartbeat_rejects_every_other_receipt \

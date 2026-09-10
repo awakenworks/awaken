@@ -359,6 +359,41 @@ pub enum SessionWorkOwnership {
     Leased(SessionWorkLease),
 }
 
+#[derive(Clone, Copy)]
+enum SessionWorkEffectAuthority {
+    NotRequired,
+    Unowned,
+    Leased,
+}
+
+const fn session_work_effect_policy(
+    authority: SessionWorkEffectAuthority,
+    owner_matches: bool,
+) -> bool {
+    match authority {
+        SessionWorkEffectAuthority::NotRequired => true,
+        SessionWorkEffectAuthority::Unowned => false,
+        SessionWorkEffectAuthority::Leased => owner_matches,
+    }
+}
+
+impl SessionWorkOwnership {
+    /// Whether this observed Work authority permits the authenticated Worker
+    /// to enter or renew Session realization effects.
+    #[must_use]
+    pub fn permits_effect_for(&self, worker_owner: &str) -> bool {
+        let (authority, owner_matches) = match self {
+            Self::NotRequired => (SessionWorkEffectAuthority::NotRequired, false),
+            Self::Unowned => (SessionWorkEffectAuthority::Unowned, false),
+            Self::Leased(lease) => (
+                SessionWorkEffectAuthority::Leased,
+                lease.owner == worker_owner,
+            ),
+        };
+        session_work_effect_policy(authority, owner_matches)
+    }
+}
+
 /// Cause authorizing a private registered Worker to acquire Session Work.
 /// A live claimed Run may repair a stopped Work projection after an admission /
 /// predecessor-retirement race. Realization renewal carries no driving event
@@ -762,9 +797,44 @@ pub trait WorkQueue: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::{
-        SessionWorkReleaseAdmission, WorkLeaseMutationAdmission, next_heartbeat_receipt,
-        session_work_release_admission, work_lease_mutation_admission,
+        SessionWorkLease, SessionWorkOwnership, SessionWorkReleaseAdmission,
+        WorkLeaseMutationAdmission, next_heartbeat_receipt, session_work_release_admission,
+        work_lease_mutation_admission,
     };
+
+    #[test]
+    fn session_work_effect_admission_follows_the_complete_authority_table() {
+        // Cause/effect graph: C1 the frozen Session requires no external Work;
+        // C2 required Work is absent/retired or leased; C3 the observed lease
+        // names the authenticated Worker. Effects: E1 permit C1 and exact
+        // C2+C3; E2 deny absent Work and a foreign owner. The four rows cover
+        // every semantic observation produced by SessionWorkLeaseAuthority;
+        // lease identity/epoch validity remains inside that authoritative
+        // queue read.
+        //
+        // | Rule | Work observation | Owner | Permitted |
+        // |---|---|---|---|
+        // | A1 | NotRequired | any | yes |
+        // | A2 | Unowned | any | no |
+        // | A3 | Leased | exact | yes |
+        // | A4 | Leased | foreign | no |
+        let lease = |owner: &str| SessionWorkLease {
+            work_id: "work".into(),
+            environment_id: "environment".into(),
+            session_id: "session".into(),
+            owner: owner.into(),
+            epoch: 7,
+            expires_at_unix_ms: 11,
+        };
+        for (rule, ownership, expected) in [
+            ("A1", SessionWorkOwnership::NotRequired, true),
+            ("A2", SessionWorkOwnership::Unowned, false),
+            ("A3", SessionWorkOwnership::Leased(lease("worker")), true),
+            ("A4", SessionWorkOwnership::Leased(lease("foreign")), false),
+        ] {
+            assert_eq!(ownership.permits_effect_for("worker"), expected, "{rule}");
+        }
+    }
 
     #[test]
     fn utc_calendar_codec_covers_every_representable_day() {
@@ -869,6 +939,29 @@ mod tests {
 #[cfg(kani)]
 mod verification {
     use super::*;
+
+    #[kani::proof]
+    fn session_work_effect_requires_not_required_scope_or_exact_owner() {
+        // Complete policy domain: every closed Work-authority class crossed
+        // with both exact-owner facts. The production wrapper above performs
+        // String equality once and feeds that fact to this sole policy owner;
+        // native and real-router tests cross-check the wrapper with non-empty
+        // exact and foreign owners. No assumption or stub removes a rule.
+        let authority = match kani::any::<u8>() % 3 {
+            0 => SessionWorkEffectAuthority::NotRequired,
+            1 => SessionWorkEffectAuthority::Unowned,
+            _ => SessionWorkEffectAuthority::Leased,
+        };
+        let owner_matches: bool = kani::any();
+        let actual = session_work_effect_policy(authority, owner_matches);
+        let expected = matches!(authority, SessionWorkEffectAuthority::NotRequired)
+            || (matches!(authority, SessionWorkEffectAuthority::Leased) && owner_matches);
+
+        assert_eq!(
+            actual, expected,
+            "effects require a Work-free scope or the exact current Work owner"
+        );
+    }
 
     fn symbolic_state(tag: u8) -> WorkState {
         match tag % 5 {
