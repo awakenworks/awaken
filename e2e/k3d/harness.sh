@@ -24,6 +24,19 @@ k3d_validate_image_digest() {
   [[ "$1" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]]
 }
 
+# Nested k3d nodes observe the host filesystem size. Produce one absolute
+# kubelet eviction policy so a large host cannot turn ample free bytes into a
+# percentage-based DiskPressure taint. Callers still own capacity admission.
+k3d_eviction_hard() {
+  local eviction="${1:-}"
+  [[ "$eviction" =~ ^[1-9][0-9]*(Ki|Mi|Gi|Ti)$ ]] || {
+    echo "invalid k3d eviction threshold: $eviction" >&2
+    return 2
+  }
+  printf 'eviction-hard=imagefs.available<%s,nodefs.available<%s\n' \
+    "$eviction" "$eviction"
+}
+
 # Resolve the manifest identity of the image just built by the canonical image
 # builder. Docker's config ID is not a registry/OCI manifest digest. Never
 # synthesize a digest from a tag or substitute another published release.
@@ -294,10 +307,8 @@ k3d_create_cluster() {
     echo "invalid k3d agent count: $agents" >&2
     return 2
   }
-  [[ "$eviction" =~ ^[1-9][0-9]*(Ki|Mi|Gi|Ti)$ ]] || {
-    echo "invalid k3d eviction threshold: $eviction" >&2
-    return 2
-  }
+  local threshold
+  threshold=$(k3d_eviction_hard "$eviction") || return "$?"
   [[ -z "$registry" || "$registry" =~ ^[a-zA-Z0-9.-]+:[0-9]+$ ]] || {
     echo "invalid k3d Registry coordinate: $registry" >&2
     return 2
@@ -316,7 +327,6 @@ k3d_create_cluster() {
   fi
   k3d_capacity_preflight "$((agents + 1))" "${images[@]}" || return "$?"
   k3d_delete_cluster "$cluster" || return "$?"
-  local threshold="eviction-hard=imagefs.available<${eviction},nodefs.available<${eviction}"
   local args=(
     cluster create "$cluster" --agents "$agents" --wait --timeout 180s
     --runtime-ulimit "nofile=65536:65536"
@@ -788,6 +798,12 @@ print(json.dumps(value))
   # or removed percentage input => no cluster effects. T4 capacity failure with
   # otherwise valid arguments => no deletion/create. Other negative rows retain
   # a valid quantity so an unrelated error cannot mask missing validation.
+  [[ "$(k3d_eviction_hard 2Gi)" = \
+    "eviction-hard=imagefs.available<2Gi,nodefs.available<2Gi" ]]
+  local invalid_eviction
+  for invalid_eviction in "" 0Gi 2% low -1Gi; do
+    ! k3d_eviction_hard "$invalid_eviction" >/dev/null 2>&1
+  done
   k3d_calls=()
   k3d_create_cluster "awaken-test-1" 1 2Gi
   [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<2Gi,nodefs.available<2Gi@server:*"* ]]
