@@ -724,6 +724,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness a_second_wait_is_never_admitted \
     --harness child_result_is_consumed_only_from_ready \
     --harness terminal_delivery_phases_never_reopen \
+    --harness live_inbox_closed_lifecycle_is_absorbing_for_every_mutation \
+    --harness boundary_priority_is_pause_then_input_then_idle \
     --harness rejected_live_inbox_reorder_is_an_atomic_stutter \
     --harness live_inbox_identity_advances_strictly_or_exhausts \
     --harness advisor_never_substitutes_for_primary_model_admission \

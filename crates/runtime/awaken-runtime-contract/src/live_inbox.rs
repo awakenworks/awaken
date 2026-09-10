@@ -111,12 +111,31 @@ pub enum WaitOutcome {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum InboxLifecycle {
+    #[default]
+    Open,
+    Closed,
+}
+
+impl InboxLifecycle {
+    /// Sole admission and lifecycle transition for process-local inbox edits.
+    /// Once closed, no mutation can reopen or change the inbox.
+    const fn admits_mutation(self) -> bool {
+        matches!(self, Self::Open)
+    }
+
+    const fn close(self) -> Self {
+        Self::Closed
+    }
+}
+
 #[derive(Default)]
 struct State {
     entries: VecDeque<LiveInboxMessage>,
     next_id: u64,
     version: u64,
-    closed: bool,
+    lifecycle: InboxLifecycle,
 }
 
 /// Shared handle to one attempt's live inbox. Cheap to clone; producers,
@@ -200,7 +219,7 @@ impl LiveInbox {
     /// injection so a consumer can tell it apart from the run's own input.
     pub fn offer_as(&self, origin: MessageOrigin, message: Message) -> Offer {
         let mut state = self.state();
-        if state.closed {
+        if !state.lifecycle.admits_mutation() {
             return Offer::Closed;
         }
         let Some(id) = Self::next_message_id(state.next_id) else {
@@ -224,7 +243,7 @@ impl LiveInbox {
     /// attempt is normal, so waking a closed inbox is a no-op.
     pub fn wake(&self) {
         let mut state = self.state();
-        if state.closed {
+        if !state.lifecycle.admits_mutation() {
             return;
         }
         Self::bump_and_notify(&mut state, &self.shared.notify);
@@ -240,7 +259,7 @@ impl LiveInbox {
     /// Delete one queued message, returning its content.
     pub fn remove(&self, id: LiveInboxMessageId) -> Result<Message, EditError> {
         let mut state = self.state();
-        if state.closed {
+        if !state.lifecycle.admits_mutation() {
             return Err(EditError::Closed);
         }
         let index = state
@@ -256,7 +275,7 @@ impl LiveInbox {
     /// Replace one queued message's content, keeping its id and position.
     pub fn replace(&self, id: LiveInboxMessageId, message: Message) -> Result<(), EditError> {
         let mut state = self.state();
-        if state.closed {
+        if !state.lifecycle.admits_mutation() {
             return Err(EditError::Closed);
         }
         let entry = state
@@ -275,7 +294,7 @@ impl LiveInbox {
     /// re-lists and retries; the queue is left untouched.
     pub fn reorder(&self, order: &[LiveInboxMessageId]) -> Result<(), EditError> {
         let mut state = self.state();
-        if state.closed {
+        if !state.lifecycle.admits_mutation() {
             return Err(EditError::Closed);
         }
         if !Self::reorder_exactly(&mut state.entries, order, |entry| entry.id) {
@@ -331,17 +350,17 @@ impl LiveInbox {
     #[must_use = "undelivered messages must be routed or knowingly dropped"]
     pub fn close(&self) -> Vec<LiveInboxMessage> {
         let mut state = self.state();
-        if state.closed {
+        if !state.lifecycle.admits_mutation() {
             return Vec::new();
         }
-        state.closed = true;
+        state.lifecycle = state.lifecycle.close();
         let leftovers = state.entries.drain(..).collect();
         Self::bump_and_notify(&mut state, &self.shared.notify);
         leftovers
     }
 
     pub fn is_closed(&self) -> bool {
-        self.state().closed
+        self.state().lifecycle == InboxLifecycle::Closed
     }
 }
 
@@ -524,6 +543,19 @@ mod tests {
 
     #[test]
     fn close_returns_leftovers_and_shuts_every_mutation_path() {
+        // Causes: C1 first close with two queued messages; C2 each post-close
+        // operation (Offer, Wake, Remove, Replace, Reorder, Close). Effects:
+        // L1 first Close returns the complete FIFO queue and enters Closed;
+        // L2 every later operation rejects or returns empty; L3 queue, identity
+        // frontier, and version remain unchanged after closure.
+        //
+        // | Rule | Lifecycle | Operation | Result/state effect |
+        // |---|---|---|---|
+        // | L1 | Open | Close | FIFO leftovers, Closed, version + 1 |
+        // | L2 | Closed | Offer | Closed, exact state stutter |
+        // | L3 | Closed | Wake | exact state stutter |
+        // | L4 | Closed | Remove/Replace/Reorder | Closed error, state stutter |
+        // | L5 | Closed | Close | empty leftovers, state stutter |
         let inbox = LiveInbox::new();
         let a = offered(&inbox, "a");
         let _b = offered(&inbox, "b");
@@ -531,6 +563,8 @@ mod tests {
         let leftovers = inbox.close();
         assert_eq!(texts(&leftovers), ["a", "b"]);
         assert!(inbox.is_closed());
+        let closed_version = inbox.version();
+        let closed_next_id = inbox.state().next_id;
 
         assert_eq!(inbox.offer(msg("late")), Offer::Closed);
         assert_eq!(inbox.remove(a), Err(EditError::Closed));
@@ -541,6 +575,9 @@ mod tests {
         // Waking or re-closing a finished attempt is a normal race, not a fault.
         inbox.wake();
         assert!(inbox.close().is_empty());
+        assert_eq!(inbox.version(), closed_version, "L2-L5 version stutter");
+        assert_eq!(inbox.state().next_id, closed_next_id, "L2-L5 id stutter");
+        assert!(inbox.list().is_empty(), "L2-L5 queue stutter");
     }
 
     #[tokio::test]
@@ -688,6 +725,27 @@ mod tests {
 #[cfg(kani)]
 mod verification {
     use super::*;
+
+    #[kani::proof]
+    fn live_inbox_closed_lifecycle_is_absorbing_for_every_mutation() {
+        let lifecycle = if kani::any::<bool>() {
+            InboxLifecycle::Open
+        } else {
+            InboxLifecycle::Closed
+        };
+        let next = lifecycle.close();
+
+        assert_eq!(
+            lifecycle.admits_mutation(),
+            matches!(lifecycle, InboxLifecycle::Open)
+        );
+        if matches!(lifecycle, InboxLifecycle::Closed) {
+            assert_eq!(next, InboxLifecycle::Closed);
+            assert!(!next.admits_mutation());
+        }
+        assert_eq!(next, InboxLifecycle::Closed);
+        assert_eq!(next.close(), InboxLifecycle::Closed);
+    }
 
     #[kani::proof]
     #[kani::unwind(8)]
