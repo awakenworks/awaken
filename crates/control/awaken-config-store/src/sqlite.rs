@@ -110,9 +110,8 @@ fn write_config_revision(
     scope: &str,
     id: &str,
     data: &str,
-    expected: u64,
+    plan: crate::ConfigRevisionWritePlan,
 ) -> Result<Option<u64>, ConfigStoreError> {
-    let plan = crate::ConfigRevisionWritePlan::new(expected).map_err(reject)?;
     let statement = if plan.kind == crate::ConfigRevisionWriteKind::Insert {
         format!(
             "INSERT INTO {p}_agent (id, data, scope_id, generation) \
@@ -258,9 +257,17 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 .optional()
                 .map_err(reject)?;
             let current_revision = current.as_ref().map(|(_, revision)| *revision);
-            if current_revision.unwrap_or(0) != expected_generation {
-                return Ok(AuditedConfigWrite::Conflict { current_revision });
-            }
+            let plan = match crate::ConfigRevisionWritePlan::admit(
+                current_revision,
+                expected_generation,
+            )
+            .map_err(reject)?
+            {
+                crate::ConfigRevisionAdmission::Apply(plan) => plan,
+                crate::ConfigRevisionAdmission::Conflict { current_revision } => {
+                    return Ok(AuditedConfigWrite::Conflict { current_revision });
+                }
+            };
             let current_config = current
                 .as_ref()
                 .map(|(data, _)| serde_json::from_str::<AgentConfig>(data).map_err(reject))
@@ -290,7 +297,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                     ).map_err(reject)?;
                 }
             }
-            if write_config_revision(&tx, p, &scope, &id, &data, expected_generation)?.is_none() {
+            if write_config_revision(&tx, p, &scope, &id, &data, plan)?.is_none() {
                 let current_revision = tx
                     .query_row(
                         &format!(
@@ -510,12 +517,31 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         let data = serde_json::to_string(config).map_err(reject)?;
         let scope = scope.0.clone();
         self.with_conn(move |conn, p| {
-            if let Some(revision) =
-                write_config_revision(conn, p, &scope, &id, &data, expected_generation)?
-            {
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(reject)?;
+            let current_revision = tx
+                .query_row(
+                    &format!("SELECT generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"),
+                    params![id, scope],
+                    |row| row.get::<_, u64>(0),
+                )
+                .optional()
+                .map_err(reject)?;
+            let plan =
+                match crate::ConfigRevisionWritePlan::admit(current_revision, expected_generation)
+                    .map_err(reject)?
+                {
+                    crate::ConfigRevisionAdmission::Apply(plan) => plan,
+                    crate::ConfigRevisionAdmission::Conflict { current_revision } => {
+                        return Ok(ConfigWrite::Conflict { current_revision });
+                    }
+                };
+            if let Some(revision) = write_config_revision(&tx, p, &scope, &id, &data, plan)? {
+                tx.commit().map_err(reject)?;
                 return Ok(ConfigWrite::Applied { revision });
             }
-            let current_revision = conn
+            let current_revision = tx
                 .query_row(
                     &format!("SELECT generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"),
                     params![id, scope],

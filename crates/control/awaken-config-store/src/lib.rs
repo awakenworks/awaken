@@ -78,6 +78,12 @@ struct ConfigRevisionWritePlan {
     next: StoredU64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigRevisionAdmission {
+    Apply(ConfigRevisionWritePlan),
+    Conflict { current_revision: Option<u64> },
+}
+
 impl ConfigRevisionWritePlan {
     fn new(expected: u64) -> Result<Self, StoredU64Error> {
         let expected = StoredU64::try_from(expected)?;
@@ -92,16 +98,46 @@ impl ConfigRevisionWritePlan {
             next,
         })
     }
+
+    /// Admit one row transition before its adapter executes the final SQL
+    /// predicate. Absence is the generation-zero state, never a present row at
+    /// revision zero; every present transition must match a positive revision.
+    fn admit(
+        current_revision: Option<u64>,
+        expected: u64,
+    ) -> Result<ConfigRevisionAdmission, StoredU64Error> {
+        let plan = Self::new(expected)?;
+        let applies = matches!(
+            (current_revision, plan.kind),
+            (None, ConfigRevisionWriteKind::Insert)
+        ) || matches!(
+            (current_revision, plan.kind),
+            (Some(current), ConfigRevisionWriteKind::Update) if current == expected
+        );
+        Ok(if applies {
+            ConfigRevisionAdmission::Apply(plan)
+        } else {
+            ConfigRevisionAdmission::Conflict { current_revision }
+        })
+    }
 }
 
 #[cfg(any(test, kani))]
-fn check_config_revision_write_plan(expected: u64) {
-    // C1 zero/positive expected; C2 successor fits signed storage. R1 zero ->
-    // insert 1; R2 positive and representable successor -> exact update; R3
-    // max/out-of-range -> typed rejection. u128 is an independent range oracle.
+fn check_config_revision_admission(current_revision: Option<u64>, expected: u64) {
+    // Causes: C1 row absent/present; C2 expected zero/exact/different; C3 exact
+    // successor fits signed storage. Effects: R1 absent+zero -> insert 1; R2
+    // present+positive exact -> update to current+1; R3 absent+positive,
+    // present+zero, stale or future -> conflict with the observed revision; R4
+    // exhausted/out-of-range expectation -> typed rejection before SQL.
     let successor = u128::from(expected) + 1;
-    match ConfigRevisionWritePlan::new(expected) {
-        Ok(plan) => {
+    let should_apply = successor <= i64::MAX as u128
+        && match current_revision {
+            None => expected == 0,
+            Some(current) => expected > 0 && current == expected,
+        };
+    match ConfigRevisionWritePlan::admit(current_revision, expected) {
+        Ok(ConfigRevisionAdmission::Apply(plan)) => {
+            assert!(should_apply);
             assert!(successor <= i64::MAX as u128);
             assert_eq!(plan.expected.domain_value(), expected);
             assert_eq!(plan.expected.database_value() as u128, u128::from(expected));
@@ -110,7 +146,15 @@ fn check_config_revision_write_plan(expected: u64) {
             assert_eq!(plan.kind == ConfigRevisionWriteKind::Insert, expected == 0);
             assert_eq!(plan.kind == ConfigRevisionWriteKind::Update, expected > 0);
         }
+        Ok(ConfigRevisionAdmission::Conflict {
+            current_revision: conflict,
+        }) => {
+            assert!(!should_apply);
+            assert_eq!(conflict, current_revision);
+            assert!(successor <= i64::MAX as u128);
+        }
         Err(error) => {
+            assert!(!should_apply);
             assert!(successor > i64::MAX as u128);
             let rejected = if expected > i64::MAX as u64 {
                 expected
@@ -124,10 +168,11 @@ fn check_config_revision_write_plan(expected: u64) {
 
 #[cfg(kani)]
 #[kani::proof]
-fn config_revision_write_plan_preserves_full_u64_contract() {
-    // No assumptions: exhaust every u64 input through the production plan and
-    // StoredU64 conversion/addition. SQL execution and concurrency remain TCB.
-    check_config_revision_write_plan(kani::any());
+fn config_revision_admission_is_exact_and_nonwrapping() {
+    // No assumptions: exhaust every Option<u64> observed row x independent
+    // caller expectation through the production owner. SQL predicate execution,
+    // locking and transaction isolation remain adapter/database TCB.
+    check_config_revision_admission(kani::any(), kani::any());
 }
 
 const fn management_effect_retirement_decision(
@@ -162,7 +207,7 @@ fn management_effect_retirement_requires_present_matching_receipt() {
 #[cfg(test)]
 mod tests {
     use super::{
-        check_config_revision_write_plan, check_publication_source_admission,
+        check_config_revision_admission, check_publication_source_admission,
         management_effect_retirement_decision,
     };
 
@@ -180,9 +225,17 @@ mod tests {
     }
 
     #[test]
-    fn config_revision_write_plan_boundary_decision_table() {
-        // R1 zero; R2 smallest/ordinary/largest valid update; R3 exhausted and
-        // both ends of the out-of-range interval. Same oracle as full-u64 Kani.
+    fn config_revision_admission_boundary_decision_table() {
+        // R1-R4 above. Cross absent/present and zero/exact/stale/future with the
+        // signed ceiling plus the full-u64 endpoints. Same oracle as Kani.
+        let currents = [
+            None,
+            Some(0),
+            Some(1),
+            Some(9),
+            Some(i64::MAX as u64),
+            Some(u64::MAX),
+        ];
         for expected in [
             0,
             1,
@@ -192,7 +245,9 @@ mod tests {
             i64::MAX as u64 + 1,
             u64::MAX,
         ] {
-            check_config_revision_write_plan(expected);
+            for current in currents {
+                check_config_revision_admission(current, expected);
+            }
         }
     }
 
