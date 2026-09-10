@@ -1200,6 +1200,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/eval-evidence" \
     -config formal/tla/EvalEvidence.cfg formal/tla/EvalEvidence.tla
+  python3 scripts/ci/check_formal_mutations.py --eval-evidence-model-mutants "$tla_jar"
+  cargo test -p awaken-eval --lib \
+    outcome_judge::tests::eval_evidence_decision_table_cross_checks_frozen_complete_model --locked -- --exact
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/webhook-outbox" \
     -config formal/tla/WebhookOutbox.cfg formal/tla/WebhookOutbox.tla

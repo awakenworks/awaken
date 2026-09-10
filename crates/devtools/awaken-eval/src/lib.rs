@@ -14,6 +14,7 @@ pub mod admin_authoring;
 pub mod compact_eval;
 pub mod memory_agent_bench;
 pub mod memory_eval;
+mod observation_index;
 pub mod outcome_acp;
 pub mod outcome_judge;
 pub mod public_benchmark;

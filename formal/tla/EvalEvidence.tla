@@ -62,4 +62,13 @@ PublishedReportIsComplete ==
 PublishedEvidenceIsFrozen ==
     published => datasetVersion = FrozenVersion
 
+\* Negative reachability oracles used by the strict semantic-mutation gate.
+NoMissingCaseScored ==
+    \A case \in Cases : scored[case] => observations[case] # 0
+
+NoDuplicateCaseScored ==
+    \A case \in Cases : scored[case] => observations[case] < 2
+
+NoPublishedReport == ~published
+
 =============================================================================

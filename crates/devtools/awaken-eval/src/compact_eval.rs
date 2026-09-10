@@ -1,12 +1,13 @@
 //! Gold-corpus scoring and live ACP evaluation for the compactor Agent.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use awaken_ext_compact::{DEFAULT_COMPACT_INSTRUCTIONS, SUMMARIZE_PROMPT};
 use serde::{Deserialize, Serialize};
 
 use crate::acp_runner::ToolFreeAcpRunner;
+use crate::observation_index::index_observations;
 
 const TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -92,24 +93,11 @@ pub struct CompactReport {
 
 #[must_use]
 pub fn score(dataset: &CompactDataset, observations: &[CompactObservation]) -> CompactReport {
-    let expected = dataset
-        .cases
-        .iter()
-        .map(|case| case.id.as_str())
-        .collect::<BTreeSet<_>>();
-    let mut by_id = BTreeMap::new();
-    let mut duplicates = BTreeSet::new();
-    let mut unexpected = BTreeSet::new();
-    for observation in observations {
-        if !expected.contains(observation.case_id.as_str()) {
-            unexpected.insert(observation.case_id.clone());
-        } else if by_id
-            .insert(observation.case_id.as_str(), observation)
-            .is_some()
-        {
-            duplicates.insert(observation.case_id.clone());
-        }
-    }
+    let index = index_observations(
+        dataset.cases.iter().map(|case| case.id.as_str()),
+        observations,
+        |observation| observation.case_id.as_str(),
+    );
     let mut report = CompactReport {
         total_cases: dataset.cases.len(),
         observed_cases: 0,
@@ -119,20 +107,17 @@ pub fn score(dataset: &CompactDataset, observations: &[CompactObservation]) -> C
         required_total: 0,
         forbidden_dropped: 0,
         forbidden_total: 0,
-        duplicate_observation_ids: duplicates.iter().cloned().collect(),
-        unexpected_observation_ids: unexpected.into_iter().collect(),
+        duplicate_observation_ids: index.duplicate_ids.clone(),
+        unexpected_observation_ids: index.unexpected_ids.clone(),
         cases: Vec::with_capacity(dataset.cases.len()),
     };
     for case in &dataset.cases {
-        if let Some(observation) = by_id.get(case.id.as_str())
-            && !duplicates.contains(&case.id)
-        {
+        if let Some(observation) = index.unique(&case.id) {
             report.observed_cases += 1;
             report.errored_cases += usize::from(observation.error.is_some());
         }
-        let output = by_id
-            .get(case.id.as_str())
-            .filter(|_| !duplicates.contains(&case.id))
+        let output = index
+            .unique(&case.id)
             .filter(|observation| observation.error.is_none())
             .map(|observation| observation.output.to_ascii_lowercase())
             .unwrap_or_default();
