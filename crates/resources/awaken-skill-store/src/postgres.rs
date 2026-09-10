@@ -334,7 +334,13 @@ impl SkillStore for PgSkillStore {
         };
         let data = row.try_get::<String, _>("data").map_err(storage)?;
         let mut aggregate = decode_aggregate(data.as_bytes(), workspace_id, skill_id)?;
-        let removed = remove_version_from(&mut aggregate, version)?;
+        let removed = remove_version_from(
+            &mut aggregate.definition,
+            &aggregate.versions,
+            &mut aggregate.retired_versions,
+            aggregate.deleted,
+            version,
+        )?;
         if removed {
             let data = serde_json::to_string(&aggregate).map_err(storage)?;
             sqlx::query(&format!(

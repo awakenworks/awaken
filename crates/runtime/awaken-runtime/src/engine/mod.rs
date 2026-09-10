@@ -66,11 +66,10 @@ use awaken_runtime_contract::tool::{
     with_tool_execution_facts, with_tool_operation_context, with_tool_state_context,
 };
 use awaken_runtime_contract::tool::{
-    ToolRecoveryCapability, ToolRecoveryMode, ToolRecoveryPolicy, ToolTaskHandle, ToolTaskPoll,
-    ToolTaskStart,
+    ToolRecoveryCapability, ToolRecoveryPolicy, ToolTaskHandle, ToolTaskPoll, ToolTaskStart,
 };
 use awaken_runtime_contract::tool_batch::{
-    ActiveToolBatch, ToolBatch, ToolBatchPhase, ToolCallPhase, ToolWaitKind,
+    ActiveToolBatch, ToolBatch, ToolBatchPhase, ToolCallPhase, ToolRecoveryAction, ToolWaitKind,
     store_from_run_commands,
 };
 use awaken_runtime_contract::tool_discovery::ToolSearchInput;
