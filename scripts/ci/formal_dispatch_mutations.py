@@ -94,6 +94,7 @@ def check_retired_attempt_model_mutants(tlc_jar: Path) -> None:
 
 def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
     check_retired_attempt_model_mutants(tlc_jar)
+    check_commit_observation_model_mutants(tlc_jar)
     check_stop_evidence_model_mutants(tlc_jar)
     # R1 remove the conflict execution gate -> exact safety violation. R2 the
     # original model must REACH a settled conflict, guarding against a vacuous
@@ -142,6 +143,52 @@ def check_resolution_failure_model_mutant(tlc_jar: Path) -> None:
             "INVARIANTS NoCancelledPeerClaim Safety"), "NoCancelledPeerClaim"),
     ], dependencies=("RunIngressKernel", "SessionActivityKernel", "WorkQueueKernel"))
     print("Thread exclusion: cancelled peer claim reachable; missing physical guard mutant killed")
+
+
+def check_commit_observation_model_mutants(tlc_jar: Path) -> None:
+    # Cause/effect graph: C1 the Dispatch owner/epoch is exact; C2 the Session
+    # Work realization is current/stale; C3 committed truth is absent/present.
+    # Effects: E1 only C1+current C2+absent C3 may create the first observation;
+    # E2 stale C2 must stutter even when C1 is exact. Normal executions already
+    # reuse CurrentRealization through AuthoritativeAttempt; deterministic
+    # conflict commits have no execution and therefore depend on the observation
+    # guard directly. R1 enables that branch without shrinking the full domain,
+    # removes its sole realization guard, and must violate the action property.
+    # R2 requires a reachable same-model stale window, rejecting vacuous safety.
+    source = (ROOT / "formal/tla/SessionRunProtocol.tla").read_text(encoding="utf-8")
+    config = (ROOT / "formal/tla/SessionRunCommitObservation.cfg").read_text(encoding="utf-8")
+    guard = "    /\\ CurrentRealization(candidate)\n"
+    if source.count(guard) != 4:
+        raise SystemExit("SessionRun realization guards drifted; review the exact commit anchor")
+    commit_start = source.index("ObserveCommittedRun(run, disposition, candidate, epoch) ==")
+    commit_end = source.index("\nApplySessionObservation(run) ==", commit_start)
+    action = source[commit_start:commit_end]
+    if action.count(guard) != 1:
+        raise SystemExit("SessionRun commit realization mutation anchor drifted")
+    mutant = source[:commit_start] + action.replace(guard, "", 1) + source[commit_end:]
+    witness = config.replace(
+        "PROPERTIES\n    CommittedObservationUsesExactCurrentRealization",
+        "PROPERTIES\n    CommittedObservationUsesExactCurrentRealization\n\nINVARIANTS\n    NoStaleRealizationWindow",
+    )
+    check_tlc_model_mutations(
+        tlc_jar,
+        "SessionRunProtocol",
+        source,
+        config,
+        [
+            (
+                mutant,
+                config,
+                "action:CommittedObservationUsesExactCurrentRealization",
+            ),
+            (source, witness, "NoStaleRealizationWindow"),
+        ],
+        dependencies=("RunIngressKernel", "SessionActivityKernel", "WorkQueueKernel"),
+        heap_mb=4096,
+        timeout_seconds=600,
+        report_metrics=True,
+    )
+    print("Commit observation: stale-Work mutant killed; stale realization window witnessed")
 
 
 def check_stop_evidence_model_mutants(tlc_jar: Path) -> None:

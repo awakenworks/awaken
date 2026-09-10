@@ -503,12 +503,16 @@ impl ClaimedCommitService {
             ));
         }
         let coordinator = self.coordinator.resolve(trusted_dispatch).await?;
-        let receipt = coordinator
+        let committed = coordinator
             .commit_operation(request.operation)
             .await
-            .map_err(|error| ApplicationError::internal(error.to_string()))?;
-        drop(guard);
-        Ok(receipt)
+            .map_err(|error| ApplicationError::internal(error.to_string()));
+        match guard.release_after(committed).await {
+            Ok(committed) => committed,
+            Err(error) => Err(ApplicationError::unavailable(format!(
+                "commit claim lock release failed: {error}"
+            ))),
+        }
     }
 }
 

@@ -1445,6 +1445,8 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-run-resolution" \
     -config formal/tla/SessionRunProtocolResolution.cfg formal/tla/SessionRunProtocol.tla
+  # The mutation family checks formal/tla/SessionRunCommitObservation.cfg over
+  # the canonical ObserveCommittedRun action in SessionRunProtocol.tla.
   # The same gate also checks formal/tla/SessionRunStopEvidence.tla with
   # formal/tla/SessionRunStopEvidence.cfg, participant mutants and conditional
   # delivery fairness. It imports the original SessionRunProtocol transitions.

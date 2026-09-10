@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -16,7 +17,7 @@ def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str
                               dependencies: tuple[str, ...] = (),
                               artifact_directory: Path | None = None,
                               heap_mb: int = 512, timeout_seconds: int = 60,
-                              workers: int = 1) -> None:
+                              workers: int = 1, report_metrics: bool = False) -> None:
     # One TLC invocation/oracle for every model mutation family. Validate both
     # the process result and semantic outcome; always establish the green base.
     cases = [(source, config, None), *mutations]
@@ -37,9 +38,12 @@ def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str
                 # Pinned TLC extracts standard modules by name and deletes them
                 # on JVM exit. -metadir isolates states, not those parser files;
                 # reuse this invocation's owner for JVM temporaries as well.
+                command = ["java", f"-Djava.io.tmpdir={directory}", f"-Xmx{heap_mb}m", "-XX:+UseParallelGC", "-jar", str(tlc_jar.resolve()),
+                           "-workers", str(workers), "-metadir", str(directory / "states"), "-config", str(config_path), str(model)]
+                if report_metrics:
+                    command = ["/usr/bin/time", "-v", *command]
                 result = subprocess.run(
-                    ["java", f"-Djava.io.tmpdir={directory}", f"-Xmx{heap_mb}m", "-XX:+UseParallelGC", "-jar", str(tlc_jar.resolve()),
-                     "-workers", str(workers), "-metadir", str(directory / "states"), "-config", str(config_path), str(model)],
+                    command,
                     cwd=directory, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     timeout=timeout_seconds, check=False,
                 )
@@ -66,3 +70,14 @@ def check_tlc_model_mutations(tlc_jar: Path, name: str, source: str, config: str
                              else f"Invariant {invariant} is violated")
             if result.returncode != expected_code or expected_text not in result.stdout:
                 raise SystemExit(f"{name} {'baseline failed' if invariant is None else f'mutant for {invariant} was not killed correctly'} (exit={result.returncode}):\n{result.stdout}")
+            if report_metrics:
+                metrics = [
+                    line.strip()
+                    for line in result.stdout.splitlines()
+                    if re.search(
+                        r"(?:states generated,|depth of the complete state graph|Finished in|Maximum resident set size)",
+                        line,
+                    )
+                ]
+                label = invariant or "baseline"
+                print(f"{name} {label}: {' | '.join(metrics)}")

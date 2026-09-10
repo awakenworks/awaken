@@ -149,6 +149,21 @@ impl CommitEpochGuard {
         }
     }
 
+    /// Return an already-settled operation result only after this exact backend
+    /// authority has observably released. Both embedded commits and remote
+    /// claimed-commit ingestion use this boundary, so backend topology cannot
+    /// turn an asynchronous release into an early success response.
+    pub async fn release_after<T, E>(self, settled: Result<T, E>) -> Result<Result<T, E>, String> {
+        let boundary = CommitEpochBoundary::held().settle_inner();
+        let release = self.release().await;
+        match boundary.complete(release.is_ok()) {
+            CommitEpochCompletion::ReturnInner => Ok(settled),
+            CommitEpochCompletion::FailRelease => {
+                Err(release.expect_err("release failure decision requires an error"))
+            }
+        }
+    }
+
     /// The authoritative dispatch payload protected by this exact claim guard.
     /// Recovery uses it to select the Thread without trusting a caller-supplied
     /// Thread id.
@@ -243,6 +258,52 @@ fn commit_epoch_guard_admits_only_complete_exact_claim() {
 #[cfg(test)]
 mod commit_epoch_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn settled_result_is_hidden_until_exact_release_completes() {
+        // Cause/effect graph: C1 the inner result is success/failure; C2 backend
+        // release is pending/succeeds/fails. Effects: E1 a pending release keeps
+        // both inner outcomes hidden; E2 successful release returns the exact
+        // settled outcome; E3 failed release suppresses either inner outcome.
+        // Decision rules: R1=C1(any)+C2(pending)=>E1,
+        // R2=C1(any)+C2(success)=>E2, R3=C1(any)+C2(failure)=>E3. The pure
+        // typestate/Kani table owns the same Boolean completion decision; this
+        // async test checks its one production consumer boundary.
+        let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        let releasing = CommitEpochGuard::new_releasing(
+            {
+                let entered = entered.clone();
+                let release = release.clone();
+                async move {
+                    entered.notify_one();
+                    release.notified().await;
+                    Ok(())
+                }
+            },
+            crate::dispatch::tests::a_request(),
+            1,
+            false,
+            crate::PhysicalAttemptSlot::Empty,
+        );
+        let returning = tokio::spawn(releasing.release_after(Ok::<_, &'static str>(7_u8)));
+        entered.notified().await;
+        tokio::task::yield_now().await;
+        assert!(!returning.is_finished(), "R1/E1");
+        release.notify_one();
+        assert_eq!(returning.await.unwrap().unwrap(), Ok(7), "R2/E2");
+
+        let failed = CommitEpochGuard::new_releasing(
+            async { Err("release failed".to_string()) },
+            crate::dispatch::tests::a_request(),
+            1,
+            false,
+            crate::PhysicalAttemptSlot::Empty,
+        )
+        .release_after::<(), _>(Err("inner failed"))
+        .await;
+        assert_eq!(failed, Err("release failed".to_string()), "R3/E3");
+    }
 
     #[test]
     fn completion_decision_table_requires_release_success() {
