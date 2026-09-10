@@ -44,12 +44,12 @@ impl DataSubjectRepo for InMemoryDataSubjectRepo {
         subject: DataSubject,
     ) -> Result<(), DataSubjectError> {
         let key = subject.id.0.clone();
-        if expected_revision.checked_add(1) != Some(subject.revision) {
+        if !subject.is_successor_of(expected_revision) {
             return Err(DataSubjectError::Conflict(key));
         }
         let mut map = self.inner.lock().expect("data-subject memory store");
         match map.get(&key) {
-            Some(current) if current.revision == expected_revision => {
+            Some(current) if subject.follows_revision(expected_revision, current.revision) => {
                 map.insert(key, subject);
                 Ok(())
             }

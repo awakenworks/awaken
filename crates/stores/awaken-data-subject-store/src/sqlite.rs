@@ -130,7 +130,7 @@ impl DataSubjectRepo for SqliteDataSubjectRepo {
         let id = subject.id.0.clone();
         let org = subject.org.clone();
         let revision = subject.revision;
-        if expected_revision.checked_add(1) != Some(revision) {
+        if !subject.is_successor_of(expected_revision) {
             return Err(DataSubjectError::Conflict(id));
         }
         let stored_revision =
@@ -139,7 +139,28 @@ impl DataSubjectRepo for SqliteDataSubjectRepo {
             .map_err(|_| DataSubjectError::RevisionExhausted(id.clone()))?;
         let data = serde_json::to_string(&subject).map_err(storage)?;
         with_conn(&self.conn, move |conn, p| {
-            let updated = conn
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            let current: Option<(String, i64)> = tx
+                .query_row(
+                    &format!("SELECT data, revision FROM {p}_subject WHERE id = ?1"),
+                    params![id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(storage)?;
+            let Some((current_data, current_revision)) = current else {
+                return Err(DataSubjectError::Conflict(id));
+            };
+            let current: DataSubject = serde_json::from_str(&current_data).map_err(storage)?;
+            if i64::try_from(current.revision).ok() != Some(current_revision) {
+                return Err(storage("data subject revision mismatch"));
+            }
+            if !subject.follows_revision(expected_revision, current.revision) {
+                return Err(DataSubjectError::Conflict(id));
+            }
+            let updated = tx
                 .execute(
                     &format!(
                         "UPDATE {p}_subject SET org = ?1, data = ?2, revision = ?3 \
@@ -149,6 +170,7 @@ impl DataSubjectRepo for SqliteDataSubjectRepo {
                 )
                 .map_err(storage)?;
             if updated == 1 {
+                tx.commit().map_err(storage)?;
                 Ok(())
             } else {
                 Err(DataSubjectError::Conflict(id))
@@ -306,6 +328,48 @@ mod tests {
             repo.get(&DataSubjectId("dsub_a".into())).await.unwrap().org,
             "org_1"
         );
+    }
+
+    #[tokio::test]
+    async fn subject_cas_rejects_revision_drift_and_malformed_truth_without_writes() {
+        // Causes: C1 JSON revision disagrees with the indexed revision, or C2
+        // the stored aggregate is malformed. Effect: both rules return Storage
+        // and preserve the exact bytes/index; CAS never repairs or overwrites an
+        // unverified current row. Valid-row admission is covered by repository
+        // conformance, so these are the two corrupt-state decision-table rules.
+        let old = DataSubject::new(DataSubjectId("corrupt-subject".into()), "org_1", 0);
+        for (data, stored_revision) in [
+            (serde_json::to_string(&old).unwrap(), 1_i64),
+            ("not json".to_string(), 0_i64),
+        ] {
+            let repo = SqliteDataSubjectRepo::open_in_memory().unwrap();
+            repo.conn
+                .lock()
+                .unwrap()
+                .execute(
+                    &format!("INSERT INTO {NS}_subject(id,org,data,revision) VALUES (?1,?2,?3,?4)"),
+                    params![&old.id.0, &old.org, &data, stored_revision],
+                )
+                .unwrap();
+            let mut candidate = old.clone();
+            candidate.revision = 1;
+            candidate.name = Some("must-not-apply".into());
+            assert!(matches!(
+                repo.compare_and_swap(0, candidate).await,
+                Err(DataSubjectError::Storage(_))
+            ));
+            let raw: (String, i64) = repo
+                .conn
+                .lock()
+                .unwrap()
+                .query_row(
+                    &format!("SELECT data,revision FROM {NS}_subject WHERE id=?1"),
+                    params![&old.id.0],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(raw, (data, stored_revision));
+        }
     }
 
     #[tokio::test]
