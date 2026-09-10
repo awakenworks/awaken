@@ -3060,7 +3060,7 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
     };
     let materialization = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
         "terminal-authority-memory",
-        memory_input.mount_path.clone(),
+        awaken_provisioning_contract::memory_materialization_mount_path(&memory_input.mount_path),
         Vec::new(),
     )
     .expect("terminal authority Memory evidence");
@@ -3110,7 +3110,11 @@ async fn terminal_effect_authorization_requires_current_live_same_generation() {
                         .sandbox_effect_fence("create-terminal-authority-memory")
                         .expect("terminal authority Memory creation fence"),
                     physical_incarnation: format!("{session_id}:physical"),
-                    owned_paths: vec![memory_input.mount_path.clone()],
+                    owned_paths: vec![
+                        awaken_provisioning_contract::memory_materialization_mount_path(
+                            &memory_input.mount_path,
+                        ),
+                    ],
                 },
             )
             .with_memory_materializations(vec![materialization.clone()])

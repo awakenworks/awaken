@@ -36,6 +36,17 @@ impl FakeWorkerUpstream {
         Self::start_with_options(None, None, HeartbeatFault::None, 30_000, None)
     }
 
+    pub fn start_at(address: std::net::SocketAddr) -> Self {
+        Self::start_with_listener_options(
+            TcpListener::bind(address).expect("bind delayed Worker upstream"),
+            None,
+            None,
+            HeartbeatFault::None,
+            30_000,
+            None,
+        )
+    }
+
     pub fn start_with_expired_initial_receipt() -> Self {
         Self::start_with_options(None, None, HeartbeatFault::DelayInitial, 60, None)
     }
@@ -103,6 +114,24 @@ impl FakeWorkerUpstream {
         recovery_release: Option<Arc<AtomicBool>>,
     ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        Self::start_with_listener_options(
+            listener,
+            drain_release,
+            applied_heartbeat_budget,
+            heartbeat_fault,
+            registry_ttl_ms,
+            recovery_release,
+        )
+    }
+
+    fn start_with_listener_options(
+        listener: TcpListener,
+        drain_release: Option<Arc<AtomicBool>>,
+        applied_heartbeat_budget: Option<usize>,
+        heartbeat_fault: HeartbeatFault,
+        registry_ttl_ms: u64,
+        recovery_release: Option<Arc<AtomicBool>>,
+    ) -> Self {
         let addr = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
         let stop = Arc::new(AtomicBool::new(false));

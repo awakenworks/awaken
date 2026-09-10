@@ -3,7 +3,7 @@
 //! Durable authority remains the frozen `ResolvedInput`; this module owns only
 //! validated prompt-template rendering for the selected Session Environment.
 
-use super::{managed_file_mount_path, managed_resource_mount_path};
+use super::managed_file_mount_path;
 
 const RESOURCE_PROMPT_VARIABLE_PREFIX: &str = "{{awaken.";
 const RESOURCE_PROMPT_VARIABLES: &[&str] = &[
@@ -135,7 +135,7 @@ impl ResourcePromptProjection {
             ),
             ResolvedInputSource::MemoryStore { .. } => (
                 ResourcePromptKind::MemoryStore,
-                managed_resource_mount_path(&input.mount_path),
+                awaken_provisioning_contract::memory_materialization_mount_path(&input.mount_path),
             ),
             ResolvedInputSource::Repository { .. } => {
                 (ResourcePromptKind::Repository, input.mount_path.clone())

@@ -478,6 +478,73 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
     }));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn startup_transport_gap_retries_the_same_incarnation_until_coordinator_is_reachable() {
+    // Cause/effect decision table for a newly networked Pod:
+    // C1 the Service coordinate initially refuses TCP; C2 the same coordinate
+    // later serves Coordinator; C3 no shutdown arrives. E1 Worker stays alive
+    // without local admission; E2 exactly one accepted registration reaches
+    // Ready/claim; E3 ordinary shutdown uses the one registered lifecycle.
+    // Permanent 4xx/request defects remain terminal in WorkerControlClient.
+    let reservation = TcpListener::bind("127.0.0.1:0").expect("reserve delayed port");
+    let address = reservation.local_addr().unwrap();
+    drop(reservation);
+    let url = format!("http://{address}");
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let worker = lifecycle_worker(WorkerUpstream::new(url).with_worker_id("worker-delayed-start"))
+        .with_deployment_config(local_coordinator_deployment())
+        .with_manifest(manifest())
+        .without_admin_surface()
+        .build()
+        .expect("valid Worker topology");
+    let task = tokio::spawn(worker.run_until(async move {
+        shutdown_rx
+            .await
+            .expect("test shutdown sender remains live");
+        Ok(WorkerShutdown::Prompt)
+    }));
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !task.is_finished(),
+        "E1 transient refusal must not exit startup"
+    );
+    let upstream = FakeWorkerUpstream::start_at(address);
+    for _ in 0..300 {
+        if upstream
+            .requests()
+            .iter()
+            .any(|path| path == "/v1/worker/dispatch/claim")
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let requests = upstream.requests();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|path| path.as_str() == "/v1/worker/register")
+            .count(),
+        1,
+        "E2 only the accepted registration reaches Coordinator"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|path| path == "/v1/worker/dispatch/claim"),
+        "E2 accepted registration reaches claim"
+    );
+    shutdown_tx
+        .send(())
+        .expect("Worker still owns shutdown receiver");
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("E3 lifecycle shutdown is bounded")
+        .expect("Worker task did not panic")
+        .expect("E3 lifecycle closes successfully");
+}
+
 /// Cause/effect design:
 /// C1=Worker has external provider+capacity, C2=warm target > 0, C3=warmup
 /// succeeds, C4=prompt shutdown after Ready and asynchronous warmup. E1=Ready

@@ -79,10 +79,11 @@ pub use sandbox::{
     SandboxRestoreTargetDisposition, SandboxStatus, SecretBroker, SecretWritebackEffect,
     SelectionError, Signal, StoredCheckpointObject, WorkspaceLayout,
     capability_requirements_satisfied, checkpoint_exclusions_fingerprint,
-    resource_input_default_mounts, sandbox_spec_security_fingerprint, select_provider,
-    select_provider_with_policy, validate_checkpoint_exclusions_for_spec,
-    validate_repository_mount_path, validate_repository_mount_paths,
-    validate_repository_sandbox_adoption_layout, validate_repository_sandbox_layout,
+    memory_materialization_mount_path, resource_input_default_mounts,
+    sandbox_spec_security_fingerprint, select_provider, select_provider_with_policy,
+    validate_checkpoint_exclusions_for_spec, validate_repository_mount_path,
+    validate_repository_mount_paths, validate_repository_sandbox_adoption_layout,
+    validate_repository_sandbox_layout,
 };
 pub use spec::{
     Command, EnvironmentKind, FilesystemContinuity, HostAccessPolicy, MaterializedCommand,

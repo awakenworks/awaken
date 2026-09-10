@@ -1236,6 +1236,16 @@ mod tests {
         let evidence = |store: &str, mount: &str| {
             MemoryMaterializationEvidence::new(store, mount, Vec::new()).unwrap()
         };
+        // P1/P2 one authored logical path and its already-projected replay must
+        // converge on the same physical identity; P3 leading separators cannot
+        // create a parallel path spelling.
+        for (requested, expected) in [
+            ("/memory", "/mnt/memory"),
+            ("/mnt/memory", "/mnt/memory"),
+            ("///memory", "/mnt/memory"),
+        ] {
+            assert_eq!(memory_materialization_mount_path(requested), expected);
+        }
         let mut reversed = [
             evidence("memory-z", "/workspace/z"),
             evidence("memory-a", "/workspace/a"),

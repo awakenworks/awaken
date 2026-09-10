@@ -17854,7 +17854,7 @@ fn terminal_memory_resources() -> awaken_session_contract::ResolvedSessionResour
     effective_resources(vec![TestInput {
         kind: "memory_store".into(),
         id: "terminal-memory-store".into(),
-        mount_path: "/workspace/.mnt/terminal-memory".into(),
+        mount_path: "/terminal-memory".into(),
         access: awaken_resource_contract::ResourceAccess::ReadWrite,
         instructions: None,
         initial_branch: None,
@@ -17886,7 +17886,7 @@ fn terminal_memory_projection_with_idle_retention(
 fn terminal_memory_evidence() -> pc::MemoryMaterializationEvidence {
     pc::MemoryMaterializationEvidence::new(
         "terminal-memory-store",
-        "/workspace/.mnt/terminal-memory",
+        "/mnt/terminal-memory",
         vec![pc::MemoryMaterializationHead {
             path: "seed.txt".into(),
             id: "terminal-memory-head".into(),
@@ -18180,7 +18180,7 @@ impl pc::MemoryMounter for RecordingTerminalMemoryMounter {
     ) -> Result<(), pc::SandboxError> {
         if operation_reference != "terminal-v2-reference"
             || evidence.store_id != "terminal-memory-store"
-            || evidence.mount_path != "/workspace/.mnt/terminal-memory"
+            || evidence.mount_path != "/mnt/terminal-memory"
             || files != [("changed.txt".into(), b"changed-under-terminal-v2".to_vec())]
             || access != pc::MountAccess::ReadWrite
         {

@@ -92,6 +92,24 @@ pub(crate) async fn run_agent_loop(
         }
     };
 
+    // The marker describes the complete execution surface for the entire
+    // durable Run, not merely the Worker that first wrote it. A later attempt
+    // must therefore fail before any effect if deployment/runtime resolution
+    // would widen that surface. Authored or Session plugins are excluded even
+    // when their current contribution happens to be empty: a live capability
+    // refresh must never add a tool or hook behind an older closed profile.
+    let model_only_surface = resolved.spec.tool_descriptors.is_empty()
+        && resolved.spec.plugin_ids.is_empty()
+        && context.session_plugins.is_empty()
+        && env.is_model_only_execution_surface();
+    let installed_coverage = ActiveNativeAttemptCoverage::load(&store)
+        .map_err(|error| Error::Commit(format!("Native attempt coverage is invalid: {error}")))?;
+    if installed_coverage == NativeAttemptCoverage::ModelOnlyV1 && !model_only_surface {
+        return Err(Error::Execution(
+            "recovered Native attempt execution surface exceeds its durable coverage".into(),
+        ));
+    }
+
     emit(&context, &run_id, AgentEvent::Fact(Fact::RunStarted)).await;
 
     // A fresh run continues the thread's conversation: seed the transcript with
@@ -104,6 +122,22 @@ pub(crate) async fn run_agent_loop(
     // message id, a fresh run's uncommitted input passes through unchanged while a
     // reclaimed or redelivered input is dropped — input delivery is idempotent.
     transcript.extend(fresh_input.iter().cloned());
+    // Publish the narrow crash-recovery coverage fact in the first Running
+    // commit, before any phase hook or model invocation. A recovered/legacy Run
+    // may never gain this marker after effects could already have happened.
+    // Tool-bearing or plugin-bearing executions remain deliberately unsupported
+    // until those boundaries publish their own complete durable evidence.
+    let fresh_run = context
+        .reader
+        .as_ref()
+        .is_some_and(|reader| reader.run(&run_id).is_none());
+    let seed_state = if fresh_run && model_only_surface {
+        vec![ActiveNativeAttemptCoverage::write(
+            &NativeAttemptCoverage::ModelOnlyV1,
+        )]
+    } else {
+        Vec::new()
+    };
     if continuation == ResumeContinuation::ToolBatch {
         return drive_tool_batch(
             runtime,
@@ -113,7 +147,7 @@ pub(crate) async fn run_agent_loop(
             &thread_id,
             delegation_origin.as_ref(),
             &context,
-            StepLedger::new(transcript, fresh_input, Vec::new(), Vec::new()),
+            StepLedger::new(transcript, fresh_input, seed_state, Vec::new()),
             store,
         )
         .await;
@@ -131,7 +165,7 @@ pub(crate) async fn run_agent_loop(
         run_input,
         0,
         store,
-        Vec::new(),
+        seed_state,
         Vec::new(),
         None,
         resume_checkpoint,

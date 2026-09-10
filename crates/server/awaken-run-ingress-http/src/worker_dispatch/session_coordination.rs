@@ -18,7 +18,7 @@ use awaken_worker_transport_security::VerifiedWorkerContext;
 
 use super::{
     ClaimAuthority, HostError, RealizationHttpError, WorkerDispatchService, claim_authority,
-    respond_realization,
+    observe_expired_predecessor, respond_realization,
 };
 
 #[derive(Deserialize)]
@@ -313,7 +313,7 @@ pub(super) async fn session_agent_settle(
     Json(request): Json<ClaimedSessionBoundaryReq>,
 ) -> (StatusCode, Json<Value>) {
     let result: Result<Value, RealizationHttpError> = async {
-        let (_, guard) = claimed_session_authority(
+        let (authority, guard) = claimed_session_authority(
             &service,
             &worker,
             &request.identity,
@@ -322,6 +322,23 @@ pub(super) async fn session_agent_settle(
         )
         .await?;
         if !guard.permits_settlement() {
+            guard
+                .release()
+                .await
+                .map_err(|error| RealizationHttpError::from(HostError::unavailable(error)))?;
+            // A remote Dispatch observer reaches this route before the Worker's
+            // final `/dispatch/settle`. Progress an independently terminated
+            // predecessor through the same application service used by attempt
+            // admission and final settlement; the observer retry remains the
+            // only path that can advance Session state.
+            let observation =
+                observe_expired_predecessor(&service, &request.claim, authority.lease_ms)
+                    .await
+                    .map_err(RealizationHttpError::from)?;
+            tracing::debug!(
+                ?observation,
+                "blocked Session observer predecessor stop observation"
+            );
             return Err(RealizationHttpError::from(HostError::unavailable(
                 "Session boundary is waiting for predecessor physical quiescence",
             )));

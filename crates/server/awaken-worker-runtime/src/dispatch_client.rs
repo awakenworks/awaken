@@ -245,7 +245,7 @@ impl HttpDispatchQueue {
                 }
             }
         }
-        Err(DispatchError::Rejected(
+        Err(DispatchError::Unavailable(
             last_retryable_error.unwrap_or_else(|| {
                 "idempotent dispatch transport exhausted without a response".to_string()
             }),

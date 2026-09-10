@@ -1347,6 +1347,127 @@ fn activation(fingerprint: &str) -> RunActivation {
     }
 }
 
+#[tokio::test]
+async fn native_attempt_coverage_is_committed_only_before_a_fresh_closed_execution_surface() {
+    use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
+    use awaken_runtime_contract::attempt_termination::{
+        ActiveNativeAttemptCoverage, NativeAttemptCoverage, NativeAttemptTermination,
+        classify_native_attempt_termination,
+    };
+    use awaken_runtime_contract::model_operation::ActiveModelOperation;
+    use awaken_runtime_contract::{CommitCoordinator, RunDisposition, ThreadCommit};
+
+    // Cause/effect decision table:
+    // R1 fresh Run + no tools/plugins => one coverage marker is committed before
+    //    model entry; terminal model evidence then proves all execution stopped.
+    // R2 fresh Run + a model-visible tool => no marker and classification Unknown.
+    // R3 pre-existing Run without the marker => Runtime never backfills it after
+    //    an earlier execution window; classification remains Unknown.
+    // R4 a pre-existing model-only marker + a wider recovered tool surface =>
+    //    reject before model entry; the earlier closed profile remains intact.
+    // The same committed snapshot drives the production classifier. No fixture
+    // injects a termination receipt or a parallel coverage store.
+    for row in [
+        "fresh-closed",
+        "fresh-tool",
+        "existing",
+        "existing-covered-tool",
+    ] {
+        let durable = Arc::new(MemoryCommitCoordinator::new());
+        if row.starts_with("existing") {
+            let state = (row == "existing-covered-tool")
+                .then(|| ActiveNativeAttemptCoverage::write(&NativeAttemptCoverage::ModelOnlyV1))
+                .into_iter()
+                .collect();
+            durable
+                .commit(ThreadCommit::assemble(
+                    ThreadId("thread-1".into()),
+                    RunDisposition::running(RunId("run-1".into())),
+                    true,
+                    Vec::new(),
+                    state,
+                    Vec::new(),
+                ))
+                .await
+                .unwrap();
+        }
+        let mut request = activation("coverage");
+        if row == "fresh-tool" || row == "existing-covered-tool" {
+            request
+                .snapshot
+                .resolved_spec
+                .tool_descriptors
+                .push(ToolDescriptor::pinned(
+                    "test",
+                    "tool",
+                    "tool",
+                    serde_json::json!({"type":"object","properties":{}}),
+                ));
+        }
+        let result = Runtime::new()
+            .with_llm(Arc::new(TextLlm("done")))
+            .execute(
+                request,
+                RuntimeRunContext::new()
+                    .with_reader(durable.clone())
+                    .with_commit(durable.clone()),
+            )
+            .await;
+        if row == "existing-covered-tool" {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("exceeds its durable coverage"),
+                "R4"
+            );
+        } else {
+            assert_eq!(
+                result.unwrap(),
+                RunState::Ended(EndCause::NaturalEnd),
+                "{row}"
+            );
+        }
+        let snapshot = durable
+            .recovery_snapshot(&ThreadId("thread-1".into()), &RunId("run-1".into()))
+            .await
+            .unwrap();
+        let coverage = snapshot
+            .state
+            .iter()
+            .zip(&snapshot.state_commit_cursors)
+            .filter(|(command, _)| command.key.0 == ActiveNativeAttemptCoverage::KEY)
+            .collect::<Vec<_>>();
+        let model_entry_cursor = snapshot
+            .state
+            .iter()
+            .zip(&snapshot.state_commit_cursors)
+            .find_map(|(command, cursor)| {
+                (command.key.0 == ActiveModelOperation::KEY).then_some(*cursor)
+            });
+        if row == "fresh-closed" {
+            assert_eq!(coverage.len(), 1, "R1");
+            assert!(coverage[0].1 < &model_entry_cursor.unwrap(), "R1 ordering");
+            assert_eq!(
+                classify_native_attempt_termination(&snapshot).unwrap(),
+                NativeAttemptTermination::AllExecutionStopped,
+                "R1"
+            );
+        } else if row == "existing-covered-tool" {
+            assert_eq!(coverage.len(), 1, "R4 retained marker");
+            assert!(model_entry_cursor.is_none(), "R4 no model entry");
+        } else {
+            assert!(coverage.is_empty(), "R2/R3 {row}");
+            assert!(model_entry_cursor.is_some(), "R2/R3 model entry");
+            assert_eq!(
+                classify_native_attempt_termination(&snapshot).unwrap(),
+                NativeAttemptTermination::Unknown,
+                "R2/R3 {row}"
+            );
+        }
+    }
+}
+
 fn advisor_activation(with_candidate: bool) -> RunActivation {
     let mut activation = activation("catalog-a");
     activation.snapshot.resolved_spec.tool_descriptors = vec![

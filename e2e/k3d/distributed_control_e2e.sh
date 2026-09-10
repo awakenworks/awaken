@@ -19,11 +19,25 @@ STOPPED_NODE=""
 WORKER_TLS_DIR=""
 CONTINUATION_VOLUME=""
 CLUSTER_CREATED=0
+NATIVE_CRASH_OLD="native-crash-old"
+NATIVE_CRASH_NEXT="native-crash-next"
+NATIVE_CRASH_MARKER="ADR71-NATIVE-HARD-CRASH"
 export CARGO_CACHE_AUTOCLEAN=0
 
 log() { echo -e "\n\033[1;36m== $* ==\033[0m"; }
 ok() { echo -e "\033[1;32m$*\033[0m"; }
 err() { echo -e "\033[1;31m$*\033[0m"; }
+
+coordinator_worker_log_count() {
+  local pattern="$1"
+  local pod count total=0
+  while IFS= read -r pod; do
+    count=$(kubectl -n "$NS" logs "$pod" -c worker-tls --since=10m \
+      | grep -Ec "$pattern" || true)
+    total=$((total + count))
+  done < <(kubectl -n "$NS" get pods -l app=coordinator -o name)
+  printf '%s\n' "$total"
+}
 
 cleanup() {
   local status="$1"
@@ -47,6 +61,13 @@ cleanup() {
 
 k3d_admit_or_exit "ADR-0071 distributed E2E"
 k3d_install_exit_cleanup cleanup
+
+# The public driver intentionally uses the repository-pinned official SDK.
+# Fail before building four binaries and a cluster when that committed E2E
+# dependency tree has not been installed; package-lock.json remains its only
+# version authority.
+(cd "$REPO_ROOT/e2e" && node --input-type=module -e "import('@anthropic-ai/sdk')") \
+  || { err "E2E dependencies are missing; run: npm ci --prefix e2e"; exit 1; }
 
 start_public_endpoint() {
   if [ -n "$API_PF" ]; then
@@ -134,11 +155,100 @@ YAML
   kubectl -n "$NS" wait --for=condition=complete "job/$job" --timeout=240s
 }
 
-log "1/10 build production roles and the protocol-only Provider fixture"
+create_native_worker_pod() {
+  local pod_name="$1"
+  # One canonical Pod template covers predecessor and successor. The projected
+  # coordinate is authenticated independently by TokenReview; restartPolicy
+  # Never, the retained finalizer and a private non-privileged process namespace
+  # are prerequisites for exact termination evidence, not test conveniences.
+  kubectl -n "$NS" apply -f - >/dev/null <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${pod_name}
+  labels: { app: worker, awaken.dev/native-crash-fixture: "true" }
+  finalizers: [awaken.dev/worker-process-evidence]
+spec:
+  serviceAccountName: worker-runtime
+  automountServiceAccountToken: true
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 5
+  securityContext:
+    fsGroup: 10001
+    fsGroupChangePolicy: OnRootMismatch
+  containers:
+    - name: worker
+      image: ${IMAGE}
+      imagePullPolicy: Never
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities: { drop: ["ALL"] }
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      command: ["/bin/sh", "-ec"]
+      args:
+        - |
+          sed -e '/^worker_id =/d' \
+              -e '/^worker_request_credential_file =/d' \
+              -e '/^worker_max_concurrent =/d' \
+              /etc/awaken-template/worker.toml > /tmp/worker.toml
+          printf '\nworker_kubernetes_identity_directory = "/var/run/awaken/identity"\nworker_max_concurrent = 1\n' >> /tmp/worker.toml
+          exec /usr/local/bin/awaken-worker --server https://coordinator:3443 --config /tmp/worker.toml
+      ports: [{ containerPort: 9090 }]
+      readinessProbe:
+        httpGet: { path: /readyz, port: 9090 }
+        initialDelaySeconds: 2
+        periodSeconds: 2
+      resources:
+        requests: { cpu: 250m, memory: 256Mi }
+        limits: { cpu: "2", memory: 2Gi }
+      volumeMounts:
+        - { name: template, mountPath: /etc/awaken-template, readOnly: true }
+        - { name: upstream-tls, mountPath: /etc/awaken-worker-tls, readOnly: true }
+        - { name: material, mountPath: /var/run/awaken/credentials, readOnly: true }
+        - { name: identity, mountPath: /var/run/awaken/identity, readOnly: true }
+        - { name: data, mountPath: /var/lib/awaken }
+  volumes:
+    - name: template
+      secret:
+        secretName: adr71-role-config
+        items: [{ key: worker.toml, path: worker.toml }]
+    - name: upstream-tls
+      configMap:
+        name: adr71-worker-upstream-ca
+        items: [{ key: ca.crt, path: ca.crt }]
+    - name: material
+      secret:
+        secretName: adr71-worker-material
+        items:
+          - key: provider-secret
+            path: envelopes/61647237312d656e76656c6f7065/7368613235363a61647237312d70726f76696465722d7061796c6f6164/61647237312d70726f76696465722d63726564656e7469616c/1/776f726b73706163652d6164723731/666e76316136343a37616138653836326333363034333234/secret
+          - key: payload-fingerprint
+            path: envelopes/61647237312d656e76656c6f7065/7368613235363a61647237312d70726f76696465722d7061796c6f6164/61647237312d70726f76696465722d63726564656e7469616c/1/776f726b73706163652d6164723731/666e76316136343a37616138653836326333363034333234/payload_fingerprint
+    - name: identity
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: token
+              audience: awaken-worker
+              expirationSeconds: 600
+          - downwardAPI:
+              items:
+                - { path: namespace, fieldRef: { fieldPath: metadata.namespace } }
+                - { path: name, fieldRef: { fieldPath: metadata.name } }
+                - { path: uid, fieldRef: { fieldPath: metadata.uid } }
+    - name: data
+      emptyDir: {}
+YAML
+}
+
+log "1/11 build production roles and the protocol-only Provider fixture"
 # The canonical Cargo/Docker caches own incremental reuse. An existing tag
 # alone cannot establish that any of these four binaries matches this tree.
 CONTROL_BIN=$(resolve_cargo_executable awaken-cli awaken-control)
-COORDINATOR_BIN=$(resolve_cargo_executable awaken-cli awaken-coordinator)
+COORDINATOR_BIN=$(resolve_cargo_executable awaken-cli awaken-coordinator --features container-k8s)
 WORKER_BIN=$(resolve_cargo_executable awaken-worker awaken-worker --features container-k8s)
 SCENARIO_BIN=$(resolve_cargo_executable awaken-scenario-host awaken-scenario-host)
 [ -n "$CONTROL_BIN" ] && [ -n "$COORDINATOR_BIN" ] && [ -n "$WORKER_BIN" ] && [ -n "$SCENARIO_BIN" ] \
@@ -152,7 +262,7 @@ cp "$SCENARIO_BIN" "$DEPLOY_DIR/awaken-server"
 # copies so K3D does not need a second multi-GiB tar while importing the image.
 strip --strip-unneeded "$DEPLOY_DIR/awaken-control" "$DEPLOY_DIR/awaken-coordinator" "$DEPLOY_DIR/awaken-worker" "$DEPLOY_DIR/awaken-server"
 
-log "2/10 create three K3S worker nodes and import immutable test images"
+log "2/11 create three K3S worker nodes and import immutable test images"
 "$REPO_ROOT/deploy/images/sandbox/build.sh" awaken-sandbox:local ""
 k3d_docker_build --load -q -t "$IMAGE" \
   --build-arg AUXILIARY_EXECUTABLE=awaken-control \
@@ -229,9 +339,10 @@ kubectl -n "$NS" create secret tls adr71-worker-upstream-tls \
 # ClusterIP before DNAT -> a ClusterIP rule may work but is not portable; A2 it
 # evaluates the backend after DNAT (K3S) -> that same rule silently blocks every
 # Session Pod operation; A3 the harness resolves the authoritative Endpoint and
-# admits only its exact IP/port -> the Worker K8s adapter can operate while all
-# other HTTPS egress remains denied. The namespace-scoped ServiceAccount remains
-# the independent authorization fence. Invalid coordinates fail before apply.
+# admits only its exact IP/port -> Worker Sandbox operations and Coordinator
+# TokenReview/process-stop observations can operate while all other HTTPS egress
+# remains denied. Their distinct ServiceAccounts remain the authorization fence.
+# Invalid coordinates fail before apply.
 KUBE_API_IP=$(kubectl get endpoints kubernetes -o jsonpath='{.subsets[0].addresses[0].ip}')
 KUBE_API_PORT=$(kubectl get endpoints kubernetes -o jsonpath='{.subsets[0].ports[0].port}')
 [[ "$KUBE_API_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] \
@@ -240,16 +351,18 @@ KUBE_API_PORT=$(kubectl get endpoints kubernetes -o jsonpath='{.subsets[0].ports
 kubectl -n "$NS" apply -f - >/dev/null <<YAML
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
-metadata: { name: worker-kube-api }
+metadata: { name: runtime-kube-api }
 spec:
-  podSelector: { matchLabels: { app: worker } }
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [worker, coordinator] }
   policyTypes: [Egress]
   egress:
     - to: [{ ipBlock: { cidr: "${KUBE_API_IP}/32" } }]
       ports: [{ protocol: TCP, port: ${KUBE_API_PORT} }]
 YAML
 
-log "3/10 deploy replicated authorities, real Workers, and PostgreSQL standby"
+log "3/11 deploy replicated authorities, real Workers, and PostgreSQL standby"
 # Cause/effect decision table:
 # K1 delayed primary Service + bounded base-backup reconnect -> standby retries
 # the same replication source and becomes ready within the rollout deadline;
@@ -299,14 +412,14 @@ while IFS= read -r candidate; do
   fi
 done < <(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
 
-log "4/10 exercise the complete public configuration-to-response path"
+log "4/11 exercise the complete public configuration-to-response path"
 BOOTSTRAP=$(node "$DRIVER" bootstrap "$API_URL" | tail -1)
 [ "${BOOTSTRAP%% *}" = "OK" ] || { err "bootstrap failed: $BOOTSTRAP"; diagnostics; exit 1; }
 read -r _ DEPLOYMENT_ID SESSION_ID ENVIRONMENT_ID FILE_ID MEMORY_ID SKILL_ID <<<"$BOOTSTRAP"
 kubectl uncordon "${CORDONED_NODES[@]}" >/dev/null
 ok "one endpoint completed Credential/File/Memory/Skill/Agent/Deployment/Session/Provider flow"
 
-log "5/10 prove Worker process isolation and material realization"
+log "5/11 prove Worker process isolation and material realization"
 WORKER_SPEC=$(kubectl -n "$NS" get statefulset worker -o json)
 if printf '%s' "$WORKER_SPEC" | grep -Eq 'postgres://|DATABASE_URL|seal-key|control-auth|coordinator-auth'; then
   err "Worker workload received authority database or seal configuration"
@@ -341,7 +454,7 @@ SKILL|/workspace/.skills/${SKILL_ID}/SKILL.md|ADR71-SKILL-MATERIALIZED
 MATERIALIZATION_CASES
 ok "Workers have no DB socket/config/seal; the Session Pod owns every exact Resource projection"
 
-log "6/10 remove the entire Coordinator tier, then recover the same publication"
+log "6/11 remove the entire Coordinator tier, then recover the same publication"
 # C1 Coordinator unavailable -> public publication fails retryably and Workers
 # revoke their local claim admission; C2 Coordinator restored -> durable
 # publication remains available, but drained Worker incarnations terminate;
@@ -364,7 +477,7 @@ WORKER_CONTAINERS_AFTER=$(kubectl -n "$NS" get pod -l app=worker -o jsonpath='{r
 [ "$WORKER_CONTAINERS_BEFORE" != "$WORKER_CONTAINERS_AFTER" ] || { err "drained Worker containers were reused"; exit 1; }
 ok "Coordinator outage failed closed; RestartPolicy restored fresh Worker incarnations"
 
-log "7/10 inject single-Pod faults and concurrent durable traffic"
+log "7/11 inject single-Pod faults and concurrent durable traffic"
 # Cause/effect decision table:
 # C1 one Control/Coordinator Pod removed -> the peer serves the same durable IDs;
 # C2 peer Coordinator commits a Run -> the request owner reads the canonical
@@ -427,7 +540,7 @@ node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AF
 wait_roles || { diagnostics; exit 1; }
 ok "Pod loss and concurrent traffic preserved exactly-once terminal responses"
 
-log "8/10 stop one K3D agent node and verify public continuity"
+log "8/11 stop one K3D agent node and verify public continuity"
 # Cause/effect decision table:
 # N1 hard node stop + Ready still True -> no business write during the detection window;
 # N2 Ready False/Unknown -> failed role endpoints are evicted; N2b a StatefulSet
@@ -539,7 +652,7 @@ RESTORED_NODE="$STOPPED_NODE"
 STOPPED_NODE=""
 kubectl wait --for=condition=Ready "node/$RESTORED_NODE" --timeout=180s
 
-log "9/10 hard-crash the synchronous PostgreSQL writer and promote its standby"
+log "9/11 hard-crash the synchronous PostgreSQL writer and promote its standby"
 # Database failover cause/effect graph:
 # D1 the API acknowledged the preceding durable marker; D2 PostgreSQL reports
 # exactly one synchronous remote_apply standby; D3 the primary container dies
@@ -604,11 +717,139 @@ wait_roles || { diagnostics; exit 1; }
 start_public_endpoint
 node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-DATABASE-FAILOVER
 
-log "10/10 run concurrent pressure through the same endpoint and audit final truth"
+log "10/11 run concurrent pressure through the same endpoint and audit final truth"
 node "$DRIVER" load "$API_URL" "$ENVIRONMENT_ID"
 DATABASES=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d awaken -tAc \
   "SELECT count(*) FROM pg_database WHERE datname IN ('control','credentials','runtime','resources')" | tr -d '[:space:]')
 [ "$DATABASES" = "4" ] || { err "expected four isolated owner databases, got $DATABASES"; exit 1; }
 kubectl -n "$NS" get pods -o custom-columns=POD:.metadata.name,APP:.metadata.labels.app,NODE:.spec.nodeName --no-headers
 
-ok "K3D/K3S FULL E2E PASS: one public API covered configuration, resources, credentials, publication, deployment, real Worker execution and response; tier, Worker, node, provider, and PostgreSQL faults recovered without duplicate terminal output; concurrent load met the public latency/error gates."
+log "11/11 hard-crash a Pod-bound Native Worker and recover without model replay"
+# Native takeover cause/effect decision table:
+# C1 only one non-restarting Pod-bound Worker is Ready; C2 a tool/Skill/Resource-
+# free Native Run commits exactly one terminal Provider response; C3 the TLS
+# fixture rejects only that predecessor's exact finish ACK; C4 its CRI container
+# is hard-killed and the retained Pod reports the same terminated container;
+# C5 the old Worker and Run leases expire; C6 a differently named/UID successor
+# retries the existing claim. Effects: E1 the predecessor slot remains occupied
+# until C4+C5; E2 the independent Coordinator closes and observes the exact Pod,
+# reads the original ThreadCommit, then invokes only Dispatch's exact finish;
+# E3 the successor completes the same receipt with no second Provider request;
+# E4 the successor Pod remains live and the old deletion evidence stays retained.
+# Rules K1 C1+C2+C3=>E1; K2 C4+C5+C6=>E2; K3 E2+C6=>E3+E4. Missing evidence,
+# stale UID, opaque execution history or response timeout must retain the slot.
+AWAKEN_K8S_E2E=1 AWAKEN_K3D_CLUSTER="$CLUSTER" AWAKEN_K8S_FIXTURE_IMAGE="$IMAGE" \
+  cargo test -p awaken-cli --features container-k8s --lib \
+  real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_attempt
+kubectl -n "$NS" scale statefulset/worker --replicas=0 >/dev/null
+kubectl -n "$NS" wait --for=delete pod/worker-0 pod/worker-1 --timeout=180s
+
+COORDINATOR_CONFIG=$(kubectl -n "$NS" get secret adr71-role-config \
+  -o jsonpath='{.data.coordinator\.toml}' | base64 -d)
+grep -q '^worker_trust_credentials_file = ' <<<"$COORDINATOR_CONFIG" \
+  || { err "initial Coordinator transport is not the expected signed authority"; exit 1; }
+COORDINATOR_CONFIG=$(sed '/^worker_trust_credentials_file = /d' <<<"$COORDINATOR_CONFIG")
+COORDINATOR_CONFIG+=$'\n[worker_kubernetes]\nnamespace = "awaken-adr71"\nservice_account = "worker-runtime"\naudience = "awaken-worker"\nprovider_id = "k3d-adr71"\n'
+COORDINATOR_CONFIG_B64=$(printf '%s' "$COORDINATOR_CONFIG" | base64 | tr -d '\n')
+kubectl -n "$NS" patch secret adr71-role-config --type=merge \
+  -p "{\"data\":{\"coordinator.toml\":\"${COORDINATOR_CONFIG_B64}\"}}" >/dev/null
+COORDINATOR_SUBJECT="system:serviceaccount:${NS}:coordinator-runtime"
+[ "$(kubectl auth can-i create tokenreviews.authentication.k8s.io --as="$COORDINATOR_SUBJECT")" = "yes" ] \
+  || { err "coordinator-runtime cannot create TokenReviews"; exit 1; }
+for pod_verb in get delete; do
+  [ "$(kubectl auth can-i "$pod_verb" pods --as="$COORDINATOR_SUBJECT" -n "$NS")" = "yes" ] \
+    || { err "coordinator-runtime cannot ${pod_verb} Pods"; exit 1; }
+done
+kubectl -n "$NS" rollout restart deployment/coordinator >/dev/null
+kubectl -n "$NS" rollout status deployment/coordinator --timeout=240s
+start_public_endpoint
+
+create_native_worker_pod "$NATIVE_CRASH_OLD"
+kubectl -n "$NS" wait --for=condition=Ready "pod/$NATIVE_CRASH_OLD" --timeout=240s
+NATIVE_OLD_UID=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_OLD" -o jsonpath='{.metadata.uid}')
+[[ "$NATIVE_OLD_UID" =~ ^[0-9a-f-]+$ ]] \
+  || { err "old Native Worker has no exact Pod UID"; exit 1; }
+
+NATIVE_PREPARE=$(node "$DRIVER" prepare-native-crash \
+  "$API_URL" "$ENVIRONMENT_ID" "$NATIVE_CRASH_MARKER" | tail -1)
+[ "${NATIVE_PREPARE%% *}" = "OK" ] \
+  || { err "Native crash preparation failed: $NATIVE_PREPARE"; exit 1; }
+read -r _ NATIVE_SESSION_ID NATIVE_RECEIPT_ID <<<"$NATIVE_PREPARE"
+[ -n "$NATIVE_SESSION_ID" ] && [ -n "$NATIVE_RECEIPT_ID" ] \
+  || { err "Native crash preparation returned incomplete identities"; exit 1; }
+
+FINISH_REJECTED=0
+for _ in $(seq 1 60); do
+  # `kubectl logs -l` may select only one replica. Join every named Coordinator
+  # Pod so a request handled by either TLS sidecar is observable; absence from
+  # one replica is not evidence that the distributed boundary was not crossed.
+  FINISH_REJECTED=$(coordinator_worker_log_count \
+    'POST /v1/worker/dispatch/attempt/finish.* 503 ')
+  [ "$FINISH_REJECTED" -gt 0 ] && break
+  sleep 1
+done
+[ "$FINISH_REJECTED" -gt 0 ] \
+  || { err "old Native Worker never reached the held finish ACK boundary"; exit 1; }
+NATIVE_PROVIDER_BEFORE_CRASH=$(kubectl -n "$NS" logs -l app=provider -c provider --since=30m \
+  | grep -Fc "ADR71_PROVIDER_REQUEST \"${NATIVE_CRASH_MARKER}\"" || true)
+[ "$NATIVE_PROVIDER_BEFORE_CRASH" = "1" ] \
+  || { err "Native crash Run reached Provider ${NATIVE_PROVIDER_BEFORE_CRASH} times before crash"; exit 1; }
+
+NATIVE_DISPATCH=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -Atc \
+  "SELECT run_id || '|' || active_attempt_owner || '|' || active_attempt_epoch::text
+     FROM runtime_dispatch
+    WHERE request::text LIKE '%${NATIVE_SESSION_ID}%'
+      AND active_attempt_owner LIKE 'k8s:${NS}:${NATIVE_CRASH_OLD}:%'")
+[ "$(grep -c . <<<"$NATIVE_DISPATCH")" = "1" ] \
+  || { err "expected one exact occupied Native dispatch, got: $NATIVE_DISPATCH"; exit 1; }
+IFS='|' read -r NATIVE_RUN_ID NATIVE_OLD_OWNER NATIVE_OLD_EPOCH <<<"$NATIVE_DISPATCH"
+[ -n "$NATIVE_RUN_ID" ] && [ -n "$NATIVE_OLD_OWNER" ] && [[ "$NATIVE_OLD_EPOCH" =~ ^[0-9]+$ ]] \
+  || { err "occupied Native dispatch coordinates are malformed"; exit 1; }
+
+NATIVE_OLD_NODE=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_OLD" -o jsonpath='{.spec.nodeName}')
+NATIVE_OLD_CONTAINER=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_OLD" \
+  -o jsonpath='{.status.containerStatuses[0].containerID}')
+NATIVE_OLD_CONTAINER=${NATIVE_OLD_CONTAINER#containerd://}
+[[ "$NATIVE_OLD_NODE" == "k3d-${CLUSTER}-"* ]] \
+  && [[ "$NATIVE_OLD_CONTAINER" =~ ^[0-9a-f]{64}$ ]] \
+  || { err "invalid Native Worker CRI crash target"; exit 1; }
+docker exec "$NATIVE_OLD_NODE" crictl stop --timeout 0 "$NATIVE_OLD_CONTAINER" >/dev/null
+for _ in $(seq 1 90); do
+  NATIVE_OLD_PHASE=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_OLD" -o jsonpath='{.status.phase}')
+  NATIVE_TERMINATED_CONTAINER=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_OLD" \
+    -o jsonpath='{.status.containerStatuses[0].state.terminated.containerID}')
+  [ "$NATIVE_OLD_PHASE" = "Failed" ] \
+    && [ "$NATIVE_TERMINATED_CONTAINER" = "containerd://${NATIVE_OLD_CONTAINER}" ] \
+    && break
+  sleep 1
+done
+[ "$NATIVE_OLD_PHASE" = "Failed" ] \
+  && [ "$NATIVE_TERMINATED_CONTAINER" = "containerd://${NATIVE_OLD_CONTAINER}" ] \
+  || { err "Kubernetes did not retain the exact hard-crashed Worker process"; exit 1; }
+
+create_native_worker_pod "$NATIVE_CRASH_NEXT"
+kubectl -n "$NS" wait --for=condition=Ready "pod/$NATIVE_CRASH_NEXT" --timeout=240s
+node "$DRIVER" verify-native-crash \
+  "$API_URL" "$NATIVE_SESSION_ID" "$NATIVE_RECEIPT_ID" "$NATIVE_CRASH_MARKER"
+
+NATIVE_REMAINING=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d runtime -Atc \
+  "SELECT count(*) FROM runtime_dispatch WHERE run_id = '${NATIVE_RUN_ID}'" | tr -d '[:space:]')
+[ "$NATIVE_REMAINING" = "0" ] \
+  || { err "recovered Native dispatch was not settled"; exit 1; }
+NATIVE_OLD_DELETION=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_OLD" \
+  -o jsonpath='{.metadata.deletionTimestamp}')
+NATIVE_OLD_FINALIZERS=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_OLD" \
+  -o jsonpath='{.metadata.finalizers[*]}')
+NATIVE_NEXT_DELETION=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_NEXT" \
+  -o jsonpath='{.metadata.deletionTimestamp}')
+[ -n "$NATIVE_OLD_DELETION" ] \
+  && grep -qw 'awaken.dev/worker-process-evidence' <<<"$NATIVE_OLD_FINALIZERS" \
+  && [ -z "$NATIVE_NEXT_DELETION" ] \
+  || { err "exact predecessor deletion evidence or successor isolation was lost"; exit 1; }
+NATIVE_PROVIDER_REQUESTS=$(kubectl -n "$NS" logs -l app=provider -c provider --since=30m \
+  | grep -Fc "ADR71_PROVIDER_REQUEST \"${NATIVE_CRASH_MARKER}\"" || true)
+[ "$NATIVE_PROVIDER_REQUESTS" = "1" ] \
+  || { err "Native crash Run reached Provider ${NATIVE_PROVIDER_REQUESTS} times"; exit 1; }
+ok "Pod-bound Native hard crash retired only the exact predecessor and settled without model replay"
+
+ok "K3D/K3S FULL E2E PASS: one public API covered configuration, resources, credentials, publication, deployment, real Worker execution and response; tier, Worker, node, provider, PostgreSQL and Pod-bound Native hard-crash faults recovered without duplicate terminal output; concurrent load met the public latency/error gates."

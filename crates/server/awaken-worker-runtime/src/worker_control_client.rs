@@ -15,7 +15,57 @@ pub enum WorkerRegistrationError {
     #[error("{0}")]
     SlotOccupied(String),
     #[error("{0}")]
+    Unavailable(String),
+    #[error("{0}")]
     Rejected(String),
+}
+
+#[derive(Debug)]
+struct WorkerControlRequestError {
+    message: String,
+    retryable: bool,
+}
+
+impl WorkerControlRequestError {
+    fn request(error: reqwest::Error) -> Self {
+        let kind = if error.is_connect() {
+            "connect"
+        } else if error.is_timeout() {
+            "timeout"
+        } else if error.is_body() {
+            "body"
+        } else if error.is_builder() {
+            "request"
+        } else {
+            "transport"
+        };
+        Self {
+            message: format!("worker control transport ({kind}): {error}"),
+            retryable: !error.is_builder(),
+        }
+    }
+
+    fn response(status: reqwest::StatusCode, error: reqwest::Error) -> Self {
+        Self {
+            message: format!("worker control response decode ({status}): {error}"),
+            retryable: status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error(),
+        }
+    }
+}
+
+impl std::fmt::Display for WorkerControlRequestError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl From<String> for WorkerControlRequestError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            retryable: false,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -33,7 +83,7 @@ impl WorkerControlClient {
         &self,
         path: &str,
         body: Value,
-    ) -> Result<(reqwest::StatusCode, Value), String> {
+    ) -> Result<(reqwest::StatusCode, Value), WorkerControlRequestError> {
         let request = self
             .upstream
             .client()
@@ -44,17 +94,20 @@ impl WorkerControlClient {
             .json(&body)
             .send()
             .await
-            .map_err(|error| format!("worker control transport: {error}"))?;
+            .map_err(WorkerControlRequestError::request)?;
         let status = response.status();
         let body: Value = response
             .json()
             .await
-            .map_err(|error| format!("worker control response decode: {error}"))?;
+            .map_err(|error| WorkerControlRequestError::response(status, error))?;
         Ok((status, body))
     }
 
     async fn post(&self, path: &str, body: Value) -> Result<Value, String> {
-        let (status, body) = self.post_response(path, body).await?;
+        let (status, body) = self
+            .post_response(path, body)
+            .await
+            .map_err(|error| error.to_string())?;
         if status.is_success() {
             Ok(body)
         } else {
@@ -102,7 +155,7 @@ impl WorkerControlClient {
                 json!({ "identity": identity, "intent": intent }),
             )
             .await
-            .map_err(awaken_session_contract::RunError::unavailable)?;
+            .map_err(|error| awaken_session_contract::RunError::unavailable(error.to_string()))?;
         if !status.is_success() {
             return Err(Self::session_environment_error(status, &body));
         }
@@ -127,7 +180,7 @@ impl WorkerControlClient {
                 json!({ "identity": identity, "receipt": receipt }),
             )
             .await
-            .map_err(awaken_session_contract::RunError::unavailable)?;
+            .map_err(|error| awaken_session_contract::RunError::unavailable(error.to_string()))?;
         if !status.is_success() {
             return Err(Self::session_environment_error(status, &body));
         }
@@ -148,7 +201,7 @@ impl WorkerControlClient {
         incarnation_id: impl Into<String>,
         manifest: WorkerManifest,
     ) -> Result<WorkerRegistrationReceipt, WorkerRegistrationError> {
-        let (status, body) = self
+        let response = self
             .post_response(
                 "/v1/worker/register",
                 json!({
@@ -159,8 +212,14 @@ impl WorkerControlClient {
                     }
                 }),
             )
-            .await
-            .map_err(WorkerRegistrationError::Rejected)?;
+            .await;
+        let (status, body) = match response {
+            Ok(response) => response,
+            Err(error) if error.retryable => {
+                return Err(WorkerRegistrationError::Unavailable(error.to_string()));
+            }
+            Err(error) => return Err(WorkerRegistrationError::Rejected(error.to_string())),
+        };
         if !status.is_success() {
             let message = body
                 .get("error")
@@ -169,6 +228,8 @@ impl WorkerControlClient {
                 .to_string();
             return if status == reqwest::StatusCode::CONFLICT {
                 Err(WorkerRegistrationError::SlotOccupied(message))
+            } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                Err(WorkerRegistrationError::Unavailable(message))
             } else {
                 Err(WorkerRegistrationError::Rejected(message))
             };
@@ -719,10 +780,11 @@ impl WorkerControlClient {
         path: &str,
         body: Value,
     ) -> Result<Value, awaken_session_contract::SessionRealizationControlFailure> {
-        let (status, body) = self
-            .post_response(path, body)
-            .await
-            .map_err(awaken_session_contract::SessionRealizationControlFailure::Unavailable)?;
+        let (status, body) = self.post_response(path, body).await.map_err(|error| {
+            awaken_session_contract::SessionRealizationControlFailure::Unavailable(
+                error.to_string(),
+            )
+        })?;
         if status.is_success() {
             return Ok(body);
         }

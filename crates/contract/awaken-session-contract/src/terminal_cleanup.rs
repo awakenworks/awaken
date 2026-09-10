@@ -243,7 +243,7 @@ mod tests {
     fn terminal_memory_batch_projection_is_exact_and_fail_closed() {
         // Cause/effect decision table:
         // | Rule | evidence -> frozen mount | source/store | access | Effect |
-        // | B1 | exactly one | exact Memory | RW | one existing single-item intent |
+        // | B1 | logical path projects to exact physical Memory path | exact Memory | RW | one existing single-item intent |
         // | B2 | exactly one | exact Memory | RO | explicit skip |
         // | B3 | zero or multiple inputs for evidence | any | any | ResourceMismatch |
         // | B4 | no evidence for frozen input | exact Memory | RW | no intent (FUSE) |
@@ -275,13 +275,13 @@ mod tests {
         );
         let ro_evidence = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
             "store-ro",
-            "/memory/ro",
+            "/mnt/memory/ro",
             Vec::new(),
         )
         .unwrap();
         let rw_evidence = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
             "store-rw",
-            "/memory/rw",
+            "/mnt/memory/rw",
             Vec::new(),
         )
         .unwrap();
@@ -304,7 +304,7 @@ mod tests {
 
         let missing = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
             "store-missing",
-            "/memory/missing",
+            "/mnt/memory/missing",
             Vec::new(),
         )
         .unwrap();
@@ -339,7 +339,7 @@ mod tests {
 
         let wrong_store = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
             "store-other",
-            "/memory/rw",
+            "/mnt/memory/rw",
             Vec::new(),
         )
         .unwrap();

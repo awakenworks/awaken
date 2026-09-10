@@ -4,8 +4,10 @@ EXTENDS SessionRunProtocol
 \* Participant evidence over the EXISTING composition, not another Dispatch.
 \* Its aggregate external attempt contains four independent participant kinds.
 \* Provider receipt authenticity and complete participant enrollment before
-\* effects are trusted boundaries, NOT claims about current Native wiring.
-\* In particular this specification does not infer absence from missing data.
+\* effects are trusted boundaries. Production Native refines one strict subset:
+\* ModelOnlyV1 closes tool/hook participation before effects and journals every
+\* model operation; all wider surfaces remain Unknown. This specification does
+\* not infer absence from missing data.
 Participants == {"local", "model", "tool", "hook"}
 Attempts == Runs \X Workers \X (1..MaxEpoch)
 Subject(participant) == <<participant[1], participant[2], participant[3]>>
