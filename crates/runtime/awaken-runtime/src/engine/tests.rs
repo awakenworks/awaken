@@ -1200,7 +1200,8 @@ async fn logical_model_request_observations_cover_success_without_usage_and_fail
         None,
         None,
     )
-    .await;
+    .await
+    .expect("checkpoint retirement is not configured");
     assert!(success.result.is_ok(), "R1/E1");
     assert_eq!(
         success.observation,
@@ -1225,7 +1226,8 @@ async fn logical_model_request_observations_cover_success_without_usage_and_fail
         None,
         None,
     )
-    .await;
+    .await
+    .expect("checkpoint retirement is not configured");
     assert!(failure.result.is_err(), "R2/E1");
     assert!(failure.observation.is_error, "R2/E2");
     assert_eq!(failure.observation.usage, Default::default(), "R2/E3");
@@ -1274,6 +1276,7 @@ async fn provider_attempts_fail_closed_when_live_ownership_is_lost() {
         None,
     )
     .await
+    .expect("checkpoint retirement is not configured")
     .result
     .expect_err("O2 stale claim fails closed");
     assert!(matches!(error, LlmError::Unauthorized(_)), "O2/E2");
@@ -1305,6 +1308,7 @@ async fn provider_attempts_fail_closed_when_live_ownership_is_lost() {
         None,
     )
     .await
+    .expect("checkpoint retirement is not configured")
     .result
     .expect_err("O4 child observes the parent's lost authority");
     assert!(matches!(error, LlmError::Unauthorized(_)), "O4/E2");
@@ -1336,6 +1340,7 @@ async fn provider_attempts_fail_closed_when_live_ownership_is_lost() {
         None,
     )
     .await
+    .expect("checkpoint retirement is not configured")
     .result
     .expect_err("O3 retry observes lost claim");
     assert!(matches!(error, LlmError::Unauthorized(_)), "O3/E2");
@@ -1384,7 +1389,8 @@ async fn model_entry_evidence_does_not_replace_post_write_ownership_verification
         Some(&ownership),
         Some(&mut journal),
     )
-    .await;
+    .await
+    .expect("checkpoint retirement is not configured");
     assert!(matches!(result.result, Err(LlmError::Unauthorized(_))));
     assert!(provider.requests.lock().unwrap().is_empty());
     assert_eq!(
@@ -1575,7 +1581,8 @@ async fn interrupted_text_stream_is_continued_from_the_partial() {
         None,
         None,
     )
-    .await;
+    .await
+    .expect("checkpoint retirement is not configured");
     let response = observed.result.expect("continues past the drop");
 
     // The committed step is the whole text: prefix + continuation, stitched once.
@@ -1745,11 +1752,46 @@ async fn an_in_flight_tool_call_is_dropped_and_the_text_continues() {
 /// following persisted-partial tests cover crash-before-clear recovery.
 /// Constraints/invariants: the checkpoint is Run-scoped and survives only a
 /// crash before the confirmed return-path deletion; Unknown never authorizes deletion.
+#[test]
+fn spent_checkpoint_clear_decision_table_is_total() {
+    // Causes: C1 the observation was cancelled; C2 its journal evidence write
+    // failed; C3 physical quiescence permits acknowledging return. Effect E1
+    // issues the existing checkpoint delete only for !C1+!C2+C3; E2 retains it.
+    // The eight rules exhaust the Boolean kernel domain. Store presence and the
+    // async delete result remain caller/effect boundaries, not inputs to this gate.
+    //
+    // | Rule | Cancelled | Journal failed | Can ACK | Clear |
+    // |---|---|---|---|---|
+    // | R1 | no | no | yes | yes |
+    // | R2 | no | no | no | no |
+    // | R3 | no | yes | yes | no |
+    // | R4 | no | yes | no | no |
+    // | R5 | yes | no | yes | no |
+    // | R6 | yes | no | no | no |
+    // | R7 | yes | yes | yes | no |
+    // | R8 | yes | yes | no | no |
+    for (cancelled, journal_failed, can_ack, expected) in [
+        (false, false, true, true),
+        (false, false, false, false),
+        (false, true, true, false),
+        (false, true, false, false),
+        (true, false, true, false),
+        (true, false, false, false),
+        (true, true, true, false),
+        (true, true, false, false),
+    ] {
+        assert_eq!(
+            should_clear_spent_checkpoint(cancelled, journal_failed, can_ack),
+            expected
+        );
+    }
+}
+
 #[tokio::test]
 async fn the_interruption_boundary_flushes_a_checkpoint_then_clears_it_on_return() {
     // A text-only drop with no retry budget: the boundary flush persists the
-    // partial, and the unconditional delete-on-return clears it (the run
-    // concluded in-process, so nothing to resume).
+    // partial; an unvetoed, physically quiescent return then requests deletion
+    // (the run concluded in-process, so nothing remains eligible to resume).
     let flaky = Arc::new(FlakyStreamLlm {
         requests: Default::default(),
         first_partial: "half ",
@@ -1833,7 +1875,8 @@ async fn a_persisted_text_partial_resumes_in_a_fresh_call() {
         None,
         None,
     )
-    .await;
+    .await
+    .expect("checkpoint retirement is not configured");
     let response = observed.result.expect("resumes from the persisted partial");
 
     assert_eq!(response.output.text_content(), "Hello world");
