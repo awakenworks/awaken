@@ -142,6 +142,7 @@ pub(crate) async fn interrupt_awaiting_tools(
             new_messages: Vec::new(),
             staged_state: vec![ActiveToolBatch::remove()],
             audit: Vec::new(),
+            resume: None,
             disposition: RunDisposition::ended(
                 run_id.clone(),
                 EndCause::Error(Failure::StateConflict),
@@ -185,6 +186,7 @@ pub(crate) async fn interrupt_awaiting_tools(
         new_messages: messages,
         staged_state: vec![ActiveToolBatch::write(&Some(batch))],
         audit: Vec::new(),
+        resume: None,
         disposition: RunDisposition::ended(run_id.clone(), EndCause::NaturalEnd),
     };
     finish(runtime, &context, &thread_id, run_id, step).await
@@ -328,6 +330,12 @@ async fn resume_with_continuation(
         .resume_ticket(&command.run_id)
         .ok_or_else(|| Error::Execution("run is not awaiting".to_string()))?;
     validate_resume(&ticket, &command).map_err(|err| Error::Execution(err.to_string()))?;
+    // Delegation continuation retains its execution ticket across child turns
+    // and is not a ToolResult consumption. Every other named resume operation
+    // is carried to the first commit that replaces this exact ticket.
+    let resume_commit = (ticket.reason() != AwaitReason::Delegation)
+        .then(|| ResumeCommit::for_operation(command.operation_id.clone(), &ticket))
+        .flatten();
     if continuation == ResumeContinuation::ToolBatch
         && ticket.reason() != AwaitReason::ToolPermission
     {
@@ -357,13 +365,12 @@ async fn resume_with_continuation(
                 Some(reader),
                 &command.thread_id,
                 command.run_id.clone(),
-                RunStepResult::ended_with_messages(command.run_id, cause, context_messages),
+                RunStepResult::ended_with_messages(command.run_id, cause, context_messages)
+                    .with_resume(resume_commit),
             )
             .await;
         }
     };
-    let resume_operation_id = command.operation_id.clone();
-
     let snapshot = runtime
         .snapshot_by_id(&ExecutableAgentSnapshotId(ticket.snapshot_id.clone()))
         .ok_or_else(|| Error::Resolution("snapshot for resume not found".to_string()))?;
@@ -381,7 +388,8 @@ async fn resume_with_continuation(
                 error = %error,
                 "resumed run plugin environment violates its declared capability boundary"
             );
-            let mut step = RunStepResult::capability_bound(run_id.clone());
+            let mut step =
+                RunStepResult::capability_bound(run_id.clone()).with_resume(resume_commit);
             step.new_messages = context_messages;
             return finalize::finish_with_reader(
                 runtime,
@@ -427,7 +435,7 @@ async fn resume_with_continuation(
         &thread_id,
         &ticket,
         command.result,
-        resume_operation_id,
+        resume_commit,
         context_messages,
         reader,
         &context,

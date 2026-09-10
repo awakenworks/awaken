@@ -907,10 +907,12 @@ impl awaken_agent_contract::thread::commit::coordinator::Coordinator for RejectH
 
 #[tokio::test]
 async fn tool_batch_handoff_commit_failure_preserves_the_execution_boundary() {
-    // H7 reject the approval commit => Awaiting, zero effects/results, ticket
-    // retained. H8 reject the result commit => Running/Executing, one effect,
-    // no invented result. On reclaim the pinned NeverReplay policy produces an
-    // indeterminate error receipt without repeating an unknowable side effect.
+    // Causes: H7 reject the atomic approval+ResumeApplied commit; H8 accept that
+    // commit then reject the later result commit. Effects: H7 stays Awaiting
+    // with zero receipt/effect/result; H8 exposes Running+one exact receipt and
+    // one effect, but no invented result. Thus a commit error cannot expose one
+    // half of ticket consumption + receipt. On H8 reclaim the pinned NeverReplay
+    // policy produces an indeterminate result without repeating the effect.
     for reject_at in [0, 1] {
         let fixture = PermissionHandoffFixture::awaiting(false).await;
         let rejecting = Arc::new(RejectHandoffCommit {
@@ -946,6 +948,24 @@ async fn tool_batch_handoff_commit_failure_preserves_the_execution_boundary() {
                 RunState::Running
             })
         );
+        let resume_receipts = fixture
+            .commit
+            .committed()
+            .events
+            .into_iter()
+            .filter(|event| event.kind == EventKind::ResumeApplied)
+            .collect::<Vec<_>>();
+        assert_eq!(resume_receipts.len(), reject_at, "H7/H8 receipt frame");
+        if let Some(receipt) = resume_receipts.first() {
+            assert_eq!(
+                receipt.payload["operation_id"],
+                fixture.command.operation_id.as_deref().unwrap()
+            );
+            assert_eq!(
+                receipt.payload["correlation_id"],
+                fixture.command.correlation_id
+            );
+        }
         if reject_at == 1 {
             // H8a: external-loop reclaim has no Native model. It must publish
             // the NeverReplay indeterminate receipt before returning Running.

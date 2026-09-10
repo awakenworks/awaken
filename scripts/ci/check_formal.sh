@@ -629,13 +629,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
     echo "skipped Z3: install the pinned solver on PATH (TLAPS bundles it)"
     missing=1
   fi
-  # The reply selector visits at most three lifecycle facts; comparing the
-  # exact retryable error code needs a separate builtin memcmp budget.
-  run_kani awaken-protocol-managed -Z unstable-options --solver kissat \
-    --harness managed_reply_anchor_selects_exact_fenced_commit \
-    --cbmc-args --unwindset memcmp.0:16
-  # One production ticket-admission owner; snapshot lookup stays at the edge.
+  # The production reply selector folds every lifecycle fact through a
+  # heap-free one-step induction kernel; prefix collection stays at the edge.
   run_kani awaken-protocol-managed --solver cadical \
+    --harness managed_reply_anchor_selects_exact_fenced_commit \
     --harness managed_ticket_admission_preserves_terminal_and_identity_priority
   run_kani awaken-protocol-managed \
     --harness projection_publish_decision_is_total_exact_and_fail_closed \
@@ -707,7 +704,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness circuit_admission_is_capacity_bounded_nonwrapping_and_rejection_stutters \
     --harness circuit_completion_requires_exact_phase_and_generation_for_every_outcome \
     --harness checkpoint_clear_requires_unvetoed_terminal_completion \
-    --harness durable_watermark_successor_is_exact_or_rejected_without_rollback
+    --harness durable_watermark_successor_is_exact_or_rejected_without_rollback \
+    --harness a_resume_receipt_requires_consumption_of_the_exact_ticket
   run_kani awaken-runtime-contract --checked-loop-profile resume-validator-empty-object-v1 \
     --harness resume_validator_preserves_complete_binding_decision_table
   run_kani awaken-runtime-contract --solver kissat \
@@ -725,6 +723,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness terminal_calls_are_never_reentered \
     --harness only_the_matching_approval_ticket_enters_execution \
     --harness every_tool_call_transition_has_the_unique_documented_precondition \
+    --harness a_tool_call_completion_is_applied_at_most_once \
     --harness terminal_tool_calls_only_accept_result_staging \
     --harness run_end_sealing_targets_exactly_nonterminal_calls \
     --harness a_second_wait_is_never_admitted \

@@ -133,6 +133,7 @@ pub(crate) async fn run_agent_loop(
         store,
         Vec::new(),
         Vec::new(),
+        None,
         resume_checkpoint,
     )
     .await?;
@@ -479,6 +480,7 @@ pub(super) async fn drive(
     mut store: Store,
     seed_state: Vec<StateCommand>,
     seed_audit: Vec<EventDraft>,
+    seed_resume: Option<ResumeCommit>,
     mut resume_checkpoint: Option<StreamCheckpoint>,
 ) -> Result<RunStepResult> {
     // The per-run model executor (ADR-0004) wins over the runtime's bound default:
@@ -499,6 +501,7 @@ pub(super) async fn drive(
     // watermark invariant, so only the tail beyond a watermark is ever returned
     // or re-committed.
     let mut ledger = StepLedger::new(transcript, new_messages, seed_state, seed_audit);
+    ledger.attach_resume(seed_resume);
     // The loop's terminal decision. It stays `None` only if the loop runs to its
     // step ceiling, which is itself an end (`MaxSteps`).
     let mut disposition: Option<RunDisposition> = None;
