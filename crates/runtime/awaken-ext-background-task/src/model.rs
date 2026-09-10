@@ -484,6 +484,7 @@ impl BackgroundTask {
         now_ms: u64,
         lease_ms: u64,
     ) -> Result<(), BackgroundTaskError> {
+        self.owned_attempt(fence)?;
         if lease_ms == 0 {
             return Err(BackgroundTaskError::InvalidClaim);
         }
@@ -491,18 +492,16 @@ impl BackgroundTask {
             .checked_add(lease_ms)
             .ok_or(BackgroundTaskError::ClockOverflow)?;
         let lifecycle = match &self.lifecycle {
-            BackgroundTaskLifecycle::Running { attempt } if attempt.owns(fence) => {
-                BackgroundTaskLifecycle::Running {
-                    attempt: extended_attempt(attempt, expires)?,
-                }
-            }
-            BackgroundTaskLifecycle::Waiting { attempt, wait } if attempt.owns(fence) => {
+            BackgroundTaskLifecycle::Running { attempt } => BackgroundTaskLifecycle::Running {
+                attempt: extended_attempt(attempt, expires)?,
+            },
+            BackgroundTaskLifecycle::Waiting { attempt, wait } => {
                 BackgroundTaskLifecycle::Waiting {
                     attempt: extended_attempt(attempt, expires)?,
                     wait: wait.clone(),
                 }
             }
-            BackgroundTaskLifecycle::Cancelling { attempt, wait } if attempt.owns(fence) => {
+            BackgroundTaskLifecycle::Cancelling { attempt, wait } => {
                 BackgroundTaskLifecycle::Cancelling {
                     attempt: extended_attempt(attempt, expires)?,
                     wait: wait.clone(),
@@ -521,41 +520,29 @@ impl BackgroundTask {
         if let BackgroundWait::Remote(handle) = &wait {
             validate_task_handle(handle)?;
         }
+        self.owned_attempt(fence)?;
         let lifecycle = match &self.lifecycle {
-            BackgroundTaskLifecycle::Running { attempt } if attempt.owns(fence) => {
-                BackgroundTaskLifecycle::Waiting {
-                    attempt: attempt.clone(),
-                    wait,
-                }
-            }
+            BackgroundTaskLifecycle::Running { attempt } => BackgroundTaskLifecycle::Waiting {
+                attempt: attempt.clone(),
+                wait,
+            },
             BackgroundTaskLifecycle::Waiting {
                 attempt,
                 wait: current,
-            } if attempt.owns(fence) && same_wait_target(current, &wait) => {
-                BackgroundTaskLifecycle::Waiting {
-                    attempt: attempt.clone(),
-                    wait,
-                }
-            }
+            } if same_wait_target(current, &wait) => BackgroundTaskLifecycle::Waiting {
+                attempt: attempt.clone(),
+                wait,
+            },
             BackgroundTaskLifecycle::Cancelling {
                 attempt,
                 wait: current,
-            } if attempt.owns(fence) && cancelling_accepts_wait(current.as_ref(), &wait) => {
+            } if cancelling_accepts_wait(current.as_ref(), &wait) => {
                 BackgroundTaskLifecycle::Cancelling {
                     attempt: attempt.clone(),
                     wait: Some(wait),
                 }
             }
-            lifecycle if lifecycle.attempt().is_some() => {
-                if lifecycle
-                    .attempt()
-                    .is_some_and(|attempt| !attempt.owns(fence))
-                {
-                    return Err(BackgroundTaskError::StaleFence);
-                }
-                return Err(BackgroundTaskError::InvalidTransition);
-            }
-            _ => return Err(BackgroundTaskError::StaleFence),
+            _ => return Err(BackgroundTaskError::InvalidTransition),
         };
         self.replace_lifecycle(lifecycle)
     }
@@ -591,10 +578,7 @@ impl BackgroundTask {
         fence: &TaskFence,
         end: BackgroundTaskEnd,
     ) -> Result<(), BackgroundTaskError> {
-        self.lifecycle
-            .attempt()
-            .filter(|attempt| attempt.owns(fence))
-            .ok_or(BackgroundTaskError::StaleFence)?;
+        self.owned_attempt(fence)?;
         let end = if cancellation_wins_completion(
             self.lifecycle.phase(),
             matches!(end, BackgroundTaskEnd::Indeterminate { .. }),
@@ -604,6 +588,15 @@ impl BackgroundTask {
             end
         };
         self.end(end)
+    }
+
+    /// Resolve the one current worker/epoch authority before a fenced command
+    /// performs command-specific validation or constructs a successor state.
+    fn owned_attempt(&self, fence: &TaskFence) -> Result<&TaskAttempt, BackgroundTaskError> {
+        self.lifecycle
+            .attempt()
+            .filter(|attempt| attempt.owns(fence))
+            .ok_or(BackgroundTaskError::StaleFence)
     }
 
     fn end(&mut self, end: BackgroundTaskEnd) -> Result<(), BackgroundTaskError> {
