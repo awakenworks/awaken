@@ -80,6 +80,38 @@ async fn assert_pending<F: Future>(future: Pin<&mut F>) {
     .await;
 }
 
+#[test]
+fn live_provider_owner_retention_decision_table_is_fail_closed() {
+    // Causes: C1 another wrapper/waiter holds the owner; C2 the owner state is
+    // observable instead of currently borrowed; C3 a mount operation is
+    // pending/unknown; C4 a returned guard remains after success or failed
+    // teardown. Effects: E1 retain the registry entry; E2 prune it only after
+    // observing an unreferenced, unlocked, fully empty owner.
+    // Rules: R1=C1=>E1; R2=!C2=>E1; R3=C2+C3=>E1; R4=C2+C4=>E1;
+    // R5=!C1+C2+!C3+!C4=>E2. The exhaustive table keeps these causes
+    // independent so no retained physical responsibility can be collapsed
+    // into the empty-owner case.
+    for has_external_reference in [false, true] {
+        for state_is_observable in [false, true] {
+            for has_pending_operation in [false, true] {
+                for has_mounted_participant in [false, true] {
+                    let observed_state = state_is_observable
+                        .then_some((has_pending_operation, has_mounted_participant));
+                    let retained = retain_memory_owner(has_external_reference, observed_state);
+                    let expected = has_external_reference
+                        || !state_is_observable
+                        || has_pending_operation
+                        || has_mounted_participant;
+                    assert_eq!(
+                        retained, expected,
+                        "C1={has_external_reference} C2={state_is_observable} C3={has_pending_operation} C4={has_mounted_participant}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 async fn acquire(
     owner: &MemoryMountOwner,
     mounter: Arc<dyn pc::MemoryMounter>,

@@ -120,6 +120,12 @@ cargo test -p awaken-protocol-managed --lib projection_publish_decision_covers_c
 cargo test -p awaken-session-contract --lib network_policy::tests
 cargo test -p awaken-session-application --lib profiled_session_creation_enforces_publication_and_upfront_inputs
 cargo test -p awaken-session-application --lib realization::publication::collection_tests
+# The executable-refresh theorem abstracts async trait dispatch and application
+# side effects. Inject failure at independent production consumers and require
+# every downstream handler, mutation and launch counter to remain untouched.
+cargo test -p awaken-coordinator --lib failed_refresh_never_enters_shared_inventory_or_warmup_handlers
+cargo test -p awaken-session-application --lib admission_surfaces_dispatch_failure_and_preserves_retryable_intent
+cargo test -p awaken-deployment-application --lib scheduler_refresh_failure_precedes_candidate_mutation_and_launch
 
 # Explore the production in-memory worker registry's lock interleavings. This
 # feature swaps only its mutex for Loom's instrumented mutex; the transition
@@ -434,6 +440,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness pending_lifecycle_fact_completes_iff_delivery_succeeds_with_the_exact_identity
   run_kani awaken-sandbox-memoryd \
     --harness listener_cleanup_requests_stop_then_joins_the_owned_handle_exactly_once
+  run_kani awaken-sandbox-local \
+    --harness live_provider_prunes_only_observed_empty_unreferenced_memory_owners
   run_kani awaken-service-auth-contract \
     --harness service_token_retry_is_enabled_only_for_an_exact_changed_token
   run_kani awaken-session-application \
