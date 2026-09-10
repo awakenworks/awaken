@@ -1575,39 +1575,75 @@ mod tests {
 
     #[tokio::test]
     async fn scheduled_capacity_is_linearizable_across_replicas() {
-        // Capacity graph: C1=two replicas observe zero scheduled rows at limit 1;
-        // C2=both concurrently create a scheduled Deployment. Effects:
-        // E1=database transaction admits exactly one; E2=other receives capacity
-        // rejection; E3=restart lists one row. This is the cross-replica rule
-        // that a process-local count cannot provide.
+        // Capacity graph: C1=two applications with independent SQLite clients
+        // observe zero scheduled rows at limit one; C2=both concurrently create
+        // a scheduled Deployment. Effects: E1=database transaction admits one
+        // exact winner; E2=the loser receives the exact capacity error and both
+        // projections converge without a speculative loser; E3=after every old
+        // handle closes, a fresh connection restores only that winner.
+        // Decision table: R1 C1+C2 -> E1+E2; R2 R1+reopen -> E3.
         let path = std::env::temp_dir().join(format!(
             "deployment-capacity-{}.db",
             uuid::Uuid::new_v4().simple()
         ));
-        let repository = Arc::new(
+        let left_repository = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
                 .unwrap(),
         );
-        let mut left = DeploymentApplication::from_repository(repository.clone())
+        let right_repository = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
+                .unwrap(),
+        );
+        let mut left = DeploymentApplication::from_repository(left_repository.clone())
             .await
             .unwrap();
         left.scheduled_limit = 1;
-        let mut right = DeploymentApplication::from_repository(repository.clone())
+        let mut right = DeploymentApplication::from_repository(right_repository.clone())
             .await
             .unwrap();
         right.scheduled_limit = 1;
-        let (left, right) = tokio::join!(left.create(command(true)), right.create(command(true)));
+        let (left_outcome, right_outcome) =
+            tokio::join!(left.create(command(true)), right.create(command(true)));
         assert_eq!(
-            usize::from(left.is_ok()) + usize::from(right.is_ok()),
+            usize::from(left_outcome.is_ok()) + usize::from(right_outcome.is_ok()),
             1,
-            "E1/E2"
+            "R1/E1"
         );
-        let restored = DeploymentApplication::from_repository(repository.clone())
+        let winner = [left_outcome.as_ref(), right_outcome.as_ref()]
+            .into_iter()
+            .find_map(Result::ok)
+            .expect("R1 exact capacity winner")
+            .clone();
+        let loser = [left_outcome.as_ref(), right_outcome.as_ref()]
+            .into_iter()
+            .find_map(Result::err)
+            .expect("R1 exact capacity loser");
+        assert_eq!(loser, &scheduled_capacity_error(1), "R1/E2");
+        for (index, application) in [&left, &right].into_iter().enumerate() {
+            assert_eq!(
+                application.list("workspace-a").await.unwrap(),
+                vec![winner.clone()],
+                "R1/E2 application {index} converges without loser"
+            );
+        }
+        drop(left);
+        drop(right);
+        drop(left_repository);
+        drop(right_repository);
+        let restored_repository = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
+                .unwrap(),
+        );
+        let restored = DeploymentApplication::from_repository(restored_repository.clone())
             .await
             .unwrap();
-        assert_eq!(restored.list("workspace-a").await.unwrap().len(), 1, "E3");
+        assert_eq!(
+            restored.list("workspace-a").await.unwrap(),
+            vec![winner],
+            "R2/E3 exact durable winner"
+        );
         drop(restored);
-        drop(repository);
+        drop(restored_repository);
         let _ = std::fs::remove_file(path);
     }
 
