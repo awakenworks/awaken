@@ -493,7 +493,7 @@ impl ManagedState {
         owner_thread_id: Option<&str>,
         messages: &[awaken_agent_contract::agent::message::Message],
         synthetic_source_run_id: Option<&awaken_agent_contract::agent::run::Id>,
-        events: &mut [ProjectedEvent],
+        events: &mut Vec<ProjectedEvent>,
     ) -> Result<(), StateError> {
         let public_thread_id = Self::public_tool_thread_id(&record.session.id, owner_thread_id);
         let declared_custom_tools = owner_thread_id
@@ -513,8 +513,11 @@ impl ManagedState {
             })
             .collect::<std::collections::HashSet<_>>();
         let mut sources = Self::tool_call_sources(messages);
-        let mut latest = record.projected_tool_index_for(owner_thread_id).latest;
-        for event in events {
+        let tool_index = record.projected_tool_index_for(owner_thread_id);
+        let mut latest = tool_index.latest;
+        let client_settled_occurrences = tool_index.client_settled_occurrences;
+        let mut qualified = Vec::with_capacity(events.len());
+        for mut event in std::mem::take(events) {
             // Runtime's neutral pending state says only that the client must
             // supply the result. Managed distinguishes authored custom tools
             // from self-hosted Agent-toolset execution at this sole projection
@@ -533,12 +536,7 @@ impl ManagedState {
                     session_thread_id: session_thread_id.clone(),
                 };
             }
-            if matches!(
-                event.kind,
-                OutboundKind::AgentToolUse { .. }
-                    | OutboundKind::AgentCustomToolUse { .. }
-                    | OutboundKind::AgentMcpToolUse { .. }
-            ) {
+            if ProjectedToolUseFamily::from_kind(&event.kind).is_some() {
                 let runtime_call_id = event.id.as_deref().ok_or_else(|| {
                     StateError::Run(RunError::internal(
                         "Managed tool-use projection is missing its Runtime call id",
@@ -560,11 +558,21 @@ impl ManagedState {
             }
             match &mut event.kind {
                 OutboundKind::AgentToolResult { tool_use_id, .. } => {
-                    *tool_use_id = latest.get(tool_use_id).cloned().ok_or_else(|| {
+                    // Managed Agents publishes a client-owned result as the
+                    // admitted `user.custom_tool_result`. Runtime must retain
+                    // its neutral ToolResult for model continuation, but
+                    // exposing that same fact again as `agent.tool_result`
+                    // violates the public tool family and makes an exact SDK
+                    // history internally contradictory.
+                    let public_tool_use_id = latest.get(tool_use_id).cloned().ok_or_else(|| {
                         StateError::Run(RunError::internal(format!(
                             "Managed tool result `{tool_use_id}` has no preceding tool-use identity"
                         )))
                     })?;
+                    if client_settled_occurrences.contains(&public_tool_use_id) {
+                        continue;
+                    }
+                    *tool_use_id = public_tool_use_id;
                 }
                 OutboundKind::AgentMcpToolResult {
                     mcp_tool_use_id, ..
@@ -588,7 +596,9 @@ impl ManagedState {
                 }
                 _ => {}
             }
+            qualified.push(event);
         }
+        *events = qualified;
         Ok(())
     }
 

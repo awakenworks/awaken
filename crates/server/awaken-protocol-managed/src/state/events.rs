@@ -722,13 +722,17 @@ enum ProjectedToolUseFamily {
 }
 
 impl ProjectedToolUseFamily {
-    fn from_event(event: &Event) -> Option<Self> {
-        match event.kind {
+    fn from_kind(kind: &OutboundKind) -> Option<Self> {
+        match kind {
             OutboundKind::AgentToolUse { .. } => Some(Self::Tool),
             OutboundKind::AgentCustomToolUse { .. } => Some(Self::Custom),
             OutboundKind::AgentMcpToolUse { .. } => Some(Self::Mcp),
             _ => None,
         }
+    }
+
+    fn from_event(event: &Event) -> Option<Self> {
+        Self::from_kind(&event.kind)
     }
 }
 

@@ -6,6 +6,11 @@ use super::*;
 
 pub(super) struct ProjectedToolIndex {
     pub(super) all: HashSet<String>,
+    /// Exact public tool-use occurrences already settled by a client-provided
+    /// result. The neutral Runtime transcript retains those results for model
+    /// continuation, while Managed publishes the corresponding `user.*` event
+    /// as their one wire representation.
+    pub(super) client_settled_occurrences: HashSet<String>,
     pub(super) mcp: Vec<String>,
     pub(super) latest: HashMap<String, String>,
     /// Exact committed source occurrence of every qualified tool-use Event.
@@ -274,10 +279,27 @@ impl SessionRecord {
         owner_thread_id: Option<&str>,
     ) -> ProjectedToolIndex {
         let mut all = HashSet::new();
+        let mut client_settled_occurrences = HashSet::new();
         let mut mcp = Vec::new();
         let mut latest = HashMap::new();
         let mut sources = HashSet::new();
         for event in &self.events {
+            // Client replies are admitted on the Session root event log even
+            // when their globally qualified tool id targets a child Thread.
+            // Index the exact occurrence before applying the tool owner's
+            // Thread filter; the qualified id itself prevents cross-Thread or
+            // reused-call aliasing.
+            match &event.kind {
+                OutboundKind::UserCustomToolResult {
+                    custom_tool_use_id, ..
+                } => {
+                    client_settled_occurrences.insert(custom_tool_use_id.clone());
+                }
+                OutboundKind::UserToolResult { tool_use_id, .. } => {
+                    client_settled_occurrences.insert(tool_use_id.clone());
+                }
+                _ => {}
+            }
             if self.event_thread_owners.get(&event.id).map(String::as_str) != owner_thread_id {
                 continue;
             }
@@ -286,7 +308,7 @@ impl SessionRecord {
             if let Some(identity) = crate::project::decode_managed_tool_event_id(&event.id) {
                 sources.insert((identity.source_id.to_string(), identity.call_id.to_string()));
             }
-            match event.kind {
+            match &event.kind {
                 OutboundKind::AgentToolUse { .. } | OutboundKind::AgentCustomToolUse { .. } => {
                     all.insert(runtime_call_id.to_string());
                     latest.insert(runtime_call_id.to_string(), event.id.clone());
@@ -301,6 +323,7 @@ impl SessionRecord {
         }
         ProjectedToolIndex {
             all,
+            client_settled_occurrences,
             mcp,
             latest,
             sources,
