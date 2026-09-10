@@ -765,6 +765,157 @@ mod tests {
         assert!(registry.end_parent().is_empty());
     }
 
+    /// Cause/effect graph: relationship identity is the conjunction of parent
+    /// call, delegation id, target, recursive-self bit, and child Run id. The
+    /// first accepted request freezes that tuple; every replay or conflict must
+    /// leave the complete registry unchanged. Parent termination then projects
+    /// the same tuple plus its execution reference as the durable cancellation
+    /// command, including after serde reconstruction.
+    ///
+    /// | rule | existing call | exact tuple | reused delegation id | reused child | relationship state | effect |
+    /// |---|---|---|---|---|---|---|
+    /// | I1 | yes | yes | yes | yes | Open | Duplicate; registry stutters |
+    /// | I2 | yes | no | any | any | Open | CallConflict; registry stutters |
+    /// | I3 | no | no | yes | no | Open | IdentityConflict; registry stutters |
+    /// | I4 | no | no | no | yes | Open | ChildRunConflict; registry stutters |
+    /// | C1 | yes | yes | yes | yes | Open + reference, then parent ends | exact command survives cold reload and repeated projection |
+    /// | C2 | yes | yes | yes | yes | Completed before parent ends | reference cleared; no cancellation projected |
+    #[test]
+    fn relationship_identity_and_cancel_redelivery_share_exact_durable_binding() {
+        let parent = RunId("a".into());
+        let call = "b:c";
+        let origin = DelegationOrigin::root_for_agent(parent.clone(), call, "coordinator");
+        let delimiter_peer =
+            DelegationOrigin::root_for_agent(RunId("a:b".into()), "c", "coordinator");
+        assert_ne!(
+            origin.delegation_id, delimiter_peer.delegation_id,
+            "length framing"
+        );
+        assert_ne!(
+            origin.child_run_id(),
+            delimiter_peer.child_run_id(),
+            "length framing"
+        );
+        assert_eq!(
+            origin,
+            DelegationOrigin::root_for_agent(parent.clone(), call, "coordinator"),
+            "stable reconstruction"
+        );
+
+        let accepted = RequestDelegation {
+            id: origin.delegation_id.clone(),
+            parent_call_id: call.into(),
+            target_agent_id: "researcher".into(),
+            recursive_self: false,
+            child_run_id: origin.child_run_id(),
+        };
+        let mut authoritative = DelegationRegistry::new(
+            parent,
+            "coordinator",
+            Vec::new(),
+            0,
+            DelegationLimits::new(3, 4, 4),
+        );
+        assert_eq!(
+            authoritative.request(accepted.clone()),
+            Ok(TransitionResult::Applied)
+        );
+
+        let mut conflicts = Vec::new();
+        let mut changed_id = accepted.clone();
+        changed_id.id = DelegationId("another-delegation".into());
+        conflicts.push(("I2/id", changed_id, DelegationError::CallConflict));
+        let mut changed_target = accepted.clone();
+        changed_target.target_agent_id = "writer".into();
+        conflicts.push(("I2/target", changed_target, DelegationError::CallConflict));
+        let mut changed_recursion = accepted.clone();
+        changed_recursion.recursive_self = true;
+        conflicts.push((
+            "I2/recursive-self",
+            changed_recursion,
+            DelegationError::CallConflict,
+        ));
+        let mut changed_child = accepted.clone();
+        changed_child.child_run_id = RunId("another-child".into());
+        conflicts.push(("I2/child", changed_child, DelegationError::CallConflict));
+        let mut reused_id = accepted.clone();
+        reused_id.parent_call_id = "another-call".into();
+        reused_id.child_run_id = RunId("fresh-child".into());
+        conflicts.push(("I3", reused_id, DelegationError::IdentityConflict));
+        let mut reused_child = accepted.clone();
+        reused_child.id = DelegationId("fresh-delegation".into());
+        reused_child.parent_call_id = "fresh-call".into();
+        conflicts.push(("I4", reused_child, DelegationError::ChildRunConflict));
+
+        let frozen = serde_json::to_value(&authoritative).expect("freeze authoritative registry");
+        assert_eq!(
+            authoritative.request(accepted.clone()),
+            Ok(TransitionResult::Duplicate),
+            "I1"
+        );
+        assert_eq!(
+            serde_json::to_value(&authoritative).unwrap(),
+            frozen,
+            "I1 stutter"
+        );
+        for (rule, conflict, error) in conflicts {
+            assert_eq!(authoritative.request(conflict), Err(error), "{rule}");
+            assert_eq!(
+                serde_json::to_value(&authoritative).unwrap(),
+                frozen,
+                "{rule} stutter"
+            );
+        }
+
+        let execution_reference = serde_json::json!({
+            "protocol": "a2a",
+            "task_id": "remote-task:7",
+            "context_id": "remote-context",
+        });
+        authoritative
+            .record_cancellation_reference(&accepted.id, execution_reference.clone())
+            .expect("record adapter cancellation identity");
+        let expected = ChildRunCancellation {
+            delegation_id: accepted.id.clone(),
+            child_run_id: accepted.child_run_id.clone(),
+            target_agent_id: accepted.target_agent_id.clone(),
+            execution_reference: Some(execution_reference),
+        };
+        assert_eq!(authoritative.end_parent(), vec![expected.clone()], "C1");
+        let bytes = serde_json::to_vec(&authoritative).expect("serialize ended registry");
+        let mut recovered: DelegationRegistry =
+            serde_json::from_slice(&bytes).expect("validate cold registry reconstruction");
+        assert_eq!(
+            recovered.pending_cancellations().collect::<Vec<_>>(),
+            vec![expected.clone()],
+            "C1 first recovery projection"
+        );
+        assert_eq!(
+            recovered.pending_cancellations().collect::<Vec<_>>(),
+            vec![expected],
+            "C1 repeated recovery projection"
+        );
+        assert!(
+            recovered.end_parent().is_empty(),
+            "C1 termination replay stutters"
+        );
+
+        let mut completed = registry(2, 2);
+        let settled = request(1, "researcher");
+        completed.request(settled.clone()).unwrap();
+        completed
+            .record_cancellation_reference(&settled.id, serde_json::json!({"task": "done"}))
+            .unwrap();
+        completed.complete(&settled.id).unwrap();
+        assert!(completed.end_parent().is_empty(), "C2");
+        assert_eq!(completed.pending_cancellations().count(), 0, "C2");
+        assert_eq!(
+            completed.get(&settled.id).unwrap().cancellation_reference,
+            None,
+            "C2 completed relationships cannot retain adapter identity"
+        );
+    }
+
     #[test]
     fn origin_identity_is_stable_and_nested_depth_survives() {
         let root = DelegationOrigin::root_for_agent(RunId("p".into()), "c", "root");

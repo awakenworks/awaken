@@ -202,6 +202,15 @@ cargo test -p awaken-run-executor-acp --features loom --lib binding_batch_tests
 cargo test -p awaken-acp-application --lib binding_batch_
 # Exercise the real A2A executor across both commit/send crash-window tables.
 cargo test -p awaken-run-executor-a2a --lib send_windows
+# Cross the delegation model's stable identity and durable-cancellation actions
+# through the one production registry, restart recovery, and the A2A adapter's
+# lost-response retry against the same committed remote task.
+cargo test -p awaken-agent-contract --lib \
+  agent::delegation::tests::relationship_identity_and_cancel_redelivery_share_exact_durable_binding -- --exact
+cargo test -p awaken-runtime --test delegation \
+  cancelling_an_awaiting_parent_atomically_persists_child_cancel_intent -- --exact
+cargo test -p awaken-run-executor-a2a --lib \
+  tests::failed_remote_cancel_is_retryable_against_the_same_committed_task -- --exact
 # Exercise the production BackgroundTask projection under callback/replacement
 # races. Only its single mutex is instrumented; durable commits remain outside
 # this bounded lock-interleaving claim.
@@ -1054,6 +1063,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/delegation" \
     -config formal/tla/Delegation.cfg formal/tla/Delegation.tla
+  python3 scripts/ci/check_formal_mutations.py --delegation-model-mutants "$tla_jar"
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/tool-batch" \
     -config formal/tla/ToolBatch.cfg formal/tla/ToolBatch.tla
