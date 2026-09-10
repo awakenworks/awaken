@@ -301,6 +301,7 @@ impl awaken_session_executor::PiiRedactor
 pub fn awaken_session_executor::PiiRedactor::new() -> Self
 impl awaken_runtime_contract::capture::ContentRedactor for awaken_session_executor::PiiRedactor
 pub fn awaken_session_executor::PiiRedactor::redact<'a>(&self, awaken_runtime_contract::capture::ContentKind, &'a str) -> alloc::borrow::Cow<'a, str>
+pub struct awaken_session_executor::PoolDrainFence
 pub struct awaken_session_executor::PublishedAcpLaunchResolver
 impl awaken_session_executor::PublishedAcpLaunchResolver
 pub fn awaken_session_executor::PublishedAcpLaunchResolver::backend_owned(awaken_run_executor_acp::acp_cli::AcpCli, core::option::Option<std::path::PathBuf>) -> Self
@@ -367,7 +368,7 @@ pub fn awaken_session_executor::SharedHost::with_projected_acp(self, awaken_run_
 pub fn awaken_session_executor::SharedHost::with_projected_acp_argv(self, awaken_run_executor_acp::acp_cli::AcpCli, alloc::sync::Arc<dyn awaken_run_executor_acp::subprocess::LaunchResolver>, core::option::Option<std::path::PathBuf>, core::option::Option<alloc::vec::Vec<alloc::string::String>>) -> Self
 pub async fn awaken_session_executor::SharedHost::with_session_environment_from_deployment(self, core::option::Option<alloc::sync::Arc<dyn awaken_session_executor::HandExecutorFactory>>) -> core::result::Result<Self, alloc::string::String>
 impl awaken_session_executor::SharedHost
-pub async fn awaken_session_executor::SharedHost::begin_pool_drain(&self)
+pub async fn awaken_session_executor::SharedHost::begin_pool_drain(&self) -> core::option::Option<awaken_session_executor::PoolDrainFence>
 pub fn awaken_session_executor::SharedHost::client_tools(&self) -> &std::collections::hash::set::HashSet<alloc::string::String>
 pub fn awaken_session_executor::SharedHost::content_capture_ceiling(&self) -> awaken_runtime_contract::capture::ContentCapture
 pub fn awaken_session_executor::SharedHost::default_environment_capacity_shape(&self) -> awaken_provisioning_contract::spec::SandboxCapacityShapeId
