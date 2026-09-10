@@ -264,58 +264,88 @@ async fn erasure_checkpoint_preserves_completed_targets(repo: &dyn ErasureJobRep
 }
 
 async fn erasure_checkpoint_competing_candidates(
-    left: &dyn ErasureJobRepo,
-    right: &dyn ErasureJobRepo,
+    replicas: [&dyn ErasureJobRepo; 3],
 ) -> ErasureProgress {
-    // Causes: two independent connections submit the same absent/exact base;
-    // candidates have distinguishable complete payloads and preserve old targets.
-    // R1 absent -> one insert winner; R2 exact -> one update winner; R3 loser
-    // reload -> exact winner, never a mixture. This is finite database executable
-    // evidence; engine atomicity/all schedules are not a production Kani proof.
+    // Cause/effect decision table: C1 base={absent,present}; C2 three replicas
+    // submit the same base concurrently; C3 candidate payloads are distinct but
+    // each preserves every old target; C4 generation={create,first update,later
+    // update}. R1 C1=absent -> exactly one insert succeeds; R2 C1=present ->
+    // exactly one exact-revision update succeeds; R3 every losing call returns
+    // Conflict; R4 every replica reloads the exact complete winner, never a
+    // mixed frame; R5 repeats R2-R4 across later generations. This is finite
+    // adapter/executor evidence. Database atomicity, every schedule, process
+    // failure, and universal Rust-to-TLA refinement remain outside Kani proof.
     let id = DataSubjectId("dsub_erasure_race".into());
-    for (expected, revision, targets) in [
-        (None, 0, vec![ErasureTarget::Coordinator]),
-        (
-            Some(0),
-            1,
-            vec![ErasureTarget::Coordinator, ErasureTarget::Resources],
-        ),
-    ] {
+    let mut durable_winner = None;
+    for revision in 0_u64..4 {
+        let expected = revision.checked_sub(1);
+        let targets = if revision == 0 {
+            vec![ErasureTarget::Coordinator]
+        } else {
+            vec![ErasureTarget::Coordinator, ErasureTarget::Resources]
+        };
         let first = ErasureProgress {
             revision,
             completed_targets: targets.clone(),
-            records_removed: 11,
+            records_removed: revision as usize * 10 + 11,
             accountability_stamped: false,
             complete: false,
         };
         let second = ErasureProgress {
             revision,
-            completed_targets: targets,
-            records_removed: 13,
+            completed_targets: targets.clone(),
+            records_removed: revision as usize * 10 + 13,
             accountability_stamped: false,
             complete: false,
         };
-        let (a, b) = tokio::join!(
-            left.compare_and_swap_progress(&id, expected, &first),
-            right.compare_and_swap_progress(&id, expected, &second),
-        );
-        let winner = match (a, b) {
-            (Ok(()), Err(awaken_data_subject_application::DataSubjectError::Conflict(_))) => first,
-            (Err(awaken_data_subject_application::DataSubjectError::Conflict(_)), Ok(())) => second,
-            other => panic!("R1/R2 expected one winner and one conflict: {other:?}"),
+        let third = ErasureProgress {
+            revision,
+            completed_targets: targets,
+            records_removed: revision as usize * 10 + 17,
+            accountability_stamped: false,
+            complete: false,
         };
+        let (a, b, c) = tokio::join!(
+            replicas[0].compare_and_swap_progress(&id, expected, &first),
+            replicas[1].compare_and_swap_progress(&id, expected, &second),
+            replicas[2].compare_and_swap_progress(&id, expected, &third),
+        );
+        let outcomes = [(a, &first), (b, &second), (c, &third)];
+        let winners: Vec<&ErasureProgress> = outcomes
+            .iter()
+            .filter_map(|(result, candidate)| result.as_ref().ok().map(|()| *candidate))
+            .collect();
         assert_eq!(
-            left.load(&id).await.unwrap(),
-            Some(winner.clone()),
-            "R3 left full frame"
+            winners.len(),
+            1,
+            "R1/R2 exactly one winner at revision {revision}: {outcomes:?}"
         );
         assert_eq!(
-            right.load(&id).await.unwrap(),
-            Some(winner),
-            "R3 right full frame"
+            outcomes
+                .iter()
+                .filter(|(result, _)| {
+                    matches!(
+                        result,
+                        Err(awaken_data_subject_application::DataSubjectError::Conflict(
+                            _
+                        ))
+                    )
+                })
+                .count(),
+            2,
+            "R3 every loser conflicts at revision {revision}: {outcomes:?}"
         );
+        let winner = winners[0].clone();
+        for (index, replica) in replicas.iter().enumerate() {
+            assert_eq!(
+                replica.load(&id).await.unwrap(),
+                Some(winner.clone()),
+                "R4 replica {index} full frame at revision {revision}"
+            );
+        }
+        durable_winner = Some(winner);
     }
-    left.load(&id).await.unwrap().unwrap()
+    durable_winner.unwrap()
 }
 
 #[tokio::test]
@@ -328,7 +358,8 @@ async fn sqlite_erasure_independent_connections_preserve_winner_after_reopen() {
     let winner = {
         let left = SqliteDataSubjectRepo::open(path).unwrap();
         let right = SqliteDataSubjectRepo::open(path).unwrap();
-        erasure_checkpoint_competing_candidates(&left, &right).await
+        let third = SqliteDataSubjectRepo::open(path).unwrap();
+        erasure_checkpoint_competing_candidates([&left, &right, &third]).await
     };
     let reopened = SqliteDataSubjectRepo::open(path).unwrap();
     assert_eq!(
@@ -362,6 +393,8 @@ async fn in_memory_repo_conforms() {
     // E7 the committed target set/count never regress. Rule D3=C6+C7 -> E6+E7.
     erasure_checkpoint_fences_stale_writers(&InMemoryDataSubjectRepo::new()).await;
     erasure_checkpoint_preserves_completed_targets(&InMemoryDataSubjectRepo::new()).await;
+    let erasure_repo = InMemoryDataSubjectRepo::new();
+    erasure_checkpoint_competing_candidates([&erasure_repo, &erasure_repo, &erasure_repo]).await;
 }
 
 #[tokio::test]
@@ -483,7 +516,8 @@ mod postgres {
         let pool = schema_pool("t_ds_erasure_race").await.unwrap();
         let left = PgDataSubjectRepo::with_pool(pool.clone()).await.unwrap();
         let right = PgDataSubjectRepo::with_pool(pool.clone()).await.unwrap();
-        erasure_checkpoint_competing_candidates(&left, &right).await;
+        let third = PgDataSubjectRepo::with_pool(pool.clone()).await.unwrap();
+        erasure_checkpoint_competing_candidates([&left, &right, &third]).await;
         println!(
             "[executed] PostgreSQL erasure checkpoint conformance and independent transaction race"
         );
