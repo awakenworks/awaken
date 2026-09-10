@@ -201,6 +201,12 @@ cargo test -p awaken-control --lib management_effect
 cargo test -p awaken-config-store --features test-support --test integration management_effect
 cargo test -p awaken-config-store --features test-support --lib audit_identity
 cargo test -p awaken-config-store --features test-support --test integration audit_identity
+# The store's direct source-admission proof classifies supplied revision facts,
+# but cannot establish the async caller's source/expected pairing or absence of
+# Coordinator effects. Exercise that sole ConfigService seam and require an
+# observed stale CAS to return without entering the registrar.
+cargo test -p awaken-config-service --lib \
+  publish_never_installs_an_artifact_from_a_stale_source_revision
 # The scalar admission proofs below rely on the actual adapters and reclaimer
 # calling the shared kernels at their transaction and pre-purge boundaries.
 cargo test -p awaken-resource-store --lib reclamation_acquisition_has_one_fail_closed_decision_table
