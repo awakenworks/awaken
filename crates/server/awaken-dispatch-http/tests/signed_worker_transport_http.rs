@@ -2521,6 +2521,15 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .applied(),
         "T22"
     );
+    let replacement_claim = awaken_dispatch::RunClaim::from(&replacement.lease);
+    assert!(
+        queue
+            .defer_claim(&replacement_claim, i64::MAX as u64)
+            .await
+            .expect("signed request-local deferral")
+            .applied(),
+        "the authenticated internal Worker transport preserves request-local retry"
+    );
 
     // FMECA T21: graceful restart can begin after the committed answer becomes
     // visible but before asynchronous Run settlement. Deregistration is the last

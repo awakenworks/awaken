@@ -2720,6 +2720,18 @@ async fn relinquish_claim_store_spec() {
 }
 
 #[tokio::test]
+async fn defer_claim_is_request_local_store_spec() {
+    harness::assert_defer_claim_is_request_local(&MemoryDispatchStore::new()).await;
+}
+
+#[tokio::test]
+async fn defer_claim_uses_the_store_clock_and_exact_deadline_on_memory() {
+    let clock = Arc::new(ManualClock::new(100));
+    let store = MemoryDispatchStore::new().with_clock(clock.clone());
+    harness::assert_defer_claim_deadline_edge(&store, &clock).await;
+}
+
+#[tokio::test]
 async fn physical_attempt_admission_store_spec() {
     harness::assert_physical_attempt_admission(
         &MemoryDispatchStore::new(),

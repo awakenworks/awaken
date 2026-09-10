@@ -29,10 +29,9 @@ use awaken_dispatch_contract::{
     ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest, Claimed, CommitEpochGuard,
     CredentialRealizationReceipt, CredentialRealizationRequest, DeliverAndClaimRequest,
     DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary, EnqueueRequest, Inbox,
-    LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, RecoveryRequest, RelinquishRequest,
-    RenewRequest, RunClaim, RunDispatch, SessionRunReservationResolution,
-    SessionRunReservationResolutionRequest, SettleOutcome, SettleRequest, StreamEventRequest,
-    StreamObservationRequest, SubmitOptions,
+    LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, RecoveryRequest, RenewRequest,
+    RunClaim, RunDispatch, SessionRunReservationResolution, SessionRunReservationResolutionRequest,
+    SettleOutcome, SettleRequest, StreamEventRequest, StreamObservationRequest, SubmitOptions,
 };
 use awaken_dispatch_contract::{
     ClaimedStreamPublisher, WorkerIdentity, WorkerSnapshot,
@@ -43,6 +42,17 @@ use awaken_worker_transport_security::{WorkerRequestAuthorizer, WorkerUpstream};
 
 const IDEMPOTENT_TRANSPORT_ATTEMPTS: usize = 3;
 const IDEMPOTENT_TRANSPORT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Private Worker-to-Coordinator wire command. Keeping the request-local retry
+/// hint here prevents a scheduler mechanism from entering the public ingress
+/// contract or the Anthropic Managed API surface.
+#[derive(Serialize)]
+struct RelinquishCommand<'a> {
+    claim: &'a RunClaim,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retry_after_ms: Option<u64>,
+    identity: &'a WorkerIdentity,
+}
 
 fn reject_worker_supplied_execution_binding(
     binding: Option<&awaken_dispatch_contract::dispatch::AttemptExecutionBinding>,
@@ -851,9 +861,38 @@ impl DispatchQueue for HttpDispatchQueue {
         let v = self
             .post_idempotent(
                 "/v1/worker/dispatch/relinquish",
-                &RelinquishRequest {
-                    claim: claim.clone(),
-                    identity: Some(self.worker_identity.clone()),
+                &RelinquishCommand {
+                    claim,
+                    retry_after_ms: None,
+                    identity: &self.worker_identity,
+                },
+                self.worker_id(),
+            )
+            .await?;
+        Ok(
+            if v.get("relinquished")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+            {
+                SettleOutcome::Applied
+            } else {
+                SettleOutcome::Fenced
+            },
+        )
+    }
+
+    async fn defer_claim(
+        &self,
+        claim: &RunClaim,
+        retry_after_ms: u64,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let v = self
+            .post_idempotent(
+                "/v1/worker/dispatch/relinquish",
+                &RelinquishCommand {
+                    claim,
+                    retry_after_ms: Some(retry_after_ms),
+                    identity: &self.worker_identity,
                 },
                 self.worker_id(),
             )

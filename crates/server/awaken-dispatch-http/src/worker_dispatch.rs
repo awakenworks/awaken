@@ -26,7 +26,7 @@ use awaken_dispatch::{
     DeliverAndClaimRequest as DeliverAndClaimReq, DispatchQueue, DispatchSettlementObserver,
     EnqueueRequest as EnqueueReq, HeartbeatWorkerRequest as HeartbeatWorkerReq, PlacementPolicy,
     RecoveryRequest as RecoveryReq, RegisterWorkerRequest as RegisterWorkerReq,
-    RelinquishRequest as RelinquishReq, RenewRequest as RenewReq, RunClaim,
+    RenewRequest as RenewReq, RunClaim,
     SessionRunReservationResolutionRequest as ReservationResolutionReq, SettleRequest as SettleReq,
     StreamObservationRequest as StreamEventReq, WorkerDirectory, WorkerIdentity,
     WorkerIdentityRequest as WorkerIdentityReq, WorkerSnapshot,
@@ -43,6 +43,17 @@ mod run_dispatch_endpoints;
 mod session_coordination;
 mod session_realization;
 mod terminal_repository_publication;
+
+/// Private Worker transport DTO. The retry hint is deliberately absent from
+/// the public ingress and Anthropic Managed API contracts.
+#[derive(Deserialize)]
+struct RelinquishReq {
+    claim: RunClaim,
+    #[serde(default)]
+    retry_after_ms: Option<u64>,
+    #[serde(default)]
+    identity: Option<WorkerIdentity>,
+}
 
 use run_dispatch_endpoints::{
     begin_attempt, claim, claim_new_run, claim_retry_exhausted, claim_run, deliver_and_claim,

@@ -3070,12 +3070,14 @@ async fn renewal_stops_when_claim_resolution_fails() {
     // Cause/effect decision table:
     // | Rule | claim | resolver/drive | local activity | renewal/recovery effect |
     // | R1 | live | blocked | present | exact lease renews (covered above) |
-    // | R2 | live | fails | removed | exact claim is relinquished; peer claims |
+    // | R2 | live | fails | removed | exact claim is request-locally deferred |
     // | R3 | absent | n/a | absent | no lease write (idle-poller test) |
     // R2 drops the exact guard instead of indefinitely preserving an unsettled
-    // claim after provisioning or Runtime construction has failed; relinquish
-    // also avoids waiting a full lease or charging crash recovery.
-    let store = Arc::new(MemoryDispatchStore::new());
+    // claim after provisioning or Runtime construction has failed. Deferral
+    // avoids waiting a full lease or charging crash recovery without allowing
+    // one unresolved request to hot-loop.
+    let clock = Arc::new(ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     store
         .enqueue(RunDispatch::new(activation("resolver-failure")))
         .await
@@ -3084,7 +3086,7 @@ async fn renewal_stops_when_claim_resolution_fails() {
     let lease_ms = 100;
     let pool = DispatchPool::spawn_with_wake(
         store.clone(),
-        Arc::new(SystemClock),
+        clock.clone(),
         "failed-owner",
         lease_ms,
         DispatchServiceConfig {
@@ -3102,16 +3104,21 @@ async fn renewal_stops_when_claim_resolution_fails() {
         wait_for(|| calls.load(Ordering::SeqCst) == 1).await,
         "R2 resolver failure observed"
     );
-    let reclaimed = store
-        .claim(
-            "recovery-owner",
-            lease_ms,
-            SystemClock.now_ms(),
-            &Default::default(),
-        )
+    let _drain_fence = pool.begin_drain().await;
+    let premature = store
+        .claim("recovery-owner", lease_ms, 0, &Default::default())
         .await
         .unwrap();
-    let reclaimed = reclaimed.expect("R2 failed claim is immediately available");
+    assert!(
+        premature.is_none(),
+        "R2 failed claim is not eligible before its request-local deadline"
+    );
+    clock.set(250);
+    let reclaimed = store
+        .claim("recovery-owner", lease_ms, 250, &Default::default())
+        .await
+        .unwrap();
+    let reclaimed = reclaimed.expect("R2 failed claim is available after its deadline");
     assert!(
         !reclaimed.recovered,
         "R2 is admission rollback, not a crash"
@@ -3121,23 +3128,192 @@ async fn renewal_stops_when_claim_resolution_fails() {
 }
 
 #[tokio::test]
-async fn session_work_backpressure_relinquishes_once_then_retries_with_a_floor() {
+async fn retryable_resolution_failure_does_not_starve_an_independent_thread() {
+    assert_resolution_failure_isolation(1).await;
+}
+
+#[tokio::test]
+async fn equal_priority_resolution_failure_allows_an_independent_thread() {
+    assert_resolution_failure_isolation(0).await;
+}
+
+async fn assert_resolution_failure_isolation(failing_priority: i64) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct SelectiveResolver {
+        worker: Arc<MemWorker>,
+        rejected: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl WorkerResolver<MemoryDispatchStore> for SelectiveResolver {
+        async fn worker_for(
+            &self,
+            thread: &ThreadId,
+            _: Option<&str>,
+        ) -> Result<Arc<MemWorker>, Error> {
+            if thread.0 == "unresolved-thread" {
+                self.rejected.fetch_add(1, Ordering::SeqCst);
+                return Err(Error::Execution(
+                    awaken_runtime_contract::execution::Error::Execution(
+                        "retained projection cannot yet be resolved".into(),
+                    ),
+                ));
+            }
+            Ok(self.worker.clone())
+        }
+    }
+
+    let store = Arc::new(MemoryDispatchStore::new());
+    store
+        .enqueue_with(
+            RunDispatch::new(activation_on("unresolved", "unresolved-thread")),
+            awaken_dispatch::SubmitOptions {
+                priority: failing_priority,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .enqueue(RunDispatch::new(activation("independent")))
+        .await
+        .unwrap();
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let rejected = Arc::new(AtomicUsize::new(0));
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(SystemClock),
+        "resolution-isolation",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_millis(10),
+            ..Default::default()
+        },
+        Arc::new(SelectiveResolver {
+            worker: worker_over(text_runtime(), store, commit.clone()),
+            rejected: rejected.clone(),
+        }),
+        1,
+        Arc::new(BlackholeWake),
+    );
+    let progressed = wait_for(|| commit.commit_count() > 0).await;
+    pool.shutdown().await;
+    assert!(
+        rejected.load(Ordering::SeqCst) > 0,
+        "the unresolved request was actually attempted"
+    );
+    assert!(
+        progressed,
+        "an independent runnable Thread must progress despite a returned resolution error"
+    );
+}
+
+#[tokio::test]
+async fn many_equal_priority_resolution_failures_do_not_accumulate_global_backoff() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct PrefixRejectingResolver {
+        worker: Arc<MemWorker>,
+        rejected: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl WorkerResolver<MemoryDispatchStore> for PrefixRejectingResolver {
+        async fn worker_for(
+            &self,
+            thread: &ThreadId,
+            _: Option<&str>,
+        ) -> Result<Arc<MemWorker>, Error> {
+            if thread.0.starts_with("unresolved-") {
+                self.rejected.fetch_add(1, Ordering::SeqCst);
+                return Err(Error::Execution(
+                    awaken_runtime_contract::execution::Error::Execution(
+                        "retained projection cannot yet be resolved".into(),
+                    ),
+                ));
+            }
+            Ok(self.worker.clone())
+        }
+    }
+
+    const UNRESOLVED: usize = 16;
+    let store = Arc::new(MemoryDispatchStore::new());
+    for index in 0..UNRESOLVED {
+        store
+            .enqueue(RunDispatch::new(activation_on(
+                &format!("unresolved-run-{index}"),
+                &format!("unresolved-thread-{index}"),
+            )))
+            .await
+            .unwrap();
+    }
+    store
+        .enqueue(RunDispatch::new(activation_on(
+            "healthy-after-unresolved",
+            "healthy-thread",
+        )))
+        .await
+        .unwrap();
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let rejected = Arc::new(AtomicUsize::new(0));
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(SystemClock),
+        "bulk-resolution-isolation",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(60),
+            ..Default::default()
+        },
+        Arc::new(PrefixRejectingResolver {
+            worker: worker_over(text_runtime(), store, commit.clone()),
+            rejected: rejected.clone(),
+        }),
+        1,
+        Arc::new(BlackholeWake),
+    );
+
+    let progressed_without_global_backoff = tokio::time::timeout(
+        Duration::from_millis(500),
+        wait_for(|| commit.commit_count() > 0),
+    )
+    .await
+    .is_ok_and(|progressed| progressed);
+    pool.shutdown().await;
+
+    assert_eq!(
+        rejected.load(Ordering::SeqCst),
+        UNRESOLVED,
+        "all earlier unresolved rows were retained and individually deferred"
+    );
+    assert!(
+        progressed_without_global_backoff,
+        "later healthy work must not inherit unrelated resolution backoff"
+    );
+}
+
+#[tokio::test]
+async fn session_work_backpressure_defers_only_that_request_then_retries() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // Cause/effect graph: C1 a valid Run claim reaches a Session whose one
     // Environment Work slot is occupied; C2 the resolver returns typed NotReady;
     // C3 queue polling is configured below the admission floor. C1+C2 -> E1
-    // relinquish without crash accounting; C2+C3 -> E2 no warning-speed hot
-    // reacquisition. Once the slot changes, the same durable row remains eligible.
+    // request-local deferral without crash accounting; C2+C3 -> E2 no
+    // warning-speed hot reacquisition. Once the deadline passes, the same
+    // durable row becomes eligible again.
     //
     // | Rule | resolver | poll | first 100 ms effect | durable row effect |
-    // | B1 | NotReady | 10 ms | one resolution attempt | immediately reclaimable |
+    // | B1 | NotReady | 10 ms | one resolution attempt | deferred for 250 ms |
     // | B2 | fault | any | warning/backoff path | covered by R2 above |
     //
     // FMECA: treating expected Environment serialization as a fault produced
     // ~20 claim/relinquish cycles per second, inflated lease epochs, and hid real
     // Worker failures. Holding the lease instead would starve the rightful next
-    // owner, so the canonical pool relinquishes once and rate-limits retry.
+    // owner, so the canonical pool releases the claim and durably defers only
+    // that request.
     let store = Arc::new(MemoryDispatchStore::new());
     store
         .enqueue(RunDispatch::new(activation("session-work-pressure")))
@@ -3176,31 +3352,37 @@ async fn session_work_backpressure_relinquishes_once_then_retries_with_a_floor()
             )
             .await
             .unwrap()
-            .is_some(),
-        "B1 remains durable and immediately reclaimable"
+            .is_none(),
+        "B1 remains durable but cannot be reclaimed before its deadline"
     );
+    assert!(
+        wait_for(|| calls.load(Ordering::SeqCst) >= 2).await,
+        "B1 is retried after its request-local deadline"
+    );
+    assert_eq!(store.dispatch_count(), 1, "B1 is retained across retries");
     pool.shutdown().await;
 }
 
 #[tokio::test(start_paused = true)]
-async fn recovered_probe_with_session_backpressure_does_not_strand_the_pool() {
-    assert_recovered_probe_with_session_backpressure(1).await;
+async fn successive_resolution_failures_retry_without_stranding_a_single_drain() {
+    assert_successive_resolution_failures_retry(1).await;
 }
 
 #[tokio::test(start_paused = true)]
-async fn recovered_probe_with_session_backpressure_preserves_multi_drain_progress() {
-    assert_recovered_probe_with_session_backpressure(4).await;
+async fn successive_resolution_failures_preserve_multi_drain_progress() {
+    assert_successive_resolution_failures_retry(4).await;
 }
 
-async fn assert_recovered_probe_with_session_backpressure(concurrency: usize) {
+async fn assert_successive_resolution_failures_retry(concurrency: usize) {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    // C1 a transient fault opens the single-probe error gate; C2 the recovery
-    // probe finds ordinary Environment pressure, not another fault; C3 the
-    // Environment becomes available. E1 C2 releases probe ownership; E2 C3
+    // C1 generic resolution fails before execution; C2 its request-local retry
+    // reaches ordinary Environment pressure; C3 the next retry resolves.
+    // E1 neither C1 nor C2 opens the pool-wide infrastructure-error gate; E2 C3
     // executes the retained request exactly once without another enqueue,
-    // external wake, queue fallback, or forced lease/physical-slot release.
-    let store = Arc::new(MemoryDispatchStore::new());
+    // external wake, queue fallback, or lease-expiry recovery.
+    let clock = Arc::new(ManualClock::new(0));
+    let store = Arc::new(MemoryDispatchStore::new().with_clock(clock.clone()));
     store
         .enqueue(RunDispatch::new(activation("recovered-pressure")))
         .await
@@ -3210,7 +3392,7 @@ async fn assert_recovered_probe_with_session_backpressure(concurrency: usize) {
     let (runtime, inference_calls) = counting_text_runtime();
     let pool = DispatchPool::spawn_with_wake(
         store.clone(),
-        Arc::new(ManualClock::new(0)),
+        clock.clone(),
         "pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
@@ -3228,14 +3410,22 @@ async fn assert_recovered_probe_with_session_backpressure(concurrency: usize) {
     // Explicit virtual-clock steps allow runnable drain tasks to settle before
     // each deadline. Test timing cannot be decided by host CPU load.
     assert!(yield_until(|| calls.load(Ordering::SeqCst) == 1).await);
-    tokio::time::advance(Duration::from_millis(100)).await;
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    clock.set(250);
+    tokio::time::advance(Duration::from_millis(250)).await;
     assert!(yield_until(|| calls.load(Ordering::SeqCst) == 2).await);
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    clock.set(500);
     tokio::time::advance(Duration::from_millis(250)).await;
     let completed = yield_until(|| store.dispatch_count() == 0).await;
     pool.shutdown().await;
     assert!(
         completed,
-        "a NotReady recovery probe must release the error gate"
+        "successive request-local resolution failures must not strand the pool"
     );
     assert_eq!(
         calls.load(Ordering::SeqCst),
