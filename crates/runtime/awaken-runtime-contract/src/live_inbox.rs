@@ -414,20 +414,6 @@ mod tests {
     }
 
     #[test]
-    fn replace_keeps_the_original_origin() {
-        let inbox = LiveInbox::new();
-        let id = match inbox.offer_as(MessageOrigin::External, msg("v1")) {
-            Offer::Accepted(id) => id,
-            Offer::Closed => panic!("closed"),
-        };
-        inbox.replace(id, msg("v2")).unwrap();
-        let entry = &inbox.list()[0];
-        assert_eq!(entry.message.text_content(), "v2");
-        // Editing content must not silently relaunder the provenance to Run.
-        assert_eq!(entry.origin, MessageOrigin::External);
-    }
-
-    #[test]
     fn message_origin_serde_is_snake_case() {
         assert_eq!(
             serde_json::to_string(&MessageOrigin::External).unwrap(),
@@ -485,16 +471,43 @@ mod tests {
     }
 
     #[test]
-    fn replace_keeps_id_and_position() {
+    fn replace_decision_table_changes_only_the_target_payload() {
+        // Causes: C1 the open queue contains the requested id; C2 it does not.
+        // Effects: E1 a hit replaces only that entry's Message, preserving its
+        // id, origin, position, and both complete peers, then advances version
+        // once; E2 a miss returns UnknownMessage and the complete queue/version
+        // stutter. Closed admission is owned by the adjacent lifecycle table.
+        //
+        // | Rule | Open | Target | Result | Queue/version effect |
+        // |---|---|---|---|---|
+        // | R1 | yes | absent | UnknownMessage | exact stutter |
+        // | R2 | yes | present | Ok | target payload only; version + 1 |
         let inbox = LiveInbox::new();
         let _a = offered(&inbox, "a");
-        let b = offered(&inbox, "b");
+        let b = match inbox.offer_as(MessageOrigin::External, msg("b")) {
+            Offer::Accepted(id) => id,
+            Offer::Closed => panic!("inbox unexpectedly closed"),
+        };
         let _c = offered(&inbox, "c");
+
+        let before = inbox.list();
+        let version = inbox.version();
+        assert_eq!(
+            inbox.replace(LiveInboxMessageId(999), msg("missing")),
+            Err(EditError::UnknownMessage),
+            "R1"
+        );
+        assert_eq!(inbox.list(), before, "R1 queue stutter");
+        assert_eq!(inbox.version(), version, "R1 version stutter");
 
         inbox.replace(b, msg("b-edited")).expect("b is queued");
         let listed = inbox.list();
         assert_eq!(texts(&listed), ["a", "b-edited", "c"]);
-        assert_eq!(listed[1].id, b);
+        assert_eq!(listed[0], before[0], "R2 leading peer");
+        assert_eq!(listed[2], before[2], "R2 trailing peer");
+        assert_eq!(listed[1].id, before[1].id, "R2 identity");
+        assert_eq!(listed[1].origin, before[1].origin, "R2 provenance");
+        assert_eq!(inbox.version(), version + 1, "R2 version");
     }
 
     #[test]
