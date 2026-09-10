@@ -114,6 +114,14 @@ python3 scripts/ci/check_formal_web_surface.py
 python3 scripts/ci/check_proof_boundaries.py
 python3 scripts/ci/check_formal_mutations.py
 
+# Bind the abstract one-owner/waiting-follower theorem to the production Tokio
+# shutdown guard across both timeout and cooperative leader outcomes. The second
+# row also requires two independent followers to remain blocked until drain.
+cargo test -p awaken-service-lifecycle --test service_lifecycle \
+  concurrent_shutdown_cannot_return_before_the_active_drain_finishes -- --exact
+cargo test -p awaken-service-lifecycle --test service_lifecycle \
+  concurrent_shutdown_followers_wait_for_successful_active_drain -- --exact
+
 # The abstract network algebra is not Rust String/Vec refinement. Exercise the
 # actual owner and frozen SQLite root alongside its TLAPS/TLC checks below.
 cargo test -p awaken-protocol-managed --lib projection_publish_decision_covers_cache_and_source_fences
