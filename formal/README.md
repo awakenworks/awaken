@@ -840,10 +840,12 @@ The production bridge remains layered around that direct trace check:
 3. Runtime tests cover the typed `RunDelegations`, `PendingChildRunResults`, and
    `ActiveToolBatch` cells
    through actual async dispatch, approval, resume, cancellation, and recovery.
-4. The lower-layer store conformance suite commits those same state addresses
-   in one `ThreadCommit`, verifies crash recovery and stale post-terminal
-   fencing, and runs against in-memory, filesystem, SQLite, and PostgreSQL
-   adapters when the PostgreSQL test service is available.
+4. The lower-layer store conformance suite commits Run fact/ticket, message,
+   state and event regions in one `ThreadCommit`, binds their recovery cursors
+   to that exact commit, and verifies that a valid but stale post-terminal full
+   shape publishes none of them. The same shared rules run against in-memory,
+   filesystem, SQLite, and PostgreSQL adapters when the PostgreSQL test service
+   is available; backend-specific tests retain crash and later-write rollback.
 
 ## Running locally and from CI
 
