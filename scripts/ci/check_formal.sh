@@ -430,6 +430,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness activity_terminal_transition_clears_real_members
   run_kani awaken-session-store \
     --harness session_identity_and_create_shapes_require_one_owned_live_row
+  run_kani awaken-webhook-managed \
+    --harness pending_lifecycle_fact_completes_iff_delivery_succeeds_with_the_exact_identity
   run_kani awaken-service-auth-contract \
     --harness service_token_retry_is_enabled_only_for_an_exact_changed_token
   run_kani awaken-session-application \
@@ -722,6 +724,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness a_second_wait_is_never_admitted \
     --harness child_result_is_consumed_only_from_ready \
     --harness terminal_delivery_phases_never_reopen \
+    --harness live_inbox_closed_lifecycle_is_absorbing_for_every_mutation \
+    --harness boundary_priority_is_pause_then_input_then_idle \
     --harness rejected_live_inbox_reorder_is_an_atomic_stutter \
     --harness live_inbox_identity_advances_strictly_or_exhausts \
     --harness advisor_never_substitutes_for_primary_model_admission \

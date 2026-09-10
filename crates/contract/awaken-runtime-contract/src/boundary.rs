@@ -34,6 +34,24 @@ pub enum BoundaryOutcome {
     Idle,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoundaryPriority {
+    Pause,
+    Input,
+    Idle,
+}
+
+impl BoundaryPriority {
+    /// Sole priority selector for the already-drained boundary observation.
+    const fn select(paused: bool, has_input: bool) -> Self {
+        match (paused, has_input) {
+            (true, _) => Self::Pause,
+            (false, true) => Self::Input,
+            (false, false) => Self::Idle,
+        }
+    }
+}
+
 /// The id prefix shared by a run's live-inbox injections — same discipline the
 /// native engine has always used.
 fn inbox_id_prefix(run_id: &RunId) -> String {
@@ -84,16 +102,14 @@ pub fn evaluate_boundary(
     transcript: &[Message],
 ) -> BoundaryOutcome {
     let fold = drain_and_reidentify(ctx, run_id, transcript);
-    if ctx.is_pause_requested() {
-        return BoundaryOutcome::Await {
+    match BoundaryPriority::select(ctx.is_pause_requested(), !fold.is_empty()) {
+        BoundaryPriority::Pause => BoundaryOutcome::Await {
             fold,
             reason: PauseReason::Manual,
-        };
+        },
+        BoundaryPriority::Input => BoundaryOutcome::Continue { fold },
+        BoundaryPriority::Idle => BoundaryOutcome::Idle,
     }
-    if !fold.is_empty() {
-        return BoundaryOutcome::Continue { fold };
-    }
-    BoundaryOutcome::Idle
 }
 
 #[cfg(test)]
@@ -108,6 +124,29 @@ mod tests {
     }
     fn run() -> RunId {
         RunId("r1".into())
+    }
+
+    #[test]
+    fn boundary_priority_decision_table_is_total() {
+        // Causes: C1 pause requested; C2 drained fold has input. Effects:
+        // B1 pause always selects Await; B2 input without pause selects
+        // Continue; B3 neither selects Idle. All four Boolean combinations are
+        // the complete selector domain used by evaluate_boundary.
+        //
+        // | Rule | Pause | Input | Selection |
+        // |---|---|---|---|
+        // | B1 | true | false | Pause/Await |
+        // | B2 | true | true | Pause/Await |
+        // | B3 | false | true | Input/Continue |
+        // | B4 | false | false | Idle |
+        for (paused, has_input, expected) in [
+            (true, false, BoundaryPriority::Pause),
+            (true, true, BoundaryPriority::Pause),
+            (false, true, BoundaryPriority::Input),
+            (false, false, BoundaryPriority::Idle),
+        ] {
+            assert_eq!(BoundaryPriority::select(paused, has_input), expected);
+        }
     }
 
     #[test]
@@ -188,5 +227,21 @@ mod tests {
             }
             other => panic!("expected Await, got {other:?}"),
         }
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::BoundaryPriority;
+
+    #[kani::proof]
+    fn boundary_priority_is_pause_then_input_then_idle() {
+        let paused = kani::any::<bool>();
+        let has_input = kani::any::<bool>();
+        let selected = BoundaryPriority::select(paused, has_input);
+
+        assert_eq!(selected == BoundaryPriority::Pause, paused);
+        assert_eq!(selected == BoundaryPriority::Input, !paused && has_input);
+        assert_eq!(selected == BoundaryPriority::Idle, !paused && !has_input);
     }
 }
