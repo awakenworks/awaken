@@ -598,7 +598,7 @@ mod tests {
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
 
-    fn a_request() -> RunDispatch {
+    pub(super) fn a_request() -> RunDispatch {
         let activation = RunActivation::new(
             RunId("run-1".into()),
             ThreadId("thrd-1".into()),
