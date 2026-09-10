@@ -259,16 +259,16 @@ type checking are valuable executable evidence, but are not formal proofs.
   These bounded reference-adapter checks do not prove SQLite/PostgreSQL isolation,
   arbitrary schedules or token entropy, and neither atomicity/release ledger row
   is promoted beyond its existing abstract theorem grade.
-- Config CAS uses one statement owner per SQL adapter for both ordinary and
-  audited writes: expected zero inserts only, positive revisions update only,
-  and the returned revision is the stored `RETURNING` value. Existing `StoredU64`
-  checked arithmetic prevents signed-range exhaustion; SQLite's unconditional
-  upsert also rejects exhaustion instead of promoting the integer to REAL.
-  Shared SQLite/PostgreSQL decision, concurrent-writer, audit rollback and
-  reopen tests cover the adapters. AggregateCAS permits arbitrary client
-  revisions, including positive revisions against absence; removing the
-  absent-row predicate or exhaustion guard must kill the corresponding model
-  mutant. These SQL obligations remain abstract-model grade.
+- Config ordinary and audited CAS consume one production row-admission owner
+  before their shared SQLite/PostgreSQL statement seam. It distinguishes absence
+  from present zero, admits absence only for expected zero, admits a present row
+  only for its positive exact expectation, and derives the checked successor.
+  Kani exhausts `Option<u64> x u64` without assumptions. SQLite holds an
+  `IMMEDIATE` transaction and PostgreSQL locks present rows; the final SQL keeps
+  the same predicate for absent-row races and defense in depth. AggregateCAS,
+  adapter tables, concurrency, rollback and reopen tests cross-check this result.
+  SQL interpretation, `RETURNING`, locking, isolation and atomicity remain TCB;
+  separate unconditional-upsert arithmetic keeps global monotonicity abstract.
 - Console initialization and route changes both reuse `workspaceFromPath`;
   no separate encoded-Workspace parser remains. Storage remains presentation
   only, and the server remains the authorization authority. Component tests and
