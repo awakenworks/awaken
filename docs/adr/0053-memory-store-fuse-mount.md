@@ -282,12 +282,18 @@ cuts, including no-effect failure, unknown result and failed recovery. The
 `RecoveryRequired`; both live local ownership and container staging retain the
 same operation identity until a retryable recovery succeeds. This removes the
 former assumption that every ordinary error proved mounter-owned cleanup. It is
-an abstract safety model, not a Rust refinement or an unconditional liveness
-proof. A non-returning mounter, process/Provider death, a dishonest adapter
-recovery result, hostile-host identity races and real multi-platform/cloud
-credential qualification remain outside this process-local closure. Actual
-kernel FUSE tests are separate from fake-guard timing fixtures;
-cross-compilation is not platform execution.
+independent bounded cross-evidence, not a universal Rust refinement or an
+unconditional liveness proof. The live Provider index has one production pruning
+predicate shared by Local and Namespace: another wrapper, a currently borrowed
+owner, a pending/unknown operation or any returned guard retains the owner; only
+an observed empty unreferenced owner is removable. The direct Kani harness
+exhausts those four independent facts. Async decision tables bind unknown recovery
+and failed teardown to the same pending/guard fields and reject a mutation that
+drops pending responsibility. Arc and Tokio behavior, a non-returning mounter,
+process/Provider death, a dishonest adapter recovery result, hostile-host identity
+races and real multi-platform/cloud credential qualification remain outside this
+process-local closure. Actual kernel FUSE tests are separate from fake-guard
+timing fixtures; cross-compilation is not platform execution.
 
 #### Provider process death and cold FUSE adoption qualification
 
