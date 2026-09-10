@@ -27,6 +27,7 @@ from formal_realization_capacity_mutations import check_realization_capacity_obs
 from formal_event_batch_mutations import check_event_batch_model_mutants, check_event_batch_observation_mutants
 from formal_erasure_mutations import check_erasure_checkpoint_model_mutants
 from formal_eval_mutations import check_eval_evidence_model_mutants
+from formal_delegation_mutations import check_delegation_model_mutants
 from formal_session_deletion_mutations import (check_session_deletion_model_mutants, check_deletion_observation_mutants)
 from formal_local_process_mutations import (
     check_local_process_model_mutants, check_local_recovery_model_mutants,
@@ -589,6 +590,7 @@ def main() -> None:
         "acp-projection-model-mutants": check_acp_projection_model_mutants,
         "managed-projection-model-mutants": check_managed_projection_model_mutants,
         "eval-evidence-model-mutants": check_eval_evidence_model_mutants,
+        "delegation-model-mutants": check_delegation_model_mutants,
     }
     model_selection = parser.add_mutually_exclusive_group()
     for name in model_checks:
