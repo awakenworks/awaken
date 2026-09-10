@@ -93,6 +93,99 @@ async fn shutdown_is_idempotent_and_aborts_only_after_the_drain_deadline() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn timeout_requests_task_abort_and_joins_watcher_before_task_stops() {
+    struct DropSignal {
+        entered: Option<tokio::sync::oneshot::Sender<()>>,
+    }
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            if let Some(entered) = self.entered.take() {
+                let _ = entered.send(());
+            }
+        }
+    }
+
+    // Cause/effect graph: C1 a registered task ignores cancellation; C2 the
+    // shared deadline expires; C3 task abort is requested; C4 watcher abort is
+    // requested while the task is synchronously non-yielding. Effects: E1 C3
+    // eventually drops a pending task Future; E2 C4 lets shutdown join the
+    // watcher and return while the non-yielding task is still live; E3 the exact
+    // task is named. Decision table: R1=C1+C2+!C3 -> !E1;
+    // R2=C1+C2+C3+!C4 -> E1 but no bounded E2; R3=C1+C2+C3+C4 -> E1+E2+E3.
+    // This establishes an abort request plus watcher completion, not task
+    // termination at shutdown return; Tokio scheduling and AbortHandle semantics
+    // remain TCB.
+
+    // R1/R3: a pending Future is eventually dropped only because the timeout
+    // branch requests abort of the exact task.
+    let group = ServiceLifecycle::new();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (drop_entered_tx, drop_entered_rx) = tokio::sync::oneshot::channel();
+    group.spawn("pending", |_| async move {
+        let _drop_signal = DropSignal {
+            entered: Some(drop_entered_tx),
+        };
+        let _ = started_tx.send(());
+        std::future::pending::<()>().await;
+        Ok(())
+    });
+    started_rx.await.expect("R1 task installed its Drop signal");
+    let result = group
+        .shutdown(Duration::from_millis(10))
+        .await
+        .expect_err("R3 pending task crosses the deadline");
+    let drop_observed = tokio::time::timeout(Duration::from_secs(1), drop_entered_rx)
+        .await
+        .is_ok_and(|entered| entered.is_ok());
+    assert!(
+        drop_observed,
+        "R3/E1 task abort eventually drops the Future"
+    );
+    assert_eq!(result.timed_out, vec!["pending"], "R3/E3");
+
+    // R2/R3: this task never yields while the observer holds it. Its task abort
+    // cannot finish it, so only watcher abort permits bounded shutdown return.
+    let group = ServiceLifecycle::new();
+    let release = Arc::new(AtomicBool::new(false));
+    let task_release = release.clone();
+    let (busy_started_tx, busy_started_rx) = tokio::sync::oneshot::channel();
+    group.spawn("busy", |_| async move {
+        let _ = busy_started_tx.send(());
+        while !task_release.load(Ordering::Acquire) {
+            std::hint::spin_loop();
+        }
+        Ok(())
+    });
+    busy_started_rx.await.expect("R2 busy task started");
+
+    let shutdown_done = Arc::new(AtomicBool::new(false));
+    let shutdown_done_task = shutdown_done.clone();
+    let shutdown_group = group.clone();
+    let shutdown = tokio::spawn(async move {
+        let result = shutdown_group.shutdown(Duration::from_millis(10)).await;
+        shutdown_done_task.store(true, Ordering::Release);
+        result
+    });
+    let observer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        let returned_before_release = shutdown_done.load(Ordering::Acquire);
+        release.store(true, Ordering::Release);
+        returned_before_release
+    });
+    let returned_before_release = tokio::task::spawn_blocking(move || observer.join().unwrap())
+        .await
+        .expect("R2/R3 observer joins");
+    let result = tokio::time::timeout(Duration::from_secs(1), shutdown)
+        .await
+        .expect("R2 completes after the observer releases the task")
+        .expect("R2/R3 shutdown task does not panic")
+        .expect_err("R3 reports the deadline timeout");
+    assert!(returned_before_release, "R3/E2 watcher abort bounds return");
+    assert_eq!(result.timed_out, vec!["busy"], "R3/E3");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_shutdown_cannot_return_before_the_active_drain_finishes() {
     // C1 the leader owns a non-cooperative task; C2 a follower calls shutdown
     // after cancellation is visible but before the leader's deadline. E1 the
