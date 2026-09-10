@@ -365,12 +365,17 @@ pub(super) async fn relinquish(
                 "authenticated worker does not own the relinquished claim",
             ));
         }
-        let relinquished = service
-            .dispatch
-            .relinquish_claim(&request.claim)
-            .await
-            .map_err(|error| HostError::internal(error.to_string()))?
-            .applied();
+        let relinquished = match request.retry_after_ms {
+            Some(retry_after_ms) => {
+                service
+                    .dispatch
+                    .defer_claim(&request.claim, retry_after_ms)
+                    .await
+            }
+            None => service.dispatch.relinquish_claim(&request.claim).await,
+        }
+        .map_err(|error| HostError::internal(error.to_string()))?
+        .applied();
         Ok(json!({ "relinquished": relinquished }))
     }
     .await;

@@ -1,5 +1,135 @@
 // SQLite realization of the one neutral DispatchQueue contract. Included by
 // `sqlite.rs` so the public adapter and trait implementation paths do not move.
+fn release_claim_transaction(
+    conn: &mut rusqlite::Connection,
+    p: &str,
+    claim: RunClaim,
+    retry_not_before: Option<i64>,
+) -> Result<SettleOutcome, DispatchError> {
+    let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(store_error)?;
+    let current: Option<(
+        String,
+        Option<String>,
+        i64,
+        i64,
+        i64,
+        Option<String>,
+        Option<i64>,
+    )> = tx
+        .query_row(
+            &format!(
+                "SELECT status, lease_owner, lease_epoch, cancel_requested, attempt_count, \
+                 active_attempt_owner, active_attempt_epoch FROM {p}_dispatch WHERE run_id = ?1"
+            ),
+            params![claim.run_id.0],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some((
+        status,
+        owner,
+        persisted_epoch,
+        cancellation_requested,
+        attempt_count,
+        active_attempt_owner,
+        active_attempt_epoch,
+    )) = current
+    else {
+        let _ = tx.rollback();
+        return Ok(SettleOutcome::Fenced);
+    };
+    let attempt_count = durable_u64("dispatch attempt count", attempt_count)?;
+    let active_attempt_epoch = active_attempt_epoch
+        .map(|value| durable_u64("dispatch attempt epoch", value))
+        .transpose()?;
+    let slot = PhysicalAttemptSlot::from_facts(
+        active_attempt_owner.is_some(),
+        active_attempt_epoch.is_some(),
+        active_attempt_owner.as_deref() == Some(&claim.owner),
+        active_attempt_epoch == Some(claim.epoch),
+    );
+    let transition = crate::persisted_dispatch_transition(
+        &status,
+        persisted_epoch,
+        cancellation_requested != 0,
+    )?;
+    let (next, lease_until, attempt_count) = match transition.relinquish(
+        claim.epoch,
+        owner.as_deref() == Some(&claim.owner),
+        slot,
+        attempt_count,
+    ) {
+        awaken_dispatch_contract::RelinquishTransition::Pending {
+            state,
+            attempt_count,
+        } => (state, None, attempt_count),
+        awaken_dispatch_contract::RelinquishTransition::Recovering {
+            state,
+            attempt_count,
+        } => (state, Some(0_i64), attempt_count),
+        awaken_dispatch_contract::RelinquishTransition::Fenced => {
+            let _ = tx.rollback();
+            return Ok(SettleOutcome::Fenced);
+        }
+        awaken_dispatch_contract::RelinquishTransition::Corrupt => {
+            let _ = tx.rollback();
+            return Err(DispatchError::Rejected(
+                "persisted physical attempt slot is not an owner/epoch pair".to_string(),
+            ));
+        }
+    };
+    let attempt_count = durable_i64("dispatch attempt count", attempt_count)?;
+    let changed = tx
+        .execute(
+            &format!(
+                "UPDATE {p}_dispatch SET status = ?4, \
+                 lease_owner = CASE WHEN ?5 IS NULL THEN NULL ELSE lease_owner END, \
+                 lease_until = ?5, attempt_count = ?6, retry_not_before = ?7, \
+                 created_at = strftime('%Y-%m-%d %H:%M:%f', 'now') \
+                 WHERE run_id = ?1 AND status = 'running' \
+                 AND lease_owner = ?2 AND lease_epoch = ?3"
+            ),
+            params![
+                claim.run_id.0,
+                claim.owner,
+                epoch,
+                crate::dispatch_state_db(next.state),
+                lease_until,
+                attempt_count,
+                retry_not_before,
+            ],
+        )
+        .map_err(store_error)?;
+    if changed != 1 {
+        let _ = tx.rollback();
+        return Ok(SettleOutcome::Fenced);
+    }
+    insert_operation(
+        &tx,
+        p,
+        &DispatchOperation::LeaseLost {
+            claim,
+            reason: LeaseLossReason::Relinquished,
+        },
+    )?;
+    tx.commit().map_err(store_error)?;
+    Ok(SettleOutcome::Applied)
+}
+
 #[async_trait]
 impl DispatchQueue for SqliteDispatchStore {
     async fn worker_owns_run(
@@ -633,17 +763,19 @@ impl DispatchQueue for SqliteDispatchStore {
                         <> 'remote_required' AND \
                     COALESCE(json_array_length(json_extract(\
                         d.request, '$.placement.required_credentials')), 0) = 0))";
+                let retry_due = "(d.cancel_requested = 1 OR d.retry_not_before IS NULL \
+                    OR d.retry_not_before <= ?1)";
                 let reservation_recovery = format!(
                     "SELECT d.run_id, d.request, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d \
                      WHERE {physical_eligible} AND d.status IN ('reserved', 'reservation_running') \
-                     AND d.lease_until IS NOT NULL AND d.lease_until < ?1 \
+                     AND d.lease_until IS NOT NULL AND d.lease_until < ?1 AND {retry_due} \
                     AND {} ORDER BY d.created_at",
                     no_running_peer(p)
                 );
                 let recovery = format!(
                     "SELECT d.run_id, d.request, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d \
                      WHERE {physical_eligible} AND d.status = 'running' AND d.lease_until IS NOT NULL \
-                     AND d.lease_until < ?1 AND {local_eligible} \
+                     AND d.lease_until < ?1 AND {retry_due} AND {local_eligible} \
                      ORDER BY d.cancel_requested DESC, d.created_at"
                 );
                 // ADR-0022 single writer is an open-Run fence: an Awaiting Run keeps
@@ -654,12 +786,13 @@ impl DispatchQueue for SqliteDispatchStore {
                      WHERE {physical_eligible} AND d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
                          SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id \
                      AND (pe.available_at IS NULL OR pe.available_at <= ?1))) \
-                     AND {thread_available} AND {local_eligible} \
+                     AND {thread_available} AND {retry_due} AND {local_eligible} \
                      ORDER BY d.cancel_requested DESC, d.created_at"
                 );
                 let fresh = format!(
                     "SELECT d.run_id, d.request, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d \
-                     WHERE {physical_eligible} AND d.status = 'pending' AND {thread_available} AND {local_eligible} \
+                     WHERE {physical_eligible} AND d.status = 'pending' AND {thread_available} \
+                     AND {retry_due} AND {local_eligible} \
                      ORDER BY d.cancel_requested DESC, d.priority DESC, d.created_at"
                 );
 
@@ -707,7 +840,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         Some(found) => Some(found),
                         None => match row(&wake, true, false)? {
                             Some(found) => Some(found),
-                            None => row(&fresh, false, false)?,
+                            None => row(&fresh, true, false)?,
                         },
                     },
                 };
@@ -750,13 +883,14 @@ impl DispatchQueue for SqliteDispatchStore {
             let thread_available = thread_available_for_claim(p);
             let sql = format!(
                 "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
-                 (d.status IN ('reserved', 'reservation_running') AND \
+                 ((d.status IN ('reserved', 'reservation_running') AND \
                    d.lease_until IS NOT NULL AND d.lease_until < ?1 AND {}) OR \
                  (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < ?1) OR \
                  (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (SELECT 1 FROM {p}_pending pe \
                    WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= ?1)) \
                    ) AND {thread_available}) OR \
-                 (d.status = 'pending' AND {thread_available}) \
+                 (d.status = 'pending' AND {thread_available})) \
+                 AND (d.cancel_requested = 1 OR d.retry_not_before IS NULL OR d.retry_not_before <= ?1) \
                  ORDER BY CASE WHEN d.active_attempt_owner IS NOT NULL OR d.active_attempt_epoch IS NOT NULL THEN 1 ELSE 0 END, \
                           CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
                           d.priority DESC, d.created_at",
@@ -855,13 +989,14 @@ impl DispatchQueue for SqliteDispatchStore {
             let thread_available = thread_available_for_claim(p);
             let sql = format!(
                 "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
-                 (d.status IN ('reserved', 'reservation_running') AND \
+                 ((d.status IN ('reserved', 'reservation_running') AND \
                    d.lease_until IS NOT NULL AND d.lease_until < ?1 AND {}) OR \
                  (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < ?1) OR \
                  (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (SELECT 1 FROM {p}_pending pe \
                    WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= ?1)) \
                    ) AND {thread_available}) OR \
-                 (d.status = 'pending' AND {thread_available}) \
+                 (d.status = 'pending' AND {thread_available})) \
+                 AND (d.cancel_requested = 1 OR d.retry_not_before IS NULL OR d.retry_not_before <= ?1) \
                  ORDER BY CASE WHEN d.active_attempt_owner IS NOT NULL OR d.active_attempt_epoch IS NOT NULL THEN 1 ELSE 0 END, \
                           CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
                           d.priority DESC, d.created_at",
@@ -1236,7 +1371,7 @@ impl DispatchQueue for SqliteDispatchStore {
             let depth: i64 = conn
                 .query_row(
                     &format!(
-                        "SELECT COUNT(*) FROM {p}_dispatch d WHERE \
+                        "SELECT COUNT(*) FROM {p}_dispatch d WHERE (\
                          (d.status IN ('reserved', 'reservation_running') \
                            AND d.lease_until IS NOT NULL AND d.lease_until < ?1 AND {}) OR \
                          (d.status = 'pending' AND {thread_available}) OR \
@@ -1244,7 +1379,9 @@ impl DispatchQueue for SqliteDispatchStore {
                          (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (\
                            SELECT 1 FROM {p}_pending i WHERE i.run_id = d.run_id \
                            AND (i.available_at IS NULL OR i.available_at <= ?1)\
-                         )) AND {thread_available})",
+                         )) AND {thread_available})) \
+                         AND (d.cancel_requested = 1 OR d.retry_not_before IS NULL \
+                              OR d.retry_not_before <= ?1)",
                         no_running_peer(p)
                     ),
                     params![crate::clock::db_millis(now_ms)],
@@ -1349,100 +1486,22 @@ impl DispatchQueue for SqliteDispatchStore {
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
         let claim = claim.clone();
+        self.with_conn(move |conn, p| release_claim_transaction(conn, p, claim, None))
+            .await
+    }
+
+    async fn defer_claim(
+        &self,
+        claim: &RunClaim,
+        retry_after_ms: u64,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let claim = claim.clone();
+        let retry_not_before = durable_i64(
+            "dispatch resolution retry deadline",
+            crate::clock::deadline_millis(self.clock.now_ms(), retry_after_ms),
+        )?;
         self.with_conn(move |conn, p| {
-            let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
-            let tx = conn
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(store_error)?;
-            let current: Option<(String, Option<String>, i64, i64, i64, Option<String>, Option<i64>)> = tx
-                .query_row(
-                    &format!(
-                        "SELECT status, lease_owner, lease_epoch, cancel_requested, attempt_count, active_attempt_owner, active_attempt_epoch \
-                         FROM {p}_dispatch WHERE run_id = ?1"
-                    ),
-                    params![claim.run_id.0],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
-                )
-                .optional()
-                .map_err(store_error)?;
-            let Some((status, owner, persisted_epoch, cancellation_requested, attempt_count, active_attempt_owner, active_attempt_epoch)) = current else {
-                let _ = tx.rollback();
-                return Ok(SettleOutcome::Fenced);
-            };
-            let attempt_count = durable_u64("dispatch attempt count", attempt_count)?;
-            let active_attempt_epoch = active_attempt_epoch
-                .map(|value| durable_u64("dispatch attempt epoch", value))
-                .transpose()?;
-            let slot = PhysicalAttemptSlot::from_facts(
-                active_attempt_owner.is_some(),
-                active_attempt_epoch.is_some(),
-                active_attempt_owner.as_deref() == Some(&claim.owner),
-                active_attempt_epoch == Some(claim.epoch),
-            );
-            let transition = crate::persisted_dispatch_transition(
-                &status,
-                persisted_epoch,
-                cancellation_requested != 0,
-            )?;
-            let (next, lease_until, attempt_count) = match transition.relinquish(
-                claim.epoch,
-                owner.as_deref() == Some(&claim.owner),
-                slot,
-                attempt_count,
-            ) {
-                awaken_dispatch_contract::RelinquishTransition::Pending {
-                    state,
-                    attempt_count,
-                } => (state, None, attempt_count),
-                awaken_dispatch_contract::RelinquishTransition::Recovering {
-                    state,
-                    attempt_count,
-                } => (state, Some(0_i64), attempt_count),
-                awaken_dispatch_contract::RelinquishTransition::Fenced => {
-                    let _ = tx.rollback();
-                    return Ok(SettleOutcome::Fenced);
-                }
-                awaken_dispatch_contract::RelinquishTransition::Corrupt => {
-                    let _ = tx.rollback();
-                    return Err(DispatchError::Rejected(
-                        "persisted physical attempt slot is not an owner/epoch pair".to_string(),
-                    ));
-                }
-            };
-            let attempt_count = durable_i64("dispatch attempt count", attempt_count)?;
-            let changed = tx
-                .execute(
-                    &format!(
-                        "UPDATE {p}_dispatch SET status = ?4, \
-                         lease_owner = CASE WHEN ?5 IS NULL THEN NULL ELSE lease_owner END, \
-                         lease_until = ?5, attempt_count = ?6, created_at = strftime('%Y-%m-%d %H:%M:%f', 'now') \
-                         WHERE run_id = ?1 AND status = 'running' \
-                         AND lease_owner = ?2 AND lease_epoch = ?3"
-                    ),
-                    params![
-                        claim.run_id.0,
-                        claim.owner,
-                        epoch,
-                        crate::dispatch_state_db(next.state),
-                        lease_until,
-                        attempt_count,
-                    ],
-                )
-                .map_err(store_error)?;
-            if changed != 1 {
-                let _ = tx.rollback();
-                return Ok(SettleOutcome::Fenced);
-            }
-            insert_operation(
-                &tx,
-                p,
-                &DispatchOperation::LeaseLost {
-                    claim,
-                    reason: LeaseLossReason::Relinquished,
-                },
-            )?;
-            tx.commit().map_err(store_error)?;
-            Ok(SettleOutcome::Applied)
+            release_claim_transaction(conn, p, claim, Some(retry_not_before))
         })
         .await
     }

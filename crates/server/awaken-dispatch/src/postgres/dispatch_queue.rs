@@ -109,6 +109,124 @@ impl PostgresDispatchStore {
         tx.commit().await.map_err(store_error)?;
         Ok(admission)
     }
+
+    async fn release_claim(
+        &self,
+        claim: &RunClaim,
+        retry_after_ms: Option<u64>,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let p = NS;
+        let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
+        let mut tx = self.pool.begin().await.map_err(store_error)?;
+        let retry_not_before = if let Some(retry_after_ms) = retry_after_ms {
+            let now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
+            Some(durable_i64(
+                "dispatch resolution retry deadline",
+                crate::clock::deadline_millis(now_ms, retry_after_ms),
+            )?)
+        } else {
+            None
+        };
+        let current = sqlx::query(&format!(
+            "SELECT status, lease_owner, lease_epoch, cancel_requested, attempt_count, \
+             active_attempt_owner, active_attempt_epoch \
+             FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
+        ))
+        .bind(&claim.run_id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        let Some(current) = current else {
+            let _ = tx.rollback().await;
+            return Ok(SettleOutcome::Fenced);
+        };
+        let status: String = current.try_get("status").map_err(store_error)?;
+        let persisted_epoch: i64 = current.try_get("lease_epoch").map_err(store_error)?;
+        let persisted_owner: Option<String> =
+            current.try_get("lease_owner").map_err(store_error)?;
+        let cancellation_requested: i64 =
+            current.try_get("cancel_requested").map_err(store_error)?;
+        let attempt_count = durable_u64(
+            "dispatch attempt count",
+            current.try_get("attempt_count").map_err(store_error)?,
+        )?;
+        let active_attempt_owner: Option<String> = current
+            .try_get("active_attempt_owner")
+            .map_err(store_error)?;
+        let active_attempt_epoch = current
+            .try_get::<Option<i64>, _>("active_attempt_epoch")
+            .map_err(store_error)?
+            .map(|value| durable_u64("dispatch attempt epoch", value))
+            .transpose()?;
+        let slot = PhysicalAttemptSlot::from_facts(
+            active_attempt_owner.is_some(),
+            active_attempt_epoch.is_some(),
+            active_attempt_owner.as_deref() == Some(&claim.owner),
+            active_attempt_epoch == Some(claim.epoch),
+        );
+        let transition = crate::persisted_dispatch_transition(
+            &status,
+            persisted_epoch,
+            cancellation_requested != 0,
+        )?;
+        let (next, lease_until, attempt_count) = match transition.relinquish(
+            claim.epoch,
+            persisted_owner.as_deref() == Some(&claim.owner),
+            slot,
+            attempt_count,
+        ) {
+            awaken_dispatch_contract::RelinquishTransition::Pending {
+                state,
+                attempt_count,
+            } => (state, None, attempt_count),
+            awaken_dispatch_contract::RelinquishTransition::Recovering {
+                state,
+                attempt_count,
+            } => (state, Some(0_i64), attempt_count),
+            awaken_dispatch_contract::RelinquishTransition::Fenced => {
+                let _ = tx.rollback().await;
+                return Ok(SettleOutcome::Fenced);
+            }
+            awaken_dispatch_contract::RelinquishTransition::Corrupt => {
+                let _ = tx.rollback().await;
+                return Err(DispatchError::Rejected(
+                    "persisted physical attempt slot is not an owner/epoch pair".to_string(),
+                ));
+            }
+        };
+        let attempt_count = durable_i64("dispatch attempt count", attempt_count)?;
+        let changed = sqlx::query(&format!(
+            "UPDATE {p}_dispatch SET status = $4, \
+             lease_owner = CASE WHEN $5 IS NULL THEN NULL ELSE lease_owner END, \
+             lease_until = $5, attempt_count = $6, retry_not_before = $7, \
+             created_at = clock_timestamp() WHERE run_id = $1 AND status = 'running' \
+             AND lease_owner = $2 AND lease_epoch = $3"
+        ))
+        .bind(&claim.run_id.0)
+        .bind(&claim.owner)
+        .bind(epoch)
+        .bind(crate::dispatch_state_db(next.state))
+        .bind(lease_until)
+        .bind(attempt_count)
+        .bind(retry_not_before)
+        .execute(&mut *tx)
+        .await
+        .map_err(store_error)?;
+        if changed.rows_affected() != 1 {
+            let _ = tx.rollback().await;
+            return Ok(SettleOutcome::Fenced);
+        }
+        insert_operation(
+            &mut tx,
+            &DispatchOperation::LeaseLost {
+                claim: claim.clone(),
+                reason: LeaseLossReason::Relinquished,
+            },
+        )
+        .await?;
+        tx.commit().await.map_err(store_error)?;
+        Ok(SettleOutcome::Applied)
+    }
 }
 
 #[async_trait]
@@ -686,7 +804,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let thread_available = thread_available_for_claim(p);
         let candidates = sqlx::query(&format!(
             "SELECT d.run_id, d.request, d.cancel_requested, d.lease_epoch, d.status FROM {p}_dispatch d WHERE \
-             (d.status IN ('reserved', 'reservation_running') AND \
+             ((d.status IN ('reserved', 'reservation_running') AND \
                d.lease_until IS NOT NULL AND d.lease_until < $1 AND {}) OR \
              (d.status = 'running' AND d.lease_until IS NOT NULL AND \
                d.lease_until < $1 AND {local_eligible}) OR \
@@ -694,7 +812,8 @@ impl DispatchQueue for PostgresDispatchStore {
                SELECT 1 FROM {p}_pending pe WHERE pe.run_id = d.run_id AND \
                  (pe.available_at IS NULL OR pe.available_at <= $1))) AND \
                {thread_available} AND {local_eligible}) OR \
-             (d.status = 'pending' AND {thread_available} AND {local_eligible}) \
+             (d.status = 'pending' AND {thread_available} AND {local_eligible})) \
+             AND (d.cancel_requested = 1 OR d.retry_not_before IS NULL OR d.retry_not_before <= $1) \
              ORDER BY CASE WHEN d.active_attempt_owner IS NOT NULL OR d.active_attempt_epoch IS NOT NULL THEN 1 ELSE 0 END, \
                CASE WHEN d.cancel_requested = 1 THEN 0 \
                WHEN d.status IN ('reserved', 'reservation_running') THEN 1 \
@@ -754,13 +873,14 @@ impl DispatchQueue for PostgresDispatchStore {
         let thread_available = thread_available_for_claim(p);
         let rows = sqlx::query(&format!(
             "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
-             (d.status IN ('reserved', 'reservation_running') AND \
+             ((d.status IN ('reserved', 'reservation_running') AND \
                d.lease_until IS NOT NULL AND d.lease_until < $1 AND {}) OR \
              (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $1) OR \
              (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (SELECT 1 FROM {p}_pending pe \
                WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
                ) AND {thread_available}) OR \
-             (d.status = 'pending' AND {thread_available}) \
+             (d.status = 'pending' AND {thread_available})) \
+             AND (d.cancel_requested = 1 OR d.retry_not_before IS NULL OR d.retry_not_before <= $1) \
              ORDER BY CASE WHEN d.active_attempt_owner IS NOT NULL OR d.active_attempt_epoch IS NOT NULL THEN 1 ELSE 0 END, \
                       CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
                       d.priority DESC, d.created_at",
@@ -837,13 +957,14 @@ impl DispatchQueue for PostgresDispatchStore {
         let thread_available = thread_available_for_claim(p);
         let rows = sqlx::query(&format!(
             "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
-             (d.status IN ('reserved', 'reservation_running') AND \
+             ((d.status IN ('reserved', 'reservation_running') AND \
                d.lease_until IS NOT NULL AND d.lease_until < $1 AND {}) OR \
              (d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < $1) OR \
              (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (SELECT 1 FROM {p}_pending pe \
                WHERE pe.run_id = d.run_id AND (pe.available_at IS NULL OR pe.available_at <= $1)) \
                ) AND {thread_available}) OR \
-             (d.status = 'pending' AND {thread_available}) \
+             (d.status = 'pending' AND {thread_available})) \
+             AND (d.cancel_requested = 1 OR d.retry_not_before IS NULL OR d.retry_not_before <= $1) \
              ORDER BY CASE WHEN d.active_attempt_owner IS NOT NULL OR d.active_attempt_epoch IS NOT NULL THEN 1 ELSE 0 END, \
                       CASE WHEN d.cancel_requested = 1 THEN 0 WHEN d.status = 'running' THEN 1 WHEN d.status = 'awaiting' THEN 2 ELSE 3 END, \
                       d.priority DESC, d.created_at",
@@ -1175,7 +1296,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let p = NS;
         let thread_available = thread_available_for_claim(p);
         let depth: i64 = sqlx::query_scalar(&format!(
-            "SELECT COUNT(*) FROM {p}_dispatch d WHERE \
+            "SELECT COUNT(*) FROM {p}_dispatch d WHERE (\
              (d.status IN ('reserved', 'reservation_running') \
                AND d.lease_until IS NOT NULL AND d.lease_until < $1 AND {}) OR \
              (d.status = 'pending' AND {thread_available}) OR \
@@ -1183,7 +1304,9 @@ impl DispatchQueue for PostgresDispatchStore {
              (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS (\
                SELECT 1 FROM {p}_pending i WHERE i.run_id = d.run_id \
                AND (i.available_at IS NULL OR i.available_at <= $1)\
-             )) AND {thread_available})",
+             )) AND {thread_available})) \
+             AND (d.cancel_requested = 1 OR d.retry_not_before IS NULL \
+                  OR d.retry_not_before <= $1)",
             no_running_peer(p)
         ))
         .bind(crate::clock::db_millis(now_ms))
@@ -1292,107 +1415,15 @@ impl DispatchQueue for PostgresDispatchStore {
     }
 
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
-        let p = NS;
-        let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
-        let mut tx = self.pool.begin().await.map_err(store_error)?;
-        let current = sqlx::query(&format!(
-            "SELECT status, lease_owner, lease_epoch, cancel_requested, attempt_count, active_attempt_owner, active_attempt_epoch \
-             FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
-        ))
-        .bind(&claim.run_id.0)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        let Some(current) = current else {
-            let _ = tx.rollback().await;
-            return Ok(SettleOutcome::Fenced);
-        };
-        let status: String = current.try_get("status").map_err(store_error)?;
-        let persisted_epoch: i64 = current.try_get("lease_epoch").map_err(store_error)?;
-        let persisted_owner: Option<String> =
-            current.try_get("lease_owner").map_err(store_error)?;
-        let cancellation_requested: i64 =
-            current.try_get("cancel_requested").map_err(store_error)?;
-        let attempt_count = durable_u64(
-            "dispatch attempt count",
-            current.try_get("attempt_count").map_err(store_error)?,
-        )?;
-        let active_attempt_owner: Option<String> = current
-            .try_get("active_attempt_owner")
-            .map_err(store_error)?;
-        let active_attempt_epoch: Option<i64> = current
-            .try_get("active_attempt_epoch")
-            .map_err(store_error)?;
-        let active_attempt_epoch = active_attempt_epoch
-            .map(|value| durable_u64("dispatch attempt epoch", value))
-            .transpose()?;
-        let slot = PhysicalAttemptSlot::from_facts(
-            active_attempt_owner.is_some(),
-            active_attempt_epoch.is_some(),
-            active_attempt_owner.as_deref() == Some(&claim.owner),
-            active_attempt_epoch == Some(claim.epoch),
-        );
-        let transition = crate::persisted_dispatch_transition(
-            &status,
-            persisted_epoch,
-            cancellation_requested != 0,
-        )?;
-        let (next, lease_until, attempt_count) = match transition.relinquish(
-            claim.epoch,
-            persisted_owner.as_deref() == Some(&claim.owner),
-            slot,
-            attempt_count,
-        ) {
-            awaken_dispatch_contract::RelinquishTransition::Pending {
-                state,
-                attempt_count,
-            } => (state, None, attempt_count),
-            awaken_dispatch_contract::RelinquishTransition::Recovering {
-                state,
-                attempt_count,
-            } => (state, Some(0_i64), attempt_count),
-            awaken_dispatch_contract::RelinquishTransition::Fenced => {
-                let _ = tx.rollback().await;
-                return Ok(SettleOutcome::Fenced);
-            }
-            awaken_dispatch_contract::RelinquishTransition::Corrupt => {
-                let _ = tx.rollback().await;
-                return Err(DispatchError::Rejected(
-                    "persisted physical attempt slot is not an owner/epoch pair".to_string(),
-                ));
-            }
-        };
-        let attempt_count = durable_i64("dispatch attempt count", attempt_count)?;
-        let changed = sqlx::query(&format!(
-            "UPDATE {p}_dispatch SET status = $4, \
-             lease_owner = CASE WHEN $5 IS NULL THEN NULL ELSE lease_owner END, \
-             lease_until = $5, attempt_count = $6, created_at = clock_timestamp() \
-             WHERE run_id = $1 AND status = 'running' \
-             AND lease_owner = $2 AND lease_epoch = $3"
-        ))
-        .bind(&claim.run_id.0)
-        .bind(&claim.owner)
-        .bind(epoch)
-        .bind(crate::dispatch_state_db(next.state))
-        .bind(lease_until)
-        .bind(attempt_count)
-        .execute(&mut *tx)
-        .await
-        .map_err(store_error)?;
-        if changed.rows_affected() != 1 {
-            let _ = tx.rollback().await;
-            return Ok(SettleOutcome::Fenced);
-        }
-        insert_operation(
-            &mut tx,
-            &DispatchOperation::LeaseLost {
-                claim: claim.clone(),
-                reason: LeaseLossReason::Relinquished,
-            },
-        )
-        .await?;
-        tx.commit().await.map_err(store_error)?;
-        Ok(SettleOutcome::Applied)
+        self.release_claim(claim, None).await
+    }
+
+    async fn defer_claim(
+        &self,
+        claim: &RunClaim,
+        retry_after_ms: u64,
+    ) -> Result<SettleOutcome, DispatchError> {
+        self.release_claim(claim, Some(retry_after_ms)).await
     }
 
     async fn settle(

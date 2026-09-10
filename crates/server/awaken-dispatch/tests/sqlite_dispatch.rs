@@ -573,6 +573,21 @@ async fn relinquish_claim_on_sqlite() {
 }
 
 #[tokio::test]
+async fn defer_claim_is_request_local_on_sqlite() {
+    let store = SqliteDispatchStore::open_in_memory().expect("open");
+    harness::assert_defer_claim_is_request_local(&store).await;
+}
+
+#[tokio::test]
+async fn defer_claim_uses_the_store_clock_and_exact_deadline_on_sqlite() {
+    let clock = Arc::new(awaken_dispatch::ManualClock::new(100));
+    let store = SqliteDispatchStore::open_in_memory()
+        .expect("open")
+        .with_clock(clock.clone());
+    harness::assert_defer_claim_deadline_edge(&store, &clock).await;
+}
+
+#[tokio::test]
 async fn physical_attempt_admission_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
     harness::assert_physical_attempt_admission(

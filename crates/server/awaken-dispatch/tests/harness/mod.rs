@@ -1089,6 +1089,13 @@ impl awaken_dispatch::DispatchQueue for FlakyDispatchStore {
     ) -> Result<awaken_dispatch::SettleOutcome, awaken_dispatch::DispatchError> {
         self.inner.relinquish_claim(claim).await
     }
+    async fn defer_claim(
+        &self,
+        claim: &awaken_dispatch::RunClaim,
+        retry_after_ms: u64,
+    ) -> Result<awaken_dispatch::SettleOutcome, awaken_dispatch::DispatchError> {
+        self.inner.defer_claim(claim, retry_after_ms).await
+    }
     async fn settle(
         &self,
         run_id: &RunId,
@@ -2252,6 +2259,123 @@ pub async fn assert_relinquish_claim<S: awaken_dispatch::Dispatch>(store: &S) {
     let leased = store.list_dispatches().await.unwrap();
     assert_eq!(leased[0].state, DispatchState::Leased, "R2");
     assert_eq!(leased[0].attempt_count, 0, "R2");
+}
+
+/// Request-local resolution retry must preserve scheduling policy without
+/// turning one bad request into a pool-wide outage.
+pub async fn assert_defer_claim_is_request_local<
+    S: awaken_dispatch::Dispatch + awaken_dispatch::DispatchOperationalFeed,
+>(
+    store: &S,
+) {
+    use awaken_dispatch::{
+        DispatchCursor, DispatchOperation, LeaseLossReason, RunClaim, RunDispatch, SettleOutcome,
+        SubmitOptions,
+    };
+
+    let deferred = RunDispatch::new(activation_on(
+        "deferred-resolution",
+        "deferred-resolution-thread",
+    ));
+    let deferred_run = deferred.run_id().clone();
+    store
+        .enqueue_with(
+            deferred,
+            SubmitOptions {
+                priority: 10,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .enqueue(RunDispatch::new(activation_on(
+            "independent-resolution",
+            "independent-resolution-thread",
+        )))
+        .await
+        .unwrap();
+
+    let first = store
+        .claim("owner-a", 1_000, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("higher-priority dispatch is claimed first");
+    let first_claim = RunClaim::from(&first.lease);
+    assert_eq!(first_claim.run_id, deferred_run);
+    assert_eq!(
+        store
+            .defer_claim(&first_claim, i64::MAX as u64)
+            .await
+            .unwrap(),
+        SettleOutcome::Applied
+    );
+    let operations = store.events_after(DispatchCursor(0), 10).await.unwrap();
+    assert!(operations.events.iter().any(|event| {
+        matches!(
+            &event.operation,
+            DispatchOperation::LeaseLost { claim, reason }
+                if claim == &first_claim && *reason == LeaseLossReason::Relinquished
+        )
+    }));
+
+    let independent = store
+        .claim("owner-b", 1_000, 1, &Default::default())
+        .await
+        .unwrap()
+        .expect("unrelated lower-priority dispatch remains claimable");
+    assert_ne!(independent.lease.run_id, deferred_run);
+
+    assert_eq!(
+        store.cancel(&deferred_run).await.unwrap(),
+        Some(first.request.thread_id().clone()),
+        "cancellation remains terminal control while resolution is deferred"
+    );
+    let cancelled = store
+        .claim("owner-c", 1_000, 2, &Default::default())
+        .await
+        .unwrap()
+        .expect("cancellation bypasses request-local retry deadline");
+    assert_eq!(cancelled.lease.run_id, deferred_run);
+    assert!(cancelled.cancellation_requested);
+}
+
+pub async fn assert_defer_claim_deadline_edge<S: awaken_dispatch::Dispatch>(
+    store: &S,
+    clock: &awaken_dispatch::ManualClock,
+) {
+    use awaken_dispatch::{RunClaim, RunDispatch};
+
+    clock.set(100);
+    store
+        .enqueue(RunDispatch::new(activation("defer-deadline-edge")))
+        .await
+        .unwrap();
+    let first = store
+        .claim("owner-a", 1_000, 100, &Default::default())
+        .await
+        .unwrap()
+        .expect("initial claim");
+    store
+        .defer_claim(&RunClaim::from(&first.lease), 50)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .claim("owner-b", 1_000, 149, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
+        "request is fenced before its store-owned deadline"
+    );
+    assert!(
+        store
+            .claim("owner-b", 1_000, 150, &Default::default())
+            .await
+            .unwrap()
+            .is_some(),
+        "request becomes eligible exactly at its deadline"
+    );
 }
 
 /// Physical-attempt admission cause/effect decision table:
