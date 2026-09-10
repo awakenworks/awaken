@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::acp_runner::ToolFreeAcpRunner;
 use crate::memory_eval::{MemoryDataset, SelectionCase};
+use crate::observation_index::index_observations;
 
 const VERSION: u32 = 1;
 const TIMEOUT: Duration = Duration::from_secs(300);
@@ -229,9 +230,10 @@ pub fn score_pairwise(
     dataset: &PairwiseDataset,
     observations: &[BenchmarkObservation],
 ) -> PairwiseReport {
-    let (by_id, duplicates, unexpected) = index_observations(
+    let index = index_observations(
         dataset.cases.iter().map(|case| case.id.as_str()),
         observations,
+        |observation| observation.case_id.as_str(),
     );
     let mut valid = 0;
     let mut correct = 0;
@@ -249,14 +251,16 @@ pub fn score_pairwise(
             })
             .or_default()
             .0 += 1;
-        let entries = by_id.get(case.id.as_str()).cloned().unwrap_or_default();
-        provider_errors += usize::from(entries.len() == 1 && entries[0].error.is_some());
-        if entries.len() != 1 || entries[0].error.is_some() {
+        let Some(observation) = index.unique(&case.id) else {
+            continue;
+        };
+        provider_errors += usize::from(observation.error.is_some());
+        if observation.error.is_some() {
             continue;
         }
         observed += 1;
-        latency += u128::from(entries[0].latency_ms);
-        let Ok(reply) = serde_json::from_str::<PairwiseReply>(&entries[0].output) else {
+        latency += u128::from(observation.latency_ms);
+        let Ok(reply) = serde_json::from_str::<PairwiseReply>(&observation.output) else {
             continue;
         };
         if reply.explanation.trim().is_empty() {
@@ -292,8 +296,8 @@ pub fn score_pairwise(
         } else {
             latency as f64 / observed as f64
         },
-        duplicate_observation_ids: duplicates,
-        unexpected_observation_ids: unexpected,
+        duplicate_observation_ids: index.duplicate_ids,
+        unexpected_observation_ids: index.unexpected_ids,
     }
 }
 
@@ -303,20 +307,16 @@ pub fn compare_pairwise(
     left: &[BenchmarkObservation],
     right: &[BenchmarkObservation],
 ) -> PairwiseCrossReport {
-    let mut left_by_id = BTreeMap::new();
-    let mut right_by_id = BTreeMap::new();
-    for observation in left {
-        left_by_id
-            .entry(observation.case_id.as_str())
-            .or_insert_with(Vec::new)
-            .push(observation);
-    }
-    for observation in right {
-        right_by_id
-            .entry(observation.case_id.as_str())
-            .or_insert_with(Vec::new)
-            .push(observation);
-    }
+    let left_index = index_observations(
+        dataset.cases.iter().map(|case| case.id.as_str()),
+        left,
+        |observation| observation.case_id.as_str(),
+    );
+    let right_index = index_observations(
+        dataset.cases.iter().map(|case| case.id.as_str()),
+        right,
+        |observation| observation.case_id.as_str(),
+    );
     let mut jointly_valid = 0;
     let mut agreements = 0;
     let mut both_correct = 0;
@@ -329,8 +329,9 @@ pub fn compare_pairwise(
     let mut left_invalid_case_ids = Vec::new();
     let mut right_invalid_case_ids = Vec::new();
     for case in &dataset.cases {
-        let left_prediction = prediction(left_by_id.get(case.id.as_str()));
-        let right_prediction = prediction(right_by_id.get(case.id.as_str()));
+        let left_prediction = prediction(left_index.by_id.get(case.id.as_str()).map(Vec::as_slice));
+        let right_prediction =
+            prediction(right_index.by_id.get(case.id.as_str()).map(Vec::as_slice));
         if left_prediction.is_none() {
             left_invalid_case_ids.push(case.id.clone());
         }
@@ -531,6 +532,11 @@ pub fn score_reference_compact(
     dataset: &ReferenceCompactDataset,
     observations: &[BenchmarkObservation],
 ) -> ReferenceCompactReport {
+    let index = index_observations(
+        dataset.cases.iter().map(|case| case.id.as_str()),
+        observations,
+        |observation| observation.case_id.as_str(),
+    );
     let mut precision = 0.0;
     let mut recall = 0.0;
     let mut f1 = 0.0;
@@ -539,27 +545,21 @@ pub fn score_reference_compact(
     let mut observed = 0;
     let mut provider_errors = 0;
     for case in &dataset.cases {
-        let case_observations = observations
-            .iter()
-            .filter(|item| item.case_id == case.id)
-            .collect::<Vec<_>>();
-        provider_errors +=
-            usize::from(case_observations.len() == 1 && case_observations[0].error.is_some());
-        let matches = case_observations
-            .into_iter()
-            .filter(|item| item.error.is_none())
-            .collect::<Vec<_>>();
-        if matches.len() != 1 || matches[0].output.trim().is_empty() {
+        let Some(observation) = index.unique(&case.id) else {
+            continue;
+        };
+        provider_errors += usize::from(observation.error.is_some());
+        if observation.error.is_some() || observation.output.trim().is_empty() {
             continue;
         }
         observed += 1;
-        latency += u128::from(matches[0].latency_ms);
-        let (p, r, score) = token_f1(&matches[0].output, &case.reference);
+        latency += u128::from(observation.latency_ms);
+        let (p, r, score) = token_f1(&observation.output, &case.reference);
         precision += p;
         recall += r;
         f1 += score;
         ratio +=
-            tokens(&matches[0].output).len() as f64 / tokens(&case.transcript).len().max(1) as f64;
+            tokens(&observation.output).len() as f64 / tokens(&case.transcript).len().max(1) as f64;
     }
     let divisor = observed.max(1) as f64;
     ReferenceCompactReport {
@@ -745,35 +745,6 @@ async fn run_one(
     }
 }
 
-fn index_observations<'a>(
-    expected: impl Iterator<Item = &'a str>,
-    observations: &'a [BenchmarkObservation],
-) -> (
-    BTreeMap<&'a str, Vec<&'a BenchmarkObservation>>,
-    Vec<String>,
-    Vec<String>,
-) {
-    let expected = expected.collect::<BTreeSet<_>>();
-    let mut by_id: BTreeMap<&str, Vec<&BenchmarkObservation>> = BTreeMap::new();
-    let mut unexpected = BTreeSet::new();
-    for observation in observations {
-        if expected.contains(observation.case_id.as_str()) {
-            by_id
-                .entry(&observation.case_id)
-                .or_default()
-                .push(observation);
-        } else {
-            unexpected.insert(observation.case_id.clone());
-        }
-    }
-    let duplicates = by_id
-        .iter()
-        .filter(|(_, values)| values.len() > 1)
-        .map(|(id, _)| (*id).to_string())
-        .collect();
-    (by_id, duplicates, unexpected.into_iter().collect())
-}
-
 pub(crate) fn binomial(correct: usize, total: usize) -> BinomialMetrics {
     if total == 0 {
         return BinomialMetrics {
@@ -813,7 +784,7 @@ fn metric_tuple((total, correct): (usize, usize)) -> BinomialMetrics {
     binomial(correct, total)
 }
 
-fn prediction(observations: Option<&Vec<&BenchmarkObservation>>) -> Option<Choice> {
+fn prediction(observations: Option<&[&BenchmarkObservation]>) -> Option<Choice> {
     let observations = observations?;
     if observations.len() != 1 || observations[0].error.is_some() {
         return None;
@@ -1008,17 +979,22 @@ mod tests {
     fn qmsum_adapter_and_reference_score_are_deterministic() {
         let document = serde_json::json!({"meeting_transcripts":[{"speaker":"A","content":"alpha beta gamma"}],"general_query_list":[{"query":"what?","answer":"alpha beta"}],"specific_query_list":[]});
         let dataset = import_qmsum_documents(&[document], 1).unwrap();
-        let report = score_reference_compact(
-            &dataset,
-            &[BenchmarkObservation {
-                case_id: dataset.cases[0].id.clone(),
-                output: "alpha beta".into(),
-                latency_ms: 2,
-                error: None,
-            }],
-        );
+        let observation = BenchmarkObservation {
+            case_id: dataset.cases[0].id.clone(),
+            output: "alpha beta".into(),
+            latency_ms: 2,
+            error: None,
+        };
+        let report = score_reference_compact(&dataset, std::slice::from_ref(&observation));
         assert_eq!(report.mean_token_f1, 1.0);
         assert!(report.mean_compression_ratio < 1.0);
+
+        // Cause/effect rule: one expected observation is scored; adding a
+        // second observation for the same id makes the canonical index
+        // non-unique, so even a valid first output has no scored effect.
+        let duplicate = score_reference_compact(&dataset, &[observation.clone(), observation]);
+        assert_eq!(duplicate.observed, 0);
+        assert_eq!(duplicate.mean_token_f1, 0.0);
     }
 
     #[test]

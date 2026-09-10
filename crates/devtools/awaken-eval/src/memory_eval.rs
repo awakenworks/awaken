@@ -12,6 +12,7 @@ use awaken_ext_memory::{
 use serde::{Deserialize, Serialize};
 
 use crate::acp_runner::ToolFreeAcpRunner;
+use crate::observation_index::index_observations;
 
 const TIMEOUT: Duration = Duration::from_secs(300);
 const EXTRACTION_PROJECTION: &str = "For this evaluation only, do not call tools. Return ONLY a JSON array of the write_memory calls you would make. Each item must contain exactly the string keys name and content. Return [] when nothing is worth saving.";
@@ -158,6 +159,15 @@ pub struct MemoryReport {
 
 #[must_use]
 pub fn score(dataset: &MemoryDataset, observations: &[MemoryObservation]) -> MemoryReport {
+    let index = index_observations(
+        dataset
+            .extraction_cases
+            .iter()
+            .map(|case| case.id.as_str())
+            .chain(dataset.selection_cases.iter().map(|case| case.id.as_str())),
+        observations,
+        |observation| observation.case_id.as_str(),
+    );
     let mut report = MemoryReport {
         extraction_exact: 0,
         extraction_total: dataset.extraction_cases.len(),
@@ -180,14 +190,12 @@ pub fn score(dataset: &MemoryDataset, observations: &[MemoryObservation]) -> Mem
         selection_cases: Vec::with_capacity(dataset.selection_cases.len()),
     };
     for case in &dataset.extraction_cases {
-        let outputs = observations
-            .iter()
-            .filter(|observation| observation.case_id == case.id)
-            .collect::<Vec<_>>();
-        report.extraction_observed += usize::from(outputs.len() == 1);
-        report.extraction_errors += usize::from(outputs.len() == 1 && outputs[0].error.is_some());
-        let parsed = if outputs.len() == 1 && outputs[0].error.is_none() {
-            serde_json::from_str::<Vec<ProposedMemory>>(&outputs[0].output)
+        let observation = index.unique(&case.id);
+        report.extraction_observed += usize::from(observation.is_some());
+        report.extraction_errors +=
+            usize::from(observation.is_some_and(|observation| observation.error.is_some()));
+        let parsed = if let Some(observation) = observation.filter(|value| value.error.is_none()) {
+            serde_json::from_str::<Vec<ProposedMemory>>(&observation.output)
                 .ok()
                 .filter(|memories| {
                     memories.iter().all(|memory| {
@@ -239,17 +247,16 @@ pub fn score(dataset: &MemoryDataset, observations: &[MemoryObservation]) -> Mem
         });
     }
     for case in &dataset.selection_cases {
-        let outputs = observations
-            .iter()
-            .filter(|observation| observation.case_id == case.id)
-            .collect::<Vec<_>>();
-        report.selection_observed += usize::from(outputs.len() == 1);
-        report.selection_errors += usize::from(outputs.len() == 1 && outputs[0].error.is_some());
-        let (schema_valid, actual) = if outputs.len() == 1 && outputs[0].error.is_none() {
-            parse_selection(&outputs[0].output, case.memories.len(), case.max)
-        } else {
-            (false, Vec::new())
-        };
+        let observation = index.unique(&case.id);
+        report.selection_observed += usize::from(observation.is_some());
+        report.selection_errors +=
+            usize::from(observation.is_some_and(|observation| observation.error.is_some()));
+        let (schema_valid, actual) =
+            if let Some(observation) = observation.filter(|value| value.error.is_none()) {
+                parse_selection(&observation.output, case.memories.len(), case.max)
+            } else {
+                (false, Vec::new())
+            };
         let expected = case
             .expected_indices
             .iter()

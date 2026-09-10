@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::observation_index::index_observations;
 use crate::public_benchmark::{BinomialMetrics, binomial};
 
 const VERSION: u32 = 1;
@@ -228,28 +229,14 @@ pub fn score(
     dataset: &MemoryAgentBenchDataset,
     observations: &[MemoryAgentBenchObservation],
 ) -> MemoryAgentBenchReport {
-    let expected = dataset
-        .cases
-        .iter()
-        .flat_map(|case| case.questions.iter().map(|question| question.id.as_str()))
-        .collect::<BTreeSet<_>>();
-    let mut by_id: BTreeMap<&str, Vec<&MemoryAgentBenchObservation>> = BTreeMap::new();
-    let mut unexpected = BTreeSet::new();
-    for observation in observations {
-        if expected.contains(observation.question_id.as_str()) {
-            by_id
-                .entry(observation.question_id.as_str())
-                .or_default()
-                .push(observation);
-        } else {
-            unexpected.insert(observation.question_id.clone());
-        }
-    }
-    let duplicates = by_id
-        .iter()
-        .filter(|(_, values)| values.len() > 1)
-        .map(|(id, _)| (*id).to_string())
-        .collect::<BTreeSet<_>>();
+    let index = index_observations(
+        dataset
+            .cases
+            .iter()
+            .flat_map(|case| case.questions.iter().map(|question| question.id.as_str())),
+        observations,
+        |observation| observation.question_id.as_str(),
+    );
     let mut observed = 0;
     let mut errors = 0;
     let mut correct = 0;
@@ -259,10 +246,7 @@ pub fn score(
     let mut questions = Vec::with_capacity(dataset.question_count());
     for case in &dataset.cases {
         for question in &case.questions {
-            let values = by_id.get(question.id.as_str());
-            let unique =
-                values.filter(|values| values.len() == 1 && !duplicates.contains(&question.id));
-            let observation = unique.and_then(|values| values.first()).copied();
+            let observation = index.unique(&question.id);
             let is_observed = observation.is_some();
             observed += usize::from(is_observed);
             errors += usize::from(observation.is_some_and(|value| value.error.is_some()));
@@ -304,8 +288,8 @@ pub fn score(
             .map(|(key, (total, correct))| (key, binomial(correct, total)))
             .collect(),
         mean_latency_ms: latency as f64 / observed.max(1) as f64,
-        duplicate_observation_ids: duplicates.into_iter().collect(),
-        unexpected_observation_ids: unexpected.into_iter().collect(),
+        duplicate_observation_ids: index.duplicate_ids,
+        unexpected_observation_ids: index.unexpected_ids,
         questions,
     }
 }
