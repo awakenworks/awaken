@@ -523,15 +523,15 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   or arbitrary crashes. Twelve before/after-save error/cancellation rows,
   real SQLite/PG conformance, and terminal-only HTTP authorization are the
   corresponding implementation checks.
-  `MemoryExtraction.tla` composes the existing durable intent stages with the
-  stable auxiliary Run boundary. It checks that recovery after an in-flight
-  crash observes the same Run without a second start, and that an explicit
-  unknown result becomes a non-recoverable `execution_indeterminate` terminal.
-  Unknown never fabricates mutations/receipts, changes the auxiliary Run identity,
-  or consumes the ordinary retry budget again. The model bounds attempts
-  to two and treats Runtime observation honesty, repository CAS/lease semantics,
-  provider effects, and eventual operator resolution as external assumptions;
-  it is model-linked safety evidence, not Rust refinement or a liveness claim.
+  `MemoryExtraction.tla` composes the durable intent stages with the stable
+  auxiliary Run boundary and checks that in-flight crash recovery observes the
+  same Run. The production controller now has one failure-action owner: Kani
+  exhausts all failure classes, u32 attempt/maximum pairs, and closed statuses,
+  proving that typed unknown execution selects the attention terminal and never
+  Retry. `MemoryExtractionStatus` owns the exact recoverable set used by claim
+  admission and both SQL adapters. Runtime observation truth, Future scheduling,
+  repository CAS/lease and SQL semantics, durability, provider effects, operator
+  resolution, and unconditional liveness remain outside the direct kernel proof.
   Copy location is checked inside the same repository transaction, before the
   same-content retry shortcut. Ordinary API/open-FUSE-fd updates still follow
   their ID. The shared Memory conformance suite covers SQLite/Postgres/volatile
