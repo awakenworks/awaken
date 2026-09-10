@@ -50,21 +50,25 @@ pub(super) async fn initialize_agent(
     Ok(init)
 }
 
+pub(super) struct NewSessionConfig<'a> {
+    pub cwd: &'a str,
+    pub mcp_servers: &'a [crate::SessionMcpServer],
+    pub meta: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
 pub(super) async fn open_new_session(
     wire: &mut Wire<'_>,
     sink: &mut dyn RunFactAppender,
     seq: &mut u64,
     resolver: &dyn PermissionResolver,
-    cwd: &str,
-    mcp_servers: &[crate::SessionMcpServer],
-    aliases: &std::collections::BTreeMap<String, String>,
+    config: NewSessionConfig<'_>,
 ) -> Result<NewSessionResponse, AcpError> {
     wire.send_request(
         ID_NEW_SESSION,
         AGENT_METHOD_NAMES.session_new,
-        NewSessionRequest::new(cwd)
-            .mcp_servers(to_acp_mcp_servers(mcp_servers))
-            .meta(tool_alias_meta(aliases)),
+        NewSessionRequest::new(config.cwd)
+            .mcp_servers(to_acp_mcp_servers(config.mcp_servers))
+            .meta(config.meta),
     )
     .await?;
     parse(pump_to_response(wire, ID_NEW_SESSION, sink, seq, resolver).await?)
@@ -72,15 +76,31 @@ pub(super) async fn open_new_session(
 
 /// Pinned Claude adapter extension. Disable builtin objects as well as redirecting
 /// model-emitted names; this does not grant authority or convert tool arguments.
-pub(super) fn tool_alias_meta(
+pub(super) fn claude_session_meta(
     aliases: &std::collections::BTreeMap<String, String>,
+    max_turns: Option<usize>,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
-    if aliases.is_empty() {
+    if aliases.is_empty() && max_turns.is_none() {
         return None;
     }
-    Some(serde_json::json!({"claudeCode": {"options": {
-        "toolAliases": aliases, "tools": [], "disallowedTools": aliases.keys().collect::<Vec<_>>()
-    }}}).as_object().expect("metadata object").clone())
+    let mut options = serde_json::Map::new();
+    if !aliases.is_empty() {
+        options.insert("toolAliases".into(), serde_json::json!(aliases));
+        options.insert("tools".into(), serde_json::json!([]));
+        options.insert(
+            "disallowedTools".into(),
+            serde_json::json!(aliases.keys().collect::<Vec<_>>()),
+        );
+    }
+    if let Some(max_turns) = max_turns {
+        options.insert("maxTurns".into(), serde_json::json!(max_turns));
+    }
+    Some(
+        serde_json::json!({"claudeCode": {"options": options}})
+            .as_object()
+            .expect("metadata object")
+            .clone(),
+    )
 }
 
 /// Negotiate one prompt-free ACP Session and retain the full advertised
@@ -107,9 +127,11 @@ pub async fn negotiate_capabilities(
         &mut sink,
         &mut seq,
         &resolver,
-        cwd,
-        &[],
-        &Default::default(),
+        NewSessionConfig {
+            cwd,
+            mcp_servers: &[],
+            meta: None,
+        },
     )
     .await?;
     Ok(crate::capabilities::project(init, session))

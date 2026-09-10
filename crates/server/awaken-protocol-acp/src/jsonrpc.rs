@@ -166,7 +166,10 @@ pub async fn run_turn_with_config(
                 AGENT_METHOD_NAMES.session_load,
                 LoadSessionRequest::new(SessionId::new(prior.as_str()), cwd.as_str())
                     .mcp_servers(to_acp_mcp_servers(&config.mcp_servers))
-                    .meta(handshake::tool_alias_meta(&config.tool_aliases)),
+                    .meta(handshake::claude_session_meta(
+                        &config.tool_aliases,
+                        config.max_turn_requests,
+                    )),
             )
             .await?;
             // `session/load` may replay the external Agent's entire historical
@@ -212,9 +215,14 @@ pub async fn run_turn_with_config(
                             sink,
                             &mut seq,
                             resolver,
-                            &cwd,
-                            &config.mcp_servers,
-                            &config.tool_aliases,
+                            handshake::NewSessionConfig {
+                                cwd: &cwd,
+                                mcp_servers: &config.mcp_servers,
+                                meta: handshake::claude_session_meta(
+                                    &config.tool_aliases,
+                                    config.max_turn_requests,
+                                ),
+                            },
                         ),
                     )
                     .await?;
@@ -241,9 +249,14 @@ pub async fn run_turn_with_config(
                     sink,
                     &mut seq,
                     resolver,
-                    &cwd,
-                    &config.mcp_servers,
-                    &config.tool_aliases,
+                    handshake::NewSessionConfig {
+                        cwd: &cwd,
+                        mcp_servers: &config.mcp_servers,
+                        meta: handshake::claude_session_meta(
+                            &config.tool_aliases,
+                            config.max_turn_requests,
+                        ),
+                    },
                 ),
             )
             .await?;
@@ -1909,7 +1922,8 @@ mod tests {
     #[tokio::test]
     async fn alias_metadata_survives_new_load_and_missing_session_recovery() {
         // Cause graph: aliases x prior Session x advertised load x missing id
-        // -> new/load/recovery request -> identical constrained SDK metadata -> prompt.
+        // + max-turn budget -> new/load/recovery request -> identical constrained
+        // SDK metadata -> prompt.
         // R1 absent aliases => no extension; R2 new; R3 load; R4 load missing => new;
         // R5 load unavailable => new. Metadata carries no credential or arbitrary options.
         for (enabled, prior, can_load, missing) in [
@@ -1936,7 +1950,7 @@ mod tests {
                     if enabled {
                         assert_eq!(
                             meta["claudeCode"]["options"],
-                            serde_json::json!({"toolAliases":{"Bash":"mcp__awaken_session__bash"},"tools":[],"disallowedTools":["Bash"]})
+                            serde_json::json!({"toolAliases":{"Bash":"mcp__awaken_session__bash"},"tools":[],"disallowedTools":["Bash"],"maxTurns":8})
                         );
                     } else {
                         assert!(meta.is_null());
@@ -1960,6 +1974,7 @@ mod tests {
                 config
                     .tool_aliases
                     .insert("Bash".into(), "mcp__awaken_session__bash".into());
+                config.max_turn_requests = Some(8);
             }
             if prior {
                 config.session_id = Some("sess-1".into());

@@ -505,29 +505,8 @@ async fn declared_client_tool_awaits_external_result_without_entering_host_execu
         .expect("external result ticket is durable");
     assert_eq!(ticket.reason(), AwaitReason::ExternalEvent);
     assert_eq!(ticket.call_id(), Some("call-1"));
-    // C4: a valid client-result ticket is not an owned permission continuation.
-    // The tool-only entry must reject it before mutations; the ordinary resume
-    // below remains its authority and must still succeed afterward.
-    let before_handoff = commit.commit_count();
-    let error = runtime
-        .resume_tool_batch(
-            ResumeCommand::from_ticket(
-                &ticket,
-                ResumeResult::ToolResult(ToolOutput::ok("call-1", "client-computed")),
-                0,
-            ),
-            commit.as_ref(),
-            RuntimeRunContext::new().with_commit(commit.clone()),
-        )
-        .await
-        .expect_err("C4 keeps the client-result route distinct");
-    assert!(
-        error
-            .to_string()
-            .contains("requires an awaiting tool permission")
-    );
-    assert_eq!(commit.commit_count(), before_handoff);
-    assert_eq!(ran.load(Ordering::SeqCst), 0);
+    // C4: an external model loop may select the tool-only continuation. It must
+    // settle the same batch and return Running without entering Native inference.
     let ticket_correlation_id = ticket.correlation_id.clone();
     let system = Message::text(
         MessageId("session-system-tool-reply".into()),
@@ -536,7 +515,7 @@ async fn declared_client_tool_awaits_external_result_without_entering_host_execu
     );
 
     let outcome = runtime
-        .resume(
+        .resume_tool_batch(
             ResumeCommand {
                 operation_id: Some("client-result-operation-1".into()),
                 correlation_id: ticket.correlation_id,
@@ -554,8 +533,12 @@ async fn declared_client_tool_awaits_external_result_without_entering_host_execu
                 .with_tool_output_spiller(Arc::new(PrefixSpiller)),
         )
         .await
-        .expect("exact client result resumes the run");
-    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
+        .expect("exact client result settles the shared tool batch");
+    assert_eq!(
+        outcome,
+        RunState::Running,
+        "C4 returns to the external loop"
+    );
     assert_eq!(ran.load(Ordering::SeqCst), 0);
     assert!(
         commit.resume_ticket_for(&RunId("run-1".into())).is_none(),

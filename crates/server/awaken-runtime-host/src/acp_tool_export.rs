@@ -23,6 +23,49 @@ pub(crate) fn environment_executor_tools(
         .collect()
 }
 
+/// Model-visible client tools share the Session MCP export, while their adapter
+/// only signals arrival to the existing Runtime continuation.
+pub(crate) struct ClientExecutedAcpTools {
+    pub(crate) descriptors: Vec<awaken_runtime_contract::resolved::ToolDescriptor>,
+    pub(crate) executors: Vec<Arc<dyn RawTool>>,
+    pub(crate) ids: std::collections::HashSet<String>,
+    pub(crate) requests: Option<Arc<ClientExecutedAcpToolRequests>>,
+}
+
+pub(crate) fn client_executed_tools(
+    source: &[awaken_runtime_contract::resolved::ToolDescriptor],
+) -> ClientExecutedAcpTools {
+    let descriptors = source
+        .iter()
+        .filter(|descriptor| {
+            descriptor.kind == awaken_runtime_contract::resolved::ToolKind::ClientExecuted
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let ids = descriptors
+        .iter()
+        .map(|descriptor| descriptor.id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let requests = (!ids.is_empty()).then(|| Arc::new(ClientExecutedAcpToolRequests::default()));
+    let executors = descriptors
+        .iter()
+        .map(|descriptor| {
+            Arc::new(ClientExecutedAcpTool::new(
+                descriptor.id.clone(),
+                requests
+                    .clone()
+                    .expect("client descriptors require one request edge"),
+            )) as Arc<dyn RawTool>
+        })
+        .collect();
+    ClientExecutedAcpTools {
+        descriptors,
+        executors,
+        ids,
+        requests,
+    }
+}
+
 /// Session-local one-shot authority minted only after the ACP permission path
 /// returns Allow. It is deliberately volatile: durable truth is the approval
 /// ticket; a recovered ACP Step asks again and receives a fresh one-shot grant.
@@ -69,13 +112,35 @@ impl awaken_run_executor_acp::PermissionGrantObserver for AcpToolExecutionGrants
 /// grant or creates another tool catalog/connection.
 pub(crate) struct AcpToolContinuation {
     pub(crate) runtime: Arc<awaken_runtime::Runtime>,
-    pub(crate) exports: Arc<AcpToolExecutionGrants>,
+    pub(crate) host_exports: Option<Arc<AcpToolExecutionGrants>>,
+    pub(crate) client_tools: std::collections::HashSet<String>,
+    pub(crate) client_requests: Option<Arc<ClientExecutedAcpToolRequests>>,
 }
 
 #[async_trait::async_trait]
 impl awaken_runtime_contract::resume::OwnedToolContinuation for AcpToolContinuation {
-    fn owns_tool(&self, tool_id: &str) -> bool {
-        self.exports.exported.contains(tool_id)
+    fn tool_await_reason(
+        &self,
+        tool_id: &str,
+    ) -> Option<awaken_agent_contract::agent::awaiting::ToolAwaitReason> {
+        if self.client_tools.contains(tool_id) {
+            Some(awaken_agent_contract::agent::awaiting::ToolAwaitReason::ClientExecution)
+        } else if self
+            .host_exports
+            .as_ref()
+            .is_some_and(|exports| exports.exported.contains(tool_id))
+        {
+            Some(awaken_agent_contract::agent::awaiting::ToolAwaitReason::Permission)
+        } else {
+            None
+        }
+    }
+
+    async fn next_client_execution(&self) -> ToolCall {
+        match &self.client_requests {
+            Some(requests) => requests.next().await,
+            None => std::future::pending().await,
+        }
     }
 
     async fn resume(
@@ -104,6 +169,55 @@ impl awaken_runtime_contract::resume::OwnedToolContinuation for AcpToolContinuat
     ) -> awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>
     {
         self.runtime.recover_tool_batch(activation, context).await
+    }
+}
+
+/// ACP needs a model-visible MCP contract for a client-executed tool, but the
+/// client remains its only executor. Reaching this adapter means an ACP client
+/// bypassed `session/request_permission`; fail closed without a Host effect.
+pub(crate) struct ClientExecutedAcpTool {
+    id: String,
+    requests: Arc<ClientExecutedAcpToolRequests>,
+}
+
+impl ClientExecutedAcpTool {
+    pub(crate) fn new(id: String, requests: Arc<ClientExecutedAcpToolRequests>) -> Self {
+        Self { id, requests }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct ClientExecutedAcpToolRequests {
+    pending: tokio::sync::Mutex<std::collections::VecDeque<ToolCall>>,
+    ready: tokio::sync::Notify,
+}
+
+impl ClientExecutedAcpToolRequests {
+    async fn push(&self, call: ToolCall) {
+        self.pending.lock().await.push_back(call);
+        self.ready.notify_one();
+    }
+
+    async fn next(&self) -> ToolCall {
+        loop {
+            let notified = self.ready.notified();
+            if let Some(call) = self.pending.lock().await.pop_front() {
+                return call;
+            }
+            notified.await;
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RawTool for ClientExecutedAcpTool {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        self.requests.push(call).await;
+        std::future::pending().await
     }
 }
 
@@ -472,6 +586,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn client_tool_export_is_model_visible_but_never_host_executable() {
+        // Cause/effect decision table: C1 a descriptor is ClientExecuted and the
+        // ACP adapter asks permission => the continuation classifies
+        // ClientExecution; C2 an adapter bypasses that boundary and invokes MCP
+        // directly => notify the existing continuation in FIFO order and remain
+        // pending with no Host executor. C3 notification precedes/follows the
+        // waiter => no lost wakeup. These rules cover discovery and execution
+        // ownership without another persistent result store.
+        use awaken_agent_contract::agent::awaiting::ToolAwaitReason;
+        use awaken_runtime_contract::resume::OwnedToolContinuation;
+
+        let requests = Arc::new(ClientExecutedAcpToolRequests::default());
+        let tool = ClientExecutedAcpTool::new("desktop_search".into(), requests.clone());
+        assert_eq!(tool.id(), "desktop_search");
+        let invocation = tokio::spawn(async move {
+            tool.invoke(ToolCall {
+                call_id: "client-call-1".into(),
+                tool_id: "desktop_search".into(),
+                arguments: serde_json::json!({"query":"first"}),
+            })
+            .await
+        });
+        assert_eq!(requests.next().await.call_id, "client-call-1", "C2");
+        requests
+            .push(ToolCall {
+                call_id: "client-call-2".into(),
+                tool_id: "desktop_search".into(),
+                arguments: serde_json::json!({"query":"second"}),
+            })
+            .await;
+        assert_eq!(requests.next().await.call_id, "client-call-2", "C2+C3");
+        assert!(!invocation.is_finished(), "C2 waits for the Session client");
+        invocation.abort();
+
+        let continuation = AcpToolContinuation {
+            runtime: Arc::new(awaken_runtime::Runtime::new()),
+            host_exports: None,
+            client_tools: ["desktop_search".to_string()].into_iter().collect(),
+            client_requests: None,
+        };
+        assert_eq!(
+            continuation.tool_await_reason("desktop_search"),
+            Some(ToolAwaitReason::ClientExecution),
+            "C1"
+        );
+        assert_eq!(continuation.tool_await_reason("DesktopSearch"), None);
+    }
+
+    #[tokio::test]
     async fn acp_export_reuses_the_exact_native_descriptor_executor_set() {
         // Cause/effect decision table: R1 exact two-tool set -> two deterministic
         // MCP routes and two retained leases; R2 missing executor -> reject before
@@ -563,11 +726,16 @@ mod tests {
             let exports = Arc::new(AcpToolExecutionGrants::new(["write".into()]));
             let continuation = AcpToolContinuation {
                 runtime,
-                exports: exports.clone(),
+                host_exports: Some(exports.clone()),
+                client_tools: Default::default(),
+                client_requests: None,
             };
-            assert!(continuation.owns_tool("write"));
-            assert!(!continuation.owns_tool("mcp__external__write"));
-            assert!(!continuation.owns_tool("Write"));
+            assert_eq!(
+                continuation.tool_await_reason("write"),
+                Some(ToolAwaitReason::Permission)
+            );
+            assert_eq!(continuation.tool_await_reason("mcp__external__write"), None);
+            assert_eq!(continuation.tool_await_reason("Write"), None);
             let run_id = RunId("owned-run".into());
             let thread_id = ThreadId("owned-thread".into());
             let snapshot = ExecutableAgentSnapshot {

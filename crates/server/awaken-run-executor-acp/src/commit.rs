@@ -65,15 +65,20 @@ pub(super) async fn commit(
         });
     }
     // Only Awaken-owned continuations execute through the Runtime ToolBatch.
-    // Opaque ACP permissions retain the explicit RunAttemptExecutor authority.
+    // Opaque ACP permissions retain the explicit RunAttemptExecutor authority;
+    // client execution reuses the same batch with an ExternalResult wait.
     let mut state = state;
     if let Some(ticket) = disposition.resume_ticket()
         && let AwaitTarget::ToolCall {
-            reason: ToolAwaitReason::Permission,
+            reason,
             call_id,
             tool,
             authority: awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch,
         } = ticket.target()
+        && matches!(
+            reason,
+            ToolAwaitReason::Permission | ToolAwaitReason::ClientExecution
+        )
     {
         let mut batch = awaken_runtime_contract::ToolBatch::for_step(
             ticket.run_id.clone(),
@@ -91,7 +96,15 @@ pub(super) async fn commit(
         batch
             .mark_awaiting(
                 call_id,
-                awaken_runtime_contract::ToolWaitKind::ToolPermission,
+                match reason {
+                    ToolAwaitReason::Permission => {
+                        awaken_runtime_contract::ToolWaitKind::ToolPermission
+                    }
+                    ToolAwaitReason::ClientExecution => {
+                        awaken_runtime_contract::ToolWaitKind::ExternalResult
+                    }
+                    _ => unreachable!("guarded by the owned wait reason"),
+                },
                 &ticket.correlation_id,
             )
             .map_err(|error| Error::Commit(error.to_string()))?;

@@ -337,10 +337,13 @@ async fn resume_with_continuation(
         .then(|| ResumeCommit::for_operation(command.operation_id.clone(), &ticket))
         .flatten();
     if continuation == ResumeContinuation::ToolBatch
-        && ticket.reason() != AwaitReason::ToolPermission
+        && !matches!(
+            ticket.reason(),
+            AwaitReason::ToolPermission | AwaitReason::ExternalEvent
+        )
     {
         return Err(Error::Execution(
-            "tool-batch handoff requires an awaiting tool permission".to_string(),
+            "tool-batch handoff requires an awaiting permission or client result".to_string(),
         ));
     }
 

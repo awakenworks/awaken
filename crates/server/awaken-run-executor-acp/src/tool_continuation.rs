@@ -2,6 +2,48 @@
 //! projection of its committed receipts. No transport or persistence owner lives here.
 use super::*;
 
+/// Client-executed tools use ACP's cancellable permission boundary to leave the
+/// opaque SDK loop. This classifies execution ownership; it never widens the
+/// Session's authorization policy for Host-executed tools.
+pub(super) struct OwnedToolPermissionResolver<'a> {
+    pub(super) base: &'a dyn PermissionResolver,
+    pub(super) continuation: &'a dyn awaken_runtime_contract::resume::OwnedToolContinuation,
+}
+
+#[async_trait]
+impl PermissionResolver for OwnedToolPermissionResolver<'_> {
+    async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
+        let tool_id = canonical_permission_tool_id(&ask.tool);
+        if self.continuation.tool_await_reason(&tool_id) == Some(ToolAwaitReason::ClientExecution) {
+            return PermissionVerdict::Await {
+                correlation_id: format!("client-execution:{}", ask.call_id),
+            };
+        }
+        self.base.resolve(ask).await
+    }
+}
+
+pub(super) fn client_execution_outcome(
+    pending: &std::sync::Mutex<Option<ToolCall>>,
+    outcome: std::result::Result<TerminationReason, AcpError>,
+) -> std::result::Result<TerminationReason, AcpError> {
+    match pending
+        .lock()
+        .expect("ACP client execution lock poisoned")
+        .take()
+    {
+        Some(call) => Err(AcpError::PermissionAwait {
+            correlation_id: format!("client-execution:{}", call.call_id),
+            ask: Box::new(PermissionAsk {
+                tool: call.tool_id,
+                call_id: call.call_id,
+                arguments: call.arguments,
+            }),
+        }),
+        None => outcome,
+    }
+}
+
 impl AcpRunExecutor {
     pub(super) async fn prepare_owned_tools(
         &self,
@@ -28,16 +70,17 @@ impl AcpRunExecutor {
                         batch.phase()
                             != awaken_runtime_contract::tool_batch::ToolBatchPhase::Finalized
                     })
-                    && batch
-                        .calls()
-                        .iter()
-                        .any(|entry| continuation.owns_tool(&entry.call.tool_id))
+                    && batch.calls().iter().any(|entry| {
+                        continuation
+                            .tool_await_reason(&entry.call.tool_id)
+                            .is_some()
+                    })
                 {
-                    if !batch
-                        .calls()
-                        .iter()
-                        .all(|entry| continuation.owns_tool(&entry.call.tool_id))
-                    {
+                    if !batch.calls().iter().all(|entry| {
+                        continuation
+                            .tool_await_reason(&entry.call.tool_id)
+                            .is_some()
+                    }) {
                         return Err(Error::Execution(
                             "ACP cannot recover a batch with mixed tool execution owners".into(),
                         ));
@@ -78,7 +121,9 @@ pub(super) fn owned_tool_result_context(
         .filter(|message| message.role == Role::Assistant)
         .flat_map(|message| &message.content)
         .filter_map(|block| match block {
-            ContentBlock::ToolUse { id, name, .. } if continuation.owns_tool(name) => {
+            ContentBlock::ToolUse { id, name, .. }
+                if continuation.tool_await_reason(name).is_some() =>
+            {
                 Some((id, name))
             }
             _ => None,
