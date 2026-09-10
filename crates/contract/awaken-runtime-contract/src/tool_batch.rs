@@ -127,6 +127,29 @@ pub struct ToolBatch {
     phase: ToolBatchPhase,
 }
 
+/// Ordered staged effects exposed only after the owning batch is finalized.
+///
+/// The view borrows the canonical aggregate, so Runtime publication cannot
+/// copy the staged data into a parallel receipt or observe it through a second
+/// lifecycle owner.
+pub struct ToolBatchPublication<'a> {
+    calls: &'a [DurableToolCall],
+}
+
+impl ToolBatchPublication<'_> {
+    /// Tool-owned state in the original model call order.
+    pub fn result_state(&self) -> impl Iterator<Item = &StateCommand> {
+        self.calls.iter().flat_map(|entry| &entry.result_state)
+    }
+
+    /// Model-visible result messages in the original model call order.
+    pub fn messages(
+        &self,
+    ) -> impl Iterator<Item = &awaken_agent_contract::agent::message::Message> {
+        self.calls.iter().flat_map(|entry| &entry.result_messages)
+    }
+}
+
 #[derive(Deserialize)]
 struct ToolBatchWire {
     id: ToolBatchId,
@@ -175,6 +198,8 @@ pub enum ToolBatchError {
     EmptyWaitCorrelation,
     #[error("tool batch still contains non-terminal calls")]
     Incomplete,
+    #[error("tool batch is not finalized for publication")]
+    Unfinalized,
     #[error("persisted tool batch is invalid: {0}")]
     InvalidPersistedState(String),
 }
@@ -269,6 +294,13 @@ const fn must_seal_on_run_end(phase: CallPhaseView) -> bool {
         phase,
         CallPhaseView::Completed | CallPhaseView::Indeterminate
     )
+}
+
+/// Heap-free production admission kernel shared by the aggregate publication
+/// view and Kani. Completing every call is necessary but does not expose its
+/// staged effects until `finalize` closes the batch.
+const fn permits_publication(phase: ToolBatchPhase) -> bool {
+    matches!(phase, ToolBatchPhase::Finalized)
 }
 
 fn phase_view(phase: &ToolCallPhase) -> CallPhaseView {
@@ -658,6 +690,16 @@ impl ToolBatch {
         Ok(())
     }
 
+    /// Borrow the staged effects that the Runtime may publish to the transcript.
+    /// `finalize` first proves that every call is terminal; persisted finalized
+    /// batches pass the same invariant through `validate` during decoding.
+    pub fn publication(&self) -> Result<ToolBatchPublication<'_>, ToolBatchError> {
+        if !permits_publication(self.phase) {
+            return Err(ToolBatchError::Unfinalized);
+        }
+        Ok(ToolBatchPublication { calls: &self.calls })
+    }
+
     /// Seal every unfinished call when its owning Run ends.
     ///
     /// A terminal Run can never be resumed, so retaining a `Requested`,
@@ -860,6 +902,69 @@ mod tests {
         batch.finalize().unwrap();
         assert_eq!(batch.phase, ToolBatchPhase::Finalized);
         assert_eq!(batch.mark_executing("c"), Err(ToolBatchError::Finalized));
+    }
+
+    #[test]
+    fn publication_requires_finalization_and_preserves_model_order_exactly_once() {
+        // Causes: C1 batch is Open/Finalized; C2 calls are incomplete/terminal;
+        // C3 two calls complete in model/reverse order. Effects: E1 only a
+        // Finalized batch exposes a publication view; E2 messages and state are
+        // each yielded once in original model order. Constraints: finalization
+        // itself requires every call terminal, while terminal-but-Open remains
+        // private. Decision rules: P1(Open,incomplete,*) -> reject; P2(Open,
+        // terminal,*) -> reject; P3(Finalized,terminal,model/reverse) -> E1/E2.
+        let mut batch = two_call_batch();
+        assert!(matches!(
+            batch.publication(),
+            Err(ToolBatchError::Unfinalized)
+        ));
+        for call_id in ["c2", "c1"] {
+            batch.mark_executing(call_id).unwrap();
+            batch
+                .complete(ToolOutput::ok(call_id, format!("output-{call_id}")))
+                .unwrap();
+            batch
+                .set_result_messages(
+                    call_id,
+                    vec![awaken_agent_contract::agent::message::Message::new(
+                        awaken_agent_contract::agent::message::Id(format!("message-{call_id}")),
+                        awaken_agent_contract::agent::message::Role::Tool,
+                        Vec::new(),
+                    )],
+                )
+                .unwrap();
+            batch
+                .set_result_state(
+                    call_id,
+                    vec![StateCommand::set(
+                        Scope::Run,
+                        MergePolicy::Disjoint,
+                        format!("state-{call_id}"),
+                        serde_json::json!(call_id),
+                    )],
+                )
+                .unwrap();
+        }
+        assert!(matches!(
+            batch.publication(),
+            Err(ToolBatchError::Unfinalized)
+        ));
+        batch.finalize().unwrap();
+        let publication = batch.publication().unwrap();
+        assert_eq!(
+            publication
+                .messages()
+                .map(|message| message.id.0.as_str())
+                .collect::<Vec<_>>(),
+            ["message-c1", "message-c2"]
+        );
+        assert_eq!(
+            publication
+                .result_state()
+                .map(|command| command.key.0.as_str())
+                .collect::<Vec<_>>(),
+            ["state-c1", "state-c2"]
+        );
     }
 
     #[test]
@@ -1338,5 +1443,24 @@ mod verification {
         if another_call_is_awaiting {
             assert!(!admitted);
         }
+    }
+
+    #[kani::proof]
+    fn only_finalized_batches_expose_staged_publication() {
+        // Causes: the complete ToolBatchPhase domain, selected symbolically.
+        // Effect: the production publication admission kernel accepts exactly
+        // Finalized. Completion remains a premise established by `finalize` or
+        // persisted-state validation; allocation, async commit and database
+        // durability are outside this local phase proof. Decision rules:
+        // K1(Open) -> reject; K2(Finalized) -> admit.
+        let phase = if kani::any() {
+            ToolBatchPhase::Open
+        } else {
+            ToolBatchPhase::Finalized
+        };
+        assert_eq!(
+            permits_publication(phase),
+            phase == ToolBatchPhase::Finalized
+        );
     }
 }

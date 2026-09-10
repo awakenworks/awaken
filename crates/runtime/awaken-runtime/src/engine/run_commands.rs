@@ -176,9 +176,10 @@ pub(crate) async fn interrupt_awaiting_tools(
         .finalize()
         .map_err(|error| Error::Execution(error.to_string()))?;
     let messages = batch
-        .calls()
-        .iter()
-        .flat_map(|entry| entry.result_messages.iter().cloned())
+        .publication()
+        .map_err(|error| Error::Execution(error.to_string()))?
+        .messages()
+        .cloned()
         .collect();
     let step = RunStepResult {
         new_messages: messages,
