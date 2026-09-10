@@ -207,11 +207,16 @@ keeps one production realization path across Workdir and Namespace providers.
   and setup unwind retains cleanup. `MemoryInvalidationLifecycle` separately
   checks two projection owners, join-before-return, peer isolation and conditional
   completion, with five semantic mutants and four reachability witnesses. The
-  existing Memory CAS model remains the write-conflict authority, not a listener
-  lifecycle model. The new model is abstract, not Rust refinement: scheduler
-  progress and terminating cache critical sections are assumptions. This does
-  not solve abrupt process death, unmount error reporting, Provider replay
-  cancellation or failed ownerless compensation retention.
+  production destructor's single generic cleanup action is also Kani-checked for
+  every `u64` handle identity, present/absent ownership and repeated cleanup: stop
+  precedes the exact once-only join callback, and return follows that callback.
+  Real `JoinHandle` blocking remains qualified by the channel-barrier test and the
+  Rust standard-library/runtime assumption. The existing Memory CAS model remains
+  the write-conflict authority, not a listener lifecycle model. The TLA+ model is
+  abstract, not universal Rust refinement: scheduler progress and terminating
+  cache critical sections are assumptions. This does not solve abrupt process
+  death, kernel unmount behavior, Provider replay cancellation or failed ownerless
+  compensation retention.
 - **Cross-host transport remains deferred.** `Invalidator` is the transport port, but
   only the in-process `LocalInvalidator` is implemented. A distributed transport must
   reuse that port and the same repository authority; it must not add another store or
