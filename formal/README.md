@@ -406,11 +406,11 @@ obligation when the development host is Linux.
   `LiveInboxProof.tla`
   proves that reorder has no partially applied outcome and every invalid
   request is a stuttering transition.
-- `ServiceLifecycle.tla` covers the process-wide recurring-task registry:
-  atomic registration fencing, one active drain owner, concurrent shutdown
-  followers that cannot return early, cooperative completion, deadline abort,
-  and repeated shutdown after the active drain. `ServiceLifecycleProof.tla`
-  proves the shutdown admission and return barriers directly.
+- `ServiceLifecycle.tla` and its TLAPS proof own the abstract recurring-task
+  registry, one drain owner, waiting followers and empty-drain return barrier.
+  Production instead serializes the complete drain with one Tokio mutex; timeout
+  requests task abort, aborts and joins its watcher, then returns without claiming
+  that a non-yielding task Future or opaque physical work has already stopped.
 - `BackgroundTask.tla` covers the Thread-state-owned background aggregate:
   one fenced owner/epoch/lease, waiting and cancellation, exact heartbeat and
   finish fences, expiry reclaim that preserves Waiting/Cancelling phase and
