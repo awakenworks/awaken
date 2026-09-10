@@ -1562,18 +1562,27 @@ impl DispatchQueue for MemoryDispatchStore {
                             .as_ref()
                             .is_some_and(|lease| lease.owner == claim.owner),
                         slot,
+                        row.attempt_count,
                     )
                 });
         match transition {
-            RelinquishTransition::Pending(next) => {
+            RelinquishTransition::Pending {
+                state: next,
+                attempt_count,
+            } => {
                 if let Some(row) = state.rows.get_mut(&claim.run_id) {
                     row.apply_transition(next);
+                    row.attempt_count = attempt_count;
                     row.lease = None;
                 }
             }
-            RelinquishTransition::Recovering(next) => {
+            RelinquishTransition::Recovering {
+                state: next,
+                attempt_count,
+            } => {
                 if let Some(row) = state.rows.get_mut(&claim.run_id) {
                     row.apply_transition(next);
+                    row.attempt_count = attempt_count;
                     row.lease
                         .as_mut()
                         .expect("an exact leased claim has a lease")

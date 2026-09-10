@@ -574,6 +574,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness claim_credential_binding_revalidation_rejects_missing_widened_reordered_or_stale_wire \
     --harness only_awaiting_or_already_superseded_is_replacement_safe \
     --harness stale_dispatch_claim_cannot_modify_authoritative_state \
+    --harness relinquish_requires_exact_current_claim_and_preserves_retry_budget \
     --harness exact_dispatch_settlement_is_terminal_or_awaiting_only \
     --harness dispatch_cancel_revokes_old_epoch_and_is_idempotent \
     --harness dispatch_claim_mints_exactly_one_epoch_and_never_reopens_closed_rows \
