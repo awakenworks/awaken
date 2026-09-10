@@ -152,16 +152,15 @@ async fn publish_maps_a_publication_persist_failure_to_store() {
 
 #[tokio::test]
 async fn publish_never_installs_an_artifact_from_a_stale_source_revision() {
-    // Cause/effect decision table: P1 every prepare loses to a newer authoring
-    // revision -> the bounded current-state command returns StaleRevision and
-    // registers nothing; P2 one concurrent advance from revision 7 to 8 -> the
-    // command recompiles revision 8, persists it once, and registers only that
-    // current artifact. This test owns P1; the next test owns P2. Both registry
-    // fixtures assert that the canonical caller passes publication.source_revision
-    // as the expected CAS revision. The SQL method alone cannot establish that
-    // pairing; this test covers the caller seam, not database transaction behavior.
-    // A call counter distinguishes "never invoked" from a registrar that was
-    // invoked and happened to leave the current projection empty.
+    // Cause/effect decision table: C1 prepare observes source revision 7; C2
+    // every one of the bounded current-state retries loses to durable revision
+    // 8; C3 the canonical caller supplies publication.source_revision as the
+    // expected CAS revision; C4 an observed registrar counts effect entry.
+    // R1(C1+C2+C3+C4) -> StaleRevision(8), zero registrar calls and no current
+    // catalog entry. R2(C1 + one C2 transition) -> re-prepare revision 8,
+    // persist once and register only that current artifact; the next test owns
+    // R2. The SQL method alone cannot establish C3, so this test covers the
+    // caller seam while the adapter tables cover the transaction decision.
     struct ObservedRegistrar {
         inner: LocalExecutableAgentRegistrar,
         calls: std::sync::atomic::AtomicUsize,

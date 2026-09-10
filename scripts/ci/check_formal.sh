@@ -131,6 +131,13 @@ cargo test -p awaken-executable-agent-catalog --lib active_active_peer_refreshes
 cargo test -p awaken-executable-environment-catalog --lib active_active_peer_refreshes_the_durable_environment_projection
 cargo test -p awaken-executable-agent-catalog --lib install_error_precedes_agent_target_publication
 cargo test -p awaken-executable-environment-catalog --lib install_error_precedes_environment_target_publication
+# Bind the theorem's per-domain lock owner to both production registrar types.
+# Each test blocks the first source read after two refresh tasks have attempted
+# the same registrar, then requires one entered read and one exact installation.
+cargo test -p awaken-executable-agent-catalog --lib \
+  concurrent_agent_refreshes_are_serialized_by_the_domain_registrar
+cargo test -p awaken-executable-environment-catalog --lib \
+  concurrent_environment_refreshes_are_serialized_by_the_domain_registrar
 # The WebhookOutbox model treats a committed fact as recoverable across crash.
 # Bind that premise to a real post-commit process kill and fresh SQLite reopen;
 # delivery/settlement remains covered by the separate notifier kernel below.
@@ -194,6 +201,12 @@ cargo test -p awaken-control --lib management_effect
 cargo test -p awaken-config-store --features test-support --test integration management_effect
 cargo test -p awaken-config-store --features test-support --lib audit_identity
 cargo test -p awaken-config-store --features test-support --test integration audit_identity
+# The store's direct source-admission proof classifies supplied revision facts,
+# but cannot establish the async caller's source/expected pairing or absence of
+# Coordinator effects. Exercise that sole ConfigService seam and require an
+# observed stale CAS to return without entering the registrar.
+cargo test -p awaken-config-service --lib \
+  publish_never_installs_an_artifact_from_a_stale_source_revision
 # The scalar admission proofs below rely on the actual adapters and reclaimer
 # calling the shared kernels at their transaction and pre-purge boundaries.
 cargo test -p awaken-resource-store --lib reclamation_acquisition_has_one_fail_closed_decision_table
