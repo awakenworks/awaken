@@ -1,10 +1,12 @@
 use std::sync::{Arc, RwLock};
 
-use awaken_session_contract::{SessionRecoveryScan, SessionRepositoryError};
+use awaken_session_contract::{
+    SessionEnvironmentPhase, SessionRecoveryScan, SessionRepositoryError,
+};
 
 use super::SessionApplication;
 
-/// Secret-free Event-batch cutover facts from one complete final Session scan.
+/// Secret-free cutover facts from a final Session scan and global phase count.
 ///
 /// The generation is process-local. Deployment automation must first observe a
 /// baseline from each exact candidate process, then require a strictly newer
@@ -15,6 +17,7 @@ pub struct SessionEventBatchCutoverValidationSnapshot {
     pub terminal_with_incomplete_event_batches: u64,
     pub event_batch_failures: u64,
     pub quarantined: u64,
+    pub restoring_sessions: u64,
 }
 
 /// Read-only process-local projection published by the sole Session supervisor.
@@ -48,14 +51,16 @@ impl SessionEventBatchCutoverValidationSource {
         &self,
         scan: &SessionRecoveryScan,
         event_batch_failures: usize,
+        restoring_sessions: u64,
     ) -> SessionEventBatchCutoverValidationSnapshot {
-        self.complete_scan(scan, event_batch_failures)
+        self.complete_scan(scan, event_batch_failures, restoring_sessions)
     }
 
     fn complete_scan(
         &self,
         scan: &SessionRecoveryScan,
         event_batch_failures: usize,
+        restoring_sessions: u64,
     ) -> SessionEventBatchCutoverValidationSnapshot {
         let terminal_with_incomplete_event_batches = scan
             .sessions
@@ -74,6 +79,7 @@ impl SessionEventBatchCutoverValidationSource {
             ),
             event_batch_failures: count_as_u64(event_batch_failures),
             quarantined: count_as_u64(scan.quarantined.len()),
+            restoring_sessions,
         };
         *latest = Some(snapshot);
         snapshot
@@ -94,17 +100,23 @@ impl SessionApplication {
         self.event_batch_cutover_validation.clone()
     }
 
-    /// Read the canonical Session repository after every repair stage and only
-    /// then advance the process-local validation generation. Repository failure
-    /// returns before publication, preserving the preceding snapshot exactly.
+    /// Read the final recovery scan and the canonical global Environment count
+    /// before publishing. Either failure preserves the preceding generation;
+    /// the reconciliation scan is never a substitute for the global phase query.
     pub(crate) async fn refresh_event_batch_cutover_validation(
         &self,
         event_batch_failures: usize,
     ) -> Result<SessionEventBatchCutoverValidationSnapshot, SessionRepositoryError> {
         let scan = super::scan_all_reconcilable_sessions(self.session_repository()).await?;
-        Ok(self
-            .event_batch_cutover_validation
-            .complete_scan(&scan, event_batch_failures))
+        let restoring_sessions = self
+            .session_repository()
+            .count_environment_phase(SessionEnvironmentPhase::Restoring)
+            .await?;
+        Ok(self.event_batch_cutover_validation.complete_scan(
+            &scan,
+            event_batch_failures,
+            restoring_sessions,
+        ))
     }
 }
 
@@ -126,7 +138,7 @@ mod tests {
         //
         // | Rule | Prior snapshot | Complete scan | Effect |
         // |---|---|---|---|
-        // | Q1 | absent | one quarantine | generation 1, quarantined 1 |
+        // | Q1 | absent | one quarantine, global restoring 2 | generation 1, counts 1/2 |
         // | Q2 | Q1 | clean | generation 2, all counts 0 |
         let projection = SessionEventBatchCutoverValidationSource::new();
         assert_eq!(projection.snapshot(), None, "E1");
@@ -140,11 +152,13 @@ mod tests {
                 next_cursor: None,
             },
             0,
+            2,
         );
         assert_eq!(first.generation, 1, "Q1/E2");
         assert_eq!(first.quarantined, 1, "Q1/E2");
+        assert_eq!(first.restoring_sessions, 2, "Q1/E2");
 
-        let second = projection.complete_scan(&SessionRecoveryScan::default(), 0);
+        let second = projection.complete_scan(&SessionRecoveryScan::default(), 0, 0);
         assert_eq!(
             second,
             SessionEventBatchCutoverValidationSnapshot {
@@ -152,6 +166,7 @@ mod tests {
                 terminal_with_incomplete_event_batches: 0,
                 event_batch_failures: 0,
                 quarantined: 0,
+                restoring_sessions: 0,
             },
             "Q2/E3"
         );
