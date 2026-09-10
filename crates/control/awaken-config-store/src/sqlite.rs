@@ -171,24 +171,33 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         self.with_conn(move |conn, p| {
             // Agent identity is `(scope_id, id)`: another scope may reuse the
             // same portable Agent id without reading or clobbering this row.
-            let applied: Option<u64> = conn.query_row(
-                &format!(
-                    "INSERT INTO {p}_agent (id, data, scope_id, generation) VALUES (?1, ?2, ?3, 1) \
-                     ON CONFLICT(scope_id, id) DO UPDATE SET data = excluded.data, \
-                     generation = {p}_agent.generation + 1 \
-                     WHERE {p}_agent.generation > 0 AND {p}_agent.generation < 9223372036854775807 \
-                     RETURNING generation"
-                ),
-                params![id, data, scope],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(reject)?;
-            if applied.is_none() {
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(reject)?;
+            let current_revision = tx
+                .query_row(
+                    &format!("SELECT generation FROM {p}_agent WHERE id = ?1 AND scope_id = ?2"),
+                    params![id, scope],
+                    |row| row.get::<_, u64>(0),
+                )
+                .optional()
+                .map_err(reject)?;
+            let plan = match crate::ConfigRevisionWritePlan::advance_current(current_revision)
+                .map_err(reject)?
+            {
+                crate::ConfigRevisionAdmission::Apply(plan) => plan,
+                crate::ConfigRevisionAdmission::Conflict { .. } => {
+                    return Err(ConfigStoreError(
+                        "config generation is present at invalid zero".into(),
+                    ));
+                }
+            };
+            if write_config_revision(&tx, p, &scope, &id, &data, plan)?.is_none() {
                 return Err(ConfigStoreError(
-                    "config generation exhausted or invalid".into(),
+                    "config generation transition lost its exclusive writer".into(),
                 ));
             }
+            tx.commit().map_err(reject)?;
             Ok(())
         })
         .await
@@ -221,7 +230,9 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         let audit = audit.clone();
         let effect = effect.cloned();
         self.with_conn(move |conn, p| {
-            let tx = conn.transaction().map_err(reject)?;
+            let tx = conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(reject)?;
             let existing: Option<(String, i64)> = tx
                 .query_row(
                     &format!(
