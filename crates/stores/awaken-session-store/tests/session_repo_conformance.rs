@@ -762,6 +762,22 @@ async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRep
     // transaction; C2=process/adapter reload. E1=the aggregate and exact
     // millisecond interval appear together; E2=the typed payload round-trips
     // without the store maintaining a parallel event schema.
+    fn assert_exact_outbox_delta(
+        before: &[ManagedLifecycleFact],
+        after: &[ManagedLifecycleFact],
+        added: &ManagedLifecycleFact,
+        rule: &str,
+    ) {
+        let mut remaining = after.to_vec();
+        let position = remaining
+            .iter()
+            .position(|candidate| candidate == added)
+            .unwrap_or_else(|| panic!("{rule}: exact lifecycle fact is present"));
+        remaining.remove(position);
+        assert_eq!(remaining, before, "{rule}: no unrelated outbox change");
+    }
+
+    let outbox_before = r.pending_lifecycle().await.unwrap();
     let mut created = fact(
         "evt:create",
         "sesn_lifecycle",
@@ -787,13 +803,23 @@ async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRep
     .await;
     assert!(r.get("sesn_lifecycle").await.is_ok());
     assert_eq!(r.owner("sesn_lifecycle").await.as_deref(), Ok("ws_a"));
-    assert_eq!(r.pending_lifecycle().await.unwrap(), vec![created.clone()]);
+    assert_exact_outbox_delta(
+        &outbox_before,
+        &r.pending_lifecycle().await.unwrap(),
+        &created,
+        "create",
+    );
 
     // Stable event identity makes an enqueue retry a no-op.
     r.append_lifecycle(created.clone()).await.unwrap();
-    assert_eq!(r.pending_lifecycle().await.unwrap(), vec![created.clone()]);
+    assert_exact_outbox_delta(
+        &outbox_before,
+        &r.pending_lifecycle().await.unwrap(),
+        &created,
+        "create retry",
+    );
     r.complete_lifecycle(&created.id).await.unwrap();
-    assert!(r.pending_lifecycle().await.unwrap().is_empty());
+    assert_eq!(r.pending_lifecycle().await.unwrap(), outbox_before);
 
     let archived = fact("evt:archive", "sesn_lifecycle", "session.archived");
     let mut archive = r.get("sesn_lifecycle").await.unwrap();
@@ -802,7 +828,12 @@ async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRep
     let durable = r.get("sesn_lifecycle").await.expect("archived session");
     assert_eq!(durable.execution, SessionExecutionState::Terminated);
     assert_eq!(durable.archived_at(), Some("2026-07-19T00:00:00Z"));
-    assert_eq!(r.pending_lifecycle().await.unwrap(), vec![archived.clone()]);
+    assert_exact_outbox_delta(
+        &outbox_before,
+        &r.pending_lifecycle().await.unwrap(),
+        &archived,
+        "archive",
+    );
     r.complete_lifecycle(&archived.id).await.unwrap();
 
     let deleted = fact("evt:delete", "sesn_lifecycle", "session.deleted");
@@ -843,7 +874,182 @@ async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRep
         r.get("sesn_lifecycle").await,
         Err(SessionRepositoryError::NotFound)
     );
-    assert_eq!(r.pending_lifecycle().await.unwrap(), vec![deleted]);
+    assert_exact_outbox_delta(
+        &outbox_before,
+        &r.pending_lifecycle().await.unwrap(),
+        &deleted,
+        "delete",
+    );
+}
+
+async fn lifecycle_outbox_insert_failure_rolls_back_root_paths<R, Arm, Armed>(
+    repo: &R,
+    arm_outbox_failure: Arm,
+) where
+    R: ManagedSessionRepository,
+    Arm: FnOnce() -> Armed,
+    Armed: std::future::Future<Output = ()>,
+{
+    // Cause/effect graph: C1 one of create/replace/delete changes the Session
+    // root; C2 the same command carries one exact lifecycle fact; C3 the
+    // database rejects that outbox INSERT after the root write; C4 the adapter
+    // returns the transaction error. Effects: E1 no aggregate/tombstone change;
+    // E2 no idempotency receipt; E3 no outbox change. Decision table:
+    // | Rule | root path | C2 | C3 | Effect |
+    // |---|---|---|---|---|
+    // | A1 | create | T | T | E1 absent + E2 + E3 |
+    // | A2 | replace | T | T | E1 exact predecessor + E2 + E3 |
+    // | A3 | delete | T | T | E1 live predecessor + E2 + E3 |
+    // The rejection is installed in the real database, after fixtures commit;
+    // neither adapter nor repository statement is stubbed. Engine transaction
+    // atomicity remains TCB, while these rules cross-check its actual rollback.
+    let replace_predecessor = create_session(
+        repo,
+        "ws_a",
+        session("sesn_atomic_replace", "replace predecessor"),
+        Vec::new(),
+    )
+    .await;
+    let mut delete_predecessor = session("sesn_atomic_delete", "delete predecessor");
+    assert!(
+        delete_predecessor
+            .request_delete("ws_a", 0)
+            .unwrap()
+            .is_some(),
+        "A3 fixture enters deleting"
+    );
+    complete_terminal_cleanup(&mut delete_predecessor);
+    let delete_predecessor = create_session(repo, "ws_a", delete_predecessor, Vec::new()).await;
+    let outbox_before = repo.pending_lifecycle().await.unwrap();
+
+    arm_outbox_failure().await;
+
+    let create_candidate = session("sesn_atomic_create", "create candidate");
+    let create_payload = SessionMutationPayload::Replace(create_candidate.clone());
+    let create_key = "test:atomic:create";
+    assert!(
+        matches!(
+            repo.create(
+                "ws_a",
+                create_candidate,
+                record(create_key, &create_payload),
+                vec![fact(
+                    "evt:atomic:create",
+                    "sesn_atomic_create",
+                    "session.status_idled",
+                )],
+            )
+            .await,
+            Err(SessionRepositoryError::Unavailable(_))
+        ),
+        "A1 injected outbox failure reaches the transaction boundary"
+    );
+    assert_eq!(
+        repo.get("sesn_atomic_create").await,
+        Err(SessionRepositoryError::NotFound),
+        "A1/E1"
+    );
+    assert_eq!(
+        repo.idempotency_receipt("sesn_atomic_create", create_key)
+            .await,
+        Ok(None),
+        "A1/E2"
+    );
+    assert_eq!(
+        repo.pending_lifecycle().await.unwrap(),
+        outbox_before,
+        "A1/E3"
+    );
+
+    let mut replacement = replace_predecessor.clone();
+    replacement.title = Some("rejected replacement".into());
+    let replace_payload = SessionMutationPayload::Replace(replacement);
+    let replace_key = "test:atomic:replace";
+    assert!(
+        matches!(
+            repo.commit_mutation(
+                "ws_a",
+                SessionMutation {
+                    expected_revision: replace_predecessor.revision,
+                    idempotency: record(replace_key, &replace_payload),
+                    payload: replace_payload,
+                    lifecycle_facts: vec![fact(
+                        "evt:atomic:replace",
+                        &replace_predecessor.session_id,
+                        "session.archived",
+                    )],
+                },
+            )
+            .await,
+            Err(SessionRepositoryError::Unavailable(_))
+        ),
+        "A2 injected outbox failure reaches the transaction boundary"
+    );
+    assert_eq!(
+        repo.get(&replace_predecessor.session_id).await,
+        Ok(replace_predecessor.clone()),
+        "A2/E1"
+    );
+    assert_eq!(
+        repo.idempotency_receipt(&replace_predecessor.session_id, replace_key)
+            .await,
+        Ok(None),
+        "A2/E2"
+    );
+    assert_eq!(
+        repo.pending_lifecycle().await.unwrap(),
+        outbox_before,
+        "A2/E3"
+    );
+
+    let delete_payload = SessionMutationPayload::Delete(SessionTombstone {
+        session_id: delete_predecessor.session_id.clone(),
+        deleted_revision: SessionRevision(delete_predecessor.revision.0 + 1),
+        deleted_at: "2026-09-10T00:00:00Z".into(),
+    });
+    let delete_key = "test:atomic:delete";
+    assert!(
+        matches!(
+            repo.commit_mutation(
+                "ws_a",
+                SessionMutation {
+                    expected_revision: delete_predecessor.revision,
+                    idempotency: record(delete_key, &delete_payload),
+                    payload: delete_payload,
+                    lifecycle_facts: vec![fact(
+                        "evt:atomic:delete",
+                        &delete_predecessor.session_id,
+                        "session.deleted",
+                    )],
+                },
+            )
+            .await,
+            Err(SessionRepositoryError::Unavailable(_))
+        ),
+        "A3 injected outbox failure reaches the transaction boundary"
+    );
+    assert_eq!(
+        repo.get(&delete_predecessor.session_id).await,
+        Ok(delete_predecessor.clone()),
+        "A3/E1"
+    );
+    assert_eq!(
+        repo.deleted_event_admissions("ws_a", &delete_predecessor.session_id)
+            .await,
+        Ok(None),
+        "A3/E1 no tombstone"
+    );
+    assert_eq!(
+        repo.idempotency_receipt(&delete_predecessor.session_id, delete_key)
+            .await,
+        Ok(None),
+        "A3/E2"
+    );
+    assert_eq!(
+        repo.pending_lifecycle().await.unwrap(),
+        outbox_before,
+        "A3/E3"
+    );
 }
 
 /// Reconciliation-index cause/effect rules: C1=Resource/MCP durable work is
@@ -2092,6 +2298,34 @@ fn sqlite_backend_conforms() {
 }
 
 #[test]
+fn sqlite_lifecycle_outbox_insert_failure_rolls_back_every_root_path() {
+    block(async {
+        // Backend rule S1: run A1-A3 against a file-backed production adapter;
+        // a SQLite BEFORE INSERT abort is the C3 database failure, and every
+        // subsequent assertion reads through the same repository contract.
+        let directory = tempfile::tempdir().expect("SQLite atomicity directory");
+        let database = directory.path().join("lifecycle-atomicity.db");
+        let database_path = database.to_str().expect("UTF-8 lifecycle atomicity path");
+        let repo = SqliteManagedSessionRepository::open(database_path)
+            .expect("open SQLite lifecycle atomicity repository");
+        lifecycle_outbox_insert_failure_rolls_back_root_paths(&repo, || {
+            rusqlite::Connection::open(&database)
+                .expect("open SQLite failure injector")
+                .execute_batch(
+                    "CREATE TRIGGER reject_lifecycle_outbox_insert \
+                     BEFORE INSERT ON managed_lifecycle_outbox \
+                     BEGIN \
+                       SELECT RAISE(ABORT, 'injected lifecycle outbox failure'); \
+                     END;",
+                )
+                .expect("install SQLite lifecycle outbox rejection");
+            std::future::ready(())
+        })
+        .await;
+    });
+}
+
+#[test]
 fn sqlite_restores_and_canonically_rewrites_the_pre_typed_deployment_record() {
     block(async {
         // This fixture is frozen old-release output, not JSON produced by the
@@ -2221,7 +2455,7 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
     let second_deployment_replica = PostgresManagedSessionRepository::with_pool(pool.clone())
         .await
         .expect("open second Postgres Deployment replica");
-    let third_deployment_replica = PostgresManagedSessionRepository::with_pool(pool)
+    let third_deployment_replica = PostgresManagedSessionRepository::with_pool(pool.clone())
         .await
         .expect("open third Postgres Deployment replica");
     global_environment_phase_count_has_no_recovery_batch_limit(repo.as_ref()).await;
@@ -2241,5 +2475,22 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
             &third_deployment_replica,
         ],
     )
+    .await;
+    lifecycle_outbox_tracks_every_committed_transition(repo.as_ref()).await;
+    lifecycle_outbox_insert_failure_rolls_back_root_paths(repo.as_ref(), || {
+        let pool = pool.clone();
+        async move {
+            // Backend rule P1: a NOT VALID constraint preserves successful
+            // fixture rows but rejects every new outbox INSERT. A1-A3 then
+            // observe PostgreSQL's real transaction rollback through the port.
+            sqlx::query(
+                "ALTER TABLE managed_lifecycle_outbox \
+                 ADD CONSTRAINT reject_lifecycle_outbox_insert CHECK (false) NOT VALID",
+            )
+            .execute(&pool)
+            .await
+            .expect("install PostgreSQL lifecycle outbox rejection");
+        }
+    })
     .await;
 }

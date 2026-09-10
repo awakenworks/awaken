@@ -94,6 +94,14 @@ fn fact() -> ManagedLifecycleFact {
 
 #[tokio::test]
 async fn session_commit_survives_process_kill_before_notification() {
+    // Cause/effect decision table: C1=create returns after the aggregate and
+    // lifecycle fact commit; C2=the process is killed before notification;
+    // C3=a fresh repository instance reopens the same database; C4=completion
+    // is retried. R1=C1+C2+C3 -> E1 exact revision-one aggregate and exact
+    // pending fact are both visible; R2=R1+C4 -> E2 the first completion
+    // retires the fact and the replay is idempotent. The child marker is only
+    // the kill boundary; database durability is observed exclusively through
+    // the fresh production adapter after the child process has terminated.
     if std::env::var_os(CHILD_MODE).is_some() {
         let db = std::env::var(DB_PATH).unwrap();
         let marker = std::env::var(MARKER_PATH).unwrap();
