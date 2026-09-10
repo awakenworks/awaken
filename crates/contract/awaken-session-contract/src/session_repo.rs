@@ -348,7 +348,7 @@ mod mutation_tests {
             crate::ResolvedSessionResources::try_new(vec![input.clone()], Vec::new()).unwrap();
         let evidence = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
             "memory-store",
-            "/memory/work",
+            awaken_provisioning_contract::memory_materialization_mount_path(&input.mount_path),
             vec![awaken_provisioning_contract::MemoryMaterializationHead {
                 path: "/note.md".into(),
                 id: "memory-note".into(),
@@ -394,7 +394,11 @@ mod mutation_tests {
                 realization_fingerprint: fingerprint,
                 effect_fence: lease.sandbox_effect_fence("create-memory").unwrap(),
                 physical_incarnation: "physical-memory".into(),
-                owned_paths: vec!["/memory/work".into()],
+                owned_paths: vec![
+                    awaken_provisioning_contract::memory_materialization_mount_path(
+                        &input.mount_path,
+                    ),
+                ],
             },
         )
         .with_memory_materializations(vec![evidence.clone()])
@@ -429,7 +433,9 @@ mod mutation_tests {
         other_mount_input.mount_path = "/memory/other".into();
         let other_evidence = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
             "memory-store",
-            "/memory/other",
+            awaken_provisioning_contract::memory_materialization_mount_path(
+                &other_mount_input.mount_path,
+            ),
             evidence.heads.clone(),
         )
         .unwrap();
@@ -447,7 +453,7 @@ mod mutation_tests {
 
         let altered_evidence = awaken_provisioning_contract::MemoryMaterializationEvidence::new(
             "memory-store",
-            "/memory/work",
+            awaken_provisioning_contract::memory_materialization_mount_path(&input.mount_path),
             vec![awaken_provisioning_contract::MemoryMaterializationHead {
                 path: "/note.md".into(),
                 id: "memory-note".into(),
