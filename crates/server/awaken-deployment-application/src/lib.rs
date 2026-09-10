@@ -29,8 +29,6 @@ use awaken_executable_agent_contract::{
 use scheduler::{next_occurrence, validate_schedule};
 
 #[cfg(test)]
-use awaken_deployment_contract::ScheduledRunClaimOutcome;
-#[cfg(test)]
 use scheduler::{MAX_JITTER_BOUND_MS, execution_jitter_ms};
 
 const DEFAULT_SCHEDULED_LIMIT: usize = 1_000;
@@ -1571,130 +1569,6 @@ mod tests {
         drop(left);
         drop(right);
         drop(first);
-        drop(repository);
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[tokio::test]
-    async fn repository_cas_fences_lost_updates_and_stale_scheduler_commits() {
-        // CAS cause-effect graph: C1=two commands share revision r; C2=one wins
-        // and advances to r+1; C3=the loser is an ordinary mutation or a
-        // scheduled occurrence. Effects: E1=one business row/fact commits,
-        // E2=second write returns Conflict, E3=stale scheduler returns
-        // StaleDeployment and creates no claim/run, E4=winner state survives.
-        // Decision rules: F1 concurrent update/update->E1/E2/E4;
-        // F2 archive wins before stale tick claim->E3/E4.
-        let path = std::env::temp_dir().join(format!(
-            "deployment-cas-{}.db",
-            uuid::Uuid::new_v4().simple()
-        ));
-        let repository = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
-                .unwrap(),
-        );
-        let application = DeploymentApplication::from_repository(repository.clone())
-            .await
-            .unwrap();
-        let deployment = application.create(command(true)).await.unwrap();
-        let original = deployment.record;
-        let mut paused = original.clone();
-        paused.status = DeploymentStatus::Paused;
-        paused.revision = next_revision(original.revision).unwrap();
-        let mut archived = original.clone();
-        archived.archived_at = Some(timestamp(now_ms()));
-        archived.revision = next_revision(original.revision).unwrap();
-        let (left, right) = tokio::join!(
-            repository.write_deployment(
-                stored_deployment(&deployment.id, &paused).unwrap(),
-                Some(original.revision),
-                DEFAULT_SCHEDULED_LIMIT,
-                None,
-            ),
-            repository.write_deployment(
-                stored_deployment(&deployment.id, &archived).unwrap(),
-                Some(original.revision),
-                DEFAULT_SCHEDULED_LIMIT,
-                None,
-            )
-        );
-        let outcomes = [left.unwrap(), right.unwrap()];
-        assert_eq!(
-            outcomes
-                .iter()
-                .filter(|outcome| **outcome == DeploymentWriteOutcome::Applied)
-                .count(),
-            1,
-            "F1"
-        );
-        assert_eq!(
-            outcomes
-                .iter()
-                .filter(|outcome| **outcome == DeploymentWriteOutcome::Conflict)
-                .count(),
-            1,
-            "F1/F2"
-        );
-
-        let committed = DeploymentApplication::from_repository(repository.clone())
-            .await
-            .unwrap()
-            .get("workspace-a", &deployment.id)
-            .await
-            .unwrap()
-            .record;
-        let stale = original;
-        let scheduled_at = timestamp(now_ms());
-        let run_id = "drun-stale";
-        let run = DeploymentRunRecord {
-            created_at: scheduled_at.clone(),
-            deployment_id: deployment.id.clone(),
-            workspace_id: "workspace-a".into(),
-            agent: stale.agent.clone(),
-            trigger: DeploymentTrigger::Schedule {
-                scheduled_at: scheduled_at.clone(),
-            },
-            session_id: None,
-            error: None,
-        };
-        let mut stale_advanced = stale.clone();
-        stale_advanced.revision = next_revision(stale.revision).unwrap();
-        assert_eq!(
-            repository
-                .claim_scheduled_run(
-                    &format!("{}:{scheduled_at}", deployment.id),
-                    stale.revision,
-                    stored_deployment(&deployment.id, &stale_advanced).unwrap(),
-                    stored_run(run_id, &run).unwrap(),
-                    lifecycle_fact(
-                        "stale-scheduler".into(),
-                        run_id,
-                        "workspace-a",
-                        "deployment_run.started",
-                    ),
-                )
-                .await
-                .unwrap(),
-            ScheduledRunClaimOutcome::StaleDeployment,
-            "F2/E3"
-        );
-        let restored = DeploymentApplication::from_repository(repository.clone())
-            .await
-            .unwrap();
-        assert!(
-            restored.list_runs("workspace-a").await.unwrap().is_empty(),
-            "E3"
-        );
-        assert_eq!(
-            restored
-                .get("workspace-a", &deployment.id)
-                .await
-                .unwrap()
-                .record,
-            committed,
-            "E4"
-        );
-        drop(restored);
-        drop(application);
         drop(repository);
         let _ = std::fs::remove_file(path);
     }

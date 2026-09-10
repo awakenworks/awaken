@@ -2050,10 +2050,12 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
     // Deployment repository cause/effect graph:
     // C1=create or three writers share revision r; C2=row is scheduled; C3=the
     // capacity limit is already occupied; C4=scheduler presents current or
-    // stale revision. Effects: E1=one CAS write advances r exactly once;
+    // stale revision; C5=a current scheduler reuses the rejected stale claim
+    // identity. Effects: E1=one CAS write advances r exactly once;
     // E2=the loser conflicts without a lifecycle fact; E3=capacity admission
     // is transactional; E4=claim+run+cursor commit atomically; E5=stale claim
-    // creates neither claim nor run.
+    // preserves the winner frame and creates no claim/run/fact; E6=C5 claims,
+    // proving that E5 did not reserve the durable identity.
     //
     // | Rule | C1                | C2 | C3 | C4      | Effect       |
     // | D1   | create            | F  | F  | -       | applied      |
@@ -2062,6 +2064,7 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
     // | D4   | create            | T  | T  | -       | E3 reject   |
     // | D5   | scheduler at r    | -  | -  | current | E4          |
     // | D6   | scheduler at r-1  | -  | -  | stale   | E5          |
+    // | D7   | reuse D6 claim id | -  | -  | current | E4 + E6     |
     let baseline_facts = repo.pending_lifecycle().await.unwrap().len();
     let created = deployment_record("depl_cas", 0, false);
     assert_eq!(
@@ -2206,38 +2209,125 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
         "D5/E4"
     );
     assert_eq!(repo.deployment_runs().await.unwrap().len(), 1, "D5/E4");
+    let stale_claim_id = "depl_cas:stale-then-current";
+    let mut stale_overwrite = advanced.clone();
+    stale_overwrite.record.name = "stale-overwrite-must-not-commit".into();
     assert_eq!(
-        repo.claim_scheduled_run(
-            "depl_cas:stale",
-            1,
-            advanced,
-            DeploymentRunView {
-                id: "drun_stale".into(),
-                record: DeploymentRunRecord {
-                    created_at: "1970-01-01T00:00:02Z".into(),
-                    deployment_id: "depl_cas".into(),
-                    workspace_id: "ws_a".into(),
-                    agent: DeploymentAgent::new("agent_a", 1),
-                    trigger: DeploymentTrigger::Manual,
-                    session_id: None,
-                    error: None,
+        replicas[1]
+            .claim_scheduled_run(
+                stale_claim_id,
+                1,
+                stale_overwrite,
+                DeploymentRunView {
+                    id: "drun_stale".into(),
+                    record: DeploymentRunRecord {
+                        created_at: "1970-01-01T00:00:02Z".into(),
+                        deployment_id: "depl_cas".into(),
+                        workspace_id: "ws_a".into(),
+                        agent: DeploymentAgent::new("agent_a", 1),
+                        trigger: DeploymentTrigger::Manual,
+                        session_id: None,
+                        error: None,
+                    },
                 },
-            },
-            DeploymentLifecycleFact {
-                id: "stale-fact".into(),
-                object_id: "drun_stale".into(),
-                workspace_id: Some("ws_a".into()),
-                event_type: "deployment_run.started".into(),
-                timestamp: 2,
-                runtime_interval: None,
-            },
-        )
-        .await
-        .unwrap(),
+                DeploymentLifecycleFact {
+                    id: "stale-fact".into(),
+                    object_id: "drun_stale".into(),
+                    workspace_id: Some("ws_a".into()),
+                    event_type: "deployment_run.started".into(),
+                    timestamp: 2,
+                    runtime_interval: None,
+                },
+            )
+            .await
+            .unwrap(),
         ScheduledRunClaimOutcome::StaleDeployment,
         "D6/E5"
     );
-    assert_eq!(repo.deployment_runs().await.unwrap().len(), 1, "D6/E5");
+    for (index, replica) in replicas.iter().enumerate() {
+        assert_eq!(
+            replica
+                .deployments()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|deployment| deployment.id == "depl_cas"),
+            Some(advanced.clone()),
+            "D6/E5 replica {index} preserves the exact winner frame"
+        );
+    }
+    let runs = repo.deployment_runs().await.unwrap();
+    assert_eq!(runs.len(), 1, "D6/E5");
+    assert!(runs.iter().all(|run| run.id != "drun_stale"), "D6/E5");
+    assert!(
+        repo.pending_lifecycle()
+            .await
+            .unwrap()
+            .iter()
+            .all(|fact| fact.id != "stale-fact"),
+        "D6/E5"
+    );
+
+    let mut after_stale = advanced;
+    after_stale.record.revision = 3;
+    after_stale.record.name = "fresh-after-stale".into();
+    assert_eq!(
+        replicas[2]
+            .claim_scheduled_run(
+                stale_claim_id,
+                2,
+                after_stale.clone(),
+                DeploymentRunView {
+                    id: "drun_after_stale".into(),
+                    record: DeploymentRunRecord {
+                        created_at: "1970-01-01T00:00:03Z".into(),
+                        deployment_id: "depl_cas".into(),
+                        workspace_id: "ws_a".into(),
+                        agent: DeploymentAgent::new("agent_a", 1),
+                        trigger: DeploymentTrigger::Schedule {
+                            scheduled_at: "1970-01-01T00:00:03Z".into(),
+                        },
+                        session_id: None,
+                        error: None,
+                    },
+                },
+                DeploymentLifecycleFact {
+                    id: "fresh-after-stale-fact".into(),
+                    object_id: "drun_after_stale".into(),
+                    workspace_id: Some("ws_a".into()),
+                    event_type: "deployment_run.started".into(),
+                    timestamp: 3,
+                    runtime_interval: None,
+                },
+            )
+            .await
+            .unwrap(),
+        ScheduledRunClaimOutcome::Claimed,
+        "D7/E6 stale rejection did not reserve the claim identity"
+    );
+    for (index, replica) in replicas.iter().enumerate() {
+        assert_eq!(
+            replica
+                .deployments()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|deployment| deployment.id == "depl_cas"),
+            Some(after_stale.clone()),
+            "D7/E4 replica {index} reads the fresh complete frame"
+        );
+    }
+    let runs = repo.deployment_runs().await.unwrap();
+    assert_eq!(runs.len(), 2, "D7/E4");
+    assert!(runs.iter().any(|run| run.id == "drun_current"), "D7/E4");
+    assert!(runs.iter().any(|run| run.id == "drun_after_stale"), "D7/E4");
+    assert!(runs.iter().all(|run| run.id != "drun_stale"), "D7/E5");
+    let facts = repo.pending_lifecycle().await.unwrap();
+    assert!(facts.iter().all(|fact| fact.id != "stale-fact"), "D7/E5");
+    assert!(
+        facts.iter().any(|fact| fact.id == "fresh-after-stale-fact"),
+        "D7/E4"
+    );
 }
 
 // ── Backend rows: each must pass the identical universal suite ───────────────────
@@ -2257,10 +2347,10 @@ fn sqlite_backend_conforms() {
             SqliteManagedSessionRepository::open_in_memory().expect("sqlite phase-count repo"),
         ))
         .await;
-        // SQLite refinement rule D7: C5 three independently opened adapters
-        // share one file and race D3; C6 every handle closes after the later D5
-        // claim. Effects: E6 D3 still has one exact winner; E7 reopen retains
-        // the exact revision-two Deployment frame and its one atomic run.
+        // SQLite refinement rule D8: C6 three independently opened adapters
+        // share one file and execute D3/D5-D7; C7 every handle then closes.
+        // Effects: E7 D3 still has one exact winner; E8 reopen retains the
+        // exact revision-three frame and both valid runs, excluding D6 effects.
         let directory = tempfile::tempdir().expect("SQLite Deployment CAS directory");
         let database = directory.path().join("deployment-cas.db");
         let database_path = database.to_str().expect("UTF-8 Deployment CAS path");
@@ -2283,16 +2373,19 @@ fn sqlite_backend_conforms() {
             .into_iter()
             .find(|deployment| deployment.id == "depl_cas")
             .expect("reopened CAS winner");
-        assert_eq!(deployment.record.revision, 2, "D5 persisted successor");
-        assert_eq!(deployment.record.name, "advanced", "D5 persisted frame");
+        assert_eq!(deployment.record.revision, 3, "D8 persisted successor");
+        assert_eq!(
+            deployment.record.name, "fresh-after-stale",
+            "D8 persisted frame"
+        );
         assert_eq!(
             reopened
                 .deployment_runs()
                 .await
                 .expect("read reopened DeploymentRuns")
                 .len(),
-            1,
-            "D5 claim/run survived reopen"
+            2,
+            "D8 only valid claim/runs survived reopen"
         );
     });
 }
@@ -2448,9 +2541,9 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
             .await
             .expect("open Postgres Session repository"),
     );
-    // PostgreSQL refinement rule D8: C7 three repository clients share one
-    // migrated pool/schema and race D3. Effect E8 is the same one-winner frame
-    // and lifecycle result as SQLite. An unavailable unconfigured endpoint
+    // PostgreSQL refinement rule D9: C8 three repository clients share one
+    // migrated pool/schema and execute D3/D5-D7. Effect E9 is the same stale
+    // zero-effect and reusable-claim result as SQLite. An unavailable endpoint
     // skips this entire rule and is never reported as live PostgreSQL evidence.
     let second_deployment_replica = PostgresManagedSessionRepository::with_pool(pool.clone())
         .await
