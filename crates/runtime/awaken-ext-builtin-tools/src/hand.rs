@@ -30,7 +30,7 @@ const WALK_MAX_ENTRIES: usize = 50_000;
 
 /// Trusted host configuration for one Managed Agent toolset instance.
 /// Instances are scoped to a Hand connection, so Bash state cannot cross Sessions.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct HandToolContext {
     workdir: PathBuf,
     allowed_roots: Vec<PathBuf>,
@@ -41,6 +41,22 @@ pub struct HandToolContext {
     /// sandbox once when Bash starts instead of wrapping every command and
     /// losing shell state between calls.
     bash_launcher: Option<(PathBuf, Vec<String>)>,
+}
+
+impl std::fmt::Debug for HandToolContext {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // This type owns provider-host roots and may be attached to diagnostic
+        // context. Preserve useful shape without making workdir, projection,
+        // allowed-root, launcher or environment values a second output path.
+        formatter
+            .debug_struct("HandToolContext")
+            .field("allowed_root_count", &self.allowed_roots.len())
+            .field("path_projection_count", &self.path_projections.len())
+            .field("max_file_bytes", &self.max_file_bytes)
+            .field("has_bash_env", &self.bash_env.is_some())
+            .field("has_bash_launcher", &self.bash_launcher.is_some())
+            .finish()
+    }
 }
 
 impl HandToolContext {

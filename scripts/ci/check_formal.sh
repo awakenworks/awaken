@@ -565,7 +565,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness valid_recovery_grace_covers_lease_and_reconciliation \
     --harness sandbox_admission_never_weakens_the_isolation_floor \
     --harness sandbox_admission_requires_every_requested_capability \
-    --harness fail_closed_sandbox_policy_never_authorizes_a_downgrade
+    --harness fail_closed_sandbox_policy_never_authorizes_a_downgrade \
+    --harness workspace_path_projection_requires_exact_fidelity_admission
   run_kani awaken-deployment-contract \
     --harness minute_timestamp_projection_is_exact_and_bounded \
     --harness minute_timestamp_projection_has_an_exact_input_domain

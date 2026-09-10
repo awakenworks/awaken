@@ -137,6 +137,8 @@ pub fn awaken_ext_builtin_tools::HandToolContext::with_bash_launcher(self, impl 
 pub fn awaken_ext_builtin_tools::HandToolContext::with_path_projection(self, impl core::convert::Into<std::path::PathBuf>, impl core::convert::Into<std::path::PathBuf>) -> Self
 impl core::default::Default for awaken_ext_builtin_tools::HandToolContext
 pub fn awaken_ext_builtin_tools::HandToolContext::default() -> Self
+impl core::fmt::Debug for awaken_ext_builtin_tools::HandToolContext
+pub fn awaken_ext_builtin_tools::HandToolContext::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_ext_builtin_tools::ListAgentsArgs
 pub struct awaken_ext_builtin_tools::ListAgentsTool(_)
 impl awaken_ext_builtin_tools::ListAgentsTool
