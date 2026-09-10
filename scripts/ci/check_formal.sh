@@ -703,7 +703,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness expired_background_recovery_is_exact_nonwrapping_and_never_invents_termination
   run_kani awaken-runtime \
     --harness circuit_admission_is_capacity_bounded_nonwrapping_and_rejection_stutters \
-    --harness circuit_completion_requires_exact_phase_and_generation_for_every_outcome
+    --harness circuit_completion_requires_exact_phase_and_generation_for_every_outcome \
+    --harness checkpoint_clear_requires_unvetoed_terminal_completion
   run_kani awaken-runtime-contract --checked-loop-profile resume-validator-empty-object-v1 \
     --harness resume_validator_preserves_complete_binding_decision_table
   run_kani awaken-runtime-contract --solver kissat \

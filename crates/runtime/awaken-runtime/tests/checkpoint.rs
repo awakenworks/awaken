@@ -10,7 +10,9 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
+use awaken_agent_contract::stream::checkpoint::{
+    StreamCheckpoint, StreamCheckpointError, StreamCheckpointStore,
+};
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
@@ -96,8 +98,19 @@ const THREAD_ID: &str = "thread-1";
 
 async fn drive(
     llm: Arc<dyn LlmExecutor>,
-    checkpoints: Arc<MemoryStreamCheckpointStore>,
+    checkpoints: Arc<dyn StreamCheckpointStore>,
 ) -> (RunState, MemoryCommitCoordinator) {
+    let (state, commit) = drive_result(llm, checkpoints).await;
+    (state.expect("runs"), commit)
+}
+
+async fn drive_result(
+    llm: Arc<dyn LlmExecutor>,
+    checkpoints: Arc<dyn StreamCheckpointStore>,
+) -> (
+    awaken_runtime_contract::execution::Result<RunState>,
+    MemoryCommitCoordinator,
+) {
     // A single retry with no backoff keeps the in-process recovery instant.
     let runtime = Runtime::new()
         .with_llm(llm)
@@ -153,8 +166,38 @@ async fn drive(
         data_subject_id: None,
         tool_capability_narrowing: Default::default(),
     };
-    let state = runtime.execute(activation, context).await.expect("runs");
+    let state = runtime.execute(activation, context).await;
     (state, Arc::try_unwrap(commit).unwrap_or_default())
+}
+
+#[derive(Default)]
+struct DeleteFailingCheckpointStore {
+    inner: MemoryStreamCheckpointStore,
+    deletes: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl StreamCheckpointStore for DeleteFailingCheckpointStore {
+    async fn get(
+        &self,
+        run_id: &str,
+    ) -> std::result::Result<Option<StreamCheckpoint>, StreamCheckpointError> {
+        self.inner.get(run_id).await
+    }
+
+    async fn put(
+        &self,
+        checkpoint: StreamCheckpoint,
+    ) -> std::result::Result<(), StreamCheckpointError> {
+        self.inner.put(checkpoint).await
+    }
+
+    async fn delete(&self, run_id: &str) -> std::result::Result<(), StreamCheckpointError> {
+        self.deletes.lock().unwrap().push(run_id.to_string());
+        Err(StreamCheckpointError::Storage(
+            "injected delete failure".to_string(),
+        ))
+    }
 }
 
 fn assistant_text(commit: &MemoryCommitCoordinator) -> String {
@@ -194,6 +237,59 @@ async fn an_interrupted_step_recovers_in_process_and_leaves_no_checkpoint() {
             .await
             .expect("checkpoint read")
             .is_none()
+    );
+}
+
+#[tokio::test]
+async fn checkpoint_delete_failure_withholds_terminal_completion_and_retains_resume() {
+    // Causes: C1 a confirmed interruption creates a Run-scoped checkpoint; C2
+    // the continued provider request terminates successfully; C3 deletion
+    // succeeds or fails. Effects: E1 success permits NaturalEnd with no resume;
+    // E2 failure returns the existing Commit error before terminal `finish`,
+    // targets the exact Run id, and retains the checkpoint. Decision rules:
+    // R1=C1+C2+delete-ok=>E1 (covered above); R2=C1+C2+delete-fail=>E2.
+    // Constraints/invariants: the checkpoint store is the existing runtime port;
+    // inference tolerance and model failover cannot absorb retirement failure.
+    let checkpoints = Arc::new(DeleteFailingCheckpointStore::default());
+    let (result, commit) = drive_result(
+        Arc::new(DropOnceLlm {
+            calls: Default::default(),
+            first: "Hel",
+            rest: "lo world",
+        }),
+        checkpoints.clone(),
+    )
+    .await;
+
+    assert!(
+        matches!(
+            result,
+            Err(awaken_runtime_contract::execution::Error::Commit(ref error))
+                if error.contains("injected delete failure")
+        ),
+        "R2/E2: checkpoint retirement failure must escape terminal handling"
+    );
+    assert_eq!(
+        *checkpoints.deletes.lock().unwrap(),
+        vec![RUN_ID.to_string()],
+        "R2/E2: retire only the current Run checkpoint"
+    );
+    assert!(
+        checkpoints
+            .inner
+            .get(RUN_ID)
+            .await
+            .expect("checkpoint read")
+            .is_some(),
+        "R2/E2: failed retirement preserves resumable truth"
+    );
+    assert!(
+        commit
+            .committed()
+            .messages
+            .iter()
+            .all(|message| message.role != Role::Assistant),
+        "R2/E2: no terminal assistant output is committed"
     );
 }
 

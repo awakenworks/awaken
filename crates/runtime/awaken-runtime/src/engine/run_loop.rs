@@ -334,6 +334,15 @@ async fn infer_step(
             Some(&mut journal),
         )
         .await;
+        let observed = match observed {
+            Ok(observed) => observed,
+            Err(error) => {
+                // A terminal Run cannot coexist with a resumable checkpoint.
+                // Reuse the existing fail-closed commit path so this storage
+                // failure cannot become provider retry/failover/tolerance.
+                break Ok(InferStepOutcome::EvidenceUnavailable(error.to_string()));
+            }
+        };
         if context.is_cancelled() {
             break Err(awaken_runtime_contract::llm::Error::Unauthorized(
                 "model observation cancelled".into(),
