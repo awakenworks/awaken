@@ -700,6 +700,7 @@ mod tests {
         commits: Mutex<Vec<ThreadCommit>>,
         replies: Mutex<VecDeque<String>>,
         states: Mutex<VecDeque<RunState>>,
+        lost_response_after_commit: Mutex<Option<RunId>>,
         executions: AtomicUsize,
     }
 
@@ -710,12 +711,18 @@ mod tests {
                 commits: Mutex::new(Vec::new()),
                 replies: Mutex::new(replies.iter().map(|reply| (*reply).into()).collect()),
                 states: Mutex::new(VecDeque::new()),
+                lost_response_after_commit: Mutex::new(None),
                 executions: AtomicUsize::new(0),
             }
         }
 
         fn with_states(self, states: Vec<RunState>) -> Self {
             *self.states.lock().unwrap() = states.into();
+            self
+        }
+
+        fn with_lost_response_after_commit(self, run_id: RunId) -> Self {
+            *self.lost_response_after_commit.lock().unwrap() = Some(run_id);
             self
         }
     }
@@ -833,6 +840,7 @@ mod tests {
             _context: RuntimeRunContext,
         ) -> awaken_runtime_contract::execution::Result<RunState> {
             self.executions.fetch_add(1, Ordering::SeqCst);
+            let run_id = activation.run_id.clone();
             let state = self
                 .states
                 .lock()
@@ -874,6 +882,13 @@ mod tests {
             .map_err(|error| {
                 awaken_runtime_contract::execution::Error::Execution(error.to_string())
             })?;
+            let mut lost_response = self.lost_response_after_commit.lock().unwrap();
+            if lost_response.as_ref() == Some(&run_id) {
+                *lost_response = None;
+                return Err(awaken_runtime_contract::execution::Error::Execution(
+                    "simulated response loss after committed Run".into(),
+                ));
+            }
             Ok(state)
         }
     }
@@ -1641,6 +1656,175 @@ mod tests {
             1,
             "the committed Worker Run must be observed, not inferred twice"
         );
+    }
+
+    #[tokio::test]
+    async fn acknowledgment_loss_and_command_retries_reuse_one_stable_run() {
+        // Cause/effect graph: C1 the final needs-revision Grade durably enters
+        // Acknowledging; C2 its stable acknowledgment Run commits, but the
+        // executor response is lost before the Outcome head advances; C3 a
+        // replacement resumes from committed Thread truth; C4 the original
+        // Outcome definition is retried exactly after completion; C5 the same
+        // Outcome id is retried with a changed definition; C6 continuation is
+        // delivered again after completion. Effects: E1 C2 returns an
+        // infrastructure error while retaining Acknowledging plus the terminal
+        // Run; E2 C3 completes without a second acknowledgment execution or
+        // transcript pair; E3 C4 returns the original preparation coordinate
+        // without a commit; E4 C5 conflicts without a commit; E5 C6 observes no
+        // active aggregate and performs no work. Constraints: identity derives
+        // only from Outcome id/role/iteration, the committed Run is the retry
+        // oracle, and a newly resolved binding is not a command-replay axis
+        // because the aggregate retains its originally pinned binding.
+        //
+        // | Rule | Durable Run | Retry                     | Effect       |
+        // | R1   | ack committed | response lost          | E1           |
+        // | R2   | ack committed | replacement resume     | E2           |
+        // | R3   | completed     | exact definition       | E3           |
+        // | R4   | completed     | changed definition     | E4           |
+        // | R5   | completed     | duplicate continuation | E5           |
+        let outcome_id = Id("ack-loss-outcome".into());
+        let acknowledgment = acknowledgment_run_id(&outcome_id);
+        let world = World::new(&["draft", "acknowledged"])
+            .with_lost_response_after_commit(acknowledgment.clone());
+        let thread = ThreadId("ack-loss-worker".into());
+        let definition = Definition::new("ship", "FINAL", 1).unwrap();
+        let binding = binding();
+        let grader = RangeGrader;
+        let controller = Controller::new(
+            &thread,
+            &world,
+            &world,
+            &world,
+            &world,
+            RuntimeRunContext::new(),
+            &grader,
+        );
+        let preparation_cursor = controller
+            .prepare(outcome_id.clone(), definition.clone(), binding.clone())
+            .await
+            .expect("R1 prepare");
+
+        assert!(
+            matches!(
+                controller.resume_active().await,
+                Err(Error::Execution(ExecutionFailure::WorkerFailed(ref message)))
+                    if message.contains("simulated response loss")
+            ),
+            "R1/E1"
+        );
+        let after_loss = ThreadOutcomeState::new(&thread, &world, &world)
+            .active()
+            .await
+            .unwrap()
+            .expect("R1/E1 aggregate remains active");
+        assert_eq!(
+            after_loss.state.phase,
+            Phase::Acknowledging {
+                run_id: acknowledgment.clone()
+            },
+            "R1/E1"
+        );
+        assert_eq!(
+            world.run_state(&acknowledgment),
+            Some(RunState::Ended(EndCause::NaturalEnd)),
+            "R1/E1 committed acknowledgment Run is retry truth"
+        );
+        assert_eq!(world.executions.load(Ordering::SeqCst), 2, "R1/E1");
+
+        let replacement = Controller::new(
+            &thread,
+            &world,
+            &world,
+            &world,
+            &world,
+            RuntimeRunContext::new(),
+            &grader,
+        );
+        let report = replacement
+            .resume_active()
+            .await
+            .expect("R2 replacement")
+            .expect("R2 completed report");
+        assert_eq!(
+            report.iterations[0].result,
+            EvaluationResult::MaxIterationsReached,
+            "R2/E2"
+        );
+        assert!(
+            report.iterations[0]
+                .messages
+                .iter()
+                .any(|message| message.text_content() == "acknowledged"),
+            "R2/E2"
+        );
+        assert_eq!(world.executions.load(Ordering::SeqCst), 2, "R2/E2");
+        assert_eq!(
+            world
+                .commits
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|commit| commit.run_id() == &acknowledgment)
+                .count(),
+            1,
+            "R2/E2 exactly one acknowledgment Run commit"
+        );
+        let transcript = world.committed_messages(&thread);
+        for message_id in [
+            format!("outcome/{}/ack/input", outcome_id.0),
+            format!("{}/reply", acknowledgment.0),
+        ] {
+            assert_eq!(
+                transcript
+                    .iter()
+                    .filter(|message| message.id.0 == message_id)
+                    .count(),
+                1,
+                "R2/E2 exactly one acknowledgment transcript row for {message_id}"
+            );
+        }
+
+        let commits_after_completion = world.commits.lock().unwrap().len();
+        assert_eq!(
+            replacement
+                .prepare(
+                    outcome_id.clone(),
+                    definition.clone(),
+                    binding_named("current-worker", "current-grader"),
+                )
+                .await
+                .expect("R3 exact replay"),
+            preparation_cursor,
+            "R3/E3"
+        );
+        assert_eq!(
+            world.commits.lock().unwrap().len(),
+            commits_after_completion,
+            "R3/E3"
+        );
+        assert!(
+            matches!(
+                replacement
+                    .prepare(
+                        outcome_id,
+                        Definition::new("changed", "FINAL", 1).unwrap(),
+                        binding,
+                    )
+                    .await,
+                Err(Error::ActiveDefinitionConflict { .. })
+            ),
+            "R4/E4"
+        );
+        assert_eq!(
+            world.commits.lock().unwrap().len(),
+            commits_after_completion,
+            "R4/E4"
+        );
+        assert!(
+            replacement.resume_active().await.unwrap().is_none(),
+            "R5/E5"
+        );
+        assert_eq!(world.executions.load(Ordering::SeqCst), 2, "R5/E5");
     }
 
     #[tokio::test]
