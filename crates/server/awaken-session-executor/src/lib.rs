@@ -22,7 +22,16 @@ mod agent_catalog;
 mod agent_runner;
 mod application;
 pub use application::SessionRealizationRevocation;
-pub use awaken_dispatch::PoolDrainFence;
+
+/// Opaque host-boundary proof that the canonical dispatch pool installed its
+/// absorbing local drain fence. The private field carries the ingress owner's
+/// token without exposing that infrastructure crate as a Runtime Host facade.
+#[derive(Debug)]
+#[must_use]
+pub struct PoolDrainFence {
+    _ingress: awaken_dispatch::PoolDrainFence,
+}
+
 mod authority;
 mod background;
 mod background_task;

@@ -1570,9 +1570,11 @@ impl SharedHost {
     /// claiming new runs while the in-flight ones finish. A no-op when no pool is
     /// running (a direct/non-durable host, or a worker whose pool never started).
     /// Idempotent. The admin surface calls this on `POST /admin/drain`.
-    pub async fn begin_pool_drain(&self) -> Option<awaken_dispatch::PoolDrainFence> {
+    pub async fn begin_pool_drain(&self) -> Option<crate::PoolDrainFence> {
         match self.dispatch_pool.get() {
-            Some(pool) => Some(pool.begin_drain().await),
+            Some(pool) => Some(crate::PoolDrainFence {
+                _ingress: pool.begin_drain().await,
+            }),
             None => None,
         }
     }
