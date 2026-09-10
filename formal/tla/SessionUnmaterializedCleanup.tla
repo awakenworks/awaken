@@ -16,9 +16,10 @@ FinishCreate == /\ inFlight
                 /\ absentObserved' = FALSE
                 /\ UNCHANGED <<joined, completed>>
 
-\* TARGET boundary: this action is NOT currently implemented by handle-free
-\* container preparation. It abstracts exact attempt closure at the physical
-\* effect owner; polling a lease expiry cannot substitute for it.
+\* Physical boundary: same-process Kubernetes zero-participant preparation now
+\* implements this exact attempt closure. Unsupported topology or a replacement
+\* process selects SupportsJoin=FALSE; polling or a point-in-time GET cannot
+\* substitute for this action.
 Join == /\ SupportsJoin /\ ~inFlight /\ ~joined
         /\ joined' = TRUE
         /\ UNCHANGED <<inFlight, physical, absentObserved, completed>>

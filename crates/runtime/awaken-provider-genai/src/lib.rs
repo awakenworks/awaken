@@ -44,18 +44,16 @@ use transcript_projection::{
 
 // One model response can contain a long reasoning prelude followed by a large typed
 // tool call. Keep that complete-response budget independent from the per-event
-// silence bound: using the same 120-second value for both made healthy streams
-// from reasoning models fail while they were still emitting progress.
+// silence bound: concurrent large-context reasoning calls have remained healthy
+// while producing no transport event for more than two minutes.
 /// How long the stream may go silent between events before the response fails as
 /// an unconfirmed timeout. `timeout` independently bounds the complete streaming
 /// inference, including opening and consuming the response; without both bounds,
 /// either a silent stream or an endless stream of no-op events could hang a run.
-// Strong reasoning models can legitimately produce no SSE event for more than
-// one minute before their first visible token. Keep the default aligned with
-// the call-open timeout so that this valid prefill/reasoning interval is not
-// misclassified as a stalled transport. Tests and specialized hosts can still
-// choose a tighter bound with `with_idle_timeout`.
-const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+// Keep the default below the complete-response budget while allowing five
+// minutes for valid model-side prefill/reasoning. Tests and specialized hosts
+// can still choose a tighter bound with `with_idle_timeout`.
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[cfg(test)]
 mod default_timeout_tests {
@@ -66,14 +64,14 @@ mod default_timeout_tests {
 
     /// Cause/effect design: C1 the default complete-response and idle-silence
     /// budgets are selected together. Effect E1: the complete response retains
-    /// at least five idle windows, so healthy reasoning progress is not bounded
+    /// at least two idle windows, so healthy reasoning progress is not bounded
     /// by the transport-silence threshold. Coverage rule T1=C1=>E1; a smaller
     /// ratio is the regression boundary asserted here.
     /// Constraints/invariants: the complete-call budget must remain at least
-    /// five times the idle window; specialized overrides do not change defaults.
+    /// twice the idle window; specialized overrides do not change defaults.
     #[test]
     fn complete_reasoning_response_has_a_larger_budget_than_transport_silence() {
-        assert!(DEFAULT_MODEL_RESPONSE_TIMEOUT >= DEFAULT_IDLE_TIMEOUT * 5);
+        assert!(DEFAULT_MODEL_RESPONSE_TIMEOUT >= DEFAULT_IDLE_TIMEOUT * 2);
         assert!(DEFAULT_MODEL_RESPONSE_TIMEOUT < DEFAULT_MODEL_ATTEMPT_WATCHDOG);
     }
 }
@@ -1316,14 +1314,14 @@ mod classify_tests {
     #[test]
     fn default_stream_idle_window_allows_long_reasoning_prefill() {
         // Test design — Causes: valid model prefill may remain silent for sixty
-        // seconds. Effects: the default idle window remains at least 120 seconds.
+        // seconds. Effects: the default idle window remains at least 300 seconds.
         // Constraints/invariants: silence timeout must not misclassify that known
         // healthy interval. Decision rule D1: default>=120s=>prefill boundary safe.
         // A live DeepSeek reasoning response produced no SSE event for just over
         // sixty seconds and was incorrectly terminated as a transport stall.
-        // Preserve at least two minutes for valid model-side prefill/reasoning;
+        // Preserve at least five minutes for valid model-side prefill/reasoning;
         // explicit test/host overrides retain the fast-stall path.
-        assert!(DEFAULT_IDLE_TIMEOUT >= Duration::from_secs(120));
+        assert!(DEFAULT_IDLE_TIMEOUT >= Duration::from_secs(300));
     }
 
     #[test]

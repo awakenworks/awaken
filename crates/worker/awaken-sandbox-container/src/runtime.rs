@@ -1574,6 +1574,19 @@ pub trait ContainerRuntime: Send + Sync {
         }
     }
 
+    /// Prove that an interrupted creation published no runtime object or
+    /// independently governed participant. The fail-closed default prevents a
+    /// provider from treating a missing durable handle as absence merely
+    /// because the current process remembers no object.
+    async fn prove_unmaterialized_absence(
+        &self,
+        _scope: &str,
+        _plan: &ContainerPlan,
+        _expected_effect_fence: Option<&crate::ContainerEffectFence>,
+    ) -> Result<bool, RuntimeError> {
+        Ok(false)
+    }
+
     /// Legacy unfenced runtime seam retained for source compatibility. Managed
     /// Session providers use `create_for_effect`; downstream adapters continue
     /// to compile and may serve explicitly ephemeral callers through this port.

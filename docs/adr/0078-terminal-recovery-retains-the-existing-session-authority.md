@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-09-07
 - Amends: [ADR-0075](0075-unified-managed-session-worker-execution.md)
-- Implementation: complete Resource projection and terminal-only release implemented; handle-free physical convergence remains Target
+- Implementation: complete Resource projection and terminal-only release implemented; bounded same-process Kubernetes handle-free convergence implemented
 
 ## Context
 
@@ -47,10 +47,11 @@ production adapter/Host tests enforce it.
 
 ### 2. Require physical closure before claiming handle-free absence
 
-The next physical slice remains inside the existing
+The physical slice remains inside the existing
 `ContainerEnvironmentProvider::prepare_terminal_environment_for_effect` and
 Session cleanup protocol. No generic effect service or product recovery API is
-introduced. The current default stays fail closed until this slice is built.
+introduced. The generic runtime default and every unsupported topology stay
+fail closed.
 
 The provider must distinguish:
 
@@ -72,6 +73,18 @@ ConfigMap/lease before a separate Pod POST leaves the same race. UID-fenced
 deletion solves replacement safety, not late-create absence. Kubernetes,
 Docker, and Podman adapters must name and test the primitive independently.
 Until then unsupported cases remain visibly pending, not falsely converged.
+
+The 2026-09-11 bounded implementation supplies the first of those witnesses for
+same-process Kubernetes creation only. Before its first backend effect, the
+Kubernetes adapter records the exact `(scope, operation, owner, runtime
+incarnation, epoch)` attempt and enters a shared read-side gate around both Pod
+reservation and activation. Terminal preparation may close only an already
+observed exact gate, waits for every reader to leave, and leaves a process-life
+tombstone that rejects late re-entry. While holding the close side it admits
+only an ephemeral plan with no package, bind, Memory, or continuation-PVC
+participant, then linearly observes both canonical Pod and PVC absence. A new
+Worker has no gate witness and therefore remains pending. This is a join plus
+absence proof, not the rejected point-in-time 404 rule.
 
 ### 3. Join an already-terminal Session through its existing cleanup owner
 
@@ -110,8 +123,10 @@ a separate policy change and is not part of this repair.
 3. `SessionUnmaterializedCleanup.tla` records the physical proof boundary. Its
    current config proves that unsupported cleanup remains pending. Its Target
    config checks convergence only assuming exact physical join and fair
-   external progress. Removing the join must expose the late-Create race.
-   This is not a proof that the current container adapter implements the join.
+   external progress. Removing the join must expose the late-Create race. The
+   Kubernetes adapter's executable gate table covers the implemented
+   same-process correspondence; durable cross-process closure remains outside
+   that correspondence and fails closed.
 4. Before implementing physical convergence, exercise actual adapter faults at
    intent commit, pre-create, PVC-only, Pod-created, response-loss, preparation
    receipt, disposal, and final root CAS. Resume an old Worker at every gap;
@@ -152,7 +167,9 @@ a separate policy change and is not part of this repair.
 
 ## Consequences
 
-The first repair is small and independently testable. The larger physical
-availability gap remains explicit rather than being hidden behind a successful
-receipt. Formal evidence states its bounds and assumptions; production physical
-conformance and downstream end-to-end acceptance are still required.
+The first repair is small and independently testable. Same-process,
+zero-participant Kubernetes attempts can now converge without a durable handle;
+cross-process and rich-topology physical availability gaps remain explicit
+rather than being hidden behind a successful receipt. Formal evidence states
+the bounds and assumptions; production physical conformance and downstream
+end-to-end acceptance are still required.
