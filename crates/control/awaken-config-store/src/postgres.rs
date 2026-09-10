@@ -141,8 +141,25 @@ fn domain_generation(value: i64) -> Result<u64, ConfigStoreError> {
         .map_err(reject)
 }
 
-/// Shared by ordinary CAS and the audited transaction. A missing row is not
-/// locked by SELECT FOR UPDATE, so creation must be an atomic insert-only
+/// Serialize every Config writer for one `(scope, id)` before it observes the
+/// row. Hash collisions only serialize unrelated keys; they cannot merge their
+/// separately predicated rows.
+async fn lock_config_revision(
+    conn: &mut sqlx::PgConnection,
+    scope: &ScopeId,
+    id: &str,
+) -> Result<(), ConfigStoreError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))")
+        .bind(&scope.0)
+        .bind(id)
+        .execute(conn)
+        .await
+        .map_err(reject)?;
+    Ok(())
+}
+
+/// Shared by unconditional, ordinary CAS and audited writes. A missing row is
+/// not locked by SELECT FOR UPDATE, so creation remains an atomic insert-only
 /// statement; a positive expected revision is strictly update-only.
 async fn write_config_revision(
     conn: &mut sqlx::PgConnection,
@@ -200,17 +217,37 @@ impl ScopedConfigRegistry for PostgresConfigStore {
     ) -> Result<(), ConfigStoreError> {
         // Agent identity is `(scope_id, id)`: portable Agent ids may be reused
         // across scopes without allowing either owner to clobber the other.
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_agent (id, data, scope_id, generation) VALUES ($1, $2, $3, 1) \
-             ON CONFLICT (scope_id, id) DO UPDATE SET data = excluded.data, \
-             generation = {NS}_agent.generation + 1"
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        lock_config_revision(&mut tx, scope, &config.id).await?;
+        let current_revision = sqlx::query_scalar::<_, i64>(&format!(
+            "SELECT generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2 FOR UPDATE"
         ))
         .bind(&config.id)
-        .bind(Json(config))
         .bind(&scope.0)
-        .execute(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
-        .map_err(reject)?;
+        .map_err(reject)?
+        .map(domain_generation)
+        .transpose()?;
+        let plan = match crate::ConfigRevisionWritePlan::advance_current(current_revision)
+            .map_err(reject)?
+        {
+            crate::ConfigRevisionAdmission::Apply(plan) => plan,
+            crate::ConfigRevisionAdmission::Conflict { .. } => {
+                return Err(ConfigStoreError(
+                    "config generation is present at invalid zero".into(),
+                ));
+            }
+        };
+        if write_config_revision(&mut tx, scope, config, plan)
+            .await?
+            .is_none()
+        {
+            return Err(ConfigStoreError(
+                "config generation transition lost its exclusive writer".into(),
+            ));
+        }
+        tx.commit().await.map_err(reject)?;
         Ok(())
     }
 
@@ -235,6 +272,7 @@ impl ScopedConfigRegistry for PostgresConfigStore {
     ) -> Result<AuditedConfigWrite, ConfigStoreError> {
         let audit_key = &audit.call_id;
         let mut tx = self.pool.begin().await.map_err(reject)?;
+        lock_config_revision(&mut tx, scope, &config.id).await?;
         let existing = sqlx::query(&format!(
             "SELECT record, business_committed FROM {NS}_management_audit \
              WHERE scope_id = $1 AND call_id = $2 AND tool = $3 FOR UPDATE"
@@ -508,6 +546,7 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         expected_generation: u64,
     ) -> Result<ConfigWrite, ConfigStoreError> {
         let mut tx = self.pool.begin().await.map_err(reject)?;
+        lock_config_revision(&mut tx, scope, &config.id).await?;
         let current_revision = sqlx::query_scalar::<_, i64>(&format!(
             "SELECT generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2 FOR UPDATE"
         ))

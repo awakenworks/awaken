@@ -164,7 +164,8 @@ async fn postgres_config_cas_missing_row_and_revision_decision_table() {
     let store = Arc::new(PostgresConfigStore::with_pool(pool.clone()).await.unwrap());
     let other = Arc::new(PostgresConfigStore::with_existing_pool(pool).await.unwrap());
     revision_cas::decision_table(store.as_ref()).await;
-    revision_cas::concurrent_writers(&[store, other]).await;
+    revision_cas::concurrent_writers(&[store.clone(), other.clone()]).await;
+    revision_cas::mixed_unconditional_and_cas_writers(&[store, other]).await;
 }
 
 #[tokio::test]

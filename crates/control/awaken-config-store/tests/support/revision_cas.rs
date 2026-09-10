@@ -536,3 +536,113 @@ pub async fn concurrent_writers(stores: &[std::sync::Arc<impl ScopedConfigRegist
         }
     }
 }
+
+pub async fn mixed_unconditional_and_cas_writers(
+    stores: &[std::sync::Arc<impl ScopedConfigRegistry + 'static>],
+) {
+    // Causes: C1 row absent/present; C2 four unconditional writers overlap four
+    // CAS writers holding the same zero/current token; C3 independent adapters
+    // use separate database connections. Effects: E1 every unconditional write
+    // commits once; E2 at most one CAS commits, and only before any successor;
+    // E3 the final generation and immutable history contain exactly every
+    // successful write, with no lost or duplicate successor.
+    //
+    // Decision table:
+    // | rule | base | competing intents | durable successor count |
+    // | M1 | absent/0 | 4 unconditional + 4 CAS(0) | 4 + CAS winners (0..1) |
+    // | M2 | present/1 | 4 unconditional + 4 CAS(1) | 4 + CAS winners (0..1) |
+    // Barrier overlap is executable race evidence, not exhaustive scheduling.
+    assert!(stores.len() >= 2);
+    let store = &stores[0];
+    for (scope_name, seed) in [("mixed-absent", false), ("mixed-present", true)] {
+        let scope = ScopeId::from(scope_name);
+        if seed {
+            store
+                .put_config_scoped(
+                    &scope,
+                    &AgentConfig {
+                        id: "mixed-race".into(),
+                        instructions: "seed".into(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let base = u64::from(seed);
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
+        let mut tasks = tokio::task::JoinSet::new();
+        for writer in 0..8 {
+            let store = stores[writer % stores.len()].clone();
+            let barrier = barrier.clone();
+            let scope = scope.clone();
+            tasks.spawn(async move {
+                let config = AgentConfig {
+                    id: "mixed-race".into(),
+                    instructions: format!("{scope_name}:{writer}"),
+                    ..Default::default()
+                };
+                barrier.wait().await;
+                if writer % 2 == 0 {
+                    store.put_config_scoped(&scope, &config).await.unwrap();
+                    (config, true, None)
+                } else {
+                    let outcome = store
+                        .put_config_if_revision_scoped(&scope, &config, base)
+                        .await
+                        .unwrap();
+                    let applied = matches!(outcome, ConfigWrite::Applied { .. });
+                    (config, applied, Some(outcome))
+                }
+            });
+        }
+
+        let mut successful_payloads = std::collections::BTreeSet::new();
+        let mut cas_winners = 0_u64;
+        while let Some(result) = tasks.join_next().await {
+            let (config, applied, outcome) = result.unwrap();
+            if applied {
+                successful_payloads.insert(config.instructions);
+            }
+            if let Some(outcome) = outcome {
+                match outcome {
+                    ConfigWrite::Applied { revision } => {
+                        cas_winners += 1;
+                        assert_eq!(revision, base + 1, "M1-M2 CAS precedes successors");
+                    }
+                    ConfigWrite::Conflict { current_revision } => {
+                        assert!(
+                            current_revision.is_some_and(|revision| revision > base),
+                            "M1-M2 CAS observes a committed successor"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(cas_winners <= 1, "M1-M2 at most one exact-token CAS");
+
+        let after = frame(store.as_ref(), &scope, "mixed-race").await;
+        let expected_revision = base + 4 + cas_winners;
+        assert_eq!(after.0.as_ref().unwrap().1, expected_revision);
+        assert_eq!(after.1.len(), expected_revision as usize);
+        assert_eq!(
+            after.1.iter().map(|row| row.1).collect::<Vec<_>>(),
+            (1..=expected_revision).collect::<Vec<_>>(),
+            "M1-M2 contiguous immutable history"
+        );
+        let durable_payloads = after
+            .1
+            .iter()
+            .filter_map(|row| (row.0.instructions != "seed").then_some(row.0.instructions.clone()))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(durable_payloads, successful_payloads, "M1-M2 exact writes");
+        assert_eq!(after.1.last().unwrap().0, after.0.as_ref().unwrap().0);
+        for reader in &stores[1..] {
+            assert_eq!(
+                frame(reader.as_ref(), &scope, "mixed-race").await,
+                after,
+                "M1-M2 cross-connection readback"
+            );
+        }
+    }
+}
