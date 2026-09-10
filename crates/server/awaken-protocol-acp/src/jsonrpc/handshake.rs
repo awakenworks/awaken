@@ -170,6 +170,7 @@ pub(super) async fn configure_session(
         SessionModeId, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse,
         SetSessionModeRequest, SetSessionModelRequest, SetSessionModelResponse,
     };
+    let deadline = config.handshake_step_deadline;
     let resolver = config.resolver;
     if let Some(expected) = &config.expected_capability {
         let actual = awaken_acp_contract::capability_fingerprint(
@@ -203,13 +204,17 @@ pub(super) async fn configure_session(
         if !available_modes.contains(&mode) {
             return Err(AcpError::UnsupportedSessionMode(mode));
         }
-        wire.send_request(
-            ID_SET_MODE,
-            AGENT_METHOD_NAMES.session_set_mode,
-            SetSessionModeRequest::new(session_id.clone(), SessionModeId::new(mode.as_str())),
-        )
+        handshake_step(deadline, "session/set_mode", async {
+            wire.send_request(
+                ID_SET_MODE,
+                AGENT_METHOD_NAMES.session_set_mode,
+                SetSessionModeRequest::new(session_id.clone(), SessionModeId::new(mode.as_str())),
+            )
+            .await?;
+            pump_to_response(wire, ID_SET_MODE, sink, seq, resolver).await?;
+            Ok(())
+        })
         .await?;
-        pump_to_response(wire, ID_SET_MODE, sink, seq, resolver).await?;
     }
 
     // 2c. session/set_model — some provider-agnostic adapters own model
@@ -221,14 +226,18 @@ pub(super) async fn configure_session(
                 "configured ACP session model selection was not advertised".into(),
             ));
         }
-        wire.send_request(
-            ID_SET_MODEL,
-            AGENT_METHOD_NAMES.session_set_model,
-            SetSessionModelRequest::new(session_id.clone(), model),
-        )
+        handshake_step(deadline, "session/set_model", async {
+            wire.send_request(
+                ID_SET_MODEL,
+                AGENT_METHOD_NAMES.session_set_model,
+                SetSessionModelRequest::new(session_id.clone(), model),
+            )
+            .await?;
+            let _: SetSessionModelResponse =
+                parse(pump_to_response(wire, ID_SET_MODEL, sink, seq, resolver).await?)?;
+            Ok(())
+        })
         .await?;
-        let _: SetSessionModelResponse =
-            parse(pump_to_response(wire, ID_SET_MODEL, sink, seq, resolver).await?)?;
     }
 
     // 2d. session/set_config_option — exact backend-owned model selection. The
@@ -246,26 +255,30 @@ pub(super) async fn configure_session(
                 selection.config_id
             )));
         }
-        wire.send_request(
-            ID_SET_CONFIG_OPTION + index as u64,
-            AGENT_METHOD_NAMES.session_set_config_option,
-            SetSessionConfigOptionRequest::new(
-                session_id.clone(),
-                selection.config_id,
-                selection.value,
-            ),
-        )
-        .await?;
-        let _: SetSessionConfigOptionResponse = parse(
-            pump_to_response(
-                wire,
+        handshake_step(deadline, "session/set_config_option", async {
+            wire.send_request(
                 ID_SET_CONFIG_OPTION + index as u64,
-                sink,
-                seq,
-                resolver,
+                AGENT_METHOD_NAMES.session_set_config_option,
+                SetSessionConfigOptionRequest::new(
+                    session_id.clone(),
+                    selection.config_id,
+                    selection.value,
+                ),
             )
-            .await?,
-        )?;
+            .await?;
+            let _: SetSessionConfigOptionResponse = parse(
+                pump_to_response(
+                    wire,
+                    ID_SET_CONFIG_OPTION + index as u64,
+                    sink,
+                    seq,
+                    resolver,
+                )
+                .await?,
+            )?;
+            Ok(())
+        })
+        .await?;
     }
 
     Ok(())

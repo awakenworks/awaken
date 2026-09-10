@@ -442,8 +442,9 @@ pub struct TurnConfig<'a> {
     /// handshake must reproduce before any configured option or prompt is sent.
     pub expected_capability: Option<AcpCapabilityExpectation>,
     /// Per-step wall-clock bound for the prompt-free ACP handshake. This is not
-    /// the turn/job deadline: it only fences `initialize` and `session/new|load`
-    /// so a live child that never answers cannot retain a Run claim forever.
+    /// the turn/job deadline: it fences `initialize` (including optional auth),
+    /// `session/new|load`, and every selected Session configuration step so a live
+    /// child that never answers cannot retain a Run claim forever.
     pub handshake_step_deadline: std::time::Duration,
     /// Bounded protocol cancellation drain after an Await boundary. The pending
     /// ticket remains authoritative even if the adapter does not acknowledge.
