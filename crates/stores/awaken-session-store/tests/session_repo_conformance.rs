@@ -2032,10 +2032,10 @@ fn deployment_record(id: &str, revision: u64, scheduled: bool) -> DeploymentView
     }
 }
 
-fn deployment_fact(id: &str) -> DeploymentLifecycleFact {
+fn deployment_fact(id: &str, object_id: &str) -> DeploymentLifecycleFact {
     DeploymentLifecycleFact {
         id: id.into(),
-        object_id: "depl_cas".into(),
+        object_id: object_id.into(),
         workspace_id: Some("ws_a".into()),
         event_type: "deployment.updated".into(),
         timestamp: 1,
@@ -2048,20 +2048,21 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
     replicas: [&dyn DeploymentRepository; 3],
 ) {
     // Deployment repository cause/effect graph:
-    // C1=create or three writers share revision r; C2=row is scheduled; C3=the
-    // capacity limit is already occupied; C4=scheduler presents current or
-    // stale revision; C5=a current scheduler reuses the rejected stale claim
-    // identity. Effects: E1=one CAS write advances r exactly once;
-    // E2=the loser conflicts without a lifecycle fact; E3=capacity admission
-    // is transactional; E4=claim+run+cursor commit atomically; E5=stale claim
-    // preserves the winner frame and creates no claim/run/fact; E6=C5 claims,
-    // proving that E5 did not reserve the durable identity.
+    // C1=create or three writers share revision r; C2=three independent clients
+    // race distinct scheduled rows at capacity one; C3=scheduler presents current
+    // or stale revision; C4=a current scheduler reuses the rejected stale claim
+    // identity. Effects: E1=one CAS write advances r exactly once; E2=the loser
+    // conflicts without a lifecycle fact; E3=one exact capacity winner and its
+    // fact commit while both rejected candidates leave no row or fact; E4=claim,
+    // run, cursor and fact commit atomically; E5=stale claim preserves the winner
+    // frame and creates no claim/run/fact; E6=C4 claims, proving that E5 did not
+    // reserve the durable identity.
     //
     // | Rule | C1                | C2 | C3 | C4      | Effect       |
     // | D1   | create            | F  | F  | -       | applied      |
     // | D2   | jump/reuse r      | F  | F  | -       | E2 reject   |
     // | D3   | three writers at r| F  | F  | -       | E1 + E2     |
-    // | D4   | create            | T  | T  | -       | E3 reject   |
+    // | D4   | three creates     | T  | limit 1 | -  | E3          |
     // | D5   | scheduler at r    | -  | -  | current | E4          |
     // | D6   | scheduler at r-1  | -  | -  | stale   | E5          |
     // | D7   | reuse D6 claim id | -  | -  | current | E4 + E6     |
@@ -2072,7 +2073,7 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
             created.clone(),
             None,
             1,
-            Some(deployment_fact("deployment-create")),
+            Some(deployment_fact("deployment-create", "depl_cas")),
         )
         .await
         .unwrap(),
@@ -2084,7 +2085,7 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
             deployment_record("depl_cas", 2, false),
             Some(0),
             1,
-            Some(deployment_fact("invalid-jump")),
+            Some(deployment_fact("invalid-jump", "depl_cas")),
         )
         .await
         .unwrap(),
@@ -2099,9 +2100,24 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
     let mut third = right.clone();
     third.record.name = "third".into();
     let (left_outcome, right_outcome, third_outcome) = tokio::join!(
-        replicas[0].write_deployment(left, Some(0), 1, Some(deployment_fact("left-writer")),),
-        replicas[1].write_deployment(right, Some(0), 1, Some(deployment_fact("right-writer")),),
-        replicas[2].write_deployment(third, Some(0), 1, Some(deployment_fact("third-writer")),)
+        replicas[0].write_deployment(
+            left,
+            Some(0),
+            1,
+            Some(deployment_fact("left-writer", "depl_cas")),
+        ),
+        replicas[1].write_deployment(
+            right,
+            Some(0),
+            1,
+            Some(deployment_fact("right-writer", "depl_cas")),
+        ),
+        replicas[2].write_deployment(
+            third,
+            Some(0),
+            1,
+            Some(deployment_fact("third-writer", "depl_cas")),
+        )
     );
     let outcomes = [
         left_outcome.unwrap(),
@@ -2162,19 +2178,111 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
         "D3/E2 only winner fact"
     );
 
+    let capacity_left = deployment_record("depl_capacity_left", 0, true);
+    let capacity_right = deployment_record("depl_capacity_right", 0, true);
+    let capacity_third = deployment_record("depl_capacity_third", 0, true);
+    let (left_capacity, right_capacity, third_capacity) = tokio::join!(
+        replicas[0].write_deployment(
+            capacity_left,
+            None,
+            1,
+            Some(deployment_fact("capacity-left", "depl_capacity_left")),
+        ),
+        replicas[1].write_deployment(
+            capacity_right,
+            None,
+            1,
+            Some(deployment_fact("capacity-right", "depl_capacity_right")),
+        ),
+        replicas[2].write_deployment(
+            capacity_third,
+            None,
+            1,
+            Some(deployment_fact("capacity-third", "depl_capacity_third")),
+        )
+    );
+    let capacity_outcomes = [
+        (
+            "depl_capacity_left",
+            "capacity-left",
+            left_capacity.unwrap(),
+        ),
+        (
+            "depl_capacity_right",
+            "capacity-right",
+            right_capacity.unwrap(),
+        ),
+        (
+            "depl_capacity_third",
+            "capacity-third",
+            third_capacity.unwrap(),
+        ),
+    ];
     assert_eq!(
-        repo.write_deployment(deployment_record("depl_scheduled", 0, true), None, 1, None)
-            .await
-            .unwrap(),
-        DeploymentWriteOutcome::Applied,
-        "D4 setup"
+        capacity_outcomes
+            .iter()
+            .filter(|(_, _, outcome)| *outcome == DeploymentWriteOutcome::Applied)
+            .count(),
+        1,
+        "D4/E3 one admitted transaction"
     );
     assert_eq!(
-        repo.write_deployment(deployment_record("depl_over_limit", 0, true), None, 1, None)
-            .await
-            .unwrap(),
-        DeploymentWriteOutcome::ScheduledCapacityReached,
-        "D4/E3"
+        capacity_outcomes
+            .iter()
+            .filter(|(_, _, outcome)| {
+                *outcome == DeploymentWriteOutcome::ScheduledCapacityReached
+            })
+            .count(),
+        2,
+        "D4/E3 both excess transactions rejected"
+    );
+    let capacity_rows = repo
+        .deployments()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|deployment| deployment.id.starts_with("depl_capacity_"))
+        .collect::<Vec<_>>();
+    assert_eq!(capacity_rows.len(), 1, "D4/E3 no rejected candidate row");
+    let capacity_winner = capacity_rows.into_iter().next().unwrap();
+    let applied_capacity = capacity_outcomes
+        .iter()
+        .find(|(_, _, outcome)| *outcome == DeploymentWriteOutcome::Applied)
+        .expect("D4/E3 applied capacity identity");
+    assert_eq!(
+        capacity_winner.id.as_str(),
+        applied_capacity.0,
+        "D4/E3 Applied identifies the durable winner"
+    );
+    for (index, replica) in replicas.iter().enumerate() {
+        assert_eq!(
+            replica
+                .deployments()
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|deployment| deployment.id.starts_with("depl_capacity_"))
+                .collect::<Vec<_>>(),
+            vec![capacity_winner.clone()],
+            "D4 replica {index} exact capacity winner"
+        );
+    }
+    let capacity_facts = repo
+        .pending_lifecycle()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|fact| fact.id.starts_with("capacity-"))
+        .collect::<Vec<_>>();
+    assert_eq!(capacity_facts.len(), 1, "D4/E3 no rejected candidate fact");
+    assert_eq!(
+        capacity_facts[0].object_id, capacity_winner.id,
+        "D4/E3 exact winner row/fact pair"
+    );
+    assert_eq!(
+        capacity_facts[0].id.as_str(),
+        applied_capacity.1,
+        "D4/E3 Applied identifies the durable fact"
     );
 
     let mut advanced = deployment_record("depl_cas", 2, false);
@@ -2348,9 +2456,10 @@ fn sqlite_backend_conforms() {
         ))
         .await;
         // SQLite refinement rule D8: C6 three independently opened adapters
-        // share one file and execute D3/D5-D7; C7 every handle then closes.
-        // Effects: E7 D3 still has one exact winner; E8 reopen retains the
-        // exact revision-three frame and both valid runs, excluding D6 effects.
+        // share one file and execute D3-D7; C7 every handle then closes.
+        // Effects: E7 D3/D4 still have one exact CAS/capacity winner; E8 reopen
+        // retains the capacity winner/fact, exact revision-three frame and both
+        // valid runs, excluding every rejected D4/D6 effect.
         let directory = tempfile::tempdir().expect("SQLite Deployment CAS directory");
         let database = directory.path().join("deployment-cas.db");
         let database_path = database.to_str().expect("UTF-8 Deployment CAS path");
@@ -2386,6 +2495,26 @@ fn sqlite_backend_conforms() {
                 .len(),
             2,
             "D8 only valid claim/runs survived reopen"
+        );
+        let capacity_rows = reopened
+            .deployments()
+            .await
+            .expect("read reopened capacity winner")
+            .into_iter()
+            .filter(|deployment| deployment.id.starts_with("depl_capacity_"))
+            .collect::<Vec<_>>();
+        let capacity_facts = reopened
+            .pending_lifecycle()
+            .await
+            .expect("read reopened capacity fact")
+            .into_iter()
+            .filter(|fact| fact.id.starts_with("capacity-"))
+            .collect::<Vec<_>>();
+        assert_eq!(capacity_rows.len(), 1, "D8 one durable capacity winner");
+        assert_eq!(capacity_facts.len(), 1, "D8 no rejected capacity fact");
+        assert_eq!(
+            capacity_facts[0].object_id, capacity_rows[0].id,
+            "D8 exact durable capacity row/fact pair"
         );
     });
 }
@@ -2542,9 +2671,10 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
             .expect("open Postgres Session repository"),
     );
     // PostgreSQL refinement rule D9: C8 three repository clients share one
-    // migrated pool/schema and execute D3/D5-D7. Effect E9 is the same stale
-    // zero-effect and reusable-claim result as SQLite. An unavailable endpoint
-    // skips this entire rule and is never reported as live PostgreSQL evidence.
+    // migrated pool/schema and execute D3-D7. Effect E9 includes the same exact
+    // capacity winner with rejected-row/fact absence, stale zero-effect and
+    // reusable-claim result as SQLite. An unavailable endpoint skips this
+    // entire rule and is never reported as live PostgreSQL evidence.
     let second_deployment_replica = PostgresManagedSessionRepository::with_pool(pool.clone())
         .await
         .expect("open second Postgres Deployment replica");

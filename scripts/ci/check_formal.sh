@@ -161,13 +161,17 @@ cargo test -p awaken-executable-agent-catalog --lib \
   agent_command_above_captured_high_water_waits_for_next_refresh
 cargo test -p awaken-executable-environment-catalog --lib \
   environment_command_above_captured_high_water_waits_for_next_refresh
-# Cross the application reaction with the canonical SQLite transaction owner:
-# two real schedulers calculate one occurrence, while the losing stale cache
-# removes its speculative run, refreshes and never launches. The shared store
-# table then reuses the rejected stale claim id from a current replica, proving
-# that the stale transaction left no claim/run/frame/outbox effect. Configured
-# PostgreSQL executes the same table in the required database gate.
+# Cross the application reaction with the canonical SQLite transaction owner.
+# C1 two real schedulers calculate one occurrence: the losing stale cache removes
+# its speculative run, refreshes and never launches. C2 two independent
+# application clients concurrently create at capacity one: exactly one winner is
+# published and the loser receives the capacity error. The shared three-client
+# store table proves the rejected capacity transactions leave no row/outbox fact,
+# then reuses a rejected stale claim id from a current replica. Configured
+# PostgreSQL executes that same store table in the required database gate.
 cargo test -p awaken-deployment-application --lib durable_replicas_claim_one_exact_occurrence
+cargo test -p awaken-deployment-application --lib \
+  scheduled_capacity_is_linearizable_across_replicas
 cargo test -p awaken-session-store --features test-support \
   --test session_repo_conformance sqlite_backend_conforms -- --exact
 # The WebhookOutbox model treats a committed fact as recoverable across crash.
