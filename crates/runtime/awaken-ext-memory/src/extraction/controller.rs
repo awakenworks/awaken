@@ -222,20 +222,16 @@ impl MemoryExtractionController {
                 }
                 let now = unix_ms();
                 let expected_revision = intent.revision;
-                let retryable = matches!(&failure, AdvanceFailure::Retryable(_));
-                let transition = match failure {
-                    AdvanceFailure::ExecutionIndeterminate(error) => {
+                let action = failure.into_action(intent.attempts, self.policy.max_attempts);
+                let retryable = matches!(&action, AdvanceFailureAction::Retry(_));
+                let transition = match action {
+                    AdvanceFailureAction::ExecutionIndeterminate(error) => {
                         intent.mark_execution_indeterminate(&self.owner, generation, now, error)
                     }
-                    AdvanceFailure::Permanent(error) => {
+                    AdvanceFailureAction::Terminal(error) => {
                         intent.terminal_fail(&self.owner, generation, now, error)
                     }
-                    AdvanceFailure::Retryable(error)
-                        if intent.attempts >= self.policy.max_attempts =>
-                    {
-                        intent.terminal_fail(&self.owner, generation, now, error)
-                    }
-                    AdvanceFailure::Retryable(error) => {
+                    AdvanceFailureAction::Retry(error) => {
                         intent.retry(&self.owner, generation, now, error)
                     }
                 };
@@ -413,6 +409,31 @@ enum AdvanceFailure {
     Permanent(String),
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum AdvanceFailureAction {
+    Retry(String),
+    ExecutionIndeterminate(String),
+    Terminal(String),
+}
+
+impl AdvanceFailure {
+    /// Sole controller decision for an observed extraction failure. Unknown
+    /// execution has its own terminal action and can never enter retry-budget
+    /// handling, regardless of the current attempt counters.
+    fn into_action(self, attempts: u32, max_attempts: u32) -> AdvanceFailureAction {
+        match self {
+            Self::ExecutionIndeterminate(error) => {
+                AdvanceFailureAction::ExecutionIndeterminate(error)
+            }
+            Self::Permanent(error) => AdvanceFailureAction::Terminal(error),
+            Self::Retryable(error) if attempts >= max_attempts => {
+                AdvanceFailureAction::Terminal(error)
+            }
+            Self::Retryable(error) => AdvanceFailureAction::Retry(error),
+        }
+    }
+}
+
 pub(crate) fn unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -420,4 +441,108 @@ pub(crate) fn unix_ms() -> u64 {
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AdvanceFailure, AdvanceFailureAction};
+
+    #[test]
+    fn failure_action_table_never_retries_indeterminate_execution() {
+        // Causes: C1 failure={retryable, indeterminate, permanent}; C2 attempts
+        // are below/at/above the configured maximum. Effects: E1 retry occurs
+        // only for retryable+below; E2 indeterminate always selects its distinct
+        // attention terminal; E3 permanent or exhausted retryable selects the
+        // ordinary terminal. Rules F1=C1(retryable)+C2(below)->E1;
+        // F2=C1(retryable)+!C2(below)->E3; F3=C1(indeterminate)+any C2->E2;
+        // F4=C1(permanent)+any C2->E3. Boundary and extreme counters cover the
+        // complete comparison partition while the Kani harness exhausts u32.
+        for (attempts, max_attempts) in [
+            (0, 0),
+            (0, 1),
+            (1, 1),
+            (2, 1),
+            (u32::MAX - 1, u32::MAX),
+            (u32::MAX, u32::MAX),
+        ] {
+            assert_eq!(
+                AdvanceFailure::Retryable("retry".into()).into_action(attempts, max_attempts),
+                if attempts < max_attempts {
+                    AdvanceFailureAction::Retry("retry".into())
+                } else {
+                    AdvanceFailureAction::Terminal("retry".into())
+                },
+                "F1/F2 attempts={attempts} max={max_attempts}"
+            );
+            assert_eq!(
+                AdvanceFailure::ExecutionIndeterminate("unknown".into())
+                    .into_action(attempts, max_attempts),
+                AdvanceFailureAction::ExecutionIndeterminate("unknown".into()),
+                "F3 attempts={attempts} max={max_attempts}"
+            );
+            assert_eq!(
+                AdvanceFailure::Permanent("permanent".into()).into_action(attempts, max_attempts),
+                AdvanceFailureAction::Terminal("permanent".into()),
+                "F4 attempts={attempts} max={max_attempts}"
+            );
+        }
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    fn symbolic_status(value: u8) -> MemoryExtractionStatus {
+        match value % 7 {
+            0 => MemoryExtractionStatus::Pending,
+            1 => MemoryExtractionStatus::Claimed,
+            2 => MemoryExtractionStatus::Extracted,
+            3 => MemoryExtractionStatus::Stored,
+            4 => MemoryExtractionStatus::Completed,
+            5 => MemoryExtractionStatus::ExecutionIndeterminate,
+            _ => MemoryExtractionStatus::TerminalFailed,
+        }
+    }
+
+    #[kani::proof]
+    fn memory_extraction_unknown_is_terminal_and_never_retryable() {
+        // Causes: C1 every closed failure class; C2 every u32 attempts/max pair;
+        // C3 every closed persisted status. Effects: E1 only in-budget Retryable
+        // selects Retry; E2 indeterminate always selects its distinct terminal;
+        // E3 recoverable and terminal scheduling sets are exact complements;
+        // E4 the four SQL-bound names equal exactly the recoverable states.
+        // No assumptions exclude counter values or closed enum variants.
+        let failure_class: u8 = kani::any();
+        let attempts: u32 = kani::any();
+        let max_attempts: u32 = kani::any();
+        let action = match failure_class % 3 {
+            0 => AdvanceFailure::Retryable(String::new()),
+            1 => AdvanceFailure::ExecutionIndeterminate(String::new()),
+            _ => AdvanceFailure::Permanent(String::new()),
+        }
+        .into_action(attempts, max_attempts);
+        match failure_class % 3 {
+            0 if attempts < max_attempts => {
+                assert!(matches!(action, AdvanceFailureAction::Retry(_)));
+            }
+            1 => {
+                assert!(matches!(
+                    action,
+                    AdvanceFailureAction::ExecutionIndeterminate(_)
+                ));
+            }
+            _ => assert!(matches!(action, AdvanceFailureAction::Terminal(_))),
+        }
+
+        let status = symbolic_status(kani::any());
+        assert_eq!(status.is_terminal(), !status.is_recoverable());
+        let recoverable_names = MemoryExtractionStatus::recoverable_storage_names();
+        assert_eq!(
+            recoverable_names.contains(&status.storage_name()),
+            status.is_recoverable()
+        );
+        assert!(!MemoryExtractionStatus::ExecutionIndeterminate.is_recoverable());
+        assert!(MemoryExtractionStatus::ExecutionIndeterminate.is_terminal());
+    }
 }

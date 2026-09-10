@@ -687,7 +687,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness fold_point_is_present_exactly_when_triggered_with_nonempty_prefix \
     --harness compaction_artifact_requires_exact_identity_coverage_and_content
   run_kani awaken-ext-memory \
-    --harness memory_recall_contribution_is_exact_and_disabled_is_inert
+    --harness memory_recall_contribution_is_exact_and_disabled_is_inert \
+    --harness memory_extraction_unknown_is_terminal_and_never_retryable
   run_kani awaken-ext-goal \
     --harness applying_a_grade_obeys_decision_and_budget \
     --harness terminal_outcomes_are_absorbing

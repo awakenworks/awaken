@@ -15,18 +15,6 @@ use sqlx::Row;
 
 use crate::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
 
-fn status_name(status: MemoryExtractionStatus) -> &'static str {
-    match status {
-        MemoryExtractionStatus::Pending => "pending",
-        MemoryExtractionStatus::Claimed => "claimed",
-        MemoryExtractionStatus::Extracted => "extracted",
-        MemoryExtractionStatus::Stored => "stored",
-        MemoryExtractionStatus::Completed => "completed",
-        MemoryExtractionStatus::ExecutionIndeterminate => "execution_indeterminate",
-        MemoryExtractionStatus::TerminalFailed => "terminal_failed",
-    }
-}
-
 fn encode(intent: &MemoryExtractionIntent) -> Result<String, MemoryExtractionError> {
     intent.validate()?;
     serde_json::to_string(intent).map_err(|error| MemoryExtractionError::Storage(error.to_string()))
@@ -112,7 +100,7 @@ impl MemoryExtractionRepository for SqliteManagedSessionRepository {
                 params![
                     intent.intent_id,
                     intent.idempotency_key,
-                    status_name(intent.status),
+                    intent.status.storage_name(),
                     intent.revision,
                     intent.lease_expires_at_unix_ms,
                     data,
@@ -176,16 +164,26 @@ impl MemoryExtractionRepository for SqliteManagedSessionRepository {
         limit: usize,
     ) -> Result<Vec<MemoryExtractionIntent>, MemoryExtractionError> {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let recoverable = MemoryExtractionStatus::recoverable_storage_names();
         awaken_sqlite_pool::with_connection(self.conn.clone(), move |conn| {
             let mut statement = conn
                 .prepare(
                     "SELECT data FROM managed_memory_extraction
-                 WHERE status NOT IN ('completed', 'execution_indeterminate', 'terminal_failed')
-                 ORDER BY created_at, intent_id LIMIT ?1",
+                 WHERE status IN (?1, ?2, ?3, ?4)
+                 ORDER BY created_at, intent_id LIMIT ?5",
                 )
                 .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
             statement
-                .query_map(params![limit], |row| row.get::<_, String>(0))
+                .query_map(
+                    params![
+                        recoverable[0],
+                        recoverable[1],
+                        recoverable[2],
+                        recoverable[3],
+                        limit
+                    ],
+                    |row| row.get::<_, String>(0),
+                )
                 .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?
                 .map(|row| {
                     row.map_err(|error| MemoryExtractionError::Storage(error.to_string()))
@@ -213,7 +211,7 @@ impl MemoryExtractionRepository for SqliteManagedSessionRepository {
                     params![
                         intent.intent_id,
                         intent.idempotency_key,
-                        status_name(intent.status),
+                        intent.status.storage_name(),
                         intent.revision,
                         intent.lease_expires_at_unix_ms,
                         data,
@@ -250,7 +248,7 @@ impl MemoryExtractionRepository for PostgresManagedSessionRepository {
         )
         .bind(&intent.intent_id)
         .bind(&intent.idempotency_key)
-        .bind(status_name(intent.status))
+        .bind(intent.status.storage_name())
         .bind(revision)
         .bind(lease_expires_at_unix_ms)
         .bind(data)
@@ -317,11 +315,16 @@ impl MemoryExtractionRepository for PostgresManagedSessionRepository {
         limit: usize,
     ) -> Result<Vec<MemoryExtractionIntent>, MemoryExtractionError> {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let recoverable = MemoryExtractionStatus::recoverable_storage_names();
         sqlx::query(
             "SELECT data FROM managed_memory_extraction
-             WHERE status NOT IN ('completed', 'execution_indeterminate', 'terminal_failed')
-             ORDER BY created_at, intent_id LIMIT $1",
+             WHERE status IN ($1, $2, $3, $4)
+             ORDER BY created_at, intent_id LIMIT $5",
         )
+        .bind(recoverable[0])
+        .bind(recoverable[1])
+        .bind(recoverable[2])
+        .bind(recoverable[3])
         .bind(limit)
         .fetch_all(&self.pool)
         .await
@@ -349,7 +352,7 @@ impl MemoryExtractionRepository for PostgresManagedSessionRepository {
         )
         .bind(&intent.intent_id)
         .bind(&intent.idempotency_key)
-        .bind(status_name(intent.status))
+        .bind(intent.status.storage_name())
         .bind(revision)
         .bind(lease_expires_at_unix_ms)
         .bind(data)
