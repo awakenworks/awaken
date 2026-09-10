@@ -218,11 +218,11 @@ cargo test -p awaken-session-executor --lib \
 # Async return/cleanup is not covered by the scalar physical-slot proof.
 cargo test -p awaken-dispatch --features test-support --test pool_memory
 cargo test -p awaken-dispatch --features test-support --test lease_semantics
-# Pending input has one shared cross-adapter conformance table: claim/list are
-# non-consuming, crash reclaim advances the epoch, stale settle is inert, and
-# only the current settle's exact message ids disappear. Run its exact Memory
-# and SQLite bindings here; the live PostgreSQL gate owns the same third binding,
-# while check-reliability retains its distinct normalized-history rule.
+# Settlement fencing and pending input have one shared cross-adapter table:
+# stale Awaiting/Done settlements preserve dispatch, pending input, completion
+# and wake eligibility, while current settlements publish every exact effect.
+# Run the Memory and SQLite bindings here; the live PostgreSQL gate owns the
+# same third binding, while check-reliability retains its normalized history.
 cargo test -p awaken-dispatch --features test-support --test dispatch_conformance \
   memory_dispatch_conforms -- --exact
 cargo test -p awaken-dispatch --features test-support --test dispatch_conformance \

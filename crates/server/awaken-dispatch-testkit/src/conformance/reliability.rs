@@ -1,24 +1,39 @@
-/// Pending-input crash/replay cause/effect table shared by every Dispatch store.
-/// C1 an Awaiting Run has one bound input; C2 its claimant disappears without
-/// settling; C3 the lease expires and another owner reclaims; C4 the stale owner
-/// attempts to consume the input; C5 the current owner settles and names it;
-/// C6 unbound input is read and a settlement omits/names its id. E1 C2 preserves
-/// the exact input; E2 C3 re-hands that input under a newer epoch; E3 C4 is fenced
-/// and cannot consume; E4 C5 consumes it and removes wake eligibility; E5 C6
-/// preserves an omitted id and consumes a named id. Constraints: claim/list are
-/// reads, only the current fenced settlement consumes, and message identity is
-/// exact. Rules: PI1=C1+C2+C3 -> E1+E2; PI2=PI1+C4 -> E3;
-/// PI3=PI1+C5 -> E4; PI4=C6(omit/name) -> E5.
-async fn pending_input_replays_until_exact_settle<S: Dispatch>(
+/// Settlement-fence and pending-input cause/effect table shared by every store.
+/// C1 an Awaiting Run has one bound input; C2 claimant A disappears; C3 B reclaims
+/// at a newer epoch and another input arrives; C4 stale A settles Awaiting; C5
+/// current B settles Awaiting naming only the first id; C6 C wakes on the retained
+/// input; C7 stale B/current C settle Done; C8 unbound input is read and a settle
+/// omits/names its id. E1 C2/C3 replay the exact first input; E2 C4 leaves dispatch,
+/// pending, completion and wake state unchanged; E3 C5 clears B's lease, consumes
+/// only the named id, publishes no completion and makes C6 wakeable; E4 stale C7
+/// leaves every projection unchanged; E5 current C7 removes the row and remaining
+/// run-bound input, publishes one tombstone and prevents another wake; E6 C8 keeps
+/// omitted ids and consumes named ids. Constraints: the current epoch and empty
+/// physical slot are the sole mutation authority; all four observable projections
+/// come from the existing store ports. Rules: SF1=C1+C2+C3 -> E1;
+/// SF2=SF1+C4 -> E2; SF3=SF1+C5+C6 -> E3; SF4=C6+C7(stale/current)
+/// -> E4+E5; PI1=C8(omit/name) -> E6.
+async fn settlement_fence_and_pending_input_are_atomic<S: Dispatch>(
     store: &S,
     ns: &str,
+    capabilities: ConformanceCapabilities,
     clock: &dyn ConformanceClock,
 ) {
+    let completion_cursor = if capabilities.completion_events {
+        store
+            .completion_events_after(0, usize::MAX)
+            .await
+            .expect("SF1 completion baseline")
+            .last()
+            .map_or(0, |event| event.sequence)
+    } else {
+        0
+    };
     let request = dispatch(ns, "pending-replay", "pending-replay-thread");
     let run_id = request.run_id().clone();
     let bound_thread = request.thread_id().clone();
     clock.set(300_000);
-    store.enqueue(request).await.expect("PI1 enqueue");
+    store.enqueue(request).await.expect("SF1 enqueue");
     let initial = store
         .claim_run(
             &run_id,
@@ -28,15 +43,15 @@ async fn pending_input_replays_until_exact_settle<S: Dispatch>(
             &Default::default(),
         )
         .await
-        .expect("PI1 initial claim")
-        .expect("PI1 initial Run is claimable");
+        .expect("SF1 initial claim")
+        .expect("SF1 initial Run is claimable");
     assert_eq!(
         store
             .settle(&run_id, initial.lease.epoch, DispatchOutcome::Awaiting, &[],)
             .await
-            .expect("PI1 establish Awaiting"),
+            .expect("SF1 establish Awaiting"),
         SettleOutcome::Applied,
-        "PI1 setup"
+        "SF1 setup"
     );
     let input = PendingInput {
         message_id: format!("{ns}-pending-replay-input"),
@@ -47,7 +62,7 @@ async fn pending_input_replays_until_exact_settle<S: Dispatch>(
         context_messages: Vec::new(),
         result: ResumeResult::Input("replay after crash".to_string()),
     };
-    assert!(store.append(input.clone()).await.expect("PI1 append"));
+    assert!(store.append(input.clone()).await.expect("SF1 append"));
     let crashed = store
         .claim_run(
             &run_id,
@@ -57,9 +72,9 @@ async fn pending_input_replays_until_exact_settle<S: Dispatch>(
             &Default::default(),
         )
         .await
-        .expect("PI1 crash-window claim")
-        .expect("PI1 pending input wakes Awaiting Run");
-    assert_eq!(crashed.pending, vec![input.clone()], "PI1/E1 exact handoff");
+        .expect("SF1 crash-window claim")
+        .expect("SF1 pending input wakes Awaiting Run");
+    assert_eq!(crashed.pending, vec![input.clone()], "SF1/E1 exact handoff");
 
     clock.advance_past(crashed.lease.expires_ms).await;
     let recovered = store
@@ -71,63 +86,245 @@ async fn pending_input_replays_until_exact_settle<S: Dispatch>(
             &Default::default(),
         )
         .await
-        .expect("PI1 recovery claim")
-        .expect("PI1 expired claim is recoverable");
-    assert_eq!(recovered.lease.epoch, crashed.lease.epoch + 1, "PI1/E2");
-    assert_eq!(recovered.pending, vec![input.clone()], "PI1/E1+E2");
+        .expect("SF1 recovery claim")
+        .expect("SF1 expired claim is recoverable");
+    assert_eq!(recovered.lease.epoch, crashed.lease.epoch + 1, "SF1/E1");
+    assert_eq!(recovered.pending, vec![input.clone()], "SF1/E1");
+    let arrived_during_attempt = PendingInput {
+        message_id: format!("{ns}-pending-mid-attempt-input"),
+        run_id: run_id.clone(),
+        thread_id: bound_thread.clone(),
+        correlation_id: format!("{ns}-pending-next-ticket"),
+        available_at_ms: None,
+        context_messages: Vec::new(),
+        result: ResumeResult::Input("retain for the next wake".to_string()),
+    };
+    assert!(
+        store
+            .append(arrived_during_attempt.clone())
+            .await
+            .expect("SF1 append mid-attempt input")
+    );
+    let before_stale_awaiting = store
+        .list_dispatches()
+        .await
+        .expect("SF2 dispatch snapshot");
+    let pending_before_stale_awaiting = store
+        .list(&bound_thread)
+        .await
+        .expect("SF2 pending snapshot");
+    let completions_before_stale_awaiting = if capabilities.completion_events {
+        store
+            .completion_events_after(completion_cursor, usize::MAX)
+            .await
+            .expect("SF2 completion snapshot")
+    } else {
+        Vec::new()
+    };
     assert_eq!(
         store
             .settle(
                 &run_id,
                 crashed.lease.epoch,
                 DispatchOutcome::Awaiting,
-                std::slice::from_ref(&input.message_id),
+                &[
+                    input.message_id.clone(),
+                    arrived_during_attempt.message_id.clone()
+                ],
             )
             .await
-            .expect("PI2 stale settlement"),
+            .expect("SF2 stale Awaiting settlement"),
         SettleOutcome::Fenced,
-        "PI2/E3"
+        "SF2/E2"
     );
-    let after_stale = store
-        .list(&bound_thread)
-        .await
-        .expect("PI2 inspect pending");
-    assert_eq!(after_stale.len(), 1, "PI2/E3 one pending row remains");
-    assert_eq!(after_stale[0].input, input, "PI2/E3 exact pending survives");
+    assert_eq!(
+        store
+            .list_dispatches()
+            .await
+            .expect("SF2 dispatch after stale Awaiting"),
+        before_stale_awaiting,
+        "SF2/E2 stale Awaiting preserves the complete dispatch projection"
+    );
+    assert_eq!(
+        store
+            .list(&bound_thread)
+            .await
+            .expect("SF2 pending after stale Awaiting"),
+        pending_before_stale_awaiting,
+        "SF2/E2 stale Awaiting consumes no pending input"
+    );
+    if capabilities.completion_events {
+        assert_eq!(
+            store
+                .completion_events_after(completion_cursor, usize::MAX)
+                .await
+                .expect("SF2 completion after stale Awaiting"),
+            completions_before_stale_awaiting,
+            "SF2/E2 stale Awaiting publishes no completion"
+        );
+    }
     assert_eq!(
         store
             .settle(
                 &run_id,
                 recovered.lease.epoch,
                 DispatchOutcome::Awaiting,
-                &[format!("{ns}-pending-replay-input")],
+                std::slice::from_ref(&input.message_id),
             )
             .await
-            .expect("PI3 current settlement"),
+            .expect("SF3 current Awaiting settlement"),
         SettleOutcome::Applied,
-        "PI3/E4"
+        "SF3/E3"
+    );
+    let after_current_awaiting = store
+        .list_dispatches()
+        .await
+        .expect("SF3 dispatch after current Awaiting");
+    assert_eq!(
+        after_current_awaiting
+            .iter()
+            .find(|summary| summary.run_id == run_id)
+            .expect("SF3 retained dispatch")
+            .state,
+        DispatchState::Awaiting,
+        "SF3/E3 current Awaiting publishes the exact state"
+    );
+    let after_current_pending = store
+        .list(&bound_thread)
+        .await
+        .expect("SF3 pending after current Awaiting");
+    assert_eq!(after_current_pending.len(), 1, "SF3/E3 one input remains");
+    assert_eq!(
+        after_current_pending[0].input, arrived_during_attempt,
+        "SF3/E3 only the named input is consumed"
+    );
+    if capabilities.completion_events {
+        assert!(
+            store
+                .completion_events_after(completion_cursor, usize::MAX)
+                .await
+                .expect("SF3 completion after current Awaiting")
+                .is_empty(),
+            "SF3/E3 Awaiting publishes no completion"
+        );
+    }
+    let next = store
+        .claim_run(
+            &run_id,
+            "pending-next",
+            LEASE_MS,
+            recovered.lease.expires_ms.saturating_add(1),
+            &Default::default(),
+        )
+        .await
+        .expect("SF3 next wake")
+        .expect("SF3 retained input wakes the Awaiting row");
+    assert_eq!(
+        next.pending,
+        vec![arrived_during_attempt.clone()],
+        "SF3/E3 wake hands only the retained input"
+    );
+    let before_stale_done = store
+        .list_dispatches()
+        .await
+        .expect("SF4 dispatch snapshot");
+    let pending_before_stale_done = store
+        .list(&bound_thread)
+        .await
+        .expect("SF4 pending snapshot");
+    let completions_before_stale_done = if capabilities.completion_events {
+        store
+            .completion_events_after(completion_cursor, usize::MAX)
+            .await
+            .expect("SF4 completion snapshot")
+    } else {
+        Vec::new()
+    };
+    assert_eq!(
+        store
+            .settle(
+                &run_id,
+                recovered.lease.epoch,
+                DispatchOutcome::Done,
+                std::slice::from_ref(&arrived_during_attempt.message_id),
+            )
+            .await
+            .expect("SF4 stale Done settlement"),
+        SettleOutcome::Fenced,
+        "SF4/E4"
+    );
+    assert_eq!(
+        store
+            .list_dispatches()
+            .await
+            .expect("SF4 dispatch after stale Done"),
+        before_stale_done,
+        "SF4/E4 stale Done preserves the complete dispatch projection"
+    );
+    assert_eq!(
+        store
+            .list(&bound_thread)
+            .await
+            .expect("SF4 pending after stale Done"),
+        pending_before_stale_done,
+        "SF4/E4 stale Done consumes no pending input"
+    );
+    if capabilities.completion_events {
+        assert_eq!(
+            store
+                .completion_events_after(completion_cursor, usize::MAX)
+                .await
+                .expect("SF4 completion after stale Done"),
+            completions_before_stale_done,
+            "SF4/E4 stale Done publishes no completion"
+        );
+    }
+    assert_eq!(
+        store
+            .settle(&run_id, next.lease.epoch, DispatchOutcome::Done, &[])
+            .await
+            .expect("SF4 current Done settlement"),
+        SettleOutcome::Applied,
+        "SF4/E5"
+    );
+    assert!(
+        store
+            .list_dispatches()
+            .await
+            .expect("SF4 dispatch after current Done")
+            .iter()
+            .all(|summary| summary.run_id != run_id),
+        "SF4/E5 current Done removes the dispatch"
     );
     assert!(
         store
             .list(&bound_thread)
             .await
-            .expect("PI3 inspect pending")
+            .expect("SF4 pending after current Done")
             .is_empty(),
-        "PI3/E4 exact current settlement consumes the input"
+        "SF4/E5 current Done removes remaining run-bound input"
     );
+    if capabilities.completion_events {
+        let completions = store
+            .completion_events_after(completion_cursor, usize::MAX)
+            .await
+            .expect("SF4 completion after current Done");
+        assert_eq!(completions.len(), 1, "SF4/E5 one completion tombstone");
+        assert_eq!(completions[0].run_id, run_id, "SF4/E5 exact completion");
+    }
     assert!(
         store
             .claim_run(
                 &run_id,
-                "pending-third",
+                "pending-after-done",
                 LEASE_MS,
-                recovered.lease.expires_ms.saturating_add(1),
+                next.lease.expires_ms.saturating_add(1),
                 &Default::default(),
             )
             .await
-            .expect("PI3 duplicate probe")
+            .expect("SF4 wake after current Done")
             .is_none(),
-        "PI3/E4 consumed input cannot wake a third delivery"
+        "SF4/E5 current Done prevents another wake"
     );
 
     let unbound_thread = thread_id(ns, "pending-unbound-thread");
@@ -140,20 +337,20 @@ async fn pending_input_replays_until_exact_settle<S: Dispatch>(
         context_messages: Vec::new(),
         result: ResumeResult::Input("unbound exact consumption".to_string()),
     };
-    assert!(store.append(unbound.clone()).await.expect("PI4 append"));
+    assert!(store.append(unbound.clone()).await.expect("PI1 append"));
     assert_eq!(
-        store.list(&unbound_thread).await.expect("PI4 first read"),
+        store.list(&unbound_thread).await.expect("PI1 first read"),
         store
             .list(&unbound_thread)
             .await
-            .expect("PI4 replayed read"),
-        "PI4/E5 repeated reads do not consume"
+            .expect("PI1 replayed read"),
+        "PI1/E6 repeated reads do not consume"
     );
     let omitted = dispatch(ns, "pending-unbound-omit", "pending-unbound-thread");
     store
         .enqueue(omitted.clone())
         .await
-        .expect("PI4 enqueue omit");
+        .expect("PI1 enqueue omit");
     let omitted_claim = store
         .claim_run(
             omitted.run_id(),
@@ -163,8 +360,8 @@ async fn pending_input_replays_until_exact_settle<S: Dispatch>(
             &Default::default(),
         )
         .await
-        .expect("PI4 claim omit")
-        .expect("PI4 omitted Run is claimable");
+        .expect("PI1 claim omit")
+        .expect("PI1 omitted Run is claimable");
     assert_eq!(
         store
             .settle(
@@ -174,20 +371,20 @@ async fn pending_input_replays_until_exact_settle<S: Dispatch>(
                 &[],
             )
             .await
-            .expect("PI4 omit id"),
+            .expect("PI1 omit id"),
         SettleOutcome::Applied
     );
     let after_omit = store
         .list(&unbound_thread)
         .await
-        .expect("PI4 omitted id survives");
-    assert_eq!(after_omit.len(), 1, "PI4/E5 one omitted row remains");
-    assert_eq!(after_omit[0].input, unbound, "PI4/E5 omitted id is exact");
+        .expect("PI1 omitted id survives");
+    assert_eq!(after_omit.len(), 1, "PI1/E6 one omitted row remains");
+    assert_eq!(after_omit[0].input, unbound, "PI1/E6 omitted id is exact");
     let named = dispatch(ns, "pending-unbound-name", "pending-unbound-thread");
     store
         .enqueue(named.clone())
         .await
-        .expect("PI4 enqueue named");
+        .expect("PI1 enqueue named");
     let named_claim = store
         .claim_run(
             named.run_id(),
@@ -197,8 +394,8 @@ async fn pending_input_replays_until_exact_settle<S: Dispatch>(
             &Default::default(),
         )
         .await
-        .expect("PI4 claim named")
-        .expect("PI4 named Run is claimable");
+        .expect("PI1 claim named")
+        .expect("PI1 named Run is claimable");
     assert_eq!(
         store
             .settle(
@@ -208,16 +405,16 @@ async fn pending_input_replays_until_exact_settle<S: Dispatch>(
                 &[format!("{ns}-pending-unbound-input")],
             )
             .await
-            .expect("PI4 consume named id"),
+            .expect("PI1 consume named id"),
         SettleOutcome::Applied
     );
     assert!(
         store
             .list(&unbound_thread)
             .await
-            .expect("PI4 named id absent")
+            .expect("PI1 named id absent")
             .is_empty(),
-        "PI4/E5 a named id is consumed exactly once"
+        "PI1/E6 a named id is consumed exactly once"
     );
 }
 

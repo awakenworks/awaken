@@ -338,7 +338,7 @@ pub async fn assert_dispatch_conformance_with_clock<S: Dispatch>(
     }
     occupied_recovery_does_not_starve_other_threads(store, namespace, clock).await;
     exact_claim_recovery_and_fencing(store, namespace, clock).await;
-    pending_input_replays_until_exact_settle(store, namespace, clock).await;
+    settlement_fence_and_pending_input_are_atomic(store, namespace, capabilities, clock).await;
     retry_exhaustion_claim_is_atomic_and_policy_exact(store, namespace, clock).await;
     attempt_credentials_are_atomic_and_epoch_fenced(store, namespace, capabilities, clock).await;
     incompatible_credentials_do_not_poison_broad_claims(store, namespace).await;

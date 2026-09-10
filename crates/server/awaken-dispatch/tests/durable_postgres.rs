@@ -770,21 +770,6 @@ async fn supersession_on_postgres() {
 }
 
 #[tokio::test]
-async fn settle_fences_stale_epoch_on_postgres() {
-    let Some(pool) = harness::schema_pool("t_pg_fence").await else {
-        return;
-    };
-    let store = PostgresDispatchStore::with_pool(pool.clone())
-        .await
-        .expect("dispatch");
-    harness::assert_settle_fences_stale_epoch(
-        &store,
-        &awaken_dispatch_testkit::AuthoritativeWallClock,
-    )
-    .await;
-}
-
-#[tokio::test]
 async fn concurrent_recovery_yields_one_winner_on_postgres() {
     let schema = "t_pg_concurrent_recovery";
     let Some(pool) = harness::schema_pool(schema).await else {
@@ -797,21 +782,6 @@ async fn concurrent_recovery_yields_one_winner_on_postgres() {
     );
     harness::assert_concurrent_recovery_yields_one_winner(
         store,
-        &awaken_dispatch_testkit::AuthoritativeWallClock,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn awaiting_settle_fences_stale_epoch_on_postgres() {
-    let Some(pool) = harness::schema_pool("t_pg_fence_await").await else {
-        return;
-    };
-    let store = PostgresDispatchStore::with_pool(pool.clone())
-        .await
-        .expect("dispatch");
-    harness::assert_awaiting_settle_fences_stale_epoch(
-        &store,
         &awaken_dispatch_testkit::AuthoritativeWallClock,
     )
     .await;
