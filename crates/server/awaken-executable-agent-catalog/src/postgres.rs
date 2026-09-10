@@ -270,9 +270,8 @@ impl DurableRegistrar {
                     commands,
                 )
                 .await?;
-                install_catalog(&self.catalog, &refreshed)?;
-                self.cursor.advance(through);
-                Ok(())
+                self.cursor
+                    .install_then_reconcile(through, || install_catalog(&self.catalog, &refreshed))
             }
             ProjectionBatch::FullReplay { through, commands } => {
                 let refreshed = Arc::new(ExecutableAgentCatalog::new());
@@ -281,9 +280,8 @@ impl DurableRegistrar {
                     commands,
                 )
                 .await?;
-                install_catalog(&self.catalog, &refreshed)?;
-                self.cursor.advance(through);
-                Ok(())
+                self.cursor
+                    .install_then_reconcile(through, || install_catalog(&self.catalog, &refreshed))
             }
         }
     }
@@ -466,6 +464,49 @@ mod tests {
 
     fn registration() -> ExecutableAgentRegistration {
         test_registration(7, "fp-a")
+    }
+
+    #[tokio::test]
+    async fn install_error_precedes_agent_target_publication() {
+        // Causes: C1 the target contains revision 7; C2 the replacement contains
+        // revision 8; C3 the replacement read lock is poisoned before install.
+        // Effects: R1 install returns Storage; R2 the target remains the exact
+        // revision-7 projection. This binds install_then_reconcile's Err-means-
+        // no-publication precondition to the real Agent catalog installer.
+        let target = Arc::new(ExecutableAgentCatalog::new());
+        LocalExecutableAgentRegistrar::new(target.clone())
+            .register(registration())
+            .await
+            .unwrap();
+        let refreshed = Arc::new(ExecutableAgentCatalog::new());
+        LocalExecutableAgentRegistrar::new(refreshed.clone())
+            .register(test_registration(8, "fp-b"))
+            .await
+            .unwrap();
+        let poisoned = refreshed.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoned.state.write().unwrap();
+            panic!("poison refreshed Agent catalog lock");
+        })
+        .join();
+
+        assert!(
+            matches!(
+                install_catalog(&target, &refreshed),
+                Err(ExecutableAgentRegistrationError::Storage(_))
+            ),
+            "R1"
+        );
+        assert_eq!(
+            target
+                .current("workspace-a", "agent-a")
+                .unwrap()
+                .snapshot
+                .fingerprint
+                .0,
+            "fp-a",
+            "R2"
+        );
     }
 
     #[test]
@@ -684,8 +725,10 @@ mod tests {
         // -> stale peer incrementally loads only commands above its durable cursor;
         // A3 unchanged high-water -> no command read; A4 an incomplete incremental
         // batch (the same effect as a missed/invalid change signal) -> full replay
-        // from durable truth, never partial admission. The memory sequence uses
-        // deliberate gaps to prove identity values need not be contiguous.
+        // from durable truth, never partial admission; A5 authority restored
+        // behind the cursor -> replace from complete truth and lower the cursor
+        // to that exact high-water. The memory sequence uses deliberate gaps to
+        // prove identity values need not be contiguous.
         let log = Arc::new(MemoryCommandLog::default());
         let left_catalog = Arc::new(ExecutableAgentCatalog::new());
         let right_catalog = Arc::new(ExecutableAgentCatalog::new());
@@ -750,8 +793,10 @@ mod tests {
         left.register(test_registration(9, "fp-c")).await.unwrap();
         log.drop_incremental_tail_once.store(true, Ordering::SeqCst);
         right.refresh_projection().await.unwrap();
-        let calls = log.load_after_calls.lock().unwrap();
-        assert_eq!(&calls[calls.len() - 2..], &[4, 0], "A4");
+        {
+            let calls = log.load_after_calls.lock().unwrap();
+            assert_eq!(&calls[calls.len() - 2..], &[4, 0], "A4");
+        }
         assert_eq!(
             right_catalog
                 .current("workspace-a", "agent-a")
@@ -763,6 +808,19 @@ mod tests {
             "A4"
         );
         assert_eq!(log.commands.lock().unwrap().len(), 3, "A4");
+        log.commands.lock().unwrap().truncate(1);
+        right.refresh_projection().await.unwrap();
+        assert_eq!(right.cursor.applied(), 2, "A5");
+        assert_eq!(
+            right_catalog
+                .current("workspace-a", "agent-a")
+                .unwrap()
+                .snapshot
+                .fingerprint
+                .0,
+            "fp-a",
+            "A5"
+        );
     }
 
     #[tokio::test]

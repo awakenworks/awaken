@@ -224,6 +224,11 @@ fails before the owning effect. There is no URL predicate or HTTP middleware;
 AllInOne supplies no refresh handle because registration and consumption share
 the same catalog instances. Database notification may later be added only as a
 hint; durable high-water comparison and full replay remain the correctness path.
+Forward refresh installs the replacement before advancing its cursor. When a
+restored authority is behind the private local cursor, the shared cursor owner
+lowers the cursor before replacement, then restores the previous cursor if the
+catalog install returns an error; this keeps the cursor from leading the visible
+projection across both directions.
 
 ## Implementation Status
 
