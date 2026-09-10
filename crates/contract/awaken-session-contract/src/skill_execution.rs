@@ -191,9 +191,10 @@ mod tests {
         // FMECA cause/effect decision table:
         // | Rule | kind | id/version/pin | actual bytes | Effect |
         // | S1 | custom | exact | exact | accept immutable version |
-        // | S2 | Anthropic | exact | exact | reject store substitution |
-        // | S3 | custom | mismatch | exact | reject frozen-binding drift |
-        // | S4 | custom | exact | mutated | reject digest substitution |
+        // | S2 | custom | foreign Workspace | exact | reject scope substitution |
+        // | S3 | Anthropic | exact | exact | reject store substitution |
+        // | S4 | custom | id, version, or declared hash mismatch | exact | reject frozen-binding drift |
+        // | S5 | custom | exact | mutated | reject digest substitution |
         let exact = version();
         let binding = ResolvedSkillBinding {
             skill_id: exact.skill_id.to_string(),
@@ -207,25 +208,31 @@ mod tests {
         );
         assert!(
             validate_skill_bundle("workspace", "other", &binding, exact.clone()).is_err(),
-            "S2 workspace substitution"
+            "S2"
         );
         let mut builtin = binding.clone();
         builtin.kind = awaken_agent_contract::AgentSkillKind::Anthropic;
         assert!(
             validate_skill_bundle("workspace", "workspace", &builtin, exact.clone()).is_err(),
-            "S2"
+            "S3"
         );
         let mut wrong_version = binding.clone();
         wrong_version.version += 1;
         assert!(
             validate_skill_bundle("workspace", "workspace", &wrong_version, exact.clone()).is_err(),
-            "S3"
+            "S4 version"
+        );
+        let mut wrong_hash = binding.clone();
+        wrong_hash.bundle_sha256 = "sha256:other".into();
+        assert!(
+            validate_skill_bundle("workspace", "workspace", &wrong_hash, exact.clone()).is_err(),
+            "S4 declared hash"
         );
         let mut substituted = exact;
         substituted.files[0].content = b"substituted".to_vec();
         assert!(
             validate_skill_bundle("workspace", "workspace", &binding, substituted).is_err(),
-            "S4"
+            "S5"
         );
     }
 }
