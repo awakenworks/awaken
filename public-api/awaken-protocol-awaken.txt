@@ -13,6 +13,14 @@ pub awaken_protocol_awaken::ProfiledSessionMode::Interactive
 pub awaken_protocol_awaken::ProfiledSessionMode::WorkUnit
 impl awaken_protocol_awaken::ProfiledSessionMode
 pub const fn awaken_protocol_awaken::ProfiledSessionMode::mutation_policy(self) -> awaken_session_contract::baseline::SessionMutationPolicy
+pub struct awaken_protocol_awaken::CreateRepository
+pub awaken_protocol_awaken::CreateRepository::clone_policy: awaken_resource_contract::registry::ClonePolicy
+pub awaken_protocol_awaken::CreateRepository::credential_binding: core::option::Option<alloc::string::String>
+pub awaken_protocol_awaken::CreateRepository::description: alloc::string::String
+pub awaken_protocol_awaken::CreateRepository::initial_branch: core::option::Option<alloc::string::String>
+pub awaken_protocol_awaken::CreateRepository::initial_commit: core::option::Option<alloc::string::String>
+pub awaken_protocol_awaken::CreateRepository::name: alloc::string::String
+pub awaken_protocol_awaken::CreateRepository::remote_url: alloc::string::String
 pub struct awaken_protocol_awaken::EventAdmissionReceipt
 pub awaken_protocol_awaken::EventAdmissionReceipt::idempotency_key: alloc::string::String
 pub awaken_protocol_awaken::EventAdmissionReceipt::proof: awaken_protocol_awaken::EventAdmissionProof
@@ -78,6 +86,9 @@ pub awaken_protocol_awaken::ProfiledSessionRunSubmit::execution_requirements: aw
 pub awaken_protocol_awaken::ProfiledSessionRunSubmit::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_protocol_awaken::ProfiledSessionRunSubmit::operation_id: alloc::string::String
 pub awaken_protocol_awaken::ProfiledSessionRunSubmit::run_id: awaken_agent_contract::agent::run::Id
+pub struct awaken_protocol_awaken::RepositoryObject
+impl core::convert::From<awaken_resource_contract::repository_application::RepositoryDetails> for awaken_protocol_awaken::RepositoryObject
+pub fn awaken_protocol_awaken::RepositoryObject::from(awaken_resource_contract::repository_application::RepositoryDetails) -> Self
 pub fn awaken_protocol_awaken::dream_policy_router(alloc::sync::Arc<dyn awaken_session_contract::dream::DreamPolicyApplication>) -> axum::routing::Router
 pub fn awaken_protocol_awaken::environment_extensions_router(alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>, core::option::Option<alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>>) -> axum::routing::Router
 pub fn awaken_protocol_awaken::file_output_capture_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
@@ -86,5 +97,6 @@ pub fn awaken_protocol_awaken::memory_copy_conflicts_router<H, T, S>(H) -> axum:
 pub fn awaken_protocol_awaken::profiled_session_release_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub fn awaken_protocol_awaken::profiled_session_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub fn awaken_protocol_awaken::profiled_session_run_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+pub fn awaken_protocol_awaken::repositories_router<List, ListArgs, Create, CreateArgs, Retrieve, RetrieveArgs, S>(List, Create, Retrieve) -> axum::routing::Router<S> where List: axum::handler::Handler<ListArgs, S>, ListArgs: 'static, Create: axum::handler::Handler<CreateArgs, S>, CreateArgs: 'static, Retrieve: axum::handler::Handler<RetrieveArgs, S>, RetrieveArgs: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub fn awaken_protocol_awaken::session_event_admission_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub fn awaken_protocol_awaken::session_resource_manifest_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static

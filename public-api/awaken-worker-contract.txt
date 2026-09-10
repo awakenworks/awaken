@@ -42,6 +42,10 @@ pub awaken_worker_contract::PlacementError::Policy(alloc::string::String)
 pub enum awaken_worker_contract::RegistryError
 pub awaken_worker_contract::RegistryError::GenerationExhausted
 pub awaken_worker_contract::RegistryError::GenerationExhausted::worker_id: alloc::string::String
+pub awaken_worker_contract::RegistryError::HistoricalIncarnation
+pub awaken_worker_contract::RegistryError::HistoricalIncarnation::worker_id: alloc::string::String
+pub awaken_worker_contract::RegistryError::IncompleteIncarnationHistory
+pub awaken_worker_contract::RegistryError::IncompleteIncarnationHistory::worker_id: alloc::string::String
 pub awaken_worker_contract::RegistryError::InvalidIdentity
 pub awaken_worker_contract::RegistryError::ManifestChanged
 pub awaken_worker_contract::RegistryError::Persistence(alloc::string::String)
@@ -64,6 +68,10 @@ pub enum awaken_worker_contract::WorkerRecoveryMode
 pub awaken_worker_contract::WorkerRecoveryMode::NeverReplace
 pub awaken_worker_contract::WorkerRecoveryMode::RebuildFromCommittedTruth
 pub awaken_worker_contract::WorkerRecoveryMode::RequireSandboxContinuity
+pub enum awaken_worker_contract::WorkerRegistrationHistoryAdmission
+pub awaken_worker_contract::WorkerRegistrationHistoryAdmission::Fresh
+pub awaken_worker_contract::WorkerRegistrationHistoryAdmission::HistoricalIncarnation
+pub awaken_worker_contract::WorkerRegistrationHistoryAdmission::IncompleteHistory
 pub enum awaken_worker_contract::WorkerState
 pub awaken_worker_contract::WorkerState::Dead
 pub awaken_worker_contract::WorkerState::Draining
@@ -250,4 +258,5 @@ pub const fn awaken_worker_contract::sandbox_tool_recovery_is_compatible(awaken_
 pub const fn awaken_worker_contract::worker_expiry_admission(bool, bool, awaken_worker_contract::WorkerState, u64, u64) -> awaken_worker_contract::RegistryMutation
 pub const fn awaken_worker_contract::worker_heartbeat_admission(bool, bool, bool, bool, awaken_worker_contract::WorkerState) -> awaken_worker_contract::RegistryMutation
 pub const fn awaken_worker_contract::worker_observation_sequence_after_heartbeat(u64, u64, bool) -> core::option::Option<u64>
+pub const fn awaken_worker_contract::worker_registration_history_admission(bool, bool) -> awaken_worker_contract::WorkerRegistrationHistoryAdmission
 pub const fn awaken_worker_contract::worker_slot_is_replaceable(awaken_worker_contract::WorkerState, u64, u64) -> bool

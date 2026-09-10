@@ -1964,6 +1964,7 @@ pub awaken_protocol_managed::ResourcesRouterInput::files: alloc::sync::Arc<dyn a
 pub awaken_protocol_managed::ResourcesRouterInput::memories: alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>
 pub awaken_protocol_managed::ResourcesRouterInput::memory_stores: alloc::sync::Arc<dyn awaken_resource_contract::memory_application::MemoryStoreApplicationService>
 pub awaken_protocol_managed::ResourcesRouterInput::purge: alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>
+pub awaken_protocol_managed::ResourcesRouterInput::repositories: alloc::sync::Arc<dyn awaken_resource_contract::repository_application::RepositoryApplicationService>
 pub awaken_protocol_managed::ResourcesRouterInput::skills: core::option::Option<alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>>
 pub struct awaken_protocol_managed::VaultState
 impl awaken_protocol_managed::VaultState
@@ -2039,6 +2040,7 @@ pub fn awaken_protocol_managed::models_router_with_inventory(alloc::sync::Arc<dy
 pub fn awaken_protocol_managed::parse_idempotency_key_header(&http::header::map::HeaderMap) -> core::result::Result<core::option::Option<alloc::string::String>, &'static str>
 pub async fn awaken_protocol_managed::release_profiled_session(axum::extract::state::State<alloc::sync::Arc<awaken_protocol_managed::ManagedState>>, axum::extract::path::Path<alloc::string::String>, core::option::Option<axum::extension::Extension<awaken_tenancy::WorkspaceScope>>, axum::json::Json<awaken_protocol_awaken::profiled_sessions::ProfiledSessionRelease>) -> core::result::Result<axum::json::Json<awaken_protocol_awaken::profiled_sessions::ProfiledSessionReleased>, (http::status::StatusCode, axum::json::Json<awaken_protocol_managed::types::ErrorResponse>)>
 pub async fn awaken_protocol_managed::replace_resource_manifest(axum::extract::state::State<alloc::sync::Arc<awaken_protocol_managed::ManagedState>>, axum::extract::path::Path<alloc::string::String>, core::option::Option<axum::extension::Extension<awaken_tenancy::WorkspaceScope>>, http::header::map::HeaderMap, axum::json::Json<awaken_protocol_managed::types::resource::ResourceManifestReplaceParams>) -> core::result::Result<(http::header::map::HeaderMap, axum::json::Json<awaken_protocol_managed::types::resource::SessionResourceManifest>), (http::status::StatusCode, axum::json::Json<awaken_protocol_managed::types::ErrorResponse>)>
+pub fn awaken_protocol_managed::repositories_router(alloc::sync::Arc<dyn awaken_resource_contract::repository_application::RepositoryApplicationService>) -> axum::routing::Router
 pub fn awaken_protocol_managed::resources_router(awaken_protocol_managed::ResourcesRouterInput) -> axum::routing::Router
 pub fn awaken_protocol_managed::router(alloc::sync::Arc<awaken_protocol_managed::ManagedState>) -> axum::routing::Router
 pub fn awaken_protocol_managed::skills_router(core::option::Option<alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>) -> axum::routing::Router
