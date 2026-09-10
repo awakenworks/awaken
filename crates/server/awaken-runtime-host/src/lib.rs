@@ -22,6 +22,7 @@ mod agent_catalog;
 mod agent_runner;
 mod application;
 pub use application::SessionRealizationRevocation;
+pub use awaken_run_ingress::PoolDrainFence;
 mod authority;
 mod background;
 mod background_task;

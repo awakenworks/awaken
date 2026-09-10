@@ -1514,7 +1514,8 @@ impl WorkerNode {
                 // before shutting down transport; otherwise an ordinary SIGTERM
                 // discards the only owner able to acknowledge physical return.
                 // Unknown external effects still retain their Dispatch slot.
-                Box::pin(lifecycle::revoke_worker_session_authority(&lifecycle)).await;
+                let _cleanup =
+                    Box::pin(lifecycle::revoke_worker_session_authority(&lifecycle)).await;
             }
         }
         lifecycle.authority.close();

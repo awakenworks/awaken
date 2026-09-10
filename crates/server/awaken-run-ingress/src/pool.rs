@@ -218,6 +218,15 @@ enum AdmissionCommand {
     Drain,
 }
 
+/// Proof that this process's canonical claim-admission owner installed its
+/// absorbing drain fence. The private field prevents callers from publishing a
+/// remote drain transition without first passing through [`DispatchPool::begin_drain`].
+#[derive(Debug)]
+#[must_use]
+pub struct PoolDrainFence {
+    _private: (),
+}
+
 impl AdmissionState {
     /// Sole process-local claim-admission transition. Keeping temporary
     /// suspension and permanent drain in one closed table prevents any caller
@@ -249,6 +258,15 @@ impl AdmissionState {
 
     const fn can_resume(self) -> bool {
         !matches!(self, Self::Draining)
+    }
+
+    /// Install the absorbing local fence and issue the only token that permits
+    /// the Worker lifecycle to request the corresponding Registry transition.
+    const fn begin_drain(self) -> (Self, PoolDrainFence) {
+        (
+            self.transition(AdmissionCommand::Drain),
+            PoolDrainFence { _private: () },
+        )
     }
 }
 
@@ -643,15 +661,17 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
     /// [`shutdown`](Self::shutdown) it does not await the tasks (the caller owns the
     /// grace period), and it takes `&self` so a live handle (e.g. behind an `Arc` in
     /// the host) can trigger it.
-    pub async fn begin_drain(&self) {
+    pub async fn begin_drain(&self) -> PoolDrainFence {
         // The write lock linearizes drain against the short read-side claim
         // critical section. Once this returns, every claim either completed
         // before the state became absorbing (and is now in-flight), or saw a
         // non-open state and did not touch the store.
         let mut admission = self.admission.gate.write().await;
-        *admission = admission.transition(AdmissionCommand::Drain);
+        let (draining, fence) = admission.begin_drain();
+        *admission = draining;
         self.shutdown.cancel();
         drop(admission);
+        fence
     }
 
     /// Whether a drain has been requested (the drain tasks are stopping/stopped).
@@ -823,7 +843,7 @@ mod drain_admission_proofs {
             assert!(!next.can_resume());
         }
 
-        let drained = initial.transition(AdmissionCommand::Drain);
+        let (drained, _fence) = initial.begin_drain();
         assert_eq!(drained, AdmissionState::Draining);
         assert!(!drained.accepts_claim());
         assert!(!drained.can_resume());
@@ -1241,6 +1261,16 @@ mod in_flight_tests {
                 assert_eq!(next.accepts_claim(), next == AdmissionState::Open);
                 assert_eq!(next.can_resume(), next != AdmissionState::Draining);
             }
+        }
+        for current in [
+            AdmissionState::Open,
+            AdmissionState::Suspended,
+            AdmissionState::Draining,
+        ] {
+            let (drained, _fence) = current.begin_drain();
+            assert_eq!(drained, AdmissionState::Draining, "A5-A6 token state");
+            assert!(!drained.accepts_claim(), "A5-A6 token closes claims");
+            assert!(!drained.can_resume(), "A5-A6 token is absorbing");
         }
     }
 

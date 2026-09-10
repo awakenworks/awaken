@@ -1405,6 +1405,17 @@ async fn repeated_transport_failure_drains_only_after_the_proof_deadline() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn drain_closes_local_admission_before_control_acknowledges() {
+    // Cause/effect decision table for the real local-fence/Registry seam:
+    // C1 the Pool is accepting; C2 admin drain installs its write-side fence;
+    // C3 the Registry request is delivered; C4 its response remains blocked.
+    // E1 readiness closes before C3; E2 no later claim request starts during
+    // C4; E3 releasing C4 returns the applied drain response. The Pool table
+    // separately covers every Open/Suspended/Draining transition.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | Effect |
+    // |---|---|---|---|---|---|
+    // | D1 | yes | yes | yes | yes | E1 + E2 |
+    // | D2 | yes | yes | yes | released | E1 + E2 + E3 |
     let (upstream, drain_release) = FakeWorkerUpstream::start_with_blocked_drain();
     let admin_addr = format!("127.0.0.1:{}", free_port());
     let coordinator_defaults = local_coordinator_deployment();
@@ -1447,6 +1458,21 @@ async fn drain_closes_local_admission_before_control_acknowledges() {
                 http_status(&admin_addr, "GET", "/readyz"),
                 Some(503),
                 "local claim admission closes before the blocked Control response returns"
+            );
+            let claims_at_fence = upstream
+                .requests()
+                .iter()
+                .filter(|path| path.as_str() == "/v1/worker/dispatch/claim")
+                .count();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert_eq!(
+                upstream
+                    .requests()
+                    .iter()
+                    .filter(|path| path.as_str() == "/v1/worker/dispatch/claim")
+                    .count(),
+                claims_at_fence,
+                "E2 no claim attempt after the Registry drain request"
             );
 
             drain_release.store(true, Ordering::Release);
