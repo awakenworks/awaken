@@ -5,8 +5,14 @@
 use awaken_agent_contract::stream::checkpoint::{
     PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
 };
+use awaken_reliability_testkit::CrashProcess;
 use awaken_store_fs::FsStreamCheckpointStore;
 use std::sync::Arc;
+use std::time::Duration;
+
+const CRASH_MODE: &str = "AWAKEN_FS_CHECKPOINT_CRASH_MODE";
+const CRASH_DIRECTORY: &str = "AWAKEN_FS_CHECKPOINT_CRASH_DIRECTORY";
+const CRASH_MARKER: &str = "AWAKEN_FS_CHECKPOINT_CRASH_MARKER";
 
 fn sample(run_id: &str) -> StreamCheckpoint {
     StreamCheckpoint {
@@ -21,6 +27,72 @@ fn sample(run_id: &str) -> StreamCheckpoint {
         }],
         retry_count: 0,
     }
+}
+
+#[tokio::test]
+async fn acknowledged_checkpoint_mutations_survive_real_process_kill()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Causes: C1 an old checkpoint A exists; C2 a separate process receives Ok
+    // from put(B) or delete; C3 that process is killed immediately after its
+    // acknowledgement marker. Effects: E1 reopen after acknowledged put returns
+    // the exact B; E2 reopen after acknowledged delete returns None. Rules:
+    // R1=C1+put(B)-Ok+C3=>E1; R2=E1+delete-Ok+C3=>E2.
+    // Constraint: CrashProcess performs a real process kill without graceful
+    // cleanup. This checks the production fsync/rename/directory-fsync path on
+    // the current filesystem; power loss, kernel semantics and hardware caches
+    // remain external boundaries.
+    if let Some(mode) = std::env::var_os(CRASH_MODE) {
+        let directory = std::path::PathBuf::from(std::env::var_os(CRASH_DIRECTORY).unwrap());
+        let marker = std::path::PathBuf::from(std::env::var_os(CRASH_MARKER).unwrap());
+        let store = FsStreamCheckpointStore::open(directory)?;
+        match mode.to_str() {
+            Some("put") => {
+                let mut checkpoint = sample("crash-run");
+                checkpoint.partial_text = "after-acknowledged-put".to_string();
+                store.put(checkpoint).await?;
+            }
+            Some("delete") => store.delete("crash-run").await?,
+            _ => return Err("unknown checkpoint crash-child mode".into()),
+        }
+        std::fs::write(marker, b"acknowledged")?;
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        return Err("parent did not terminate checkpoint crash child".into());
+    }
+
+    let root = tempfile::tempdir()?;
+    let directory = root.path().join("checkpoints");
+    let marker = root.path().join("acknowledged.marker");
+    let store = FsStreamCheckpointStore::open(&directory)?;
+    store.put(sample("crash-run")).await?;
+    drop(store);
+
+    for mode in ["put", "delete"] {
+        let _ = std::fs::remove_file(&marker);
+        let status = CrashProcess::new(
+            "acknowledged_checkpoint_mutations_survive_real_process_kill",
+            &marker,
+        )
+        .env(CRASH_MODE, mode)
+        .env(CRASH_DIRECTORY, &directory)
+        .env(CRASH_MARKER, &marker)
+        .run()
+        .map_err(std::io::Error::other)?;
+        assert!(!status.success(), "{mode} child must be killed");
+
+        let reopened = FsStreamCheckpointStore::open(&directory)?;
+        match mode {
+            "put" => assert_eq!(
+                reopened.get("crash-run").await?.expect("R1/E1 checkpoint"),
+                StreamCheckpoint {
+                    partial_text: "after-acknowledged-put".to_string(),
+                    ..sample("crash-run")
+                },
+            ),
+            "delete" => assert!(reopened.get("crash-run").await?.is_none(), "R2/E2"),
+            _ => unreachable!(),
+        }
+    }
+    Ok(())
 }
 
 #[tokio::test]
