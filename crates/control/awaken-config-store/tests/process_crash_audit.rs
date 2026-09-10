@@ -13,13 +13,19 @@ const MARKER_PATH: &str = "AWAKEN_AUDIT_CRASH_MARKER";
 
 #[tokio::test]
 async fn durable_audit_survives_process_kill_before_business_commit() {
-    // Causes: kill after audit intent (D1) or after atomic config/audit/effect
-    // commit but before the caller receives a response (D2). Effects: reopen
-    // sees either pending+no config/effect or committed+revision 1+one effect.
-    // D3 exact retry applies once/replays; D4 changed fingerprint is rejected;
-    // D5 the same identity in another scope remains independently pending.
-    // CrashProcess kills a separate process; no destructor or graceful flush
-    // is used as a substitute for crash durability.
+    // Causes: C1 the mutually exclusive child phase acknowledges a durable
+    // pending intent before business, or C2 it acknowledges the atomic audited
+    // config/effect commit; C3 CrashProcess then kills that separate process;
+    // C4 retry uses the exact identity/payload; C5 retry changes the payload;
+    // C6 the same identity exists in another scope. Effects: E1 fresh SQLite
+    // reopen sees pending+no config/effect after C1, or E2 committed+revision 1
+    // +one effect after C2; E3 an exact pending retry applies once and later
+    // exact retries replay, while committed retries only replay; E4 changed
+    // payload conflicts; E5 the other scope remains independently pending.
+    // Decision rules: R1=C1+C3=>E1; R2=C2+C3=>E2; R3=(C1|C2)+C4=>E3;
+    // R4=(C1|C2)+C5=>E4; R5=(C1|C2)+C6=>E5. The marker is written only
+    // after the selected store operation returns; no destructor or graceful
+    // flush substitutes for the crash boundary.
     let scope = ScopeId::from("ws");
     let other = ScopeId::from("other");
     let config = AgentConfig {
@@ -91,7 +97,7 @@ async fn durable_audit_survives_process_kill_before_business_commit() {
             .unwrap()
             .unwrap();
         assert_eq!(entry.record, audit());
-        assert_eq!(entry.business_committed, committed, "D1/D2 audit");
+        assert_eq!(entry.business_committed, committed, "R1/R2 audit");
         let revision = store
             .get_config_revision_scoped(&scope, &config.id)
             .await
@@ -118,14 +124,14 @@ async fn durable_audit_survives_process_kill_before_business_commit() {
                 .record_management_audit_scoped(&scope, &changed)
                 .await
                 .is_err(),
-            "D4 begin"
+            "R4 begin"
         );
         assert!(
             store
                 .put_config_with_audit_effect_scoped(&scope, &config, 0, &changed, Some(&effect))
                 .await
                 .is_err(),
-            "D4 commit"
+            "R4 commit"
         );
         for retry in 0..2 {
             assert_eq!(
@@ -151,7 +157,7 @@ async fn durable_audit_survives_process_kill_before_business_commit() {
                 } else {
                     AuditedConfigWrite::Applied
                 },
-                "D3"
+                "R3"
             );
         }
         let revision = store
@@ -175,7 +181,7 @@ async fn durable_audit_survives_process_kill_before_business_commit() {
                 .unwrap()
                 .unwrap()
                 .business_committed,
-            "D5 audit"
+            "R5 audit"
         );
         assert!(
             store
