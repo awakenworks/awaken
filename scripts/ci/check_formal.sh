@@ -792,6 +792,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness only_the_reserved_scope_selects_admin_catalog_membership \
     --harness every_non_reserved_scope_selects_strictly_global_membership
   run_kani awaken-service-lifecycle \
+    --harness shutdown_registry_fences_registration_and_transfers_exactly_once \
     --harness startup_wiring_is_exact_for_every_service_role \
     --harness startup_wiring_requires_every_role_owned_component \
     --harness startup_wiring_fails_closed_for_unknown_missing_or_extra_authority \
