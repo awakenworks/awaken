@@ -21,6 +21,9 @@ async fn final_authority_scan_is_the_only_event_batch_cutover_generation_trigger
     // | V2 | success | 0 | 0 | generation 1, zero counts |
     // | V3 | unavailable | unknown | any | error, V2 unchanged |
     // | V4 | two-page success; terminal on page 2 | 1 | 2 | generation 2, exact counts |
+    // V5/V6: final scan succeeds but global phase count is unavailable/corrupt
+    // -> error and previous snapshot unchanged. Global count scope/nonzero
+    // truth is covered by repository conformance; Q1 owns value projection.
     let inner: Arc<dyn ManagedSessionRepository> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("validation repository"),
@@ -44,6 +47,7 @@ async fn final_authority_scan_is_the_only_event_batch_cutover_generation_trigger
             terminal_with_incomplete_event_batches: 0,
             event_batch_failures: 0,
             quarantined: 0,
+            restoring_sessions: 0,
         },
         "V2/E2"
     );
@@ -57,6 +61,21 @@ async fn final_authority_scan_is_the_only_event_batch_cutover_generation_trigger
         "V3 repository outage"
     );
     assert_eq!(validation.snapshot(), Some(first), "V3/E3");
+
+    for (rule, fault) in [
+        ("V5", &repository.fail_environment_phase_count_once),
+        ("V6", &repository.corrupt_environment_phase_count_once),
+    ] {
+        fault.store(true, Ordering::SeqCst);
+        assert!(
+            application
+                .refresh_event_batch_cutover_validation(7)
+                .await
+                .is_err(),
+            "{rule}"
+        );
+        assert_eq!(validation.snapshot(), Some(first), "{rule}");
+    }
 
     for index in 0..256 {
         create(
@@ -95,6 +114,7 @@ async fn final_authority_scan_is_the_only_event_batch_cutover_generation_trigger
             terminal_with_incomplete_event_batches: 1,
             event_batch_failures: 2,
             quarantined: 0,
+            restoring_sessions: 0,
         },
         "V4/E4"
     );
@@ -105,7 +125,8 @@ async fn final_authority_scan_is_the_only_event_batch_cutover_generation_trigger
             "terminal_with_incomplete_event_batches": 1,
             "event_batch_failures": 2,
             "quarantined": 0,
+            "restoring_sessions": 0,
         }),
-        "V4 exposes exactly the four frozen fields"
+        "V4 exposes exactly the five frozen fields"
     );
 }
