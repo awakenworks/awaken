@@ -481,19 +481,15 @@ async fn acquire_session_work_owner(
     now_ms: u64,
     acquisition: awaken_session_contract::work_queue::SessionWorkAcquisition,
 ) -> Result<(), RealizationHttpError> {
-    use awaken_session_contract::work_queue::SessionWorkOwnership;
-
-    match session_work_ownership(service, session_id, worker_owner, now_ms, acquisition)
+    let ownership = session_work_ownership(service, session_id, worker_owner, now_ms, acquisition)
         .await
-        .map_err(RealizationHttpError::from)?
-    {
-        SessionWorkOwnership::NotRequired => Ok(()),
-        SessionWorkOwnership::Leased(lease) if lease.owner == worker_owner => Ok(()),
-        SessionWorkOwnership::Unowned | SessionWorkOwnership::Leased(_) => {
-            Err(RealizationHttpError::Control(
-                awaken_session_contract::SessionRealizationControlFailure::NotReady,
-            ))
-        }
+        .map_err(RealizationHttpError::from)?;
+    if ownership.permits_effect_for(worker_owner) {
+        Ok(())
+    } else {
+        Err(RealizationHttpError::Control(
+            awaken_session_contract::SessionRealizationControlFailure::NotReady,
+        ))
     }
 }
 
@@ -568,8 +564,7 @@ pub(super) async fn renew_session_realization(
                 "Worker registry authority cannot extend the asserted Session realization lease",
             )));
         }
-        use awaken_session_contract::work_queue::SessionWorkOwnership;
-        match session_work_ownership(
+        let ownership = session_work_ownership(
             &service,
             &command.session_id,
             &request.identity.lease_owner(),
@@ -577,26 +572,25 @@ pub(super) async fn renew_session_realization(
             awaken_session_contract::work_queue::SessionWorkAcquisition::RealizationRenewal,
         )
         .await
-        .map_err(RealizationHttpError::from)?
-        {
-            SessionWorkOwnership::NotRequired => {}
-            SessionWorkOwnership::Leased(lease)
-                if lease.owner == request.identity.lease_owner() => {}
+        .map_err(RealizationHttpError::from)?;
+        if !ownership.permits_effect_for(&request.identity.lease_owner()) {
             // A settled Run retires its self-hosted Session Work before the
             // longer-lived local realization lease next comes due. That is a
             // normal retirement proof, not evidence that another Worker stole
             // authority. Preserve the typed lifecycle result so the Worker
             // quietly revokes only its stale process-local projection.
-            SessionWorkOwnership::Unowned => {
-                return Err(RealizationHttpError::Control(
-                    awaken_session_contract::SessionRealizationControlFailure::Retired,
-                ));
-            }
-            SessionWorkOwnership::Leased(_) => {
-                return Err(RealizationHttpError::Control(
-                    awaken_session_contract::SessionRealizationControlFailure::StaleOwnership,
-                ));
-            }
+            let failure = match ownership {
+                awaken_session_contract::work_queue::SessionWorkOwnership::Unowned => {
+                    awaken_session_contract::SessionRealizationControlFailure::Retired
+                }
+                awaken_session_contract::work_queue::SessionWorkOwnership::Leased(_) => {
+                    awaken_session_contract::SessionRealizationControlFailure::StaleOwnership
+                }
+                awaken_session_contract::work_queue::SessionWorkOwnership::NotRequired => {
+                    awaken_session_contract::SessionRealizationControlFailure::NotReady
+                }
+            };
+            return Err(RealizationHttpError::Control(failure));
         }
         let lease = session_control(&service)
             .map_err(RealizationHttpError::from)?
