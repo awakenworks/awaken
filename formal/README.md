@@ -1123,7 +1123,11 @@ SBOM/signature, and fleet-conformance checks must enforce it.
 
 The transaction-hardening models cover three formerly narrower boundaries.
 `WebhookOutbox` now models the session repository's atomic lifecycle+outbox
-commit. `CredentialCreation` now projects the canonical material-attempt model
+commit. SQLite and live PostgreSQL conformance inject an outbox-insert failure
+after each create, replace, and delete root write and require the complete
+transaction to leave no root, receipt, tombstone, or outbox change; this is
+finite adapter evidence, not a universal database refinement.
+`CredentialCreation` now projects the canonical material-attempt model
 below: Source publication and external cleanup are not one atomic transaction.
 It no longer maintains a parallel atomic compensation protocol. `AuditCommit` models a
 durable pending audit followed by the config store's atomic business commit and
