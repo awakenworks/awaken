@@ -153,7 +153,9 @@ async fn execution_observation_joins_only_same_snapshot_run_and_model_facts() {
     // R2 a non-model audit on a known Run => ignored.
     // R3 a model audit whose Run is absent => ignored.
     // R4 a committed Run without a model audit => retained with an empty list,
-    // never promoted to executed. The projection performs no write or recovery.
+    // never promoted to executed. R5 two source messages reuse one batch-local
+    // tool call id => retain both exact source/call coordinates. The projection
+    // performs no write or recovery.
     let repository = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
@@ -190,6 +192,17 @@ async fn execution_observation_joins_only_same_snapshot_run_and_model_facts() {
                             id: "tool-submit".into(),
                             name: "design_submit_artifact".into(),
                             input: serde_json::json!({}),
+                        },
+                    ],
+                ),
+                Message::new(
+                    MessageId::assistant(&run_a, 1),
+                    Role::Assistant,
+                    vec![
+                        awaken_agent_contract::agent::content::ContentBlock::ToolUse {
+                            id: "tool-submit".into(),
+                            name: "design_submit_artifact".into(),
+                            input: serde_json::json!({ "revision": 2 }),
                         },
                     ],
                 ),
@@ -231,6 +244,8 @@ async fn execution_observation_joins_only_same_snapshot_run_and_model_facts() {
         .session_execution_observation("workspace", "session-observed")
         .await
         .expect("R1-R4 projection");
+    let first_tool_source = MessageId::assistant(&run_a, 0).0;
+    let second_tool_source = MessageId::assistant(&run_a, 1).0;
 
     assert_eq!(observed.session_revision, before.revision.0, "R1");
     assert_eq!(observed.agent_id, "courseware-agent", "R1");
@@ -248,7 +263,16 @@ async fn execution_observation_joins_only_same_snapshot_run_and_model_facts() {
                 run_id: run_a,
                 idempotency_key: Some("command-observed".into()),
                 state: RunState::Running,
-                tool_use_ids: vec!["tool-submit".into()],
+                tool_uses: vec![
+                    crate::SessionToolUseObservation {
+                        source_message_id: first_tool_source,
+                        call_id: "tool-submit".into(),
+                    },
+                    crate::SessionToolUseObservation {
+                        source_message_id: second_tool_source,
+                        call_id: "tool-submit".into(),
+                    },
+                ],
                 model_requests: vec![SessionModelRequestObservation {
                     sequence: 3,
                     is_error: false,
@@ -259,11 +283,11 @@ async fn execution_observation_joins_only_same_snapshot_run_and_model_facts() {
                 run_id: run_b,
                 idempotency_key: None,
                 state: RunState::Ended(EndCause::NaturalEnd),
-                tool_use_ids: Vec::new(),
+                tool_uses: Vec::new(),
                 model_requests: Vec::new(),
             },
         ],
-        "R1-R4"
+        "R1-R5"
     );
     assert_eq!(
         repository
@@ -281,7 +305,9 @@ async fn execution_observation_fails_closed_on_scope_or_corrupt_committed_eviden
     // R5 a foreign Workspace reads an existing Session => NotFound.
     // R6 no committed Thread exists => valid frozen evidence with zero Runs.
     // R7 a malformed ModelRequestCompleted payload => typed internal rejection;
-    // R8 duplicate tool-use identity in one Run => typed internal rejection.
+    // R8 duplicate tool-use identity in one source message => typed internal
+    // rejection. The same batch-local call id in different messages is covered
+    // as a valid case by R5 above.
     // Neither corrupt source can become fabricated successful evidence.
     let repository = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()

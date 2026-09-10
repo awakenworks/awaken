@@ -446,7 +446,7 @@ async fn retrieve_session(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
 ) -> Result<(HeaderMap, Json<Session>), (StatusCode, Json<ErrorResponse>)> {
-    if let Err(error) = state.refresh_committed_events(&id).await
+    if let Err(error) = state.refresh_committed_events_for_observation(&id).await
         && !error.is_projection_recovery_required()
     {
         return Err(error_response(error));
@@ -642,7 +642,7 @@ async fn list_threads(
     // direct list cannot retain idle while the Runtime has already committed
     // Running (or skip directly from idle to terminal).
     state
-        .refresh_committed_events(&id)
+        .refresh_committed_events_for_observation(&id)
         .await
         .map_err(error_response)?;
     state
@@ -657,7 +657,7 @@ async fn get_thread(
     Path((id, tid)): Path<(String, String)>,
 ) -> Result<Json<SessionThread>, WireErr> {
     state
-        .refresh_committed_events(&id)
+        .refresh_committed_events_for_observation(&id)
         .await
         .map_err(error_response)?;
     state
@@ -685,7 +685,7 @@ async fn list_thread_events(
     ManagedQuery(query): ManagedQuery<PageQuery>,
 ) -> Result<Json<ListEventsResponse>, WireErr> {
     state
-        .refresh_committed_events(&id)
+        .refresh_committed_events_for_observation(&id)
         .await
         .map_err(error_response)?;
     state
@@ -1075,7 +1075,7 @@ async fn stream_thread_events(
     // only their documented lifecycle/cross-post wire.
     let previews = parse_event_deltas(raw.as_deref())?;
     state
-        .refresh_committed_events(&id)
+        .refresh_committed_events_for_observation(&id)
         .await
         .map_err(error_response)?;
     let thread = state.get_thread(&id, &tid).map_err(error_response)?;
@@ -1425,7 +1425,7 @@ async fn list_resources(
     WireErr,
 > {
     state
-        .refresh_committed_events(&id)
+        .refresh_committed_events_for_observation(&id)
         .await
         .map_err(error_response)?;
     let (revision, resources) = state.list_resources(&id).map_err(error_response)?;
@@ -1443,7 +1443,7 @@ async fn get_resource(
     Path((id, rid)): Path<(String, String)>,
 ) -> Result<Json<crate::types::resource::SessionResource>, WireErr> {
     state
-        .refresh_committed_events(&id)
+        .refresh_committed_events_for_observation(&id)
         .await
         .map_err(error_response)?;
     state
@@ -1524,7 +1524,7 @@ async fn list_events(
     let order = parse_event_list_order(raw.as_deref())?;
     let filter = parse_event_list_filter(raw.as_deref())?;
     state
-        .refresh_committed_events(&id)
+        .refresh_committed_events_for_observation(&id)
         .await
         .map_err(error_response)?;
     state
@@ -1547,7 +1547,7 @@ async fn stream_events(
     // Opt in to live previews (`event_start`/`event_delta`) via `event_deltas[]`.
     let previews = parse_event_deltas(raw.as_deref())?;
     state
-        .refresh_committed_events(&id)
+        .refresh_committed_events_for_observation(&id)
         .await
         .map_err(error_response)?;
     let (snapshot, rx) = state.stream_subscribe(&id).map_err(error_response)?;
