@@ -545,8 +545,8 @@ mod migration_history_tests {
             .expect("Q2 convergence receipt");
         assert_eq!(published_max, 29, "Q2 expanded terminal");
         assert_eq!(
-            converged_count, 5,
-            "Q2/Q3 seal, paired slot, Thread exclusion, retired epoch, execution binding"
+            converged_count, 6,
+            "Q2/Q3 seal, paired slot, Thread exclusion, retired epoch, execution binding, retry deadline"
         );
     }
 }

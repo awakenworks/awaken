@@ -124,13 +124,17 @@ pub(super) fn claim_exact_transaction_with_mode(
              OR (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
                SELECT 1 FROM {prefix}_pending pe WHERE pe.run_id = d.run_id \
                AND (pe.available_at IS NULL OR pe.available_at <= ?2))) AND {thread_available}) \
-             OR (d.status = 'pending' AND {thread_available})) AND ?3 IS NULL"
+             OR (d.status = 'pending' AND {thread_available})) \
+             AND (d.cancel_requested = 1 OR d.retry_not_before IS NULL \
+                  OR d.retry_not_before <= ?2) AND ?3 IS NULL"
         ),
         ExactClaimMode::ReservationRecovery => format!(
             "((d.status = 'reserved' AND d.lease_until IS NOT NULL \
              AND d.lease_until < ?2) \
              OR (d.status = 'reservation_running' AND d.lease_until IS NOT NULL \
-             AND d.lease_until < ?2)) AND {no_running_peer} AND ?3 IS NULL"
+             AND d.lease_until < ?2)) AND {no_running_peer} \
+             AND (d.retry_not_before IS NULL OR d.retry_not_before <= ?2) \
+             AND ?3 IS NULL"
         ),
         ExactClaimMode::TerminalRecovery => {
             format!(
@@ -252,7 +256,7 @@ pub(super) fn claim_exact_transaction_with_mode(
             "UPDATE {prefix}_dispatch SET status = ?9, lease_owner = ?1, \
              lease_until = ?2, attempt_count = attempt_count + ?3, \
              lease_epoch = ?5, worker_assignment = ?6, credential_bindings = ?7, \
-             credential_receipts = ?8 WHERE run_id = ?4"
+             credential_receipts = ?8, retry_not_before = NULL WHERE run_id = ?4"
         ),
         params![
             owner,

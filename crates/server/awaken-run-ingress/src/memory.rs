@@ -66,6 +66,9 @@ struct Row {
     reservation_deadline_ms: Option<u64>,
     /// Consecutive crash-recoveries without a settle; reset when the run awaits.
     attempt_count: u64,
+    /// Request-local resolution backoff. It gates ordinary execution claims but
+    /// never cancellation or terminal repair authority.
+    retry_not_before_ms: Option<u64>,
     priority: i64,
     epoch: i64,
     /// Monotone fence token bumped on every claim; the lease carries it and settle
@@ -355,6 +358,7 @@ fn select_in_physical_band(
             && row.active_attempt.is_some() == occupied
             && classify_exact_claim_mode(row.state, row.exact_claim_deadline(), now_ms)
                 == ExactClaimMode::ReservationRecovery
+            && resolution_retry_is_due(row, now_ms)
             && !thread_has_claim_blocking_peer(state, run, false)
         {
             return Some(run.clone());
@@ -382,6 +386,7 @@ fn select_in_physical_band(
             && row.active_attempt.is_some() == occupied
             && row.state == DispatchState::Leased
             && row.lease.as_ref().is_some_and(|l| l.expires_ms < now_ms)
+            && resolution_retry_is_due(row, now_ms)
             && compatible(row)
         {
             return Some(run.clone());
@@ -394,6 +399,7 @@ fn select_in_physical_band(
         if let Some(row) = state.rows.get(run)
             && row.active_attempt.is_some() == occupied
             && row.state == DispatchState::Awaiting
+            && resolution_retry_is_due(row, now_ms)
             && state
                 .pending
                 .iter()
@@ -411,6 +417,7 @@ fn select_in_physical_band(
         if let Some(row) = state.rows.get(run)
             && row.active_attempt.is_some() == occupied
             && row.state == DispatchState::Pending
+            && resolution_retry_is_due(row, now_ms)
             && !thread_has_claim_blocking_peer(state, run, true)
             && compatible(row)
             && best.is_none_or(|(_, p)| row.priority > p)
@@ -421,11 +428,22 @@ fn select_in_physical_band(
     best.map(|(run, _)| run.clone())
 }
 
+fn resolution_retry_is_due(row: &Row, now_ms: u64) -> bool {
+    crate::pool::resolution_retry_is_due(
+        row.cancellation_requested,
+        row.retry_not_before_ms,
+        now_ms,
+    )
+}
+
 /// Whether one exact row is runnable under the same policy as [`select_where`]. The
 /// boolean says that the claim is crash recovery and must spend retry budget.
 fn runnable(state: &State, run_id: &RunId, now_ms: u64) -> Option<bool> {
     let now_ms = crate::clock::normalize_millis(now_ms);
     let row = state.rows.get(run_id)?;
+    if !resolution_retry_is_due(row, now_ms) {
+        return None;
+    }
     if classify_exact_claim_mode(row.state, row.exact_claim_deadline(), now_ms)
         == ExactClaimMode::ReservationRecovery
         && !thread_has_claim_blocking_peer(state, run_id, false)
@@ -513,8 +531,9 @@ fn claim_exact_with_mode(
                 return Ok(None);
             };
             let expired_recovery = row.state == DispatchState::ReservationLeased;
-            if classify_exact_claim_mode(row.state, row.exact_claim_deadline(), now_ms)
-                != ExactClaimMode::ReservationRecovery
+            if !resolution_retry_is_due(row, now_ms)
+                || classify_exact_claim_mode(row.state, row.exact_claim_deadline(), now_ms)
+                    != ExactClaimMode::ReservationRecovery
                 || thread_has_claim_blocking_peer(state, requested_run, false)
             {
                 return Ok(None);
@@ -608,6 +627,7 @@ fn claim_exact_with_mode(
         row.assignment = assignment.clone();
         row.credential_bindings.clone_from(&credential_bindings);
         row.credential_receipts.clear();
+        row.retry_not_before_ms = None;
         if was_execution_recovery {
             row.attempt_count += 1;
         }
@@ -763,6 +783,7 @@ fn enqueue_new_local(
             lease: None,
             reservation_deadline_ms: None,
             attempt_count: 0,
+            retry_not_before_ms: None,
             priority: options.priority,
             epoch,
             lease_epoch: 0,
@@ -830,6 +851,76 @@ fn claim_next_local(
         return Ok(None);
     };
     claim_exact(state, &run_id, owner, lease_ms, now_ms, None, capabilities)
+}
+
+fn release_claim(
+    state: &mut State,
+    claim: &RunClaim,
+    retry_not_before_ms: Option<u64>,
+) -> Result<SettleOutcome, DispatchError> {
+    let transition = state
+        .rows
+        .get(&claim.run_id)
+        .map_or(RelinquishTransition::Fenced, |row| {
+            let slot = match row.active_attempt.as_ref() {
+                None => PhysicalAttemptSlot::Empty,
+                Some(active) if active == claim => PhysicalAttemptSlot::ExactClaim,
+                Some(_) => PhysicalAttemptSlot::OtherClaim,
+            };
+            row.transition().relinquish(
+                claim.epoch,
+                row.lease
+                    .as_ref()
+                    .is_some_and(|lease| lease.owner == claim.owner),
+                slot,
+                row.attempt_count,
+            )
+        });
+    match transition {
+        RelinquishTransition::Pending {
+            state: next,
+            attempt_count,
+        } => {
+            if let Some(row) = state.rows.get_mut(&claim.run_id) {
+                row.apply_transition(next);
+                row.attempt_count = attempt_count;
+                row.lease = None;
+                row.retry_not_before_ms = retry_not_before_ms;
+            }
+        }
+        RelinquishTransition::Recovering {
+            state: next,
+            attempt_count,
+        } => {
+            if let Some(row) = state.rows.get_mut(&claim.run_id) {
+                row.apply_transition(next);
+                row.attempt_count = attempt_count;
+                row.lease
+                    .as_mut()
+                    .expect("an exact leased claim has a lease")
+                    .expires_ms = 0;
+                row.retry_not_before_ms = retry_not_before_ms;
+            }
+        }
+        RelinquishTransition::Fenced => return Ok(SettleOutcome::Fenced),
+        RelinquishTransition::Corrupt => {
+            return Err(DispatchError::Rejected(
+                "persisted physical attempt slot is not an owner/epoch pair".to_string(),
+            ));
+        }
+    }
+    // Re-enter at the tail of its priority cohort. Otherwise one temporarily
+    // unresolvable head item would be claimed again before a runnable peer.
+    state.order.retain(|run_id| run_id != &claim.run_id);
+    state.order.push(claim.run_id.clone());
+    push_operation(
+        state,
+        DispatchOperation::LeaseLost {
+            claim: claim.clone(),
+            reason: LeaseLossReason::Relinquished,
+        },
+    );
+    Ok(SettleOutcome::Applied)
 }
 
 #[async_trait]
@@ -1548,69 +1639,24 @@ impl DispatchQueue for MemoryDispatchStore {
     async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-        let transition =
-            state
-                .rows
-                .get(&claim.run_id)
-                .map_or(RelinquishTransition::Fenced, |row| {
-                    let slot = match row.active_attempt.as_ref() {
-                        None => PhysicalAttemptSlot::Empty,
-                        Some(active) if active == claim => PhysicalAttemptSlot::ExactClaim,
-                        Some(_) => PhysicalAttemptSlot::OtherClaim,
-                    };
-                    row.transition().relinquish(
-                        claim.epoch,
-                        row.lease
-                            .as_ref()
-                            .is_some_and(|lease| lease.owner == claim.owner),
-                        slot,
-                        row.attempt_count,
-                    )
-                });
-        match transition {
-            RelinquishTransition::Pending {
-                state: next,
-                attempt_count,
-            } => {
-                if let Some(row) = state.rows.get_mut(&claim.run_id) {
-                    row.apply_transition(next);
-                    row.attempt_count = attempt_count;
-                    row.lease = None;
-                }
-            }
-            RelinquishTransition::Recovering {
-                state: next,
-                attempt_count,
-            } => {
-                if let Some(row) = state.rows.get_mut(&claim.run_id) {
-                    row.apply_transition(next);
-                    row.attempt_count = attempt_count;
-                    row.lease
-                        .as_mut()
-                        .expect("an exact leased claim has a lease")
-                        .expires_ms = 0;
-                }
-            }
-            RelinquishTransition::Fenced => return Ok(SettleOutcome::Fenced),
-            RelinquishTransition::Corrupt => {
-                return Err(DispatchError::Rejected(
-                    "persisted physical attempt slot is not an owner/epoch pair".to_string(),
-                ));
-            }
-        }
-        // Re-enter at the tail of its priority cohort. Otherwise one
-        // temporarily unresolvable head item would be claimed again before a
-        // newly submitted runnable peer and starve the queue.
-        state.order.retain(|run_id| run_id != &claim.run_id);
-        state.order.push(claim.run_id.clone());
-        push_operation(
+        release_claim(&mut state, claim, None)
+    }
+
+    async fn defer_claim(
+        &self,
+        claim: &RunClaim,
+        retry_after_ms: u64,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        release_claim(
             &mut state,
-            DispatchOperation::LeaseLost {
-                claim: claim.clone(),
-                reason: LeaseLossReason::Relinquished,
-            },
-        );
-        Ok(SettleOutcome::Applied)
+            claim,
+            Some(crate::clock::deadline_millis(
+                self.clock.now_ms(),
+                retry_after_ms,
+            )),
+        )
     }
 
     async fn settle(

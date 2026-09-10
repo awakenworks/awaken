@@ -343,6 +343,11 @@ pub(crate) fn converged_dispatch_bundle() -> Result<MigrationBundle, MigrationEr
                 "V0005__physical_attempt_binding.sql",
                 include_str!("migrations/V0005__physical_attempt_binding.sql"),
             )?,
+            portable_migration(
+                6,
+                "V0006__dispatch_resolution_retry.sql",
+                include_str!("migrations/V0006__dispatch_resolution_retry.sql"),
+            )?,
         ],
     )
 }
@@ -527,7 +532,7 @@ mod tests {
                 .iter()
                 .map(|migration| migration.version)
                 .collect::<Vec<_>>(),
-            [1, 2, 3, 4, 5],
+            [1, 2, 3, 4, 5, 6],
             "S1/E1"
         );
         for (table, column) in [
@@ -536,6 +541,7 @@ mod tests {
             ("runtime_pending", "context_messages"),
             ("runtime_dispatch", "active_attempt_epoch"),
             ("runtime_dispatch", "active_attempt_binding"),
+            ("runtime_dispatch", "retry_not_before"),
         ] {
             let present = connection
                 .prepare(&format!("PRAGMA table_info({table})"))

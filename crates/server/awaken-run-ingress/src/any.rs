@@ -577,6 +577,14 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, relinquish_claim(claim))
     }
 
+    async fn defer_claim(
+        &self,
+        claim: &RunClaim,
+        retry_after_ms: u64,
+    ) -> Result<SettleOutcome, DispatchError> {
+        delegate!(self, defer_claim(claim, retry_after_ms))
+    }
+
     async fn settle(
         &self,
         run_id: &RunId,

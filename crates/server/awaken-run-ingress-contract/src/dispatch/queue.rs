@@ -378,6 +378,24 @@ pub trait DispatchQueue: Send + Sync {
         ))
     }
 
+    /// Return one exact current claim to `pending` and make it ineligible for
+    /// ordinary claim until the store's clock reaches `retry_after_ms` from now.
+    ///
+    /// This is a request-local resolution retry, not a Worker-wide failure gate.
+    /// Implementations preserve request bytes, priority, retry budget, pending
+    /// input and any independent physical-attempt slot. Cancellation and terminal
+    /// recovery must bypass the delay. The store owns both the current time and
+    /// the atomic claim/deadline transition.
+    async fn defer_claim(
+        &self,
+        _claim: &RunClaim,
+        _retry_after_ms: u64,
+    ) -> Result<SettleOutcome, DispatchError> {
+        Err(DispatchError::Rejected(
+            "dispatch backend does not support deferred claim relinquish".to_string(),
+        ))
+    }
+
     /// Whether one exact fenced claim still owns a live dispatch lease.
     ///
     /// The default reuses the backend's authoritative epoch guard instead of

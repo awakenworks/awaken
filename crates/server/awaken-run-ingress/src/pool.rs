@@ -758,28 +758,27 @@ async fn drain_loop<S: Dispatch + 'static>(
             // commit (terminal-is-final fence) never reaches here: `drive_claimed`
             // absorbs it as an already-done settle, so this only fires on genuine
             // faults.
-            Err(err) if err.is_resolution_not_ready() => {
+            Err(ClaimAndDriveFailure::ResolutionDeferred(err)) => {
                 // A recovery probe has returned. Ordinary Environment pressure
                 // must release its pool-wide probe ownership just like an idle
                 // or successful cycle; otherwise every future drain waits for
                 // a probe that no longer exists. This changes only retry
                 // admission, never the retained Run or physical execution slot.
                 admission.error_gate.record_success().await;
-                // WorkQueue serializes Runs that share one Environment. A
-                // predecessor releasing that slot is normal backpressure, not a
-                // fault. The queue poll is only a missed-edge fallback (and may
-                // be intentionally coarse), so apply the admission floor here
-                // independently instead of turning it into the retry interval.
-                tokio::time::sleep(Duration::from_millis(250)).await;
-                // Relinquishing made the row eligible but consumed this drain's
-                // sole permit. Re-arm exactly one permit after the floor: the
-                // external wake is edge-triggered and the Session projection or
-                // Work-slot transition that resolves NotReady need not enqueue a
-                // second row. Without this handoff a blackhole/cross-process wake
-                // waits for the coarse fallback poll despite local progress.
+                tracing::debug!(owner = %owner, error = %err, "request-local resolution retry deferred");
+                // Continue draining unrelated work immediately, including on a
+                // single-width pool. The persisted deadline remains the retry
+                // authority for the failed Dispatch.
                 admission.wake.notify_one();
+                // This timer contributes only a latency hint after that deadline;
+                // it owns no claim state and a lost hint is recovered by polling.
+                let retry_admission = admission.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(RESOLUTION_RETRY_DELAY).await;
+                    retry_admission.wake.notify_one();
+                });
             }
-            Err(err) => {
+            Err(ClaimAndDriveFailure::Fault(err)) => {
                 let (consecutive_errors, delay) = admission.error_gate.record_failure().await;
                 tracing::warn!(
                     owner = %owner,
@@ -796,6 +795,49 @@ async fn drain_loop<S: Dispatch + 'static>(
                 admission.wake.notify_one();
             }
         }
+    }
+}
+
+const RESOLUTION_RETRY_DELAY: Duration = Duration::from_millis(250);
+
+/// Internal scheduling predicate for a transiently unresolved request.
+/// Cancellation is terminal control and never waits for this local deadline.
+#[must_use]
+#[allow(
+    dead_code,
+    reason = "used by optional stores, executable tests, and the Kani admission proof"
+)]
+pub(crate) const fn resolution_retry_is_due(
+    cancellation_requested: bool,
+    retry_not_before_ms: Option<u64>,
+    now_ms: u64,
+) -> bool {
+    cancellation_requested
+        || match retry_not_before_ms {
+            None => true,
+            Some(deadline) => deadline <= now_ms,
+        }
+}
+
+#[test]
+fn resolution_retry_deadline_is_request_local_and_cancellation_bypasses_it() {
+    assert!(resolution_retry_is_due(false, None, 0));
+    assert!(!resolution_retry_is_due(false, Some(11), 10));
+    assert!(resolution_retry_is_due(false, Some(10), 10));
+    assert!(resolution_retry_is_due(true, Some(u64::MAX), 0));
+}
+
+/// Private pool control-flow classification. Resolution deferral is deliberately
+/// not added to the public Managed Agents or run-ingress error schema: callers
+/// keep seeing the established API while the drain loop avoids global backoff.
+enum ClaimAndDriveFailure {
+    ResolutionDeferred(Error),
+    Fault(Error),
+}
+
+impl From<Error> for ClaimAndDriveFailure {
+    fn from(error: Error) -> Self {
+        Self::Fault(error)
     }
 }
 
@@ -853,8 +895,21 @@ mod drain_admission_proofs {
 
 #[cfg(kani)]
 mod drain_error_proofs {
-    use super::{DrainErrorState, drain_error_backoff};
+    use super::{DrainErrorState, drain_error_backoff, resolution_retry_is_due};
     use std::time::Duration;
+
+    #[kani::proof]
+    fn resolution_retry_admission_matches_only_deadline_or_cancellation() {
+        let cancellation_requested: bool = kani::any();
+        let deadline_present: bool = kani::any();
+        let deadline: u64 = kani::any();
+        let now_ms: u64 = kani::any();
+        let retry_not_before_ms = deadline_present.then_some(deadline);
+        assert_eq!(
+            resolution_retry_is_due(cancellation_requested, retry_not_before_ms, now_ms),
+            cancellation_requested || !deadline_present || deadline <= now_ms
+        );
+    }
 
     #[kani::proof]
     fn shared_error_gate_admits_exactly_one_probe_after_the_deadline() {
@@ -927,7 +982,7 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     resolver: &dyn WorkerResolver<S>,
     completion: &Option<Arc<dyn CompletionSink>>,
     admission: &Arc<PoolAdmission>,
-) -> Result<bool, Error> {
+) -> Result<bool, ClaimAndDriveFailure> {
     let now = clock.now_ms();
     let (claimed, retry_exhausted) = {
         let gate = admission.gate.read().await;
@@ -936,7 +991,8 @@ async fn claim_and_drive<S: Dispatch + 'static>(
         }
         if let Some(claimed) = store
             .claim_retry_exhausted(owner, lease_ms, now, admission.max_attempts)
-            .await?
+            .await
+            .map_err(Error::from)?
         {
             (Some(claimed), true)
         } else {
@@ -948,7 +1004,8 @@ async fn claim_and_drive<S: Dispatch + 'static>(
                         now,
                         &resolver.credential_realization_capabilities(),
                     )
-                    .await?,
+                    .await
+                    .map_err(Error::from)?,
                 false,
             )
         }
@@ -998,8 +1055,13 @@ async fn claim_and_drive<S: Dispatch + 'static>(
                     .await
             }
             Err(error) => {
-                relinquish_after_claim_failure(store.as_ref(), &claim).await;
-                return Err(error);
+                defer_after_resolution_failure(
+                    store.as_ref(),
+                    &claim,
+                    RESOLUTION_RETRY_DELAY.as_millis() as u64,
+                )
+                .await?;
+                return Err(ClaimAndDriveFailure::ResolutionDeferred(error));
             }
         }
     };
@@ -1016,7 +1078,7 @@ async fn claim_and_drive<S: Dispatch + 'static>(
             // adding safety because the physical-attempt fence is the sole
             // external-effect exclusion authority.
             relinquish_after_claim_failure(store.as_ref(), &claim).await;
-            return Err(error);
+            return Err(ClaimAndDriveFailure::Fault(error));
         }
     };
     if let Some((run_id, state)) = settled
@@ -1026,6 +1088,34 @@ async fn claim_and_drive<S: Dispatch + 'static>(
         sink.settled(&run_id, &state);
     }
     Ok(true)
+}
+
+async fn defer_after_resolution_failure<S: Dispatch + 'static>(
+    store: &S,
+    claim: &crate::RunClaim,
+    retry_after_ms: u64,
+) -> Result<(), Error> {
+    match store.defer_claim(claim, retry_after_ms).await? {
+        crate::SettleOutcome::Applied => {
+            tracing::debug!(
+                run_id = %claim.run_id.0,
+                owner = %claim.owner,
+                epoch = claim.epoch,
+                retry_after_ms,
+                "deferred only the unresolved dispatch"
+            );
+            Ok(())
+        }
+        crate::SettleOutcome::Fenced => {
+            tracing::debug!(
+                run_id = %claim.run_id.0,
+                owner = %claim.owner,
+                epoch = claim.epoch,
+                "resolution failure claim was already fenced before deferral"
+            );
+            Ok(())
+        }
+    }
 }
 
 async fn relinquish_after_claim_failure<S: Dispatch + 'static>(store: &S, claim: &crate::RunClaim) {

@@ -811,6 +811,17 @@ async fn relinquish_claim_on_postgres() {
 }
 
 #[tokio::test]
+async fn defer_claim_is_request_local_on_postgres() {
+    let Some(pool) = harness::schema_pool("t_pg_defer_claim").await else {
+        return;
+    };
+    let store = PostgresDispatchStore::with_pool(pool.clone())
+        .await
+        .expect("dispatch");
+    harness::assert_defer_claim_is_request_local(&store).await;
+}
+
+#[tokio::test]
 async fn physical_attempt_admission_on_postgres() {
     let Some(pool) = harness::schema_pool("t_pg_physical_attempt").await else {
         return;
