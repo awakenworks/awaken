@@ -190,6 +190,92 @@ where
     }
 }
 
+/// Test query policy for making committed State diverge from the underlying
+/// compatibility projection without constructing another store or observer.
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct ScriptedStateQueries {
+    state: Arc<std::sync::Mutex<Result<Vec<StateCommand>, String>>>,
+}
+
+#[cfg(test)]
+impl ScriptedStateQueries {
+    pub(crate) fn new(state: Result<Vec<StateCommand>, String>) -> Self {
+        Self {
+            state: Arc::new(std::sync::Mutex::new(state)),
+        }
+    }
+
+    pub(crate) fn replace(&self, state: Result<Vec<StateCommand>, String>) {
+        *self
+            .state
+            .lock()
+            .expect("scripted authoritative state mutex poisoned") = state;
+    }
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl LocalCommitQueries<awaken_store_inmem::MemoryCommitCoordinator> for ScriptedStateQueries {
+    async fn authoritative_run(
+        &self,
+        store: &awaken_store_inmem::MemoryCommitCoordinator,
+        run_id: &RunId,
+    ) -> Result<Option<RunRecord>, String> {
+        ProjectedQueries.authoritative_run(store, run_id).await
+    }
+
+    async fn authoritative_latest_run(
+        &self,
+        store: &awaken_store_inmem::MemoryCommitCoordinator,
+        thread_id: &ThreadId,
+    ) -> Result<Option<RunRecord>, String> {
+        ProjectedQueries
+            .authoritative_latest_run(store, thread_id)
+            .await
+    }
+
+    async fn authoritative_committed_messages(
+        &self,
+        store: &awaken_store_inmem::MemoryCommitCoordinator,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<Message>, String> {
+        ProjectedQueries
+            .authoritative_committed_messages(store, thread_id)
+            .await
+    }
+
+    async fn authoritative_committed_state(
+        &self,
+        _store: &awaken_store_inmem::MemoryCommitCoordinator,
+        _thread_id: &ThreadId,
+    ) -> Result<Vec<StateCommand>, String> {
+        self.state
+            .lock()
+            .expect("scripted authoritative state mutex poisoned")
+            .clone()
+    }
+
+    async fn authoritative_open_wait_for_thread(
+        &self,
+        store: &awaken_store_inmem::MemoryCommitCoordinator,
+        thread_id: &ThreadId,
+    ) -> Result<Option<(RunId, ResumeTicket)>, String> {
+        ProjectedQueries
+            .authoritative_open_wait_for_thread(store, thread_id)
+            .await
+    }
+
+    async fn events_after(
+        &self,
+        store: &awaken_store_inmem::MemoryCommitCoordinator,
+        cursor: RunLifecycleCursor,
+        limit: usize,
+    ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
+        ProjectedQueries.events_after(store, cursor, limit).await
+    }
+}
+
 #[async_trait::async_trait]
 impl<S, Q> LocalCommit for LocalCommitAdapter<S, Q>
 where

@@ -264,61 +264,6 @@ mod tests {
         entered: Arc<tokio::sync::Notify>,
     }
 
-    struct UnavailableStateQueries;
-
-    #[async_trait::async_trait]
-    impl crate::LocalCommitQueries<awaken_store_inmem::MemoryCommitCoordinator>
-        for UnavailableStateQueries
-    {
-        async fn authoritative_committed_state(
-            &self,
-            _store: &awaken_store_inmem::MemoryCommitCoordinator,
-            _thread: &ThreadId,
-        ) -> Result<Vec<awaken_agent_contract::agent::state::Command>, String> {
-            Err("state read unavailable".into())
-        }
-        async fn authoritative_run(
-            &self,
-            _store: &awaken_store_inmem::MemoryCommitCoordinator,
-            _run: &RunId,
-        ) -> Result<Option<awaken_agent_contract::agent::run::Record>, String> {
-            unreachable!("ownership reads only state")
-        }
-        async fn authoritative_latest_run(
-            &self,
-            _store: &awaken_store_inmem::MemoryCommitCoordinator,
-            _thread: &ThreadId,
-        ) -> Result<Option<awaken_agent_contract::agent::run::Record>, String> {
-            unreachable!("ownership reads only state")
-        }
-        async fn authoritative_committed_messages(
-            &self,
-            _store: &awaken_store_inmem::MemoryCommitCoordinator,
-            _thread: &ThreadId,
-        ) -> Result<Vec<awaken_agent_contract::agent::message::Message>, String> {
-            unreachable!("ownership reads only state")
-        }
-        async fn authoritative_open_wait_for_thread(
-            &self,
-            _store: &awaken_store_inmem::MemoryCommitCoordinator,
-            _thread: &ThreadId,
-        ) -> Result<Option<(RunId, awaken_agent_contract::agent::awaiting::ResumeTicket)>, String>
-        {
-            unreachable!("ownership reads only state")
-        }
-        async fn events_after(
-            &self,
-            _store: &awaken_store_inmem::MemoryCommitCoordinator,
-            _cursor: awaken_agent_contract::thread::read::lifecycle::RunLifecycleCursor,
-            _limit: usize,
-        ) -> Result<
-            awaken_agent_contract::thread::read::lifecycle::RunLifecyclePage,
-            awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeedError,
-        > {
-            unreachable!("ownership reads only state")
-        }
-    }
-
     #[async_trait::async_trait]
     impl ToolExecutionAdmission for ObservedAdmission {
         async fn acquire(
@@ -651,7 +596,9 @@ mod tests {
             commit: Arc::new(HostCommit::Local(Arc::new(
                 crate::LocalCommitAdapter::with_queries(
                     Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new()),
-                    UnavailableStateQueries,
+                    crate::authority::ScriptedStateQueries::new(Err(
+                        "state read unavailable".into()
+                    )),
                 ),
             ))),
             supervisor,

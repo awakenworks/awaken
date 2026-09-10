@@ -1341,16 +1341,21 @@ mod tests {
 
     #[tokio::test]
     async fn committed_claim_launches_once_and_records_completion_without_a_second_store() {
-        // Cause graph: C1 Running task is absent from committed State -> observer
-        // sees nothing; C2 the exact claim is committed -> duplicate observer
-        // deliveries race; C3 supervisor registration wins once -> E1 one tool
-        // effect, E2 one process-local completion, E3 no observer-side commit;
+        // Cause/effect table: C1 authoritative State and the process projection
+        // are empty -> E1 observer launches nothing; C2 authoritative State has
+        // the exact Running claim while the process projection remains empty ->
+        // E2 observer launches that claim; C3 duplicate terminal deliveries ->
+        // E3 supervisor registration admits one tool effect and one completion;
         // C4 another plugin owns an AfterTool workflow hook -> E4 detached target
         // execution never advances that foreground-only workflow event;
         // C5 the canonical output spiller is bound -> E5 completion retains only
         // its stable materialized result reference, not a parallel output store;
         // C6 a Session background Run port is installed -> E6 one same-Thread
         // System attention command is submitted after process completion.
+        // Constraint: the scripted policy replaces only the existing
+        // LocalCommitQueries read seam; the Memory store remains the observable
+        // stale compatibility projection. Rules: R1=C1=>E1; R2=C2=>E2;
+        // R3=C2+C3=>E3; R4=C2+C4=>E4; R5=C2+C5=>E5; R6=C2+C6=>E6.
         let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker-test"));
         let plugin = Arc::new(BackgroundTaskPlugin::with_supervisor(
             BackgroundTaskConfig {
@@ -1367,9 +1372,13 @@ mod tests {
                 .with_plugin(Arc::new(RecordingAfterToolPlugin(after_tool_calls.clone())))
                 .with_tool(counter.clone()),
         );
-        let memory = awaken_store_inmem::MemoryCommitCoordinator::new();
+        let process_projection = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new());
+        let authoritative_state = crate::authority::ScriptedStateQueries::new(Ok(Vec::new()));
         let commit = Arc::new(HostCommit::Local(Arc::new(
-            crate::LocalCommitAdapter::projected(memory),
+            crate::LocalCommitAdapter::with_queries(
+                process_projection.clone(),
+                authoritative_state.clone(),
+            ),
         )));
         let background = Arc::new(BackgroundRuns::new());
         let attention = Arc::new(RecordingAttentionApplication::accepting(0));
@@ -1397,8 +1406,8 @@ mod tests {
             thread_id: thread_id.clone(),
             cause: awaken_runtime_contract::EndCause::NaturalEnd,
         };
-        observer.observe(&terminal).await.expect("C1 observer");
-        assert_eq!(counter.0.load(Ordering::SeqCst), 0, "C1");
+        observer.observe(&terminal).await.expect("R1 observer");
+        assert_eq!(counter.0.load(Ordering::SeqCst), 0, "R1/E1");
 
         let mut task = BackgroundTask::requested(
             BackgroundTaskId::new("task-test").expect("task id"),
@@ -1426,38 +1435,36 @@ mod tests {
                 },
             )
             .expect("claim");
-        commit
-            .commit(ThreadCommit::assemble(
-                thread_id.clone(),
-                RunDisposition::ended(origin_run, awaken_runtime_contract::EndCause::NaturalEnd),
-                true,
-                Vec::new(),
-                vec![
-                    task_state_cell(&task.id)
-                        .write(&task)
-                        .expect("task command"),
-                ],
-                Vec::new(),
-            ))
-            .await
-            .expect("C2 commit");
+        authoritative_state.replace(Ok(vec![
+            task_state_cell(&task.id)
+                .write(&task)
+                .expect("R2 authoritative task command"),
+        ]));
+        assert!(
+            awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::committed_state(
+                process_projection.as_ref(),
+                &thread_id,
+            )
+            .is_empty(),
+            "R2 process compatibility projection must remain stale"
+        );
         observer.observe(&terminal).await.expect("first delivery");
         observer
             .observe(&terminal)
             .await
             .expect("duplicate delivery");
         assert!(background.drain(std::time::Duration::from_secs(2)).await);
-        assert_eq!(counter.0.load(Ordering::SeqCst), 1, "C3/E1");
+        assert_eq!(counter.0.load(Ordering::SeqCst), 1, "R2/R3 E2/E3");
         let attention_calls = attention
             .calls
             .lock()
             .expect("attention calls mutex poisoned");
-        assert_eq!(attention_calls.len(), 1, "C3/E6 one attention Run");
-        assert_eq!(attention_calls[0].thread, thread_id.0, "C3/E6 owner");
-        assert_eq!(attention_calls[0].messages[0].role, Role::System, "C3/E6");
+        assert_eq!(attention_calls.len(), 1, "R3/R6 E3/E6 one attention Run");
+        assert_eq!(attention_calls[0].thread, thread_id.0, "R6/E6 owner");
+        assert_eq!(attention_calls[0].messages[0].role, Role::System, "R6/E6");
         drop(attention_calls);
-        assert_eq!(after_tool_calls.load(Ordering::SeqCst), 0, "C4/E4");
-        let completion = supervisor.completion(&task.id).expect("C3/E2 completion");
+        assert_eq!(after_tool_calls.load(Ordering::SeqCst), 0, "R4/E4");
+        let completion = supervisor.completion(&task.id).expect("R3/E3 completion");
         assert_eq!(completion.fence, fence);
         assert!(matches!(
             &completion.end,
@@ -1476,7 +1483,7 @@ mod tests {
                 "call".to_string(),
                 "done".to_string(),
             )],
-            "C5/E5: detached execution reuses the canonical stable spill identity"
+            "R5/E5: detached execution reuses the canonical stable spill identity"
         );
         assert!(
             supervisor.register(&task.id, &fence).is_none(),
