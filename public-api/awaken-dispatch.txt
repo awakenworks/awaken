@@ -250,7 +250,7 @@ pub fn awaken_dispatch::ClosedWorkerExecution::binding(&self) -> &awaken_dispatc
 pub fn awaken_dispatch::ClosedWorkerExecution::observed_exit(&self, impl core::convert::Into<alloc::string::String>) -> core::result::Result<awaken_dispatch::WorkerProcessStopStatus, awaken_dispatch::ApplicationError>
 pub struct awaken_dispatch::DispatchPool<S>
 impl<S: awaken_dispatch_contract::dispatch::Dispatch + 'static> awaken_dispatch::DispatchPool<S>
-pub async fn awaken_dispatch::DispatchPool<S>::begin_drain(&self)
+pub async fn awaken_dispatch::DispatchPool<S>::begin_drain(&self) -> awaken_dispatch::PoolDrainFence
 pub async fn awaken_dispatch::DispatchPool<S>::can_resume(&self) -> bool
 pub async fn awaken_dispatch::DispatchPool<S>::cancel(&self, &awaken_agent_contract::agent::run::Id) -> core::result::Result<bool, awaken_dispatch::Error>
 pub fn awaken_dispatch::DispatchPool<S>::concurrency(&self) -> usize
@@ -374,6 +374,7 @@ pub fn awaken_dispatch::PgNotifyWake::publish<'life0, 'async_trait>(&'life0 self
 pub fn awaken_dispatch::PgNotifyWake::wait<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 impl core::ops::drop::Drop for awaken_dispatch::PgNotifyWake
 pub fn awaken_dispatch::PgNotifyWake::drop(&mut self)
+pub struct awaken_dispatch::PoolDrainFence
 pub struct awaken_dispatch::PostgresDispatchStore
 impl awaken_dispatch::PostgresDispatchStore
 pub async fn awaken_dispatch::PostgresDispatchStore::connect(&str, u32) -> core::result::Result<Self, awaken_dispatch::PostgresStoreError>

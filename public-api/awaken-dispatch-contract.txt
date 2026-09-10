@@ -539,8 +539,12 @@ pub awaken_dispatch_contract::PhysicalAttemptTransition::Stutter
 pub enum awaken_dispatch_contract::RelinquishTransition
 pub awaken_dispatch_contract::RelinquishTransition::Corrupt
 pub awaken_dispatch_contract::RelinquishTransition::Fenced
-pub awaken_dispatch_contract::RelinquishTransition::Pending(awaken_dispatch_contract::DispatchTransition)
-pub awaken_dispatch_contract::RelinquishTransition::Recovering(awaken_dispatch_contract::DispatchTransition)
+pub awaken_dispatch_contract::RelinquishTransition::Pending
+pub awaken_dispatch_contract::RelinquishTransition::Pending::attempt_count: u64
+pub awaken_dispatch_contract::RelinquishTransition::Pending::state: awaken_dispatch_contract::DispatchTransition
+pub awaken_dispatch_contract::RelinquishTransition::Recovering
+pub awaken_dispatch_contract::RelinquishTransition::Recovering::attempt_count: u64
+pub awaken_dispatch_contract::RelinquishTransition::Recovering::state: awaken_dispatch_contract::DispatchTransition
 pub enum awaken_dispatch_contract::ResourceOperationFence
 pub awaken_dispatch_contract::ResourceOperationFence::CheckpointRelease(awaken_session_contract::environment::SessionEnvironmentOperation)
 pub awaken_dispatch_contract::ResourceOperationFence::RepositoryPublication
@@ -682,7 +686,7 @@ pub fn awaken_dispatch_contract::DispatchTransition::claim(self) -> core::result
 pub fn awaken_dispatch_contract::DispatchTransition::exhaust_retries(self, u64, bool) -> awaken_dispatch_contract::GuardedTransition
 pub fn awaken_dispatch_contract::DispatchTransition::recover_reservation(self) -> core::result::Result<core::option::Option<Self>, awaken_dispatch_contract::DispatchTransitionError>
 pub fn awaken_dispatch_contract::DispatchTransition::reject_reservation(self) -> awaken_dispatch_contract::GuardedTransition
-pub fn awaken_dispatch_contract::DispatchTransition::relinquish(self, u64, bool, awaken_dispatch_contract::PhysicalAttemptSlot) -> awaken_dispatch_contract::RelinquishTransition
+pub fn awaken_dispatch_contract::DispatchTransition::relinquish(self, u64, bool, awaken_dispatch_contract::PhysicalAttemptSlot, u64) -> awaken_dispatch_contract::RelinquishTransition
 pub fn awaken_dispatch_contract::DispatchTransition::requeue_dead_letter(self) -> core::option::Option<Self>
 pub fn awaken_dispatch_contract::DispatchTransition::resolve_reservation(self, u64, bool, core::option::Option<bool>) -> awaken_dispatch_contract::GuardedTransition
 pub fn awaken_dispatch_contract::DispatchTransition::settle(self, u64, bool, awaken_dispatch_contract::PhysicalAttemptSlot) -> awaken_dispatch_contract::GuardedTransition
