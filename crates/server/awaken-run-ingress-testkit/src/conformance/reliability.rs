@@ -1,3 +1,226 @@
+/// Pending-input crash/replay cause/effect table shared by every Dispatch store.
+/// C1 an Awaiting Run has one bound input; C2 its claimant disappears without
+/// settling; C3 the lease expires and another owner reclaims; C4 the stale owner
+/// attempts to consume the input; C5 the current owner settles and names it;
+/// C6 unbound input is read and a settlement omits/names its id. E1 C2 preserves
+/// the exact input; E2 C3 re-hands that input under a newer epoch; E3 C4 is fenced
+/// and cannot consume; E4 C5 consumes it and removes wake eligibility; E5 C6
+/// preserves an omitted id and consumes a named id. Constraints: claim/list are
+/// reads, only the current fenced settlement consumes, and message identity is
+/// exact. Rules: PI1=C1+C2+C3 -> E1+E2; PI2=PI1+C4 -> E3;
+/// PI3=PI1+C5 -> E4; PI4=C6(omit/name) -> E5.
+async fn pending_input_replays_until_exact_settle<S: Dispatch>(
+    store: &S,
+    ns: &str,
+    clock: &dyn ConformanceClock,
+) {
+    let request = dispatch(ns, "pending-replay", "pending-replay-thread");
+    let run_id = request.run_id().clone();
+    let bound_thread = request.thread_id().clone();
+    clock.set(300_000);
+    store.enqueue(request).await.expect("PI1 enqueue");
+    let initial = store
+        .claim_run(
+            &run_id,
+            "pending-initial",
+            LEASE_MS,
+            300_000,
+            &Default::default(),
+        )
+        .await
+        .expect("PI1 initial claim")
+        .expect("PI1 initial Run is claimable");
+    assert_eq!(
+        store
+            .settle(&run_id, initial.lease.epoch, DispatchOutcome::Awaiting, &[],)
+            .await
+            .expect("PI1 establish Awaiting"),
+        SettleOutcome::Applied,
+        "PI1 setup"
+    );
+    let input = PendingInput {
+        message_id: format!("{ns}-pending-replay-input"),
+        run_id: run_id.clone(),
+        thread_id: bound_thread.clone(),
+        correlation_id: format!("{ns}-pending-replay-ticket"),
+        available_at_ms: None,
+        context_messages: Vec::new(),
+        result: ResumeResult::Input("replay after crash".to_string()),
+    };
+    assert!(store.append(input.clone()).await.expect("PI1 append"));
+    let crashed = store
+        .claim_run(
+            &run_id,
+            "pending-crashed",
+            LEASE_MS,
+            300_001,
+            &Default::default(),
+        )
+        .await
+        .expect("PI1 crash-window claim")
+        .expect("PI1 pending input wakes Awaiting Run");
+    assert_eq!(crashed.pending, vec![input.clone()], "PI1/E1 exact handoff");
+
+    clock.advance_past(crashed.lease.expires_ms).await;
+    let recovered = store
+        .claim_run(
+            &run_id,
+            "pending-recovered",
+            LEASE_MS,
+            crashed.lease.expires_ms.saturating_add(1),
+            &Default::default(),
+        )
+        .await
+        .expect("PI1 recovery claim")
+        .expect("PI1 expired claim is recoverable");
+    assert_eq!(recovered.lease.epoch, crashed.lease.epoch + 1, "PI1/E2");
+    assert_eq!(recovered.pending, vec![input.clone()], "PI1/E1+E2");
+    assert_eq!(
+        store
+            .settle(
+                &run_id,
+                crashed.lease.epoch,
+                DispatchOutcome::Awaiting,
+                std::slice::from_ref(&input.message_id),
+            )
+            .await
+            .expect("PI2 stale settlement"),
+        SettleOutcome::Fenced,
+        "PI2/E3"
+    );
+    let after_stale = store
+        .list(&bound_thread)
+        .await
+        .expect("PI2 inspect pending");
+    assert_eq!(after_stale.len(), 1, "PI2/E3 one pending row remains");
+    assert_eq!(after_stale[0].input, input, "PI2/E3 exact pending survives");
+    assert_eq!(
+        store
+            .settle(
+                &run_id,
+                recovered.lease.epoch,
+                DispatchOutcome::Awaiting,
+                &[format!("{ns}-pending-replay-input")],
+            )
+            .await
+            .expect("PI3 current settlement"),
+        SettleOutcome::Applied,
+        "PI3/E4"
+    );
+    assert!(
+        store
+            .list(&bound_thread)
+            .await
+            .expect("PI3 inspect pending")
+            .is_empty(),
+        "PI3/E4 exact current settlement consumes the input"
+    );
+    assert!(
+        store
+            .claim_run(
+                &run_id,
+                "pending-third",
+                LEASE_MS,
+                recovered.lease.expires_ms.saturating_add(1),
+                &Default::default(),
+            )
+            .await
+            .expect("PI3 duplicate probe")
+            .is_none(),
+        "PI3/E4 consumed input cannot wake a third delivery"
+    );
+
+    let unbound_thread = thread_id(ns, "pending-unbound-thread");
+    let unbound = PendingInput {
+        message_id: format!("{ns}-pending-unbound-input"),
+        run_id: RunId(String::new()),
+        thread_id: unbound_thread.clone(),
+        correlation_id: String::new(),
+        available_at_ms: None,
+        context_messages: Vec::new(),
+        result: ResumeResult::Input("unbound exact consumption".to_string()),
+    };
+    assert!(store.append(unbound.clone()).await.expect("PI4 append"));
+    assert_eq!(
+        store.list(&unbound_thread).await.expect("PI4 first read"),
+        store
+            .list(&unbound_thread)
+            .await
+            .expect("PI4 replayed read"),
+        "PI4/E5 repeated reads do not consume"
+    );
+    let omitted = dispatch(ns, "pending-unbound-omit", "pending-unbound-thread");
+    store
+        .enqueue(omitted.clone())
+        .await
+        .expect("PI4 enqueue omit");
+    let omitted_claim = store
+        .claim_run(
+            omitted.run_id(),
+            "pending-unbound-omit",
+            LEASE_MS,
+            400_000,
+            &Default::default(),
+        )
+        .await
+        .expect("PI4 claim omit")
+        .expect("PI4 omitted Run is claimable");
+    assert_eq!(
+        store
+            .settle(
+                omitted.run_id(),
+                omitted_claim.lease.epoch,
+                DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .expect("PI4 omit id"),
+        SettleOutcome::Applied
+    );
+    let after_omit = store
+        .list(&unbound_thread)
+        .await
+        .expect("PI4 omitted id survives");
+    assert_eq!(after_omit.len(), 1, "PI4/E5 one omitted row remains");
+    assert_eq!(after_omit[0].input, unbound, "PI4/E5 omitted id is exact");
+    let named = dispatch(ns, "pending-unbound-name", "pending-unbound-thread");
+    store
+        .enqueue(named.clone())
+        .await
+        .expect("PI4 enqueue named");
+    let named_claim = store
+        .claim_run(
+            named.run_id(),
+            "pending-unbound-name",
+            LEASE_MS,
+            400_001,
+            &Default::default(),
+        )
+        .await
+        .expect("PI4 claim named")
+        .expect("PI4 named Run is claimable");
+    assert_eq!(
+        store
+            .settle(
+                named.run_id(),
+                named_claim.lease.epoch,
+                DispatchOutcome::Done,
+                &[format!("{ns}-pending-unbound-input")],
+            )
+            .await
+            .expect("PI4 consume named id"),
+        SettleOutcome::Applied
+    );
+    assert!(
+        store
+            .list(&unbound_thread)
+            .await
+            .expect("PI4 named id absent")
+            .is_empty(),
+        "PI4/E5 a named id is consumed exactly once"
+    );
+}
+
 /// Normalized history of the claim/physical-attempt crash boundary. It contains
 /// no backend identifiers or timestamps, so two adapters can be compared
 /// directly without constructing a parallel Dispatch state model.
