@@ -44,7 +44,8 @@ file_mode() {
 # all absent, all present, or partial. E1=preserve the command's status;
 # E2=terminate it and return 124; E3=make the copied contract readable by the
 # image's non-root user; E4=project the complete label set or reject a partial
-# set. H1 C1,!C2=>E1; H2 !C1,C2=>E2; H3 C3=>E3; H4 absent=>no labels;
+# set.
+# H1 C1,!C2=>E1; H2 !C1,C2=>E2; H3 C3=>E3; H4 absent=>no labels;
 # H5 complete=>three labels; H6 partial=>refuse. These self-tests own every rule
 # without invoking Cargo, Docker, or a package mirror.
 if [[ ${1:-} == --self-test ]]; then
@@ -107,7 +108,7 @@ if [[ ${1:-} == --self-test ]]; then
 fi
 
 ensure_existing=none
-if [[ ${1:-} == --ensure || ${1:-} == --ensure-hand ]]; then
+if [[ ${1:-} == --ensure || ${1:-} == --ensure-hand || ${1:-} == --ensure-current ]]; then
   ensure_existing=${1#--ensure}
   ensure_existing=${ensure_existing#-}
   ensure_existing=${ensure_existing:-full}
@@ -123,6 +124,7 @@ runtime_ids=${2-all}
 engine=${CONTAINER_ENGINE:-docker}
 build_timeout_seconds=${AWAKEN_SANDBOX_BUILD_TIMEOUT_SECONDS:-1800}
 operation_timeout_seconds=${AWAKEN_SANDBOX_OPERATION_TIMEOUT_SECONDS:-60}
+rust_toolchain_image=${AWAKEN_SANDBOX_RUST_TOOLCHAIN_IMAGE:-docker.io/library/rust:1.96-bookworm}
 [[ $build_timeout_seconds =~ ^[1-9][0-9]*$ ]] || {
   echo "AWAKEN_SANDBOX_BUILD_TIMEOUT_SECONDS must be a positive integer" >&2
   exit 2
@@ -132,6 +134,12 @@ operation_timeout_seconds=${AWAKEN_SANDBOX_OPERATION_TIMEOUT_SECONDS:-60}
   exit 2
 }
 configure_release_image_labels
+
+# A caller may supply an already accepted Sandbox image as the Rust-toolchain
+# build input when the external component mirror is unavailable. This reuses
+# only the pinned toolchain bytes: the current Hand binary and generated ACP
+# contract are still staged below, Docker still runs the component/version
+# assertion, and the completed image still passes the canonical acceptance.
 
 # A selected docker-container Buildx driver does not load `docker build` results
 # into the local image store unless the output is explicit. The production-image
@@ -165,6 +173,8 @@ build_image() {
 # | I3 | ensure | otherwise | | | | | | | E2, then full acceptance |
 # | I4 | ensure-hand | T | - | T | - | - | T | T | E1 for the Hand-only E2E fixture |
 # | I5 | ensure-hand | otherwise | | | | | | | E2, then full acceptance |
+# | I6 | ensure-current | I1 checks + exact current binary/contract bytes | | | | | | | E1 |
+# | I7 | ensure-current | otherwise | | | | | | | E2, then full acceptance |
 accept_hand() {
   run_with_deadline "$operation_timeout_seconds" \
     "$engine" run --rm --entrypoint /usr/local/bin/awaken-sandbox "$image" hand --stdio </dev/null || return 1
@@ -203,36 +213,87 @@ accept_image() {
   accept_runtimes
 }
 
+generated_context=""
+staged=""
+generated_contract=""
+current_input_fingerprint=""
+cleanup() { [[ -z $generated_context ]] || rm -rf -- "$generated_context"; }
+trap cleanup EXIT
+
+prepare_current_inputs() {
+  [[ -z $generated_context ]] || return 0
+  generated_context=$(mktemp -d "${TMPDIR:-/tmp}/awaken-sandbox-build.XXXXXX")
+  staged="$generated_context/.awaken-sandbox.bin"
+  generated_contract="$generated_context/.acp-runtimes.generated.json"
+  "$repo/deploy/images/sandbox/stage-binary.sh" "$staged" hand
+  # The Rust ACP catalog is the only package/argv/auth authority. Generate its
+  # image projection immediately before admission/build so neither path can
+  # consume a stale hand-maintained mirror.
+  (cd "$repo" && cargo run --quiet -p awaken-run-executor-acp --example image_runtime_contract) \
+    >"$generated_contract"
+  make_public_build_input "$generated_contract"
+  current_input_fingerprint=$(
+    {
+      printf 'runtime_ids=%s\n' "$runtime_ids"
+      for input in \
+        "$repo/deploy/images/sandbox/Dockerfile" \
+        "$repo/deploy/images/sandbox/Dockerfile.dockerignore" \
+        "$repo/deploy/images/sandbox/hermes-acp-bootstrap.py" \
+        "$repo/deploy/images/sandbox/install-acp-runtimes.py" \
+        "$repo/deploy/images/sandbox/verify-acp-runtimes.py" \
+        "$staged" \
+        "$generated_contract"; do
+        sha256sum "$input" | cut -d ' ' -f 1
+      done
+    } | sha256sum | cut -d ' ' -f 1
+  )
+}
+
+current_inputs_match() {
+  local image_binary image_contract image_fingerprint
+  image_fingerprint=$(
+    "$engine" image inspect --format \
+      '{{index .Config.Labels "org.awaken.build-input-fingerprint"}}' "$image" 2>/dev/null
+  ) || return 1
+  image_binary=$(run_with_deadline "$operation_timeout_seconds" \
+    "$engine" run --rm --network none --entrypoint sha256sum "$image" \
+    /usr/local/bin/awaken-sandbox) || return 1
+  image_contract=$(run_with_deadline "$operation_timeout_seconds" \
+    "$engine" run --rm --network none --entrypoint sha256sum "$image" \
+    /usr/local/share/awaken/acp-runtimes.json) || return 1
+  [[ $image_fingerprint == "$current_input_fingerprint" ]] \
+    && [[ ${image_binary%% *} == "$(sha256sum "$staged" | cut -d ' ' -f 1)" ]] \
+    && [[ ${image_contract%% *} == "$(sha256sum "$generated_contract" | cut -d ' ' -f 1)" ]]
+}
+
+if [[ $ensure_existing == current ]]; then
+  prepare_current_inputs
+fi
+
 if { [[ $ensure_existing == full ]] && image_exists && accept_image; } \
-  || { [[ $ensure_existing == hand ]] && image_exists && accept_hand; }; then
+  || { [[ $ensure_existing == hand ]] && image_exists && accept_hand; } \
+  || { [[ $ensure_existing == current ]] && image_exists && accept_image && current_inputs_match; }; then
   echo "reusing accepted sandbox image: $image"
   exit 0
 fi
 
-staged="$repo/deploy/images/sandbox/.awaken-sandbox.bin"
-generated_contract="$repo/deploy/images/sandbox/.acp-runtimes.generated.json"
-cleanup() { rm -f "$staged" "$generated_contract"; }
-trap cleanup EXIT
-
 cd "$repo"
-"$repo/deploy/images/sandbox/stage-binary.sh" "$staged" hand
-# The Rust ACP catalog is the only package/argv/auth authority. Generate its
-# image projection immediately before the build so Docker cannot consume a
-# stale hand-maintained mirror.
-cargo run --quiet -p awaken-run-executor-acp --example image_runtime_contract \
-  >"$generated_contract"
-make_public_build_input "$generated_contract"
+prepare_current_inputs
 if [[ -n "${AWAKEN_SANDBOX_BUILD_NETWORK:-}" ]]; then
   build_image --network "$AWAKEN_SANDBOX_BUILD_NETWORK" \
     "${release_image_labels[@]}" \
+    --build-context awaken_generated="$generated_context" \
+    --build-arg AWAKEN_BUILD_INPUT_FINGERPRINT="$current_input_fingerprint" \
+    --build-arg RUST_TOOLCHAIN_IMAGE="$rust_toolchain_image" \
     --build-arg ACP_RUNTIME_IDS="$runtime_ids" \
-    --build-arg ACP_RUNTIME_CONTRACT=deploy/images/sandbox/.acp-runtimes.generated.json \
-    -f deploy/images/sandbox/Dockerfile -t "$image" .
+    -f deploy/images/sandbox/Dockerfile -t "$image" deploy/images/sandbox
 else
   build_image "${release_image_labels[@]}" \
+    --build-context awaken_generated="$generated_context" \
+    --build-arg AWAKEN_BUILD_INPUT_FINGERPRINT="$current_input_fingerprint" \
+    --build-arg RUST_TOOLCHAIN_IMAGE="$rust_toolchain_image" \
     --build-arg ACP_RUNTIME_IDS="$runtime_ids" \
-    --build-arg ACP_RUNTIME_CONTRACT=deploy/images/sandbox/.acp-runtimes.generated.json \
-    -f deploy/images/sandbox/Dockerfile -t "$image" .
+    -f deploy/images/sandbox/Dockerfile -t "$image" deploy/images/sandbox
 fi
 
 # Production-image acceptance decision table. Causes: C1 the caller uses any
@@ -241,3 +302,4 @@ fi
 # binary. Rule B1 C1+C2+C3=>E1; a staging regression fails the build here instead
 # of surfacing later as a closed Session hand channel.
 accept_image
+current_inputs_match
