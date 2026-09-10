@@ -50,8 +50,8 @@ pub fn F::advance_past<'life0, 'async_trait>(&'life0 self, u64) -> core::pin::Pi
 pub fn F::exact_boundary_is_controllable(&self) -> bool
 pub fn F::set(&self, u64)
 pub async fn awaken_dispatch_testkit::assert_atomic_report_continuation_conformance(&dyn awaken_dispatch_contract::dispatch::Dispatch, &str)
-pub async fn awaken_dispatch_testkit::assert_dispatch_conformance(&dyn awaken_dispatch_contract::dispatch::DispatchQueue, &str, awaken_dispatch_testkit::ConformanceCapabilities)
-pub async fn awaken_dispatch_testkit::assert_dispatch_conformance_with_clock(&dyn awaken_dispatch_contract::dispatch::DispatchQueue, &str, awaken_dispatch_testkit::ConformanceCapabilities, &dyn awaken_dispatch_testkit::ConformanceClock)
+pub async fn awaken_dispatch_testkit::assert_dispatch_conformance<S: awaken_dispatch_contract::dispatch::Dispatch>(&S, &str, awaken_dispatch_testkit::ConformanceCapabilities)
+pub async fn awaken_dispatch_testkit::assert_dispatch_conformance_with_clock<S: awaken_dispatch_contract::dispatch::Dispatch>(&S, &str, awaken_dispatch_testkit::ConformanceCapabilities, &dyn awaken_dispatch_testkit::ConformanceClock)
 pub async fn awaken_dispatch_testkit::assert_dispatch_operational_feed_conformance<S>(&S, &str) where S: awaken_dispatch_contract::dispatch::DispatchQueue + awaken_dispatch_contract::operational::DispatchOperationalFeed + ?core::marker::Sized
 pub async fn awaken_dispatch_testkit::assert_dispatch_operational_feed_conformance_with_clock<S>(&S, &str, &dyn awaken_dispatch_testkit::ConformanceClock) where S: awaken_dispatch_contract::dispatch::DispatchQueue + awaken_dispatch_contract::operational::DispatchOperationalFeed + ?core::marker::Sized
 pub async fn awaken_dispatch_testkit::assert_session_reply_activity_rotation_conformance(&dyn awaken_dispatch_contract::dispatch::Dispatch, &str)
