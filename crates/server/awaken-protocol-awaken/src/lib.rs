@@ -7,6 +7,7 @@
 
 mod dream_policies;
 mod event_admissions;
+mod execution_evidence;
 mod file_outputs;
 mod live_inbox;
 mod memory_copy_conflicts;
@@ -19,6 +20,10 @@ pub use dream_policies::dream_policy_router;
 pub use event_admissions::{
     EventAdmissionProof, EventAdmissionReceipt, EventAdmissionStatus,
     session_event_admission_router,
+};
+pub use execution_evidence::{
+    SessionExecutionEvidence, SessionModelRequestEvidence, SessionRunExecutionEvidence,
+    session_execution_evidence_router,
 };
 pub use file_outputs::{
     FileOutputCapture, FileOutputCaptureParams, FileOutputCaptureResponse,

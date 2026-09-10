@@ -1336,6 +1336,7 @@ pub fn awaken_session_contract::PersistedSession::source_release_preparation_eff
 pub fn awaken_session_contract::PersistedSession::terminal_cleanup_work_action(&self) -> core::result::Result<core::option::Option<awaken_session_contract::SessionTerminalCleanupAction>, awaken_session_contract::SessionCleanupError>
 pub fn awaken_session_contract::PersistedSession::transition_execution(&mut self, awaken_session_contract::SessionExecutionState) -> core::result::Result<bool, awaken_session_contract::SessionExecutionTransitionError>
 pub fn awaken_session_contract::PersistedSession::try_apply_environment_receipt(&mut self, &str, &awaken_session_contract::SessionEnvironmentReceipt, u64) -> core::result::Result<bool, awaken_session_contract::SessionEnvironmentReceiptError>
+pub fn awaken_session_contract::PersistedSession::user_run_idempotency_key(&self, &awaken_agent_contract::agent::run::Id) -> core::result::Result<core::option::Option<&str>, awaken_session_contract::SessionEventBatchError>
 pub fn awaken_session_contract::PersistedSession::visible_mcp_servers(&self) -> alloc::vec::Vec<awaken_session_contract::VisibleMcpServer>
 impl awaken_session_contract::PersistedSession
 pub fn awaken_session_contract::PersistedSession::archive_with_repository_publication(&mut self, impl core::convert::Into<alloc::string::String>, awaken_session_contract::SessionRepositoryPublicationIntent) -> core::result::Result<bool, awaken_session_contract::SessionArchiveWithRepositoryPublicationError>

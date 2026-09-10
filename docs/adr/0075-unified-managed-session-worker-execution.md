@@ -844,6 +844,55 @@ and lets the leaf restore only the path-owned and fixed fields. That shared
 projector, not an Event batch builder, owns stable product Message identities
 and per-attempt tool/capability restrictions.
 
+## Amendment (2026-09-10): exact product execution evidence is one read projection
+
+A product that accepts a durable artifact needs to prove which committed Run
+produced its source tool call and which immutable model/backend selection that
+Session used. Replaying the product command, decoding a Managed Event id, or
+copying model usage into a product table would create a second execution
+authority. The existing authorities are sufficient and remain unchanged:
+
+- `PersistedSession` owns the frozen Agent/model/backend baseline and retained
+  Event-batch retry identity;
+- the primary Thread recovery snapshot owns committed Runs, assistant tool-use
+  blocks, and model-request completion audit records;
+- Managed Events remains the only public usage projection.
+
+`SessionApplication::session_execution_observation` joins those facts without
+driving realization, recovery, or execution. The Awaken extension adapter adds
+one GET-only leaf:
+
+    GET /v1/awaken/sessions/{session_id}/execution-evidence
+      -> enforce the authenticated Workspace against the Session root
+      -> read the frozen Session baseline
+      -> read one internally consistent primary-Thread recovery snapshot
+      -> for each committed Run, project its retained idempotency key when known,
+         canonical assistant tool-use ids, and completed model-request coordinates
+      -> return the Session revision and execution state with those observations
+
+This route is evidence, not another status model. It adds no table, queue,
+receipt store, settlement rule, usage counter, or compatibility alias.
+Create-time historical Runs can legitimately have no retained idempotency key.
+Missing Runtime history returns zero Runs; malformed committed audit payloads
+and ambiguous Run/tool coordinates fail closed. Token usage is deliberately
+absent because Managed Events already owns that projection.
+
+The static ownership is:
+
+    Awaken extension DTO/router -> Managed HTTP adapter -> SessionApplication query
+                                                       -> PersistedSession
+                                                       -> SessionRuntime snapshot
+
+The cause/effect rules are:
+
+| Rule | Cause | Required effect |
+|---|---|---|
+| X1 | owned frozen Session and one committed Run/tool/model completion | return the exact Session -> Run -> tool/model coordinates without mutation |
+| X2 | Run has no model completion or no source tool call | retain the Run with an empty observation; never promote it to executed |
+| X3 | foreign Workspace or missing Session | hide it as `404` and perform no Runtime write |
+| X4 | malformed model audit or ambiguous retained coordinate | fail closed; never fabricate successful execution evidence |
+| X5 | GET is retried or the Session advances after the read | return a newly reconstructed projection carrying its observed Session revision; create no durable read state |
+
 ## Amendment (2026-08-31): registered Workers record the same publication outcome
 
 ADR-0063 now distinguishes the sole Repository realizer's canonical receipt
