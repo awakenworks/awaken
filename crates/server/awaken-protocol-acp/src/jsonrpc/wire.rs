@@ -188,12 +188,17 @@ mod tests {
 
     #[tokio::test]
     async fn crossing_large_request_and_unsolicited_frames_preserves_wire_order() {
-        // Cause/effect table: C1 both peers write beyond the 64-byte transport;
-        // C2 the agent sends unsolicited frames before reading our request;
-        // C3 the first frame exceeds BufReader capacity; C4 another frame and EOF.
-        // D1 C1+C2+C3 => both writes finish without read/write circular wait.
-        // D2 +C4 => exactly ordered, lossless frames followed by EOF. No frame is
-        // projected by send(): the existing caller alone processes read() results.
+        // Causes: C1 both peers write two distinguishable frames beyond the
+        // 64-byte transport; C2 the agent writes both unsolicited frames before
+        // reading either host request; C3 send only drains and the caller has not
+        // entered read; C4 the peer closes after receiving both host frames.
+        // Effects: E1 both writers make bounded progress; E2 each endpoint observes
+        // the other endpoint's two frames exactly once and in its send order; E3
+        // send publishes no drained frame, and read returns both before explicit EOF.
+        // Constraint: one canonical Wire owns both halves and its existing FIFO;
+        // the test does not introduce a relay, queue, or projection owner.
+        // Decision rule R1: C1+C2+C3+C4 => E1+E2+E3. The outer timeout rejects
+        // circular wait; distinguishable ids and payloads reject loss/reordering.
         tokio::time::timeout(Duration::from_secs(3), async {
             let (mut host, mut peer) = tokio::io::duplex(64);
             let incoming = "x".repeat(64 * 1024);
@@ -204,13 +209,33 @@ mod tests {
                     peer.write_all(format!("{frame}\n").as_bytes()).await.unwrap();
                 }
                 let mut reader = BufReader::new(peer);
-                let mut request = String::new();
-                reader.read_line(&mut request).await.unwrap();
-                assert_eq!(serde_json::from_str::<serde_json::Value>(&request).unwrap()["params"]["text"], "p".repeat(64 * 1024));
+                for (id, payload) in [(3, "p"), (4, "q")] {
+                    let mut request = String::new();
+                    reader.read_line(&mut request).await.unwrap();
+                    let request = serde_json::from_str::<serde_json::Value>(&request).unwrap();
+                    assert_eq!(request["id"], id);
+                    assert_eq!(
+                        request["params"]["text"],
+                        payload.repeat(64 * 1024)
+                    );
+                }
                 reader.get_mut().shutdown().await.unwrap();
             });
             let mut wire = Wire::new(&mut host);
-            wire.send_request(3, "session/prompt", serde_json::json!({"text":"p".repeat(64 * 1024)})).await.unwrap();
+            wire.send_request(
+                3,
+                "session/prompt",
+                serde_json::json!({"text":"p".repeat(64 * 1024)}),
+            )
+            .await
+            .unwrap();
+            wire.send_request(
+                4,
+                "session/prompt",
+                serde_json::json!({"text":"q".repeat(64 * 1024)}),
+            )
+            .await
+            .unwrap();
             for id in [1, 2] {
                 let frame = wire.read().await.unwrap().unwrap();
                 assert_eq!(frame.id.unwrap(), id);
@@ -218,14 +243,20 @@ mod tests {
             }
             assert!(wire.read().await.unwrap().is_none());
             remote.await.unwrap();
-        }).await.expect("D1/D2 crossed writes make bounded progress");
+        })
+        .await
+        .expect("R1 crossed writes make bounded progress and preserve per-endpoint order");
     }
 
     #[tokio::test]
     async fn cancelled_read_preserves_the_partial_utf8_json_frame() {
-        // D3 prefix consumed + reader cancelled + suffix/EOF => one exact frame.
-        // Split within a multi-byte character, not merely between JSON tokens;
-        // cancellation cannot silently discard bytes or publish a partial value.
+        // Causes: C1 a read consumes a prefix ending inside a multi-byte UTF-8
+        // scalar and then becomes pending; C2 its future is dropped; C3 the peer
+        // writes the suffix and closes. Effects: E1 the canonical partial-line
+        // buffer retains the exact prefix; E2 the resumed read returns one exact
+        // frame; E3 the following read returns EOF. Constraint: fill_buf/copy/
+        // consume has no await between copy and consume. Decision rule R2:
+        // C1+C2+C3 => E1+E2+E3, rejecting byte loss, duplication, or partial JSON.
         let (mut host, mut peer) = tokio::io::duplex(64);
         let frame = "{\"id\":7,\"result\":\"中文\"}".as_bytes();
         let split = frame.iter().position(|byte| *byte >= 128).unwrap() + 1;
@@ -238,6 +269,7 @@ mod tests {
         })
         .await;
         drop(waiting);
+        assert_eq!(wire.line.as_slice(), &frame[..split], "R2 retained prefix");
         peer.write_all(&frame[split..]).await.unwrap();
         peer.shutdown().await.unwrap();
         let got = wire.read().await.unwrap().unwrap();
@@ -248,8 +280,12 @@ mod tests {
 
     #[tokio::test]
     async fn blank_lines_eof_and_invalid_frames_keep_one_explicit_outcome() {
-        // D4 blank lines + valid unterminated final frame => one value then EOF.
-        // D5 malformed JSON / invalid UTF-8 => explicit frame error, never EOF.
+        // Causes: C1 whitespace frames precede a valid unterminated final frame;
+        // C2 a newline-delimited frame is malformed JSON; C3 it is invalid UTF-8;
+        // C4 the peer closes after those bytes. Effects: E1 the C1 frame appears
+        // exactly once before EOF; E2 C2/C3 return Frame, never EOF. Constraint:
+        // each decision row uses a fresh canonical Wire and peer-owned shutdown.
+        // Rules: R3=C1+C4 => E1; R4=C2+C4 => E2; R5=C3+C4 => E2.
         for (bytes, valid) in [
             (b" \n\t\r\n{\"id\":1}".as_slice(), true),
             (b"{bad}\n", false),
@@ -263,16 +299,25 @@ mod tests {
                 assert_eq!(wire.read().await.unwrap().unwrap().id.unwrap(), 1);
                 assert!(wire.read().await.unwrap().is_none());
             } else {
-                assert!(matches!(wire.read().await, Err(AcpError::Frame(_))));
+                let outcome = wire.read().await;
+                assert!(
+                    matches!(outcome, Err(AcpError::Frame(_))),
+                    "R4/R5 explicit frame error"
+                );
             }
         }
     }
 
     #[tokio::test]
     async fn unsolicited_flood_and_oversized_frame_fail_without_unbounded_buffering() {
-        // D6 blocked large outbound + >256 unsolicited frames => explicit bounded
-        // read-ahead failure. D7 >16MiB without a newline => bounded frame failure.
-        // Neither rule truncates a tool result, authorizes a request, or invents EOF.
+        // Causes: C1 a large outbound write is blocked while the peer sends 257
+        // complete frames; C2 it instead sends >16MiB without a newline; C3 the
+        // peer then remains open. Effects: E1 C1 returns the exact read-ahead
+        // error; E2 C2 returns the exact frame-limit error; E3 every buffer stays
+        // within its declared bound and the peer task can be cancelled and joined.
+        // Constraints: admission is frames<256 and total bytes<=16MiB; neither
+        // error authorizes/projects a frame or invents EOF. Rules: R6=C1+C3 =>
+        // E1+E3; R7=C2+C3 => E2+E3. The scalar rows below cross every boundary.
         for oversized in [false, true] {
             let (mut host, mut peer) = tokio::io::duplex(64);
             let remote = tokio::spawn(async move {
@@ -291,14 +336,22 @@ mod tests {
             let error =
                 tokio::time::timeout(Duration::from_secs(5), wire.send(&"p".repeat(64 * 1024)))
                     .await
-                    .expect("D6/D7 bounded failure")
+                    .expect("R6/R7 bounded failure")
                     .unwrap_err();
-            assert!(matches!(error, AcpError::Frame(_)));
+            let expected = if oversized {
+                "ACP frame limit exceeded"
+            } else {
+                "ACP read-ahead limit exceeded"
+            };
+            assert!(matches!(&error, AcpError::Frame(message) if message == expected));
             assert!(wire.pending.len() <= MAX_QUEUED_FRAMES);
             assert!(wire.pending_bytes <= MAX_FRAME_BYTES);
             assert!(wire.line.len() <= MAX_FRAME_BYTES);
             remote.abort();
-            let _ = remote.await;
+            assert!(
+                remote.await.unwrap_err().is_cancelled(),
+                "R6/R7 peer joined"
+            );
         }
         // Admission boundary rows also include impossible/overflowing state,
         // not just states reached by the happy-path producer.
