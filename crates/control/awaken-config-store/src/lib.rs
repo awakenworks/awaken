@@ -120,15 +120,25 @@ impl ConfigRevisionWritePlan {
             ConfigRevisionAdmission::Conflict { current_revision }
         })
     }
+
+    /// Advance the row currently owned by the store. This is the unconditional
+    /// write mode, but it still enters through the same insert/update admission
+    /// and checked successor used by compare-and-set writes.
+    fn advance_current(
+        current_revision: Option<u64>,
+    ) -> Result<ConfigRevisionAdmission, StoredU64Error> {
+        Self::admit(current_revision, current_revision.unwrap_or(0))
+    }
 }
 
 #[cfg(any(test, kani))]
 fn check_config_revision_admission(current_revision: Option<u64>, expected: u64) {
-    // Causes: C1 row absent/present; C2 expected zero/exact/different; C3 exact
-    // successor fits signed storage. Effects: R1 absent+zero -> insert 1; R2
-    // present+positive exact -> update to current+1; R3 absent+positive,
-    // present+zero, stale or future -> conflict with the observed revision; R4
-    // exhausted/out-of-range expectation -> typed rejection before SQL.
+    // Causes: C1 row absent/present; C2 request is unconditional or carries an
+    // expected zero/exact/different revision; C3 exact successor fits signed
+    // storage. Effects: R1 absent+zero CAS/unconditional -> insert 1; R2
+    // present+positive exact CAS/unconditional -> update to current+1; R3
+    // absent+positive, present+zero, stale or future CAS -> conflict with the
+    // observed revision; R4 exhausted/out-of-range -> rejection before SQL.
     let successor = u128::from(expected) + 1;
     let should_apply = successor <= i64::MAX as u128
         && match current_revision {
@@ -164,14 +174,51 @@ fn check_config_revision_admission(current_revision: Option<u64>, expected: u64)
             assert_eq!(error, StoredU64Error::OutOfRange(rejected));
         }
     }
+
+    let advance_expected = current_revision.unwrap_or(0);
+    let advance_successor = u128::from(advance_expected) + 1;
+    let advance_should_apply =
+        advance_successor <= i64::MAX as u128 && current_revision.is_none_or(|current| current > 0);
+    match ConfigRevisionWritePlan::advance_current(current_revision) {
+        Ok(ConfigRevisionAdmission::Apply(plan)) => {
+            assert!(advance_should_apply);
+            assert_eq!(plan.expected.domain_value(), advance_expected);
+            assert_eq!(u128::from(plan.next.domain_value()), advance_successor);
+            assert_eq!(
+                plan.kind == ConfigRevisionWriteKind::Insert,
+                current_revision.is_none()
+            );
+            assert_eq!(
+                plan.kind == ConfigRevisionWriteKind::Update,
+                current_revision.is_some()
+            );
+        }
+        Ok(ConfigRevisionAdmission::Conflict {
+            current_revision: conflict,
+        }) => {
+            assert_eq!(current_revision, Some(0));
+            assert!(!advance_should_apply);
+            assert_eq!(conflict, current_revision);
+        }
+        Err(error) => {
+            assert!(!advance_should_apply);
+            assert!(advance_successor > i64::MAX as u128);
+            let rejected = if advance_expected > i64::MAX as u64 {
+                advance_expected
+            } else {
+                advance_successor as u64
+            };
+            assert_eq!(error, StoredU64Error::OutOfRange(rejected));
+        }
+    }
 }
 
 #[cfg(kani)]
 #[kani::proof]
 fn config_revision_admission_is_exact_and_nonwrapping() {
     // No assumptions: exhaust every Option<u64> observed row x independent
-    // caller expectation through the production owner. SQL predicate execution,
-    // locking and transaction isolation remain adapter/database TCB.
+    // caller expectation through both production request modes at the one
+    // owner. SQL predicates, locking and isolation remain adapter/database TCB.
     check_config_revision_admission(kani::any(), kani::any());
 }
 
@@ -226,8 +273,9 @@ mod tests {
 
     #[test]
     fn config_revision_admission_boundary_decision_table() {
-        // R1-R4 above. Cross absent/present and zero/exact/stale/future with the
-        // signed ceiling plus the full-u64 endpoints. Same oracle as Kani.
+        // R1-R4 above. Cross CAS and unconditional mode with absent/present,
+        // zero/exact/stale/future, the signed ceiling and full-u64 endpoints.
+        // The same production oracle is used by Kani.
         let currents = [
             None,
             Some(0),

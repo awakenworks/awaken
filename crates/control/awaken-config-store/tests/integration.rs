@@ -129,6 +129,7 @@ async fn sqlite_config_cas_missing_row_and_revision_decision_table() {
     let second = Arc::new(SqliteConfigStore::open(path.to_str().unwrap()).unwrap());
     revision_cas::decision_table(first.as_ref()).await;
     revision_cas::concurrent_writers(&[first.clone(), second.clone()]).await;
+    revision_cas::mixed_unconditional_and_cas_writers(&[first.clone(), second.clone()]).await;
     let scope = ScopeId::from("cas-concurrent");
     let before_reopen = revision_cas::frame(first.as_ref(), &scope, "race").await;
     drop((first, second));
