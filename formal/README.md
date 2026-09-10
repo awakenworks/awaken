@@ -467,6 +467,12 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   is admitted only after both independently captured high-water marks are
   covered. `ExecutableProjectionRefreshProof.tla` proves the unbounded inductive
   invariant, including the short install-before-cursor visibility window.
+  The strict gate cross-checks the async Rust boundary with injected refresh
+  failures at three independent production consumers: Coordinator inventory and
+  warmup handlers perform no source read, Session recovery performs no durable
+  mutation or dispatch, and Deployment scheduling performs no candidate mutation
+  or launch. These tests qualify representative entrypoint wiring; they do not
+  establish universal Rust refinement for every async call site.
 - `WebhookOutbox.tla`, `RegistrationIntent.tla`, `ErasureSaga.tla`, and
   `CredentialCreation.tla` cover atomic lifecycle/outbox commit, atomic
   Environment revision+intent commit with crash-window replay and
