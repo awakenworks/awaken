@@ -39,8 +39,8 @@ use awaken_agent_contract::thread::read::lifecycle::{
     CheckpointRunLifecycleFeed, RunLifecycleCursor, RunLifecycleEventKind, RunLifecycleFeed,
 };
 use awaken_dispatch::{
-    Dispatch, DispatchOutcome, DispatchQueue, DispatchWorker, Inbox, MemoryDispatchStore,
-    RunDispatch, SqliteDispatchStore,
+    Dispatch, DispatchOutcome, DispatchQueue, DispatchWorker, Inbox, ManualClock,
+    MemoryDispatchStore, RunDispatch, SettleOutcome, SqliteDispatchStore,
 };
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -53,6 +53,7 @@ use awaken_store_sqlite::SqliteCommitCoordinator;
 use harness::{THREAD, TICKET, activation, input_echo_runtime, pending, tool_runtime};
 
 const LEASE: u64 = 1_000;
+const SQLITE_CRASH_MODE: &str = "AWAKEN_PENDING_INPUT_CRASH_ROOT";
 
 #[derive(Default)]
 struct TerminalCount {
@@ -234,96 +235,146 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
     assert!(replay.events.is_empty(), "R1/E3");
 }
 
-/// Store-level spec (both backends must match): a claim HANDS a run's bound pending
-/// but does not remove it, so an owner that never settles (a crash) leaves the
-/// pending for the next claim; only a settle that NAMES it consumes it.
-async fn assert_bound_pending_survives_claim_without_settle<S: Dispatch>(store: &S) {
-    let run = RunId("run-1".to_string());
-
-    // Await the run so a wake claim will hand its bound pending.
-    store
-        .enqueue(RunDispatch::new(activation("run-1")))
-        .await
-        .unwrap();
-    assert!(
+#[tokio::test]
+async fn sqlite_process_crash_before_settle_replays_and_consumes_exact_input_once() {
+    // Cause/effect decision table. C1 a file-backed SQLite Awaiting row and its
+    // bound input are committed; C2 the exact claimant is SIGKILLed before
+    // settle; C3 a fresh adapter reopens after lease expiry; C4 the old/new
+    // epochs each attempt to name the input; C5 a second fresh adapter reopens.
+    // E1 C2 preserves the exact row; E2 C3 re-hands it under epoch+1; E3 C4(old)
+    // is fenced and preserves it; E4 C4(new) consumes it; E5 C5 observes no
+    // pending row and no third wake. Constraint: the marker identifies only the
+    // post-claim kill boundary; all persistence evidence comes from independently
+    // opened production adapters. Rules: PCR1=C1+C2+C3 -> E1+E2;
+    // PCR2=PCR1+C4(old/new) -> E3+E4; PCR3=PCR2+C5 -> E5.
+    if let Ok(root) = std::env::var(SQLITE_CRASH_MODE) {
+        let root = std::path::Path::new(&root);
+        let clock = Arc::new(ManualClock::new(0));
+        let store = SqliteDispatchStore::open(root.join("dispatch.db").to_str().unwrap())
+            .expect("PCR1 open child store")
+            .with_clock(clock);
+        let run = RunId("run-process-crash".to_string());
         store
-            .claim("w", LEASE, 0, &Default::default())
+            .enqueue(RunDispatch::new(activation("run-process-crash")))
             .await
-            .unwrap()
-            .is_some()
-    );
-    store
-        .settle(&run, 1, DispatchOutcome::Awaiting, &[])
-        .await
-        .unwrap();
-
-    // Its bound pending arrives.
-    store
-        .append(pending(
-            "good",
-            "run-1",
+            .expect("PCR1 enqueue");
+        let initial = store
+            .claim_run(&run, "initial", LEASE, 0, &Default::default())
+            .await
+            .expect("PCR1 initial claim")
+            .expect("PCR1 fresh Run is claimable");
+        assert_eq!(
+            store
+                .settle(&run, initial.lease.epoch, DispatchOutcome::Awaiting, &[],)
+                .await
+                .expect("PCR1 establish Awaiting"),
+            SettleOutcome::Applied
+        );
+        let input = pending(
+            "process-crash-input",
+            "run-process-crash",
             TICKET,
-            ResumeResult::Input("hi".to_string()),
-        ))
-        .await
-        .unwrap();
-
-    // An owner wakes the run (claim hands the pending) then crashes before settle.
-    let crashed = store
-        .claim("crasher", LEASE, 10, &Default::default())
-        .await
-        .unwrap()
-        .expect("wake claim");
-    assert!(
-        crashed.pending.iter().any(|p| p.message_id == "good"),
-        "the claim hands the bound pending"
-    );
-    drop(crashed);
-
-    // Consumed on settle, not on read: a re-claim after the lease lapses re-hands
-    // the SAME pending input.
-    let recovered = store
-        .claim("w2", LEASE, 10 + LEASE + 1, &Default::default())
-        .await
-        .unwrap()
-        .expect("recovery re-claim");
-    assert!(
-        recovered.pending.iter().any(|p| p.message_id == "good"),
-        "the crash left the pending to be re-delivered on the next claim"
-    );
-
-    // Only a settle that names it consumes it. The recovery re-claim bumped the
-    // fence, so settle under the epoch the recovery holds.
-    store
-        .settle(
-            &run,
-            recovered.lease.epoch,
-            DispatchOutcome::Done,
-            &["good".to_string()],
-        )
-        .await
-        .unwrap();
-    assert!(
-        store
-            .list(&ThreadId(THREAD.to_string()))
+            ResumeResult::Input("persist me".to_string()),
+        );
+        assert!(store.append(input.clone()).await.expect("PCR1 append"));
+        let crashed = store
+            .claim_run(&run, "crashed", LEASE, 0, &Default::default())
             .await
-            .unwrap()
-            .is_empty(),
-        "the pending is removed only by the settle that consumes it"
-    );
-}
+            .expect("PCR1 crash-window claim")
+            .expect("PCR1 pending input wakes Awaiting Run");
+        assert_eq!(crashed.pending, vec![input], "PCR1/E1 exact child handoff");
+        std::fs::write(
+            root.join("claimed.marker"),
+            crashed.lease.epoch.to_string().as_bytes(),
+        )
+        .expect("PCR1 publish post-claim marker");
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        panic!("parent failed to kill pending-input crash child");
+    }
 
-#[tokio::test]
-async fn bound_pending_survives_claim_without_settle_memory() {
-    assert_bound_pending_survives_claim_without_settle(&MemoryDispatchStore::new()).await;
-}
-
-#[tokio::test]
-async fn bound_pending_survives_claim_without_settle_sqlite() {
-    assert_bound_pending_survives_claim_without_settle(
-        &SqliteDispatchStore::open_in_memory().expect("open"),
+    let root = tempfile::tempdir().expect("PCR1 temp root");
+    let marker = root.path().join("claimed.marker");
+    let status = awaken_reliability_testkit::CrashProcess::new(
+        "sqlite_process_crash_before_settle_replays_and_consumes_exact_input_once",
+        &marker,
     )
-    .await;
+    .env(SQLITE_CRASH_MODE, root.path())
+    .run()
+    .expect("PCR1 child reaches claim and is killed");
+    assert!(!status.success(), "PCR1/C2 child was terminated");
+    let crashed_epoch = std::fs::read_to_string(&marker)
+        .expect("PCR1 read claimed epoch")
+        .parse::<u64>()
+        .expect("PCR1 marker is an epoch");
+    let run = RunId("run-process-crash".to_string());
+    let thread = ThreadId(THREAD.to_string());
+    let expected = pending(
+        "process-crash-input",
+        "run-process-crash",
+        TICKET,
+        ResumeResult::Input("persist me".to_string()),
+    );
+    let clock = Arc::new(ManualClock::new(LEASE + 1));
+    {
+        let reopened = SqliteDispatchStore::open(root.path().join("dispatch.db").to_str().unwrap())
+            .expect("PCR1 reopen after crash")
+            .with_clock(clock.clone());
+        let recovered = reopened
+            .claim_run(&run, "recovered", LEASE, LEASE + 1, &Default::default())
+            .await
+            .expect("PCR1 recovery claim")
+            .expect("PCR1 crashed lease is reclaimable");
+        assert_eq!(recovered.lease.epoch, crashed_epoch + 1, "PCR1/E2");
+        assert_eq!(recovered.pending, vec![expected.clone()], "PCR1/E1+E2");
+        assert_eq!(
+            reopened
+                .settle(
+                    &run,
+                    crashed_epoch,
+                    DispatchOutcome::Awaiting,
+                    std::slice::from_ref(&expected.message_id),
+                )
+                .await
+                .expect("PCR2 stale settle"),
+            SettleOutcome::Fenced,
+            "PCR2/E3"
+        );
+        let after_stale = reopened.list(&thread).await.expect("PCR2 inspect pending");
+        assert_eq!(after_stale.len(), 1, "PCR2/E3 one exact row remains");
+        assert_eq!(after_stale[0].input, expected, "PCR2/E3 stale is inert");
+        assert_eq!(
+            reopened
+                .settle(
+                    &run,
+                    recovered.lease.epoch,
+                    DispatchOutcome::Awaiting,
+                    &["process-crash-input".to_string()],
+                )
+                .await
+                .expect("PCR2 current settle"),
+            SettleOutcome::Applied,
+            "PCR2/E4"
+        );
+    }
+    let reopened = SqliteDispatchStore::open(root.path().join("dispatch.db").to_str().unwrap())
+        .expect("PCR3 second reopen")
+        .with_clock(clock);
+    assert!(
+        reopened
+            .list(&thread)
+            .await
+            .expect("PCR3 pending read")
+            .is_empty(),
+        "PCR3/E5"
+    );
+    assert!(
+        reopened
+            .claim_run(&run, "third", LEASE, LEASE + 1, &Default::default())
+            .await
+            .expect("PCR3 duplicate wake probe")
+            .is_none(),
+        "PCR3/E5 consumed input cannot wake a third delivery"
+    );
 }
 
 // --- 2. Unbound idle-thread input consumed on settle, not on read -------------
@@ -732,74 +783,6 @@ async fn recovering_a_terminal_run_keeps_undelivered_unbound_input() {
     );
 }
 
-/// Store-level spec (both backends must match): unbound idle-thread input is
-/// consumed on settle, not on read. Listing it (the worker's drain READ) never
-/// removes it; a settle that does NOT name it (a crash that lost the drain record)
-/// leaves it for re-delivery; only a settle that NAMES it consumes it.
-async fn assert_unbound_consumed_on_settle_not_on_read<S: Dispatch>(store: &S) {
-    let thread = ThreadId(THREAD.to_string());
-
-    store
-        .append(pending("u1", "", "", ResumeResult::Input("hi".to_string())))
-        .await
-        .unwrap();
-
-    // A read (list) does not consume: listing twice leaves it both times.
-    assert!(list_has_u1(store, &thread).await, "listed once");
-    assert!(
-        list_has_u1(store, &thread).await,
-        "a read does not consume the unbound input"
-    );
-
-    // A settle that does NOT name u1 leaves it — this is the crash case, where the
-    // owner drained u1 in memory but died before recording it in the settle.
-    store
-        .enqueue(RunDispatch::new(activation("run-1")))
-        .await
-        .unwrap();
-    assert!(
-        store
-            .claim("w", LEASE, 0, &Default::default())
-            .await
-            .unwrap()
-            .is_some()
-    );
-    store
-        .settle(&RunId("run-1".to_string()), 1, DispatchOutcome::Done, &[])
-        .await
-        .unwrap();
-    assert!(
-        list_has_u1(store, &thread).await,
-        "a settle that does not name the unbound input leaves it for re-delivery"
-    );
-
-    // Only a settle that NAMES it consumes it.
-    store
-        .enqueue(RunDispatch::new(harness::activation("run-2")))
-        .await
-        .unwrap();
-    assert!(
-        store
-            .claim("w", LEASE, 0, &Default::default())
-            .await
-            .unwrap()
-            .is_some()
-    );
-    store
-        .settle(
-            &RunId("run-2".to_string()),
-            1,
-            DispatchOutcome::Done,
-            &["u1".to_string()],
-        )
-        .await
-        .unwrap();
-    assert!(
-        !list_has_u1(store, &thread).await,
-        "the unbound input is consumed by the settle that names it"
-    );
-}
-
 /// Whether the unbound `u1` input is still listed for the thread.
 async fn list_has_u1<S: Dispatch>(store: &S, thread: &ThreadId) -> bool {
     store
@@ -808,19 +791,6 @@ async fn list_has_u1<S: Dispatch>(store: &S, thread: &ThreadId) -> bool {
         .unwrap()
         .iter()
         .any(|r| r.input.message_id == "u1")
-}
-
-#[tokio::test]
-async fn unbound_consumed_on_settle_not_on_read_memory() {
-    assert_unbound_consumed_on_settle_not_on_read(&MemoryDispatchStore::new()).await;
-}
-
-#[tokio::test]
-async fn unbound_consumed_on_settle_not_on_read_sqlite() {
-    assert_unbound_consumed_on_settle_not_on_read(
-        &SqliteDispatchStore::open_in_memory().expect("open"),
-    )
-    .await;
 }
 
 // --- 3. Atomic commit — no torn commit --------------------------------------

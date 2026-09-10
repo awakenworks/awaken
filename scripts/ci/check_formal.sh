@@ -218,6 +218,19 @@ cargo test -p awaken-session-executor --lib \
 # Async return/cleanup is not covered by the scalar physical-slot proof.
 cargo test -p awaken-dispatch --features test-support --test pool_memory
 cargo test -p awaken-dispatch --features test-support --test lease_semantics
+# Pending input has one shared cross-adapter conformance table: claim/list are
+# non-consuming, crash reclaim advances the epoch, stale settle is inert, and
+# only the current settle's exact message ids disappear. Run its exact Memory
+# and SQLite bindings here; the live PostgreSQL gate owns the same third binding,
+# while check-reliability retains its distinct normalized-history rule.
+cargo test -p awaken-dispatch --features test-support --test dispatch_conformance \
+  memory_dispatch_conforms -- --exact
+cargo test -p awaken-dispatch --features test-support --test dispatch_conformance \
+  sqlite_dispatch_conforms -- --exact
+# Cross the abstract crash action with a real child-process kill and two fresh
+# opens of the production file-backed SQLite adapter.
+cargo test -p awaken-dispatch --features test-support --test crash_before_settle \
+  sqlite_process_crash_before_settle_replays_and_consumes_exact_input_once -- --exact
 cargo test -p awaken-session-executor --lib durable_interrupt_returns_after_intent
 # The epoch kernel assumes the failure CAS actually expires every recoverable
 # assignment; cover Idle hot replacement as well as initial retry at that owner.
@@ -1005,6 +1018,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     python3 scripts/ci/check_formal_mutations.py --session-observation-trace-mutants "$tla_jar" --observation-trace-dir "$observation_trace_dir"
 
   python3 scripts/ci/check_formal_mutations.py --cowork-lifecycle-model-mutants "$tla_jar"
+  # The standalone instance loads the canonical transition owner from
+  # formal/tla/RunIngressKernel.tla; TLC checks that composition through this
+  # one configuration rather than maintaining a second kernel configuration.
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/run-ingress" \
     -config formal/tla/RunIngress.cfg formal/tla/RunIngress.tla
