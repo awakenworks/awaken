@@ -706,7 +706,9 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 )
                 .optional()
                 .map_err(reject)?;
-            if current_revision != Some(expected_generation) {
+            if let crate::PublicationSourceAdmission::Conflict { current_revision } =
+                crate::PublicationSourceAdmission::new(current_revision, expected_generation)
+            {
                 return Ok(ConfigWrite::Conflict { current_revision });
             }
             let existing = {

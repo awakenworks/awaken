@@ -14,6 +14,54 @@ pub use postgres::{PostgresConfigStore, StoreError as PostgresStoreError};
 pub use schema::config_bundle;
 pub use sqlite::{SqliteConfigStore, StoreError as SqliteStoreError};
 
+/// Admission of supplied source-revision facts, before publication-history I/O.
+/// The adapters own the authoritative read and transaction; the caller owns
+/// pairing `expected` with the prepared publication's source revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublicationSourceAdmission {
+    Current,
+    Conflict { current_revision: Option<u64> },
+}
+
+impl PublicationSourceAdmission {
+    fn new(current_revision: Option<u64>, expected: u64) -> Self {
+        match current_revision {
+            Some(current) if current == expected => Self::Current,
+            _ => Self::Conflict { current_revision },
+        }
+    }
+}
+
+#[cfg(any(test, kani))]
+fn check_publication_source_admission(current: Option<u64>, expected: u64) {
+    // Causes: C1 source present; C2 current compared with expected. Effects:
+    // P1 absent -> Conflict(None); P2 current > expected (stale candidate) ->
+    // Conflict(current); P3 current < expected (future candidate) -> Conflict;
+    // P4 exact -> Current. Zero and u64::MAX are ordinary supplied facts here;
+    // this owner neither encodes SQL integers nor establishes their provenance.
+    let admitted = PublicationSourceAdmission::new(current, expected);
+    match current.map(|revision| revision.cmp(&expected)) {
+        Some(std::cmp::Ordering::Equal) => {
+            assert_eq!(admitted, PublicationSourceAdmission::Current);
+        }
+        _ => assert_eq!(
+            admitted,
+            PublicationSourceAdmission::Conflict {
+                current_revision: current,
+            }
+        ),
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn publication_source_admission_requires_present_exact_revision() {
+    // No assumptions: all Option<u64> x u64 supplied facts reach the production
+    // owner. SQL read/locking, zero-write frames and zero registrar calls are
+    // separately exercised at their actual adapter and ConfigService boundaries.
+    check_publication_source_admission(kani::any(), kani::any());
+}
+
 /// Config owns the create/update choice; store-runtime owns integer encoding.
 /// Both SQL CAS seams consume this plan at their existing transaction position,
 /// after audit replay admission. This does not execute or model a transaction.
@@ -113,7 +161,23 @@ fn management_effect_retirement_requires_present_matching_receipt() {
 
 #[cfg(test)]
 mod tests {
-    use super::{check_config_revision_write_plan, management_effect_retirement_decision};
+    use super::{
+        check_config_revision_write_plan, check_publication_source_admission,
+        management_effect_retirement_decision,
+    };
+
+    #[test]
+    fn publication_source_admission_boundary_decision_table() {
+        // P1-P4 above: cross absence and every equality/order relation with zero,
+        // the signed storage boundary and both ends of the full u64 domain.
+        let revisions = [0, 1, 7, i64::MAX as u64, i64::MAX as u64 + 1, u64::MAX];
+        for expected in revisions {
+            check_publication_source_admission(None, expected);
+            for current in revisions {
+                check_publication_source_admission(Some(current), expected);
+            }
+        }
+    }
 
     #[test]
     fn config_revision_write_plan_boundary_decision_table() {
