@@ -13,6 +13,8 @@ use awaken_ext_goal::outcome::{
 use awaken_runtime_contract::{ThreadId, TranscriptRange, TranscriptSnapshotRef, TranscriptView};
 use serde::{Deserialize, Serialize};
 
+use crate::observation_index::index_observations;
+
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// Provenance is intentionally coarse. Private transcript paths, session ids,
@@ -199,31 +201,16 @@ pub struct JudgeReport {
 /// Strictly score recorded provider responses through the same `parse_grade`
 /// function used by the production AgentGrader.
 pub fn score(dataset: &JudgeDataset, observations: &[JudgeObservation]) -> JudgeReport {
-    let mut by_id: BTreeMap<&str, Vec<&JudgeObservation>> = BTreeMap::new();
-    for observation in observations {
-        by_id
-            .entry(observation.case_id.as_str())
-            .or_default()
-            .push(observation);
-    }
-    let case_ids: BTreeSet<&str> = dataset.cases.iter().map(|case| case.id.as_str()).collect();
-    let unexpected_observation_ids = observations
-        .iter()
-        .filter(|observation| !case_ids.contains(observation.case_id.as_str()))
-        .map(|observation| observation.case_id.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let duplicate_observation_ids = by_id
-        .iter()
-        .filter(|(_, observations)| observations.len() > 1)
-        .map(|(id, _)| (*id).to_string())
-        .collect();
+    let index = index_observations(
+        dataset.cases.iter().map(|case| case.id.as_str()),
+        observations,
+        |observation| observation.case_id.as_str(),
+    );
 
     let mut confusion: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
     let mut results = Vec::with_capacity(dataset.cases.len());
     for case in &dataset.cases {
-        let Some(case_observations) = by_id.get(case.id.as_str()) else {
+        let Some(case_observations) = index.by_id.get(case.id.as_str()) else {
             results.push(CaseResult {
                 case_id: case.id.clone(),
                 expected: case.expected,
@@ -237,7 +224,7 @@ pub fn score(dataset: &JudgeDataset, observations: &[JudgeObservation]) -> Judge
             });
             continue;
         };
-        if case_observations.len() != 1 {
+        let Some(observation) = index.unique(&case.id) else {
             results.push(CaseResult {
                 case_id: case.id.clone(),
                 expected: case.expected,
@@ -250,8 +237,7 @@ pub fn score(dataset: &JudgeDataset, observations: &[JudgeObservation]) -> Judge
                 detail: format!("{} observations supplied for case", case_observations.len()),
             });
             continue;
-        }
-        let observation = case_observations[0];
+        };
         match parse_grade(&observation.output) {
             Ok(grade) => {
                 let decision_correct = grade.decision == case.expected;
@@ -299,7 +285,7 @@ pub fn score(dataset: &JudgeDataset, observations: &[JudgeObservation]) -> Judge
     let total = results.len();
     let observed = results
         .iter()
-        .filter(|result| by_id.contains_key(result.case_id.as_str()))
+        .filter(|result| index.by_id.contains_key(result.case_id.as_str()))
         .count();
     let schema_valid = results.iter().filter(|result| result.schema_valid).count();
     let decision_correct = results
@@ -337,8 +323,8 @@ pub fn score(dataset: &JudgeDataset, observations: &[JudgeObservation]) -> Judge
             confusion,
         },
         results,
-        unexpected_observation_ids,
-        duplicate_observation_ids,
+        unexpected_observation_ids: index.unexpected_ids,
+        duplicate_observation_ids: index.duplicate_ids,
     }
 }
 
@@ -460,20 +446,137 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_observations_fail_closed() {
+    fn eval_evidence_decision_table_cross_checks_frozen_complete_model() {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum ObservationState {
+            Missing,
+            UniqueValid,
+            UniqueInvalid,
+            Duplicate,
+        }
+
+        fn append_observations(
+            observations: &mut Vec<JudgeObservation>,
+            case_id: &str,
+            state: ObservationState,
+        ) {
+            let valid = JudgeObservation {
+                case_id: case_id.into(),
+                output: r#"{"result":"satisfied","explanation":"ok"}"#.into(),
+                latency_ms: Some(1),
+            };
+            match state {
+                ObservationState::Missing => {}
+                ObservationState::UniqueValid => observations.push(valid),
+                ObservationState::UniqueInvalid => observations.push(JudgeObservation {
+                    case_id: case_id.into(),
+                    output: "not-json".into(),
+                    latency_ms: Some(2),
+                }),
+                ObservationState::Duplicate => {
+                    observations.push(valid);
+                    observations.push(JudgeObservation {
+                        case_id: case_id.into(),
+                        output: "not-json".into(),
+                        latency_ms: Some(3),
+                    });
+                }
+            }
+        }
+
         let dataset = JudgeDataset {
             schema_version: SCHEMA_VERSION,
-            name: "d".into(),
-            cases: vec![case("dup", GradeDecision::Satisfied, &[])],
+            name: "frozen".into(),
+            cases: vec![
+                case("one", GradeDecision::Satisfied, &[]),
+                case("two", GradeDecision::Satisfied, &[]),
+            ],
         };
-        let observation = JudgeObservation {
-            case_id: "dup".into(),
-            output: r#"{"result":"satisfied","explanation":"ok"}"#.into(),
-            latency_ms: None,
-        };
-        let report = score(&dataset, &[observation.clone(), observation]);
-        assert_eq!(report.duplicate_observation_ids, ["dup"]);
-        assert!(!report.results[0].schema_valid);
+        let frozen_dataset = dataset.clone();
+        let states = [
+            ObservationState::Missing,
+            ObservationState::UniqueValid,
+            ObservationState::UniqueInvalid,
+            ObservationState::Duplicate,
+        ];
+
+        // Cause/effect decision table, exhaustively crossed for both model cases:
+        // R1 count=0 => classified missing/schema-invalid; R2 count=1+valid
+        // parser => the sole schema-valid result; R3 count=1+invalid parser =>
+        // classified schema-invalid; R4 count=2 => duplicate/schema-invalid even
+        // when one output is valid. C5 unknown-id absent/present changes only the
+        // diagnostic. Every rule preserves the frozen dataset and publishes one
+        // ordered classification per case; invalid rules never set prediction,
+        // correctness, grounding, or unsafe acceptance.
+        for first in states {
+            for second in states {
+                for has_unknown in [false, true] {
+                    let mut observations = Vec::new();
+                    append_observations(&mut observations, "one", first);
+                    append_observations(&mut observations, "two", second);
+                    if has_unknown {
+                        append_observations(
+                            &mut observations,
+                            "unknown",
+                            ObservationState::UniqueValid,
+                        );
+                    }
+                    let frozen_observations = observations.clone();
+                    let report = score(&dataset, &observations);
+
+                    assert_eq!(dataset, frozen_dataset, "ground truth must remain frozen");
+                    assert_eq!(observations, frozen_observations, "evidence is read-only");
+                    assert_eq!(report.dataset, dataset.name);
+                    assert_eq!(report.results.len(), dataset.cases.len());
+                    assert_eq!(
+                        report
+                            .results
+                            .iter()
+                            .map(|result| result.case_id.as_str())
+                            .collect::<Vec<_>>(),
+                        ["one", "two"]
+                    );
+
+                    let rules = [(first, &report.results[0]), (second, &report.results[1])];
+                    for (state, result) in rules {
+                        let valid = state == ObservationState::UniqueValid;
+                        assert_eq!(result.schema_valid, valid, "{state:?}");
+                        assert_eq!(result.predicted, valid.then_some(GradeDecision::Satisfied));
+                        assert_eq!(result.decision_correct, valid);
+                        assert_eq!(result.satisfaction_correct, valid);
+                        assert_eq!(result.explanation_grounded, None);
+                        assert!(!result.unsafe_accept);
+                    }
+                    assert_eq!(
+                        report.metrics.observed,
+                        usize::from(first != ObservationState::Missing)
+                            + usize::from(second != ObservationState::Missing)
+                    );
+                    assert_eq!(
+                        report.metrics.schema_valid,
+                        usize::from(first == ObservationState::UniqueValid)
+                            + usize::from(second == ObservationState::UniqueValid)
+                    );
+                    assert_eq!(
+                        report.duplicate_observation_ids,
+                        [
+                            (first == ObservationState::Duplicate).then_some("one"),
+                            (second == ObservationState::Duplicate).then_some("two"),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                    );
+                    assert_eq!(
+                        report.unexpected_observation_ids,
+                        has_unknown
+                            .then_some("unknown")
+                            .into_iter()
+                            .collect::<Vec<_>>()
+                    );
+                }
+            }
+        }
     }
 
     #[test]
