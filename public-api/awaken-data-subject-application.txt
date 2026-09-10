@@ -126,7 +126,7 @@ pub awaken_data_subject_application::ErasureProgress::completed_targets: alloc::
 pub awaken_data_subject_application::ErasureProgress::records_removed: usize
 pub awaken_data_subject_application::ErasureProgress::revision: u64
 impl awaken_data_subject_application::ErasureProgress
-pub fn awaken_data_subject_application::ErasureProgress::follows(&self, core::option::Option<u64>) -> bool
+pub fn awaken_data_subject_application::ErasureProgress::follows(&self, core::option::Option<u64>, core::option::Option<&Self>) -> bool
 pub struct awaken_data_subject_application::RepoDataSubjectResolver
 impl awaken_data_subject_application::RepoDataSubjectResolver
 pub fn awaken_data_subject_application::RepoDataSubjectResolver::new(alloc::sync::Arc<dyn awaken_data_subject_application::DataSubjectRepo>, alloc::sync::Arc<dyn awaken_data_subject_application::ErasureJobRepo>) -> Self

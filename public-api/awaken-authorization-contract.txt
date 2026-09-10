@@ -68,6 +68,7 @@ pub awaken_authorization_contract::WorkspaceProfileRole::WorkspaceMember
 pub enum awaken_authorization_contract::WorkspaceRoleAuthority
 pub awaken_authorization_contract::WorkspaceRoleAuthority::WorkspaceApiKeyAll
 pub awaken_authorization_contract::WorkspaceRoleAuthority::WorkspaceConfigurationAll
+pub awaken_authorization_contract::WorkspaceRoleAuthority::WorkspaceModelSupplyConnect
 pub awaken_authorization_contract::WorkspaceRoleAuthority::WorkspaceModelSupplyRead
 pub awaken_authorization_contract::WorkspaceRoleAuthority::WorkspaceSkillAll
 impl awaken_authorization_contract::WorkspaceRoleAuthority
