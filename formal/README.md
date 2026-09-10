@@ -473,6 +473,12 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   mutation or dispatch, and Deployment scheduling performs no candidate mutation
   or launch. These tests qualify representative entrypoint wiring; they do not
   establish universal Rust refinement for every async call site.
+  The production `ProjectionCursor::install_then_reconcile` kernel also covers
+  the adapter-only authority-rollback case that the monotonic TLA+ authority does
+  not model: it lowers the private cursor before installing an older complete
+  replay and restores the previous cursor on an ordinary install error. Kani
+  exhausts all prior/target `u64` pairs and both installer outcomes; the native
+  decision table cross-checks lower, equal, and higher targets.
 - `WebhookOutbox.tla`, `RegistrationIntent.tla`, `ErasureSaga.tla`, and
   `CredentialCreation.tla` cover atomic lifecycle/outbox commit, atomic
   Environment revision+intent commit with crash-window replay and
@@ -1107,8 +1113,11 @@ adapter obligations; a failed source refresh is modeled only as a safe retryable
 failure that cannot advance the published fence.
 
 `ExecutableProjectionRefresh` proves per-domain serialization, clone-install and
-cursor ordering, fail-closed middleware admission, and Agent-before-Environment
-refresh for concurrent requests. It assumes the append-only command stores
+cursor ordering for a monotonic authority, fail-closed middleware admission, and
+Agent-before-Environment refresh for concurrent requests. The production cursor
+kernel separately proves ordering for a lower complete-replay target, assuming
+the installer returns success only after publishing the exact target and an
+ordinary error before any publication. It assumes the append-only command stores
 return a stable bounded range through the captured high-water and that the
 database engine honors the query and transaction contracts. The two domain
 high-water marks are captured independently, so the proof intentionally does
