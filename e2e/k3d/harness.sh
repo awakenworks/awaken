@@ -24,17 +24,19 @@ k3d_validate_image_digest() {
   [[ "$1" =~ ^[^[:space:]@]+@sha256:[0-9a-f]{64}$ ]]
 }
 
-# Nested k3d nodes observe the host filesystem size. Produce one absolute
-# kubelet eviction policy so a large host cannot turn ample free bytes into a
-# percentage-based DiskPressure taint. Callers still own capacity admission.
-k3d_eviction_hard() {
+# Nested k3d nodes observe the host filesystem size. Produce one indivisible,
+# absolute kubelet eviction policy so neither the trigger nor the recovery
+# target scales with a large host filesystem. Callers still own capacity
+# admission. Each output line is one kubelet setting for a k3d --k3s-arg.
+k3d_eviction_policy() {
   local eviction="${1:-}"
   [[ "$eviction" =~ ^[1-9][0-9]*(Ki|Mi|Gi|Ti)$ ]] || {
     echo "invalid k3d eviction threshold: $eviction" >&2
     return 2
   }
-  printf 'eviction-hard=imagefs.available<%s,nodefs.available<%s\n' \
-    "$eviction" "$eviction"
+  printf '%s\n' \
+    "eviction-hard=imagefs.available<$eviction,nodefs.available<$eviction" \
+    "eviction-minimum-reclaim=imagefs.available=$eviction,nodefs.available=$eviction"
 }
 
 # Resolve the manifest identity of the image just built by the canonical image
@@ -307,8 +309,9 @@ k3d_create_cluster() {
     echo "invalid k3d agent count: $agents" >&2
     return 2
   }
-  local threshold
-  threshold=$(k3d_eviction_hard "$eviction") || return "$?"
+  local eviction_policy_text eviction_policy
+  eviction_policy_text=$(k3d_eviction_policy "$eviction") || return "$?"
+  mapfile -t eviction_policy <<<"$eviction_policy_text"
   [[ -z "$registry" || "$registry" =~ ^[a-zA-Z0-9.-]+:[0-9]+$ ]] || {
     echo "invalid k3d Registry coordinate: $registry" >&2
     return 2
@@ -335,10 +338,15 @@ k3d_create_cluster() {
     # contend with background registry retries for images outside its fixture.
     --k3s-arg "--disable=traefik@server:*"
     --k3s-arg "--disable=metrics-server@server:*"
-    --k3s-arg "--kubelet-arg=$threshold@server:*"
   )
+  local setting
+  for setting in "${eviction_policy[@]}"; do
+    args+=(--k3s-arg "--kubelet-arg=$setting@server:*")
+  done
   if (( agents > 0 )); then
-    args+=(--k3s-arg "--kubelet-arg=$threshold@agent:*")
+    for setting in "${eviction_policy[@]}"; do
+      args+=(--k3s-arg "--kubelet-arg=$setting@agent:*")
+    done
   fi
   [[ -z "$registry" ]] || args+=(--registry-use "$registry")
   [[ -z "$shared_volume" ]] || args+=(--volume "$shared_volume:/var/lib/awaken-continuation@all")
@@ -756,7 +764,9 @@ print(json.dumps(value))
   k3d_create_cluster "awaken-test-1" 2
   [[ "${k3d_calls[0]}" = "cluster delete awaken-test-1" ]]
   [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<128Mi,nodefs.available<128Mi@server:*"* ]]
+  [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-minimum-reclaim=imagefs.available=128Mi,nodefs.available=128Mi@server:*"* ]]
   [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<128Mi,nodefs.available<128Mi@agent:*"* ]]
+  [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-minimum-reclaim=imagefs.available=128Mi,nodefs.available=128Mi@agent:*"* ]]
   # Cluster-fixture dependency rule. C1 repository scenarios import their
   # exact images; C2 bundled ingress/metrics are not scenario dependencies.
   # C1+C2 => E1 the canonical builder disables both controllers, preventing
@@ -792,22 +802,26 @@ print(json.dumps(value))
   (( ${#k3d_calls[@]} == 0 ))
   volume_missing=0
 
-  # Eviction cause/effect table: T1 absent override => one absolute default
-  # on server and agent (checked above), independent of host filesystem size;
-  # T2 explicit positive quantity => unchanged on both roles; T3 zero, malformed
-  # or removed percentage input => no cluster effects. T4 capacity failure with
-  # otherwise valid arguments => no deletion/create. Other negative rows retain
-  # a valid quantity so an unrelated error cannot mask missing validation.
-  [[ "$(k3d_eviction_hard 2Gi)" = \
-    "eviction-hard=imagefs.available<2Gi,nodefs.available<2Gi" ]]
+  # Eviction cause/effect table: T1 absent override => one absolute trigger and
+  # one absolute recovery margin on server and agent (checked above), independent
+  # of host filesystem size; T2 explicit positive quantity => both settings use
+  # that quantity on both roles; T3 zero, malformed or percentage input => no
+  # cluster effects. T4 capacity failure with otherwise valid arguments => no
+  # deletion/create. This prevents a recovered large filesystem from retaining
+  # DiskPressure merely because kubelet's percentage minimum reclaim is huge.
+  mapfile -t observed_eviction_policy < <(k3d_eviction_policy 2Gi)
+  [[ "${observed_eviction_policy[*]}" = \
+    "eviction-hard=imagefs.available<2Gi,nodefs.available<2Gi eviction-minimum-reclaim=imagefs.available=2Gi,nodefs.available=2Gi" ]]
   local invalid_eviction
   for invalid_eviction in "" 0Gi 2% low -1Gi; do
-    ! k3d_eviction_hard "$invalid_eviction" >/dev/null 2>&1
+    ! k3d_eviction_policy "$invalid_eviction" >/dev/null 2>&1
   done
   k3d_calls=()
   k3d_create_cluster "awaken-test-1" 1 2Gi
   [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<2Gi,nodefs.available<2Gi@server:*"* ]]
+  [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-minimum-reclaim=imagefs.available=2Gi,nodefs.available=2Gi@server:*"* ]]
   [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<2Gi,nodefs.available<2Gi@agent:*"* ]]
+  [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-minimum-reclaim=imagefs.available=2Gi,nodefs.available=2Gi@agent:*"* ]]
 
   k3d_calls=()
   # K2: capacity rejection happens before deleting an existing cluster or
