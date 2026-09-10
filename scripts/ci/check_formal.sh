@@ -736,6 +736,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness boundary_priority_is_pause_then_input_then_idle \
     --harness rejected_live_inbox_reorder_is_an_atomic_stutter \
     --harness live_inbox_identity_advances_strictly_or_exhausts \
+    --harness retired_live_inbox_identity_is_never_reissued \
+    --harness live_inbox_replace_preserves_identity_and_order \
+    --harness live_inbox_boundary_drain_retires_exactly_the_queue \
     --harness advisor_never_substitutes_for_primary_model_admission \
     --harness fallback_selection_preserves_the_complete_publication_pin \
     --harness every_route_pin_axis_participates_in_exact_identity \

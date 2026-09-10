@@ -328,6 +328,12 @@ async fn failed_commit_after_boundary_drain_does_not_invent_a_retry_queue() {
 
 #[tokio::test]
 async fn a_batch_drains_in_order_with_sequential_ids() {
+    // Causes: D1 two queued messages reach a safe boundary; D2 the boundary
+    // commit succeeds. Effects: E1 the editable queue retires both entries;
+    // E2 the fold retains FIFO content exactly once under sequential Run ids;
+    // E3 the model and committed transcript observe both in the same order.
+    // Rule D1+D2 => E1+E2+E3. Empty input and failed commit are the adjacent
+    // rules, so this case owns the non-empty successful branch only.
     let runtime = runtime();
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let inbox = LiveInbox::new();
