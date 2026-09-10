@@ -138,11 +138,14 @@ fn terminal_commit() -> ThreadCommit {
     }
 }
 
-/// Shared Worker-auth middleware decision table:
-/// C1 exact identity header -> verified context reaches the claimed-commit
-/// handler and an idempotent retry returns the durable receipt; C2 missing or
-/// rejected identity -> HTTP 401 before the handler and no commit. Both rules
-/// are covered here over real HTTP.
+/// Shared remote claimed-commit decision table. Causes: C1 Worker identity is
+/// exact/missing; C2 the Dispatch epoch is current/stale after same-incarnation
+/// reclaim; C3 the stable operation is fresh/replayed. Effects: E1 reject before
+/// committed truth; E2 append exactly once; E3 return the durable duplicate
+/// receipt. Rules: R1=!C1=>E1; R2=C1+stale C2=>E1; R3=C1+current C2+fresh
+/// C3=>E2; R4=C1+current C2+replayed C3=>E3. Run/Thread/operation/hash mismatch
+/// partitions are owned by the existing Host claimed-child table; this real HTTP
+/// table cross-checks authentication, ABA fencing and idempotent transport.
 #[tokio::test(flavor = "multi_thread")]
 async fn registered_worker_commits_one_idempotent_versioned_operation() {
     let manifest = WorkerManifest::default();
@@ -173,11 +176,22 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         )))
         .await
         .unwrap();
-    let claimed = dispatch
+    let stale = dispatch
         .claim(&identity.lease_owner(), 30_000, 0, &Default::default())
         .await
         .unwrap()
-        .expect("claim");
+        .expect("initial claim");
+    let current = dispatch
+        .claim(
+            &identity.lease_owner(),
+            30_000,
+            stale.lease.expires_ms.saturating_add(1),
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .expect("same-incarnation reclaim");
+    assert_eq!(current.lease.epoch, stale.lease.epoch + 1, "R2/C2");
     let coordinator = Arc::new(MemoryCommitCoordinator::new());
     let service = Arc::new(ClaimedCommitHttpService::new(
         Arc::new(ClaimedCommitService::new(dispatch, coordinator.clone())),
@@ -209,7 +223,7 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
             &ThreadId("typed-commit-thread".into())
         )
         .is_empty(),
-        "C2 rejects before commit"
+        "R1/E1"
     );
 
     let commit = terminal_commit();
@@ -220,22 +234,41 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         commit,
     };
     let command = ClaimedCommitCommand {
-        claim: RunClaim::from(&claimed.lease),
+        claim: RunClaim::from(&current.lease),
         operation,
     };
     let remote = RemoteClaimedRunCommit::new(format!("http://{address}"), identity);
+    let stale_error = remote
+        .commit_operation(ClaimedCommitCommand {
+            claim: RunClaim::from(&stale.lease),
+            operation: command.operation.clone(),
+        })
+        .await
+        .expect_err("R2 stale epoch is fenced before commit");
+    assert!(
+        stale_error.to_string().contains("run claim is stale"),
+        "R2/E1"
+    );
+    assert!(
+        CommittedThreadView::committed_messages(
+            &*coordinator,
+            &ThreadId("typed-commit-thread".into())
+        )
+        .is_empty(),
+        "R2/E1"
+    );
     let first = remote.commit_operation(command.clone()).await.unwrap();
     let duplicate = remote.commit_operation(command).await.unwrap();
 
-    assert!(!first.duplicate);
-    assert!(duplicate.duplicate);
-    assert_eq!(first.commit_sequence, duplicate.commit_sequence);
+    assert!(!first.duplicate, "R3/E2");
+    assert!(duplicate.duplicate, "R4/E3");
+    assert_eq!(first.commit_sequence, duplicate.commit_sequence, "R4/E3");
     let messages = CommittedThreadView::committed_messages(
         &*coordinator,
         &ThreadId("typed-commit-thread".into()),
     );
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].text_content(), "typed commit");
+    assert_eq!(messages.len(), 1, "R3-R4/E2-E3");
+    assert_eq!(messages[0].text_content(), "typed commit", "R3-R4/E2-E3");
 }
 
 /// Cause graph for ambiguous remote commit responses:

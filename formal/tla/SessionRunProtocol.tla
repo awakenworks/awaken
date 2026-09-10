@@ -425,6 +425,81 @@ ExecutionIdentityNeverReused == [] [
 ExecutionEpochNeverRegresses == [] [
     \A run \in Runs: executionEpoch'[run] >= executionEpoch[run]
 ]_vars
+
+\* A newly visible committed disposition is admitted only while its Dispatch
+\* identity and the Session's physical Work realization are exact in the same
+\* source state. Later Work reclaim may make the recorded receipt historical;
+\* it cannot authorize a new observation from that stale realization.
+CommittedObservationUsesExactCurrentRealization == [] [
+    \A run \in Runs:
+        (committedDisposition[run] = "None" /\
+         committedDisposition'[run] # "None") =>
+            /\ CurrentRealization(committedOwner'[run])
+            /\ committedOwner'[run] = DOwner(run)
+            /\ committedEpoch'[run] = DEpoch(run)
+            /\ committedWorkEpoch'[run] = workEpoch[WorkItem]
+]_vars
+
+\* Reachability witness for the negative control: Work may be reclaimed after
+\* realization and before any committed observation, leaving a stale physical
+\* epoch that ObserveCommittedRun must reject.
+NoStaleRealizationWindow ==
+    ~(realizedOwner \in Workers /\ realizedWorkEpoch > 0 /\
+      ~CurrentRealization(realizedOwner))
+
+\* Dedicated local action cross-check over two complete source-state cuts. It
+\* reuses ObserveCommittedRun verbatim: the first cut is current and permits the
+\* deterministic conflict commit; the second retains that exact Dispatch while
+\* another Worker has reclaimed Work, so only a stutter is legal. This wrapper
+\* does not replace or reduce the canonical protocol Spec.
+CommitObservationInit ==
+    \E candidate \in Workers:
+      /\ RootIngress!Init
+      /\ childAState = "Leased"
+      /\ childAOwner = candidate
+      /\ childALeaseEpoch = 1
+      /\ childACancel = FALSE
+      /\ childAInput = FALSE
+      /\ ChildBIngress!Init
+      /\ activityEpoch = [run \in Runs |-> IF run = ChildRunA THEN 1 ELSE 0]
+      /\ activeActivityEpochs = {1}
+      /\ settledActivities = {}
+      /\ nextActivityEpoch = 2
+      /\ \/ /\ workState = [item \in WorkItems |-> "Active"]
+                /\ workOwner = [item \in WorkItems |-> candidate]
+                /\ workEpoch = [item \in WorkItems |-> 1]
+                /\ workHeartbeat = [item \in WorkItems |-> 0]
+                /\ workExpires = [item \in WorkItems |-> 1]
+                /\ workNow = 0
+                /\ realizedOwner = candidate
+                /\ realizedWorkEpoch = 1
+         \/ \E successor \in Workers \ {candidate}:
+              /\ workState = [item \in WorkItems |-> "Active"]
+              /\ workOwner = [item \in WorkItems |-> successor]
+              /\ workEpoch = [item \in WorkItems |-> 2]
+              /\ workHeartbeat = [item \in WorkItems |-> 0]
+              /\ workExpires = [item \in WorkItems |-> 2]
+              /\ workNow = 1
+              /\ realizedOwner = candidate
+              /\ realizedWorkEpoch = 1
+      /\ releasedWorkEpoch = 0
+      /\ externalAttempts = {}
+      /\ executionStarted = {}
+      /\ executionOwner = [run \in Runs |-> NoWorker]
+      /\ executionEpoch = [run \in Runs |-> 0]
+      /\ committedDisposition = [run \in Runs |-> "None"]
+      /\ committedOwner = [run \in Runs |-> NoWorker]
+      /\ committedEpoch = [run \in Runs |-> 0]
+      /\ committedWorkEpoch = [run \in Runs |-> 0]
+      /\ sessionObservationApplied = {}
+
+CommitObservationNext ==
+    \E disposition \in {"Awaiting", "Ended"}, candidate \in Workers,
+       epoch \in 0..MaxEpoch:
+         ObserveCommittedRun(ChildRunA, disposition, candidate, epoch)
+
+CommitObservationSpec ==
+    CommitObservationInit /\ [][CommitObservationNext]_vars
 RetirementScope == DState(ChildRunA) = "Reserved" /\ DState(ChildRunB) = "Reserved"
 NoRetiredExecutionReached == \A run \in Runs:
     run \notin executionStarted => executionEpoch[run] = 0
