@@ -226,6 +226,14 @@ pub async fn events_ordered_and_paged<S: Coordinator + CheckpointReader>(store: 
 /// shared suite: a backend that let a second terminal commit through, or mutated
 /// state while rejecting, would diverge here.
 pub async fn terminal_run_is_fenced<S: Coordinator + CheckpointReader>(store: &S) {
+    // Cause/effect graph: C1=one terminal commit is durable; C2=a complete,
+    // separately identifiable awaiting shape for the same Run is valid in
+    // isolation; C3=C2 is submitted after C1. Effects: E1=C1 remains the exact
+    // message/run/event prefix; E2=C3 rejects; E3=no rejected message, state,
+    // event, Run/latest projection, or resume ticket becomes visible.
+    // Constraint: C3 is rejected by the durable terminal transition, not by
+    // ThreadCommit shape validation. Decision table: R1=C1=>E1;
+    // R2=C1+C2+C3=>E1+E2+E3. Every backend executes these same rules.
     let thread = ThreadId("conf-fence".to_string());
     let run = RunId("conf-fence-r".to_string());
     store
@@ -233,23 +241,62 @@ pub async fn terminal_run_is_fenced<S: Coordinator + CheckpointReader>(store: &S
         .await
         .expect("first terminal commit lands");
 
-    // A second commit for the already-terminal run is fenced.
-    let fenced = store
-        .commit(ended_checkpoint(&thread, &run, "duplicate"))
-        .await;
-    assert!(fenced.is_err(), "post-terminal commit is rejected");
+    let baseline_messages = store.committed_messages(&thread);
+    let baseline_state = store.committed_state(&thread);
+    let baseline_events = store.list_events(&EventScope::Run(run.clone()), None, 100);
+    let baseline_run = store.run(&run);
+    let baseline_latest = store.latest_run(&thread);
+    assert!(store.resume_ticket(&run).is_none(), "R1/E1");
 
-    // The rejection left no partial state: exactly the one committed message, and
-    // the run's state is still the original terminal fact.
+    let rejected = ThreadCommit::assemble(
+        thread.clone(),
+        RunDisposition::awaiting(ticket(&thread, &run)),
+        true,
+        vec![Message::text(
+            MsgId("m-rejected-shape".into()),
+            Role::Assistant,
+            "rejected-shape",
+        )],
+        vec![StateCommand::set(
+            Scope::Run,
+            MergePolicy::Disjoint,
+            "rejected.shape",
+            serde_json::json!({"must": "stutter"}),
+        )],
+        vec![Draft {
+            kind: EventKind::PermissionDecided,
+            payload: serde_json::json!({"candidate": "rejected-shape"}),
+        }],
+    );
+    rejected
+        .validate()
+        .expect("R2/C2 is a valid complete ThreadCommit shape");
+    assert!(store.commit(rejected).await.is_err(), "R2/E2");
+
     assert_eq!(
-        store.committed_messages(&thread).len(),
-        1,
-        "no duplicate transcript after a fenced commit"
+        store.committed_messages(&thread),
+        baseline_messages,
+        "R2/E3 message region stutters"
     );
     assert_eq!(
-        store.run(&run).map(|record| record.state),
-        Some(RunState::Ended(EndCause::NaturalEnd)),
-        "state unchanged by the fenced commit"
+        store.committed_state(&thread),
+        baseline_state,
+        "R2/E3 state region stutters"
+    );
+    assert_eq!(
+        store.list_events(&EventScope::Run(run.clone()), None, 100),
+        baseline_events,
+        "R2/E3 event region stutters"
+    );
+    assert_eq!(store.run(&run), baseline_run, "R2/E3 Run fact stutters");
+    assert_eq!(
+        store.latest_run(&thread),
+        baseline_latest,
+        "R2/E3 latest Run stutters"
+    );
+    assert!(
+        store.resume_ticket(&run).is_none(),
+        "R2/E3 awaiting ticket is absent"
     );
 }
 
@@ -506,24 +553,52 @@ pub async fn two_threads_in_one_store_are_isolated<S: Coordinator + CheckpointRe
 /// version excludes unrelated commits while the backend cursor includes them,
 /// and the claimed Run ordinal counts only that Run's commits.
 pub async fn recovery_snapshot_is_consistent<S: Coordinator + RunRecoverySource>(store: &S) {
-    // Cause/effect graph: C1 two commits belong to the requested Thread; C2 an
-    // unrelated Thread commits later; C3 the requested prefix has one audit
-    // fact. Effects: E1 messages/runs/tickets/events exclude C2; E2 Thread
-    // version excludes C2 while store cursor includes it; E3 every returned
-    // event's decoded source commit is within that same cursor fence. Decision
-    // rule R1=C1+C2+C3=>E1+E2+E3. This generic case runs against memory,
-    // filesystem, SQLite, and PostgreSQL.
+    // Cause/effect graph: C1=commit one valid awaiting shape containing its Run
+    // fact/ticket, message, Run-scoped state and generated+extra events; C2=a
+    // second commit belongs to the same Thread; C3=an unrelated Thread commits
+    // later. Effects: E1=every C1 region appears exactly once and its message,
+    // state and events carry C1's one commit cursor; E2=the snapshot includes C2
+    // but excludes C3; E3=Thread version excludes C3 while store cursor includes
+    // it; E4=every event lies within that same snapshot fence. Constraints: the
+    // Run ticket and Run-scoped state are bound by ThreadCommit::assemble, and
+    // RunRecoverySource reads one backend consistency boundary. Decision table:
+    // R1=C1=>E1; R2=C1+C2=>E1+E2; R3=C1+C2+C3=>E1+E2+E3+E4. This generic table
+    // runs against memory, filesystem, SQLite, and PostgreSQL.
     let thread = ThreadId("conf-recovery".to_string());
     let awaiting_run = RunId("conf-recovery-awaiting".to_string());
     let claimed_run = RunId("conf-recovery-claimed".to_string());
     let other_thread = ThreadId("conf-recovery-other".to_string());
     let other_run = RunId("conf-recovery-other-run".to_string());
 
-    store
-        .commit(awaiting_checkpoint(&thread, &awaiting_run))
-        .await
-        .expect("awaiting commit");
-    store
+    let shape = ThreadCommit::assemble(
+        thread.clone(),
+        RunDisposition::awaiting(ticket(&thread, &awaiting_run)),
+        true,
+        vec![Message::text(
+            MsgId("m-complete-shape".into()),
+            Role::Assistant,
+            "complete-shape",
+        )],
+        vec![StateCommand::set(
+            Scope::Run,
+            MergePolicy::Disjoint,
+            "complete.shape",
+            serde_json::json!({"atomic": true}),
+        )],
+        vec![Draft {
+            kind: EventKind::PermissionDecided,
+            payload: serde_json::json!({"shape": "complete"}),
+        }],
+    );
+    let shape_message = shape.messages[0].clone();
+    let shape_state = shape.state.clone();
+    let shape_events = shape.events.clone();
+    let shape_ticket = shape
+        .resume_ticket()
+        .expect("complete awaiting shape owns its ticket")
+        .clone();
+    let shape_record = store.commit(shape).await.expect("awaiting commit");
+    let claimed_record = store
         .commit(running_checkpoint(&thread, &claimed_run, "claimed"))
         .await
         .expect("claimed run commit");
@@ -540,23 +615,65 @@ pub async fn recovery_snapshot_is_consistent<S: Coordinator + RunRecoverySource>
     assert_eq!(snapshot.claimed_run_id, claimed_run);
     assert_eq!(snapshot.runs.len(), 2, "latest record for both Thread Runs");
     assert_eq!(
-        snapshot.messages.len(),
-        1,
-        "other Thread transcript excluded"
+        snapshot
+            .runs
+            .iter()
+            .find(|record| record.id == awaiting_run)
+            .map(|record| record.state.clone()),
+        Some(RunState::Awaiting),
+        "R1/E1 awaiting Run fact"
+    );
+    assert_eq!(
+        snapshot.messages,
+        vec![
+            shape_message,
+            Message::text(MsgId("m-claimed".into()), Role::Assistant, "claimed")
+        ],
+        "R2/E2 exact local messages; foreign transcript excluded"
+    );
+    assert_eq!(
+        snapshot.message_commit_cursors,
+        vec![shape_record.sequence, claimed_record.sequence],
+        "R1/E1 and R2/E2 message cursors bind their source commits"
+    );
+    assert_eq!(snapshot.state, shape_state, "R1/E1 exact state region");
+    assert_eq!(
+        snapshot.state_commit_cursors,
+        vec![shape_record.sequence],
+        "R1/E1 state shares the shape commit cursor"
     );
     assert_eq!(
         snapshot.events.len(),
-        1,
-        "R1/E1 other Thread audit excluded"
+        shape_events.len() + 1,
+        "R2/E2 exact local events; foreign audit excluded"
     );
-    assert_eq!(snapshot.events[0].run_id, claimed_run, "R1/E1");
-    let (source_commit, _) =
-        decode_run_lifecycle_cursor(RunLifecycleCursor(snapshot.events[0].sequence));
-    assert!(source_commit <= snapshot.store_cursor, "R1/E3");
-    assert_eq!(snapshot.resume_tickets.len(), 1, "active ticket retained");
+    for (offset, (record, draft)) in snapshot.events.iter().zip(shape_events.iter()).enumerate() {
+        assert_eq!(record.run_id, awaiting_run, "R1/E1 shape event owner");
+        assert_eq!(record.kind, draft.kind, "R1/E1 shape event kind");
+        assert_eq!(record.payload, draft.payload, "R1/E1 shape event payload");
+        let (source_commit, source_offset) =
+            decode_run_lifecycle_cursor(RunLifecycleCursor(record.sequence));
+        assert_eq!(source_commit, shape_record.sequence, "R1/E1 event cursor");
+        assert_eq!(source_offset, offset, "R1/E1 event offset");
+    }
+    let claimed_event = snapshot.events.last().expect("R2 claimed event");
+    assert_eq!(claimed_event.run_id, claimed_run, "R2/E2");
+    let (claimed_source, claimed_offset) =
+        decode_run_lifecycle_cursor(RunLifecycleCursor(claimed_event.sequence));
+    assert_eq!(claimed_source, claimed_record.sequence, "R2/E2");
+    assert_eq!(claimed_offset, 0, "R2/E2");
+    assert!(
+        snapshot.events.iter().all(|event| {
+            decode_run_lifecycle_cursor(RunLifecycleCursor(event.sequence)).0
+                <= snapshot.store_cursor
+        }),
+        "R3/E4"
+    );
+    assert_eq!(snapshot.resume_tickets.len(), 1, "R1/E1 active ticket");
     assert_eq!(snapshot.resume_tickets[0].run_id, awaiting_run);
-    assert_eq!(snapshot.thread_version, 2, "per-Thread version");
-    assert_eq!(snapshot.store_cursor, 3, "backend-wide prefix cursor");
+    assert_eq!(snapshot.resume_tickets[0].ticket, shape_ticket, "R1/E1");
+    assert_eq!(snapshot.thread_version, 2, "R3/E3 per-Thread version");
+    assert_eq!(snapshot.store_cursor, 3, "R3/E3 backend-wide prefix cursor");
     assert_eq!(snapshot.next_commit_ordinal, 1, "claimed Run ordinal");
     // T1: two local commits + one foreign commit => exactly the local time
     // observations, within the snapshot fence; new writes never use a fixture date.
