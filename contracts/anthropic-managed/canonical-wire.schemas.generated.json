@@ -661,10 +661,7 @@
       "properties": {
         "force": {
           "default": null,
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": "boolean"
         }
       },
       "title": "WorkStopParams",
