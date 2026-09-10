@@ -208,7 +208,7 @@ Cause/effect and decision rules live in comments beside their tests.
 | Rule family | Owning test |
 |---|---|
 | durable restore, Workspace isolation, two-replica claim, lifecycle facts | `durable_repository_restores_scope_and_claims_each_occurrence_once` |
-| SQLite/Postgres CAS, transactional capacity, atomic claim/run, stale scheduler | `deployment_cas_decision_table` in the shared repository conformance suite |
+| SQLite/Postgres CAS, three-client transactional capacity, failed claim rollback plus same-identity retry, atomic claim/run, stale scheduler | `deployment_cas_decision_table` in the shared repository conformance suite |
 | bounded state-space proof of CAS, capacity, absorbing archive, claim/run atomicity | `formal/tla/DeploymentCAS.tla` via `scripts/ci/check_formal.sh` |
 | Agent latest/pinned resolution and invalid lifecycle | `deployment_resolves_and_freezes_the_authoritative_agent_version` |
 | missing/archived primary Agent | `missing_or_archived_primary_agent_archives_without_a_run` |
