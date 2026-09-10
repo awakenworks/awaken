@@ -1532,6 +1532,8 @@ impl SharedHost {
             let mut acp_provider_server_tools = Vec::new();
             let mut acp_host_web_tools = Vec::new();
             let mut acp_tool_grants = None;
+            let mut acp_client_tool_ids = std::collections::HashSet::new();
+            let mut acp_client_tool_requests = None;
             // A coordination envelope owns no physical Environment and must
             // not publish an executable ACP MCP server. The claim-owning
             // execution context is rebuilt later and exports the exact
@@ -1619,9 +1621,27 @@ impl SharedHost {
                     descriptors.extend(memory.descriptors.iter().cloned());
                     executors.extend(memory.executors.iter().cloned());
                 }
+                // Claude and other ACP SDKs discover custom tools through MCP.
+                // Export the same frozen ClientExecuted descriptors as Native.
+                // The adapter only reports arrival and never performs the effect;
+                // execution belongs exclusively to the Managed Session client
+                // through ExternalEvent resume.
+                let client_tools = crate::acp_tool_export::client_executed_tools(
+                    &config.resolved_spec.tool_descriptors,
+                );
+                descriptors.extend(client_tools.descriptors);
+                executors.extend(client_tools.executors);
+                acp_client_tool_ids = client_tools.ids;
+                acp_client_tool_requests = client_tools.requests;
                 if !descriptors.is_empty() {
                     let grants = Arc::new(crate::acp_tool_export::AcpToolExecutionGrants::new(
-                        descriptors.iter().map(|descriptor| descriptor.id.clone()),
+                        descriptors
+                            .iter()
+                            .filter(|descriptor| {
+                                descriptor.kind
+                                    != awaken_runtime_contract::resolved::ToolKind::ClientExecuted
+                            })
+                            .map(|descriptor| descriptor.id.clone()),
                     ));
                     acp_tool_grants = Some(grants.clone());
                     executors = executors
@@ -1690,7 +1710,9 @@ impl SharedHost {
                                 dyn awaken_runtime_contract::resume::OwnedToolContinuation,
                             > = Arc::new(crate::acp_tool_export::AcpToolContinuation {
                                 runtime: runtime.clone(),
-                                exports,
+                                host_exports: Some(exports),
+                                client_tools: acp_client_tool_ids.clone(),
+                                client_requests: acp_client_tool_requests.clone(),
                             });
                             port
                         });

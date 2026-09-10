@@ -781,10 +781,11 @@ impl Runtime {
         crate::engine::run_commands::resume_run(self, command, reader, context).await
     }
 
-    /// Apply a validated tool-permission decision through the same durable batch
-    /// execution/recovery path as `resume`, then return control without invoking
-    /// the native model. `Running` means ordered tool results are committed and
-    /// the caller must continue its existing model loop; it is not a Run ending.
+    /// Apply a validated tool-permission decision or client-executed result through
+    /// the same durable batch execution/recovery path as `resume`, then return
+    /// control without invoking the native model. `Running` means ordered tool
+    /// results are committed and the caller must continue its existing model loop;
+    /// it is not a Run ending.
     /// A later call may await or end the Run under the normal batch rules.
     ///
     /// Requires a commit coordinator and the ticket's registered snapshot. The

@@ -580,10 +580,13 @@ impl RunAttemptExecutor for AcpRunExecutor {
                 "ACP activation does not match the resumed Run".to_string(),
             ));
         }
-        if ticket.reason() == AwaitReason::ToolPermission
-            && let Some((_, pending)) = ticket.tool_call()
+        if let AwaitTarget::ToolCall {
+            reason,
+            tool: pending,
+            ..
+        } = ticket.target()
             && let Some(continuation) = &self.owned_tool_continuation
-            && continuation.owns_tool(&pending.tool_id)
+            && continuation.tool_await_reason(&pending.tool_id) == Some(*reason)
         {
             let state = continuation
                 .resume(activation.clone(), command, context.clone())
@@ -808,6 +811,17 @@ impl AcpRunExecutor {
             .map_or(self.permission.as_ref(), |resolver| {
                 resolver as &dyn PermissionResolver
             });
+        let owned_permission = self.owned_tool_continuation.as_ref().map(|continuation| {
+            tool_continuation::OwnedToolPermissionResolver {
+                base: configured_permission,
+                continuation: continuation.as_ref(),
+            }
+        });
+        let configured_permission = owned_permission
+            .as_ref()
+            .map_or(configured_permission, |resolver| {
+                resolver as &dyn PermissionResolver
+            });
         let aliased_permission = AliasedMcpPermissionResolver {
             base: configured_permission,
             mcp_server_names: &mcp_server_names,
@@ -832,7 +846,8 @@ impl AcpRunExecutor {
                 context.tool_output_spiller.clone(),
                 context.ownership.clone(),
                 permission_resume.as_ref(),
-            );
+            )
+            .with_tool_call_limit(activation.snapshot.resolved_spec.max_steps);
             // ADR-0052 owner control channel. Retain the sender and forward a run
             // cancellation into it as an `Injection::Interrupt`, so the supervisor
             // reaps the Step through the same interrupt path a protocol interrupt
@@ -846,10 +861,30 @@ impl AcpRunExecutor {
                     let _ = tx.send(Injection::Interrupt).await;
                 })
             });
+            let client_execution = Arc::new(std::sync::Mutex::new(None));
+            let client_execution_result = client_execution.clone();
+            let owned_continuation = self.owned_tool_continuation.clone();
             let cancel = async {
-                match &context.cancellation {
-                    Some(token) => token.cancelled().await,
-                    None => std::future::pending::<()>().await,
+                let owner_cancel = async {
+                    match &context.cancellation {
+                        Some(token) => token.cancelled().await,
+                        None => std::future::pending::<()>().await,
+                    }
+                };
+                let client_call = async {
+                    match owned_continuation {
+                        Some(continuation) => continuation.next_client_execution().await,
+                        None => std::future::pending::<ToolCall>().await,
+                    }
+                };
+                tokio::select! {
+                    biased;
+                    () = owner_cancel => {},
+                    call = client_call => {
+                        *client_execution_result
+                            .lock()
+                            .expect("ACP client execution lock poisoned") = Some(call);
+                    }
                 }
             };
 
@@ -860,6 +895,7 @@ impl AcpRunExecutor {
                     resolver as &dyn PermissionResolver
                 });
             let mut config = TurnConfig::new(permission);
+            config.max_turn_requests = Some(activation.snapshot.resolved_spec.max_steps);
             config.mcp_servers = session.mcp_session_servers.clone();
             config.session_id = acp_session_id.take();
             config.session_model = session.session_model.clone();
@@ -913,6 +949,7 @@ impl AcpRunExecutor {
             // Recheck before projecting any returned fact into local Run truth;
             // the replacement owner remains the only attempt allowed to commit.
             verify_attempt_ownership(context.ownership.as_deref()).await?;
+            let outcome = tool_continuation::client_execution_outcome(&client_execution, outcome);
             // Keep the negotiated session id for the next relaunched Step, and fold
             // this Step's token usage into the Run total.
             acp_session_id = config.session_id.take();
@@ -975,11 +1012,12 @@ impl AcpRunExecutor {
                         &ask,
                     )?;
                     let tool_id = canonical_permission_tool_id(&ask.tool);
-                    let authority = if self
+                    let owned_reason = self
                         .owned_tool_continuation
                         .as_ref()
-                        .is_some_and(|continuation| continuation.owns_tool(&tool_id))
-                    {
+                        .and_then(|continuation| continuation.tool_await_reason(&tool_id));
+                    let reason = owned_reason.unwrap_or(ToolAwaitReason::Permission);
+                    let authority = if owned_reason.is_some() {
                         awaken_agent_contract::agent::awaiting::ToolCallAuthority::RuntimeToolBatch
                     } else {
                         awaken_agent_contract::agent::awaiting::ToolCallAuthority::RunAttemptExecutor
@@ -991,7 +1029,7 @@ impl AcpRunExecutor {
                         &activation.snapshot.id.0,
                         &activation.snapshot.fingerprint.0,
                         AwaitTarget::ToolCall {
-                            reason: ToolAwaitReason::Permission,
+                            reason,
                             call_id: ask.call_id.clone(),
                             tool: PendingTool {
                                 tool_id,
@@ -1663,6 +1701,8 @@ struct CollectingAppender {
     usage: TokenUsage,
     resumed_call: Option<PermissionResume>,
     remapped_result: Option<(String, PermissionResume)>,
+    tool_call_count: usize,
+    max_tool_calls: usize,
 }
 
 impl CollectingAppender {
@@ -1686,7 +1726,14 @@ impl CollectingAppender {
             usage: TokenUsage::default(),
             resumed_call: resumed_call.cloned(),
             remapped_result: None,
+            tool_call_count: 0,
+            max_tool_calls: usize::MAX,
         }
+    }
+
+    fn with_tool_call_limit(mut self, max_tool_calls: usize) -> Self {
+        self.max_tool_calls = max_tool_calls;
+        self
     }
 }
 
@@ -1779,6 +1826,13 @@ impl RunFactAppender for CollectingAppender {
                         }
                     }
                 }
+                if self.tool_call_count >= self.max_tool_calls {
+                    return Err(AppendError::Append(format!(
+                        "ACP agent exceeded the Run max_steps budget of {} distinct tool calls inside one opaque prompt",
+                        self.max_tool_calls
+                    )));
+                }
+                self.tool_call_count += 1;
                 let message_id =
                     take_assistant_message_id(&self.run_id, &mut self.next_assistant_step);
                 self.messages.push(Message {

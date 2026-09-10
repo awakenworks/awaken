@@ -230,7 +230,15 @@ pub fn validate_resume(ticket: &ResumeTicket, command: &ResumeCommand) -> Result
 /// name. External backends retain their own model loop and third-party clients.
 #[async_trait::async_trait]
 pub trait OwnedToolContinuation: Send + Sync {
-    fn owns_tool(&self, tool_id: &str) -> bool;
+    /// Classify one tool exported by the Host into the existing Runtime wait
+    /// vocabulary. Absence means the external ACP adapter owns the call.
+    fn tool_await_reason(&self, tool_id: &str) -> Option<ToolAwaitReason>;
+
+    /// Wait for a Host-exported client tool to reach the MCP execution edge.
+    /// Implementations without client-executed tools retain an inert future.
+    async fn next_client_execution(&self) -> crate::tool::ToolCall {
+        std::future::pending().await
+    }
 
     async fn resume(
         &self,

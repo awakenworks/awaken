@@ -161,26 +161,27 @@ pub async fn run_turn_with_config(
                 launch_sink,
                 AcpLaunchEvent::with_detail(AcpLaunchStage::Initializing, "session/load"),
             );
-            wire.send_request(
-                ID_NEW_SESSION,
-                AGENT_METHOD_NAMES.session_load,
-                LoadSessionRequest::new(SessionId::new(prior.as_str()), cwd.as_str())
-                    .mcp_servers(to_acp_mcp_servers(&config.mcp_servers))
-                    .meta(handshake::tool_alias_meta(&config.tool_aliases)),
-            )
-            .await?;
             // `session/load` may replay the external Agent's entire historical
             // notification stream. Those facts were committed by earlier Runs;
             // the neutral Thread log is their sole owner, so recovery must not
             // append them again under the current Run's ids.
             let mut replay = crate::DiscardRunFacts;
-            match handshake_step(
-                config.handshake_step_deadline,
-                "session/load",
-                pump_response(&mut wire, ID_NEW_SESSION, &mut replay, &mut seq, resolver),
-            )
-            .await?
-            {
+            let load = handshake_step(config.handshake_step_deadline, "session/load", async {
+                wire.send_request(
+                    ID_NEW_SESSION,
+                    AGENT_METHOD_NAMES.session_load,
+                    LoadSessionRequest::new(SessionId::new(prior.as_str()), cwd.as_str())
+                        .mcp_servers(to_acp_mcp_servers(&config.mcp_servers))
+                        .meta(handshake::claude_session_meta(
+                            &config.tool_aliases,
+                            config.max_turn_requests,
+                        )),
+                )
+                .await?;
+                pump_response(&mut wire, ID_NEW_SESSION, &mut replay, &mut seq, resolver).await
+            })
+            .await?;
+            match load {
                 RpcResponse::Result(result) => {
                     let resp: LoadSessionResponse = parse(result)?;
                     let supports_session_model = resp.models.is_some();
@@ -212,9 +213,14 @@ pub async fn run_turn_with_config(
                             sink,
                             &mut seq,
                             resolver,
-                            &cwd,
-                            &config.mcp_servers,
-                            &config.tool_aliases,
+                            handshake::NewSessionConfig {
+                                cwd: &cwd,
+                                mcp_servers: &config.mcp_servers,
+                                meta: handshake::claude_session_meta(
+                                    &config.tool_aliases,
+                                    config.max_turn_requests,
+                                ),
+                            },
                         ),
                     )
                     .await?;
@@ -241,9 +247,14 @@ pub async fn run_turn_with_config(
                     sink,
                     &mut seq,
                     resolver,
-                    &cwd,
-                    &config.mcp_servers,
-                    &config.tool_aliases,
+                    handshake::NewSessionConfig {
+                        cwd: &cwd,
+                        mcp_servers: &config.mcp_servers,
+                        meta: handshake::claude_session_meta(
+                            &config.tool_aliases,
+                            config.max_turn_requests,
+                        ),
+                    },
                 ),
             )
             .await?;
@@ -467,109 +478,162 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn initialize_that_keeps_the_channel_open_cannot_hold_the_turn_forever() {
-        // FMECA: a live adapter process can stop replying before any prompt or
-        // projected fact (high occurrence impact, otherwise no Flow detection).
-        // Cause graph / decision table: open channel + missing initialize reply ->
-        // bounded IO failure; an explicit reply remains the ordinary handshake.
-        let (mut ours, theirs) = channel();
-        let adapter = tokio::spawn(async move {
-            let mut io = AgentIo::new(theirs);
-            assert_eq!(
-                io.read().await.unwrap()["method"],
-                AGENT_METHOD_NAMES.initialize
-            );
-            std::future::pending::<()>().await
-        });
-        let resolver = RecordingResolver::default();
-        let mut config = TurnConfig::new(&resolver);
-        config.handshake_step_deadline = std::time::Duration::from_millis(20);
-        let mut sink = RecordingSink::default();
-
-        // L3 a stalled handshake reports its exact last boundary and never
-        // emits Ready; a later timeout cannot imply prompt/model admission.
-        let launch = crate::tests::RecordingLaunch::default();
-        let error = run_turn_with_config(
-            ours.as_mut(),
-            "not sent",
-            &mut sink,
-            &mut config,
-            Some(LaunchSink::new(&launch, "stalled-launch")),
-        )
-        .await
-        .expect_err("a silent initialize must be bounded");
-        let stages = launch.events.lock().unwrap();
-        assert_eq!(
-            stages.last().unwrap().1.detail.as_deref(),
-            Some("initialize")
-        );
-        assert!(
-            stages
-                .iter()
-                .all(|(_, event)| event.stage == AcpLaunchStage::Initializing)
-        );
-
-        assert!(
-            matches!(&error, AcpError::Io(detail) if detail.contains("initialize handshake timed out"))
-        );
-        assert!(sink.events.is_empty(), "no prompt-side effect occurred");
-        adapter.abort();
-    }
-
-    #[tokio::test]
-    async fn new_session_that_keeps_the_channel_open_cannot_hold_the_turn_forever() {
-        // Same failure mode after a successful initialize: the stage label must
-        // preserve causal diagnosis and the prompt must still remain unsent.
-        let (mut ours, theirs) = channel();
-        let adapter = tokio::spawn(async move {
-            let mut io = AgentIo::new(theirs);
-            assert_eq!(
-                io.read().await.unwrap()["method"],
-                AGENT_METHOD_NAMES.initialize
-            );
-            io.write_line(
-                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
-            )
-            .await;
-            assert_eq!(
-                io.read().await.unwrap()["method"],
-                AGENT_METHOD_NAMES.session_new
-            );
-            std::future::pending::<()>().await
-        });
-        let resolver = RecordingResolver::default();
-        let mut config = TurnConfig::new(&resolver);
-        config.handshake_step_deadline = std::time::Duration::from_millis(20);
-        let mut sink = RecordingSink::default();
-
-        // L3 a stalled handshake reports its exact last boundary and never
-        // emits Ready; a later timeout cannot imply prompt/model admission.
-        let launch = crate::tests::RecordingLaunch::default();
-        let error = run_turn_with_config(
-            ours.as_mut(),
-            "not sent",
-            &mut sink,
-            &mut config,
-            Some(LaunchSink::new(&launch, "stalled-launch")),
-        )
-        .await
-        .expect_err("a silent session/new must be bounded");
-        let stages = launch.events.lock().unwrap();
-        assert_eq!(
-            stages.last().unwrap().1.detail.as_deref(),
-            Some("session/new")
-        );
-        assert!(
-            stages
-                .iter()
-                .all(|(_, event)| event.stage == AcpLaunchStage::Initializing)
-        );
-
-        assert!(
-            matches!(&error, AcpError::Io(detail) if detail.contains("session/new handshake timed out"))
-        );
-        assert!(sink.events.is_empty(), "no prompt-side effect occurred");
-        adapter.abort();
+    async fn every_handshake_failure_is_bounded_and_precedes_prompt() {
+        // Causes: C1 each required request boundary (initialize, optional auth,
+        // new/load, missing-load fallback, mode, model, and either exact option)
+        // receives an explicit error; C2 the same boundary instead remains open
+        // without a response. Effects: E1 C1 fails closed; E2 C2 returns the
+        // boundary's deadline error; E3 neither outcome sends session/prompt,
+        // emits Ready, or projects a prompt-side fact. Constraints: one production
+        // driver, Wire, and handshake_step own every row; the missing-Session error
+        // alone authorizes new-session fallback; selected configuration order is
+        // mode -> model -> option[0] -> option[1]. Decision rules H1=C1=>E1+E3
+        // and H2=C2=>E2+E3, crossed with all nine boundaries below.
+        let cases = [
+            ("initialize", false, false, 0, "initialize"),
+            ("authenticate", false, false, 0, "initialize"),
+            ("session/new", false, false, 0, "session/new"),
+            ("session/load", true, false, 0, "session/load"),
+            ("session/new", true, true, 0, "session/new"),
+            ("session/set_mode", false, false, 0, "session/set_mode"),
+            ("session/set_model", false, false, 0, "session/set_model"),
+            (
+                "session/set_config_option",
+                false,
+                false,
+                0,
+                "session/set_config_option",
+            ),
+            (
+                "session/set_config_option",
+                false,
+                false,
+                1,
+                "session/set_config_option",
+            ),
+        ];
+        for (target, prior, missing, target_index, stage) in cases {
+            for stalls in [false, true] {
+                let (mut ours, theirs) = channel();
+                let methods = Arc::new(Mutex::new(Vec::new()));
+                let observed = methods.clone();
+                let adapter = tokio::spawn(async move {
+                    let mut io = AgentIo::new(theirs);
+                    let mut target_seen = 0;
+                    while let Some(request) = io.read().await {
+                        let method = request["method"].as_str().unwrap().to_string();
+                        observed.lock().unwrap().push(method.clone());
+                        if method == target && target_seen == target_index {
+                            if stalls {
+                                std::future::pending::<()>().await;
+                            }
+                            io.write_line(
+                                &serde_json::json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32001,"message":"forced handshake failure"}}).to_string(),
+                            )
+                            .await;
+                            return;
+                        }
+                        target_seen += usize::from(method == target);
+                        let response = match method.as_str() {
+                            "initialize" => {
+                                serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":prior},"authMethods":[{"id":"api-key","name":"API key"}]}})
+                            }
+                            "authenticate" => {
+                                assert_eq!(request["params"]["methodId"], "api-key");
+                                serde_json::json!({"jsonrpc":"2.0","id":5,"result":{}})
+                            }
+                            "session/load" if missing => {
+                                serde_json::json!({"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"Unknown sessionId"}})
+                            }
+                            "session/load" => {
+                                unreachable!("load succeeds only after the target row")
+                            }
+                            "session/new" => {
+                                serde_json::json!({"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1","modes":{"currentModeId":"plan","availableModes":[{"id":"plan","name":"Plan"}]},"models":{"currentModelId":"default","availableModels":[]},"configOptions":[{"id":"model","name":"Model","type":"select","currentValue":"default","options":[]},{"id":"reasoning","name":"Reasoning","type":"select","currentValue":"low","options":[]}]}})
+                            }
+                            "session/set_mode" => {
+                                serde_json::json!({"jsonrpc":"2.0","id":4,"result":{}})
+                            }
+                            "session/set_model" => {
+                                serde_json::json!({"jsonrpc":"2.0","id":6,"result":{}})
+                            }
+                            "session/set_config_option" => {
+                                serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":{"configOptions":[]}})
+                            }
+                            "session/prompt" => {
+                                panic!("H1/H2/E3 prompt preceded handshake completion")
+                            }
+                            other => panic!("unexpected method {other}"),
+                        };
+                        io.write_line(&response.to_string()).await;
+                    }
+                });
+                let resolver = RecordingResolver::default();
+                let mut config = TurnConfig::new(&resolver);
+                config.auth_method_id = Some("api-key".into());
+                config.session_id = prior.then(|| "old".into());
+                config.session_mode = Some("plan".into());
+                config.session_model = Some("provider/exact".into());
+                config.session_config_options = ["model", "reasoning"]
+                    .map(|id| crate::SessionConfigOptionSelection {
+                        config_id: id.into(),
+                        value: "exact".into(),
+                    })
+                    .to_vec();
+                config.handshake_step_deadline = std::time::Duration::from_millis(20);
+                let launch = crate::tests::RecordingLaunch::default();
+                let mut sink = RecordingSink::default();
+                let error = run_turn_with_config(
+                    ours.as_mut(),
+                    "not sent",
+                    &mut sink,
+                    &mut config,
+                    Some(LaunchSink::new(&launch, "bounded-handshake")),
+                )
+                .await
+                .expect_err("H1/H2 handshake must fail");
+                if stalls {
+                    assert!(
+                        matches!(&error, AcpError::Io(detail) if detail.contains(&format!("{stage} handshake timed out"))),
+                        "H2/E2: {error}"
+                    );
+                    adapter.abort();
+                } else {
+                    assert!(matches!(error, AcpError::Frame(_)), "H1/E1: {error}");
+                    adapter.await.unwrap();
+                }
+                let observed = methods.lock().unwrap();
+                assert!(
+                    !observed.iter().any(|method| method == "session/prompt"),
+                    "H1/H2/E3"
+                );
+                if target == "session/set_config_option" && target_index == 1 {
+                    assert_eq!(
+                        observed.as_slice(),
+                        [
+                            "initialize",
+                            "authenticate",
+                            "session/new",
+                            "session/set_mode",
+                            "session/set_model",
+                            "session/set_config_option",
+                            "session/set_config_option"
+                        ],
+                        "H1/H2 selected configuration preserves its exact order"
+                    );
+                }
+                assert!(
+                    launch
+                        .events
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .all(|(_, event)| event.stage == AcpLaunchStage::Initializing),
+                    "H1/H2/E3"
+                );
+                assert!(sink.events.is_empty(), "H1/H2/E3");
+            }
+        }
     }
 
     /// A scripted in-process ACP agent speaking real JSON-RPC over the duplex: it
@@ -612,51 +676,9 @@ mod tests {
         }
     }
 
-    async fn authenticated_agent(side: DuplexStream) {
-        let mut io = AgentIo::new(side);
-        let initialize = io.read().await.expect("initialize");
-        assert_eq!(initialize["method"], AGENT_METHOD_NAMES.initialize);
-        io.write_line(
-            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":[{"id":"api-key","name":"API key"}]}}"#,
-        )
-        .await;
-
-        let authenticate = io.read().await.expect("authenticate");
-        assert_eq!(authenticate["id"], ID_AUTHENTICATE);
-        assert_eq!(authenticate["method"], AGENT_METHOD_NAMES.authenticate);
-        assert_eq!(authenticate["params"]["methodId"], "api-key");
-        io.write_line(r#"{"jsonrpc":"2.0","id":5,"result":{}}"#)
-            .await;
-
-        let new_session = io.read().await.expect("session/new");
-        assert_eq!(new_session["method"], AGENT_METHOD_NAMES.session_new);
-        io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"authenticated"}}"#)
-            .await;
-
-        let prompt = io.read().await.expect("session/prompt");
-        assert_eq!(prompt["method"], AGENT_METHOD_NAMES.session_prompt);
-        io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
-            .await;
-    }
-
     fn channel() -> (Box<dyn AgentChannel>, DuplexStream) {
         let (ours, theirs) = tokio::io::duplex(8192);
         (Box::new(ours), theirs)
-    }
-
-    #[tokio::test]
-    async fn selects_the_catalog_auth_method_before_opening_a_session() {
-        let (mut ours, theirs) = channel();
-        let agent = tokio::spawn(authenticated_agent(theirs));
-        let mut sink = RecordingSink::default();
-        let mut config = TurnConfig::new(&AllowAll);
-        config.auth_method_id = Some("api-key".to_string());
-
-        let reason = run_turn_with_config(ours.as_mut(), "do it", &mut sink, &mut config, None)
-            .await
-            .unwrap();
-        assert_eq!(reason, TerminationReason::NaturalEnd);
-        agent.await.unwrap();
     }
 
     #[tokio::test]
@@ -1909,7 +1931,8 @@ mod tests {
     #[tokio::test]
     async fn alias_metadata_survives_new_load_and_missing_session_recovery() {
         // Cause graph: aliases x prior Session x advertised load x missing id
-        // -> new/load/recovery request -> identical constrained SDK metadata -> prompt.
+        // + max-turn budget -> new/load/recovery request -> identical constrained
+        // SDK metadata -> prompt.
         // R1 absent aliases => no extension; R2 new; R3 load; R4 load missing => new;
         // R5 load unavailable => new. Metadata carries no credential or arbitrary options.
         for (enabled, prior, can_load, missing) in [
@@ -1936,7 +1959,7 @@ mod tests {
                     if enabled {
                         assert_eq!(
                             meta["claudeCode"]["options"],
-                            serde_json::json!({"toolAliases":{"Bash":"mcp__awaken_session__bash"},"tools":[],"disallowedTools":["Bash"]})
+                            serde_json::json!({"toolAliases":{"Bash":"mcp__awaken_session__bash"},"tools":[],"disallowedTools":["Bash"],"maxTurns":8})
                         );
                     } else {
                         assert!(meta.is_null());
@@ -1960,6 +1983,7 @@ mod tests {
                 config
                     .tool_aliases
                     .insert("Bash".into(), "mcp__awaken_session__bash".into());
+                config.max_turn_requests = Some(8);
             }
             if prior {
                 config.session_id = Some("sess-1".into());
