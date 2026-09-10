@@ -23,20 +23,28 @@ const stream = (value: Record<string, unknown>): ManagedStreamEvent => value as 
 
 describe("Managed Session committed projection decision table", () => {
   it("pairs exact calls independently of order, family, status and text", () => {
-    // P1 same-name calls + reversed results -> exact ids, never name/order.
-    // P2 builtin/MCP x success/failure -> retain the original typed result.
-    // P3 error-looking success remains success; unrelated/missing ids and
-    // user-supplied result events never supply a server outcome.
+    // Cause/effect graph: C1 result family is host, MCP, client-custom, or
+    // client-self-hosted; C2 exact reference id is present/missing; C3 status is
+    // success/failure; C4 same-name calls and result order may differ. Effects:
+    // E1 every official result family pairs by its own exact reference field;
+    // E2 missing/unrelated events do not pair; E3 typed result and status survive.
+    // Decision rules: P1 C1(any)+C2(present) -> E1+E3; P2 C2(missing) -> E2;
+    // P3 C3(any)+C4(any) -> exact identity wins, never name/order/text inference.
     const first = event({ id: "r1", type: "agent.tool_result", tool_use_id: "a", is_error: false, content: [{ type: "text", text: "[tool error] literal" }] });
     const second = event({ id: "r2", type: "agent.tool_result", tool_use_id: "b", is_error: true });
     const mcp = event({ id: "r3", type: "agent.mcp_tool_result", mcp_tool_use_id: "m", is_error: true });
+    const custom = event({ id: "r4", type: "user.custom_tool_result", custom_tool_use_id: "c", is_error: false });
+    const selfHosted = event({ id: "r5", type: "user.tool_result", tool_use_id: "s", is_error: true });
     const log = [event({ id: "a", type: "agent.tool_use", name: "read" }), event({ id: "b", type: "agent.tool_use", name: "read" }), second, mcp, first,
-      event({ id: "user", type: "user.tool_result", tool_use_id: "a" }), event({ id: "missing", type: "agent.tool_result" })];
+      custom, selfHosted, event({ id: "message", type: "user.message", tool_use_id: "unrelated" }), event({ id: "missing", type: "agent.tool_result" })];
     const results = pairToolResults(log);
-    expect([...results.keys()].sort()).toEqual(["a", "b", "m"]);
+    expect([...results.keys()].sort()).toEqual(["a", "b", "c", "m", "s"]);
     expect(results.get("a")).toBe(first);
     expect(results.get("b")).toBe(second);
     expect(results.get("m")).toBe(mcp);
+    expect(results.get("c")).toBe(custom);
+    expect(results.get("s")).toBe(selfHosted);
+    expect(results.has("unrelated")).toBe(false);
   });
 
   /**
