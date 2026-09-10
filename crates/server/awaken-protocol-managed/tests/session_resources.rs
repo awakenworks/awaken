@@ -63,6 +63,9 @@ fn profiled_router(state: std::sync::Arc<ManagedState>, workspace: &str) -> Rout
     .merge(awaken_protocol_awaken::profiled_session_release_router(
         awaken_protocol_managed::release_profiled_session,
     ))
+    .merge(awaken_protocol_awaken::session_execution_evidence_router(
+        awaken_protocol_managed::get_session_execution_evidence,
+    ))
     .with_state(state);
     extensions.layer(axum::Extension(awaken_tenancy::WorkspaceScope(
         workspace.to_string(),
@@ -5034,6 +5037,74 @@ async fn profiled_create_accepts_the_durable_root_without_waiting_for_realizatio
         "Q2/E3 replay does not mutate durable operation truth"
     );
     assert!(runtime.prepared.lock().unwrap().is_empty(), "Q2/E3");
+}
+
+#[tokio::test]
+async fn execution_evidence_http_reads_the_owned_frozen_root_without_mutation() {
+    // Cause/effect decision table:
+    // H1 an owned frozen Session with no committed Thread => 200 with the exact
+    // baseline and zero Runs; H2 the same id under another Workspace => 404;
+    // H3 either read => no Session-root mutation. The adapter must not invent a
+    // Run/model call or add a second ownership rule. Rules H1=>E1, H2=>E2,
+    // H1+H2=>E3.
+    let runtime = AcceptingFake::default();
+    let sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
+    );
+    let state = std::sync::Arc::new(
+        ManagedState::new(runtime)
+            .with_session_repo(sessions.clone())
+            .with_resource_registry(resource_registry()),
+    );
+    let owned = profiled_router(state.clone(), "workspace-a");
+    let request = json!({
+        "session_id": "profiled-execution-evidence",
+        "mode": "work_unit",
+        "agent_id": "coder"
+    });
+    let (status, created) = call(&owned, "POST", "/v1/awaken/sessions", Some(request)).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "H1 create: {created}");
+    let before = sessions
+        .get("profiled-execution-evidence")
+        .await
+        .expect("durable Session root");
+    let baseline = before.frozen_baseline().expect("frozen baseline");
+
+    let (status, evidence) = call(
+        &owned,
+        "GET",
+        "/v1/awaken/sessions/profiled-execution-evidence/execution-evidence",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "H1/E1: {evidence}");
+    assert_eq!(evidence["session_id"], before.session_id, "H1/E1");
+    assert_eq!(evidence["session_revision"], before.revision.0, "H1/E1");
+    assert_eq!(evidence["agent_id"], baseline.agent_id, "H1/E1");
+    assert_eq!(evidence["model"], baseline.model, "H1/E1");
+    assert_eq!(
+        evidence["execution_model_ref"], baseline.execution_model_ref,
+        "H1/E1"
+    );
+    assert_eq!(evidence["runs"], json!([]), "H1/E1");
+
+    let foreign = profiled_router(state, "workspace-b");
+    let (status, _) = call(
+        &foreign,
+        "GET",
+        "/v1/awaken/sessions/profiled-execution-evidence/execution-evidence",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "H2/E2");
+    assert_eq!(
+        sessions
+            .get("profiled-execution-evidence")
+            .await
+            .expect("Session after reads"),
+        before,
+        "H3/E3"
+    );
 }
 
 #[tokio::test]

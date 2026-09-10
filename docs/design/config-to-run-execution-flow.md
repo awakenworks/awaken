@@ -544,13 +544,17 @@ The Worker commits under its exact claim epoch. Coordinator rejects a stale
 owner, returns a durable receipt for an identical logical operation, and settles
 the dispatch only after the committed boundary is known.
 
-The public result has two surfaces:
+The result and observation boundary has four surfaces:
 
 1. `POST /v1/sessions/{id}/events` returns the admitted Event receipts after the
    processing command reaches its boundary;
 2. private `POST /v1/awaken/sessions/{id}/runs` returns only the exact Session
    and Run identities after canonical admission and activation;
-3. SSE or `GET /events` returns projected Agent messages, tool activity, errors,
+3. private GET `/v1/awaken/sessions/{id}/execution-evidence` reconstructs the
+   frozen Agent/model/backend selection and exact committed Run, assistant
+   tool-use, and model-request completion coordinates from the Session root and
+   one primary-Thread recovery snapshot; it owns no status or usage state;
+4. SSE or `GET /events` returns projected Agent messages, tool activity, errors,
    and the terminal Session state.
 
 The private profiled Run body carries exact Agent, operation, Run, Message, tool

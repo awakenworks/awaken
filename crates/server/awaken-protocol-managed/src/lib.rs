@@ -88,8 +88,9 @@ pub use routes::environments::{
 pub use routes::user_profiles::user_profiles_router;
 pub use routes::vaults::{VaultState, vault_router};
 pub use routes::{
-    close_event_admission, create_profiled_session, enforce_managed_beta, release_profiled_session,
-    replace_resource_manifest, router, submit_profiled_session_run, tunnels_router,
+    close_event_admission, create_profiled_session, enforce_managed_beta,
+    get_session_execution_evidence, release_profiled_session, replace_resource_manifest, router,
+    submit_profiled_session_run, tunnels_router,
 };
 pub use state::{ManagedState, StateError, managed_session_id_from_idempotency};
 pub use tunnel::{ManagedTunnelApplication, ManagedTunnelApplicationError, ManagedTunnelScope};

@@ -2032,6 +2032,7 @@ pub async fn awaken_protocol_managed::enforce_managed_rate_limit(axum::extract::
 pub fn awaken_protocol_managed::environment_authoring_router(alloc::sync::Arc<awaken_protocol_managed::EnvironmentAuthoringState>) -> axum::routing::Router
 pub fn awaken_protocol_managed::environment_work_router(alloc::sync::Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>) -> axum::routing::Router
 pub fn awaken_protocol_managed::files_router(alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>) -> axum::routing::Router
+pub async fn awaken_protocol_managed::get_session_execution_evidence(axum::extract::state::State<alloc::sync::Arc<awaken_protocol_managed::ManagedState>>, axum::extract::path::Path<alloc::string::String>, core::option::Option<axum::extension::Extension<awaken_tenancy::WorkspaceScope>>) -> core::result::Result<axum::json::Json<awaken_protocol_awaken::execution_evidence::SessionExecutionEvidence>, (http::status::StatusCode, axum::json::Json<awaken_protocol_managed::types::ErrorResponse>)>
 pub fn awaken_protocol_managed::inference_geo_name(core::option::Option<awaken_protocol_managed::types::ModelInferenceGeo>) -> &'static str
 pub fn awaken_protocol_managed::managed_session_id_from_idempotency(&str, &str) -> alloc::string::String
 pub fn awaken_protocol_managed::memory_stores_router(alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::sync::Arc<dyn awaken_resource_contract::memory_application::MemoryStoreApplicationService>) -> axum::routing::Router

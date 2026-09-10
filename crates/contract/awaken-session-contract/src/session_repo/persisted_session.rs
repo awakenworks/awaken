@@ -362,15 +362,9 @@ impl PersistedSession {
         projection_anchor: SessionEventProjectionAnchor,
         processed_at_unix_ms: u64,
     ) -> Result<SessionEventDispatchSettlementEffect, SessionEventBatchError> {
-        let mut coordinate = None;
-        for (batch_index, batch) in self.event_batches.iter().enumerate() {
-            if let Some(operation_id) = batch.user_run_operation_id(run_id)? {
-                if coordinate.is_some() {
-                    return Err(SessionEventBatchError::ProgressMismatch);
-                }
-                coordinate = Some((batch_index, operation_id.to_string()));
-            }
-        }
+        let coordinate = self
+            .user_run_coordinate(run_id)?
+            .map(|(batch_index, operation_id)| (batch_index, operation_id.to_string()));
         let Some((batch_index, operation_id)) = coordinate else {
             return Ok(SessionEventDispatchSettlementEffect::NotEvent);
         };
@@ -411,6 +405,36 @@ impl PersistedSession {
                 Err(SessionEventBatchError::ProgressMismatch)
             }
         }
+    }
+
+    /// Resolve the original HTTP retry identity retained with one exact User
+    /// Run. Create-time inputs legitimately return `None`; multiple retained
+    /// coordinates are corrupt and fail closed through the same lookup used by
+    /// Dispatch settlement.
+    pub fn user_run_idempotency_key(
+        &self,
+        run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<Option<&str>, SessionEventBatchError> {
+        let Some((batch_index, _)) = self.user_run_coordinate(run_id)? else {
+            return Ok(None);
+        };
+        Ok(self.event_batches[batch_index].idempotency_key.as_deref())
+    }
+
+    fn user_run_coordinate(
+        &self,
+        run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<Option<(usize, &str)>, SessionEventBatchError> {
+        let mut coordinate = None;
+        for (batch_index, batch) in self.event_batches.iter().enumerate() {
+            if let Some(operation_id) = batch.user_run_operation_id(run_id)? {
+                if coordinate.is_some() {
+                    return Err(SessionEventBatchError::ProgressMismatch);
+                }
+                coordinate = Some((batch_index, operation_id));
+            }
+        }
+        Ok(coordinate)
     }
 
     /// Whether the current aggregate has explicit, unsettled activity truth.

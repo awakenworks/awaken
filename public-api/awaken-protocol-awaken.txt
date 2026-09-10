@@ -89,6 +89,26 @@ pub awaken_protocol_awaken::ProfiledSessionRunSubmit::run_id: awaken_agent_contr
 pub struct awaken_protocol_awaken::RepositoryObject
 impl core::convert::From<awaken_resource_contract::repository_application::RepositoryDetails> for awaken_protocol_awaken::RepositoryObject
 pub fn awaken_protocol_awaken::RepositoryObject::from(awaken_resource_contract::repository_application::RepositoryDetails) -> Self
+pub struct awaken_protocol_awaken::SessionExecutionEvidence
+pub awaken_protocol_awaken::SessionExecutionEvidence::agent_id: alloc::string::String
+pub awaken_protocol_awaken::SessionExecutionEvidence::agent_revision: core::option::Option<u64>
+pub awaken_protocol_awaken::SessionExecutionEvidence::backend_ref: core::option::Option<alloc::string::String>
+pub awaken_protocol_awaken::SessionExecutionEvidence::execution: awaken_session_contract::session_repo::execution_state::SessionExecutionState
+pub awaken_protocol_awaken::SessionExecutionEvidence::execution_model_ref: alloc::string::String
+pub awaken_protocol_awaken::SessionExecutionEvidence::model: alloc::string::String
+pub awaken_protocol_awaken::SessionExecutionEvidence::runs: alloc::vec::Vec<awaken_protocol_awaken::SessionRunExecutionEvidence>
+pub awaken_protocol_awaken::SessionExecutionEvidence::session_id: alloc::string::String
+pub awaken_protocol_awaken::SessionExecutionEvidence::session_revision: u64
+pub struct awaken_protocol_awaken::SessionModelRequestEvidence
+pub awaken_protocol_awaken::SessionModelRequestEvidence::is_error: bool
+pub awaken_protocol_awaken::SessionModelRequestEvidence::retry_count: u32
+pub awaken_protocol_awaken::SessionModelRequestEvidence::sequence: u64
+pub struct awaken_protocol_awaken::SessionRunExecutionEvidence
+pub awaken_protocol_awaken::SessionRunExecutionEvidence::idempotency_key: core::option::Option<alloc::string::String>
+pub awaken_protocol_awaken::SessionRunExecutionEvidence::model_requests: alloc::vec::Vec<awaken_protocol_awaken::SessionModelRequestEvidence>
+pub awaken_protocol_awaken::SessionRunExecutionEvidence::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_protocol_awaken::SessionRunExecutionEvidence::state: awaken_agent_contract::agent::run::RunState
+pub awaken_protocol_awaken::SessionRunExecutionEvidence::tool_use_ids: alloc::vec::Vec<alloc::string::String>
 pub fn awaken_protocol_awaken::dream_policy_router(alloc::sync::Arc<dyn awaken_session_contract::dream::DreamPolicyApplication>) -> axum::routing::Router
 pub fn awaken_protocol_awaken::environment_extensions_router(alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>, core::option::Option<alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>>) -> axum::routing::Router
 pub fn awaken_protocol_awaken::file_output_capture_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
@@ -99,4 +119,5 @@ pub fn awaken_protocol_awaken::profiled_session_router<H, T, S>(H) -> axum::rout
 pub fn awaken_protocol_awaken::profiled_session_run_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub fn awaken_protocol_awaken::repositories_router<List, ListArgs, Create, CreateArgs, Retrieve, RetrieveArgs, S>(List, Create, Retrieve) -> axum::routing::Router<S> where List: axum::handler::Handler<ListArgs, S>, ListArgs: 'static, Create: axum::handler::Handler<CreateArgs, S>, CreateArgs: 'static, Retrieve: axum::handler::Handler<RetrieveArgs, S>, RetrieveArgs: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub fn awaken_protocol_awaken::session_event_admission_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
+pub fn awaken_protocol_awaken::session_execution_evidence_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub fn awaken_protocol_awaken::session_resource_manifest_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static

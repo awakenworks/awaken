@@ -1268,7 +1268,7 @@ fn mount_with_managed_over_and_models(
         awaken_protocol_managed::replace_resource_manifest,
     )
     .with_state(managed_state.clone());
-    let profiled_sessions = awaken_protocol_awaken::profiled_session_router(
+    let session_extensions = awaken_protocol_awaken::profiled_session_router(
         awaken_protocol_managed::create_profiled_session,
     )
     .merge(awaken_protocol_awaken::profiled_session_run_router(
@@ -1276,6 +1276,9 @@ fn mount_with_managed_over_and_models(
     ))
     .merge(awaken_protocol_awaken::profiled_session_release_router(
         awaken_protocol_managed::release_profiled_session,
+    ))
+    .merge(awaken_protocol_awaken::session_execution_evidence_router(
+        awaken_protocol_managed::get_session_execution_evidence,
     ))
     .with_state(managed_state.clone());
     let managed = router(managed_state.clone())
@@ -1290,7 +1293,7 @@ fn mount_with_managed_over_and_models(
             session_application.clone(),
         ))
         .merge(resource_manifests)
-        .merge(profiled_sessions);
+        .merge(session_extensions);
     // One protocol-neutral Run application serves all three wire adapters, so
     // they share the Host with no per-protocol execution path.
     let host_runs: Arc<dyn RunApplication> = Arc::new(RunApplicationHost::new(host.clone()));

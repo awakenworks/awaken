@@ -7,20 +7,8 @@ use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 
-use super::{WireErr, error_response};
+use super::{WireErr, error_response, session_projection_error};
 use crate::state::{ManagedState, RunError, StateError};
-
-fn projection_error(error: awaken_session_application::SessionProjectionRecoveryError) -> WireErr {
-    use awaken_session_application::SessionProjectionRecoveryError as Error;
-
-    match error {
-        Error::NotFound => error_response(StateError::NotFound),
-        Error::Rejected(error) => error_response(StateError::Run(error)),
-        Error::Unavailable(message) => {
-            error_response(StateError::Run(RunError::unavailable(message)))
-        }
-    }
-}
 
 fn exact_receipt(
     session_id: &str,
@@ -64,7 +52,7 @@ pub async fn submit_profiled_session_run(
     let projection = application
         .read_session_projection(&id, Some(&owner_scope))
         .await
-        .map_err(projection_error)?
+        .map_err(session_projection_error)?
         .ok_or_else(|| error_response(StateError::NotFound))?;
     let baseline = projection
         .session
@@ -107,7 +95,8 @@ pub async fn submit_profiled_session_run(
 mod tests {
     use axum::http::StatusCode;
 
-    use super::{exact_receipt, projection_error};
+    use super::exact_receipt;
+    use crate::routes::sessions::session_projection_error;
     use crate::state::RunError;
 
     #[test]
@@ -186,7 +175,7 @@ mod tests {
                 "api_error",
             ),
         ] {
-            let (status, body) = projection_error(error);
+            let (status, body) = session_projection_error(error);
             assert_eq!(status, expected_status, "{rule}");
             assert_eq!(body.0.error.kind, expected_kind, "{rule}");
         }
