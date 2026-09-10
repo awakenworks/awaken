@@ -53,6 +53,93 @@ struct CatalogState {
     fingerprints: BTreeMap<FingerprintKey, ExecutableAgentSnapshot>,
 }
 
+/// One owner for deciding whether a registration or withdrawal may replace the
+/// current executable projection. Exact history admission remains separate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CurrentLifecycleDisposition {
+    Advance,
+    Retain,
+    AlreadyUnavailable,
+}
+
+const fn current_lifecycle_disposition(
+    current: Option<(u64, bool)>,
+    incoming_revision: u64,
+    incoming_available: bool,
+) -> CurrentLifecycleDisposition {
+    match current {
+        None => CurrentLifecycleDisposition::Advance,
+        Some((current_revision, _)) if incoming_revision < current_revision => {
+            CurrentLifecycleDisposition::Retain
+        }
+        Some((current_revision, current_available))
+            if incoming_revision == current_revision && !incoming_available =>
+        {
+            if current_available {
+                CurrentLifecycleDisposition::Advance
+            } else {
+                CurrentLifecycleDisposition::AlreadyUnavailable
+            }
+        }
+        Some((current_revision, _)) if incoming_revision == current_revision => {
+            CurrentLifecycleDisposition::Retain
+        }
+        Some(_) => CurrentLifecycleDisposition::Advance,
+    }
+}
+
+#[cfg(any(test, kani))]
+fn check_current_lifecycle_disposition(
+    current_revision: Option<u64>,
+    current_available: bool,
+    incoming_revision: u64,
+    incoming_available: bool,
+) {
+    // Causes: C1 current is absent/present; C2 present current is available or
+    // tombstoned; C3 incoming revision is lower/equal/higher; C4 command makes
+    // the incoming state available (register) or unavailable (withdraw).
+    // Effects: R1 absent or higher -> Advance to the incoming revision; R2 lower
+    // -> Retain; R3 equal register -> Retain, including an equal tombstone; R4
+    // equal withdrawal from available -> Advance to a tombstone; R5 equal
+    // tombstone withdrawal -> AlreadyUnavailable. Every outcome preserves or
+    // raises the installed lifecycle revision.
+    let current = current_revision.map(|revision| (revision, current_available));
+    let disposition = current_lifecycle_disposition(current, incoming_revision, incoming_available);
+    match (current, disposition) {
+        (None, CurrentLifecycleDisposition::Advance) => {}
+        (None, _) => panic!("R1 absent current must advance"),
+        (Some((old, _)), CurrentLifecycleDisposition::Advance) => {
+            assert!(incoming_revision >= old);
+        }
+        (Some(_), CurrentLifecycleDisposition::Retain)
+        | (Some(_), CurrentLifecycleDisposition::AlreadyUnavailable) => {}
+    }
+    if let Some((old, available)) = current {
+        if incoming_revision < old {
+            assert_eq!(disposition, CurrentLifecycleDisposition::Retain);
+        } else if incoming_revision == old {
+            assert_eq!(
+                disposition,
+                match (incoming_available, available) {
+                    (true, _) => CurrentLifecycleDisposition::Retain,
+                    (false, true) => CurrentLifecycleDisposition::Advance,
+                    (false, false) => CurrentLifecycleDisposition::AlreadyUnavailable,
+                }
+            );
+        } else {
+            assert_eq!(disposition, CurrentLifecycleDisposition::Advance);
+        }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn installed_lifecycle_revision_never_rolls_back() {
+    // No assumptions or stubs: exhaust the complete Option<u64> current domain,
+    // both availability states, every u64 incoming revision and both commands.
+    check_current_lifecycle_disposition(kani::any(), kani::any(), kani::any(), kani::any());
+}
+
 /// Coordinator's current/exact/fingerprint read projection.
 #[derive(Default)]
 pub struct ExecutableAgentCatalog {
@@ -159,21 +246,27 @@ impl ExecutableAgentCatalog {
             registration.workspace_id.clone(),
             registration.agent_id.clone(),
         );
-        let advances_current = state
+        let current = state
             .current
             .get(&key)
-            .is_none_or(|current| registration.source_revision > current.lifecycle_revision);
-        if advances_current {
-            state.current.insert(
-                key,
-                CurrentEntry {
-                    lifecycle_revision: registration.source_revision,
-                    registration: Some(registration),
-                },
-            );
-            Ok(ExecutableAgentRegistrationOutcome::RegisteredCurrent)
-        } else {
-            Ok(ExecutableAgentRegistrationOutcome::RegisteredHistorical)
+            .map(|current| (current.lifecycle_revision, current.registration.is_some()));
+        match current_lifecycle_disposition(current, registration.source_revision, true) {
+            CurrentLifecycleDisposition::Advance => {
+                state.current.insert(
+                    key,
+                    CurrentEntry {
+                        lifecycle_revision: registration.source_revision,
+                        registration: Some(registration),
+                    },
+                );
+                Ok(ExecutableAgentRegistrationOutcome::RegisteredCurrent)
+            }
+            CurrentLifecycleDisposition::Retain => {
+                Ok(ExecutableAgentRegistrationOutcome::RegisteredHistorical)
+            }
+            CurrentLifecycleDisposition::AlreadyUnavailable => {
+                unreachable!("an available registration cannot be already unavailable")
+            }
         }
     }
 
@@ -191,22 +284,12 @@ impl ExecutableAgentCatalog {
     ) -> Result<ExecutableAgentWithdrawalOutcome, ExecutableAgentRegistrationError> {
         withdrawal.validate()?;
         let key = (withdrawal.workspace_id, withdrawal.agent_id);
-        match state.current.get_mut(&key) {
-            Some(current) if withdrawal.lifecycle_revision < current.lifecycle_revision => {
-                Ok(ExecutableAgentWithdrawalOutcome::HistoricalNoop)
-            }
-            Some(current)
-                if withdrawal.lifecycle_revision == current.lifecycle_revision
-                    && current.registration.is_none() =>
-            {
-                Ok(ExecutableAgentWithdrawalOutcome::AlreadyWithdrawn)
-            }
-            Some(current) => {
-                current.lifecycle_revision = withdrawal.lifecycle_revision;
-                current.registration = None;
-                Ok(ExecutableAgentWithdrawalOutcome::WithdrawnCurrent)
-            }
-            None => {
+        let current = state
+            .current
+            .get(&key)
+            .map(|current| (current.lifecycle_revision, current.registration.is_some()));
+        match current_lifecycle_disposition(current, withdrawal.lifecycle_revision, false) {
+            CurrentLifecycleDisposition::Advance => {
                 state.current.insert(
                     key,
                     CurrentEntry {
@@ -215,6 +298,12 @@ impl ExecutableAgentCatalog {
                     },
                 );
                 Ok(ExecutableAgentWithdrawalOutcome::WithdrawnCurrent)
+            }
+            CurrentLifecycleDisposition::Retain => {
+                Ok(ExecutableAgentWithdrawalOutcome::HistoricalNoop)
+            }
+            CurrentLifecycleDisposition::AlreadyUnavailable => {
+                Ok(ExecutableAgentWithdrawalOutcome::AlreadyWithdrawn)
             }
         }
     }
@@ -590,6 +679,31 @@ mod test_support {
 mod tests {
     use super::*;
     use crate::test_support::registration;
+
+    #[test]
+    fn current_lifecycle_disposition_decision_table() {
+        // R1-R5 in `check_current_lifecycle_disposition`: cross absent,
+        // available and tombstone current states with both command types and
+        // lower/equal/higher revision relations. Boundary representatives cover
+        // zero and u64::MAX; Kani supplies every full-width value.
+        let revisions = [0, 1, 7, u64::MAX - 1, u64::MAX];
+        for current in [None].into_iter().chain(
+            revisions
+                .into_iter()
+                .flat_map(|revision| [Some((revision, false)), Some((revision, true))]),
+        ) {
+            for incoming_revision in revisions {
+                for incoming_available in [false, true] {
+                    check_current_lifecycle_disposition(
+                        current.map(|(revision, _)| revision),
+                        current.is_some_and(|(_, available)| available),
+                        incoming_revision,
+                        incoming_available,
+                    );
+                }
+            }
+        }
+    }
 
     #[tokio::test]
     async fn exact_session_profile_does_not_follow_mutable_current_selection() {

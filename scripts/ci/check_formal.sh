@@ -551,6 +551,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness config_revision_admission_is_exact_and_nonwrapping \
     --harness publication_source_admission_requires_present_exact_revision \
     --harness management_effect_retirement_requires_present_matching_receipt
+  run_kani awaken-executable-agent-catalog \
+    --harness installed_lifecycle_revision_never_rolls_back
   run_kani awaken-credential-contract --solver minisat \
     --harness managed_rollout_identity_requires_every_payload_field
   run_kani awaken-credential-contract \
