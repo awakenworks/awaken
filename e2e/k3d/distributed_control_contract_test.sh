@@ -11,7 +11,9 @@ grep -Fq "import('@anthropic-ai/sdk')" "$REPO_ROOT/e2e/k3d/distributed_control_e
 grep -Fq 'npm ci --prefix e2e' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -Fq 'COORDINATOR_BIN=$(resolve_cargo_executable awaken-cli awaken-coordinator --features container-k8s)' \
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
-grep -Fq 'k3d_create_cluster "$CLUSTER" 3 "" "" --shared-volume "$CONTINUATION_VOLUME" "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'SANDBOX_IMAGE=$(k3d_image_digest awaken-sandbox:local)' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'k3d_create_cluster "$CLUSTER" 3 "" "" --shared-volume "$CONTINUATION_VOLUME" "$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'k3d_import_storage_images "$CLUSTER" "$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 # D12 host build failure occurs before cluster creation and must not query an
 # ambient kubectl context; after creation every diagnostic uses the harness's
 # exact-context, bounded observer. The harness self-test owns deadline behavior.
@@ -35,9 +37,15 @@ kubectl kustomize "$REPO_ROOT/deploy/k3d/distributed-control" >"$RENDERED"
 # K1 selector/rule shape stays owned by test_image_contract.py and the Runtime
 # live attestor; this test does not copy that authority. D4-D1 C1+C2 => E1+E2;
 # a missing, extra, or duplicate rendered policy fails the contract.
-# D5 K8s sandbox + admitted image + namespace-scoped ServiceAccount with Pod
-# metadata update -> Worker creates isolated Session Pods and can CAS-transfer
-# their reaper lease after restart, without privilege escalation or local fallback.
+# D5 K8s sandbox + the one built image's exact OCI digest + namespace-scoped
+# ServiceAccount with Pod metadata update -> Worker creates isolated Session
+# Pods and their trusted control forwarder from the same immutable artifact,
+# and can CAS-transfer their reaper lease after restart without privilege
+# escalation or local fallback. C1 the source contains one placeholder; C2 the
+# live harness resolves one validated digest; C3 capacity, import and rendered
+# Worker config consume that same value. E1 no mutable tag can pass this static
+# contract; E2 a missing or duplicate placeholder fails the live deployment
+# before any workload is applied.
 # D6 the existing distributed-Control composition adapter + explicit config path
 # + the same Secret mounted there -> production Control assembly receives the
 # deployment-owned model resolver without a parallel catalog or HOME config path.
@@ -138,7 +146,10 @@ grep -q 'type: RuntimeDefault' "$RENDERED"
 grep -q 'sandbox_tier = "k8s"' "$RENDERED"
 grep -q 'k8s_namespace = "awaken-adr71"' "$RENDERED"
 ! grep -q 'k8s_memoryd_image' "$RENDERED"
-grep -q 'container_image = "awaken-sandbox:local"' "$RENDERED"
+[[ "$(grep -o '__AWAKEN_SANDBOX_IMAGE__' "$RENDERED" | wc -l)" -eq 1 ]]
+! grep -q 'container_image = "awaken-sandbox:local"' "$RENDERED"
+grep -Fq 'k3d_render_sandbox_image "$DEPLOY_DIR/distributed-control" "$SANDBOX_IMAGE"' \
+  "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'serviceAccountName: worker-runtime' "$RENDERED"
 grep -q 'name: worker-runtime' "$RENDERED"
 grep -q 'serviceAccountName: coordinator-runtime' "$RENDERED"

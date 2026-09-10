@@ -159,7 +159,7 @@ stringData:
     sandbox_tier = "k8s"
     k8s_namespace = "awaken-adr71"
     k8s_continuation_volume = { storage_class_name = "local-path", size = "1Gi" }
-    container_image = "awaken-sandbox:local"
+    container_image = "__AWAKEN_SANDBOX_IMAGE__"
     sandbox_dir = "/var/lib/awaken/sandboxes"
 ---
 apiVersion: batch/v1

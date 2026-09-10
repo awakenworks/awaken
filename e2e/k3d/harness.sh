@@ -45,6 +45,23 @@ print(sorted(set(values))[0])
   printf '%s\n' "$digest"
 }
 
+# Render one deployment-owned Kubernetes Sandbox image placeholder with the
+# exact manifest identity admitted and imported by the caller. Runtime rejects
+# mutable control-forwarder images, so a missing or duplicated binding must fail
+# before Kubernetes sees any workload.
+k3d_render_sandbox_image() {
+  local overlay="${1:-}" image="${2:-}" manifest marker_count
+  [[ -n "$overlay" && "$overlay" != -* ]] || return 2
+  k3d_validate_image_digest "$image" || return 2
+  manifest=$(kubectl kustomize "$overlay") || return "$?"
+  marker_count=$( { grep -oF '__AWAKEN_SANDBOX_IMAGE__' <<<"$manifest" || true; } | wc -l)
+  [[ "$marker_count" = "1" ]] || {
+    echo "Kubernetes deployment must contain exactly one Sandbox image pin" >&2
+    return 2
+  }
+  printf '%s\n' "${manifest/__AWAKEN_SANDBOX_IMAGE__/$image}"
+}
+
 k3d_capacity_preflight() {
   local nodes="$1"
   shift
@@ -511,6 +528,34 @@ k3d_harness_selftest() (
     for document in '[]' 'null' '{}' 'invalid-json' '[null]' '["tag:latest"]' '["repo@sha256:short"]'; do
       ! k3d_image_digest exact:built >/dev/null 2>&1
     done
+  )
+  # Render-binding cause/effect table: C1 one deployment placeholder + C2 one
+  # validated immutable image + C3 successful Kustomize render => the exact
+  # image appears once and no marker remains. Missing/duplicate markers, a
+  # mutable reference, option-shaped input, or a render failure must produce no
+  # usable manifest; Kubernetes apply is deliberately outside this function.
+  (
+    local digest="registry.test/sandbox@sha256:$(printf 'b%.0s' {1..64})"
+    local document result=0 rendered
+    kubectl() {
+      [[ "$*" = "kustomize fixture" ]] || return 99
+      printf '%s\n' "$document"
+      return "$result"
+    }
+    document='container_image = "__AWAKEN_SANDBOX_IMAGE__"'
+    rendered=$(k3d_render_sandbox_image fixture "$digest")
+    [[ "$rendered" = "container_image = \"$digest\"" ]]
+    for document in \
+      'container_image = "tag:latest"' \
+      'first = "__AWAKEN_SANDBOX_IMAGE__" second = "__AWAKEN_SANDBOX_IMAGE__"'; do
+      ! k3d_render_sandbox_image fixture "$digest" >/dev/null 2>&1
+    done
+    document='container_image = "__AWAKEN_SANDBOX_IMAGE__"'
+    ! k3d_render_sandbox_image fixture tag:latest >/dev/null 2>&1
+    ! k3d_render_sandbox_image --fixture "$digest" >/dev/null 2>&1
+    ! k3d_render_sandbox_image >/dev/null 2>&1
+    result=7
+    ! k3d_render_sandbox_image fixture "$digest" >/dev/null 2>&1
   )
   # Cause/effect decision table:
   # H1 canonical name/count/quantity -> one delete + create with server and agent

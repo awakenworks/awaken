@@ -264,6 +264,8 @@ strip --strip-unneeded "$DEPLOY_DIR/awaken-control" "$DEPLOY_DIR/awaken-coordina
 
 log "2/11 create three K3S worker nodes and import immutable test images"
 "$REPO_ROOT/deploy/images/sandbox/build.sh" awaken-sandbox:local ""
+SANDBOX_IMAGE=$(k3d_image_digest awaken-sandbox:local)
+echo "using immutable Sandbox image $SANDBOX_IMAGE"
 k3d_docker_build --load -q -t "$IMAGE" \
   --build-arg AUXILIARY_EXECUTABLE=awaken-control \
   -f "$DEPLOY_DIR/Dockerfile" "$DEPLOY_DIR" >/dev/null
@@ -287,9 +289,9 @@ for executable in awaken-control awaken-coordinator awaken-worker awaken-server;
 done
 ok "all role artifacts execute as UID 10001 with normalized mode and unchanged bytes"
 # Reuse the shared nested-node reserve and actual capacity admission.
-k3d_ensure_images "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine
+k3d_ensure_images "$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine
 CONTINUATION_VOLUME=$(docker volume create --label "awaken.e2e.cluster=$CLUSTER")
-k3d_create_cluster "$CLUSTER" 3 "" "" --shared-volume "$CONTINUATION_VOLUME" "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine
+k3d_create_cluster "$CLUSTER" 3 "" "" --shared-volume "$CONTINUATION_VOLUME" "$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine
 CLUSTER_CREATED=1
 # The installed local-path provisioner owns PVC/PV lifecycle. Its shared-filesystem
 # mode removes node affinity because this exact Docker volume is mounted on every
@@ -301,7 +303,7 @@ kubectl -n kube-system patch configmap local-path-config --type=merge -p \
 # directory with `hostPath` => a relocatable PV. Select the provisioner's existing
 # type contract explicitly rather than relying on its distribution-specific default.
 kubectl annotate storageclass local-path defaultVolumeType=hostPath --overwrite >/dev/null
-k3d_import_storage_images "$CLUSTER" "$IMAGE" awaken-sandbox:local postgres:16 nginx:1.27-alpine
+k3d_import_storage_images "$CLUSTER" "$IMAGE" "$SANDBOX_IMAGE" postgres:16 nginx:1.27-alpine
 # Cause/effect decision table: D1 one default CoreDNS replica + its node stops ->
 # replacement application Pods cannot resolve authority Services; D2 two replicas
 # + the built-in hostname spread constraint -> one node loss retains DNS; D3 fewer
@@ -374,7 +376,8 @@ log "3/11 deploy replicated authorities, real Workers, and PostgreSQL standby"
 # creates an isolated Session Pod, and resolves exact Credential/File/Memory/
 # Skill projections there; Worker egress cannot bypass TLS on port 3001;
 # K5 one Ingress -> public paths route by owner and every private path stays absent.
-kubectl -n "$NS" apply -k "$DEPLOY_DIR/distributed-control" >/dev/null
+k3d_render_sandbox_image "$DEPLOY_DIR/distributed-control" "$SANDBOX_IMAGE" \
+  | kubectl -n "$NS" apply -f - >/dev/null
 # Live RBAC decision table: C1 the Worker identity may create the retained claim;
 # C2 it may get the exact UID during adoption/rebuild; C3 it may delete only at
 # fenced disposal. E1 every required verb is admitted by the namespace Role.

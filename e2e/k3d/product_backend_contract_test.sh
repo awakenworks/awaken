@@ -3,6 +3,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OVERLAY="$REPO_ROOT/deploy/k3d/product-backend"
+source "$REPO_ROOT/e2e/k3d/harness.sh"
 RENDERED="$(mktemp)"
 trap 'rm -f "$RENDERED"' EXIT
 
@@ -16,7 +17,8 @@ trap 'rm -f "$RENDERED"' EXIT
 # BuildKit Jobs, the derived-image Registry, and namespace-scoped RBAC including
 # Pod metadata update for resourceVersion-fenced reaper-lease transfer are
 # coherent through the Registry container's internal :5000 endpoint (the host
-# publishing port is not reachable inside the cluster); C6 the Kubernetes
+# publishing port is not reachable inside the cluster), while the Sandbox base
+# is bound once to its validated OCI digest before apply; C6 the Kubernetes
 # backend selects the canonical resident Pod channel and grants its ServiceAccount
 # the namespace-scoped Pod port-forward subresource used by that channel, while
 # retaining attached exec only for bounded file operations; C7 model/provider
@@ -30,7 +32,10 @@ trap 'rm -f "$RENDERED"' EXIT
 # authority beyond the Session namespace; E6 reject the deployment contract before a
 # cluster mutation. Rules: K1 C1+C2+C3+C4+C5+C6+!C7=>E1+E2+E3+E4+E5;
 # K2 !C1|!C2|!C3|!C4|!C5|!C6|C7=>E6.
-kubectl kustomize "$OVERLAY" >"$RENDERED"
+SANDBOX_IMAGE="registry.test/awaken-sandbox@sha256:$(printf 'c%.0s' {1..64})"
+[[ "$(grep -o '__AWAKEN_SANDBOX_IMAGE__' "$OVERLAY/resources.yaml" | wc -l)" -eq 1 ]]
+! grep -q 'container_image = "awaken-sandbox:local"' "$OVERLAY/resources.yaml"
+k3d_render_sandbox_image "$OVERLAY" "$SANDBOX_IMAGE" >"$RENDERED"
 
 [[ "$(grep -c '^kind: Deployment$' "$RENDERED")" -eq 1 ]]
 [[ "$(grep -c '^kind: Service$' "$RENDERED")" -eq 1 ]]
@@ -49,7 +54,8 @@ grep -q 'no_browser = true' "$RENDERED"
 grep -q 'identity_mode = "self-managed"' "$RENDERED"
 grep -q 'worker_trust_credentials_file = "/etc/awaken-auth/worker-trust.json"' "$RENDERED"
 grep -q 'sandbox_tier = "k8s"' "$RENDERED"
-grep -q 'container_image = "awaken-sandbox:local"' "$RENDERED"
+grep -q "container_image = \"$SANDBOX_IMAGE\"" "$RENDERED"
+! grep -q '__AWAKEN_SANDBOX_IMAGE__' "$RENDERED"
 grep -q 'container_hand_residency = "resident"' "$RENDERED"
 grep -q 'package_image_builder = "k8s"' "$RENDERED"
 grep -q 'package_image_registry = "k3d-awaken-registry.localhost:5000/environments"' "$RENDERED"

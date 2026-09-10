@@ -42,10 +42,11 @@ dependencies such as Postgres or NATS, but they must not reimplement import,
 cluster creation, executable discovery, port selection, or cleanup.
 
 The product backend uses the Kubernetes sandbox tier and Coordinator's durable
-Environment build jobs. Build and import the production sandbox base into every
-k3d node as `awaken-sandbox:local`; its non-`latest` tag defaults to
-`IfNotPresent`, so Session Pods consume the exact node-local image without a
-Registry pull:
+Environment build jobs. The canonical builder first publishes the production
+sandbox base locally as `awaken-sandbox:local`; deployment then resolves that
+artifact's real OCI digest and uses the same immutable reference for capacity
+admission, node import, Session Pods, and the trusted Sandbox control forwarder.
+No mutable tag enters the Worker configuration and no Registry pull is needed:
 
 The product overlay selects `container_hand_residency = "resident"`. The
 existing Pod channel is the single ACP transport for these Kubernetes Sessions;
@@ -58,8 +59,16 @@ operations, not a parallel ACP transport.
 ```bash
 deploy/images/sandbox/build.sh awaken-sandbox:local
 . e2e/k3d/harness.sh
-k3d_import_images awaken-product awaken-sandbox:local
+SANDBOX_IMAGE=$(k3d_image_digest awaken-sandbox:local)
+k3d_import_images awaken-product "$SANDBOX_IMAGE"
+k3d_render_sandbox_image deploy/k3d/product-backend "$SANDBOX_IMAGE" \
+  | kubectl apply -f -
 ```
+
+Both production-like overlays retain exactly one
+`__AWAKEN_SANDBOX_IMAGE__` deployment placeholder. Always render them through
+`k3d_render_sandbox_image`; applying either source overlay directly leaves the
+required immutable identity unresolved and is rejected by the Runtime.
 
 Package-bearing Environments still require a Registry for the immutable derived
 images built by the Kubernetes BuildKit Jobs. Create and attach that Registry
