@@ -354,6 +354,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness operation_identity_replays_only_the_same_run_and_payload \
     --harness operation_append_requires_exact_prefix_and_nonwrapping_version \
     --harness applied_receipt_is_exact_and_names_one_successor_record \
+    --harness toolset_policy_exact_override_replaces_only_the_matching_default \
     --harness tool_policy_selector_fails_closed_for_unregistered_widened_or_mismatched_calls \
     --harness stream_terminal_projection_is_exact_fail_closed_and_absorbing
   # Exact final wire encoding only: SHA/FNV algorithms and enclosing request
@@ -497,6 +498,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness realization_renewal_never_widens_owner_epoch_or_expiry_authority \
     --harness session_realization_assignment_never_shares_a_live_foreign_owner_or_reuses_an_epoch \
     --harness runtime_intervals_open_once_and_never_close_before_start \
+    --harness managed_toolset_default_resolution_is_source_exact_and_configurable \
     --harness bounded_runtime_capability_iterator_uses_exact_member_projection \
     --harness runtime_capability_member_projection_is_total_exact_and_bounded \
     --harness terminal_environment_receipt_is_admitted_only_during_the_fenced_join \
