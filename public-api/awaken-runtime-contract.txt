@@ -1856,6 +1856,7 @@ impl awaken_runtime_contract::tool_batch::ToolBatch
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::calls(&self) -> &[awaken_runtime_contract::tool_batch::DurableToolCall]
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::complete(&mut self, awaken_runtime_contract::tool::ToolOutput) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchError>
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::complete_immediate(&mut self, awaken_runtime_contract::tool::ToolOutput) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchError>
+pub fn awaken_runtime_contract::tool_batch::ToolBatch::execution_admission(&self, &str) -> core::result::Result<awaken_runtime_contract::tool_batch::ToolExecutionAdmission<'_>, awaken_runtime_contract::tool_batch::ToolBatchError>
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::finalize(&mut self) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchError>
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::for_step(awaken_agent_contract::agent::run::Id, usize, impl core::iter::traits::collect::IntoIterator<Item = (awaken_runtime_contract::llm::ToolCall, awaken_runtime_contract::tool::ToolRecoveryPolicy)>) -> core::result::Result<Self, awaken_runtime_contract::tool_batch::ToolBatchError>
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::id(&self) -> &awaken_runtime_contract::tool_batch::ToolBatchId
@@ -1885,6 +1886,11 @@ pub struct awaken_runtime_contract::tool_batch::ToolBatchPublication<'a>
 impl awaken_runtime_contract::tool_batch::ToolBatchPublication<'_>
 pub fn awaken_runtime_contract::tool_batch::ToolBatchPublication<'_>::messages(&self) -> impl core::iter::traits::iterator::Iterator<Item = &awaken_agent_contract::agent::message::Message>
 pub fn awaken_runtime_contract::tool_batch::ToolBatchPublication<'_>::result_state(&self) -> impl core::iter::traits::iterator::Iterator<Item = &awaken_agent_contract::agent::state::Command>
+pub struct awaken_runtime_contract::tool_batch::ToolExecutionAdmission<'a>
+impl awaken_runtime_contract::tool_batch::ToolExecutionAdmission<'_>
+pub const fn awaken_runtime_contract::tool_batch::ToolExecutionAdmission<'_>::attempt(&self) -> u16
+pub fn awaken_runtime_contract::tool_batch::ToolExecutionAdmission<'_>::call_id(&self) -> &str
+pub fn awaken_runtime_contract::tool_batch::ToolExecutionAdmission<'_>::operation_id(&self) -> alloc::string::String
 pub struct awaken_runtime_contract::tool_batch::ToolWait
 pub awaken_runtime_contract::tool_batch::ToolWait::correlation_id: alloc::string::String
 pub awaken_runtime_contract::tool_batch::ToolWait::kind: awaken_runtime_contract::tool_batch::ToolWaitKind
@@ -2568,6 +2574,7 @@ impl awaken_runtime_contract::tool_batch::ToolBatch
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::calls(&self) -> &[awaken_runtime_contract::tool_batch::DurableToolCall]
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::complete(&mut self, awaken_runtime_contract::tool::ToolOutput) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchError>
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::complete_immediate(&mut self, awaken_runtime_contract::tool::ToolOutput) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchError>
+pub fn awaken_runtime_contract::tool_batch::ToolBatch::execution_admission(&self, &str) -> core::result::Result<awaken_runtime_contract::tool_batch::ToolExecutionAdmission<'_>, awaken_runtime_contract::tool_batch::ToolBatchError>
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::finalize(&mut self) -> core::result::Result<(), awaken_runtime_contract::tool_batch::ToolBatchError>
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::for_step(awaken_agent_contract::agent::run::Id, usize, impl core::iter::traits::collect::IntoIterator<Item = (awaken_runtime_contract::llm::ToolCall, awaken_runtime_contract::tool::ToolRecoveryPolicy)>) -> core::result::Result<Self, awaken_runtime_contract::tool_batch::ToolBatchError>
 pub fn awaken_runtime_contract::tool_batch::ToolBatch::id(&self) -> &awaken_runtime_contract::tool_batch::ToolBatchId
