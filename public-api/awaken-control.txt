@@ -210,6 +210,7 @@ pub awaken_control::ControlComponent::management_audit: awaken_config_service::m
 pub awaken_control::ControlComponent::organization_privacy: alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::OrganizationPrivacyResolver>
 pub awaken_control::ControlComponent::publication_reconciler: alloc::sync::Arc<dyn awaken_config_service::binding_resolver::PublicationBindingReconciler>
 pub awaken_control::ControlComponent::registration_supervisor: alloc::sync::Arc<awaken_control::StaticRegistrationSupervisor>
+pub awaken_control::ControlComponent::repository_credentials: alloc::sync::Arc<dyn awaken_resource_contract::repository_application::RepositoryCredentialValidator>
 pub awaken_control::ControlComponent::router: axum::routing::Router
 pub awaken_control::ControlComponent::vault_state: alloc::sync::Arc<awaken_protocol_managed::routes::vaults::VaultState>
 pub struct awaken_control::ControlDependencies
@@ -302,6 +303,8 @@ impl awaken_control::CredentialRevisionValidator
 pub fn awaken_control::CredentialRevisionValidator::new(alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>) -> Self
 impl awaken_config_service::credential_reference::CredentialReferenceValidator for awaken_control::CredentialRevisionValidator
 pub fn awaken_control::CredentialRevisionValidator::validate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_credential_contract::CredentialRef) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+impl awaken_resource_contract::repository_application::RepositoryCredentialValidator for awaken_control::CredentialRevisionValidator
+pub fn awaken_control::CredentialRevisionValidator::validate<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_resource_contract::registry::ResourceRegistryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub struct awaken_control::HostResourceInventory
 impl awaken_control::admin_assistant::HostResourceInventory
 pub fn awaken_control::admin_assistant::HostResourceInventory::new(alloc::sync::Arc<dyn awaken_resource_contract::registry::ResourceRegistry>, alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>) -> Self
