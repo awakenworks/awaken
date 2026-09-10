@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_config::ModelSelection;
 use awaken_config_service::{
-    ConfigService, ModelPublicationResolver, PublicationResolutionError, ResolvedPublicationModels,
-    StaticToolCatalog,
+    ConfigService, ManagementAuditRepository, ModelPublicationResolver, PublicationResolutionError,
+    ResolvedPublicationModels, StaticToolCatalog,
 };
 use awaken_config_store::SqliteConfigStore;
 use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
@@ -68,6 +68,88 @@ async fn stamp_workspace(mut request: Request<Body>, next: Next) -> Response {
         .extensions_mut()
         .insert(WorkspaceScope("ws_authenticated".into()));
     next.run(request).await
+}
+
+#[derive(Default)]
+struct FailingAuditRepository {
+    record_calls: AtomicUsize,
+    mark_calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl ManagementAuditRepository for FailingAuditRepository {
+    async fn record(
+        &self,
+        _scope: &ScopeId,
+        _audit: &ManagementAuditRecord,
+    ) -> Result<AuditedConfigWrite, String> {
+        self.record_calls.fetch_add(1, Ordering::SeqCst);
+        Err("injected durable audit failure".into())
+    }
+
+    async fn get(
+        &self,
+        _scope: &ScopeId,
+        _tool: &str,
+        _call_id: &str,
+    ) -> Result<Option<awaken_agent_config::ManagementAuditEntry>, String> {
+        Ok(None)
+    }
+
+    async fn mark_committed(
+        &self,
+        _scope: &ScopeId,
+        _tool: &str,
+        _call_id: &str,
+    ) -> Result<(), String> {
+        self.mark_calls.fetch_add(1, Ordering::SeqCst);
+        Err("an unrecorded audit cannot be committed".into())
+    }
+}
+
+#[tokio::test]
+async fn durable_audit_failure_blocks_business_through_canonical_management_router() {
+    // Causes: C1 a body-bounded non-read request reaches the canonical protected
+    // management router; C2 the durable audit repository rejects its intent;
+    // C3 the business handler has an observable write counter. Effects: E1 the
+    // edge returns 500 with the durable failure; E2 record is attempted exactly
+    // once; E3 the handler and audit completion are never entered. Decision rule:
+    // C1+C2+C3 => E1+E2+E3. Applied/replay/conflict/body-limit and IAM rules stay
+    // owned by the adjacent tests instead of creating another audit workflow.
+    let repository = Arc::new(FailingAuditRepository::default());
+    let plane = ManagementAuditPlane::from_repository(repository.clone());
+    let business_calls = Arc::new(AtomicUsize::new(0));
+    let app = protect_management_router(
+        Router::new().route(
+            "/v1/mutate",
+            post({
+                let business_calls = business_calls.clone();
+                move || {
+                    let business_calls = business_calls.clone();
+                    async move {
+                        business_calls.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::NO_CONTENT
+                    }
+                }
+            }),
+        ),
+        plane,
+        None,
+        None,
+        None,
+    );
+
+    let response = app.oneshot(mutation("audit-fails-1", "{}")).await.unwrap();
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "E1: {body:?}");
+    assert!(
+        String::from_utf8_lossy(&body).contains("injected durable audit failure"),
+        "E1: {body:?}"
+    );
+    assert_eq!(repository.record_calls.load(Ordering::SeqCst), 1, "E2");
+    assert_eq!(business_calls.load(Ordering::SeqCst), 0, "E3");
+    assert_eq!(repository.mark_calls.load(Ordering::SeqCst), 0, "E3");
 }
 
 #[tokio::test]

@@ -600,21 +600,14 @@ pub fn protect_management_router(
             awaken_protocol_managed::enforce_managed_rate_limit,
         ));
     }
-    if iam.is_some() || remote_iam.is_some() {
-        // Layer order is outside-in in reverse application order: audit is
-        // installed first, then IAM wraps it. Thus unauthenticated requests
-        // never create audit intents, while admitted requests carry the
-        // authenticated WorkspaceScope into durable audit and ownership guards.
-        router = router.layer(axum::middleware::from_fn_with_state(
-            audit_plane,
-            durable_management_audit,
-        ));
-    } else {
-        router = router.layer(axum::middleware::from_fn_with_state(
-            audit_plane,
-            durable_management_audit,
-        ));
-    }
+    // Layer order is outside-in in reverse application order: audit is
+    // installed first, then an optional IAM edge wraps it. Thus unauthenticated
+    // requests never create audit intents, while admitted requests carry the
+    // authenticated WorkspaceScope into durable audit and ownership guards.
+    router = router.layer(axum::middleware::from_fn_with_state(
+        audit_plane,
+        durable_management_audit,
+    ));
     protect_authorized_router(router, iam, remote_iam)
 }
 

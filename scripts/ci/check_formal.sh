@@ -126,6 +126,11 @@ cargo test -p awaken-session-application --lib realization::publication::collect
 cargo test -p awaken-coordinator --lib failed_refresh_never_enters_shared_inventory_or_warmup_handlers
 cargo test -p awaken-session-application --lib admission_surfaces_dispatch_failure_and_preserves_retryable_intent
 cargo test -p awaken-deployment-application --lib scheduler_refresh_failure_precedes_candidate_mutation_and_launch
+# ManagementAuditIntent abstracts the repository and Axum middleware boundary.
+# Require the canonical protected router to attempt durable intent persistence
+# and leave its observable business handler untouched on repository failure.
+cargo test -p awaken-control --lib \
+  durable_audit_failure_blocks_business_through_canonical_management_router
 cargo test -p awaken-durable-projection --lib install_reconciliation_covers_forward_equal_and_rollback_outcomes
 cargo test -p awaken-executable-agent-catalog --lib active_active_peer_refreshes_the_durable_command_projection
 cargo test -p awaken-executable-environment-catalog --lib active_active_peer_refreshes_the_durable_environment_projection
