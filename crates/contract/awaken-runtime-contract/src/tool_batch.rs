@@ -16,7 +16,7 @@ use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::num::NonZeroU16;
 
 use crate::llm::ToolCall;
-use crate::tool::{ToolOutput, ToolRecoveryPolicy};
+use crate::tool::{ToolOutput, ToolRecoveryCapability, ToolRecoveryMode, ToolRecoveryPolicy};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolBatchId(String);
@@ -102,6 +102,17 @@ pub struct DurableToolCall {
 pub enum ToolBatchPhase {
     Open,
     Finalized,
+}
+
+/// The one durable phase effect admitted by recovery for an unfinished call.
+///
+/// `Indeterminate` means the aggregate has already sealed the call with the
+/// exact fail-closed reason. The caller only persists and publishes that state;
+/// it must not maintain a parallel recovery receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolRecoveryAction {
+    Entered { attempt: u16 },
+    Indeterminate,
 }
 
 /// Validated aggregate for a non-empty, uniquely identified tool-call batch.
@@ -257,6 +268,14 @@ enum CallTransition {
     StageResult,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoveryTransition {
+    Enter(u16),
+    NeverReplay,
+    UnsupportedCapability,
+    AttemptsExhausted,
+}
+
 const fn permits_call_transition(phase: CallPhaseView, transition: CallTransition) -> bool {
     match transition {
         CallTransition::CompleteFromExecutionOrWait => matches!(
@@ -341,6 +360,36 @@ fn next_execution_attempt(
         Err(ToolBatchError::AttemptsExhausted)
     } else {
         Ok(attempt)
+    }
+}
+
+/// Combine the pinned policy, trusted executable capability and durable attempt
+/// into one recovery decision. `ToolBatch::recover_execution` is the sole
+/// mutating consumer; keeping this kernel heap-free lets Kani cover the full
+/// enum and integer domains without inventing a second recovery state machine.
+fn recovery_transition(
+    phase: CallPhaseView,
+    policy: &ToolRecoveryPolicy,
+    capability: ToolRecoveryCapability,
+) -> Result<RecoveryTransition, ToolBatchError> {
+    if !matches!(
+        phase,
+        CallPhaseView::Requested | CallPhaseView::Executing(_)
+    ) {
+        return Err(ToolBatchError::InvalidTransition);
+    }
+    if matches!(phase, CallPhaseView::Executing(_))
+        && policy.mode() == ToolRecoveryMode::NeverReplay
+    {
+        return Ok(RecoveryTransition::NeverReplay);
+    }
+    if !policy.mode().is_supported_by(capability) {
+        return Ok(RecoveryTransition::UnsupportedCapability);
+    }
+    match next_execution_attempt(phase, policy.max_attempts(), ExecutionRequest::StartOrRetry) {
+        Ok(attempt) => Ok(RecoveryTransition::Enter(attempt)),
+        Err(ToolBatchError::AttemptsExhausted) => Ok(RecoveryTransition::AttemptsExhausted),
+        Err(error) => Err(error),
     }
 }
 
@@ -490,6 +539,51 @@ impl ToolBatch {
         )?;
         call.phase = ToolCallPhase::Executing { attempt };
         Ok(attempt)
+    }
+
+    /// Apply the complete recovery policy to one unfinished durable call.
+    ///
+    /// A never-entered `Requested` call may make its first attempt even under
+    /// `NeverReplay`. Once an `Executing` call is recovered, NeverReplay,
+    /// unsupported capability and an exhausted attempt budget all seal it as
+    /// `Indeterminate`; only a supported policy with remaining budget advances
+    /// to the exact next attempt.
+    pub fn recover_execution(
+        &mut self,
+        call_id: &str,
+        capability: ToolRecoveryCapability,
+    ) -> Result<ToolRecoveryAction, ToolBatchError> {
+        self.ensure_open()?;
+        let call = self.call_mut(call_id)?;
+        let transition =
+            recovery_transition(phase_view(&call.phase), &call.recovery_policy, capability)?;
+        match transition {
+            RecoveryTransition::Enter(attempt) => {
+                call.phase = ToolCallPhase::Executing { attempt };
+                Ok(ToolRecoveryAction::Entered { attempt })
+            }
+            RecoveryTransition::NeverReplay => {
+                call.phase = ToolCallPhase::Indeterminate {
+                    reason: "owner lease expired after the executor was entered".into(),
+                };
+                Ok(ToolRecoveryAction::Indeterminate)
+            }
+            RecoveryTransition::UnsupportedCapability => {
+                let reason = call
+                    .recovery_policy
+                    .validate(capability)
+                    .expect_err("the recovery kernel rejected this capability")
+                    .to_string();
+                call.phase = ToolCallPhase::Indeterminate { reason };
+                Ok(ToolRecoveryAction::Indeterminate)
+            }
+            RecoveryTransition::AttemptsExhausted => {
+                call.phase = ToolCallPhase::Indeterminate {
+                    reason: "recovery attempt budget exhausted".into(),
+                };
+                Ok(ToolRecoveryAction::Indeterminate)
+            }
+        }
     }
 
     /// Resume a typed durable wait into execution. Both the wait kind and its
@@ -1077,6 +1171,153 @@ mod tests {
     }
 
     #[test]
+    fn recovery_policy_and_attempt_budget_have_one_phase_owner() {
+        // Causes: C1 durable phase is Requested, Executing, Awaiting, Completed,
+        // or Indeterminate; C2 pinned mode is NeverReplay, ReplaySafe,
+        // Idempotent, or DurableRequest; C3 trusted capability is any matching
+        // or nonmatching capability; C4 an Executing attempt has or lacks budget.
+        // Effects: E1 Requested+supported enters attempt 1 (NeverReplay is safe
+        // because no executor was entered); E2 Executing+supported replay mode
+        // with budget enters exactly n+1; E3 Executing+NeverReplay, unsupported
+        // policy, or exhausted budget becomes Indeterminate; E4 every other
+        // phase is rejected without mutation. Decision rules R1=C1(Requested)+
+        // C3(supported)=>E1, R2=C1(Executing)+C2(replay)+C3(supported)+C4(room)
+        // =>E2, R3=Executing+NeverReplay=>E3, R4=!C3=>E3,
+        // R5=Executing+replay+C3+!C4=>E3, R6=C1(other)=>E4.
+        // The Runtime persists this aggregate decision before invoking; async
+        // commit, crash timing, and external idempotency stay outside this table.
+        let modes = [
+            ToolRecoveryMode::NeverReplay,
+            ToolRecoveryMode::ReplaySafe,
+            ToolRecoveryMode::Idempotent,
+            ToolRecoveryMode::DurableRequest,
+        ];
+        let capabilities = [
+            ToolRecoveryCapability::NonRecoverable,
+            ToolRecoveryCapability::ReplaySafe,
+            ToolRecoveryCapability::Idempotent,
+            ToolRecoveryCapability::DurableRequest,
+        ];
+        let candidate = |mode, max_attempts, phase| {
+            let mut batch = ToolBatch::for_step(
+                RunId("r".into()),
+                0,
+                [(
+                    ToolCall {
+                        call_id: "c".into(),
+                        tool_id: "t".into(),
+                        arguments: serde_json::json!({}),
+                    },
+                    ToolRecoveryPolicy::try_new(mode, max_attempts).unwrap(),
+                )],
+            )
+            .unwrap();
+            batch.calls[0].phase = phase;
+            batch
+        };
+
+        for mode in modes {
+            for capability in capabilities {
+                let supported = mode.is_supported_by(capability);
+                let mut requested = candidate(mode, 3, ToolCallPhase::Requested);
+                assert_eq!(
+                    requested.recover_execution("c", capability),
+                    Ok(if supported {
+                        ToolRecoveryAction::Entered { attempt: 1 }
+                    } else {
+                        ToolRecoveryAction::Indeterminate
+                    }),
+                    "R1/R4 requested {mode:?}/{capability:?}"
+                );
+                assert_eq!(
+                    matches!(
+                        requested.calls[0].phase,
+                        ToolCallPhase::Executing { attempt: 1 }
+                    ),
+                    supported,
+                    "R1 exact attempt"
+                );
+                if !supported {
+                    assert!(
+                        matches!(
+                            requested.calls[0].phase,
+                            ToolCallPhase::Indeterminate { .. }
+                        ),
+                        "R4 unsupported Requested is terminal"
+                    );
+                }
+
+                let mut executing = candidate(mode, 3, ToolCallPhase::Executing { attempt: 1 });
+                let replays = mode != ToolRecoveryMode::NeverReplay && supported;
+                assert_eq!(
+                    executing.recover_execution("c", capability),
+                    Ok(if replays {
+                        ToolRecoveryAction::Entered { attempt: 2 }
+                    } else {
+                        ToolRecoveryAction::Indeterminate
+                    }),
+                    "R2/R3/R4 executing {mode:?}/{capability:?}"
+                );
+                assert_eq!(
+                    matches!(
+                        executing.calls[0].phase,
+                        ToolCallPhase::Executing { attempt: 2 }
+                    ),
+                    replays,
+                    "R2 exact next attempt"
+                );
+                if !replays {
+                    assert!(
+                        matches!(
+                            executing.calls[0].phase,
+                            ToolCallPhase::Indeterminate { .. }
+                        ),
+                        "R3/R4 rejected reentry is terminal"
+                    );
+                }
+            }
+        }
+
+        let mut exhausted = candidate(
+            ToolRecoveryMode::ReplaySafe,
+            1,
+            ToolCallPhase::Executing { attempt: 1 },
+        );
+        assert_eq!(
+            exhausted.recover_execution("c", ToolRecoveryCapability::ReplaySafe),
+            Ok(ToolRecoveryAction::Indeterminate),
+            "R5"
+        );
+        assert!(matches!(
+            &exhausted.calls[0].phase,
+            ToolCallPhase::Indeterminate { reason }
+                if reason == "recovery attempt budget exhausted"
+        ));
+
+        for phase in [
+            ToolCallPhase::Awaiting {
+                wait: ToolWait {
+                    kind: ToolWaitKind::ExternalResult,
+                    correlation_id: "corr".into(),
+                },
+            },
+            ToolCallPhase::Completed(ToolOutput::ok("c", "done")),
+            ToolCallPhase::Indeterminate {
+                reason: "already terminal".into(),
+            },
+        ] {
+            let mut invalid = candidate(ToolRecoveryMode::ReplaySafe, 3, phase);
+            let before = invalid.clone();
+            assert_eq!(
+                invalid.recover_execution("c", ToolRecoveryCapability::ReplaySafe),
+                Err(ToolBatchError::InvalidTransition),
+                "R6"
+            );
+            assert_eq!(invalid, before, "R6 rejected recovery stutters");
+        }
+    }
+
+    #[test]
     fn approval_must_match_the_committed_wait() {
         let mut batch = batch();
         batch
@@ -1369,6 +1610,77 @@ mod verification {
             1 => CallTransition::CompleteImmediate,
             2 => CallTransition::MarkIndeterminate,
             _ => CallTransition::StageResult,
+        }
+    }
+
+    fn symbolic_recovery_mode(tag: u8) -> ToolRecoveryMode {
+        match tag % 4 {
+            0 => ToolRecoveryMode::NeverReplay,
+            1 => ToolRecoveryMode::ReplaySafe,
+            2 => ToolRecoveryMode::Idempotent,
+            _ => ToolRecoveryMode::DurableRequest,
+        }
+    }
+
+    fn symbolic_recovery_capability(tag: u8) -> ToolRecoveryCapability {
+        match tag % 4 {
+            0 => ToolRecoveryCapability::NonRecoverable,
+            1 => ToolRecoveryCapability::ReplaySafe,
+            2 => ToolRecoveryCapability::Idempotent,
+            _ => ToolRecoveryCapability::DurableRequest,
+        }
+    }
+
+    #[kani::proof]
+    fn recovery_reentry_requires_policy_capability_and_remaining_budget() {
+        // Causes: all four policy modes, all four capability modes, both
+        // recoverable durable phases, every u16 attempt, and every non-zero u16
+        // budget. Effects: Requested enters attempt 1 exactly when supported;
+        // Executing enters n+1 exactly for a supported replay mode with room;
+        // every NeverReplay, unsupported, overflow, or exhausted case is the
+        // matching fail-closed transition. Awaiting and both terminal phases
+        // are additionally rejected. No assumptions or bounded collections are
+        // needed because the production kernel is enum/integer-only.
+        let mode = symbolic_recovery_mode(kani::any());
+        let capability = symbolic_recovery_capability(kani::any());
+        let budget = NonZeroU16::new(kani::any()).unwrap_or(NonZeroU16::MIN);
+        let policy = ToolRecoveryPolicy::new(mode, budget);
+        let executing = kani::any::<bool>();
+        let attempt = kani::any::<u16>();
+        let phase = if executing {
+            CallPhaseView::Executing(attempt)
+        } else {
+            CallPhaseView::Requested
+        };
+        let actual = recovery_transition(phase, &policy, capability).unwrap();
+        let supported = mode.is_supported_by(capability);
+        let expected = if !executing {
+            if supported {
+                RecoveryTransition::Enter(1)
+            } else {
+                RecoveryTransition::UnsupportedCapability
+            }
+        } else if mode == ToolRecoveryMode::NeverReplay {
+            RecoveryTransition::NeverReplay
+        } else if !supported {
+            RecoveryTransition::UnsupportedCapability
+        } else {
+            match attempt.checked_add(1) {
+                Some(next) if next <= budget.get() => RecoveryTransition::Enter(next),
+                _ => RecoveryTransition::AttemptsExhausted,
+            }
+        };
+        assert_eq!(actual, expected);
+
+        for invalid in [
+            CallPhaseView::Awaiting(ToolWaitKind::ExternalResult),
+            CallPhaseView::Completed,
+            CallPhaseView::Indeterminate,
+        ] {
+            assert_eq!(
+                recovery_transition(invalid, &policy, capability),
+                Err(ToolBatchError::InvalidTransition)
+            );
         }
     }
 

@@ -538,6 +538,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-memory-store \
     --harness memory_head_update_admission_preserves_stale_and_idempotent_heads \
     --harness memory_conditional_delete_admission_is_exact
+  run_kani awaken-skill-store \
+    --harness skill_version_retirement_is_visibility_only_and_total
   run_kani awaken-agent-config \
     --harness management_audit_admission_requires_exact_intent_and_closed_state \
     --harness management_effect_confirmation_requires_positive_exact_readback \
@@ -727,6 +729,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness run_end_sealing_targets_exactly_nonterminal_calls \
     --harness a_second_wait_is_never_admitted \
     --harness only_finalized_batches_expose_staged_publication \
+    --harness recovery_reentry_requires_policy_capability_and_remaining_budget \
     --harness child_result_is_consumed_only_from_ready \
     --harness terminal_delivery_phases_never_reopen \
     --harness live_inbox_closed_lifecycle_is_absorbing_for_every_mutation \

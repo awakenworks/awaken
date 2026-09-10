@@ -901,60 +901,11 @@ pub(super) async fn recover_tool_batch(
                 persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
                 continue;
             }
-            ToolCallPhase::Executing { .. }
-                if durable.recovery_policy.mode() == ToolRecoveryMode::NeverReplay =>
-            {
-                batch
-                    .mark_indeterminate(
-                        &call.call_id,
-                        "owner lease expired after the executor was entered",
-                    )
-                    .map_err(|error| Error::Execution(error.to_string()))?;
-                let output = batch.output(&call.call_id).expect("now terminal");
-                batch
-                    .set_result_messages(&call.call_id, vec![tool_result_message(&call, &output)])
-                    .map_err(|error| Error::Execution(error.to_string()))?;
-                if let Some(disposition) = abandon_delegation_on_indeterminate(
-                    runtime,
-                    resolved,
-                    delegation_origin,
-                    &call,
-                    &batch,
-                    ledger,
-                    store,
-                ) {
-                    return Ok(Some(disposition));
-                }
-                persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
-                continue;
-            }
             ToolCallPhase::Requested | ToolCallPhase::Executing { .. } => {}
         }
 
         let capability =
             recovery_capability(runtime, context, delegation_origin, resolved, env, &call);
-        if let Err(error) = durable.recovery_policy.validate(capability) {
-            batch
-                .mark_indeterminate(&call.call_id, error.to_string())
-                .map_err(|error| Error::Execution(error.to_string()))?;
-            let output = batch.output(&call.call_id).expect("now terminal");
-            batch
-                .set_result_messages(&call.call_id, vec![tool_result_message(&call, &output)])
-                .map_err(|error| Error::Execution(error.to_string()))?;
-            if let Some(disposition) = abandon_delegation_on_indeterminate(
-                runtime,
-                resolved,
-                delegation_origin,
-                &call,
-                &batch,
-                ledger,
-                store,
-            ) {
-                return Ok(Some(disposition));
-            }
-            persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
-            continue;
-        }
 
         // A Requested call must still pass the gate. An Executing call already
         // committed its allow decision with the transition and goes directly to
@@ -1049,21 +1000,12 @@ pub(super) async fn recover_tool_batch(
             }
         }
 
-        let delegation_started = stage_delegation_request(
-            runtime,
-            resolved,
-            delegation_origin,
-            run_id,
-            &call,
-            store,
-            &mut ledger.staged_state,
-        )?;
-        match batch.mark_executing(&call.call_id) {
-            Ok(_) => {}
-            Err(awaken_runtime_contract::tool_batch::ToolBatchError::AttemptsExhausted) => {
-                batch
-                    .mark_indeterminate(&call.call_id, "recovery attempt budget exhausted")
-                    .map_err(|error| Error::Execution(error.to_string()))?;
+        match batch
+            .recover_execution(&call.call_id, capability)
+            .map_err(|error| Error::Execution(error.to_string()))?
+        {
+            ToolRecoveryAction::Entered { .. } => {}
+            ToolRecoveryAction::Indeterminate => {
                 let output = batch.output(&call.call_id).expect("now terminal");
                 batch
                     .set_result_messages(&call.call_id, vec![tool_result_message(&call, &output)])
@@ -1082,8 +1024,16 @@ pub(super) async fn recover_tool_batch(
                 persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
                 continue;
             }
-            Err(error) => return Err(Error::Execution(error.to_string())),
         }
+        let delegation_started = stage_delegation_request(
+            runtime,
+            resolved,
+            delegation_origin,
+            run_id,
+            &call,
+            store,
+            &mut ledger.staged_state,
+        )?;
         persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
 
         let reaction_call = call.clone();
