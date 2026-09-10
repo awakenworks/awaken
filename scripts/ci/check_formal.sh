@@ -210,6 +210,11 @@ cargo test -p awaken-ext-background-task --features loom --lib supervisor::loom_
 # Exercise its aggregate projection and real post-concurrency-admission check.
 cargo test -p awaken-ext-background-task --test state_machine execution_admission
 cargo test -p awaken-session-executor --lib background_task::ownership::tests
+# The model's CommittedAuthority observation source is an async query policy,
+# not the process projection. Hold that projection stale while the production
+# terminal observer consumes an exact scripted authoritative state command.
+cargo test -p awaken-session-executor --lib \
+  committed_claim_launches_once_and_records_completion_without_a_second_store
 # Async return/cleanup is not covered by the scalar physical-slot proof.
 cargo test -p awaken-dispatch --features test-support --test pool_memory
 cargo test -p awaken-dispatch --features test-support --test lease_semantics
