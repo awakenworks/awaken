@@ -54,3 +54,6 @@ awaken-file-store = { workspace = true, features = ["test-support"] }
 awaken-sandbox-memoryd.workspace = true
 awaken-memory-store = { workspace = true, features = ["test-support"] }
 async-trait.workspace = true
+
+[lints]
+workspace = true

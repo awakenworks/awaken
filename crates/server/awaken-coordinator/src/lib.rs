@@ -850,14 +850,16 @@ mod executable_projection_refresh_tests {
     }
 
     #[tokio::test]
-    async fn shared_inventory_and_warmup_adapters_fail_before_source_reads() {
+    async fn failed_refresh_never_enters_shared_inventory_or_warmup_handlers() {
         // Causes: C1 executable refresh succeeds/fails; C2 Agent inventory is
         // consumed by Models/Dream; C3 Environment warmups are consumed by the
         // Worker. Effects: E1 failure reaches each consumer as unavailable and
         // its source is not read; E2 recovery delegates once. Constraints: K1
         // adapters own no cursor/cache; K2 Models and Dream share one wrapped
         // inventory. Decision table: D1 !C1+C2=>E1; D2 !C1+C3=>E1;
-        // D3 C1+C2+C3=>E2.
+        // D3 C1+C2+C3=>E2. Each rule also requires one refresh call per
+        // attempted handler entry so a false pass cannot come from bypassing
+        // the prerequisite altogether.
         let refresh = Arc::new(ToggleRefresh::default());
         let inventory = Arc::new(Inventory::default());
         let warmups = Arc::new(Warmups::default());
@@ -889,6 +891,7 @@ mod executable_projection_refresh_tests {
         );
         assert_eq!(inventory.0.load(Ordering::SeqCst), 0, "D1/E1");
         assert_eq!(warmups.0.load(Ordering::SeqCst), 0, "D2/E1");
+        assert_eq!(refresh.calls.load(Ordering::SeqCst), 2, "D1+D2 gate calls");
 
         refresh.fail.store(false, Ordering::SeqCst);
         awaken_executable_agent_contract::ExecutableAgentInventorySource::current_registrations(
@@ -904,6 +907,7 @@ mod executable_projection_refresh_tests {
         .unwrap();
         assert_eq!(inventory.0.load(Ordering::SeqCst), 1, "D3/E2");
         assert_eq!(warmups.0.load(Ordering::SeqCst), 1, "D3/E2");
+        assert_eq!(refresh.calls.load(Ordering::SeqCst), 4, "D3 gate calls");
     }
 }
 
