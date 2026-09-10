@@ -156,11 +156,14 @@ fn execution_admission_preserves_frozen_identity_and_remote_target() {
 #[test]
 fn cancellation_preserves_unknown_outcomes_and_rejected_finishes_are_atomic() {
     // C1 cancel intent; C2 observed Completed/Failed/Cancelled/Indeterminate;
-    // C3 exact owner+epoch; C4 revision has capacity. R1 !C3 => stale, stutter;
-    // R2 C3&&!C4 => overflow, stutter; R3 C3&&C4&&unknown => exact unknown;
+    // C3 exact owner+epoch; C4 revision has capacity; C5 finish/heartbeat;
+    // C6 heartbeat lease is valid/zero/overflowing. R1 !C3 + either C5 + any
+    // C6 => stale, full aggregate stutter; R2 C3&&!C4 => overflow, stutter;
+    // R3 C3&&C4&&unknown => exact unknown;
     // R4 C3&&C4&&known&&C1 => Cancelled; R5 known&&!C1 => exact observation.
-    // Cancel intent is not evidence of remote termination. Cross every outcome
-    // with cancellation, each independent fence mismatch, and revision capacity.
+    // Cancel intent is not evidence of remote termination. This crosses Running
+    // and Cancelling with both independent fence mismatches; the existing remote
+    // wait table owns the same heartbeat/finish checks for Waiting.
     for cancelling in [false, true] {
         for end in [
             BackgroundTaskEnd::Completed {
@@ -192,6 +195,16 @@ fn cancellation_preserves_unknown_outcomes_and_rejected_finishes_are_atomic() {
                         task.revision = u64::MAX;
                     }
                     let before = task.clone();
+                    if mismatch != 0 {
+                        for (now_ms, lease_ms) in [(0, 1), (0, 0), (u64::MAX, 1)] {
+                            assert_eq!(
+                                task.heartbeat(&fence, now_ms, lease_ms),
+                                Err(BackgroundTaskError::StaleFence),
+                                "R1 stale heartbeat"
+                            );
+                            assert_eq!(task, before, "R1 stale heartbeat stutter");
+                        }
+                    }
                     let result = task.finish(&fence, end.clone());
                     if mismatch != 0 {
                         assert_eq!(result, Err(BackgroundTaskError::StaleFence), "R1");

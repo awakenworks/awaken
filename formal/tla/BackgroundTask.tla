@@ -309,6 +309,19 @@ Next ==
 
 Spec == Init /\ [][Next]_vars
 
+\* The explicit stale-settlement action is a full stutter, while the real
+\* heartbeat and finish actions are disabled for either owner or epoch mismatch.
+\* Keeping this as an explicit safety property makes removal of either
+\* production-shaped fence guard observable instead of relying only on
+\* post-state type invariants.
+StaleFenceCannotFinishOrHeartbeat ==
+    [](\A worker \in Workers, observedEpoch \in 0..MaxAttempts :
+        (phase \in LivePhases
+          /\ (worker # owner \/ observedEpoch # epoch))
+        => /\ ~ENABLED Heartbeat(worker, observedEpoch)
+           /\ \A reason \in CompletionReasons :
+                ~ENABLED Finish(worker, observedEpoch, reason))
+
 TypeOK ==
     /\ phase \in Phases
     /\ owner \in Workers \cup {"None"}

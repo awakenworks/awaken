@@ -49,6 +49,7 @@ from formal_credential_mutations import (
 )
 from formal_dispatch_mutations import (check_resolution_failure_model_mutant, check_terminal_scan_model_mutants,
     check_maintenance_observation_mutants, check_managed_projection_model_mutants)
+from formal_background_mutations import check_background_completion_model_mutant
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1146,21 +1147,6 @@ def check_sandbox_control_model_mutants(tlc_jar: Path) -> None:
         mutations.append((source, header + f"INVARIANTS {witness}\n", witness))
     check_tlc_model_mutations(tlc_jar, "SandboxControlPublication", source, config, mutations)
     print("Sandbox control mutation score: 7/7 killed; 4 disposal/drop schedules reachable")
-
-
-def check_background_completion_model_mutant(tlc_jar: Path) -> None:
-    # C1 remove only the uncertainty guard from canonical settlement. E1 the
-    # exact unknown-retention invariant fails. Use the same green-base/semantic
-    # oracle as other models; an infrastructure failure is never a killed bug.
-    source = (ROOT / "formal/tla/BackgroundTask.tla").read_text(encoding="utf-8")
-    config = (ROOT / "formal/tla/BackgroundTask.cfg").read_text(encoding="utf-8")
-    guard = 'p = "Cancelling" /\\ reason # "Indeterminate"'
-    if source.count(guard) != 1:
-        raise SystemExit("Background completion mutation anchor drifted; review the model")
-    check_tlc_model_mutations(tlc_jar, "BackgroundTask", source, config, [
-        (source.replace(guard, 'p = "Cancelling"'), config, "CompletionProjectionRetainsUnknown"),
-    ])
-    print("Background completion mutation score: 1/1 killed (unknown is not cancelled)")
 
 
 def check_audit_commit_model_mutants(tlc_jar: Path) -> None:
