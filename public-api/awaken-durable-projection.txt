@@ -20,9 +20,9 @@ pub awaken_durable_projection::RefreshPlan::Incremental::after: u64
 pub awaken_durable_projection::RefreshPlan::Incremental::through: u64
 pub struct awaken_durable_projection::ProjectionCursor
 impl awaken_durable_projection::ProjectionCursor
-pub fn awaken_durable_projection::ProjectionCursor::advance(&self, u64)
 pub fn awaken_durable_projection::ProjectionCursor::applied(&self) -> u64
 pub fn awaken_durable_projection::ProjectionCursor::at(u64) -> Self
+pub fn awaken_durable_projection::ProjectionCursor::install_then_reconcile<E>(&self, u64, impl core::ops::function::FnOnce() -> core::result::Result<(), E>) -> core::result::Result<(), E>
 pub fn awaken_durable_projection::ProjectionCursor::plan(&self, u64) -> awaken_durable_projection::RefreshPlan
 pub fn awaken_durable_projection::ProjectionCursor::validates_full<C>(&[awaken_durable_projection::Sequenced<C>], u64) -> bool
 pub fn awaken_durable_projection::ProjectionCursor::validates_incremental<C>(&self, &[awaken_durable_projection::Sequenced<C>], u64) -> bool

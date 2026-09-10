@@ -102,9 +102,81 @@ impl ProjectionCursor {
         (through == 0 && batch.is_empty()) || Self::at(0).validates_incremental(batch, through)
     }
 
-    pub fn advance(&self, through: u64) {
+    fn advance(&self, through: u64) {
         self.applied.store(through, Ordering::Release);
     }
+
+    /// Install a projection at `through` without ever letting this cursor lead
+    /// the installed projection. The caller must hold its domain mutation lock
+    /// and the installer must return `Ok` only after publishing that exact
+    /// projection.
+    ///
+    /// Ordinary forward refresh installs first and advances second. A complete
+    /// replay can intentionally move to an authority high-water below the local
+    /// cursor; that path lowers the private cursor first and restores it if the
+    /// installation returns an error.
+    pub fn install_then_reconcile<E>(
+        &self,
+        through: u64,
+        install: impl FnOnce() -> Result<(), E>,
+    ) -> Result<(), E> {
+        let previous = self.applied();
+        if through < previous {
+            self.advance(through);
+            if let Err(error) = install() {
+                self.advance(previous);
+                return Err(error);
+            }
+        } else {
+            install()?;
+            self.advance(through);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(any(test, kani))]
+fn check_install_then_reconcile(previous: u64, through: u64, succeeds: bool) {
+    use std::cell::Cell;
+
+    // Causes: C1 the captured authority target is lower than, equal to, or
+    // higher than the local cursor; C2 installing the exact target succeeds or
+    // returns an error. Effects: R1 a forward/equal installer observes the old
+    // cursor; R2 a rollback installer observes the cursor already lowered; R3
+    // success publishes the exact target and leaves the cursor equal to it; R4
+    // failure publishes nothing and restores/retains the old cursor. Every
+    // observable boundary preserves cursor <= installed.
+    let cursor = ProjectionCursor::at(previous);
+    let installed = Cell::new(previous);
+    let result = cursor.install_then_reconcile(through, || {
+        assert!(cursor.applied() <= installed.get(), "R1/R2 entry");
+        if succeeds {
+            installed.set(through);
+            assert!(cursor.applied() <= installed.get(), "R1/R2 installed");
+            Ok(())
+        } else {
+            Err(())
+        }
+    });
+
+    if succeeds {
+        assert!(result.is_ok(), "R3");
+        assert_eq!(installed.get(), through, "R3");
+        assert_eq!(cursor.applied(), through, "R3");
+    } else {
+        assert!(result.is_err(), "R4");
+        assert_eq!(installed.get(), previous, "R4");
+        assert_eq!(cursor.applied(), previous, "R4");
+    }
+    assert!(cursor.applied() <= installed.get(), "R3/R4 terminal");
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn projection_cursor_never_leads_installed_projection() {
+    // No assumptions, stubs, or reduced domains: all prior and target u64
+    // values cross both installer outcomes in the production ordering kernel.
+    check_install_then_reconcile(kani::any(), kani::any(), kani::any());
 }
 
 pub async fn load_full<C, L>(
@@ -181,6 +253,14 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+
+    #[test]
+    fn install_reconciliation_covers_forward_equal_and_rollback_outcomes() {
+        for (previous, through) in [(4, 7), (4, 4), (7, 4)] {
+            check_install_then_reconcile(previous, through, true);
+            check_install_then_reconcile(previous, through, false);
+        }
+    }
 
     struct MemoryLog {
         high_water: u64,

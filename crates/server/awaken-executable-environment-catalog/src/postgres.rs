@@ -254,9 +254,8 @@ impl DurableRegistrar {
                     commands,
                 )
                 .await?;
-                install_catalog(&self.catalog, &refreshed)?;
-                self.cursor.advance(through);
-                Ok(())
+                self.cursor
+                    .install_then_reconcile(through, || install_catalog(&self.catalog, &refreshed))
             }
             ProjectionBatch::FullReplay { through, commands } => {
                 let refreshed = Arc::new(ExecutableEnvironmentCatalog::new());
@@ -265,9 +264,8 @@ impl DurableRegistrar {
                     commands,
                 )
                 .await?;
-                install_catalog(&self.catalog, &refreshed)?;
-                self.cursor.advance(through);
-                Ok(())
+                self.cursor
+                    .install_then_reconcile(through, || install_catalog(&self.catalog, &refreshed))
             }
         }
     }
@@ -544,6 +542,44 @@ mod tests {
         ExecutableEnvironmentRegistration::new(definition, None)
     }
 
+    #[tokio::test]
+    async fn install_error_precedes_environment_target_publication() {
+        // Causes: C1 the target contains revision 1; C2 the replacement contains
+        // revision 2; C3 the replacement read lock is poisoned before install.
+        // Effects: R1 install returns Storage; R2 the target remains the exact
+        // revision-1 projection. This binds install_then_reconcile's Err-means-
+        // no-publication precondition to the real Environment catalog installer.
+        let target = Arc::new(ExecutableEnvironmentCatalog::new());
+        LocalExecutableEnvironmentRegistrar::new(target.clone())
+            .register(registration())
+            .await
+            .unwrap();
+        let refreshed = Arc::new(ExecutableEnvironmentCatalog::new());
+        LocalExecutableEnvironmentRegistrar::new(refreshed.clone())
+            .register(registration_at(2, "Environment B"))
+            .await
+            .unwrap();
+        let poisoned = refreshed.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoned.state.write().unwrap();
+            panic!("poison refreshed Environment catalog lock");
+        })
+        .join();
+
+        assert!(
+            matches!(
+                install_catalog(&target, &refreshed),
+                Err(ExecutableEnvironmentRegistrationError::Storage(_))
+            ),
+            "R1"
+        );
+        assert_eq!(
+            target.current("env-a").unwrap().definition.name,
+            "Environment A",
+            "R2"
+        );
+    }
+
     async fn registrar(
         log: Arc<MemoryCommandLog>,
         catalog: Arc<ExecutableEnvironmentCatalog>,
@@ -556,8 +592,10 @@ mod tests {
         // Cause/effect decision table: R1 peers start empty; R2 authority ahead
         // -> stale peer loads only commands above its durable cursor; R3 unchanged
         // high-water -> no command read; R4 incomplete incremental tail -> full
-        // replay from durable truth. Deliberate sequence gaps prove no contiguous
-        // identity assumption leaks into the projection.
+        // replay from durable truth; R5 authority restored behind the cursor ->
+        // replace from complete truth and lower the cursor to that exact
+        // high-water. Deliberate sequence gaps prove no contiguous identity
+        // assumption leaks into the projection.
         let log = Arc::new(MemoryCommandLog::default());
         let left_catalog = Arc::new(ExecutableEnvironmentCatalog::new());
         let right_catalog = Arc::new(ExecutableEnvironmentCatalog::new());
@@ -604,14 +642,24 @@ mod tests {
             .unwrap();
         log.drop_incremental_tail_once.store(true, Ordering::SeqCst);
         right.refresh_projection().await.unwrap();
-        let calls = log.load_after_calls.lock().unwrap();
-        assert_eq!(&calls[calls.len() - 2..], &[4, 0], "R4");
+        {
+            let calls = log.load_after_calls.lock().unwrap();
+            assert_eq!(&calls[calls.len() - 2..], &[4, 0], "R4");
+        }
         assert_eq!(
             right_catalog.current("env-a").unwrap().definition.name,
             "Environment C",
             "R4"
         );
         assert_eq!(log.commands.lock().unwrap().len(), 3, "R4");
+        log.commands.lock().unwrap().truncate(1);
+        right.refresh_projection().await.unwrap();
+        assert_eq!(right.cursor.applied(), 2, "R5");
+        assert_eq!(
+            right_catalog.current("env-a").unwrap().definition.name,
+            "Environment A",
+            "R5"
+        );
     }
 
     #[tokio::test]

@@ -126,6 +126,11 @@ cargo test -p awaken-session-application --lib realization::publication::collect
 cargo test -p awaken-coordinator --lib failed_refresh_never_enters_shared_inventory_or_warmup_handlers
 cargo test -p awaken-session-application --lib admission_surfaces_dispatch_failure_and_preserves_retryable_intent
 cargo test -p awaken-deployment-application --lib scheduler_refresh_failure_precedes_candidate_mutation_and_launch
+cargo test -p awaken-durable-projection --lib install_reconciliation_covers_forward_equal_and_rollback_outcomes
+cargo test -p awaken-executable-agent-catalog --lib active_active_peer_refreshes_the_durable_command_projection
+cargo test -p awaken-executable-environment-catalog --lib active_active_peer_refreshes_the_durable_environment_projection
+cargo test -p awaken-executable-agent-catalog --lib install_error_precedes_agent_target_publication
+cargo test -p awaken-executable-environment-catalog --lib install_error_precedes_environment_target_publication
 # The WebhookOutbox model treats a committed fact as recoverable across crash.
 # Bind that premise to a real post-commit process kill and fresh SQLite reopen;
 # delivery/settlement remains covered by the separate notifier kernel below.
@@ -573,6 +578,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness management_effect_retirement_requires_present_matching_receipt
   run_kani awaken-executable-agent-catalog \
     --harness installed_lifecycle_revision_never_rolls_back
+  run_kani awaken-durable-projection \
+    --harness projection_cursor_never_leads_installed_projection
   run_kani awaken-credential-contract --solver minisat \
     --harness managed_rollout_identity_requires_every_payload_field
   run_kani awaken-credential-contract \
