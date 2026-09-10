@@ -131,6 +131,13 @@ cargo test -p awaken-executable-agent-catalog --lib active_active_peer_refreshes
 cargo test -p awaken-executable-environment-catalog --lib active_active_peer_refreshes_the_durable_environment_projection
 cargo test -p awaken-executable-agent-catalog --lib install_error_precedes_agent_target_publication
 cargo test -p awaken-executable-environment-catalog --lib install_error_precedes_environment_target_publication
+# Bind the theorem's per-domain lock owner to both production registrar types.
+# Each test blocks the first source read after two refresh tasks have attempted
+# the same registrar, then requires one entered read and one exact installation.
+cargo test -p awaken-executable-agent-catalog --lib \
+  concurrent_agent_refreshes_are_serialized_by_the_domain_registrar
+cargo test -p awaken-executable-environment-catalog --lib \
+  concurrent_environment_refreshes_are_serialized_by_the_domain_registrar
 # The WebhookOutbox model treats a committed fact as recoverable across crash.
 # Bind that premise to a real post-commit process kill and fresh SQLite reopen;
 # delivery/settlement remains covered by the separate notifier kernel below.

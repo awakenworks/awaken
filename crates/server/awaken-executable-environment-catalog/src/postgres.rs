@@ -433,12 +433,14 @@ impl ExecutableEnvironmentRegistrar for PostgresExecutableEnvironmentRegistrar {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex as StdMutex;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex as StdMutex};
+    use std::time::Duration;
 
     use awaken_environment_contract::{EnvItem, EnvironmentConfig, EnvironmentRevision};
     use sqlx::Executor;
     use sqlx::postgres::PgPoolOptions;
+    use tokio::sync::{Barrier, Notify};
 
     use super::*;
 
@@ -447,6 +449,10 @@ mod tests {
         commands: StdMutex<Vec<Sequenced<CatalogCommand>>>,
         drop_incremental_tail_once: AtomicBool,
         load_after_calls: StdMutex<Vec<u64>>,
+        gate_next_high_water: AtomicBool,
+        high_water_calls: AtomicUsize,
+        high_water_entered: Notify,
+        release_high_water: Notify,
     }
 
     #[async_trait]
@@ -484,6 +490,11 @@ mod tests {
         type Error = ExecutableEnvironmentRegistrationError;
 
         async fn high_water(&self) -> Result<u64, Self::Error> {
+            self.high_water_calls.fetch_add(1, Ordering::SeqCst);
+            if self.gate_next_high_water.swap(false, Ordering::SeqCst) {
+                self.high_water_entered.notify_one();
+                self.release_high_water.notified().await;
+            }
             Ok(self
                 .commands
                 .lock()
@@ -585,6 +596,64 @@ mod tests {
         catalog: Arc<ExecutableEnvironmentCatalog>,
     ) -> DurableRegistrar {
         DurableRegistrar::hydrate(catalog, log).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn concurrent_environment_refreshes_are_serialized_by_the_domain_registrar() {
+        // Causes: C1 one registrar has cursor 0 and authority sequence 2; C2 two
+        // refresh tasks have both crossed their start barrier; C3 the first
+        // high-water read is held pending. Effects: R1 exactly one source read
+        // can enter while C3 holds; R2 release installs sequence 2 and advances
+        // the cursor; R3 the waiting refresh then observes Current without a
+        // second range replay, leaving the exact canonical Environment projection.
+        // Rules: C1+C2+C3 => R1; release+C1 => R2; R2+waiting task => R3.
+        let log = Arc::new(MemoryCommandLog::default());
+        let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        let registrar = Arc::new(registrar(log.clone(), catalog.clone()).await);
+        log.append(&CatalogCommand::Registration(Box::new(registration())))
+            .await
+            .unwrap();
+        log.high_water_calls.store(0, Ordering::SeqCst);
+        log.load_after_calls.lock().unwrap().clear();
+        log.gate_next_high_water.store(true, Ordering::SeqCst);
+
+        let start = Arc::new(Barrier::new(3));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let mut refreshes = Vec::new();
+        for _ in 0..2 {
+            let registrar = registrar.clone();
+            let start = start.clone();
+            let attempts = attempts.clone();
+            refreshes.push(tokio::spawn(async move {
+                start.wait().await;
+                attempts.fetch_add(1, Ordering::SeqCst);
+                registrar.refresh_projection().await
+            }));
+        }
+        start.wait().await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while attempts.load(Ordering::SeqCst) != 2 {
+                tokio::task::yield_now().await;
+            }
+            log.high_water_entered.notified().await;
+        })
+        .await
+        .expect("both refresh tasks attempt and one reaches the source");
+        tokio::task::yield_now().await;
+        assert_eq!(log.high_water_calls.load(Ordering::SeqCst), 1, "R1");
+        assert!(catalog.current("env-a").is_none(), "R1");
+
+        log.release_high_water.notify_one();
+        for refresh in refreshes {
+            refresh.await.unwrap().unwrap();
+        }
+        assert_eq!(log.high_water_calls.load(Ordering::SeqCst), 2, "R2/R3");
+        assert_eq!(*log.load_after_calls.lock().unwrap(), vec![0], "R3");
+        assert_eq!(
+            catalog.current("env-a").unwrap().definition.name,
+            "Environment A",
+            "R3"
+        );
     }
 
     #[tokio::test]
