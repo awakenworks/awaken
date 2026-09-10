@@ -2051,19 +2051,22 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
     // C1=create or three writers share revision r; C2=three independent clients
     // race distinct scheduled rows at capacity one; C3=scheduler presents current
     // or stale revision; C4=a current scheduler reuses the rejected stale claim
-    // identity. Effects: E1=one CAS write advances r exactly once; E2=the loser
+    // identity; C5=a duplicate run row forces the claim transaction to fail.
+    // Effects: E1=one CAS write advances r exactly once; E2=the loser
     // conflicts without a lifecycle fact; E3=one exact capacity winner and its
     // fact commit while both rejected candidates leave no row or fact; E4=claim,
     // run, cursor and fact commit atomically; E5=stale claim preserves the winner
     // frame and creates no claim/run/fact; E6=C4 claims, proving that E5 did not
-    // reserve the durable identity.
+    // reserve the durable identity; E7=C5 preserves the complete deployment,
+    // creates no fact or claim, and an exact retry of that claim identity commits.
     //
     // | Rule | C1                | C2 | C3 | C4      | Effect       |
     // | D1   | create            | F  | F  | -       | applied      |
     // | D2   | jump/reuse r      | F  | F  | -       | E2 reject   |
     // | D3   | three writers at r| F  | F  | -       | E1 + E2     |
     // | D4   | three creates     | T  | limit 1 | -  | E3          |
-    // | D5   | scheduler at r    | -  | -  | current | E4          |
+    // | D5a  | duplicate run     | -  | -  | current | E7          |
+    // | D5b  | retry D5a claim id| -  | -  | current | E4 + E7     |
     // | D6   | scheduler at r-1  | -  | -  | stale   | E5          |
     // | D7   | reuse D6 claim id | -  | -  | current | E4 + E6     |
     let baseline_facts = repo.pending_lifecycle().await.unwrap().len();
@@ -2285,8 +2288,61 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
         "D4/E3 Applied identifies the durable fact"
     );
 
-    let mut advanced = deployment_record("depl_cas", 2, false);
+    let collision_run = DeploymentRunView {
+        id: "drun_collision".into(),
+        record: DeploymentRunRecord {
+            created_at: "1970-01-01T00:00:00Z".into(),
+            deployment_id: "depl_cas".into(),
+            workspace_id: "ws_a".into(),
+            agent: DeploymentAgent::new("agent_a", 1),
+            trigger: DeploymentTrigger::Manual,
+            session_id: None,
+            error: None,
+        },
+    };
+    repo.upsert_deployment_run(collision_run.clone(), None)
+        .await
+        .expect("D5a collision setup");
+    let failed_claim_id = "depl_cas:failed-then-retried";
+    let mut advanced = committed.clone();
+    advanced.record.revision = 2;
     advanced.record.name = "advanced".into();
+    assert!(
+        repo.claim_scheduled_run(
+            failed_claim_id,
+            1,
+            advanced.clone(),
+            collision_run,
+            DeploymentLifecycleFact {
+                id: "failed-claim-fact".into(),
+                object_id: "drun_collision".into(),
+                workspace_id: Some("ws_a".into()),
+                event_type: "deployment_run.started".into(),
+                timestamp: 1,
+                runtime_interval: None,
+            },
+        )
+        .await
+        .is_err(),
+        "D5a/E7 duplicate run rejects the transaction"
+    );
+    assert_eq!(
+        repo.deployments()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|deployment| deployment.id == "depl_cas"),
+        Some(committed),
+        "D5a/E7 deployment update rolled back"
+    );
+    assert!(
+        repo.pending_lifecycle()
+            .await
+            .unwrap()
+            .iter()
+            .all(|fact| fact.id != "failed-claim-fact"),
+        "D5a/E7 lifecycle fact rolled back"
+    );
     let run = DeploymentRunView {
         id: "drun_current".into(),
         record: DeploymentRunRecord {
@@ -2310,13 +2366,30 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
         runtime_interval: None,
     };
     assert_eq!(
-        repo.claim_scheduled_run("depl_cas:instant", 1, advanced.clone(), run, fact)
+        repo.claim_scheduled_run(failed_claim_id, 1, advanced.clone(), run, fact)
             .await
             .unwrap(),
         ScheduledRunClaimOutcome::Claimed,
-        "D5/E4"
+        "D5b/E4+E7"
     );
-    assert_eq!(repo.deployment_runs().await.unwrap().len(), 1, "D5/E4");
+    assert_eq!(
+        repo.deployments()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|deployment| deployment.id == "depl_cas"),
+        Some(advanced.clone()),
+        "D5b/E4 exact deployment successor"
+    );
+    let runs = repo.deployment_runs().await.unwrap();
+    assert_eq!(runs.len(), 2, "D5b/E4 only setup and committed run");
+    assert!(runs.iter().any(|run| run.id == "drun_current"), "D5b/E4");
+    assert!(
+        repo.pending_lifecycle().await.unwrap().iter().any(|fact| {
+            fact.id == "deployment-run-started" && fact.object_id == "drun_current"
+        }),
+        "D5b/E4 exact run/fact pair"
+    );
     let stale_claim_id = "depl_cas:stale-then-current";
     let mut stale_overwrite = advanced.clone();
     stale_overwrite.record.name = "stale-overwrite-must-not-commit".into();
@@ -2365,7 +2438,7 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
         );
     }
     let runs = repo.deployment_runs().await.unwrap();
-    assert_eq!(runs.len(), 1, "D6/E5");
+    assert_eq!(runs.len(), 2, "D6/E5");
     assert!(runs.iter().all(|run| run.id != "drun_stale"), "D6/E5");
     assert!(
         repo.pending_lifecycle()
@@ -2426,7 +2499,7 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
         );
     }
     let runs = repo.deployment_runs().await.unwrap();
-    assert_eq!(runs.len(), 2, "D7/E4");
+    assert_eq!(runs.len(), 3, "D7/E4");
     assert!(runs.iter().any(|run| run.id == "drun_current"), "D7/E4");
     assert!(runs.iter().any(|run| run.id == "drun_after_stale"), "D7/E4");
     assert!(runs.iter().all(|run| run.id != "drun_stale"), "D7/E5");
@@ -2493,8 +2566,24 @@ fn sqlite_backend_conforms() {
                 .await
                 .expect("read reopened DeploymentRuns")
                 .len(),
-            2,
+            3,
             "D8 only valid claim/runs survived reopen"
+        );
+        let reopened_facts = reopened
+            .pending_lifecycle()
+            .await
+            .expect("read reopened Deployment lifecycle facts");
+        assert!(
+            reopened_facts
+                .iter()
+                .all(|fact| fact.id != "failed-claim-fact"),
+            "D8 failed claim fact remained absent"
+        );
+        assert!(
+            reopened_facts.iter().any(|fact| {
+                fact.id == "deployment-run-started" && fact.object_id == "drun_current"
+            }),
+            "D8 retried claim's exact run/fact pair survived reopen"
         );
         let capacity_rows = reopened
             .deployments()
@@ -2503,10 +2592,7 @@ fn sqlite_backend_conforms() {
             .into_iter()
             .filter(|deployment| deployment.id.starts_with("depl_capacity_"))
             .collect::<Vec<_>>();
-        let capacity_facts = reopened
-            .pending_lifecycle()
-            .await
-            .expect("read reopened capacity fact")
+        let capacity_facts = reopened_facts
             .into_iter()
             .filter(|fact| fact.id.starts_with("capacity-"))
             .collect::<Vec<_>>();
