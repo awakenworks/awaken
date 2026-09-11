@@ -256,26 +256,44 @@ pub enum DispatchAdmissionShape {
     InvalidZeroActivityEpoch,
 }
 
+/// Classify the already-decoded routing coordinates without owning any Run or
+/// Session lifecycle. `RunDispatch::admission_shape` is the sole caller in
+/// production; keeping the categorical decision heap-free lets Kani exhaust it
+/// without replacing the durable dispatch or its identity fields.
+const fn classify_dispatch_admission(
+    has_session_thread: bool,
+    session_thread_matches: bool,
+    session_activity_epoch: Option<u64>,
+) -> DispatchAdmissionShape {
+    if matches!(session_activity_epoch, Some(0)) {
+        return DispatchAdmissionShape::InvalidZeroActivityEpoch;
+    }
+    if !has_session_thread {
+        DispatchAdmissionShape::OrdinaryRoot
+    } else if session_thread_matches {
+        if session_activity_epoch.is_some() {
+            DispatchAdmissionShape::SessionRootWithActivity
+        } else {
+            DispatchAdmissionShape::SessionRootAwaitingActivity
+        }
+    } else {
+        DispatchAdmissionShape::SessionChild
+    }
+}
+
 impl RunDispatch {
     /// Classify the immutable routing/activity coordinates before persistence.
     /// The caller still owns port-specific authorization; this method only makes
     /// the previously implicit shape distinction total and shared.
     #[must_use]
     pub fn admission_shape(&self) -> DispatchAdmissionShape {
-        if self.session_activity_epoch == Some(0) {
-            return DispatchAdmissionShape::InvalidZeroActivityEpoch;
-        }
-        match self.session_thread_id.as_ref() {
-            None => DispatchAdmissionShape::OrdinaryRoot,
-            Some(session) if session == self.thread_id() => {
-                if self.session_activity_epoch.is_some() {
-                    DispatchAdmissionShape::SessionRootWithActivity
-                } else {
-                    DispatchAdmissionShape::SessionRootAwaitingActivity
-                }
-            }
-            Some(_) => DispatchAdmissionShape::SessionChild,
-        }
+        classify_dispatch_admission(
+            self.session_thread_id.is_some(),
+            self.session_thread_id
+                .as_ref()
+                .is_some_and(|session| session == self.thread_id()),
+            self.session_activity_epoch,
+        )
     }
 
     fn canonicalized(&self) -> Self {
@@ -546,6 +564,47 @@ impl RunDispatch {
         self.session_thread_id
             .as_ref()
             .unwrap_or(&self.activation.thread_id)
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn dispatch_admission_shape_keeps_child_affinity_independent() {
+    // Cause/effect graph: C1 Session affinity is absent, matches the Run Thread,
+    // or names a distinct parent Thread; C2 activity is absent, positive, or
+    // zero. Effects: E1 ordinary root, E2 root awaiting activity, E3 root with
+    // activity, E4 independently scheduled Session child, E5 invalid zero.
+    // Constraint: this descriptive reducer never authors identity or lifecycle.
+    // Decision rules: R1 absent+valid=>E1; R2 same+absent=>E2;
+    // R3 same+positive=>E3; R4 distinct+absent/positive=>E4; R5 any+zero=>E5.
+    let has_session_thread: bool = kani::any();
+    let session_thread_matches: bool = kani::any();
+    let has_activity: bool = kani::any();
+    let activity = has_activity.then_some(kani::any::<u64>());
+    let result = classify_dispatch_admission(has_session_thread, session_thread_matches, activity);
+
+    if activity == Some(0) {
+        assert_eq!(
+            result,
+            DispatchAdmissionShape::InvalidZeroActivityEpoch,
+            "R5/E5"
+        );
+    } else if !has_session_thread {
+        assert_eq!(result, DispatchAdmissionShape::OrdinaryRoot, "R1/E1");
+    } else if session_thread_matches && activity.is_none() {
+        assert_eq!(
+            result,
+            DispatchAdmissionShape::SessionRootAwaitingActivity,
+            "R2/E2"
+        );
+    } else if session_thread_matches {
+        assert_eq!(
+            result,
+            DispatchAdmissionShape::SessionRootWithActivity,
+            "R3/E3"
+        );
+    } else {
+        assert_eq!(result, DispatchAdmissionShape::SessionChild, "R4/E4");
     }
 }
 

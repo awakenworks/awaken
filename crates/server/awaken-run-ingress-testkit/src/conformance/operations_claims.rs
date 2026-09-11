@@ -360,16 +360,19 @@ async fn exact_claim_recovery_and_fencing(
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
-    // Cause/effect graph: C1 the durable request freezes an exact credential,
-    // provider, route, primary and ordered fallback; C2 a fresh claim succeeds;
-    // C3 the first lease is still live or exactly at its boundary; C4 it is
-    // strictly expired and another owner reclaims it. Effects: E1 C2 returns
-    // the complete persisted request; E2 C3 admits no replacement owner; E3 C4
-    // returns the byte-equivalent frozen request under exactly epoch+1; E4 the
-    // old epoch is fenced and the new epoch settles.
+    // Cause/effect graph: C0 the durable request is one first-class delegated
+    // child with its own Run/Thread, exact origin, and distinct parent-Session
+    // affinity; C1 it freezes an exact credential, provider, route, primary and
+    // ordered fallback; C2 a fresh claim succeeds; C3 the first lease is live
+    // or exactly at its boundary; C4 it is strictly expired and another owner
+    // reclaims it. Effects: E0 the child remains a SessionChild with every
+    // identity coordinate frozen; E1 C2 returns the complete persisted request;
+    // E2 C3 admits no replacement owner; E3 C4 returns the byte-equivalent
+    // request under exactly epoch+1; E4 the old epoch is fenced and the new
+    // epoch settles.
     //
     // | Rule | Claim state | Time | Effects |
-    // | R1 | Pending | fresh | E1 |
+    // | R1 | Pending | fresh | E0+E1 |
     // | R2 | Leased | live/equal deadline | E2 |
     // | R3 | Leased | strictly expired | E3+E4 |
     //
@@ -401,6 +404,17 @@ async fn exact_claim_recovery_and_fencing(
         alternatives: Vec::new(),
     };
     let mut frozen = credential_dispatch(ns, "target", "target-thread", &holder);
+    frozen.activation.delegation_origin = Some(DelegationOrigin::root_for_agent(
+        run_id(ns, "parent-run"),
+        format!("{ns}-parent-call"),
+        format!("{ns}-parent-agent"),
+    ));
+    frozen = frozen.for_session(thread_id(ns, "parent-session-thread"));
+    assert_eq!(
+        frozen.admission_shape(),
+        DispatchAdmissionShape::SessionChild,
+        "C0/E0"
+    );
     frozen.activation.snapshot.resolved_spec.model_candidates = vec![credential_candidate(
         ns,
         &format!("{ns}-fallback-provider"),
@@ -527,11 +541,30 @@ async fn parent_mediated_commands_are_atomic(
     ns: &str,
     clock: &dyn ConformanceClock,
 ) {
+    // Cause/effect graph: C1 one delegated child carries its own Run/Thread,
+    // durable origin and distinct parent-Session affinity; C2 its parent creates
+    // and exact-claims it while the pool races; C3 the child awaits and receives
+    // one correlated input. Effects: E1 creation and lease are atomic over the
+    // complete frozen child; E2 the pool cannot interleave; E3 input delivery
+    // and resume claim are atomic and expose exactly that input. Decision rules:
+    // R1=C1+C2=>E1+E2; R2=R1+Awaiting+C3=>E2+E3.
     clock.set(10_000);
     let child = run_id(ns, "child");
+    let mut child_dispatch = dispatch(ns, "child", "child-thread");
+    child_dispatch.activation.delegation_origin = Some(DelegationOrigin::root_for_agent(
+        run_id(ns, "parent-run"),
+        format!("{ns}-parent-call"),
+        format!("{ns}-parent-agent"),
+    ));
+    child_dispatch = child_dispatch.for_session(thread_id(ns, "parent-session-thread"));
+    assert_eq!(
+        child_dispatch.admission_shape(),
+        DispatchAdmissionShape::SessionChild,
+        "C1"
+    );
     let claimed = store
         .claim_new_run(
-            dispatch(ns, "child", "child-thread"),
+            child_dispatch.clone(),
             "conformance-parent",
             LEASE_MS,
             10_000,
@@ -541,6 +574,7 @@ async fn parent_mediated_commands_are_atomic(
         .expect("claim_new_run succeeds")
         .expect("new child is returned already claimed");
     assert_eq!(claimed.request.run_id(), &child);
+    assert_eq!(claimed.request, child_dispatch, "R1/E1");
     assert!(
         store
             .claim("conformance-pool", LEASE_MS, 10_000, &Default::default(),)
