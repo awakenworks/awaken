@@ -13,6 +13,7 @@ mod http_credential;
 mod inference;
 #[cfg(feature = "authority")]
 mod oauth_refresh;
+mod platform_egress;
 mod platform_relay;
 pub mod recipient_envelope;
 mod refresh;
@@ -25,6 +26,9 @@ pub use inference::{
 };
 #[cfg(feature = "authority")]
 pub use oauth_refresh::{VaultRefreshFactory, VaultRefresher};
+pub use platform_egress::{
+    MediatedMcpRoute, PlatformMcpEgressProvisioner, PlatformMcpEgressRequest,
+};
 pub use refresh::CredentialRefreshFactory;
 
 use std::collections::{BTreeMap, HashMap};

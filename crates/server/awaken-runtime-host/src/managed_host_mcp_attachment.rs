@@ -122,11 +122,11 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
             ));
         }
 
-        let (bearer, refresh, actual_realization_kind) = match (
+        let (bearer, refresh, actual_realization_kind, mediated_route) = match (
             request.credential.as_ref(),
             request.selected_plaintext_holder.as_ref(),
         ) {
-            (None, None) => (None, None, None),
+            (None, None) => (None, None, None, None),
             (Some(access), Some(holder)) => {
                 let realization_kind = match holder.boundary {
                     PlaintextBoundary::Worker => CredentialRealizationKind::WorkerRelay,
@@ -139,13 +139,18 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                             "Workload-held MCP credentials require an ACP backend",
                         ));
                     }
-                    PlaintextBoundary::Platform => {
-                        return Err(RunError::classified(
-                            "mcp_gateway_provisioner_required",
-                            "Platform-held MCP credentials require an external gateway provisioner",
-                        ));
-                    }
+                    // The deployment's egress mediator performs this call.
+                    // The Host learns a route and an expiry, never material.
+                    PlaintextBoundary::Platform => CredentialRealizationKind::PlatformRelay,
                 };
+                // Both relay kinds hand the workload a generation-scoped
+                // synthetic route rather than upstream material, so they share
+                // one exposure and one no-bypass requirement.
+                let mediated = matches!(
+                    realization_kind,
+                    CredentialRealizationKind::WorkerRelay
+                        | CredentialRealizationKind::PlatformRelay
+                );
                 if realization_kind == CredentialRealizationKind::ProcessProtocolField
                     && access.refresh.is_some()
                 {
@@ -168,7 +173,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                     }
                 }
                 if is_acp
-                    && realization_kind == CredentialRealizationKind::WorkerRelay
+                    && mediated
                     && access.policy.model_exposure
                         != awaken_runtime_contract::ModelExposurePolicy::VirtualOnly
                 {
@@ -177,7 +182,7 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                         "authenticated ACP MCP requires explicit VirtualOnly authorization for its generation-scoped relay capability",
                     ));
                 }
-                if is_acp && realization_kind == CredentialRealizationKind::WorkerRelay {
+                if is_acp && mediated {
                     let provider = self
                         .host
                         .projected_session_environment_provider(
@@ -191,11 +196,19 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                     {
                         return Err(RunError::classified(
                             "mcp_holder_unsupported",
-                            "authenticated ACP MCP requires provider-enforced secret substitution and no-bypass networking before Worker relay materialization",
+                            "authenticated ACP MCP requires provider-enforced secret substitution and no-bypass networking before mediated relay materialization",
                         ));
                     }
-                    if let Some(exposure) =
-                        self.host.deployment.sandbox.container_mcp_relay.as_ref()
+                    // The advertised-origin allowlist below describes the
+                    // Host's own relay. A platform mediator is reached through
+                    // the deployment's egress boundary instead.
+                    if let Some(exposure) = self
+                        .host
+                        .deployment
+                        .sandbox
+                        .container_mcp_relay
+                        .as_ref()
+                        .filter(|_| realization_kind == CredentialRealizationKind::WorkerRelay)
                     {
                         let upstream_host = request
                             .target
@@ -244,6 +257,9 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                 })?;
                 let installed = match realization_kind {
                     CredentialRealizationKind::WorkerRelay => injector.worker_relay_capabilities(),
+                    CredentialRealizationKind::PlatformRelay => {
+                        injector.platform_relay_capabilities(holder.trust_domain.0.clone())
+                    }
                     CredentialRealizationKind::ProcessProtocolField => {
                         let Some(awaken_runtime_contract::resolved::Backend::Acp(backend)) =
                             execution_backend.as_ref()
@@ -280,72 +296,112 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                     .map_err(|error| {
                         RunError::classified("mcp_credential_admission", error.to_string())
                     })?;
-                let bearer = injector
-                    .resolve_for_workspace(
-                        access,
-                        holder,
-                        realization_kind,
-                        &request.workspace_id,
-                        exact_credential_realization_target(&request.target),
-                    )
-                    .await
-                    .map_err(|error| match error {
-                        awaken_runtime_contract::CredentialMaterialError::Unavailable => {
+                if realization_kind == CredentialRealizationKind::PlatformRelay {
+                    let provisioner = self.platform_mcp_egress.as_ref().ok_or_else(|| {
+                        RunError::unavailable_classified(
+                            "mcp_gateway_provisioner_required",
+                            "Platform-held MCP credentials require an installed egress mediator",
+                        )
+                    })?;
+                    let upstream = request.target.http_url().ok_or_else(|| {
+                        RunError::classified(
+                            "mcp_relay_target_invalid",
+                            "a mediated MCP credential requires one canonical HTTP MCP target",
+                        )
+                    })?;
+                    let route = provisioner
+                        .provision(awaken_credential_materializer::PlatformMcpEgressRequest {
+                            holder,
+                            credential: &access.credential,
+                            workspace_id: &request.workspace_id,
+                            session_id: &request.generation.session_id,
+                            attachment_id: &request.generation.attachment_id().0,
+                            generation: request.generation.generation.version(),
+                            runtime_incarnation: &request.generation.runtime_incarnation,
+                            lease_epoch: request.generation.lease_epoch,
+                            upstream_url: upstream,
+                        })
+                        .await
+                        .map_err(|error| {
                             RunError::unavailable_classified(
-                                "mcp_material_source_unavailable",
+                                "mcp_gateway_route_unavailable",
                                 format!(
-                                    "mcp server `{}` credential material is temporarily unavailable",
+                                    "mcp server `{}` mediated route is unavailable: {error}",
                                     request.name
                                 ),
                             )
-                        }
-                        error => RunError::classified(
-                            "mcp_credential_revision_mismatch",
-                            format!(
-                                "mcp server `{}` credential could not be resolved exactly: {error}",
-                                request.name
-                            ),
-                        ),
-                    })?
-                    .material
-                    .into_secret()
-                    .map_err(|error| {
-                        RunError::classified(
-                            "mcp_credential_material_kind_mismatch",
-                            error.to_string(),
+                        })?;
+                    // Nothing is resolved here. The Host is a caller of the
+                    // mediator, never a holder of this credential.
+                    (None, None, Some(realization_kind), Some(route))
+                } else {
+                    let bearer = injector
+                        .resolve_for_workspace(
+                            access,
+                            holder,
+                            realization_kind,
+                            &request.workspace_id,
+                            exact_credential_realization_target(&request.target),
                         )
-                    })?;
-                let refresh = if realization_kind == CredentialRealizationKind::WorkerRelay {
-                    match access.refresh.as_ref() {
-                        Some(refresh) => Some(Box::new(crate::mcp::McpRefreshMaterial(
-                            self.credential_refresh_factory
-                                .as_ref()
-                                .ok_or_else(|| {
-                                    RunError::unavailable_classified(
-                                        "mcp_credential_refresh_unavailable",
-                                        "MCP credential refresh requires a Coordinator refresh adapter",
-                                    )
-                                })?
-                                .refresher(
+                        .await
+                        .map_err(|error| match error {
+                            awaken_runtime_contract::CredentialMaterialError::Unavailable => {
+                                RunError::unavailable_classified(
+                                    "mcp_material_source_unavailable",
+                                    format!(
+                                        "mcp server `{}` credential material is temporarily unavailable",
+                                        request.name
+                                    ),
+                                )
+                            }
+                            error => RunError::classified(
+                                "mcp_credential_revision_mismatch",
+                                format!(
+                                    "mcp server `{}` credential could not be resolved exactly: {error}",
+                                    request.name
+                                ),
+                            ),
+                        })?
+                        .material
+                        .into_secret()
+                        .map_err(|error| {
+                            RunError::classified(
+                                "mcp_credential_material_kind_mismatch",
+                                error.to_string(),
+                            )
+                        })?;
+                    let refresh = if realization_kind == CredentialRealizationKind::WorkerRelay {
+                        match access.refresh.as_ref() {
+                            Some(refresh) => Some(Box::new(crate::mcp::McpRefreshMaterial(
+                                self.credential_refresh_factory
+                                    .as_ref()
+                                    .ok_or_else(|| {
+                                        RunError::unavailable_classified(
+                                            "mcp_credential_refresh_unavailable",
+                                            "MCP credential refresh requires a Coordinator refresh adapter",
+                                        )
+                                    })?
+                                    .refresher(
+                                        awaken_credential_contract::CredentialSourceId(
+                                            access.credential.id.clone(),
+                                        ),
+                                        refresh.clone(),
+                                    ),
+                            ))),
+                            None => self.credential_refresh_factory.as_ref().map(|factory| {
+                                Box::new(crate::mcp::McpRefreshMaterial(factory.bearer_reloader(
                                     awaken_credential_contract::CredentialSourceId(
                                         access.credential.id.clone(),
                                     ),
-                                    refresh.clone(),
-                                ),
-                        ))),
-                        None => self.credential_refresh_factory.as_ref().map(|factory| {
-                            Box::new(crate::mcp::McpRefreshMaterial(factory.bearer_reloader(
-                                awaken_credential_contract::CredentialSourceId(
-                                    access.credential.id.clone(),
-                                ),
-                                access.credential.revision,
-                            )))
-                        }),
-                    }
-                } else {
-                    None
-                };
-                (Some(bearer), refresh, Some(realization_kind))
+                                    access.credential.revision,
+                                )))
+                            }),
+                        }
+                    } else {
+                        None
+                    };
+                    (Some(bearer), refresh, Some(realization_kind), None)
+                }
             }
             _ => {
                 return Err(RunError::classified(
@@ -364,11 +420,17 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                     args: target.args.clone(),
                 },
                 None => crate::mcp::McpTransportMaterialKind::Http {
-                    url: request
-                        .target
-                        .http_url()
-                        .expect("non-stdio MCP target must be HTTP")
-                        .to_string(),
+                    // A mediated credential points the client at the mediator.
+                    // Reaching upstream is the mediator's business, and the
+                    // client holds nothing it could replay there.
+                    url: match &mediated_route {
+                        Some(route) => route.url.clone(),
+                        None => request
+                            .target
+                            .http_url()
+                            .expect("non-stdio MCP target must be HTTP")
+                            .to_string(),
+                    },
                     bearer,
                     refresh,
                 },
