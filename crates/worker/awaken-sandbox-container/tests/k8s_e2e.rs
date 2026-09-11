@@ -574,7 +574,7 @@ async fn k8s_warm_capacity_reaches_ready_hands_out_and_drains_without_killing_se
     );
 
     environment
-        .dispose()
+        .dispose_unattached()
         .await
         .expect("dispose active Session Pod");
     assert_eq!(
@@ -1653,7 +1653,10 @@ async fn resident_hand_joins_and_caches_across_two_provider_owners_of_one_pod() 
     assert_eq!(count.text().trim(), "1", "H2/H3 E3");
     drop(cached_executor);
 
-    adopted.dispose().await.expect("delete Session Pod");
+    adopted
+        .dispose_unattached()
+        .await
+        .expect("delete Session Pod");
     let unavailable = tokio::time::timeout(Duration::from_secs(20), adopted.open_agent_channel())
         .await
         .expect("H5/E5 channel establishment owns a finite bound");

@@ -145,8 +145,9 @@ async fn run(tier: Tier, can_exec: bool) -> bool {
         visibility: pc::EnvVisibility::Process,
     });
 
+    let (fence, authority) = pc::test_support::fixture_effect("env-injection");
     let sandbox = p
-        .create(&s)
+        .create_for_effect(&s, &fence, &authority)
         .await
         .unwrap_or_else(|e| panic!("{tier:?}: create with env: {e:?}"));
 
@@ -175,7 +176,9 @@ async fn run(tier: Tier, can_exec: bool) -> bool {
     );
     assert_ne!(secret, "broker://k", "{tier:?}: reference never leaks");
 
-    sandbox.dispose().await.unwrap();
+    pc::test_support::dispose_owned_fixture(sandbox.as_ref(), &fence, &authority)
+        .await
+        .expect("fenced disposal");
     true
 }
 
@@ -215,10 +218,13 @@ async fn missing_broker_fails_before_a_workdir_process_starts() {
         },
         visibility: pc::EnvVisibility::Process,
     });
-    let sandbox = p.create(&s).await.unwrap();
+    let (fence, authority) = pc::test_support::fixture_effect("env-injection");
+    let sandbox = p.create_for_effect(&s, &fence, &authority).await.unwrap();
     assert!(sandbox.spawn(sh("exit 0".into())).await.is_err());
     assert!(sandbox.artifacts().await.unwrap().is_empty());
-    sandbox.dispose().await.unwrap();
+    pc::test_support::dispose_owned_fixture(sandbox.as_ref(), &fence, &authority)
+        .await
+        .expect("fenced disposal");
 }
 
 /// The reserved runtime-owned keys are rejected at admission before any provisioning —

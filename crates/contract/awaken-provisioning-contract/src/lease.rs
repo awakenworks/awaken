@@ -12,7 +12,9 @@
 //! pure function over them. The run↔sandbox binding itself lives in the dispatch
 //! aggregate (`Claimed`), never here.
 
-use crate::sandbox::{SandboxHandle, SandboxProvider};
+use crate::sandbox::SandboxHandle;
+#[cfg(test)]
+use crate::sandbox::SandboxProvider;
 
 /// A lease deadline over a realized sandbox — the dead-man switch the owner renews
 /// within `lease_ttl_secs`. `None` is an indefinite lease (dev/trusted).
@@ -254,78 +256,6 @@ pub fn reconcile_adoption(live: &[SandboxHandle], referenced: &[SandboxHandle]) 
         }
     }
     plan
-}
-
-/// The result of actuating an [`AdoptionPlan`] against a provider — the node-agent
-/// restart reconcile step atop the pure [`reconcile_adoption`] planner. Best-effort
-/// and idempotent: a per-handle actuation error lands in `failed` (a later tick
-/// retries) rather than aborting the whole reconcile.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ReconcileOutcome {
-    /// Reconnected sandboxes a live run still references.
-    pub adopted: Vec<SandboxHandle>,
-    /// Sandboxes reaped because nothing referenced them.
-    pub reaped: Vec<SandboxHandle>,
-    /// Referenced-but-dead sandboxes the caller must re-place onto fresh sandboxes.
-    pub orphaned: Vec<SandboxHandle>,
-    /// Handles whose adopt/dispose actuation errored this tick (retried next tick).
-    pub failed: Vec<SandboxHandle>,
-}
-
-/// Actuate a reconciliation plan against `provider`: reconnect (`adopt`) the
-/// sandboxes a run still references, reap (reconnect → `dispose`) the ones nothing
-/// references, and pass orphans through for the caller to re-place. Best-effort per
-/// handle so a single failure never strands the rest of the fleet.
-///
-/// This generic actuator has neither the frozen [`crate::spec::SandboxSpec`] nor
-/// the authoritative [`crate::sandbox::SandboxRestoreRequest`] required to prove
-/// an exact restored target. Handles carrying restoration evidence therefore fail
-/// closed without provider effects. Exact restored adoption/disposal belongs to
-/// the dedicated R1 [`SandboxProvider::restore`] /
-/// [`SandboxProvider::dispose_restored`] port owner; it must not be recreated as a
-/// second cleanup path here.
-pub async fn apply_adoption_plan(
-    provider: &dyn SandboxProvider,
-    plan: &AdoptionPlan,
-) -> ReconcileOutcome {
-    let mut out = ReconcileOutcome {
-        orphaned: plan.orphan.clone(),
-        ..Default::default()
-    };
-    for h in &plan.adopt {
-        if h.restoration().is_some() {
-            out.failed.push(h.clone());
-            continue;
-        }
-        match provider.adopt(h).await {
-            Ok(_reconnected) => out.adopted.push(h.clone()),
-            Err(_) => out.failed.push(h.clone()),
-        }
-    }
-    for h in &plan.reap {
-        if h.restoration().is_some() {
-            out.failed.push(h.clone());
-            continue;
-        }
-        match provider.adopt(h).await {
-            Ok(sandbox) => match sandbox.dispose().await {
-                Ok(()) => out.reaped.push(h.clone()),
-                Err(_) => out.failed.push(h.clone()),
-            },
-            Err(_) => out.failed.push(h.clone()),
-        }
-    }
-    out
-}
-
-/// Reconcile the driver-live set against the referenced set and actuate the plan in
-/// one call — the node-agent restart reconcile entry point.
-pub async fn reconcile_and_apply(
-    provider: &dyn SandboxProvider,
-    live: &[SandboxHandle],
-    referenced: &[SandboxHandle],
-) -> ReconcileOutcome {
-    apply_adoption_plan(provider, &reconcile_adoption(live, referenced)).await
 }
 
 #[cfg(kani)]
@@ -710,6 +640,10 @@ mod actuator_tests {
 
     #[async_trait]
     impl Sandbox for FakeSandbox {
+        async fn dispose_unattached(&self) -> Result<(), SandboxError> {
+            self.dispose().await
+        }
+
         fn id(&self) -> &str {
             &self.id
         }
@@ -740,6 +674,21 @@ mod actuator_tests {
         async fn renew_lease(&self) -> Result<(), SandboxError> {
             Ok(())
         }
+
+        async fn dispose_for_effect(
+            &self,
+            authorization: &crate::SandboxDisposalAuthorization,
+            authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<(), SandboxError> {
+            crate::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))?;
+            self.dispose().await
+        }
+    }
+
+    impl FakeSandbox {
+        // Relocated from the Sandbox/SandboxProvider trait: the unfenced ports
+        // are no longer a trait obligation or a reachable escape hatch. They stay
+        // as this type's own implementation detail, used by its fenced edges.
         async fn dispose(&self) -> Result<(), SandboxError> {
             self.disposes.fetch_add(1, Ordering::SeqCst);
             if self.dispose_fails {
@@ -775,6 +724,32 @@ mod actuator_tests {
                 control_services: Default::default(),
             }
         }
+
+        async fn create_for_effect(
+            &self,
+            spec: &SandboxSpec,
+            effect_fence: &crate::SandboxEffectFence,
+            authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<Box<dyn Sandbox>, SandboxError> {
+            crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+            self.create(spec).await
+        }
+        async fn adopt_for_effect(
+            &self,
+            _spec: &SandboxSpec,
+            handle: &SandboxHandle,
+            effect_fence: &crate::SandboxEffectFence,
+            authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<Box<dyn Sandbox>, SandboxError> {
+            crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+            self.adopt(handle).await
+        }
+    }
+
+    impl FakeProvider {
+        // Relocated from the Sandbox/SandboxProvider trait: the unfenced ports
+        // are no longer a trait obligation or a reachable escape hatch. They stay
+        // as this type's own implementation detail, used by its fenced edges.
         async fn create(&self, _s: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
             Err(SandboxError::new("unused"))
         }
@@ -795,124 +770,11 @@ mod actuator_tests {
         SandboxHandle::new("k8s", id)
     }
 
-    // Actuation rules derived from A1-A3:
-    // X1 adopt target succeeds => adopted; X2 unreferenced adopt+dispose succeeds
-    // => reaped; X3 referenced but absent => orphaned; X4 any provider failure
-    // => failed and independent targets continue. Only X2 invokes dispose.
-    #[tokio::test]
-    async fn reconcile_and_apply_adopts_reaps_and_reports_orphans() {
-        let adopts = Arc::new(AtomicU32::new(0));
-        let disposes = Arc::new(AtomicU32::new(0));
-        let provider = FakeProvider {
-            adopts: adopts.clone(),
-            disposes: disposes.clone(),
-            fail_adopt_ids: Vec::new(),
-            dispose_fails: false,
-        };
-        let live = vec![h("keep"), h("reap")];
-        let referenced = vec![h("keep"), h("gone")];
-
-        let out = reconcile_and_apply(&provider, &live, &referenced).await;
-        assert_eq!(out.adopted, vec![h("keep")]);
-        assert_eq!(out.reaped, vec![h("reap")]);
-        assert_eq!(out.orphaned, vec![h("gone")]);
-        assert!(out.failed.is_empty());
-        // Only the unreferenced sandbox is disposed; adopt runs for both the adopt set
-        // and the reap set (reconnect-to-reap).
-        assert_eq!(disposes.load(Ordering::SeqCst), 1);
-        assert_eq!(adopts.load(Ordering::SeqCst), 2);
-    }
-
-    #[tokio::test]
-    async fn actuation_errors_are_recorded_not_fatal() {
-        let provider = FakeProvider {
-            adopts: Arc::new(AtomicU32::new(0)),
-            disposes: Arc::new(AtomicU32::new(0)),
-            fail_adopt_ids: vec!["keep".into()],
-            dispose_fails: true,
-        };
-        let plan = AdoptionPlan {
-            adopt: vec![h("keep")],
-            reap: vec![h("reap")],
-            orphan: Vec::new(),
-        };
-        let out = apply_adoption_plan(&provider, &plan).await;
-        // `keep` fails to adopt; `reap` adopts then fails to dispose — both land in
-        // `failed`, and neither aborts the other.
-        assert!(out.adopted.is_empty());
-        assert!(out.reaped.is_empty());
-        assert_eq!(out.failed.len(), 2);
-    }
-
-    // Restored-handle actuator decision table:
-    // C1 restoration Some in adopt; C2 restoration Some in reap; C3 ordinary
-    // restoration None follows either. R1 C1/C2 => failed with zero provider
-    // adopt/dispose effects because this generic port lacks the frozen spec and
-    // restore request. R2 C3 => ordinary work still succeeds after either
-    // fail-closed classification, preserving per-handle best effort.
-    #[tokio::test]
-    async fn restored_handles_fail_closed_without_blocking_ordinary_work() {
-        let restored_adopt = super::tests::restored_h("restored-adopt", "effect-adopt");
-        let restored_reap = super::tests::restored_h("restored-reap", "effect-reap");
-        let exact_adopts = Arc::new(AtomicU32::new(0));
-        let exact_disposes = Arc::new(AtomicU32::new(0));
-        let exact_provider = FakeProvider {
-            adopts: exact_adopts.clone(),
-            disposes: exact_disposes.clone(),
-            fail_adopt_ids: Vec::new(),
-            dispose_fails: false,
-        };
-
-        let exact = apply_adoption_plan(
-            &exact_provider,
-            &AdoptionPlan {
-                adopt: vec![restored_adopt.clone()],
-                reap: vec![restored_reap.clone()],
-                orphan: Vec::new(),
-            },
-        )
-        .await;
-        assert_eq!(
-            exact.failed,
-            vec![restored_adopt.clone(), restored_reap.clone()]
-        );
-        assert!(exact.adopted.is_empty());
-        assert!(exact.reaped.is_empty());
-        assert_eq!(exact_adopts.load(Ordering::SeqCst), 0, "R1 adopt");
-        assert_eq!(exact_disposes.load(Ordering::SeqCst), 0, "R1 dispose");
-
-        let ordinary = h("ordinary");
-        let mixed_adopts = Arc::new(AtomicU32::new(0));
-        let mixed_disposes = Arc::new(AtomicU32::new(0));
-        let mixed_provider = FakeProvider {
-            adopts: mixed_adopts.clone(),
-            disposes: mixed_disposes.clone(),
-            fail_adopt_ids: Vec::new(),
-            dispose_fails: false,
-        };
-        let mixed = apply_adoption_plan(
-            &mixed_provider,
-            &AdoptionPlan {
-                adopt: vec![restored_adopt.clone(), ordinary.clone()],
-                reap: vec![restored_reap.clone()],
-                orphan: Vec::new(),
-            },
-        )
-        .await;
-        assert_eq!(mixed.adopted, vec![ordinary], "R2");
-        assert_eq!(mixed.failed, vec![restored_adopt, restored_reap], "R2");
-        assert_eq!(mixed_adopts.load(Ordering::SeqCst), 1, "ordinary only");
-        assert_eq!(
-            mixed_disposes.load(Ordering::SeqCst),
-            0,
-            "restored reap skipped"
-        );
-    }
-
+    // The generic adoption actuator is gone: it drove `dispose` with no current
+    // authority at all. This fixture keeps proving the fake is a well-formed
+    // `Sandbox`/`SandboxProvider`, which is what the surviving planner assumes.
     #[tokio::test]
     async fn fixtures_conform_to_the_sandbox_ports() {
-        // The actuator only drives adopt/dispose; assert the fake is otherwise a
-        // well-formed `Sandbox`/`SandboxProvider` so what it *does* drive is sound.
         let provider = FakeProvider {
             adopts: Arc::new(AtomicU32::new(0)),
             disposes: Arc::new(AtomicU32::new(0)),

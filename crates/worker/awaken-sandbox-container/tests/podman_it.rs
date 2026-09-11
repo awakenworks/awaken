@@ -257,7 +257,7 @@ async fn podman_materializes_inline_content_through_the_provider() {
             None => tokio::time::sleep(Duration::from_millis(100)).await,
         }
     }
-    let _ = sandbox.dispose().await;
+    let _ = sandbox.dispose_unattached().await;
     assert_eq!(
         code,
         Some(0),
@@ -320,7 +320,10 @@ async fn podman_separates_container_environment_from_cli_environment() {
         .container_id
         .clone();
     process_lifecycle::verify_wait_cancellation_and_signal(rt.as_ref(), &container_id).await;
-    sandbox.dispose().await.expect("dispose environment");
+    sandbox
+        .dispose_unattached()
+        .await
+        .expect("dispose environment");
     assert_eq!(status.code, Some(0), "R3: E1-E4 must hold");
 }
 
@@ -397,6 +400,6 @@ async fn podman_rotates_and_persists_a_native_credential_file() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
     assert_eq!(broker.0.lock().unwrap().as_slice(), refreshed);
 }

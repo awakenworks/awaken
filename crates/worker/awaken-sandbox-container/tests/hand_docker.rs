@@ -142,7 +142,7 @@ async fn a_hand_in_a_network_denied_container_is_reached_over_a_unix_rendezvous(
         .await
         .expect("hand exit is bounded")
         .expect("hand exit");
-    sandbox.dispose().await.expect("dispose");
+    sandbox.dispose_unattached().await.expect("dispose");
     let _ = std::fs::remove_dir_all(&rv);
 
     assert!(

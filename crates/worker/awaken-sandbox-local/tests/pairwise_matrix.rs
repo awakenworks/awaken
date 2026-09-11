@@ -71,6 +71,46 @@ use Res::{File as ResFile, Memory as ResMemory, None as ResNone, Secret as ResSe
 use Shape::{OpaqueAgent, Process};
 use Tier::{Namespace, Workdir};
 
+/// This matrix provisions environments that no Session owns: it varies tier ×
+/// resource × shape × network and asserts realization, never session ownership.
+/// The production ports deliberately expose only the fenced obligations, so the
+/// matrix reaches the providers' own unowned provisioning through this local
+/// trait rather than pretending to hold an aggregate effect.
+#[async_trait::async_trait]
+trait UnownedProvisioning: Send + Sync {
+    fn capabilities(&self) -> pc::SandboxCapabilities;
+    async fn create_unowned(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError>;
+}
+
+#[async_trait::async_trait]
+impl UnownedProvisioning for LocalProvider {
+    fn capabilities(&self) -> pc::SandboxCapabilities {
+        pc::SandboxProvider::capabilities(self)
+    }
+    async fn create_unowned(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+        self.create(spec).await
+    }
+}
+
+#[async_trait::async_trait]
+impl UnownedProvisioning for NamespaceProvider {
+    fn capabilities(&self) -> pc::SandboxCapabilities {
+        pc::SandboxProvider::capabilities(self)
+    }
+    async fn create_unowned(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+        self.create(spec).await
+    }
+}
+
 /// The pairwise covering array. Every feasible (tier,res)/(tier,shape)/(res,shape) pair
 /// appears at least once (asserted by [`pairwise_coverage_is_complete`]); the single
 /// infeasible pair `(Workdir, OpaqueAgent)` is the negative row at the end.
@@ -204,7 +244,7 @@ async fn build(
     base: &std::path::Path,
 ) -> (
     pc::SandboxSpec,
-    Box<dyn pc::SandboxProvider>,
+    Box<dyn UnownedProvisioning>,
     Option<Arc<VolatileMemoryRepository>>,
 ) {
     let mount_path = "/data/in.txt";
@@ -292,7 +332,7 @@ async fn build(
     // A file store seeded with the File resource bytes.
     let file_bytes = SEED.as_bytes().to_vec();
 
-    let provider: Box<dyn pc::SandboxProvider> = match case.tier {
+    let provider: Box<dyn UnownedProvisioning> = match case.tier {
         Tier::Workdir => {
             let mut p = LocalProvider::new(base).with_blob("f", file_bytes);
             if matches!(case.res, Res::Secret) {
@@ -339,7 +379,7 @@ async fn run_case(case: &Case, can_exec: bool) -> bool {
         .unwrap_or_else(|e| panic!("{label}: spec should fit its tier: {e:?}"));
 
     let sandbox = provider
-        .create(&spec)
+        .create_unowned(&spec)
         .await
         .unwrap_or_else(|e| panic!("{label}: create: {e:?}"));
 
@@ -380,7 +420,7 @@ async fn run_case(case: &Case, can_exec: bool) -> bool {
 
     // ── Teardown + post-dispose assertions. ───────────────────────────────────────
     sandbox
-        .dispose()
+        .dispose_unattached()
         .await
         .unwrap_or_else(|e| panic!("{label}: dispose: {e:?}"));
     assert!(

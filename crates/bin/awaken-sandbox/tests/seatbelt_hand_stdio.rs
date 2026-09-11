@@ -125,5 +125,8 @@ async fn seatbelt_hand_reads_the_session_mount_when_the_host_mnt_exists() {
     drop(executor);
     let _ = process.signal(pc::Signal::Term).await;
     let _ = process.wait().await;
-    sandbox.dispose().await.expect("dispose namespace");
+    sandbox
+        .dispose_unattached()
+        .await
+        .expect("dispose namespace");
 }

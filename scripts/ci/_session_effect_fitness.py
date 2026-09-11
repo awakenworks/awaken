@@ -919,12 +919,68 @@ def repository_publication_writer_violations(sources: dict[str, str]) -> list[st
     return errors
 
 
+
+SANDBOX_PORTS = "crates/contract/awaken-provisioning-contract/src/sandbox/runtime.rs"
+
+
+def sandbox_port_obligation_violations(sources: dict[str, str]) -> list[str]:
+    """The Sandbox ports must keep the fenced edges mandatory and the unfenced
+    ones absent.
+
+    The compiler already enforces this for anyone implementing or calling the
+    traits; this guard exists for the one thing the compiler cannot see — a
+    future edit that re-adds an unfenced port, or gives a fenced obligation a
+    default body so a provider can silently inherit it again. That inversion is
+    exactly how an unfenced `dispose` survived five separate 'revalidate current
+    authority' fixes in the Session environment lifecycle.
+    """
+    errors: list[str] = []
+    ports = sources.get(SANDBOX_PORTS, "")
+    if not ports:
+        return [f"{SANDBOX_PORTS}: sandbox port definitions are missing"]
+
+    for obligation in (
+        "async fn create_for_effect(",
+        "async fn adopt_for_effect(",
+        "async fn dispose_for_effect(",
+        "async fn dispose_unattached(",
+    ):
+        start = ports.find(obligation)
+        if start < 0:
+            errors.append(f"{SANDBOX_PORTS}: missing required obligation {obligation!r}")
+            continue
+        terminator = ports.find(";", start)
+        body = ports.find("{", start)
+        if body != -1 and (terminator == -1 or body < terminator):
+            errors.append(
+                f"{SANDBOX_PORTS}: {obligation!r} has a default body; a provider that cannot "
+                "honour it must fail to compile, not inherit one"
+            )
+
+    for unfenced in (
+        "async fn create(&self",
+        "async fn adopt(&self",
+        "async fn dispose(&self",
+    ):
+        if unfenced in ports:
+            errors.append(
+                f"{SANDBOX_PORTS}: unfenced port {unfenced!r} is back on the trait; a physical "
+                "effect reachable through the port has no current-authority admission"
+            )
+    return errors
+
+
 def check_all(repo_root: Path) -> list[str]:
     sources = {
         relative: (repo_root / relative).read_text(encoding="utf-8")
         for relative in REQUIRED
     }
     errors = session_effect_violations(sources)
+    errors.extend(
+        sandbox_port_obligation_violations(
+            {SANDBOX_PORTS: (repo_root / SANDBOX_PORTS).read_text(encoding="utf-8")}
+        )
+    )
     rust_sources = {
         path.relative_to(repo_root).as_posix(): path.read_text(encoding="utf-8")
         for path in (repo_root / "crates").rglob("*.rs")

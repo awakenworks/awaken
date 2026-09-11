@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
 use awaken_provisioning_contract as pc;
-use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_local::LocalProvider;
 use awaken_sandbox_memoryd::MemoryStoreMounter;
 
@@ -128,7 +127,7 @@ async fn memory_store_mount_realizes_and_persists_an_edit() {
 
     // An agent edits the file; dispose unmounts (FUSE write-through) / harvests (copy).
     std::fs::write(&note, "v2").unwrap();
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
 
     assert_eq!(
         fs.get_by_path("s", "/note.md")

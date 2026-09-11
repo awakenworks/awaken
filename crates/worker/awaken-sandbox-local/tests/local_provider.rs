@@ -567,12 +567,12 @@ async fn dispose_removes_the_environment() {
         sandbox.status().await.unwrap(),
         pc::SandboxStatus::Ready
     ));
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
     assert!(matches!(
         sandbox.status().await.unwrap(),
         pc::SandboxStatus::Terminated
     ));
-    sandbox.dispose().await.unwrap(); // idempotent
+    sandbox.dispose_unattached().await.unwrap(); // idempotent
 }
 
 #[tokio::test]
@@ -589,7 +589,7 @@ async fn disposed_handle_is_observed_as_absent_and_cannot_be_adopted() {
     let provider = LocalProvider::new(tmp.path());
     let sandbox = provider.create(&spec("t-stale")).await.unwrap();
     let handle = sandbox.handle();
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
 
     assert!(matches!(
         provider.observe(&handle).await.unwrap(),

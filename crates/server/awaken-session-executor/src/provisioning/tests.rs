@@ -1218,6 +1218,10 @@ impl SandboxControlServicePublisher for BatchArtifactContainer {
 
 #[async_trait::async_trait]
 impl pc::Sandbox for BatchArtifactContainer {
+    async fn dispose_unattached(&self) -> Result<(), pc::SandboxError> {
+        self.dispose().await
+    }
+
     fn id(&self) -> &str {
         &self.handle.sandbox_id
     }
@@ -1277,6 +1281,20 @@ impl pc::Sandbox for BatchArtifactContainer {
         Ok(())
     }
 
+    async fn dispose_for_effect(
+        &self,
+        authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<(), pc::SandboxError> {
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))?;
+        self.dispose().await
+    }
+}
+
+impl BatchArtifactContainer {
+    // Relocated from the Sandbox/SandboxProvider trait: the unfenced ports
+    // are no longer a trait obligation or a reachable escape hatch. They stay
+    // as this type's own implementation detail, used by its fenced edges.
     async fn dispose(&self) -> Result<(), pc::SandboxError> {
         Ok(())
     }
