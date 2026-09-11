@@ -117,7 +117,15 @@ mod tests {
         async fn dispose(&self) -> Result<(), SandboxError> {
             Ok(())
         }
-    }
+            async fn dispose_for_effect(
+            &self,
+            authorization: &crate::SandboxDisposalAuthorization,
+            authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<(), SandboxError> {
+            crate::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))?;
+            self.dispose().await
+        }
+}
 
     struct FakeProvider {
         renews: Arc<AtomicU32>,
@@ -153,7 +161,26 @@ mod tests {
                 renews: self.renews.clone(),
             }))
         }
-    }
+            async fn create_for_effect(
+            &self,
+            spec: &SandboxSpec,
+            effect_fence: &crate::SandboxEffectFence,
+            authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<Box<dyn Sandbox>, SandboxError> {
+            crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+            self.create(spec).await
+        }
+        async fn adopt_for_effect(
+            &self,
+            _spec: &SandboxSpec,
+            handle: &SandboxHandle,
+            effect_fence: &crate::SandboxEffectFence,
+            authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<Box<dyn Sandbox>, SandboxError> {
+            crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+            self.adopt(handle).await
+        }
+}
 
     fn spec() -> SandboxSpec {
         SandboxSpec {
@@ -383,7 +410,26 @@ mod tests {
                 renews: Arc::new(AtomicU32::new(0)),
             }))
         }
-    }
+            async fn create_for_effect(
+            &self,
+            spec: &SandboxSpec,
+            effect_fence: &crate::SandboxEffectFence,
+            authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<Box<dyn Sandbox>, SandboxError> {
+            crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+            self.create(spec).await
+        }
+        async fn adopt_for_effect(
+            &self,
+            _spec: &SandboxSpec,
+            handle: &SandboxHandle,
+            effect_fence: &crate::SandboxEffectFence,
+            authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<Box<dyn Sandbox>, SandboxError> {
+            crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+            self.adopt(handle).await
+        }
+}
 
     #[tokio::test]
     async fn select_provider_picks_the_first_capable_and_ready_backend() {

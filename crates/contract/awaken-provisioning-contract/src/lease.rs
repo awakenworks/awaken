@@ -748,7 +748,15 @@ mod actuator_tests {
                 Ok(())
             }
         }
-    }
+            async fn dispose_for_effect(
+            &self,
+            authorization: &crate::SandboxDisposalAuthorization,
+            authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<(), SandboxError> {
+            crate::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))?;
+            self.dispose().await
+        }
+}
 
     struct FakeProvider {
         adopts: Arc<AtomicU32>,
@@ -789,7 +797,26 @@ mod actuator_tests {
                 disposes: self.disposes.clone(),
             }))
         }
-    }
+            async fn create_for_effect(
+            &self,
+            spec: &SandboxSpec,
+            effect_fence: &crate::SandboxEffectFence,
+            authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<Box<dyn Sandbox>, SandboxError> {
+            crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+            self.create(spec).await
+        }
+        async fn adopt_for_effect(
+            &self,
+            _spec: &SandboxSpec,
+            handle: &SandboxHandle,
+            effect_fence: &crate::SandboxEffectFence,
+            authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<Box<dyn Sandbox>, SandboxError> {
+            crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+            self.adopt(handle).await
+        }
+}
 
     fn h(id: &str) -> SandboxHandle {
         SandboxHandle::new("k8s", id)

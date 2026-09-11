@@ -1303,24 +1303,31 @@ pub trait SandboxProvider: Send + Sync {
 
     /// Realize a validated spec into a live sandbox (bind mounts, apply ro/env/
     /// network/limits). Callers should validate first via `prepare_environment`.
-    async fn create(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError>;
+    /// Unfenced realization, for callers that own no aggregate effect at all
+    /// (one-shot local tooling). Durable Session work must never reach here.
+    /// The default refuses: a provider opts in to the unfenced edge explicitly,
+    /// which inverts the previous obligation where this was the only mandatory
+    /// creation port and the fenced edge was the optional one.
+    async fn create(&self, _spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
+        Err(SandboxError::new(
+            "sandbox provider does not offer unfenced creation",
+        ))
+    }
 
     /// Realize one Sandbox only after validating the aggregate-owned physical
     /// effect fence against the original captured current authority. Re-enter
     /// that authority after asynchronous preparation and before publishing its
     /// result; a durable fence or cached receipt alone is not a live grant.
-    /// Durable Session creation/rebuild must use this edge; the
-    /// legacy method remains available only to explicitly unfenced callers.
+    ///
+    /// This is the provider's creation obligation. It carries no default: a
+    /// provider that cannot fence creation must fail to compile rather than
+    /// inherit a body, and [`Self::create`] is the opt-in unfenced escape.
     async fn create_for_effect(
         &self,
-        _spec: &SandboxSpec,
-        _effect_fence: &SandboxEffectFence,
-        _authority: &dyn crate::CurrentExecutionAuthority,
-    ) -> Result<Box<dyn Sandbox>, SandboxError> {
-        Err(SandboxError::new(
-            "sandbox provider does not implement fenced creation",
-        ))
-    }
+        spec: &SandboxSpec,
+        effect_fence: &SandboxEffectFence,
+        authority: &dyn crate::CurrentExecutionAuthority,
+    ) -> Result<Box<dyn Sandbox>, SandboxError>;
 
     /// Observe one exact durable handle without renewing, mounting, deleting,
     /// or otherwise adopting it. Out-of-tree providers fail closed until they
@@ -1351,24 +1358,28 @@ pub trait SandboxProvider: Send + Sync {
     /// — the recovery path after a host restart, and the takeover path across
     /// hosts. For a local backend this re-opens the directory; for a remote one it
     /// rebuilds a client against the still-running pod/container.
-    async fn adopt(&self, handle: &SandboxHandle) -> Result<Box<dyn Sandbox>, SandboxError>;
+    /// Unfenced adoption, for callers that own no aggregate effect. The default
+    /// refuses; providers opt in explicitly.
+    async fn adopt(&self, _handle: &SandboxHandle) -> Result<Box<dyn Sandbox>, SandboxError> {
+        Err(SandboxError::new(
+            "sandbox provider does not offer unfenced adoption",
+        ))
+    }
 
     /// Adopt only after revalidating the exact aggregate-owned effect fence.
     /// The legacy port remains available for explicitly unfenced callers; a
     /// durable Session must use this fail-closed edge. Re-enter the supplied
     /// current authority after waits and before subsequent effects or success;
     /// the durable fence alone is not a process-local clock or admission proof.
+    /// This is the provider's adoption obligation and carries no default, so a
+    /// provider that cannot fence adoption fails to compile.
     async fn adopt_for_effect(
         &self,
-        _spec: &SandboxSpec,
-        _handle: &SandboxHandle,
-        _effect_fence: &SandboxEffectFence,
-        _authority: &dyn crate::CurrentExecutionAuthority,
-    ) -> Result<Box<dyn Sandbox>, SandboxError> {
-        Err(SandboxError::new(
-            "sandbox provider does not implement fenced adoption",
-        ))
-    }
+        spec: &SandboxSpec,
+        handle: &SandboxHandle,
+        effect_fence: &SandboxEffectFence,
+        authority: &dyn crate::CurrentExecutionAuthority,
+    ) -> Result<Box<dyn Sandbox>, SandboxError>;
 
     /// Reconstruct the same Sandbox lifecycle owner solely to finish an exact
     /// terminal physical realization. Unlike ordinary adoption this must not
@@ -1539,7 +1550,13 @@ pub trait Sandbox: Send + Sync {
     async fn renew_lease(&self) -> Result<(), SandboxError>;
 
     /// Tear down the environment. Idempotent; `Durable` mounts persist.
-    async fn dispose(&self) -> Result<(), SandboxError>;
+    /// Unfenced teardown, for environments owned by no aggregate effect. The
+    /// default refuses; implementations opt in explicitly.
+    async fn dispose(&self) -> Result<(), SandboxError> {
+        Err(SandboxError::new(
+            "sandbox does not offer unfenced disposal",
+        ))
+    }
 
     /// Confirm that the Host completed every copy-backed Memory obligation for
     /// this aggregate effect and supplied the provider's exact complete ordered
@@ -1591,15 +1608,13 @@ pub trait Sandbox: Send + Sync {
     /// Re-enter after waits and hold the guard through synchronous destructive
     /// effects; the preparation receipt is not a grant across later I/O.
     /// Backend commit fencing remains the resource adapter's responsibility.
+    /// This is the Sandbox's destructive obligation and carries no default, so
+    /// an environment that cannot fence teardown fails to compile.
     async fn dispose_for_effect(
         &self,
-        _authorization: &SandboxDisposalAuthorization,
-        _authority: &dyn crate::CurrentExecutionAuthority,
-    ) -> Result<(), SandboxError> {
-        Err(SandboxError::new(
-            "sandbox does not implement fenced disposal",
-        ))
-    }
+        authorization: &SandboxDisposalAuthorization,
+        authority: &dyn crate::CurrentExecutionAuthority,
+    ) -> Result<(), SandboxError>;
 }
 
 /// A handle to a process launched by [`Sandbox::spawn`]. Lifecycle only — piped
