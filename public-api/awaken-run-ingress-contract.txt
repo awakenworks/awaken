@@ -19,6 +19,7 @@ pub use awaken_run_ingress_contract::PlacementPolicy
 pub use awaken_run_ingress_contract::PlacementRequirements
 pub use awaken_run_ingress_contract::REPOSITORY_CREDENTIALS_CAPABILITY
 pub use awaken_run_ingress_contract::RankedWorker
+pub use awaken_run_ingress_contract::RegisteredCapacity
 pub use awaken_run_ingress_contract::RegisteredWorker
 pub use awaken_run_ingress_contract::RegistryError
 pub use awaken_run_ingress_contract::RegistryMutation
