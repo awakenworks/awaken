@@ -423,16 +423,16 @@ obligation when the development host is Linux.
   retry/loss/stale-fence behavior of the one process-local completion projection
   before its next ordinary Thread commit.
   The supervisor remains a driver, not a second durable task or result store.
-- `SandboxControlPublication.tla` covers the provider-neutral control-channel
-  publication slot shared by local Namespace and container sandboxes: one live
-  owner identity, stale-release fencing, finite identity exhaustion without
-  wraparound, absorbing close, and a retained task participant across two
-  concurrent/cancelled/retried disposers. Setup and serving share task admission;
-  Drop cannot release before join and completion cannot forget pending cleanup.
-  Conditional liveness assumes eventual task exit and fair retry/completion;
-  seven semantic mutants and four reachability witnesses guard this model in
-  the strict gate. Provider sockets, Kubernetes Pods, Rust/Tokio refinement,
-  process lifetime, and kernel isolation remain executable or environmental evidence.
+- `SandboxControlPublication.tla` covers retained setup/serving cleanup across
+  concurrent, cancelled and retried disposers. The shared production slot is
+  checked directly without a mirror: its actual Mutex/Arc methods admit one live
+  owner, fence stale and foreign releases, never reuse a still-live allocation,
+  close absorbingly, retain cleanup across retries and finish it once. Native
+  tables cover poison recovery and join-before-cleanup; seven mutants and four
+  reachability witnesses guard the finite model. Conditional liveness still
+  assumes eventual task exit and fair retry/completion. Mutex scheduling, Tokio
+  progress, provider sockets/processes, Kubernetes Pods and kernel isolation
+  remain executable or environmental evidence rather than direct proof.
 - `EvalEvidence.tla` covers only deterministic evaluation evidence handling:
   frozen dataset version, exactly-one observation validity, complete case
   classification before publication, and post-publication immutability.
