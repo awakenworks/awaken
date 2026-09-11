@@ -239,7 +239,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                     .read()
                     .expect("container secret broker lock poisoned")
                     .clone(),
-                staging.guard,
+                staging.guard.take(),
             )),
         })
     }

@@ -700,6 +700,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 content_hash: None,
             })
             .collect();
+        let parts = staging.into_parts()?;
         Ok(ContainerSandbox {
             retained_attempt: Some(create_attempt),
             runtime: self.runtime.clone(),
@@ -732,10 +733,10 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             realized,
             recovered: already_active,
             lifecycle: Arc::new(ContainerCleanupState {
-                staging: std::sync::Mutex::new(staging.guard),
-                secret_writebacks: staging.secret_writebacks,
+                staging: std::sync::Mutex::new(parts.guard),
+                secret_writebacks: parts.secret_writebacks,
                 secret_broker,
-                memory: tokio::sync::Mutex::new((!already_active).then_some(staging.memory)),
+                memory: tokio::sync::Mutex::new((!already_active).then_some(parts.memory)),
                 memory_reconciliation_ack: pc::MemoryReconciliationAck::default(),
                 writeback_done: tokio::sync::Mutex::new(false),
                 remove_done: tokio::sync::Mutex::new(false),
