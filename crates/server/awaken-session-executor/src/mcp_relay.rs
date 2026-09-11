@@ -1,4 +1,4 @@
-//! Host-side loopback MCP relay — the α-reference resolver.
+//! Host-side MCP relay — the α-reference resolver.
 //!
 //! A sandboxed ACP agent's MCP client must authenticate to a real HTTP MCP server (e.g. the
 //! GitHub MCP) without the raw token ever entering the sandbox. Instead of handing the CLI
@@ -8,7 +8,9 @@
 //! holds the host-side bearer from private exact-generation transport material,
 //! looks it up by `(session, attachment, generation)`, strips any workload-supplied `Authorization`,
 //! injects the real bearer, and forwards to the real server — so the credential is resolved
-//! **out of the sandbox's address space** (the sandbox only reaches loopback over shared-net).
+//! **out of the sandbox's address space**. Local sandboxes use Worker loopback;
+//! an isolated container may use an operator-configured relay origin reachable
+//! only through its separately attested network boundary.
 //!
 //! Admission requires provider-enforced substitution plus a no-bypass network boundary;
 //! loopback reachability alone is never custody evidence. The request body is buffered;
@@ -16,8 +18,12 @@
 //! `text/event-stream` reply is forwarded live rather than stalled.
 
 use std::collections::HashMap;
+#[cfg(test)]
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 use axum::body::Body;
 use axum::extract::{Path, Request, State};
@@ -68,9 +74,20 @@ impl RelayState {
 #[derive(Clone)]
 pub(crate) struct McpRelay {
     routes: Routes,
-    addr: SocketAddr,
+    advertised_origin: String,
+    alive: Arc<AtomicBool>,
     #[cfg(test)]
     state: RelayState,
+    #[cfg(test)]
+    server_abort: tokio::task::AbortHandle,
+}
+
+struct RelayLiveGuard(Arc<AtomicBool>);
+
+impl Drop for RelayLiveGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 impl McpRelay {
@@ -78,32 +95,75 @@ impl McpRelay {
     pub(crate) async fn for_host(
         host: std::sync::Weak<crate::SharedHost>,
     ) -> std::io::Result<Self> {
-        Self::start_with_authority(Arc::new(move |generation, _now| {
-            host.upgrade().is_some_and(|host| {
-                host.mcp_generation_root_authority(generation)
-                    .unwrap_or(false)
-            })
-        }))
+        let exposure = host
+            .upgrade()
+            .ok_or_else(|| std::io::Error::other("MCP relay Host authority is unavailable"))?
+            .deployment
+            .sandbox
+            .container_mcp_relay
+            .clone();
+        Self::start_with_authority_and_exposure(
+            Arc::new(move |generation, _now| {
+                host.upgrade().is_some_and(|host| {
+                    host.mcp_generation_root_authority(generation)
+                        .unwrap_or(false)
+                })
+            }),
+            exposure.as_ref(),
+        )
         .await
+    }
+
+    pub(crate) fn matches_exposure(&self, exposure: &crate::ContainerMcpRelayExposure) -> bool {
+        self.advertised_origin == exposure.advertised_origin().as_str().trim_end_matches('/')
+    }
+
+    pub(crate) fn is_live(&self) -> bool {
+        self.alive.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn abort_for_test(&self) {
+        self.server_abort.abort();
     }
 
     /// Protocol-only fixtures have no Session application. Production always
     /// uses for_host and the existing root-lease decision, never a route clock.
     #[cfg(test)]
     pub(crate) async fn start() -> std::io::Result<Self> {
-        Self::start_with_authority(Arc::new(|generation, now| {
-            awaken_session_contract::realization_lease_is_live_at(
-                generation.lease_expires_at_unix_ms,
-                now,
-            )
-        }))
+        Self::start_with_authority_and_exposure(
+            Arc::new(|generation, now| {
+                awaken_session_contract::realization_lease_is_live_at(
+                    generation.lease_expires_at_unix_ms,
+                    now,
+                )
+            }),
+            None,
+        )
         .await
     }
 
-    async fn start_with_authority(authority: GenerationAuthority) -> std::io::Result<Self> {
+    async fn start_with_authority_and_exposure(
+        authority: GenerationAuthority,
+        exposure: Option<&crate::ContainerMcpRelayExposure>,
+    ) -> std::io::Result<Self> {
         let routes: Routes = Arc::new(Mutex::new(HashMap::new()));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let bind = exposure.map_or_else(
+            || "127.0.0.1:0".parse().expect("literal MCP relay address"),
+            crate::ContainerMcpRelayExposure::bind,
+        );
+        let listener = tokio::net::TcpListener::bind(bind).await?;
         let addr = listener.local_addr()?;
+        let advertised_origin = exposure.map_or_else(
+            || format!("http://{addr}"),
+            |exposure| {
+                exposure
+                    .advertised_origin()
+                    .as_str()
+                    .trim_end_matches('/')
+                    .to_owned()
+            },
+        );
         let state = RelayState {
             routes: routes.clone(),
             authority,
@@ -114,14 +174,22 @@ impl McpRelay {
                 axum::routing::any(forward),
             )
             .with_state(state.clone());
-        tokio::spawn(async move {
+        let alive = Arc::new(AtomicBool::new(true));
+        let live_guard = RelayLiveGuard(alive.clone());
+        let server = tokio::spawn(async move {
+            let _live_guard = live_guard;
             let _ = axum::serve(listener, app).await;
         });
+        #[cfg(not(test))]
+        drop(server);
         Ok(Self {
             routes,
-            addr,
+            advertised_origin,
+            alive,
             #[cfg(test)]
             state,
+            #[cfg(test)]
+            server_abort: server.abort_handle(),
         })
     }
 
@@ -234,13 +302,33 @@ impl McpRelay {
             .capability
             .clone();
         Some(format!(
-            "http://{}/{}/{}/{}/{}",
-            self.addr,
+            "{}/{}/{}/{}/{}",
+            self.advertised_origin,
             generation.session_id,
             generation.attachment_id.0,
             generation.generation.0,
             capability
         ))
+    }
+}
+
+impl crate::SharedHost {
+    /// Bind the configured external relay before a Worker can publish Ready.
+    /// The endpoint is still only a transport prerequisite: provider-owned
+    /// substitution and no-bypass evidence remain independent admission facts.
+    pub async fn prepare_container_mcp_relay(self: &Arc<Self>) -> Result<(), std::io::Error> {
+        if self.deployment.sandbox.container_mcp_relay.is_none() {
+            return Ok(());
+        }
+        self.mcp_relay
+            .get_or_try_init(|| McpRelay::for_host(Arc::downgrade(self)))
+            .await?;
+        if !self.mcp_relay.get().is_some_and(McpRelay::is_live) {
+            return Err(std::io::Error::other(
+                "container MCP relay transport exited during startup",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -478,6 +566,63 @@ mod tests {
             let _ = axum::serve(listener, app).await;
         });
         addr
+    }
+
+    #[tokio::test]
+    async fn external_exposure_binds_exactly_and_preserves_default_loopback() {
+        // Cause/effect table: R1 no external exposure + route => the sole relay
+        // keeps its default loopback origin. R2 validated external bind/origin +
+        // route => the listener owns that Worker port and the Sandbox sees only
+        // the advertised origin plus its opaque capability. Neither rule
+        // projects the bind coordinate or credential material.
+        let default = McpRelay::start().await.unwrap();
+        let default_generation = generation("session-default", "docs", 2);
+        default.set_route(
+            &default_generation,
+            &http_material(
+                "docs",
+                "http://upstream.example.test/mcp",
+                Some("secret".into()),
+            ),
+        );
+        let default_route = default.route_url(&default_generation).unwrap();
+        assert!(
+            default_route.starts_with("http://127.0.0.1:"),
+            "R1 default remains loopback: {default_route}"
+        );
+
+        let reservation = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = reservation.local_addr().unwrap().port();
+        drop(reservation);
+        let exposure = crate::ContainerMcpRelayExposure::new(
+            format!("0.0.0.0:{port}").parse().unwrap(),
+            "http://awaken-worker.awaken-cloud.svc:8081",
+        )
+        .unwrap();
+        let relay =
+            McpRelay::start_with_authority_and_exposure(Arc::new(|_, _| true), Some(&exposure))
+                .await
+                .unwrap();
+        let generation = generation("session-external", "docs", 3);
+        relay.set_route(
+            &generation,
+            &http_material(
+                "docs",
+                "http://upstream.example.test/mcp",
+                Some("secret".into()),
+            ),
+        );
+        let route = relay.route_url(&generation).unwrap();
+        assert!(
+            route.starts_with("http://awaken-worker.awaken-cloud.svc:8081/"),
+            "R2 {route}"
+        );
+        assert!(!route.contains("0.0.0.0"), "R2 bind is private");
+        assert!(!route.contains("secret"), "R2 material is private");
+        assert!(
+            std::net::TcpListener::bind(("0.0.0.0", port)).is_err(),
+            "R2 exact port is owned by the running relay"
+        );
     }
 
     #[tokio::test]
@@ -1183,8 +1328,8 @@ mod tests {
     async fn relay_fails_closed_on_an_unknown_route() {
         let relay = McpRelay::start().await.unwrap();
         let unknown = format!(
-            "http://{}/t-unknown/mcp-nope/1/not-a-route-capability",
-            relay.addr
+            "{}/t-unknown/mcp-nope/1/not-a-route-capability",
+            relay.advertised_origin
         );
         let status = reqwest::Client::new()
             .post(unknown)

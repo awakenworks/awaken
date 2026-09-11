@@ -1306,6 +1306,11 @@ impl WorkerNode {
 
         let authority = Arc::new(lifecycle::WorkerAuthorityProof::default());
         let host = Arc::new(host.with_execution_authority(authority.clone()));
+        host.prepare_container_mcp_relay().await.map_err(|error| {
+            std::io::Error::other(format!(
+                "container MCP relay transport failed before Ready: {error}"
+            ))
+        })?;
         let acp_capability_observation_source = match self.acp_capability_observation_source {
             Some(source) => Some(source),
             None => configured_container_acp_capability_source(&deployment, host.clone())

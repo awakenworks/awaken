@@ -144,9 +144,9 @@ pub use crate::config::{
     platform_plugin_capabilities_with_web_search,
 };
 pub use crate::deployment_config::{
-    AcpWorkerProfile, ContainerHandResidency, ContentCaptureSettings, ContentRedaction,
-    DeploymentConfig, DispatchBackend, PackageImageBuilder, SandboxSettings, SandboxTier,
-    StoreKind, Wake, default_postgres_max_connections,
+    AcpWorkerProfile, ContainerHandResidency, ContainerMcpRelayExposure, ContentCaptureSettings,
+    ContentRedaction, DeploymentConfig, DispatchBackend, PackageImageBuilder, SandboxSettings,
+    SandboxTier, StoreKind, Wake, default_postgres_max_connections,
 };
 // The model-route seam (R1/R2/R5): a process startup supplies its own
 // `InferenceExecutorMaterializer` to map a session's model ref to a labeled executor.

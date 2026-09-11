@@ -194,6 +194,47 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                             "authenticated ACP MCP requires provider-enforced secret substitution and no-bypass networking before Worker relay materialization",
                         ));
                     }
+                    if let Some(exposure) =
+                        self.host.deployment.sandbox.container_mcp_relay.as_ref()
+                    {
+                        let upstream_host = request
+                            .target
+                            .http_url()
+                            .and_then(|url| awaken_session_contract::McpTarget::identity(url).ok())
+                            .map(|identity| identity.host)
+                            .ok_or_else(|| {
+                                RunError::classified(
+                                    "mcp_relay_target_invalid",
+                                    "Worker relay requires one canonical HTTP MCP target",
+                                )
+                            })?;
+                        let network = self
+                            .host
+                            .session_slots
+                            .read(&request.generation.session_id, |slot| {
+                                slot.environment_projection
+                                    .as_ref()
+                                    .map(|projection| projection.network.clone())
+                            })
+                            .flatten();
+                        if !network
+                            .as_ref()
+                            .is_some_and(|network| exposure.admitted_by(network, &upstream_host))
+                        {
+                            return Err(RunError::classified(
+                                "mcp_relay_network_not_frozen",
+                                "an external authenticated ACP MCP relay requires the frozen Environment allowlist to contain its advertised origin and exclude the exact upstream target",
+                            ));
+                        }
+                        if !self.host.mcp_relay.get().is_some_and(|relay| {
+                            relay.matches_exposure(exposure) && relay.is_live()
+                        }) {
+                            return Err(RunError::unavailable_classified(
+                                "mcp_relay_unavailable",
+                                "an external authenticated ACP MCP relay must be bound before Worker Ready",
+                            ));
+                        }
+                    }
                 }
                 let injector = self.credentials.as_ref().ok_or_else(|| {
                     RunError::unavailable_classified(
@@ -545,6 +586,12 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                             format!("could not stage Worker-held MCP route: {error}"),
                         )
                     })?;
+                if !relay.is_live() {
+                    return Err(RunError::unavailable_classified(
+                        "mcp_relay_unavailable",
+                        "Worker MCP relay transport is no longer serving",
+                    ));
+                }
                 if !relay.stage_route(&request.generation, &server) {
                     return Err(RunError::classified(
                         "mcp_stale_generation",
