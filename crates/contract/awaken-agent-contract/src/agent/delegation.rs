@@ -1028,14 +1028,32 @@ mod verification {
 
     #[kani::proof]
     fn cancellation_delivery_is_enabled_only_by_durable_intent() {
-        let status = match kani::any::<u8>() % 3 {
-            0 => DelegationStatus::Open,
-            1 => DelegationStatus::Completed,
-            _ => DelegationStatus::CancelRequested,
-        };
+        // Cause/effect decision table over the production relationship kernel:
+        // Open+RequestCancel applies CancelRequested and newly enables delivery;
+        // CancelRequested+RequestCancel is a stuttering retry that keeps delivery
+        // enabled; Complete reaches/stutters at Completed and never enables it;
+        // the two crossed terminal transitions reject without a successor.
+        let status = symbolic_status(kani::any());
+        let transition = symbolic_transition(kani::any());
+        let before = requires_cancellation_delivery(status);
+        let result = transition_relationship(status, transition);
+        let after = result
+            .as_ref()
+            .is_ok_and(|(next, _)| requires_cancellation_delivery(*next));
         assert_eq!(
-            requires_cancellation_delivery(status),
-            status == DelegationStatus::CancelRequested
+            !before && after,
+            status == DelegationStatus::Open
+                && transition == RelationshipTransition::RequestCancel
+                && result
+                    .as_ref()
+                    .is_ok_and(|(_, effect)| { *effect == TransitionResult::Applied })
         );
+        if transition == RelationshipTransition::Complete {
+            assert!(!after);
+        }
+        if let Ok((next, TransitionResult::Duplicate)) = result {
+            assert_eq!(next, status);
+            assert_eq!(requires_cancellation_delivery(next), before);
+        }
     }
 }
