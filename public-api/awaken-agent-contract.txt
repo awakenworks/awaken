@@ -702,6 +702,17 @@ pub awaken_agent_contract::model_target::ModelTarget::protocol_endpoint_id: core
 pub awaken_agent_contract::model_target::ModelTarget::provider_id: core::option::Option<alloc::string::String>
 impl awaken_agent_contract::model_target::ModelTarget
 pub fn awaken_agent_contract::model_target::ModelTarget::unqualified(impl core::convert::Into<alloc::string::String>) -> Self
+pub mod awaken_agent_contract::observation
+pub enum awaken_agent_contract::observation::Observed<T>
+pub awaken_agent_contract::observation::Observed::Absent
+pub awaken_agent_contract::observation::Observed::Present(T)
+pub awaken_agent_contract::observation::Observed::Unknown(awaken_agent_contract::observation::UnknownCause)
+pub enum awaken_agent_contract::observation::UnknownCause
+pub awaken_agent_contract::observation::UnknownCause::Fenced(alloc::string::String)
+pub awaken_agent_contract::observation::UnknownCause::Interrupted(alloc::string::String)
+pub awaken_agent_contract::observation::UnknownCause::Storage(alloc::string::String)
+impl core::convert::From<awaken_agent_contract::stream::checkpoint::StreamCheckpointError> for awaken_agent_contract::observation::UnknownCause
+pub fn awaken_agent_contract::observation::UnknownCause::from(awaken_agent_contract::stream::checkpoint::StreamCheckpointError) -> Self
 pub mod awaken_agent_contract::page
 pub struct awaken_agent_contract::page::CursorParams
 pub awaken_agent_contract::page::CursorParams::cursor: core::option::Option<alloc::string::String>
@@ -755,6 +766,8 @@ pub mod awaken_agent_contract::stream::checkpoint
 pub enum awaken_agent_contract::stream::checkpoint::StreamCheckpointError
 pub awaken_agent_contract::stream::checkpoint::StreamCheckpointError::Fenced(alloc::string::String)
 pub awaken_agent_contract::stream::checkpoint::StreamCheckpointError::Storage(alloc::string::String)
+impl core::convert::From<awaken_agent_contract::stream::checkpoint::StreamCheckpointError> for awaken_agent_contract::observation::UnknownCause
+pub fn awaken_agent_contract::observation::UnknownCause::from(awaken_agent_contract::stream::checkpoint::StreamCheckpointError) -> Self
 pub struct awaken_agent_contract::stream::checkpoint::PartialToolCall
 pub awaken_agent_contract::stream::checkpoint::PartialToolCall::call_id: alloc::string::String
 pub awaken_agent_contract::stream::checkpoint::PartialToolCall::raw_arguments: alloc::string::String
@@ -768,7 +781,7 @@ pub awaken_agent_contract::stream::checkpoint::StreamCheckpoint::run_id: alloc::
 pub awaken_agent_contract::stream::checkpoint::StreamCheckpoint::thread_id: alloc::string::String
 pub trait awaken_agent_contract::stream::checkpoint::StreamCheckpointStore: core::marker::Send + core::marker::Sync
 pub fn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore::delete<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::checkpoint::StreamCheckpointError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::stream::checkpoint::StreamCheckpoint>, awaken_agent_contract::stream::checkpoint::StreamCheckpointError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_agent_contract::observation::Observed<awaken_agent_contract::stream::checkpoint::StreamCheckpoint>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore::put<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::checkpoint::StreamCheckpoint) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::checkpoint::StreamCheckpointError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub mod awaken_agent_contract::stream::event
 pub struct awaken_agent_contract::stream::event::AssistantResponseCoordinate
@@ -1117,6 +1130,10 @@ pub fn awaken_agent_contract::mcp_target::McpTarget::sandbox_stdio_target(&self)
 pub enum awaken_agent_contract::McpTargetError
 pub awaken_agent_contract::McpTargetError::Invalid
 pub awaken_agent_contract::McpTargetError::InvalidSandboxStdio
+pub enum awaken_agent_contract::Observed<T>
+pub awaken_agent_contract::Observed::Absent
+pub awaken_agent_contract::Observed::Present(T)
+pub awaken_agent_contract::Observed::Unknown(awaken_agent_contract::observation::UnknownCause)
 pub enum awaken_agent_contract::RunLifecycleCursorCodecError
 pub awaken_agent_contract::RunLifecycleCursorCodecError::OffsetOutOfRange
 pub awaken_agent_contract::RunLifecycleCursorCodecError::OffsetOutOfRange::max_exclusive: u64
@@ -1164,6 +1181,12 @@ pub awaken_agent_contract::TranscriptError::SnapshotUnavailable::requested_end: 
 pub enum awaken_agent_contract::TranscriptView
 pub awaken_agent_contract::TranscriptView::ContextEffective
 pub awaken_agent_contract::TranscriptView::RawCommitted
+pub enum awaken_agent_contract::UnknownCause
+pub awaken_agent_contract::UnknownCause::Fenced(alloc::string::String)
+pub awaken_agent_contract::UnknownCause::Interrupted(alloc::string::String)
+pub awaken_agent_contract::UnknownCause::Storage(alloc::string::String)
+impl core::convert::From<awaken_agent_contract::stream::checkpoint::StreamCheckpointError> for awaken_agent_contract::observation::UnknownCause
+pub fn awaken_agent_contract::observation::UnknownCause::from(awaken_agent_contract::stream::checkpoint::StreamCheckpointError) -> Self
 pub struct awaken_agent_contract::AcpSessionConfiguration
 pub awaken_agent_contract::AcpSessionConfiguration::mode: core::option::Option<alloc::string::String>
 pub awaken_agent_contract::AcpSessionConfiguration::options: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
