@@ -46,15 +46,15 @@ impl MemoryExtractorSnapshot {
 
 /// One deterministic Memory mutation proposed by the extractor.
 ///
-/// `observed_sha256` is captured before storage. A retry may apply the mutation
-/// only when the current head still equals that value, or treat it as already
+/// `observed_generation` is captured before storage. A retry may apply the mutation
+/// only when the current head still equals that token, or treat it as already
 /// applied when the current head equals `target_sha256`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryExtractionMutation {
     pub path: String,
     pub content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observed_sha256: Option<String>,
+    pub observed_generation: Option<awaken_resource_contract::MemoryGeneration>,
     pub target_sha256: String,
 }
 

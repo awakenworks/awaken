@@ -484,13 +484,13 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
     assert_eq!(snapshot.len(), 1, "M1");
     let created = client.create(&rw, "/new.md", "v1").await.expect("M2");
     let updated = client
-        .update(&rw, &created.id, "v2", &created.content_sha256)
+        .update(&rw, &created.generation(), "v2")
         .await
         .expect("M2");
     assert_eq!(updated.content.as_deref(), Some("v2"), "M2");
 
     let conflict = client
-        .update(&rw, &created.id, "stale", &created.content_sha256)
+        .update(&rw, &created.generation(), "stale")
         .await
         .expect_err("M3");
     assert!(matches!(conflict, MemErr::Conflict { .. }), "M3");
@@ -511,7 +511,7 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
     // snapshot and server transaction must not turn this into ID-following IO.
     let copied = client.create(&rw, "/copy.md", "base").await.unwrap();
     client
-        .update_materialized(&rw, "/copy.md", &copied.id, "edit", &copied.content_sha256)
+        .update_materialized(&rw, "/copy.md", &copied.generation(), "edit")
         .await
         .unwrap();
     repository
@@ -522,7 +522,7 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
     let history = repository.list_versions("memory-rw").await.unwrap();
     assert!(matches!(
         client
-            .update_materialized(&rw, "/copy.md", &copied.id, "edit", &copied.content_sha256)
+            .update_materialized(&rw, "/copy.md", &copied.generation(), "edit")
             .await,
         Err(MemErr::Conflict { .. })
     ));
@@ -822,16 +822,18 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
     let input = memory_input("terminal", "memory-terminal", ResourceAccess::ReadWrite);
     let materialization = MemoryMaterializationEvidence::new(
         "memory-terminal",
-        input.mount_path.clone(),
+        awaken_provisioning_contract::memory_materialization_mount_path(&input.mount_path),
         vec![
             MemoryMaterializationHead {
                 path: note_a.path.clone(),
                 id: note_a.id.clone(),
+                version: note_a.version,
                 content_sha256: note_a.content_sha256.clone(),
             },
             MemoryMaterializationHead {
                 path: conflict_a.path.clone(),
                 id: conflict_a.id.clone(),
+                version: conflict_a.version,
                 content_sha256: conflict_a.content_sha256.clone(),
             },
         ],
@@ -882,7 +884,7 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         .unwrap()
         .len();
     let note_b = client
-        .update(&reference, &note_a.id, "B", &note_a.content_sha256)
+        .update(&reference, &note_a.generation(), "B")
         .await
         .expect("T1 A→B");
     let history_after_first = repository
@@ -892,11 +894,14 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         .len();
     assert_eq!(history_after_first, history_before + 1, "T1");
 
-    let replay = client
-        .update(&reference, &note_a.id, "B", &note_a.content_sha256)
-        .await
-        .expect("T2 response-loss replay");
-    assert_eq!(replay.version, note_b.version, "T2");
+    // T2: the frozen original generation cannot be treated as a successful
+    // response-loss retry after B committed. Without an operation receipt, the
+    // safe result is Conflict; current-token retry belongs to a live caller that
+    // holds that token, while terminal recovery retains its candidate.
+    assert!(matches!(
+        client.update(&reference, &note_a.generation(), "B").await,
+        Err(MemErr::Conflict { current }) if *current == note_b
+    ));
     assert_eq!(
         repository
             .list_versions("memory-terminal")
@@ -919,18 +924,10 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
     for pinned in [false, true] {
         let result = if pinned {
             client
-                .update_materialized(
-                    &reference,
-                    "/note.md",
-                    &note_a.id,
-                    "B",
-                    &note_a.content_sha256,
-                )
+                .update_materialized(&reference, "/note.md", &note_a.generation(), "B")
                 .await
         } else {
-            client
-                .update(&reference, &note_a.id, "B", &note_a.content_sha256)
-                .await
+            client.update(&reference, &note_a.generation(), "B").await
         };
         assert!(
             matches!(result, Err(MemErr::Conflict { .. })),
@@ -946,13 +943,14 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         moved_history
     );
 
-    // RC-W3 terminal exact original path/id/hash => one durable candidate on
-    // repeated/concurrent requests. RC-W4 altered path/id/hash or omitted base
+    // RC-W3 terminal exact original path/generation => one durable candidate on
+    // repeated/concurrent requests. RC-W4 altered path/generation or omitted base
     // for an original path => 403 before persistence. Heads/history stay exact.
     let proposed = awaken_resource_contract::MemoryCopyConflict {
         path: note_a.path.clone(),
         base: Some(awaken_resource_contract::MemoryCopyBase {
             id: note_a.id.clone(),
+            version: note_a.version,
             content_sha256: note_a.content_sha256.clone(),
         }),
         content: Some("losing proposal".into()),
@@ -1005,23 +1003,13 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
     );
 
     let conflict_c = repository
-        .update(
-            "memory-terminal",
-            &conflict_a.id,
-            "C",
-            &conflict_a.content_sha256,
-        )
+        .update("memory-terminal", &conflict_a.generation(), "C")
         .await
         .unwrap();
     assert!(
         matches!(
             client
-                .update(
-                    &reference,
-                    &conflict_a.id,
-                    "B-conflict",
-                    &conflict_a.content_sha256,
-                )
+                .update(&reference, &conflict_a.generation(), "B-conflict",)
                 .await,
             Err(MemErr::Conflict { .. })
         ),
@@ -1043,9 +1031,8 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         client
             .update(
                 &reference,
-                &conflict_c.id,
+                &conflict_c.generation(),
                 "not-authorized-from-C",
-                &conflict_c.content_sha256,
             )
             .await
             .is_err(),
@@ -1206,9 +1193,12 @@ async fn terminal_memory_uses_root_target_and_original_heads_after_run_settlemen
         "T8 successor generation uses the canonical conflict status: {successor_error}"
     );
 
-    let altered_materialization =
-        MemoryMaterializationEvidence::new("memory-terminal", input.mount_path.clone(), Vec::new())
-            .unwrap();
+    let altered_materialization = MemoryMaterializationEvidence::new(
+        "memory-terminal",
+        awaken_provisioning_contract::memory_materialization_mount_path(&input.mount_path),
+        Vec::new(),
+    )
+    .unwrap();
     let altered_intent = awaken_session_contract::terminal_memory_reconciliation_intent(
         &input,
         &altered_materialization,

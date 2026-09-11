@@ -1133,6 +1133,7 @@ impl awaken_provisioning_contract::MemoryMounter for TestMemoryMounter {
                 heads.push(awaken_provisioning_contract::MemoryMaterializationHead {
                     path: memory.path.clone(),
                     id: memory.id.clone(),
+                    version: memory.version,
                     content_sha256: memory.content_sha256.clone(),
                 });
                 let path = host_path.join(memory.path.trim_start_matches('/'));
@@ -8825,7 +8826,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
     // disables every filesystem member but allows web ids without publishing a
     // web plugin; C3 two frozen
     // MemoryStore bindings with different access; C4 write has absent/current/
-    // stale CAS hash. Effects: E1 no Sandbox or Memory mount; E2 prompt names
+    // stale complete generation. Effects: E1 no Sandbox or Memory mount; E2 prompt names
     // every binding and semantic-tool protocol; E3 tools route only to the
     // explicit binding; E4 create/current-CAS succeed, stale/read-only writes
     // fail without clobbering; E5 a policy-only WebFetch does not manufacture a
@@ -9093,7 +9094,7 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
             "binding": "test-input-0",
             "path": "/fact.md",
             "content": "v2",
-            "expected_sha256": created.content_sha256
+            "expected_generation": created.generation()
         }),
     )
     .await
@@ -9105,7 +9106,11 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
             "binding": "test-input-0",
             "path": "/fact.md",
             "content": "clobber",
-            "expected_sha256": "stale"
+            "expected_generation": {
+                "memory_id": created.id,
+                "version": created.version,
+                "content_sha256": "stale"
+            }
         }),
     )
     .await
@@ -18154,6 +18159,7 @@ fn terminal_memory_evidence() -> pc::MemoryMaterializationEvidence {
         vec![pc::MemoryMaterializationHead {
             path: "seed.txt".into(),
             id: "terminal-memory-head".into(),
+            version: 1,
             content_sha256: "terminal-memory-seed-sha".into(),
         }],
     )

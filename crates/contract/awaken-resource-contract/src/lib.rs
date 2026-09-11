@@ -724,6 +724,42 @@ pub struct Memory {
     pub content: Option<String>,
 }
 
+/// Complete optimistic-concurrency identity for one Memory head generation.
+///
+/// Content hashes alone are not generations: a path-only rename or an A -> B -> A
+/// content cycle can retain the same hash while advancing the authoritative head.
+/// Every conditional mutation therefore carries the immutable Memory identity,
+/// its monotonic version, and the content digest observed together.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryGeneration {
+    pub memory_id: String,
+    pub version: u64,
+    pub content_sha256: String,
+}
+
+impl Memory {
+    #[must_use]
+    pub fn generation(&self) -> MemoryGeneration {
+        MemoryGeneration {
+            memory_id: self.id.clone(),
+            version: self.version,
+            content_sha256: self.content_sha256.clone(),
+        }
+    }
+}
+
+impl MemoryEntry {
+    #[must_use]
+    pub fn generation(&self) -> MemoryGeneration {
+        MemoryGeneration {
+            memory_id: self.id.clone(),
+            version: self.version,
+            content_sha256: self.content_sha256.clone(),
+        }
+    }
+}
+
 /// A directory-listing entry (no content). Serializes with the same field names as a
 /// content-less [`Memory`], so a `MemoryRepository::list` result crosses the managed/HTTP
 /// surfaces directly rather than being re-projected through `Memory` first.
@@ -791,10 +827,10 @@ pub struct MemoryPurgeSummary {
 pub enum MemErr {
     #[error("memory not found: {0}")]
     NotFound(String),
-    /// Optimistic-concurrency failure: the base sha no longer matches. `current`
-    /// carries the server's live memory (sha + content) for diagnostics; the caller
+    /// Optimistic-concurrency failure: the complete base generation no longer
+    /// matches. `current` carries the server's live memory for diagnostics; the caller
     /// must not clobber.
-    #[error("cas conflict on {}: base sha stale", .current.path)]
+    #[error("cas conflict on {}: base generation stale", .current.path)]
     Conflict { current: Box<Memory> },
     #[error("path already exists: {0}")]
     PathConflict(String),
@@ -878,40 +914,36 @@ pub trait MemoryRepository: Send + Sync {
     }
     /// Atomically compare-and-swap the head of memory `id`, optionally moving it to
     /// `target_path` in the same repository operation. Content, path, displaced-target
-    /// deletion, and history either all commit or all roll back. A stale `base_sha`
-    /// is idempotent only when both requested content and path are already current;
-    /// otherwise it returns [`MemErr::Conflict`] carrying the live memory.
+    /// deletion, and history either all commit or all roll back. Only the complete
+    /// observed generation may apply or report an already-current retry; every stale
+    /// identity, version, or digest returns [`MemErr::Conflict`] with the live head.
     async fn update_head(
         &self,
         store: &str,
-        id: &str,
+        base: &MemoryGeneration,
         content: &str,
-        base_sha: &str,
         target_path: Option<&str>,
     ) -> Result<Memory, MemErr>;
     /// The canonical CAS mutation with optional authenticated attribution.
     async fn update_head_as(
         &self,
         store: &str,
-        id: &str,
+        base: &MemoryGeneration,
         content: &str,
-        base_sha: &str,
         target_path: Option<&str>,
         actor: Option<&MemoryActor>,
     ) -> Result<Memory, MemErr> {
         let _ = actor;
-        self.update_head(store, id, content, base_sha, target_path)
-            .await
+        self.update_head(store, base, content, target_path).await
     }
     /// Content-only convenience over [`MemoryRepository::update_head`].
     async fn update(
         &self,
         store: &str,
-        id: &str,
+        base: &MemoryGeneration,
         content: &str,
-        base_sha: &str,
     ) -> Result<Memory, MemErr> {
-        self.update_head(store, id, content, base_sha, None).await
+        self.update_head(store, base, content, None).await
     }
     /// Update a materialized head only at its original logical path. The path,
     /// id and content CAS must be checked in the SAME repository transaction;
@@ -924,11 +956,10 @@ pub trait MemoryRepository: Send + Sync {
         &self,
         store: &str,
         path: &str,
-        id: &str,
+        base: &MemoryGeneration,
         content: &str,
-        base_sha: &str,
     ) -> Result<Memory, MemErr> {
-        let _ = (store, path, id, content, base_sha);
+        let _ = (store, path, base, content);
         Err(MemErr::Storage(
             "atomic materialized Memory update is unsupported".into(),
         ))
@@ -958,8 +989,7 @@ pub trait MemoryRepository: Send + Sync {
         &self,
         store: &str,
         path: &str,
-        base_id: &str,
-        base_sha: &str,
+        base: &MemoryGeneration,
     ) -> Result<bool, MemErr>;
     /// The canonical conditional delete with optional authenticated attribution.
     /// Implementations that persist version authorship override this method while
@@ -968,12 +998,11 @@ pub trait MemoryRepository: Send + Sync {
         &self,
         store: &str,
         path: &str,
-        base_id: &str,
-        base_sha: &str,
+        base: &MemoryGeneration,
         actor: Option<&MemoryActor>,
     ) -> Result<bool, MemErr> {
         let _ = actor;
-        self.delete_if_match(store, path, base_id, base_sha).await
+        self.delete_if_match(store, path, base).await
     }
     /// Ordered version history for this store.
     async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr>;

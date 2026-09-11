@@ -241,17 +241,15 @@ enum MemoryOperation {
         content: String,
     },
     UpdateHead {
-        id: String,
+        base: awaken_resource_contract::MemoryGeneration,
         content: String,
-        base_sha: String,
         target_path: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_path: Option<String>,
     },
     DeleteIfMatch {
         path: String,
-        base_id: String,
-        base_sha: String,
+        base: awaken_resource_contract::MemoryGeneration,
     },
 }
 
@@ -479,6 +477,7 @@ fn terminal_operation_allowed(
                     .filter(|head| {
                         head.path == candidate.path
                             && head.id == base.id
+                            && head.version == base.version
                             && head.content_sha256 == base.content_sha256
                     })
                     .count()
@@ -491,8 +490,7 @@ fn terminal_operation_allowed(
         MemoryOperation::Snapshot => true,
         MemoryOperation::Create { path, .. } => !heads.iter().any(|head| head.path == *path),
         MemoryOperation::UpdateHead {
-            id,
-            base_sha,
+            base,
             target_path,
             expected_path,
             ..
@@ -501,22 +499,22 @@ fn terminal_operation_allowed(
                 && heads
                     .iter()
                     .filter(|head| {
-                        head.id == *id
-                            && head.content_sha256 == *base_sha
+                        head.id == base.memory_id
+                            && head.version == base.version
+                            && head.content_sha256 == base.content_sha256
                             && expected_path.as_ref().is_none_or(|path| *path == head.path)
                     })
                     .count()
                     == 1
         }
-        MemoryOperation::DeleteIfMatch {
-            path,
-            base_id,
-            base_sha,
-        } => {
+        MemoryOperation::DeleteIfMatch { path, base } => {
             heads
                 .iter()
                 .filter(|head| {
-                    head.path == *path && head.id == *base_id && head.content_sha256 == *base_sha
+                    head.path == *path
+                        && head.id == base.memory_id
+                        && head.version == base.version
+                        && head.content_sha256 == base.content_sha256
                 })
                 .count()
                 == 1
@@ -716,9 +714,8 @@ async fn memory_operation(
                 memory: memory.into(),
             }),
         MemoryOperation::UpdateHead {
-            id,
+            base,
             content,
-            base_sha,
             target_path,
             expected_path,
         } => {
@@ -731,7 +728,7 @@ async fn memory_operation(
                     .materialization()
                     .heads
                     .iter()
-                    .find(|head| head.id == id)
+                    .find(|head| head.id == base.memory_id)
                     .map(|head| head.path.as_str())
             });
             let path = frozen_path.or(expected_path.as_deref());
@@ -739,7 +736,7 @@ async fn memory_operation(
                 (Some(path), None) => {
                     service
                         .repository
-                        .update_materialized(&memory_store_id, path, &id, &content, &base_sha)
+                        .update_materialized(&memory_store_id, path, &base, &content)
                         .await
                 }
                 (Some(_), Some(_)) => Err(MemErr::Storage(
@@ -748,7 +745,7 @@ async fn memory_operation(
                 (None, target) => {
                     service
                         .repository
-                        .update_head(&memory_store_id, &id, &content, &base_sha, target)
+                        .update_head(&memory_store_id, &base, &content, target)
                         .await
                 }
             };
@@ -756,13 +753,9 @@ async fn memory_operation(
                 memory: memory.into(),
             })
         }
-        MemoryOperation::DeleteIfMatch {
-            path,
-            base_id,
-            base_sha,
-        } => service
+        MemoryOperation::DeleteIfMatch { path, base } => service
             .repository
-            .delete_if_match(&memory_store_id, &path, &base_id, &base_sha)
+            .delete_if_match(&memory_store_id, &path, &base)
             .await
             .map(|deleted| MemoryOperationResponse::Deleted { deleted }),
     }
@@ -959,18 +952,16 @@ impl MemoryRepository for HttpMemoryRepository {
     async fn update_head(
         &self,
         store: &str,
-        id: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
         content: &str,
-        base_sha: &str,
         target_path: Option<&str>,
     ) -> Result<Memory, MemErr> {
         self.writeback
             .send_memory(
                 store,
                 MemoryOperation::UpdateHead {
-                    id: id.into(),
+                    base: base.clone(),
                     content: content.into(),
-                    base_sha: base_sha.into(),
                     target_path: target_path.map(str::to_owned),
                     expected_path: None,
                 },
@@ -982,17 +973,15 @@ impl MemoryRepository for HttpMemoryRepository {
         &self,
         store: &str,
         path: &str,
-        id: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
         content: &str,
-        base_sha: &str,
     ) -> Result<Memory, MemErr> {
         self.writeback
             .send_memory(
                 store,
                 MemoryOperation::UpdateHead {
-                    id: id.into(),
+                    base: base.clone(),
                     content: content.into(),
-                    base_sha: base_sha.into(),
                     target_path: None,
                     expected_path: Some(path.into()),
                 },
@@ -1011,7 +1000,7 @@ impl MemoryRepository for HttpMemoryRepository {
             return Ok(());
         };
         if self
-            .delete_if_match(store, path, &current.id, &current.content_sha256)
+            .delete_if_match(store, path, &current.generation())
             .await?
         {
             Ok(())
@@ -1026,8 +1015,7 @@ impl MemoryRepository for HttpMemoryRepository {
         &self,
         store: &str,
         path: &str,
-        base_id: &str,
-        base_sha: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
     ) -> Result<bool, MemErr> {
         match self
             .writeback
@@ -1035,8 +1023,7 @@ impl MemoryRepository for HttpMemoryRepository {
                 store,
                 MemoryOperation::DeleteIfMatch {
                     path: path.into(),
-                    base_id: base_id.into(),
-                    base_sha: base_sha.into(),
+                    base: base.clone(),
                 },
             )
             .await?
@@ -1083,19 +1070,20 @@ mod tests {
 
     #[test]
     fn memory_update_wire_preserves_optional_location_without_weakening_strictness() {
-        // MP-W decision table: absent expected_path => legacy ID update and
-        // omitted serialized field; string => lossless Copy location; null =>
-        // absent; non-string or an unknown authority field => reject parsing.
-        let legacy = serde_json::json!({
-            "kind": "update_head", "id": "head", "content": "edit",
-            "base_sha": "base", "target_path": null
+        // MP-W decision table: a complete generation is mandatory; absent
+        // expected_path => id-following update, string => lossless Copy location,
+        // null => absent, and malformed/unknown authority fields fail closed.
+        let base_wire = serde_json::json!({
+            "kind": "update_head",
+            "base": {"memory_id": "head", "version": 7, "content_sha256": "base"},
+            "content": "edit", "target_path": null
         });
         for expected in [
             None,
             Some(serde_json::Value::Null),
             Some(serde_json::json!("/note.md")),
         ] {
-            let mut wire = legacy.clone();
+            let mut wire = base_wire.clone();
             if let Some(expected) = expected {
                 wire["expected_path"] = expected;
             }
@@ -1112,7 +1100,7 @@ mod tests {
                 .get("expected_path")
                 .is_none_or(serde_json::Value::is_null)
             {
-                assert_eq!(encoded, legacy, "MP-W legacy output stays unchanged");
+                assert_eq!(encoded, base_wire, "MP-W absent location stays absent");
             } else {
                 assert_eq!(encoded, wire, "MP-W exact location roundtrip");
             }
@@ -1121,7 +1109,7 @@ mod tests {
             ("expected_path", serde_json::json!(42)),
             ("bypass", serde_json::json!(true)),
         ] {
-            let mut wire = legacy.clone();
+            let mut wire = base_wire.clone();
             wire[field] = value;
             assert!(
                 serde_json::from_value::<MemoryOperation>(wire).is_err(),
@@ -1154,6 +1142,7 @@ mod tests {
                 vec![awaken_provisioning_contract::MemoryMaterializationHead {
                     path: "/note.md".into(),
                     id: "memory-note".into(),
+                    version: 1,
                     content_sha256: "sha-a".into(),
                 }],
             )
@@ -1217,9 +1206,9 @@ mod tests {
     #[test]
     fn terminal_operation_kernel_is_closed_over_original_heads() {
         // Mutation cause/effect decision table: O1 snapshot => allow; O2 create
-        // absent-from-A => allow, existing-in-A => deny; O3 update exact A id+sha
+        // absent-from-A => allow, existing-in-A => deny; O3 update exact generation
         // without rename => allow, stale/rename => deny; O4 delete exact
-        // path+id+sha => allow, any mismatch => deny. These rules are evaluated
+        // path+generation => allow, any mismatch => deny. These rules are evaluated
         // before the canonical repository sees an operation.
         let intent = terminal_intent();
         let target =
@@ -1235,6 +1224,7 @@ mod tests {
                         path: path.into(),
                         base: has_base.then(|| awaken_resource_contract::MemoryCopyBase {
                             id: "memory-note".into(),
+                            version: 1,
                             content_sha256: "sha-a".into(),
                         }),
                         content: write.then(|| "edit".into()),
@@ -1282,9 +1272,12 @@ mod tests {
             terminal_operation_allowed(
                 &target,
                 &MemoryOperation::UpdateHead {
-                    id: "memory-note".into(),
+                    base: awaken_resource_contract::MemoryGeneration {
+                        memory_id: "memory-note".into(),
+                        version: 1,
+                        content_sha256: "sha-a".into(),
+                    },
                     content: "B".into(),
-                    base_sha: "sha-a".into(),
                     target_path: None,
                     expected_path: None,
                 },
@@ -1293,23 +1286,32 @@ mod tests {
         );
         for operation in [
             MemoryOperation::UpdateHead {
-                id: "memory-note".into(),
+                base: awaken_resource_contract::MemoryGeneration {
+                    memory_id: "memory-note".into(),
+                    version: 1,
+                    content_sha256: "sha-c".into(),
+                },
                 content: "B".into(),
-                base_sha: "sha-c".into(),
                 target_path: None,
                 expected_path: None,
             },
             MemoryOperation::UpdateHead {
-                id: "memory-note".into(),
+                base: awaken_resource_contract::MemoryGeneration {
+                    memory_id: "memory-note".into(),
+                    version: 1,
+                    content_sha256: "sha-a".into(),
+                },
                 content: "B".into(),
-                base_sha: "sha-a".into(),
                 target_path: Some("/renamed.md".into()),
                 expected_path: None,
             },
             MemoryOperation::UpdateHead {
-                id: "memory-note".into(),
+                base: awaken_resource_contract::MemoryGeneration {
+                    memory_id: "memory-note".into(),
+                    version: 1,
+                    content_sha256: "sha-a".into(),
+                },
                 content: "B".into(),
-                base_sha: "sha-a".into(),
                 target_path: None,
                 expected_path: Some("/foreign.md".into()),
             },
@@ -1321,8 +1323,11 @@ mod tests {
                 &target,
                 &MemoryOperation::DeleteIfMatch {
                     path: "/note.md".into(),
-                    base_id: "memory-note".into(),
-                    base_sha: "sha-a".into(),
+                    base: awaken_resource_contract::MemoryGeneration {
+                        memory_id: "memory-note".into(),
+                        version: 1,
+                        content_sha256: "sha-a".into(),
+                    },
                 },
             ),
             "O4 exact"
@@ -1332,8 +1337,11 @@ mod tests {
                 &target,
                 &MemoryOperation::DeleteIfMatch {
                     path: "/note.md".into(),
-                    base_id: "memory-note".into(),
-                    base_sha: "sha-c".into(),
+                    base: awaken_resource_contract::MemoryGeneration {
+                        memory_id: "memory-note".into(),
+                        version: 1,
+                        content_sha256: "sha-c".into(),
+                    },
                 },
             ),
             "O4 mismatch"

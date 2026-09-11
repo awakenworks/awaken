@@ -34,7 +34,8 @@ use async_trait::async_trait;
 // `awaken_memory_store::repository::Memory` and root re-exports resolve uniformly.
 pub use awaken_resource_contract::{
     MAX_MEMORIES_PER_STORE, MAX_MEMORY_BYTES, MAX_PATH_BYTES, MemErr, Memory, MemoryActor,
-    MemoryEntry, MemoryPurgeSummary, MemoryRepository, MemoryVersion, MemoryVersionOperation,
+    MemoryEntry, MemoryGeneration, MemoryPurgeSummary, MemoryRepository, MemoryVersion,
+    MemoryVersionOperation,
 };
 
 pub use awaken_resource_contract::memory_sha256_hex as sha256_hex;
@@ -55,6 +56,7 @@ pub(crate) fn validate_copy_conflict(
     if candidate.base.as_ref().is_some_and(|base| {
         base.id.is_empty()
             || base.id.len() > MAX_PATH_BYTES
+            || base.version == 0
             || base.content_sha256.len() != 64
             || !base
                 .content_sha256
@@ -149,17 +151,13 @@ pub(crate) enum HeadUpdateAdmission {
 impl HeadUpdateAdmission {
     pub(crate) fn new(
         expected_path_matches: bool,
-        base_matches: bool,
+        identity_matches: bool,
+        version_matches: bool,
+        content_matches: bool,
         already_current: bool,
     ) -> Self {
-        if !expected_path_matches {
+        if !expected_path_matches || !identity_matches || !version_matches || !content_matches {
             Self::Conflict
-        } else if !base_matches {
-            if already_current {
-                Self::Current
-            } else {
-                Self::Conflict
-            }
         } else if already_current {
             Self::Current
         } else {
@@ -180,7 +178,8 @@ pub(crate) fn rename_replace_identity<T>(source_id: T, _displaced_id: Option<&T>
 
 /// The single admission owner for deletion against a path-selected head.
 /// `None` means the selected path is absent; `Some` carries the exact id/hash
-/// comparisons made from the head observed under the backend's transaction.
+/// identity, version and hash comparisons made from the head observed under
+/// the backend's transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConditionalDeleteAdmission {
     Absent,
@@ -189,10 +188,10 @@ pub(crate) enum ConditionalDeleteAdmission {
 }
 
 impl ConditionalDeleteAdmission {
-    pub(crate) fn new(current_matches: Option<(bool, bool)>) -> Self {
+    pub(crate) fn new(current_matches: Option<(bool, bool, bool)>) -> Self {
         match current_matches {
             None => Self::Absent,
-            Some((true, true)) => Self::Delete,
+            Some((true, true, true)) => Self::Delete,
             Some(_) => Self::Conflict,
         }
     }
@@ -201,42 +200,53 @@ impl ConditionalDeleteAdmission {
 #[cfg(any(test, kani))]
 fn check_head_update_admission(
     expected_path_matches: bool,
-    base_matches: bool,
+    identity_matches: bool,
+    version_matches: bool,
+    content_matches: bool,
     already_current: bool,
 ) {
-    // Causes: C1 the materialized path still identifies this head; C2 the
-    // supplied base hash matches; C3 requested path/content are already current.
+    // Causes: C1 the materialized path still identifies this head; C2-C4 the
+    // supplied immutable id, monotonic version and content hash each match the
+    // same observed head; C5 requested path/content are already current.
     // Effects and decision rules:
-    // U1 !C1 => Conflict; U2 C1,!C2,!C3 => Conflict;
-    // U3 C1,!C2,C3 or C1,C2,C3 => Current; U4 C1,C2,!C3 => Apply.
-    let decision = HeadUpdateAdmission::new(expected_path_matches, base_matches, already_current);
+    // U1 any of !C1..!C4 => Conflict; U2 C1..C4,C5 => Current;
+    // U3 C1..C4,!C5 => Apply. A same-content ABA is U1, never a retry.
+    let decision = HeadUpdateAdmission::new(
+        expected_path_matches,
+        identity_matches,
+        version_matches,
+        content_matches,
+        already_current,
+    );
+    let complete_generation =
+        expected_path_matches && identity_matches && version_matches && content_matches;
     match decision {
         HeadUpdateAdmission::Conflict => {
-            assert!(!expected_path_matches || (!base_matches && !already_current));
+            assert!(!complete_generation);
         }
         HeadUpdateAdmission::Current => {
-            assert!(expected_path_matches && already_current);
+            assert!(complete_generation && already_current);
         }
         HeadUpdateAdmission::Apply => {
-            assert!(expected_path_matches && base_matches && !already_current);
+            assert!(complete_generation && !already_current);
         }
     }
 }
 
 #[cfg(any(test, kani))]
-fn check_conditional_delete_admission(current_matches: Option<(bool, bool)>) {
-    // Causes: C1 a head exists at the selected path; C2 id matches; C3 hash
-    // matches. Effects: D1 !C1 => Absent; D2 C1 and (!C2 or !C3) => Conflict;
-    // D3 C1,C2,C3 => Delete. Only D3 authorizes backend delete/history effects.
+fn check_conditional_delete_admission(current_matches: Option<(bool, bool, bool)>) {
+    // Causes: C1 a head exists at the selected path; C2 id matches; C3 version
+    // matches; C4 hash matches. Effects: D1 !C1 => Absent; D2 C1 and any of
+    // !C2..!C4 => Conflict; D3 C1,C2,C3,C4 => Delete. Only D3 authorizes effects.
     let decision = ConditionalDeleteAdmission::new(current_matches);
     match decision {
         ConditionalDeleteAdmission::Absent => assert!(current_matches.is_none()),
         ConditionalDeleteAdmission::Conflict => assert!(matches!(
             current_matches,
-            Some((false, _)) | Some((true, false))
+            Some((false, _, _)) | Some((true, false, _)) | Some((true, true, false))
         )),
         ConditionalDeleteAdmission::Delete => {
-            assert_eq!(current_matches, Some((true, true)));
+            assert_eq!(current_matches, Some((true, true, true)));
         }
     }
 }
@@ -244,10 +254,16 @@ fn check_conditional_delete_admission(current_matches: Option<(bool, bool)>) {
 #[cfg(kani)]
 #[kani::proof]
 fn memory_head_update_admission_preserves_stale_and_idempotent_heads() {
-    // No assumptions: all eight Boolean observation classes pass through the
-    // exact production decision used by every backend. Locking, row selection,
-    // hash computation and persistence remain outside this decision proof.
-    check_head_update_admission(kani::any(), kani::any(), kani::any());
+    // No assumptions: all 32 path/identity/version/hash/current classes pass
+    // through the exact production decision used by every backend. Locking, row
+    // selection, hash computation and persistence remain outside this proof.
+    check_head_update_admission(
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+        kani::any(),
+    );
 }
 
 #[cfg(kani)]
@@ -515,25 +531,23 @@ impl MemoryRepository for VolatileMemoryRepository {
     async fn update_head(
         &self,
         store: &str,
-        id: &str,
+        base: &MemoryGeneration,
         content: &str,
-        base_sha: &str,
         target_path: Option<&str>,
     ) -> Result<Memory, MemErr> {
-        self.update_head_as(store, id, content, base_sha, target_path, None)
+        self.update_head_as(store, base, content, target_path, None)
             .await
     }
 
     async fn update_head_as(
         &self,
         store: &str,
-        id: &str,
+        base: &MemoryGeneration,
         content: &str,
-        base_sha: &str,
         target_path: Option<&str>,
         actor: Option<&MemoryActor>,
     ) -> Result<Memory, MemErr> {
-        self.update_head_checked(store, id, content, base_sha, target_path, actor, None)
+        self.update_head_checked(store, base, content, target_path, actor, None)
             .await
     }
 
@@ -541,11 +555,10 @@ impl MemoryRepository for VolatileMemoryRepository {
         &self,
         store: &str,
         path: &str,
-        id: &str,
+        base: &MemoryGeneration,
         content: &str,
-        base_sha: &str,
     ) -> Result<Memory, MemErr> {
-        self.update_head_checked(store, id, content, base_sha, None, None, Some(path))
+        self.update_head_checked(store, base, content, None, None, Some(path))
             .await
     }
 
@@ -627,19 +640,16 @@ impl MemoryRepository for VolatileMemoryRepository {
         &self,
         store: &str,
         path: &str,
-        base_id: &str,
-        base_sha: &str,
+        base: &MemoryGeneration,
     ) -> Result<bool, MemErr> {
-        self.delete_if_match_as(store, path, base_id, base_sha, None)
-            .await
+        self.delete_if_match_as(store, path, base, None).await
     }
 
     async fn delete_if_match_as(
         &self,
         store: &str,
         path: &str,
-        base_id: &str,
-        base_sha: &str,
+        base: &MemoryGeneration,
         actor: Option<&MemoryActor>,
     ) -> Result<bool, MemErr> {
         let mut guard = self.inner.lock().unwrap();
@@ -648,11 +658,13 @@ impl MemoryRepository for VolatileMemoryRepository {
             .get(store)
             .and_then(|records| records.get(path))
             .cloned();
-        match ConditionalDeleteAdmission::new(
-            current
-                .as_ref()
-                .map(|head| (head.id == base_id, head.sha == base_sha)),
-        ) {
+        match ConditionalDeleteAdmission::new(current.as_ref().map(|head| {
+            (
+                head.id == base.memory_id,
+                head.version == base.version,
+                head.sha == base.content_sha256,
+            )
+        })) {
             ConditionalDeleteAdmission::Absent => return Ok(false),
             ConditionalDeleteAdmission::Conflict => {
                 return Err(MemErr::Conflict {
@@ -752,9 +764,8 @@ impl VolatileMemoryRepository {
     async fn update_head_checked(
         &self,
         store: &str,
-        id: &str,
+        base: &MemoryGeneration,
         content: &str,
-        base_sha: &str,
         target_path: Option<&str>,
         actor: Option<&MemoryActor>,
         expected_path: Option<&str>,
@@ -771,11 +782,11 @@ impl VolatileMemoryRepository {
         let store_map = guard
             .records
             .get_mut(store)
-            .ok_or_else(|| MemErr::NotFound(id.to_string()))?;
+            .ok_or_else(|| MemErr::NotFound(base.memory_id.clone()))?;
         let source_path = store_map
             .iter()
-            .find_map(|(path, record)| (record.id == id).then(|| path.clone()))
-            .ok_or_else(|| MemErr::NotFound(id.to_string()))?;
+            .find_map(|(path, record)| (record.id == base.memory_id).then(|| path.clone()))
+            .ok_or_else(|| MemErr::NotFound(base.memory_id.clone()))?;
         let requested_path = target_path.unwrap_or(&source_path);
         let current = store_map
             .get(&source_path)
@@ -783,7 +794,9 @@ impl VolatileMemoryRepository {
         let already_current = current.sha == new_sha && source_path == requested_path;
         match HeadUpdateAdmission::new(
             expected_path.is_none_or(|path| path == source_path),
-            current.sha == base_sha,
+            current.id == base.memory_id,
+            current.version == base.version,
+            current.sha == base.content_sha256,
             already_current,
         ) {
             HeadUpdateAdmission::Conflict => {
@@ -845,19 +858,31 @@ pub(crate) mod tests {
         // production functions independently from the symbolic harnesses.
         for expected_path_matches in [false, true] {
             for base_matches in [false, true] {
-                for already_current in [false, true] {
-                    check_head_update_admission(
-                        expected_path_matches,
-                        base_matches,
-                        already_current,
-                    );
+                for version_matches in [false, true] {
+                    for content_matches in [false, true] {
+                        for already_current in [false, true] {
+                            check_head_update_admission(
+                                expected_path_matches,
+                                base_matches,
+                                version_matches,
+                                content_matches,
+                                already_current,
+                            );
+                        }
+                    }
                 }
             }
         }
         check_conditional_delete_admission(None);
         for id_matches in [false, true] {
-            for sha_matches in [false, true] {
-                check_conditional_delete_admission(Some((id_matches, sha_matches)));
+            for version_matches in [false, true] {
+                for sha_matches in [false, true] {
+                    check_conditional_delete_admission(Some((
+                        id_matches,
+                        version_matches,
+                        sha_matches,
+                    )));
+                }
             }
         }
     }
@@ -928,11 +953,11 @@ pub(crate) mod tests {
         assert_eq!(fs.list_versions(store).await.unwrap().len(), 1);
 
         let updated = fs
-            .update(store, &created.id, "two", &created.content_sha256)
+            .update(store, &created.generation(), "two")
             .await
             .unwrap();
         assert_eq!(fs.list_versions(store).await.unwrap().len(), 2);
-        fs.update(store, &created.id, "two", "stale-but-idempotent")
+        fs.update(store, &updated.generation(), "two")
             .await
             .unwrap();
         assert_eq!(
@@ -981,7 +1006,7 @@ pub(crate) mod tests {
     async fn purge_conformance(fs: &dyn MemoryRepository) {
         fs.create("purge", "/a.md", "one").await.unwrap();
         let updated = fs.get_by_path("purge", "/a.md").await.unwrap().unwrap();
-        fs.update("purge", &updated.id, "two", &updated.content_sha256)
+        fs.update("purge", &updated.generation(), "two")
             .await
             .unwrap();
         assert_eq!(
@@ -1021,7 +1046,7 @@ pub(crate) mod tests {
             vec!["/a.md", "/z.md"]
         );
         assert_eq!(frozen[0].content.as_deref(), Some("old-a"));
-        fs.update("snapshot", &a.id, "new-a", &a.content_sha256)
+        fs.update("snapshot", &a.generation(), "new-a")
             .await
             .unwrap();
         assert_eq!(frozen[0].content.as_deref(), Some("old-a"));
@@ -1120,7 +1145,7 @@ pub(crate) mod tests {
             "the second handle sees the create"
         );
         writer
-            .update("s", &m.id, "updated", &m.content_sha256)
+            .update("s", &m.generation(), "updated")
             .await
             .unwrap();
         assert_eq!(
@@ -1154,7 +1179,7 @@ pub(crate) mod tests {
             Err(MemErr::AtCapacity)
         ));
         let updated = fs
-            .update("capacity", &first.id, "updated", &first.content_sha256)
+            .update("capacity", &first.generation(), "updated")
             .await
             .unwrap();
         assert_eq!(updated.content.as_deref(), Some("updated"), "MC3");

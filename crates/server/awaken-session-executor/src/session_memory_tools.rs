@@ -25,13 +25,12 @@ pub(crate) trait SessionMemoryBinding: Send + Sync {
         &self,
         path: &str,
         content: &str,
-        expected_sha256: Option<&str>,
+        expected_generation: Option<&awaken_resource_contract::MemoryGeneration>,
     ) -> Result<awaken_resource_contract::Memory, String>;
     async fn delete(
         &self,
         path: &str,
-        expected_id: &str,
-        expected_sha256: &str,
+        expected_generation: &awaken_resource_contract::MemoryGeneration,
     ) -> Result<bool, String>;
 }
 
@@ -52,20 +51,18 @@ impl SessionMemoryBinding for crate::memory::BoundMemory {
         &self,
         path: &str,
         content: &str,
-        expected_sha256: Option<&str>,
+        expected_generation: Option<&awaken_resource_contract::MemoryGeneration>,
     ) -> Result<awaken_resource_contract::Memory, String> {
-        self.write_bound_memory(path, content, expected_sha256)
+        self.write_bound_memory(path, content, expected_generation)
             .await
     }
 
     async fn delete(
         &self,
         path: &str,
-        expected_id: &str,
-        expected_sha256: &str,
+        expected_generation: &awaken_resource_contract::MemoryGeneration,
     ) -> Result<bool, String> {
-        self.delete_bound_memory(path, expected_id, expected_sha256)
-            .await
+        self.delete_bound_memory(path, expected_generation).await
     }
 }
 
@@ -170,9 +167,27 @@ struct WriteMemoryArgs {
     path: String,
     /// Complete replacement content.
     content: String,
-    /// Hash returned by read_memory; required when updating an existing path.
+    /// Complete generation returned by read_memory; required for an update.
     #[serde(default)]
-    expected_sha256: Option<String>,
+    expected_generation: Option<MemoryGenerationArgs>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct MemoryGenerationArgs {
+    memory_id: String,
+    version: u64,
+    content_sha256: String,
+}
+
+impl From<MemoryGenerationArgs> for awaken_resource_contract::MemoryGeneration {
+    fn from(value: MemoryGenerationArgs) -> Self {
+        Self {
+            memory_id: value.memory_id,
+            version: value.version,
+            content_sha256: value.content_sha256,
+        }
+    }
 }
 
 struct WriteMemoryTool(MemoryToolContext);
@@ -182,13 +197,14 @@ impl Tool for WriteMemoryTool {
     type Args = WriteMemoryArgs;
     type Output = awaken_resource_contract::Memory;
     const ID: &'static str = "write_memory";
-    const DESCRIPTION: &'static str = "Create or compare-and-swap one memory. Omit expected_sha256 only for create-only semantics.";
+    const DESCRIPTION: &'static str = "Create or compare-and-swap one memory. Omit expected_generation only for create-only semantics.";
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, ToolError> {
         let binding = self.0.binding(&args.binding)?;
         let path = required("path", &args.path)?;
+        let expected_generation = args.expected_generation.map(Into::into);
         binding
-            .write(path, &args.content, args.expected_sha256.as_deref())
+            .write(path, &args.content, expected_generation.as_ref())
             .await
             .map_err(ToolError::Execution)
     }
@@ -201,10 +217,8 @@ struct DeleteMemoryArgs {
     binding: String,
     /// Absolute path within the selected memory store.
     path: String,
-    /// Exact memory id returned by read_memory.
-    expected_id: String,
-    /// Exact content hash returned by read_memory.
-    expected_sha256: String,
+    /// Complete generation returned by read_memory.
+    expected_generation: MemoryGenerationArgs,
 }
 
 #[derive(Debug, Serialize)]
@@ -220,15 +234,14 @@ impl Tool for DeleteMemoryTool {
     type Output = DeleteMemoryOutput;
     const ID: &'static str = "delete_memory";
     const DESCRIPTION: &'static str =
-        "Compare-and-delete one memory using the exact id and hash returned by read_memory.";
+        "Compare-and-delete one memory using the exact generation returned by read_memory.";
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, ToolError> {
         let binding = self.0.binding(&args.binding)?;
         let path = required("path", &args.path)?;
-        let expected_id = required("expected_id", &args.expected_id)?;
-        let expected_sha256 = required("expected_sha256", &args.expected_sha256)?;
+        let expected_generation = args.expected_generation.into();
         let deleted = binding
-            .delete(path, expected_id, expected_sha256)
+            .delete(path, &expected_generation)
             .await
             .map_err(ToolError::Execution)?;
         Ok(DeleteMemoryOutput { deleted })
@@ -315,7 +328,7 @@ mod tests {
             &self,
             _path: &str,
             _content: &str,
-            _expected_sha256: Option<&str>,
+            _expected_generation: Option<&awaken_resource_contract::MemoryGeneration>,
         ) -> Result<awaken_resource_contract::Memory, String> {
             Err("unused".into())
         }
@@ -323,8 +336,7 @@ mod tests {
         async fn delete(
             &self,
             _path: &str,
-            _expected_id: &str,
-            _expected_sha256: &str,
+            _expected_generation: &awaken_resource_contract::MemoryGeneration,
         ) -> Result<bool, String> {
             Err("unused".into())
         }
