@@ -108,6 +108,12 @@ impl CredentialMaterial {
         usage
             .validate()
             .map_err(|_| CredentialMaterialError::MaterialKindMismatch)?;
+        // A core delivery carrier transports material without parsing it, so
+        // it admits every resolved shape. An external extension consumer must
+        // still pin the exact material type it knows how to read.
+        if usage.is_core_delivery() {
+            return Ok(());
+        }
         let valid = match (self, usage) {
             (Self::Structured(material), CredentialUsage::HttpBasicAuth) => {
                 material.type_id == HTTP_BASIC_MATERIAL_TYPE
@@ -131,9 +137,7 @@ impl CredentialMaterial {
                 Self::Secret(_),
                 CredentialUsage::ProviderAdapter
                 | CredentialUsage::HttpHeader { .. }
-                | CredentialUsage::QueryParameter { .. }
-                | CredentialUsage::EnvironmentVariable { .. }
-                | CredentialUsage::File { .. },
+                | CredentialUsage::QueryParameter { .. },
             )
             | (Self::OAuth(_), CredentialUsage::ProviderAdapter) => true,
             (Self::Secret(_), CredentialUsage::HttpEffect { fields }) => {

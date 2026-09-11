@@ -1,5 +1,7 @@
 use super::*;
-use awaken_credential_contract::{CredentialExecutionPolicy, CredentialRef, ModelExposurePolicy};
+use awaken_credential_contract::{
+    CredentialExecutionPolicy, CredentialRef, CredentialUsage, ModelExposurePolicy,
+};
 use serde_json::{Value, json};
 
 fn holder(boundary: PlaintextBoundary) -> PlaintextHolder {
@@ -33,9 +35,7 @@ fn request(boundary: PlaintextBoundary) -> CredentialEnvelopeIssuance {
     let selected_holder = holder(boundary);
     let usage = match boundary {
         PlaintextBoundary::Worker => CredentialUsage::ProviderAdapter,
-        _ => CredentialUsage::EnvironmentVariable {
-            name: "ANTHROPIC_API_KEY".into(),
-        },
+        _ => CredentialUsage::process_env("ANTHROPIC_API_KEY"),
     };
     let binding = CredentialMaterialBinding::for_target("workspace-a", &"endpoint-a", &usage);
     CredentialEnvelopeIssuance {
@@ -248,11 +248,7 @@ async fn every_independent_replay_coordinate_and_ciphertext_mutation_is_rejected
                     .payload_fingerprint
                     .push_str("-foreign"),
                 15 => access.material_source = CredentialMaterialSource::WorkerReference,
-                16 => {
-                    access.usage = CredentialUsage::EnvironmentVariable {
-                        name: "OTHER_KEY".into(),
-                    }
-                }
+                16 => access.usage = CredentialUsage::process_env("OTHER_KEY"),
                 _ => unreachable!(),
             }
             if matches!(rule, 6..=10 | 15..=16) {

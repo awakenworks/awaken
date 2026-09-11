@@ -397,11 +397,9 @@ impl AcpPublicationCapability {
                 "ACP model delivery does not accept credential environment {name}"
             ));
         }
-        Ok(
-            awaken_credential_contract::CredentialUsage::EnvironmentVariable {
-                name: name.to_string(),
-            },
-        )
+        Ok(awaken_credential_contract::CredentialUsage::process_env(
+            name,
+        ))
     }
 }
 
@@ -627,9 +625,7 @@ mod tests {
         );
         assert_eq!(
             capability.credential_usage(Some("TEST_API_KEY")).unwrap(),
-            awaken_credential_contract::CredentialUsage::EnvironmentVariable {
-                name: "TEST_API_KEY".into()
-            },
+            awaken_credential_contract::CredentialUsage::process_env("TEST_API_KEY"),
             "P2/E2"
         );
         assert!(

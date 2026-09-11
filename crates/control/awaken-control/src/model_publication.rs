@@ -1532,9 +1532,7 @@ mod tests {
         assert_eq!(claude_access.credential.id, setup_token.id.0, "S2");
         assert_eq!(
             claude_access.usage,
-            CredentialUsage::EnvironmentVariable {
-                name: awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV.into(),
-            },
+            CredentialUsage::process_env(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV),
             "S2"
         );
 

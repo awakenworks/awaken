@@ -5,7 +5,7 @@
 //! is upstream plaintext or a delegated capability. Keeping these axes separate
 //! prevents deployment topology from inventing a second injection mechanism.
 
-use super::{PlaintextBoundary, PlaintextHolder};
+use super::{CredentialPurpose, PlaintextBoundary, PlaintextHolder};
 
 /// Last-mile mechanism used by a trusted consumer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,20 +40,91 @@ pub struct CredentialDeliveryPlan {
     pub authority: CredentialDeliveredAuthority,
 }
 
-const fn repository_git_delivery_shape(
+/// Route and authority follow the plaintext boundary alone.
+///
+/// A Worker or Workload holder performs its own upstream effect and therefore
+/// receives upstream plaintext. A Platform holder never hands plaintext to the
+/// caller: the mediator performs the effect and the caller receives only a
+/// delegated capability. Purpose deliberately has no say here — that is what
+/// lets one deployment topology move every credential kind between a direct
+/// and a gateway-mediated route without inventing a second mechanism.
+const fn boundary_delivery_shape(
     boundary: PlaintextBoundary,
-) -> Option<(CredentialInvocationRoute, CredentialDeliveredAuthority)> {
+) -> (CredentialInvocationRoute, CredentialDeliveredAuthority) {
     match boundary {
-        PlaintextBoundary::Workload => Some((
+        PlaintextBoundary::Worker | PlaintextBoundary::Workload => (
             CredentialInvocationRoute::Direct,
             CredentialDeliveredAuthority::PlaintextMaterial,
-        )),
-        PlaintextBoundary::Platform => Some((
+        ),
+        PlaintextBoundary::Platform => (
             CredentialInvocationRoute::EgressGateway,
             CredentialDeliveredAuthority::DelegatedCapability,
-        )),
-        PlaintextBoundary::Worker => None,
+        ),
     }
+}
+
+/// Which boundaries may perform this purpose's effect at all. Each `false`
+/// encodes a custody decision, never a missing implementation.
+const fn purpose_admits_boundary(purpose: CredentialPurpose, boundary: PlaintextBoundary) -> bool {
+    match (purpose, boundary) {
+        // Repository Git effects are Sandbox-owned. A Worker/Runtime Host is
+        // never a valid Git effect path in any topology.
+        (CredentialPurpose::RepositoryTransport, PlaintextBoundary::Worker) => false,
+        // Host-side signature verification consumes material in place. It
+        // performs no upstream effect, so it has no delivery route at all.
+        (CredentialPurpose::SignatureVerification, _) => false,
+        _ => true,
+    }
+}
+
+/// Which last-mile carriers this purpose's consumer can actually read. A
+/// carrier is refused here when the consuming protocol cannot accept it,
+/// independent of which carriers a deployment happens to have installed.
+const fn purpose_admits_carrier(
+    purpose: CredentialPurpose,
+    carrier: CredentialDeliveryCarrier,
+) -> bool {
+    match purpose {
+        // Git, MCP, remote-agent and platform HTTP effects all reach their
+        // consumer through a protocol field on the call itself.
+        CredentialPurpose::RepositoryTransport
+        | CredentialPurpose::McpAuthorization
+        | CredentialPurpose::RemoteAgentAuthorization
+        | CredentialPurpose::WebProviderAuthorization
+        | CredentialPurpose::HttpEffect => {
+            matches!(carrier, CredentialDeliveryCarrier::ProcessProtocol)
+        }
+        // A model provider adapter reads an in-process value, a process
+        // environment entry, or a process-private file, depending on which
+        // mechanism the selected backend advertises.
+        CredentialPurpose::ProviderAdapter | CredentialPurpose::Extension => true,
+        CredentialPurpose::SignatureVerification => false,
+    }
+}
+
+/// The one admitted delivery decision for a purpose, holder and carrier.
+///
+/// Policy owns admissibility, route and authority; the caller supplies the
+/// carrier it holds installed evidence for. `None` is a closed refusal, never
+/// an unimplemented case.
+#[must_use]
+pub fn credential_delivery_plan(
+    purpose: CredentialPurpose,
+    holder: &PlaintextHolder,
+    carrier: CredentialDeliveryCarrier,
+) -> Option<CredentialDeliveryPlan> {
+    if !purpose_admits_boundary(purpose, holder.boundary)
+        || !purpose_admits_carrier(purpose, carrier)
+    {
+        return None;
+    }
+    let (route, authority) = boundary_delivery_shape(holder.boundary);
+    Some(CredentialDeliveryPlan {
+        holder: holder.clone(),
+        carrier,
+        route,
+        authority,
+    })
 }
 
 /// Repository Git has one Sandbox-visible protocol carrier in every topology.
@@ -64,46 +135,204 @@ const fn repository_git_delivery_shape(
 pub fn repository_git_credential_delivery(
     holder: &PlaintextHolder,
 ) -> Option<CredentialDeliveryPlan> {
-    let (route, authority) = repository_git_delivery_shape(holder.boundary)?;
-    Some(CredentialDeliveryPlan {
-        holder: holder.clone(),
-        carrier: CredentialDeliveryCarrier::ProcessProtocol,
-        route,
-        authority,
-    })
+    credential_delivery_plan(
+        CredentialPurpose::RepositoryTransport,
+        holder,
+        CredentialDeliveryCarrier::ProcessProtocol,
+    )
 }
 
 #[cfg(kani)]
 #[kani::proof]
-fn credential_effect_repository_git_delivery_never_admits_worker_or_mixes_route_authority() {
+fn credential_effect_delivery_policy_is_total_and_never_mixes_route_authority() {
+    let purpose = match kani::any::<u8>() % 8 {
+        0 => CredentialPurpose::ProviderAdapter,
+        1 => CredentialPurpose::RepositoryTransport,
+        2 => CredentialPurpose::McpAuthorization,
+        3 => CredentialPurpose::RemoteAgentAuthorization,
+        4 => CredentialPurpose::WebProviderAuthorization,
+        5 => CredentialPurpose::HttpEffect,
+        6 => CredentialPurpose::SignatureVerification,
+        _ => CredentialPurpose::Extension,
+    };
     let boundary = match kani::any::<u8>() % 3 {
         0 => PlaintextBoundary::Workload,
         1 => PlaintextBoundary::Worker,
         _ => PlaintextBoundary::Platform,
     };
-    let shape = repository_git_delivery_shape(boundary);
+    let carrier = match kani::any::<u8>() % 3 {
+        0 => CredentialDeliveryCarrier::ProcessEnvironment,
+        1 => CredentialDeliveryCarrier::PrivateFile,
+        _ => CredentialDeliveryCarrier::ProcessProtocol,
+    };
+
+    // Policy is total: every triple is either an admitted shape or a closed
+    // refusal, and the refusal reason is exactly one of the two stated axes.
+    let admitted =
+        purpose_admits_boundary(purpose, boundary) && purpose_admits_carrier(purpose, carrier);
+
+    // Route and authority never mix across the plaintext boundary.
+    let (route, authority) = boundary_delivery_shape(boundary);
     match boundary {
-        PlaintextBoundary::Workload => assert!(matches!(
-            shape,
-            Some((
+        PlaintextBoundary::Worker | PlaintextBoundary::Workload => assert!(matches!(
+            (route, authority),
+            (
                 CredentialInvocationRoute::Direct,
                 CredentialDeliveredAuthority::PlaintextMaterial
-            ))
+            )
         )),
-        PlaintextBoundary::Worker => assert!(shape.is_none()),
         PlaintextBoundary::Platform => assert!(matches!(
-            shape,
-            Some((
+            (route, authority),
+            (
                 CredentialInvocationRoute::EgressGateway,
                 CredentialDeliveredAuthority::DelegatedCapability
-            ))
+            )
         )),
+    }
+
+    // Repository Git custody never reaches a Worker, in any topology.
+    if matches!(purpose, CredentialPurpose::RepositoryTransport)
+        && matches!(boundary, PlaintextBoundary::Worker)
+    {
+        assert!(!admitted);
+    }
+    // Host-side verification performs no upstream effect at all.
+    if matches!(purpose, CredentialPurpose::SignatureVerification) {
+        assert!(!admitted);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The gateway-shielding property, stated once for every purpose: route
+    /// and authority are decided by the plaintext boundary alone. A deployment
+    /// that turns its egress gateway on moves every credential kind from
+    /// direct/plaintext to mediated/capability together, with no purpose left
+    /// behind on a second mechanism.
+    #[test]
+    fn every_purpose_shares_one_boundary_driven_route_and_authority() {
+        for purpose in [
+            CredentialPurpose::ProviderAdapter,
+            CredentialPurpose::RepositoryTransport,
+            CredentialPurpose::McpAuthorization,
+            CredentialPurpose::RemoteAgentAuthorization,
+            CredentialPurpose::WebProviderAuthorization,
+            CredentialPurpose::HttpEffect,
+            CredentialPurpose::Extension,
+        ] {
+            let direct = credential_delivery_plan(
+                purpose,
+                &PlaintextHolder::new(PlaintextBoundary::Workload, "sandbox"),
+                CredentialDeliveryCarrier::ProcessProtocol,
+            )
+            .expect("workload delivers every purpose directly");
+            assert_eq!(direct.route, CredentialInvocationRoute::Direct);
+            assert_eq!(
+                direct.authority,
+                CredentialDeliveredAuthority::PlaintextMaterial,
+                "{purpose:?}"
+            );
+
+            let mediated = credential_delivery_plan(
+                purpose,
+                &PlaintextHolder::new(PlaintextBoundary::Platform, "gateway"),
+                CredentialDeliveryCarrier::ProcessProtocol,
+            )
+            .expect("platform mediates every purpose");
+            assert_eq!(mediated.route, CredentialInvocationRoute::EgressGateway);
+            assert_eq!(
+                mediated.authority,
+                CredentialDeliveredAuthority::DelegatedCapability,
+                "{purpose:?}"
+            );
+        }
+    }
+
+    /// Purposes differ on exactly two axes, and each refusal is a custody
+    /// decision. Stating them per purpose keeps the table meaningful instead
+    /// of padding a cartesian product with `None`.
+    #[test]
+    fn purpose_refusals_are_closed_custody_decisions() {
+        let worker = PlaintextHolder::new(PlaintextBoundary::Worker, "runtime-host");
+        let workload = PlaintextHolder::new(PlaintextBoundary::Workload, "sandbox");
+
+        // Repository Git effects are Sandbox-owned in every topology.
+        assert!(
+            credential_delivery_plan(
+                CredentialPurpose::RepositoryTransport,
+                &worker,
+                CredentialDeliveryCarrier::ProcessProtocol,
+            )
+            .is_none()
+        );
+        // A provider adapter legitimately runs in the Worker.
+        assert!(
+            credential_delivery_plan(
+                CredentialPurpose::ProviderAdapter,
+                &worker,
+                CredentialDeliveryCarrier::ProcessProtocol,
+            )
+            .is_some()
+        );
+        // Host-side verification performs no upstream effect at all.
+        for boundary in [
+            PlaintextBoundary::Worker,
+            PlaintextBoundary::Workload,
+            PlaintextBoundary::Platform,
+        ] {
+            assert!(
+                credential_delivery_plan(
+                    CredentialPurpose::SignatureVerification,
+                    &PlaintextHolder::new(boundary, "host"),
+                    CredentialDeliveryCarrier::ProcessProtocol,
+                )
+                .is_none()
+            );
+        }
+        // Protocol-field consumers cannot read a process environment entry or
+        // a private file; only an adapter-shaped consumer can.
+        for carrier in [
+            CredentialDeliveryCarrier::ProcessEnvironment,
+            CredentialDeliveryCarrier::PrivateFile,
+        ] {
+            assert!(
+                credential_delivery_plan(CredentialPurpose::McpAuthorization, &workload, carrier)
+                    .is_none()
+            );
+            assert!(
+                credential_delivery_plan(CredentialPurpose::ProviderAdapter, &workload, carrier)
+                    .is_some()
+            );
+        }
+    }
+
+    /// The hosted profile and the delivery policy must agree: the canonical
+    /// hosted holder is exactly the one that yields a mediated, capability
+    /// route for every purpose.
+    #[test]
+    fn the_canonical_hosted_profile_mediates_every_purpose() {
+        let hosted = crate::CredentialRealizationProfile::hosted_cloud();
+        for holder in [
+            &hosted.inference_holder,
+            &hosted.mcp_holder,
+            &hosted.resource_holder,
+        ] {
+            assert_eq!(holder.boundary, PlaintextBoundary::Platform);
+            let plan = credential_delivery_plan(
+                CredentialPurpose::RepositoryTransport,
+                holder,
+                CredentialDeliveryCarrier::ProcessProtocol,
+            )
+            .expect("hosted holder delivers");
+            assert_eq!(plan.route, CredentialInvocationRoute::EgressGateway);
+            assert_eq!(
+                plan.authority,
+                CredentialDeliveredAuthority::DelegatedCapability
+            );
+        }
+    }
 
     #[test]
     fn repository_git_delivery_is_closed_over_sandbox_and_gateway_routes() {

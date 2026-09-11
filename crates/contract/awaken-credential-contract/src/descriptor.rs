@@ -87,7 +87,17 @@ pub struct CredentialPermissionRef(pub String);
 /// Why a target is allowed to consume the credential. Purpose is orthogonal to
 /// provider identity and material shape.
 #[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    schemars::JsonSchema,
 )]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CredentialPurpose {
@@ -104,11 +114,17 @@ pub enum CredentialPurpose {
 
 impl CredentialPurpose {
     /// Validate the closed usage shapes supported by each target owner.
+    ///
+    /// Core delivery carriers are deliberately purpose-neutral: Repository,
+    /// MCP, remote-agent and provider credentials all reuse the one ENV and
+    /// private-file mechanism. Purpose constrains which upstream may consume
+    /// material; it does not get a second say in how the bytes travel.
     pub fn validate_usage(&self, usage: &CredentialUsage) -> Result<(), CredentialDescriptorError> {
+        if usage.is_core_delivery() {
+            return Ok(());
+        }
         match (self, usage) {
             (Self::ProviderAdapter, CredentialUsage::ProviderAdapter)
-            | (Self::ProviderAdapter, CredentialUsage::EnvironmentVariable { .. })
-            | (Self::ProviderAdapter, CredentialUsage::File { .. })
             | (Self::RepositoryTransport, CredentialUsage::HttpBasicAuth)
             | (Self::McpAuthorization, CredentialUsage::HttpHeader { .. })
             | (Self::RemoteAgentAuthorization, CredentialUsage::HttpHeader { .. })
@@ -116,8 +132,6 @@ impl CredentialPurpose {
             | (Self::WebProviderAuthorization, CredentialUsage::HttpBasicAuth)
             | (Self::WebProviderAuthorization, CredentialUsage::QueryParameter { .. })
             | (Self::WebProviderAuthorization, CredentialUsage::ClientCertificate)
-            | (Self::WebProviderAuthorization, CredentialUsage::EnvironmentVariable { .. })
-            | (Self::WebProviderAuthorization, CredentialUsage::File { .. })
             | (Self::HttpEffect, CredentialUsage::HttpEffect { .. })
             | (Self::SignatureVerification, CredentialUsage::SignatureVerification { .. })
             | (Self::Extension, CredentialUsage::Extension { .. }) => Ok(()),
@@ -163,6 +177,11 @@ pub fn validate_credential_target_usage(
 ) -> Result<(), CredentialDescriptorError> {
     match target {
         Some(target) => target.validate_usage(usage),
+        // A core delivery carrier keeps the leniency the retired
+        // `environment_variable`/`file` encodings had: a retained row that
+        // names no target still describes a complete placement. External
+        // extension consumers continue to require an explicit target.
+        None if usage.is_core_delivery() => Ok(()),
         None if matches!(
             usage,
             CredentialUsage::ProviderAdapter

@@ -552,9 +552,7 @@ mod tests {
                         if backend == "genai" {
                             CredentialUsage::ProviderAdapter
                         } else {
-                            CredentialUsage::EnvironmentVariable {
-                                name: "ANTHROPIC_API_KEY".into(),
-                            }
+                            CredentialUsage::process_env("ANTHROPIC_API_KEY")
                         }
                     );
                 } else {
