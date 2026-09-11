@@ -17,10 +17,6 @@ fn is_false(value: &bool) -> bool {
 #[serde(transparent)]
 pub struct McpSetRevision(pub u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct McpGeneration(pub u64);
-
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct McpAttachmentId(pub String);
@@ -110,22 +106,9 @@ pub struct SessionMcpAttachmentSet {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct McpReplacementPlan {
-    pub requested: Vec<(McpAttachmentId, McpGeneration)>,
-    pub draining: Vec<(McpAttachmentId, McpGeneration)>,
+    pub requested: Vec<McpGeneration>,
+    pub draining: Vec<McpGeneration>,
     pub changed: bool,
-}
-
-/// Exact identity and continuing ownership fence for one Runtime projection.
-/// Runtime adapters must compare the complete value; a logical name is never a
-/// sufficient route or cleanup identity.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct McpGenerationRef {
-    pub session_id: String,
-    pub attachment_id: McpAttachmentId,
-    pub generation: McpGeneration,
-    pub runtime_incarnation: String,
-    pub lease_epoch: u64,
-    pub lease_expires_at_unix_ms: u64,
 }
 
 /// Secret-free command for realizing one already-authorized attachment
@@ -165,8 +148,7 @@ impl StageMcpAttachment {
             return crate::stable_fingerprint(&(
                 &self.workspace_id,
                 &self.generation.session_id,
-                &self.generation.attachment_id,
-                self.generation.generation,
+                &self.generation.generation,
                 &self.generation.runtime_incarnation,
                 self.generation.lease_epoch,
                 &self.realization_id,
@@ -179,8 +161,7 @@ impl StageMcpAttachment {
         crate::stable_fingerprint(&(
             &self.workspace_id,
             &self.generation.session_id,
-            &self.generation.attachment_id,
-            self.generation.generation,
+            &self.generation.generation,
             &self.generation.runtime_incarnation,
             self.generation.lease_epoch,
             &self.realization_id,
@@ -391,23 +372,26 @@ impl SessionMcpAttachmentSet {
         let desired_fingerprint = desired_fingerprint(&drafts);
         let attachments: Vec<SessionMcpAttachment> = drafts
             .into_iter()
-            .map(|draft| SessionMcpAttachment {
-                attachment_id: attachment_id(&draft.name),
-                name: draft.name,
-                generation: McpGeneration(1),
-                target: draft.target,
-                prompts_as_skills: draft.prompts_as_skills,
-                origin: draft.origin,
-                selected_plaintext_holder: draft
-                    .credential
-                    .as_ref()
-                    .map(|_| selected_holder.clone().expect("validated holder")),
-                credential: draft.credential,
-                state: McpAttachmentState::Requested,
-                publication_acknowledged: false,
-                realization: None,
-                attempts: 0,
-                last_error: None,
+            .map(|draft| {
+                let attachment_id = attachment_id(&draft.name);
+                SessionMcpAttachment {
+                    generation: McpGeneration::of_draft(attachment_id.clone(), 1, &draft),
+                    attachment_id,
+                    name: draft.name,
+                    target: draft.target,
+                    prompts_as_skills: draft.prompts_as_skills,
+                    origin: draft.origin,
+                    selected_plaintext_holder: draft
+                        .credential
+                        .as_ref()
+                        .map(|_| selected_holder.clone().expect("validated holder")),
+                    credential: draft.credential,
+                    state: McpAttachmentState::Requested,
+                    publication_acknowledged: false,
+                    realization: None,
+                    attempts: 0,
+                    last_error: None,
+                }
             })
             .collect();
         Ok(Self {
@@ -451,7 +435,7 @@ impl SessionMcpAttachmentSet {
                 desired
                     .get(&attachment.name)
                     .is_none_or(|current: &&SessionMcpAttachment| {
-                        current.generation < attachment.generation
+                        current.generation.version() < attachment.generation.version()
                     });
             if replace {
                 desired.insert(attachment.name.clone(), attachment);
@@ -472,11 +456,10 @@ impl SessionMcpAttachmentSet {
 
     pub fn claim_realization(
         &mut self,
-        attachment_id: &McpAttachmentId,
-        generation: McpGeneration,
+        generation: &McpGeneration,
         claim: McpRealizationClaim,
     ) -> Result<(), McpAttachmentError> {
-        let attachment = exact_mut(&mut self.attachments, attachment_id, generation)?;
+        let attachment = exact_mut(&mut self.attachments, generation)?;
         if attachment.state != McpAttachmentState::Requested {
             return Err(McpAttachmentError::InvalidTransition);
         }
@@ -496,11 +479,10 @@ impl SessionMcpAttachmentSet {
     /// expired process-local realization claim.
     pub fn claim_recovery(
         &mut self,
-        attachment_id: &McpAttachmentId,
-        generation: McpGeneration,
+        generation: &McpGeneration,
         claim: McpRealizationClaim,
     ) -> Result<(), McpAttachmentError> {
-        let attachment = exact_mut(&mut self.attachments, attachment_id, generation)?;
+        let attachment = exact_mut(&mut self.attachments, generation)?;
         match attachment.state {
             McpAttachmentState::Requested => {
                 attachment.state = McpAttachmentState::Realizing;
@@ -566,8 +548,7 @@ impl SessionMcpAttachmentSet {
                 match attachment.state {
                     McpAttachmentState::Active | McpAttachmentState::Realizing => {
                         attachment.state = McpAttachmentState::Draining;
-                        plan.draining
-                            .push((attachment.attachment_id.clone(), attachment.generation));
+                        plan.draining.push(attachment.generation.clone());
                     }
                     McpAttachmentState::Requested => {
                         attachment.state = McpAttachmentState::Removed;
@@ -600,24 +581,24 @@ impl SessionMcpAttachmentSet {
                     || attachment_id(&draft.name),
                     |item| item.attachment_id.clone(),
                 );
-            let generation = self
+            let version = self
                 .attachments
                 .iter()
                 .filter(|attachment| attachment.attachment_id == attachment_id)
-                .map(|attachment| attachment.generation.0)
+                .map(|attachment| attachment.generation.version())
                 .max()
                 .unwrap_or(0)
                 .checked_add(1)
-                .map(McpGeneration)
                 .ok_or(McpAttachmentError::CounterExhausted)?;
+            let generation = McpGeneration::of_draft(attachment_id.clone(), version, &draft);
             let selected_plaintext_holder = draft
                 .credential
                 .as_ref()
                 .map(|_| selected_holder.clone().expect("validated holder"));
             self.attachments.push(SessionMcpAttachment {
-                attachment_id: attachment_id.clone(),
+                attachment_id,
                 name: draft.name,
-                generation,
+                generation: generation.clone(),
                 target: draft.target,
                 prompts_as_skills: draft.prompts_as_skills,
                 origin: draft.origin,
@@ -629,15 +610,15 @@ impl SessionMcpAttachmentSet {
                 attempts: 0,
                 last_error: None,
             });
-            plan.requested.push((attachment_id, generation));
+            plan.requested.push(generation);
         }
         // A set-wide replacement does not hide removals while another desired
         // generation is still staging. Persist the future drain intent through
         // `desired_names`; the activation switch applies it atomically after all
         // requested generations have receipts. A pure removal can drain now.
         if !plan.requested.is_empty() {
-            for (attachment_id, generation) in &plan.draining {
-                let attachment = exact_mut(&mut self.attachments, attachment_id, *generation)?;
+            for generation in &plan.draining {
+                let attachment = exact_mut(&mut self.attachments, generation)?;
                 attachment.state = McpAttachmentState::Active;
             }
         }
@@ -670,11 +651,11 @@ impl SessionMcpAttachmentSet {
 
     pub fn activate(
         &mut self,
-        attachment_id: &McpAttachmentId,
-        generation: McpGeneration,
+        generation: &McpGeneration,
         realization_id: &str,
     ) -> Result<(), McpAttachmentError> {
-        let index = exact_index(&self.attachments, attachment_id, generation)?;
+        let attachment_id = generation.attachment_id();
+        let index = exact_index(&self.attachments, generation)?;
         let attachment = &self.attachments[index];
         if attachment.state != McpAttachmentState::Realizing {
             return Err(McpAttachmentError::InvalidTransition);
@@ -700,11 +681,10 @@ impl SessionMcpAttachmentSet {
 
     pub fn acknowledge_publication(
         &mut self,
-        attachment_id: &McpAttachmentId,
-        generation: McpGeneration,
+        generation: &McpGeneration,
         realization_id: &str,
     ) -> Result<(), McpAttachmentError> {
-        let attachment = exact_mut(&mut self.attachments, attachment_id, generation)?;
+        let attachment = exact_mut(&mut self.attachments, generation)?;
         if attachment.state != McpAttachmentState::Active {
             return Err(McpAttachmentError::InvalidTransition);
         }
@@ -775,12 +755,11 @@ impl SessionMcpAttachmentSet {
 
     pub fn fail_realization(
         &mut self,
-        attachment_id: &McpAttachmentId,
-        generation: McpGeneration,
+        generation: &McpGeneration,
         realization_id: &str,
         error: impl Into<String>,
     ) -> Result<(), McpAttachmentError> {
-        let attachment = exact_mut(&mut self.attachments, attachment_id, generation)?;
+        let attachment = exact_mut(&mut self.attachments, generation)?;
         if attachment.state != McpAttachmentState::Realizing {
             return Err(McpAttachmentError::InvalidTransition);
         }
@@ -796,12 +775,8 @@ impl SessionMcpAttachmentSet {
         self.bump_revision()
     }
 
-    pub fn begin_drain(
-        &mut self,
-        attachment_id: &McpAttachmentId,
-        generation: McpGeneration,
-    ) -> Result<(), McpAttachmentError> {
-        let attachment = exact_mut(&mut self.attachments, attachment_id, generation)?;
+    pub fn begin_drain(&mut self, generation: &McpGeneration) -> Result<(), McpAttachmentError> {
+        let attachment = exact_mut(&mut self.attachments, generation)?;
         if attachment.state != McpAttachmentState::Active {
             return Err(McpAttachmentError::InvalidTransition);
         }
@@ -809,12 +784,8 @@ impl SessionMcpAttachmentSet {
         self.bump_revision()
     }
 
-    pub fn finish_drain(
-        &mut self,
-        attachment_id: &McpAttachmentId,
-        generation: McpGeneration,
-    ) -> Result<(), McpAttachmentError> {
-        let attachment = exact_mut(&mut self.attachments, attachment_id, generation)?;
+    pub fn finish_drain(&mut self, generation: &McpGeneration) -> Result<(), McpAttachmentError> {
+        let attachment = exact_mut(&mut self.attachments, generation)?;
         if attachment.state != McpAttachmentState::Draining {
             return Err(McpAttachmentError::InvalidTransition);
         }
@@ -903,17 +874,22 @@ fn attachment_id(name: &str) -> McpAttachmentId {
     McpAttachmentId(format!("mcp_{}", crate::stable_fingerprint(&name)))
 }
 
+/// The aggregate's one compare-and-set precondition.
+///
+/// The observed witness must still be the durable head on every coordinate.
+/// [`awaken_resource_contract::generation_matches`] owns that conjunction, so
+/// no caller can weaken it to an identity-only or counter-only comparison.
 fn exact_index(
     attachments: &[SessionMcpAttachment],
-    attachment_id: &McpAttachmentId,
-    generation: McpGeneration,
+    generation: &McpGeneration,
 ) -> Result<usize, McpAttachmentError> {
     if let Some(index) = attachments
         .iter()
-        .position(|item| item.attachment_id == *attachment_id && item.generation == generation)
+        .position(|item| awaken_resource_contract::generation_matches(generation, &item.generation))
     {
         return Ok(index);
     }
+    let attachment_id = generation.attachment_id();
     if attachments
         .iter()
         .any(|item| item.attachment_id == *attachment_id)
@@ -928,12 +904,16 @@ fn exact_index(
 
 fn exact_mut<'a>(
     attachments: &'a mut [SessionMcpAttachment],
-    attachment_id: &McpAttachmentId,
-    generation: McpGeneration,
+    generation: &McpGeneration,
 ) -> Result<&'a mut SessionMcpAttachment, McpAttachmentError> {
-    let index = exact_index(attachments, attachment_id, generation)?;
+    let index = exact_index(attachments, generation)?;
     Ok(&mut attachments[index])
 }
+
+mod generation;
+pub use generation::{McpAttachmentContentDigest, McpGeneration, McpGenerationRef};
+#[cfg(test)]
+pub(crate) use generation::{test_generation, test_generation_at_version};
 
 mod quiescence;
 
@@ -994,8 +974,7 @@ mod tests {
             workspace_id: "workspace-a".into(),
             generation: McpGenerationRef {
                 session_id: "session-a".into(),
-                attachment_id: McpAttachmentId("mcp-docs".into()),
-                generation: McpGeneration(3),
+                generation: witness("mcp-docs", 3, "https://mcp.example.test"),
                 runtime_incarnation: "runtime-a".into(),
                 lease_epoch: 7,
                 lease_expires_at_unix_ms: u64::MAX,
@@ -1025,7 +1004,9 @@ mod tests {
             let mut receipt = exact.clone();
             match mutation {
                 0 => {}
-                1 => receipt.generation.generation = McpGeneration(4),
+                1 => {
+                    receipt.generation.generation = at_version(&receipt.generation.generation, 4);
+                }
                 2 => receipt.realization_id = "realization-b".into(),
                 3 => receipt.selected_plaintext_holder = Some(holder("worker-b")),
                 4 => receipt.receipt_fingerprint = "another-request".into(),
@@ -1091,8 +1072,7 @@ mod tests {
                 workspace_id: "workspace-a".into(),
                 generation: McpGenerationRef {
                     session_id: "session-a".into(),
-                    attachment_id: McpAttachmentId("mcp-docs".into()),
-                    generation: McpGeneration(3),
+                    generation: witness("mcp-docs", 3, "https://mcp.example.test"),
                     runtime_incarnation: "runtime-a".into(),
                     lease_epoch: 7,
                     lease_expires_at_unix_ms: u64::MAX,
@@ -1143,6 +1123,8 @@ mod tests {
             CredentialExecutionPolicy::exact(allowed, ModelExposurePolicy::VirtualOnly),
         )
     }
+
+    use super::{test_generation as witness, test_generation_at_version as at_version};
 
     pub(super) fn draft(
         name: &str,
@@ -1262,13 +1244,13 @@ mod tests {
             attachment.state = McpAttachmentState::Active;
         }
         let mut failed = set.attachments[0].clone();
-        failed.generation = McpGeneration(2);
+        failed.generation = at_version(&failed.generation, 2);
         failed.state = McpAttachmentState::Failed;
         let mut removed = set.attachments[1].clone();
-        removed.generation = McpGeneration(2);
+        removed.generation = at_version(&removed.generation, 2);
         removed.state = McpAttachmentState::Removed;
         let mut realizing = set.attachments[2].clone();
-        realizing.generation = McpGeneration(3);
+        realizing.generation = at_version(&realizing.generation, 3);
         realizing.state = McpAttachmentState::Realizing;
         set.attachments.extend([failed, removed, realizing]);
 
@@ -1278,7 +1260,7 @@ mod tests {
                 .map(|attachment| {
                     (
                         attachment.name.clone(),
-                        attachment.generation,
+                        attachment.generation.version(),
                         attachment.state,
                     )
                 })
@@ -1289,21 +1271,9 @@ mod tests {
         assert_eq!(
             selected(&set),
             [
-                (
-                    "alpha".to_string(),
-                    McpGeneration(1),
-                    McpAttachmentState::Active,
-                ),
-                (
-                    "beta".to_string(),
-                    McpGeneration(1),
-                    McpAttachmentState::Active,
-                ),
-                (
-                    "gamma".to_string(),
-                    McpGeneration(3),
-                    McpAttachmentState::Realizing,
-                ),
+                ("alpha".to_string(), 1, McpAttachmentState::Active,),
+                ("beta".to_string(), 1, McpAttachmentState::Active,),
+                ("gamma".to_string(), 3, McpAttachmentState::Realizing,),
             ],
             "D1/E1+E4+E5"
         );
@@ -1320,21 +1290,9 @@ mod tests {
         assert_eq!(
             selected(&set),
             [
-                (
-                    "alpha".to_string(),
-                    McpGeneration(2),
-                    McpAttachmentState::Failed,
-                ),
-                (
-                    "beta".to_string(),
-                    McpGeneration(1),
-                    McpAttachmentState::Active,
-                ),
-                (
-                    "gamma".to_string(),
-                    McpGeneration(3),
-                    McpAttachmentState::Realizing,
-                ),
+                ("alpha".to_string(), 2, McpAttachmentState::Failed,),
+                ("beta".to_string(), 1, McpAttachmentState::Active,),
+                ("gamma".to_string(), 3, McpAttachmentState::Realizing,),
             ],
             "D3-D4/E3-E5"
         );
@@ -1453,7 +1411,8 @@ mod tests {
             None,
         )
         .unwrap();
-        let id = set.attachments[0].attachment_id.clone();
+        let one = set.attachments[0].generation.clone();
+        let two = at_version(&one, 2);
         let claim = McpRealizationClaim {
             realization_id: "realization-1".into(),
             runtime_incarnation: "runtime-1".into(),
@@ -1461,19 +1420,18 @@ mod tests {
             lease_expires_at_unix_ms: 100,
             stage_idempotency_key: "stage-1".into(),
         };
-        set.claim_realization(&id, McpGeneration(1), claim)
-            .expect("L1");
+        set.claim_realization(&one, claim).expect("L1");
         assert_eq!(set.attachments[0].state, McpAttachmentState::Realizing);
 
         let before = set.clone();
         assert_eq!(
-            set.activate(&id, McpGeneration(2), "realization-1"),
+            set.activate(&two, "realization-1"),
             Err(McpAttachmentError::StaleGeneration),
             "L6"
         );
         assert_eq!(set, before, "L6 no mutation");
         assert_eq!(
-            set.activate(&id, McpGeneration(1), "foreign"),
+            set.activate(&one, "foreign"),
             Err(McpAttachmentError::StaleRealizationClaim),
             "L7"
         );
@@ -1481,35 +1439,34 @@ mod tests {
 
         let mut failed = set.clone();
         failed
-            .fail_realization(&id, McpGeneration(1), "realization-1", "dial failed")
+            .fail_realization(&one, "realization-1", "dial failed")
             .expect("L3");
         assert_eq!(failed.attachments[0].state, McpAttachmentState::Failed);
         assert_eq!(
-            failed.begin_drain(&id, McpGeneration(1)),
+            failed.begin_drain(&one),
             Err(McpAttachmentError::InvalidTransition),
             "L8"
         );
 
-        set.activate(&id, McpGeneration(1), "realization-1")
-            .expect("L2");
+        set.activate(&one, "realization-1").expect("L2");
         assert_eq!(set.attachments[0].state, McpAttachmentState::Active);
         let before_ack = set.clone();
         assert_eq!(
-            set.acknowledge_publication(&id, McpGeneration(1), "foreign"),
+            set.acknowledge_publication(&one, "foreign"),
             Err(McpAttachmentError::StaleRealizationClaim),
             "L11"
         );
         assert_eq!(set, before_ack, "L11 no mutation");
-        set.acknowledge_publication(&id, McpGeneration(1), "realization-1")
+        set.acknowledge_publication(&one, "realization-1")
             .expect("L9");
         assert!(set.attachments[0].publication_acknowledged, "L9");
         let revision = set.revision;
-        set.acknowledge_publication(&id, McpGeneration(1), "realization-1")
+        set.acknowledge_publication(&one, "realization-1")
             .expect("L10");
         assert_eq!(set.revision, revision, "L10");
-        set.begin_drain(&id, McpGeneration(1)).expect("L4");
+        set.begin_drain(&one).expect("L4");
         assert_eq!(set.attachments[0].state, McpAttachmentState::Draining);
-        set.finish_drain(&id, McpGeneration(1)).expect("L5");
+        set.finish_drain(&one).expect("L5");
         assert_eq!(set.attachments[0].state, McpAttachmentState::Removed);
     }
 
@@ -1534,10 +1491,9 @@ mod tests {
                 None,
             )
             .unwrap();
-            let id = set.attachments[0].attachment_id.clone();
+            let one = set.attachments[0].generation.clone();
             set.claim_realization(
-                &id,
-                McpGeneration(1),
+                &one,
                 McpRealizationClaim {
                     realization_id: "realization-1".into(),
                     runtime_incarnation: "runtime-1".into(),
@@ -1547,10 +1503,8 @@ mod tests {
                 },
             )
             .unwrap();
-            set.activate(&id, McpGeneration(1), "realization-1")
-                .unwrap();
-            set.acknowledge_publication(&id, McpGeneration(1), "realization-1")
-                .unwrap();
+            set.activate(&one, "realization-1").unwrap();
+            set.acknowledge_publication(&one, "realization-1").unwrap();
             set
         };
 
@@ -1669,10 +1623,10 @@ mod tests {
             )
             .unwrap();
             set.attachments[0].state = state;
-            let id = set.attachments[0].attachment_id.clone();
+            let one = set.attachments[0].generation.clone();
             let before = set.clone();
             let actual = set
-                .claim_recovery(&id, McpGeneration(1), claim(rule))
+                .claim_recovery(&one, claim(rule))
                 .map(|()| set.attachments[0].state);
             assert_eq!(actual, expected, "{rule}");
             if expected.is_err() {
@@ -1694,10 +1648,10 @@ mod tests {
             None,
         )
         .unwrap();
-        let id = set.attachments[0].attachment_id.clone();
+        let two = at_version(&set.attachments[0].generation, 2);
         let before = set.clone();
         assert_eq!(
-            set.claim_recovery(&id, McpGeneration(2), claim("R7")),
+            set.claim_recovery(&two, claim("R7")),
             Err(McpAttachmentError::StaleGeneration),
             "R7"
         );
@@ -1760,7 +1714,7 @@ mod tests {
             .request_full_replacement(vec![draft("a", "https://a.test/mcp", None)], None)
             .expect("D1");
         assert_eq!(plan.requested.len(), 1, "D1");
-        assert_eq!(add.attachments[0].generation, McpGeneration(1), "D1");
+        assert_eq!(add.attachments[0].generation.version(), 1, "D1");
 
         add.attachments[0].state = McpAttachmentState::Active;
         let unchanged = add
@@ -1773,7 +1727,7 @@ mod tests {
             .expect("D3");
         assert_eq!(replaced.requested.len(), 1, "D3");
         assert_eq!(add.attachments[0].state, McpAttachmentState::Active, "D3");
-        assert_eq!(add.attachments[1].generation, McpGeneration(2), "D3");
+        assert_eq!(add.attachments[1].generation.version(), 2, "D3");
 
         let mut prompt_policy = SessionMcpAttachmentSet::from_initial(
             vec![draft("docs", "https://docs.test/mcp", None)],
@@ -1788,11 +1742,7 @@ mod tests {
             .expect("D8");
         assert!(prompt_replaced.changed, "D8");
         assert_eq!(prompt_policy.attachments.len(), 2, "D8");
-        assert_eq!(
-            prompt_policy.attachments[1].generation,
-            McpGeneration(2),
-            "D8"
-        );
+        assert_eq!(prompt_policy.attachments[1].generation.version(), 2, "D8");
         assert!(prompt_policy.attachments[1].prompts_as_skills, "D8");
 
         let workload = PlaintextHolder::new(PlaintextBoundary::Workload, "awaken.workload.acp");
@@ -1818,8 +1768,8 @@ mod tests {
         assert!(credential_replaced.changed, "D9");
         assert_eq!(credential_policy.attachments.len(), 2, "D9");
         assert_eq!(
-            credential_policy.attachments[1].generation,
-            McpGeneration(2),
+            credential_policy.attachments[1].generation.version(),
+            2,
             "D9"
         );
 
@@ -1854,7 +1804,7 @@ mod tests {
             .request_full_replacement(vec![draft("a", "https://a.test/mcp", None)], None)
             .expect("D6");
         assert_eq!(retried.requested.len(), 1, "D6");
-        assert_eq!(retry.attachments[1].generation, McpGeneration(2), "D6");
+        assert_eq!(retry.attachments[1].generation.version(), 2, "D6");
 
         let mut atomic = SessionMcpAttachmentSet::from_initial(
             vec![draft("old", "https://old.test/mcp", None)],
@@ -1883,8 +1833,7 @@ mod tests {
     fn projection_receipt_is_bound_to_generation_and_effect_kind() {
         let generation = McpGenerationRef {
             session_id: "session".into(),
-            attachment_id: McpAttachmentId("attachment".into()),
-            generation: McpGeneration(3),
+            generation: witness("attachment", 3, "https://attachment.test/mcp"),
             runtime_incarnation: "runtime".into(),
             lease_epoch: 7,
             lease_expires_at_unix_ms: 99,

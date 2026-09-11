@@ -258,8 +258,12 @@ async fn realization_revocation_closes_admission_before_waiting_for_owner_locks(
                 install_test_renewal_authority(&host, &control, SESSION, lease.clone());
                 let generation = awaken_session_contract::McpGenerationRef {
                     session_id: SESSION.into(),
-                    attachment_id: awaken_session_contract::McpAttachmentId("mcp".into()),
-                    generation: awaken_session_contract::McpGeneration(1),
+                    generation: awaken_session_contract::McpGeneration::of_bare_target(
+                        awaken_session_contract::McpAttachmentId("mcp".into()),
+                        1,
+                        &awaken_session_contract::McpTarget::parse_http("https://fixture.test/mcp")
+                            .unwrap(),
+                    ),
                     runtime_incarnation: lease.runtime_incarnation.clone(),
                     lease_epoch: lease.epoch,
                     lease_expires_at_unix_ms: lease.expires_at_unix_ms,

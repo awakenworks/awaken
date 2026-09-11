@@ -383,6 +383,19 @@ fn add_acknowledged_active_mcp(
     };
     session.realization = Some(lease.clone());
     let attachment_id = awaken_session_contract::McpAttachmentId(name.into());
+    let target =
+        awaken_session_contract::McpTarget::parse_http(format!("https://{name}.example.test/mcp"))
+            .expect("continuation MCP fixture endpoint is valid");
+    let witness = awaken_session_contract::McpGeneration::new(
+        attachment_id.clone(),
+        generation,
+        awaken_session_contract::McpAttachmentContentDigest::of_content(
+            &target,
+            false,
+            None,
+            awaken_session_contract::McpAttachmentOrigin::Agent,
+        ),
+    );
     session
         .mcp
         .desired_names
@@ -392,13 +405,10 @@ fn add_acknowledged_active_mcp(
         .mcp
         .attachments
         .push(awaken_session_contract::SessionMcpAttachment {
-            attachment_id: attachment_id.clone(),
+            attachment_id,
             name: name.into(),
-            generation: awaken_session_contract::McpGeneration(generation),
-            target: awaken_session_contract::McpTarget::parse_http(format!(
-                "https://{name}.example.test/mcp"
-            ))
-            .expect("continuation MCP fixture endpoint is valid"),
+            generation: witness.clone(),
+            target,
             prompts_as_skills: false,
             origin: awaken_session_contract::McpAttachmentOrigin::Agent,
             credential: None,
@@ -417,8 +427,7 @@ fn add_acknowledged_active_mcp(
         });
     awaken_session_contract::McpGenerationRef {
         session_id: session.session_id.clone(),
-        attachment_id,
-        generation: awaken_session_contract::McpGeneration(generation),
+        generation: witness,
         runtime_incarnation: lease.runtime_incarnation,
         lease_epoch: lease.epoch,
         lease_expires_at_unix_ms: lease.expires_at_unix_ms,

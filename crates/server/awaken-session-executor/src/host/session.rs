@@ -818,8 +818,8 @@ impl SharedHost {
                     let wiring = projection.native_wiring.as_ref().ok_or_else(|| {
                         HostError::internal(format!(
                             "native MCP generation {}:{} has no staged connection",
-                            projection.request.generation.attachment_id.0,
-                            projection.request.generation.generation.0
+                            projection.request.generation.attachment_id().0,
+                            projection.request.generation.generation.version()
                         ))
                     })?;
                     combined.plugins.extend(wiring.plugins.clone());
