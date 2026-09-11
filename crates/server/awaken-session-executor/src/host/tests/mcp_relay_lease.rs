@@ -25,8 +25,11 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
     let (upstream, seen) = crate::test_mcp::start(Some("Bearer test-relay-secret")).await;
     let generation = awaken_session_contract::McpGenerationRef {
         session_id: session.into(),
-        attachment_id: awaken_session_contract::McpAttachmentId("browser".into()),
-        generation: awaken_session_contract::McpGeneration(1),
+        generation: awaken_session_contract::McpGeneration::of_bare_target(
+            awaken_session_contract::McpAttachmentId("browser".into()),
+            1,
+            &awaken_session_contract::McpTarget::parse_http("https://fixture.test/mcp").unwrap(),
+        ),
         runtime_incarnation: lease.runtime_incarnation.clone(),
         lease_epoch: lease.epoch,
         lease_expires_at_unix_ms: 1,
@@ -61,7 +64,11 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
     assert_eq!(seen.lock().unwrap().len(), 1);
     for incarnation in [false, true] {
         let mut foreign = generation.clone();
-        foreign.attachment_id.0 = format!("foreign-{incarnation}");
+        foreign.generation = awaken_session_contract::McpGeneration::new(
+            awaken_session_contract::McpAttachmentId(format!("foreign-{incarnation}")),
+            foreign.generation.version(),
+            foreign.generation.digest().clone(),
+        );
         foreign.lease_expires_at_unix_ms = u64::MAX;
         if incarnation {
             foreign.runtime_incarnation = "other/1".into();
@@ -91,7 +98,11 @@ async fn relay_uses_current_session_authority_without_restaging_its_route() {
         "R3"
     );
     let mut live = generation.clone();
-    live.attachment_id.0 = "live-assertion".into();
+    live.generation = awaken_session_contract::McpGeneration::new(
+        awaken_session_contract::McpAttachmentId("live-assertion".into()),
+        live.generation.version(),
+        live.generation.digest().clone(),
+    );
     live.lease_expires_at_unix_ms = u64::MAX;
     assert!(relay.stage_route(&live, &material));
     for remove in [false, true] {

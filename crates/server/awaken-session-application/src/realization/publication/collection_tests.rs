@@ -29,7 +29,7 @@ fn assert_unique_generations(set: &SessionMcpAttachmentSet) {
     for (index, item) in set.attachments.iter().enumerate() {
         for other in &set.attachments[index + 1..] {
             assert!(
-                item.attachment_id != other.attachment_id || item.generation != other.generation,
+                item.generation != other.generation,
                 "aggregate transitions preserve unique generation identities"
             );
         }
@@ -48,23 +48,20 @@ fn check_replacement(renewed: bool, reverse: bool, removed: bool, acknowledged: 
     // original expiry through renewal. Unneeded Stage receipts never invent work.
     let mut set = SessionMcpAttachmentSet::from_initial(vec![draft("http://a")], None).unwrap();
     assert_unique_generations(&set);
-    let id = set.attachments[0].attachment_id.clone();
-    let old_generation = set.attachments[0].generation;
-    set.claim_realization(&id, old_generation, claim("a"))
-        .unwrap();
-    set.activate(&id, old_generation, "a").unwrap();
+    let old_generation = set.attachments[0].generation.clone();
+    set.claim_realization(&old_generation, claim("a")).unwrap();
+    set.activate(&old_generation, "a").unwrap();
     assert_unique_generations(&set);
     set.request_full_replacement(vec![draft("http://b")], None)
         .unwrap();
     assert_unique_generations(&set);
     assert_eq!(set.attachments.len(), 2);
-    let new_generation = set.attachments[1].generation;
+    let new_generation = set.attachments[1].generation.clone();
     assert_ne!(old_generation, new_generation);
-    set.claim_realization(&id, new_generation, claim("b"))
-        .unwrap();
+    set.claim_realization(&new_generation, claim("b")).unwrap();
     let old_receipt = projection::mcp_generation_ref("a", &set.attachments[0]).unwrap();
     let new_receipt = projection::mcp_generation_ref("a", &set.attachments[1]).unwrap();
-    set.activate(&id, new_generation, "b").unwrap();
+    set.activate(&new_generation, "b").unwrap();
     set.begin_obsolete_drains().unwrap();
     assert_unique_generations(&set);
     assert_eq!(set.attachments[0].state, McpAttachmentState::Draining);
@@ -73,8 +70,7 @@ fn check_replacement(renewed: bool, reverse: bool, removed: bool, acknowledged: 
         set.extend_active_realization_leases("a", 1, 3).unwrap();
     }
     if acknowledged {
-        set.acknowledge_publication(&id, new_generation, "b")
-            .unwrap();
+        set.acknowledge_publication(&new_generation, "b").unwrap();
     }
     if removed {
         set.request_full_replacement(Vec::new(), None).unwrap();
@@ -86,10 +82,16 @@ fn check_replacement(renewed: bool, reverse: bool, removed: bool, acknowledged: 
         0..=2 => {}
         3 => actual_new.lease_expires_at_unix_ms = 4,
         4 => actual_new.session_id = "b".into(),
-        5 => actual_new.generation = old_generation,
+        5 => actual_new.generation = old_generation.clone(),
         6 => actual_new.runtime_incarnation = "b".into(),
         7 => actual_new.lease_epoch = 2,
-        8 => actual_new.attachment_id.0 = "b".into(),
+        8 => {
+            actual_new.generation = awaken_session_contract::McpGeneration::new(
+                awaken_session_contract::McpAttachmentId("b".into()),
+                actual_new.generation.version(),
+                actual_new.generation.digest().clone(),
+            );
+        }
         _ => unreachable!("closed fault table"),
     }
     let receipts = match fault {
@@ -138,8 +140,7 @@ fn check_replacement(renewed: bool, reverse: bool, removed: bool, acknowledged: 
     for published in &publish {
         for drained in &drain {
             assert!(
-                published.attachment_id != drained.attachment_id
-                    || published.generation != drained.generation,
+                published.generation != drained.generation,
                 "publication and drain generation identities are disjoint"
             );
         }

@@ -1626,9 +1626,7 @@ mod tests {
     /// | R3 | drain | T | T | `mcp_runtime_unsupported` |
     #[tokio::test]
     async fn default_mcp_generation_port_fails_closed_from_decision_table() {
-        use crate::{
-            McpAttachmentId, McpGeneration, McpGenerationRef, McpTarget, StageMcpAttachment,
-        };
+        use crate::{McpGenerationRef, McpTarget, StageMcpAttachment};
 
         struct UnsupportedRealizer;
         #[async_trait]
@@ -1636,8 +1634,11 @@ mod tests {
         let runtime = UnsupportedRealizer;
         let generation = McpGenerationRef {
             session_id: "session-1".into(),
-            attachment_id: McpAttachmentId("mcp-1".into()),
-            generation: McpGeneration(1),
+            generation: crate::mcp_attachment::test_generation(
+                "mcp-1",
+                1,
+                "https://mcp.example.test",
+            ),
             runtime_incarnation: "runtime-1".into(),
             lease_epoch: 7,
             lease_expires_at_unix_ms: u64::MAX,

@@ -170,14 +170,16 @@ pub(crate) fn project_mcp_session_transport(
             let relay = relay.ok_or_else(|| {
                 HostError::internal(format!(
                     "authenticated MCP generation {}:{} requires the Worker relay",
-                    generation.attachment_id.0, generation.generation.0
+                    generation.attachment_id().0,
+                    generation.generation.version()
                 ))
             })?;
             (
                 relay.route_url(generation).ok_or_else(|| {
                     HostError::internal(format!(
                         "authenticated MCP generation {}:{} has no staged relay capability",
-                        generation.attachment_id.0, generation.generation.0
+                        generation.attachment_id().0,
+                        generation.generation.version()
                     ))
                 })?,
                 None,
@@ -190,7 +192,8 @@ pub(crate) fn project_mcp_session_transport(
         Some(_) => {
             return Err(HostError::internal(format!(
                 "authenticated MCP generation {}:{} has no admitted delivery",
-                generation.attachment_id.0, generation.generation.0
+                generation.attachment_id().0,
+                generation.generation.version()
             )));
         }
         None => (original_url.to_string(), None),
@@ -420,8 +423,8 @@ impl crate::SharedHost {
                 }
                 let Some(projection) = slot.mcp.iter_mut().find(|projection| {
                     projection.request.generation.session_id == request.generation.session_id
-                        && projection.request.generation.attachment_id
-                            == request.generation.attachment_id
+                        && projection.request.generation.attachment_id()
+                            == request.generation.attachment_id()
                         && projection.request.generation.generation == request.generation.generation
                         && projection.request.generation.runtime_incarnation
                             == request.generation.runtime_incarnation
@@ -565,7 +568,8 @@ impl crate::SharedHost {
                 )),
                 crate::session_slot::McpProjectionState::Staged => {
                     for projection in &mut slot.mcp {
-                        if projection.request.generation.attachment_id == generation.attachment_id
+                        if projection.request.generation.attachment_id()
+                            == generation.attachment_id()
                             && projection.state == crate::session_slot::McpProjectionState::Active
                         {
                             projection.state = crate::session_slot::McpProjectionState::Draining;
@@ -1024,8 +1028,12 @@ mod acp_projection_tests {
     fn generation() -> awaken_session_contract::McpGenerationRef {
         awaken_session_contract::McpGenerationRef {
             session_id: "t1".into(),
-            attachment_id: awaken_session_contract::McpAttachmentId("mcp-gh".into()),
-            generation: awaken_session_contract::McpGeneration(3),
+            generation: awaken_session_contract::McpGeneration::of_bare_target(
+                awaken_session_contract::McpAttachmentId("mcp-gh".into()),
+                3,
+                &awaken_session_contract::McpTarget::parse_http("https://fixture.test/mcp")
+                    .unwrap(),
+            ),
             runtime_incarnation: "runtime-1".into(),
             lease_epoch: 2,
             lease_expires_at_unix_ms: u64::MAX,

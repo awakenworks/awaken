@@ -371,7 +371,8 @@ impl awaken_session_contract::McpAttachmentRealizer for HotRuntime {
         let receipt_fingerprint = request.fingerprint();
         let mut generation = request.generation;
         if matches!(mode, HotStageMode::MismatchNext) {
-            generation.generation.0 += 1;
+            let next = generation.generation.version() + 1;
+            generation.generation = generation.generation.at_version(next);
         }
         Ok(awaken_session_contract::McpRealizationReceipt {
             generation,
@@ -1299,7 +1300,7 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
     {
         let state = h.state.lock().unwrap();
         assert_eq!(state.staged.len(), 1, "H2");
-        assert_eq!(state.staged[0].generation.generation.0, 1, "H2");
+        assert_eq!(state.staged[0].generation.generation.version(), 1, "H2");
         assert_eq!(state.published.len(), 1, "H2");
         assert_eq!(
             state.durable_at_stage[0].mcp.attachments[0].state,
@@ -1351,12 +1352,16 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
     {
         let state = h.state.lock().unwrap();
         assert_eq!(
-            state.staged.last().unwrap().generation.generation.0,
+            state.staged.last().unwrap().generation.generation.version(),
             2,
             "H3"
         );
-        assert_eq!(state.published.last().unwrap().generation.0, 2, "H3");
-        assert_eq!(state.drained.last().unwrap().generation.0, 1, "H3");
+        assert_eq!(
+            state.published.last().unwrap().generation.version(),
+            2,
+            "H3"
+        );
+        assert_eq!(state.drained.last().unwrap().generation.version(), 1, "H3");
     }
     let durable = h.repo.get(id).await.expect("H3 durable");
     assert_eq!(durable.visible_mcp_servers().len(), 1, "H3");
@@ -1381,7 +1386,14 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
     assert_eq!(status, StatusCode::OK, "H4");
     assert_eq!(removed["agent"]["mcp_servers"], json!([]), "H4");
     assert_eq!(
-        h.state.lock().unwrap().drained.last().unwrap().generation.0,
+        h.state
+            .lock()
+            .unwrap()
+            .drained
+            .last()
+            .unwrap()
+            .generation
+            .version(),
         2,
         "H4"
     );
@@ -1446,7 +1458,7 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
             .unwrap()
             .generation
             .generation
-            .0,
+            .version(),
         3,
         "H6"
     );
@@ -1612,11 +1624,8 @@ async fn mcp_recovery_lifecycle_decision_table_case() {
     assert_eq!(h.state.lock().unwrap().published.len(), 2, "R2");
 
     let mut draining = active;
-    let attachment_id = draining.mcp.attachments[0].attachment_id.clone();
-    draining
-        .mcp
-        .begin_drain(&attachment_id, awaken_session_contract::McpGeneration(1))
-        .unwrap();
+    let generation = draining.mcp.attachments[0].generation.clone();
+    draining.mcp.begin_drain(&generation).unwrap();
     replace_session_fixture(
         h.repo.as_ref(),
         "default",
@@ -1714,7 +1723,7 @@ async fn mcp_recovery_retry_decision_table_case() {
         awaken_session_contract::McpAttachmentState::Active,
         "R6"
     );
-    assert_eq!(retried.mcp.attachments[1].generation.0, 2, "R6");
+    assert_eq!(retried.mcp.attachments[1].generation.version(), 2, "R6");
 }
 
 /// External acknowledgement gaps are derived from this cause graph:

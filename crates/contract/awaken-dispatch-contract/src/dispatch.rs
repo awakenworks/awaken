@@ -802,8 +802,12 @@ mod tests {
                 workspace_id: "workspace-a".into(),
                 generation: awaken_session_contract::McpGenerationRef {
                     session_id: "session-a".into(),
-                    attachment_id: awaken_session_contract::McpAttachmentId("mcp-a".into()),
-                    generation: awaken_session_contract::McpGeneration(1),
+                    generation: awaken_session_contract::McpGeneration::of_bare_target(
+                        awaken_session_contract::McpAttachmentId("mcp-a".into()),
+                        1,
+                        &awaken_session_contract::McpTarget::parse_http("https://mcp.example.test")
+                            .expect("valid MCP target"),
+                    ),
                     runtime_incarnation: "worker-a".into(),
                     lease_epoch: 1,
                     lease_expires_at_unix_ms: 10_000,

@@ -305,8 +305,8 @@ impl McpRelay {
             "{}/{}/{}/{}/{}",
             self.advertised_origin,
             generation.session_id,
-            generation.attachment_id.0,
-            generation.generation.0,
+            generation.attachment_id().0,
+            generation.generation.version(),
             capability
         ))
     }
@@ -335,8 +335,8 @@ impl crate::SharedHost {
 fn route_key(generation: &awaken_session_contract::McpGenerationRef) -> RouteKey {
     (
         generation.session_id.clone(),
-        generation.attachment_id.0.clone(),
-        generation.generation.0,
+        generation.attachment_id().0.clone(),
+        generation.generation.version(),
     )
 }
 
@@ -523,8 +523,12 @@ mod tests {
     ) -> awaken_session_contract::McpGenerationRef {
         awaken_session_contract::McpGenerationRef {
             session_id: session.into(),
-            attachment_id: awaken_session_contract::McpAttachmentId(attachment.into()),
-            generation: awaken_session_contract::McpGeneration(generation),
+            generation: awaken_session_contract::McpGeneration::of_bare_target(
+                awaken_session_contract::McpAttachmentId(attachment.into()),
+                generation,
+                &awaken_session_contract::McpTarget::parse_http("https://fixture.test/mcp")
+                    .unwrap(),
+            ),
             runtime_incarnation: "runtime-1".into(),
             lease_epoch: 4,
             lease_expires_at_unix_ms: u64::MAX,
@@ -700,8 +704,8 @@ mod tests {
             State(relay.state.clone()),
             Path((
                 generation.session_id.clone(),
-                generation.attachment_id.0.clone(),
-                generation.generation.0,
+                generation.attachment_id().0.clone(),
+                generation.generation.version(),
                 capability.clone(),
             )),
             Request::builder().method("POST").body(body).unwrap(),
@@ -716,8 +720,8 @@ mod tests {
             State(relay.state.clone()),
             Path((
                 generation.session_id.clone(),
-                generation.attachment_id.0.clone(),
-                generation.generation.0,
+                generation.attachment_id().0.clone(),
+                generation.generation.version(),
                 capability,
             )),
             Request::builder()

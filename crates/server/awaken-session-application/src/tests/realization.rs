@@ -4881,19 +4881,27 @@ pub(super) fn publication_fixture(
         expires_at_unix_ms: (u64::MAX - 1_024),
     };
     let attachment_id = awaken_session_contract::McpAttachmentId("browser".into());
-    let generation = awaken_session_contract::McpGeneration(1);
+    let target = awaken_session_contract::McpTarget::parse_http("https://browser.example.test/mcp")
+        .expect("MCP target");
+    let generation = awaken_session_contract::McpGeneration::new(
+        attachment_id,
+        1,
+        awaken_session_contract::McpAttachmentContentDigest::of_content(
+            &target,
+            false,
+            None,
+            awaken_session_contract::McpAttachmentOrigin::Agent,
+        ),
+    );
     session.realization = Some(lease.clone());
     session
         .mcp
         .attachments
         .push(awaken_session_contract::SessionMcpAttachment {
-            attachment_id: attachment_id.clone(),
+            attachment_id: generation.attachment_id().clone(),
             name: "browser".into(),
-            generation,
-            target: awaken_session_contract::McpTarget::parse_http(
-                "https://browser.example.test/mcp",
-            )
-            .expect("MCP target"),
+            generation: generation.clone(),
+            target,
             prompts_as_skills: false,
             origin: awaken_session_contract::McpAttachmentOrigin::Agent,
             credential: None,
@@ -4912,7 +4920,6 @@ pub(super) fn publication_fixture(
         });
     let generation_ref = awaken_session_contract::McpGenerationRef {
         session_id: id.into(),
-        attachment_id,
         generation,
         runtime_incarnation: lease.runtime_incarnation.clone(),
         lease_epoch: lease.epoch,
@@ -4969,11 +4976,18 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                     let mut next = template.clone();
                     next.attachment_id =
                         awaken_session_contract::McpAttachmentId(format!("tool-{index}"));
+                    // The witness carries the attachment identity, so renaming
+                    // the row must re-mint it or the two would disagree.
+                    next.generation = awaken_session_contract::McpGeneration::new(
+                        next.attachment_id.clone(),
+                        next.generation.version(),
+                        next.generation.digest().clone(),
+                    );
                     next.name = format!("tool-{index}");
                     if predecessor {
                         session.mcp.attachments.push(next.clone());
                     }
-                    next.generation = awaken_session_contract::McpGeneration(2);
+                    next.generation = next.generation.at_version(2);
                     next.state = awaken_session_contract::McpAttachmentState::Realizing;
                     next.realization.as_mut().unwrap().realization_id =
                         format!("realize-{index}-2");
@@ -4995,7 +5009,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                     receipts.push(NoopMcpRealizer.stage_mcp_attachment(request).await.unwrap());
                 }
                 let key = |g: &awaken_session_contract::McpGenerationRef| {
-                    format!("{}:{}", g.attachment_id.0, g.generation.0)
+                    format!("{}:{}", g.attachment_id().0, g.generation.version())
                 };
                 let staged = receipts
                     .iter()
@@ -5042,12 +5056,12 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
                     .attachments
                     .iter()
                     .filter(|a| a.state == awaken_session_contract::McpAttachmentState::Active)
-                    .map(|a| format!("{}:{}", a.attachment_id.0, a.generation.0))
+                    .map(|a| format!("{}:{}", a.attachment_id.0, a.generation.version()))
                     .collect::<Vec<_>>();
                 publication_traces.push(serde_json::json!({"rule": format!("count-{count}-predecessor-{predecessor}-renewed-{renewed}"), "cause": {"expiry_before": expiry_before, "expiry_after": durable.realization.as_ref().unwrap().expires_at_unix_ms}, "staged": staged, "active": active, "published": publish.iter().map(key).collect::<Vec<_>>(), "drained": drain.iter().map(key).collect::<Vec<_>>() }));
                 assert_eq!(publish.len(), count, "A7 {id}");
                 assert!(
-                    publish.iter().all(|g| g.generation.0 == 2),
+                    publish.iter().all(|g| g.generation.version() == 2),
                     "A7 no retired publication"
                 );
                 assert_eq!(drain.len(), if predecessor { count } else { 0 }, "A7 {id}");
@@ -5260,11 +5274,14 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
             }
             "session" => request.generation.session_id = "foreign".into(),
             "attachment" => {
-                request.generation.attachment_id =
-                    awaken_session_contract::McpAttachmentId("foreign".into())
+                request.generation.generation = awaken_session_contract::McpGeneration::new(
+                    awaken_session_contract::McpAttachmentId("foreign".into()),
+                    request.generation.generation.version(),
+                    request.generation.generation.digest().clone(),
+                );
             }
             "generation" => {
-                request.generation.generation = awaken_session_contract::McpGeneration(2)
+                request.generation.generation = request.generation.generation.at_version(2)
             }
             "incarnation" => request.generation.runtime_incarnation = "replacement".into(),
             "epoch" => request.generation.lease_epoch += 1,
@@ -5325,10 +5342,13 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
         match fault {
             "session" => generation.session_id = "foreign".into(),
             "attachment" => {
-                generation.attachment_id =
-                    awaken_session_contract::McpAttachmentId("foreign".into())
+                generation.generation = awaken_session_contract::McpGeneration::new(
+                    awaken_session_contract::McpAttachmentId("foreign".into()),
+                    generation.generation.version(),
+                    generation.generation.digest().clone(),
+                );
             }
-            "generation" => generation.generation = awaken_session_contract::McpGeneration(2),
+            "generation" => generation.generation = generation.generation.at_version(2),
             "incarnation" => generation.runtime_incarnation = "replacement".into(),
             "epoch" => generation.lease_epoch += 1,
             "future-expiry" => generation.lease_expires_at_unix_ms = current_expiry + 1,
@@ -5482,7 +5502,11 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
 
     let (replacement, replacement_lease, mut wrong_generation) = fixture("ack-replaced");
     create(repo.as_ref(), replacement).await;
-    wrong_generation.attachment_id = awaken_session_contract::McpAttachmentId("other".into());
+    wrong_generation.generation = awaken_session_contract::McpGeneration::new(
+        awaken_session_contract::McpAttachmentId("other".into()),
+        wrong_generation.generation.version(),
+        wrong_generation.generation.digest().clone(),
+    );
     let error =
         awaken_session_contract::SessionRealizationControl::acknowledge_session_realization(
             &application,

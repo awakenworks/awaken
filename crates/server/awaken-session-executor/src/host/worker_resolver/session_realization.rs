@@ -656,8 +656,12 @@ mod tests {
             workspace_id: "workspace".into(),
             generation: awaken_session_contract::McpGenerationRef {
                 session_id: thread.into(),
-                attachment_id: awaken_session_contract::McpAttachmentId("browser".into()),
-                generation: awaken_session_contract::McpGeneration(1),
+                generation: awaken_session_contract::McpGeneration::of_bare_target(
+                    awaken_session_contract::McpAttachmentId("browser".into()),
+                    1,
+                    &awaken_session_contract::McpTarget::parse_http("https://fixture.test/mcp")
+                        .unwrap(),
+                ),
                 runtime_incarnation: lease.runtime_incarnation.clone(),
                 lease_epoch: lease.epoch,
                 lease_expires_at_unix_ms: expires_at_unix_ms,
@@ -676,9 +680,9 @@ mod tests {
         projection
             .mcp
             .push(awaken_session_contract::SessionMcpAttachment {
-                attachment_id: stage.generation.attachment_id.clone(),
+                attachment_id: stage.generation.attachment_id().clone(),
                 name: stage.name.clone(),
-                generation: stage.generation.generation,
+                generation: stage.generation.generation.clone(),
                 target: stage.target.clone(),
                 prompts_as_skills: stage.prompts_as_skills,
                 origin: awaken_session_contract::McpAttachmentOrigin::Agent,
@@ -1459,8 +1463,12 @@ mod tests {
             workspace_id: "workspace".into(),
             generation: awaken_session_contract::McpGenerationRef {
                 session_id: thread.into(),
-                attachment_id: awaken_session_contract::McpAttachmentId("browser".into()),
-                generation: awaken_session_contract::McpGeneration(1),
+                generation: awaken_session_contract::McpGeneration::of_bare_target(
+                    awaken_session_contract::McpAttachmentId("browser".into()),
+                    1,
+                    &awaken_session_contract::McpTarget::parse_http("https://fixture.test/mcp")
+                        .unwrap(),
+                ),
                 runtime_incarnation: "worker-a".into(),
                 lease_epoch: 1,
                 lease_expires_at_unix_ms: u64::MAX,
