@@ -1559,22 +1559,32 @@ mod verification {
         // | T4 | CancelRequested | RequestCancel | Ok(CancelRequested, Duplicate) |
         // | T5 | Completed | RequestCancel | Err(InvalidTransition) |
         // | T6 | CancelRequested | Complete | Err(InvalidTransition) |
+        //
+        // The successor is compared through `Result::ok` rather than against a
+        // whole `DelegationError`: that error carries a `String` variant whose
+        // derived equality the model checker would have to unwind, and the
+        // rejected rows are pinned by their variant instead.
         let status = symbolic_status(kani::any());
         let transition = symbolic_transition(kani::any());
         let expected = match (status, transition) {
             (DelegationStatus::Open, RelationshipTransition::Complete) => {
-                Ok((DelegationStatus::Completed, TransitionResult::Applied))
+                Some((DelegationStatus::Completed, TransitionResult::Applied))
             }
             (DelegationStatus::Open, RelationshipTransition::RequestCancel) => {
-                Ok((DelegationStatus::CancelRequested, TransitionResult::Applied))
+                Some((DelegationStatus::CancelRequested, TransitionResult::Applied))
             }
             (DelegationStatus::Completed, RelationshipTransition::Complete)
             | (DelegationStatus::CancelRequested, RelationshipTransition::RequestCancel) => {
-                Ok((status, TransitionResult::Duplicate))
+                Some((status, TransitionResult::Duplicate))
             }
-            _ => Err(DelegationError::InvalidTransition),
+            _ => None,
         };
-        assert!(transition_relationship(status, transition) == expected);
+        let result = transition_relationship(status, transition);
+        assert_eq!(result.as_ref().ok().copied(), expected);
+        assert!(
+            expected.is_some() || matches!(result, Err(DelegationError::InvalidTransition)),
+            "a rejected row must reject with the one documented error"
+        );
     }
 
     #[kani::proof]
