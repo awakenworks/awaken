@@ -48,6 +48,7 @@ pub(super) async fn prepare_runtime_routers(
         coordinator_service_authenticator,
     ) = executable_agent_registration::process_parts(process.executable_agent_wiring);
     let content_capture_ceiling = process.content_capture_ceiling;
+    let namespace_hand_path = process.namespace_hand_path;
     let deployment = process.deployment;
     let session_execution_placement = if deployment
         .as_ref()
@@ -546,9 +547,19 @@ pub(super) async fn prepare_runtime_routers(
         == awaken_session_application::SessionExecutionPlacement::LocalWorker
     {
         let hand_factory = awaken_worker::relay_hand_executor_factory();
+        let host_builder = match namespace_hand_path {
+            Some(path) => {
+                host_builder
+                    .with_session_environment_from_deployment_at(Some(hand_factory), path)
+                    .await?
+            }
+            None => {
+                host_builder
+                    .with_session_environment_from_deployment(Some(hand_factory))
+                    .await?
+            }
+        };
         host_builder
-            .with_session_environment_from_deployment(Some(hand_factory))
-            .await?
             .with_acp_from_deployment(credential_materializer.clone(), None)
             .await
     } else {

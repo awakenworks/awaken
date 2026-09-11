@@ -51,11 +51,12 @@ fn control_profile_is_a_side_effect_free_release_projection() {
             grant["subject"]["role_id"] == serde_json::json!("awaken.workspace:publisher")
         })
         .collect::<Vec<_>>();
-    // Release-projection decision table: the Flow publisher needs Workspace
-    // authoring and read-only executable-model discovery; credential access,
-    // model-supply mutation, and a broad model wildcard remain absent. This
-    // separately verifies that CLI serialization does not lose either grant
-    // from the authoritative in-process profile test.
+    // Release-projection decision table: C1 publisher -> Workspace/Skill write
+    // plus model read, without credential or supply mutation; C2 credential
+    // ingress -> API-key custody plus the exact provider-connect command,
+    // without general model-supply write/wildcard; C3 CLI serialization -> the
+    // same exact grants as the authoritative in-process profile. R1=C1+C3 and
+    // R2=C2+C3 preserve the bounded roles without a second grant matrix here.
     let publisher_actions = publisher
         .iter()
         .map(|grant| grant["action_pattern"].as_str().expect("action pattern"))
@@ -81,7 +82,16 @@ fn control_profile_is_a_side_effect_free_release_projection() {
         })
         .map(|grant| grant["action_pattern"].as_str().expect("action pattern"))
         .collect::<Vec<_>>();
-    assert_eq!(credential_ingress, ["awaken.workspace::apikey.*"]);
+    assert_eq!(
+        credential_ingress,
+        [
+            "awaken.workspace::apikey.*",
+            "awaken.workspace::model_supply.connect"
+        ]
+    );
+    assert!(credential_ingress.iter().all(
+        |action| !action.ends_with("model_supply.*") && !action.ends_with("model_supply.write")
+    ));
 
     let actions = profile["document"]["resource_model"]["actions"]
         .as_array()

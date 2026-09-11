@@ -27,6 +27,9 @@ use serde_json::{Value, json};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeCapability {
     pub id: String,
+    /// Exact model `backend_ref` values this runtime can execute. Consumers use
+    /// these identities instead of duplicating native/ACP naming conventions.
+    pub backend_refs: Vec<String>,
     pub label: String,
     pub kind: String,
     pub cli: Option<String>,
@@ -54,6 +57,7 @@ impl RuntimeCapability {
     pub fn native() -> Self {
         Self {
             id: "awaken".into(),
+            backend_refs: vec!["genai".into()],
             label: "Native".into(),
             kind: "native".into(),
             cli: None,
@@ -71,8 +75,10 @@ impl RuntimeCapability {
         description: impl Into<String>,
     ) -> Self {
         let cli = cli.into();
+        let id = format!("acp:{cli}");
         Self {
-            id: format!("acp:{cli}"),
+            backend_refs: vec![id.clone()],
+            id,
             label: label.into(),
             kind: "acp".into(),
             cli: Some(cli),
@@ -123,6 +129,7 @@ impl RuntimeCapability {
         };
         json!({
             "id": self.id,
+            "backend_refs": self.backend_refs,
             "label": self.label,
             "kind": self.kind,
             "cli": self.cli,
@@ -629,8 +636,10 @@ mod tests {
         let acp = RuntimeCapability::acp("codex", "Codex", "description");
         assert_eq!(native.id, "awaken", "C1");
         assert_eq!(native.cli, None, "C1");
+        assert_eq!(native.backend_refs, ["genai"], "C1");
         assert_eq!(acp.id, "acp:codex", "C2");
         assert_eq!(acp.cli.as_deref(), Some("codex"), "C2");
+        assert_eq!(acp.backend_refs, ["acp:codex"], "C2");
         let observed = acp.with_local(LocalRuntimeCapability {
             detected: true,
             version: Some("1".into()),

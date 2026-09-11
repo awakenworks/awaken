@@ -236,7 +236,7 @@ pub trait OwnedToolContinuation: Send + Sync {
 
     /// Wait for a Host-exported client tool to reach the MCP execution edge.
     /// Implementations without client-executed tools retain an inert future.
-    async fn next_client_execution(&self) -> crate::tool::ToolCall {
+    async fn next_client_execution(&self) -> Option<crate::tool::ToolCall> {
         std::future::pending().await
     }
 

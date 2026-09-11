@@ -169,6 +169,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services_and_instal
         ProcessStartup {
             service_lifecycle: service_lifecycle.clone(),
             deployment: Some(deployment.runtime.clone()),
+            namespace_hand_path: None,
             content_capture_ceiling: deployment.runtime.content_capture.level,
             org_id: Some(deployment.org_id.clone()),
             enrollment_signing_key: key

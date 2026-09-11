@@ -32,6 +32,23 @@ pub(crate) struct ClientExecutedAcpTools {
     pub(crate) requests: Option<Arc<ClientExecutedAcpToolRequests>>,
 }
 
+const CLIENT_EXECUTED_TOOL_ARRIVAL_CAPACITY: usize = 32;
+
+fn client_executed_tool_arrivals(
+    capacity: usize,
+) -> (
+    tokio::sync::mpsc::Sender<ToolCall>,
+    Arc<ClientExecutedAcpToolRequests>,
+) {
+    let (sender, receiver) = tokio::sync::mpsc::channel(capacity);
+    (
+        sender,
+        Arc::new(ClientExecutedAcpToolRequests {
+            receiver: tokio::sync::Mutex::new(receiver),
+        }),
+    )
+}
+
 pub(crate) fn client_executed_tools(
     source: &[awaken_runtime_contract::resolved::ToolDescriptor],
 ) -> ClientExecutedAcpTools {
@@ -46,15 +63,19 @@ pub(crate) fn client_executed_tools(
         .iter()
         .map(|descriptor| descriptor.id.clone())
         .collect::<std::collections::HashSet<_>>();
-    let requests = (!ids.is_empty()).then(|| Arc::new(ClientExecutedAcpToolRequests::default()));
+    let arrivals = (!ids.is_empty())
+        .then(|| client_executed_tool_arrivals(CLIENT_EXECUTED_TOOL_ARRIVAL_CAPACITY));
+    let requests = arrivals.as_ref().map(|(_, requests)| requests.clone());
     let executors = descriptors
         .iter()
         .map(|descriptor| {
             Arc::new(ClientExecutedAcpTool::new(
                 descriptor.id.clone(),
-                requests
-                    .clone()
-                    .expect("client descriptors require one request edge"),
+                arrivals
+                    .as_ref()
+                    .expect("client descriptors require one request edge")
+                    .0
+                    .clone(),
             )) as Arc<dyn RawTool>
         })
         .collect();
@@ -136,7 +157,7 @@ impl awaken_runtime_contract::resume::OwnedToolContinuation for AcpToolContinuat
         }
     }
 
-    async fn next_client_execution(&self) -> ToolCall {
+    async fn next_client_execution(&self) -> Option<ToolCall> {
         match &self.client_requests {
             Some(requests) => requests.next().await,
             None => std::future::pending().await,
@@ -177,35 +198,22 @@ impl awaken_runtime_contract::resume::OwnedToolContinuation for AcpToolContinuat
 /// bypassed `session/request_permission`; fail closed without a Host effect.
 pub(crate) struct ClientExecutedAcpTool {
     id: String,
-    requests: Arc<ClientExecutedAcpToolRequests>,
+    sender: tokio::sync::mpsc::Sender<ToolCall>,
 }
 
 impl ClientExecutedAcpTool {
-    pub(crate) fn new(id: String, requests: Arc<ClientExecutedAcpToolRequests>) -> Self {
-        Self { id, requests }
+    pub(crate) fn new(id: String, sender: tokio::sync::mpsc::Sender<ToolCall>) -> Self {
+        Self { id, sender }
     }
 }
 
-#[derive(Default)]
 pub(crate) struct ClientExecutedAcpToolRequests {
-    pending: tokio::sync::Mutex<std::collections::VecDeque<ToolCall>>,
-    ready: tokio::sync::Notify,
+    receiver: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<ToolCall>>,
 }
 
 impl ClientExecutedAcpToolRequests {
-    async fn push(&self, call: ToolCall) {
-        self.pending.lock().await.push_back(call);
-        self.ready.notify_one();
-    }
-
-    async fn next(&self) -> ToolCall {
-        loop {
-            let notified = self.ready.notified();
-            if let Some(call) = self.pending.lock().await.pop_front() {
-                return call;
-            }
-            notified.await;
-        }
+    async fn next(&self) -> Option<ToolCall> {
+        self.receiver.lock().await.recv().await
     }
 }
 
@@ -216,7 +224,12 @@ impl RawTool for ClientExecutedAcpTool {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        self.requests.push(call).await;
+        self.sender.send(call).await.map_err(|_| {
+            ToolError::Execution(
+                "CLIENT_TOOL_ARRIVAL_CLOSED: the Session continuation is no longer available"
+                    .into(),
+            )
+        })?;
         std::future::pending().await
     }
 }
@@ -597,8 +610,8 @@ mod tests {
         use awaken_agent_contract::agent::awaiting::ToolAwaitReason;
         use awaken_runtime_contract::resume::OwnedToolContinuation;
 
-        let requests = Arc::new(ClientExecutedAcpToolRequests::default());
-        let tool = ClientExecutedAcpTool::new("desktop_search".into(), requests.clone());
+        let (sender, requests) = client_executed_tool_arrivals(2);
+        let tool = ClientExecutedAcpTool::new("desktop_search".into(), sender.clone());
         assert_eq!(tool.id(), "desktop_search");
         let invocation = tokio::spawn(async move {
             tool.invoke(ToolCall {
@@ -608,17 +621,28 @@ mod tests {
             })
             .await
         });
-        assert_eq!(requests.next().await.call_id, "client-call-1", "C2");
-        requests
-            .push(ToolCall {
-                call_id: "client-call-2".into(),
-                tool_id: "desktop_search".into(),
-                arguments: serde_json::json!({"query":"second"}),
-            })
-            .await;
-        assert_eq!(requests.next().await.call_id, "client-call-2", "C2+C3");
+        assert_eq!(
+            requests.next().await.expect("open sender").call_id,
+            "client-call-1",
+            "C2"
+        );
+        let second_invocation = tokio::spawn(async move {
+            ClientExecutedAcpTool::new("desktop_search".into(), sender)
+                .invoke(ToolCall {
+                    call_id: "client-call-2".into(),
+                    tool_id: "desktop_search".into(),
+                    arguments: serde_json::json!({"query":"second"}),
+                })
+                .await
+        });
+        assert_eq!(
+            requests.next().await.expect("open sender").call_id,
+            "client-call-2",
+            "C2+C3"
+        );
         assert!(!invocation.is_finished(), "C2 waits for the Session client");
         invocation.abort();
+        second_invocation.abort();
 
         let continuation = AcpToolContinuation {
             runtime: Arc::new(awaken_runtime::Runtime::new()),
@@ -632,6 +656,62 @@ mod tests {
             "C1"
         );
         assert_eq!(continuation.tool_await_reason("DesktopSearch"), None);
+    }
+
+    #[tokio::test]
+    async fn client_tool_arrival_channel_preserves_cancellation_backpressure_and_close() {
+        // Cause/effect graph: C1 a waiter may be cancelled; C2 capacity may be
+        // exhausted; C3 every sender may be dropped. Effects: E1 cancellation
+        // consumes no call; E2 producers wait and FIFO is preserved; E3 the
+        // consumer observes terminal closure instead of waiting forever.
+        // Decision table: R1 C1 -> E1; R2 C2 -> E2; R3 C3 -> E3. These are the
+        // loss, overload, and shutdown cases that the removed VecDeque+Notify
+        // implementation could not express with one canonical queue primitive.
+        let (sender, requests) = client_executed_tool_arrivals(1);
+
+        let cancelled_waiter = tokio::spawn({
+            let requests = requests.clone();
+            async move { requests.next().await }
+        });
+        tokio::task::yield_now().await;
+        cancelled_waiter.abort();
+
+        let first = ToolCall {
+            call_id: "first".into(),
+            tool_id: "desktop_search".into(),
+            arguments: serde_json::json!({"query":"first"}),
+        };
+        sender.send(first).await.expect("R1 channel remains open");
+
+        let blocked_sender = tokio::spawn({
+            let sender = sender.clone();
+            async move {
+                sender
+                    .send(ToolCall {
+                        call_id: "second".into(),
+                        tool_id: "desktop_search".into(),
+                        arguments: serde_json::json!({"query":"second"}),
+                    })
+                    .await
+            }
+        });
+        tokio::task::yield_now().await;
+        assert!(!blocked_sender.is_finished(), "R2 bounded backpressure");
+        assert_eq!(
+            requests.next().await.expect("R1 first retained").call_id,
+            "first"
+        );
+        blocked_sender
+            .await
+            .expect("R2 producer task")
+            .expect("R2 send");
+        assert_eq!(
+            requests.next().await.expect("R2 second retained").call_id,
+            "second"
+        );
+
+        drop(sender);
+        assert!(requests.next().await.is_none(), "R3 terminal closure");
     }
 
     #[tokio::test]

@@ -119,53 +119,41 @@ impl CatalogModelPublicationResolver {
                 reason: format!("Worker capability observations are unavailable: {error}"),
             }
         })?;
-        let mut fingerprints = snapshots
-            .into_iter()
-            .map(|registered| registered.snapshot)
-            .filter(|worker| {
-                worker.state.accepts_work()
-                    && worker.expires_at_ms > now_ms
-                    && credential.is_none_or(|credential| {
-                        worker
-                            .credential_observations
-                            .iter()
-                            .any(|observation| observation.is_selectable_at(credential, now_ms))
-                    })
-            })
-            .flat_map(|worker| worker.acp_capability_observations)
-            .filter(|capability| {
-                capability.valid_until_ms > now_ms
-                    && capability.observation.observed_at_ms() <= now_ms
-                    && capability.observation.backend_ref() == backend_ref
-            })
-            .filter_map(|capability| capability.observation.into_verified_evidence())
-            .collect::<Vec<_>>();
-        fingerprints.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
-        fingerprints.dedup_by(|left, right| left.0 == right.0 && left.1 == right.1);
-        match (fingerprints.pop(), fingerprints.is_empty()) {
-            (Some((version, fingerprint, negotiated)), true)
-                if !version.trim().is_empty() && !fingerprint.trim().is_empty() =>
-            {
-                Ok((version, fingerprint, negotiated))
+        match awaken_worker_contract::select_verified_acp_capability(
+            &snapshots,
+            backend_ref,
+            credential,
+            now_ms,
+        ) {
+            awaken_worker_contract::VerifiedAcpCapabilitySelection::Available(evidence) => Ok((
+                evidence.adapter_version,
+                evidence.fingerprint,
+                evidence.negotiated,
+            )),
+            awaken_worker_contract::VerifiedAcpCapabilitySelection::Unavailable => {
+                Err(PublicationResolutionError::CandidateUnavailable {
+                    binding: ModelBinding::new(
+                        credential.map_or("", |credential| credential.id.as_str()),
+                        "",
+                        backend_ref,
+                    ),
+                    reason: format!(
+                        "no fresh verified ACP capability is available for {backend_ref}"
+                    ),
+                })
             }
-            (None, _) => Err(PublicationResolutionError::CandidateUnavailable {
-                binding: ModelBinding::new(
-                    credential.map_or("", |credential| credential.id.as_str()),
-                    "",
-                    backend_ref,
-                ),
-                reason: format!("no fresh verified ACP capability is available for {backend_ref}"),
-            }),
-            _ => Err(PublicationResolutionError::CandidateUnavailable {
-                binding: ModelBinding::new(
-                    credential.map_or("", |credential| credential.id.as_str()),
-                    "",
-                    backend_ref,
-                ),
-                reason: format!(
-                    "multiple incompatible ACP capability fingerprints are live for {backend_ref}"
-                ),
-            }),
+            awaken_worker_contract::VerifiedAcpCapabilitySelection::Incompatible => {
+                Err(PublicationResolutionError::CandidateUnavailable {
+                    binding: ModelBinding::new(
+                        credential.map_or("", |credential| credential.id.as_str()),
+                        "",
+                        backend_ref,
+                    ),
+                    reason: format!(
+                        "multiple incompatible ACP capability fingerprints are live for {backend_ref}"
+                    ),
+                })
+            }
         }
     }
 }

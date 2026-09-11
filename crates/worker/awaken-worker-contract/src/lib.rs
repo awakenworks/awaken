@@ -4,6 +4,7 @@
 //! replaceable ranking policy. A policy may order workers that already satisfy the
 //! durable requirements, but it cannot widen authority; mutable adapters live elsewhere.
 
+mod capability_agreement;
 mod manifest;
 mod observation;
 mod placement;
@@ -22,8 +23,9 @@ pub use manifest::{
 #[cfg(any(test, kani))]
 pub(crate) use observation::dynamic_observation_admitted;
 pub use observation::{
-    WorkerAcpCapabilityObservation, WorkerAcpCapabilityRequirement, WorkerCredentialObservation,
-    dynamic_evidence_admits,
+    VerifiedAcpCapabilityEvidence, VerifiedAcpCapabilitySelection, WorkerAcpCapabilityObservation,
+    WorkerAcpCapabilityRequirement, WorkerCredentialObservation, dynamic_evidence_admits,
+    select_verified_acp_capability,
 };
 pub use placement::{
     LeastLoadedPolicy, PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE, PlacementContext, PlacementError,
@@ -852,6 +854,102 @@ mod tests {
         assert!(
             serde_json::from_value::<WorkerAcpCapabilityObservation>(malformed).is_err(),
             "A4 malformed evidence cannot enter a Worker manifest",
+        );
+    }
+
+    #[test]
+    fn live_acp_selection_is_worker_local_order_independent_and_fail_closed() {
+        // Cause/effect graph: C1 Worker is Ready and live; C2 capability is a
+        // fresh verified profile for the backend; C3 the required credential
+        // is fresh on that same Worker; C4 all admitted profiles agree.
+        // Effects: E1 one coherent profile is available; E2 missing/cross-Worker
+        // evidence is unavailable; E3 disagreement is incompatible.
+        // Decision table: R1 C1+C2+C3+C4 -> E1; R2 !C1|!C2|!C3 -> E2;
+        // R3 C1+C2+C3+!C4 -> E3. Reversing input order must preserve every rule.
+        let credential = WorkerCredentialRevision {
+            id: "credential-1".into(),
+            revision: 1,
+        };
+        let negotiated = || awaken_acp_contract::NegotiatedAcpCapabilities {
+            protocol_version: "1".into(),
+            load_session: false,
+            prompt_image: false,
+            prompt_audio: false,
+            prompt_embedded_context: false,
+            mcp_http: true,
+            mcp_sse: false,
+            session_list: false,
+            modes: Vec::new(),
+            config_options: Vec::new(),
+        };
+        let registered =
+            |id: &str, fingerprint: &str, with_credential: bool| {
+                let mut snapshot = manifest(id, 0);
+                if with_credential {
+                    snapshot.credential_observations.insert(
+                        WorkerCredentialObservation::available(credential.clone(), 100, 200),
+                    );
+                }
+                snapshot.acp_capability_observations = vec![WorkerAcpCapabilityObservation {
+                    observation: AcpCapabilityObservation::verified(
+                        "acp:claude",
+                        "1",
+                        100,
+                        fingerprint,
+                        negotiated(),
+                    )
+                    .unwrap(),
+                    valid_until_ms: 200,
+                }];
+                RegisteredWorker {
+                    snapshot,
+                    heartbeat_sequence: 1,
+                    observation_sequence: 1,
+                    registered_at_ms: 1,
+                    heartbeat_at_ms: 100,
+                    drain_deadline_ms: None,
+                }
+            };
+
+        let matching = registered("matching", "sha256:same", true);
+        let duplicate = registered("duplicate", "sha256:same", true);
+        for workers in [
+            vec![matching.clone(), duplicate.clone()],
+            vec![duplicate.clone(), matching.clone()],
+        ] {
+            assert!(
+                matches!(
+                    select_verified_acp_capability(&workers, "acp:claude", Some(&credential), 150),
+                    VerifiedAcpCapabilitySelection::Available(_)
+                ),
+                "R1 order-independent duplicate evidence"
+            );
+        }
+
+        let split_credential = registered("capability-only", "sha256:same", false);
+        let mut credential_only = registered("credential-only", "sha256:same", true);
+        credential_only.snapshot.acp_capability_observations.clear();
+        assert_eq!(
+            select_verified_acp_capability(
+                &[split_credential, credential_only],
+                "acp:claude",
+                Some(&credential),
+                150
+            ),
+            VerifiedAcpCapabilitySelection::Unavailable,
+            "R2 evidence from different Workers cannot be joined"
+        );
+
+        let incompatible = registered("incompatible", "sha256:other", true);
+        assert_eq!(
+            select_verified_acp_capability(
+                &[matching, incompatible],
+                "acp:claude",
+                Some(&credential),
+                150
+            ),
+            VerifiedAcpCapabilitySelection::Incompatible,
+            "R3"
         );
     }
 
