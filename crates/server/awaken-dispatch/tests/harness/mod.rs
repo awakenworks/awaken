@@ -104,7 +104,7 @@ pub fn assert_completed_model_invocations(commit: &dyn CommittedThreadView, coun
                 (
                     ordinal,
                     ModelOperationPhase::Returned,
-                    ModelExecutionEvidence::Terminated
+                    ModelExecutionEvidence::Terminated(awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some("completed")).unwrap())
                 ),
             ])
             .collect::<Vec<_>>()

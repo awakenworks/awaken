@@ -22,7 +22,12 @@ async fn make_model_unknown(fixture: &PermissionHandoffFixture, shadowed: bool) 
     let mut prior = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
     prior.execution = ModelExecutionEvidence::Unknown;
     let mut later = ModelOperation::next(Some(&prior), prior.binding.clone()).unwrap();
-    later.execution = ModelExecutionEvidence::Terminated;
+    later.execution = ModelExecutionEvidence::Terminated(
+        awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
+            "completed",
+        ))
+        .unwrap(),
+    );
     let mut commands = vec![ActiveModelOperation::write(&Some(prior))];
     if shadowed {
         commands.push(ActiveModelOperation::write(&Some(later)));
@@ -181,7 +186,12 @@ async fn permission_resume_keeps_the_validated_model_ordinal_after_a_late_receip
         .pop()
         .unwrap();
         let mut later = ModelOperation::next(Some(&prior), prior.binding.clone()).unwrap();
-        later.execution = ModelExecutionEvidence::Terminated;
+        later.execution = ModelExecutionEvidence::Terminated(
+            awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
+                "completed",
+            ))
+            .unwrap(),
+        );
         let expected = later.ordinal.get() + 1;
         for operation in [later, prior] {
             fixture

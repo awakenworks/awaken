@@ -23,6 +23,8 @@ use sha2::{Digest as _, Sha256};
 
 mod artifact_capture;
 mod execution;
+mod generation;
+pub use generation::{CompleteGeneration, generation_matches, sealed};
 mod input;
 mod lifecycle;
 mod memory_application;
@@ -736,6 +738,22 @@ pub struct MemoryGeneration {
     pub memory_id: String,
     pub version: u64,
     pub content_sha256: String,
+}
+
+impl sealed::Sealed for MemoryGeneration {}
+
+impl CompleteGeneration for MemoryGeneration {
+    fn subject_id(&self) -> &str {
+        &self.memory_id
+    }
+
+    fn version(&self) -> u64 {
+        self.version
+    }
+
+    fn content_digest(&self) -> &str {
+        &self.content_sha256
+    }
 }
 
 impl Memory {

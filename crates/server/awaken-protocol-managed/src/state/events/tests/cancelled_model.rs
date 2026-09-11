@@ -20,8 +20,17 @@ async fn cancelled_model_evidence_projects_without_rewriting_logical_outcome() {
     for evidence in [
         None,
         Some(ModelExecutionEvidence::Unknown),
-        Some(ModelExecutionEvidence::NotDispatched),
-        Some(ModelExecutionEvidence::Terminated),
+        Some(ModelExecutionEvidence::NotDispatched(
+            awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
+                awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection,
+            ),
+        )),
+        Some(ModelExecutionEvidence::Terminated(
+            awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
+                "completed",
+            ))
+            .unwrap(),
+        )),
     ] {
         for (foreign, prior_unknown) in [false, true]
             .into_iter()
@@ -83,7 +92,12 @@ async fn cancelled_model_evidence_projects_without_rewriting_logical_outcome() {
                 runtime.state_cursors.lock().unwrap().push(2);
                 // A later durable terminal receipt is a separate fact. The same
                 // terminal event must keep its original content under cold replay.
-                operation.execution = ModelExecutionEvidence::Terminated;
+                operation.execution = ModelExecutionEvidence::Terminated(
+                    awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(
+                        Some("completed"),
+                    )
+                    .unwrap(),
+                );
                 let mut later = ActiveModelOperation::write(&Some(operation));
                 later.bind_run(&run);
                 runtime.state.lock().unwrap().push(later);
@@ -157,7 +171,12 @@ async fn cancelled_child_uses_the_same_committed_execution_classifier() {
     // both views. Cross C1/C2 x C3; a different ordinal cannot stop its sibling.
     for (execution, prior_unknown) in [
         ModelExecutionEvidence::Unknown,
-        ModelExecutionEvidence::Terminated,
+        ModelExecutionEvidence::Terminated(
+            awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
+                "completed",
+            ))
+            .unwrap(),
+        ),
     ]
     .into_iter()
     .flat_map(|execution| [false, true].map(|prior| (execution, prior)))

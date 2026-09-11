@@ -58,11 +58,15 @@ impl LlmExecutor for FailingLlm {
                 message: "overloaded".to_string(),
                 retry_after: None,
             }
-            .with_execution_evidence(ModelExecutionEvidence::NotDispatched))
+            .with_execution_evidence(ModelExecutionEvidence::NotDispatched(
+                awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
+                    awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection,
+                ),
+            )))
         } else {
             Err(
                 LlmError::Unauthorized("bad api key before dispatch".to_string())
-                    .with_execution_evidence(ModelExecutionEvidence::NotDispatched),
+                    .with_execution_evidence(ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection))),
             )
         }
     }
@@ -86,7 +90,7 @@ impl LlmExecutor for PermanentThenOkLlm {
         if n < self.fail_times {
             Err(
                 LlmError::Unauthorized("bad api key before dispatch".to_string())
-                    .with_execution_evidence(ModelExecutionEvidence::NotDispatched),
+                    .with_execution_evidence(ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection))),
             )
         } else {
             Ok(ChatResponse {
@@ -114,7 +118,7 @@ impl LlmExecutor for FlakyLlm {
         if n < self.fail_times {
             Err(
                 LlmError::Provider("unavailable before dispatch".to_string())
-                    .with_execution_evidence(ModelExecutionEvidence::NotDispatched),
+                    .with_execution_evidence(ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection))),
             )
         } else {
             Ok(ChatResponse {

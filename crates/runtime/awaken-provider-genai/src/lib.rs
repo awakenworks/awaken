@@ -15,7 +15,9 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, DEFAULT_MODEL_RESPONSE_TIMEOUT, Error, LlmExecutor,
     Result, StopReason, TokenUsage, ToolCall,
 };
-use awaken_runtime_contract::model_operation::ModelExecutionEvidence;
+use awaken_runtime_contract::model_operation::{
+    ModelExecutionEvidence, NoDispatchProof, PreDispatchStage, ResponseEnvelope, TerminalReceipt,
+};
 use genai::Client;
 use genai::chat::{
     Binary, ChatMessage, ChatRequest as GenaiChatRequest, ContentPart, MessageContent,
@@ -222,7 +224,9 @@ impl LlmExecutor for GenaiExecutor {
         let genai_request =
             to_genai_request_with_adapter(&request, self.adapter, self.provider_kind.as_deref())
                 .map_err(|error| {
-                    error.with_execution_evidence(ModelExecutionEvidence::NotDispatched)
+                    error.with_execution_evidence(ModelExecutionEvidence::NotDispatched(
+                        NoDispatchProof::before_dispatch(PreDispatchStage::RequestProjection),
+                    ))
                 })?;
 
         // Have genai assemble the committed response for us. It concatenates the text
@@ -233,7 +237,11 @@ impl LlmExecutor for GenaiExecutor {
         // no content and we'd be stuck with the raw, string-encoded deltas.
         let options = self
             .chat_options(&request, true)
-            .map_err(|error| error.with_execution_evidence(ModelExecutionEvidence::NotDispatched))?
+            .map_err(|error| {
+                error.with_execution_evidence(ModelExecutionEvidence::NotDispatched(
+                    NoDispatchProof::before_dispatch(PreDispatchStage::RequestProjection),
+                ))
+            })?
             .with_capture_content(true)
             .with_capture_tool_calls(true)
             .with_capture_usage(true)
@@ -360,12 +368,20 @@ impl LlmExecutor for GenaiExecutor {
             }
         };
 
+        // The loop above breaks ONLY on `ChatStreamEvent::End`, the streaming
+        // protocol's own end-of-response frame. A socket EOF before that frame,
+        // the idle-progress deadline and the total deadline all return earlier
+        // with no evidence, so this receipt rests on the frame and never on a
+        // local observation that the stream stopped producing bytes.
+        let receipt = TerminalReceipt::from_response_envelope(ResponseEnvelope::StreamEndFrame);
         let stop_reason = end
             .captured_stop_reason
             .as_ref()
             .map(map_stop_reason)
             .transpose()
-            .map_err(|error| error.with_execution_evidence(ModelExecutionEvidence::Terminated))?;
+            .map_err(|error| {
+                error.with_execution_evidence(ModelExecutionEvidence::Terminated(receipt))
+            })?;
         let usage = end.captured_usage.as_ref().map(map_usage);
         let output = end
             .captured_content
@@ -384,7 +400,7 @@ impl LlmExecutor for GenaiExecutor {
             usage,
             stop_reason,
         })
-        .map_err(|error| error.with_execution_evidence(ModelExecutionEvidence::Terminated))
+        .map_err(|error| error.with_execution_evidence(ModelExecutionEvidence::Terminated(receipt)))
     }
 }
 
@@ -398,10 +414,14 @@ impl GenaiExecutor {
         let genai_request =
             to_genai_request_with_adapter(&request, self.adapter, self.provider_kind.as_deref())
                 .map_err(|error| {
-                    error.with_execution_evidence(ModelExecutionEvidence::NotDispatched)
+                    error.with_execution_evidence(ModelExecutionEvidence::NotDispatched(
+                        NoDispatchProof::before_dispatch(PreDispatchStage::RequestProjection),
+                    ))
                 })?;
         let mut options = self.chat_options(&request, false).map_err(|error| {
-            error.with_execution_evidence(ModelExecutionEvidence::NotDispatched)
+            error.with_execution_evidence(ModelExecutionEvidence::NotDispatched(
+                NoDispatchProof::before_dispatch(PreDispatchStage::RequestProjection),
+            ))
         })?;
         if let Some(max_tokens) = max_tokens_override {
             options = options.with_max_tokens(max_tokens);
@@ -416,9 +436,16 @@ impl GenaiExecutor {
         .map_err(|_| Error::Timeout("model call timed out".to_string()))?
         .map_err(|err| classify_error(&err.to_string()))?;
 
+        // `exec_chat` resolves only once the provider's complete response body
+        // was received and decoded; the local timeout above and any transport
+        // failure return earlier with no evidence. The receipt therefore rests
+        // on that decoded body, not on this future having finished.
+        let receipt = TerminalReceipt::from_response_envelope(ResponseEnvelope::CompleteBody);
         from_genai_response(response)
             .and_then(require_usable_response)
-            .map_err(|error| error.with_execution_evidence(ModelExecutionEvidence::Terminated))
+            .map_err(|error| {
+                error.with_execution_evidence(ModelExecutionEvidence::Terminated(receipt))
+            })
     }
 
     fn chat_options(

@@ -974,8 +974,17 @@ mod tests {
         // test owns successful terminal replay, so no parallel classifier here.
         for evidence in [
             ModelExecutionEvidence::Unknown,
-            ModelExecutionEvidence::NotDispatched,
-            ModelExecutionEvidence::Terminated,
+            ModelExecutionEvidence::NotDispatched(
+                awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
+                    awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection,
+                ),
+            ),
+            ModelExecutionEvidence::Terminated(
+                awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
+                    "completed",
+                ))
+                .unwrap(),
+            ),
         ] {
             let tmp = tempfile::tempdir().unwrap();
             let provider = LocalProvider::new(tmp.path());

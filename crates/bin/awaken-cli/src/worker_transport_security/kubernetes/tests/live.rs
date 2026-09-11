@@ -366,7 +366,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
                     ordinal: NonZeroU64::MIN,
                     binding: ModelBinding::new("test", "model", "native"),
                     phase: ModelOperationPhase::Returned,
-                    execution: ModelExecutionEvidence::Terminated,
+                    execution: ModelExecutionEvidence::Terminated(awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some("completed")).unwrap()),
                 })),
             ],
             Vec::new(),

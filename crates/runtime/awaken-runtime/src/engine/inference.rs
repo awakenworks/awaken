@@ -410,8 +410,14 @@ async fn infer_with_retry_inner(
         };
         use awaken_runtime_contract::model_operation::ModelExecutionEvidence;
         let execution = match &outcome {
-            Ok(Ok(_)) => ModelExecutionEvidence::Terminated,
+            // A returned response IS the adapter's receipt for this
+            // invocation; Runtime reads it rather than inferring termination
+            // from the fact that a Rust future resolved.
+            Ok(Ok(response)) => ModelExecutionEvidence::Terminated(response.terminal_receipt()),
+            // A returned error carries only what the adapter could prove.
             Ok(Err(error)) => error.execution_evidence(),
+            // The local attempt timeout fired. That is an observation about
+            // this process, never about the remote operation.
             Err(_) => ModelExecutionEvidence::Unknown,
         };
         // The adapter can drop its own transport future and RETURN an error.

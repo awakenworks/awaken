@@ -9,16 +9,205 @@ use crate::resolved::ModelBinding;
 use crate::{MergePolicy, Scope};
 use awaken_agent_contract::agent::state::StateKey;
 
+/// The private witness carried by every minted proof. It is nameable only
+/// inside this module, so no struct literal and no functional-update syntax
+/// anywhere else in the workspace can assemble a [`TerminalReceipt`] or a
+/// [`NoDispatchProof`]. Positive evidence therefore has exactly the entry
+/// points published below, and `Unknown` stays free to construct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Seal;
+
+/// Which wire fact a [`TerminalReceipt`] rests on, recorded in the run journal
+/// so an operator reading history can see *why* an invocation was ruled
+/// terminal instead of having to trust that some adapter once decided so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalWireFact {
+    /// The provider named a terminal status for this operation on the wire.
+    Status,
+    /// A complete non-streaming response body was received and decoded.
+    CompleteBody,
+    /// The streaming protocol's own end-of-response frame was received.
+    StreamEndFrame,
+    /// Restored from a journal written before receipts were recorded. Such a
+    /// record still proves some adapter established termination at the time;
+    /// the wire fact it rested on simply was not kept. This variant is
+    /// reachable only by decoding history, never by minting.
+    Unrecorded,
+}
+
+/// The decoded frame an adapter must name to mint a receipt without a status
+/// token. Only the adapter that owns a provider's codec can witness one, and
+/// naming the exact frame at the call site is what a reviewer checks.
+///
+/// None of the following is an envelope, and every one of them must report
+/// [`ModelExecutionEvidence::Unknown`]: a local timeout firing, a dropped or
+/// abandoned future, a socket EOF arriving before the protocol's end frame, an
+/// HTTP status line, a request id, or a transport error being returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseEnvelope {
+    /// The provider's complete non-streaming response body was received and
+    /// decoded for this exact invocation.
+    CompleteBody,
+    /// The streaming protocol's own end-of-response frame was received
+    /// (OpenAI `[DONE]`, Anthropic `message_stop`) — not a socket EOF.
+    StreamEndFrame,
+}
+
+/// Why a claimed termination is not a receipt. Every variant means the caller
+/// must report [`ModelExecutionEvidence::Unknown`]: re-entry stays blocked.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum UnprovenTermination {
+    /// The provider named no terminal status at all. Absence is never proof.
+    #[error("the provider named no terminal status for this operation")]
+    AbsentStatus,
+    /// The provider named a status this platform does not accept as terminal.
+    /// Guessing it into a terminal class is the exact fault this type exists
+    /// to prevent, so it fails closed instead.
+    #[error("`{0}` is not a status that proves the remote operation ended")]
+    UnrecognizedStatus(String),
+}
+
+/// The complete set of provider status tokens this platform accepts as proof
+/// that a remote operation ended. Supporting another dialect means adding its
+/// tokens here, under review, in one place — not classifying strings inside an
+/// adapter where a catch-all arm can quietly promote an unknown value.
+const TERMINAL_WIRE_STATUS: &[&str] = &["completed", "incomplete", "failed", "cancelled"];
+
+/// Positive proof that a remote operation ended, mintable only by parsing a
+/// remote terminal receipt.
+///
+/// The private [`Seal`] makes this unconstructible outside this module: there
+/// is no public field, no struct literal, no `Default`, and no zero-argument
+/// constructor. The only ways to obtain one are
+/// [`from_wire_status`](Self::from_wire_status), which requires a terminal
+/// status token the provider itself put on the wire, and
+/// [`from_response_envelope`](Self::from_response_envelope), which requires the
+/// caller to name the decoded frame it is holding. A local timeout, a dropped
+/// future, an HTTP status or a transport error has neither, so none of them can
+/// produce terminal evidence any more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalReceipt {
+    fact: TerminalWireFact,
+    seal: Seal,
+}
+
+impl TerminalReceipt {
+    /// Mint from the provider's own terminal status token, taken verbatim from
+    /// a decoded response. An absent token, or one outside
+    /// [`TERMINAL_WIRE_STATUS`], is an error and never a receipt.
+    ///
+    /// # Errors
+    /// [`UnprovenTermination`] whenever the status cannot prove termination.
+    pub fn from_wire_status(status: Option<&str>) -> Result<Self, UnprovenTermination> {
+        let status = status.ok_or(UnprovenTermination::AbsentStatus)?;
+        if !TERMINAL_WIRE_STATUS.contains(&status) {
+            return Err(UnprovenTermination::UnrecognizedStatus(status.to_owned()));
+        }
+        Ok(Self {
+            fact: TerminalWireFact::Status,
+            seal: Seal,
+        })
+    }
+
+    /// Mint from a decoded response envelope, for the providers whose terminal
+    /// fact is the frame itself rather than a status token. The caller must
+    /// hold that frame; see [`ResponseEnvelope`] for what does not qualify.
+    #[must_use]
+    pub const fn from_response_envelope(envelope: ResponseEnvelope) -> Self {
+        Self {
+            fact: match envelope {
+                ResponseEnvelope::CompleteBody => TerminalWireFact::CompleteBody,
+                ResponseEnvelope::StreamEndFrame => TerminalWireFact::StreamEndFrame,
+            },
+            seal: Seal,
+        }
+    }
+
+    /// The wire fact this receipt rests on, for diagnostics and history.
+    #[must_use]
+    pub const fn wire_fact(self) -> TerminalWireFact {
+        self.fact
+    }
+
+    /// Restore evidence a trusted adapter minted before the wire fact was
+    /// recorded. Private: reachable only from this module's decoder.
+    const fn unrecorded() -> Self {
+        Self {
+            fact: TerminalWireFact::Unrecorded,
+            seal: Seal,
+        }
+    }
+}
+
+/// Where in its own send path an adapter stopped, for a [`NoDispatchProof`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
+#[serde(rename_all = "snake_case")]
+pub enum PreDispatchStage {
+    /// The neutral request could not be projected into the provider dialect,
+    /// or its per-call options could not be assembled. Nothing was encoded.
+    RequestProjection,
+    /// No provider executor, endpoint or egress lease could be resolved for
+    /// the binding, so no adapter was ever entered.
+    ExecutorResolution,
+    /// Restored from a journal written before proofs were recorded. Reachable
+    /// only by decoding history, never by minting.
+    Unrecorded,
+}
+
+/// Positive proof that a request never left this process.
+///
+/// Unlike termination there is no remote artifact to parse — the absence of a
+/// dispatch has no wire form — so the witness is the adapter naming the point
+/// in its own send path at which it stopped. Every [`PreDispatchStage`] is
+/// strictly before the first byte is handed to a transport, which is the one
+/// claim a caller downstream of a send can never honestly make. The private
+/// [`Seal`] keeps this out of reach of struct literals just like a receipt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoDispatchProof {
+    stage: PreDispatchStage,
+    seal: Seal,
+}
+
+impl NoDispatchProof {
+    /// Mint by naming the pre-send stage that failed. Honest only where no
+    /// byte of the request has reached a transport; a failure observed after
+    /// a send must report [`ModelExecutionEvidence::Unknown`] instead.
+    #[must_use]
+    pub const fn before_dispatch(stage: PreDispatchStage) -> Self {
+        Self { stage, seal: Seal }
+    }
+
+    /// Which pre-send stage refused the request, for diagnostics and history.
+    #[must_use]
+    pub const fn stage(self) -> PreDispatchStage {
+        self.stage
+    }
+
+    const fn unrecorded() -> Self {
+        Self {
+            stage: PreDispatchStage::Unrecorded,
+            seal: Seal,
+        }
+    }
+}
+
 /// Evidence about one invocation, independent of response quality and error
 /// classification. Missing evidence is unknown, including legacy Returned.
-/// Only the trusted adapter may establish NotDispatched or Terminated; a local
-/// timeout, dropped stream, HTTP status or request id is not such a proof.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Unknown` is deliberately free: "I do not know" is exactly what a timeout, a
+/// dropped future or a transport error is entitled to report, and it is the
+/// `Default`. The two positive variants instead carry a sealed proof that only
+/// a trusted adapter can mint, so a local timeout, a dropped stream, an HTTP
+/// status or a request id can no longer be written as termination at all.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ModelExecutionEvidence {
     #[default]
     Unknown,
-    NotDispatched,
-    Terminated,
+    NotDispatched(NoDispatchProof),
+    Terminated(TerminalReceipt),
 }
 
 impl ModelExecutionEvidence {
@@ -26,7 +215,93 @@ impl ModelExecutionEvidence {
     /// independent mandatory gates owned by Runtime/Dispatch.
     #[must_use]
     pub const fn permits_reentry(self) -> bool {
-        matches!(self, Self::NotDispatched | Self::Terminated)
+        matches!(self, Self::NotDispatched(_) | Self::Terminated(_))
+    }
+}
+
+const EVIDENCE_VARIANTS: &[&str] = &["Unknown", "NotDispatched", "Terminated"];
+
+impl Serialize for ModelExecutionEvidence {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Unknown => {
+                serializer.serialize_unit_variant("ModelExecutionEvidence", 0, EVIDENCE_VARIANTS[0])
+            }
+            Self::NotDispatched(proof) => serializer.serialize_newtype_variant(
+                "ModelExecutionEvidence",
+                1,
+                EVIDENCE_VARIANTS[1],
+                &proof.stage,
+            ),
+            Self::Terminated(receipt) => serializer.serialize_newtype_variant(
+                "ModelExecutionEvidence",
+                2,
+                EVIDENCE_VARIANTS[2],
+                &receipt.fact,
+            ),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ModelExecutionEvidence {
+    /// Decoding restores evidence a trusted adapter already minted and this run
+    /// already committed; it is not a second minting authority, and it is the
+    /// same trust boundary the committed journal has always been. A pre-receipt
+    /// record decodes to the non-committal `Unrecorded` wire fact rather than
+    /// having one invented for it, and an unknown tag fails closed.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(EvidenceVisitor)
+    }
+}
+
+struct EvidenceVisitor;
+
+impl<'de> serde::de::Visitor<'de> for EvidenceVisitor {
+    type Value = ModelExecutionEvidence;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("model execution evidence")
+    }
+
+    fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        match value {
+            "Unknown" => Ok(ModelExecutionEvidence::Unknown),
+            "NotDispatched" => Ok(ModelExecutionEvidence::NotDispatched(
+                NoDispatchProof::unrecorded(),
+            )),
+            "Terminated" => Ok(ModelExecutionEvidence::Terminated(
+                TerminalReceipt::unrecorded(),
+            )),
+            other => Err(E::unknown_variant(other, EVIDENCE_VARIANTS)),
+        }
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        use serde::de::Error as _;
+        let Some(tag) = map.next_key::<String>()? else {
+            return Err(A::Error::custom("model execution evidence has no variant"));
+        };
+        let value = match tag.as_str() {
+            "Unknown" => {
+                map.next_value::<serde::de::IgnoredAny>()?;
+                ModelExecutionEvidence::Unknown
+            }
+            "NotDispatched" => ModelExecutionEvidence::NotDispatched(NoDispatchProof {
+                stage: map.next_value()?,
+                seal: Seal,
+            }),
+            "Terminated" => ModelExecutionEvidence::Terminated(TerminalReceipt {
+                fact: map.next_value()?,
+                seal: Seal,
+            }),
+            other => return Err(A::Error::unknown_variant(other, EVIDENCE_VARIANTS)),
+        };
+        if map.next_key::<serde::de::IgnoredAny>()?.is_some() {
+            return Err(A::Error::custom(
+                "model execution evidence carries exactly one variant",
+            ));
+        }
+        Ok(value)
     }
 }
 
@@ -280,17 +555,32 @@ fn fold_recorded_operation(recorded: &mut Vec<ModelOperation>, operation: ModelO
     true
 }
 
+/// Every positive-evidence value the proofs must exhaust, including each
+/// recorded wire fact and pre-send stage. Built from this module's private
+/// seal so the proof covers values a decoder can restore, not only the two
+/// minting doors — the doors' own fail-closed rules are proven separately.
+#[cfg(kani)]
+fn any_evidence(selector: u8) -> ModelExecutionEvidence {
+    match selector % 3 {
+        0 => ModelExecutionEvidence::Unknown,
+        1 => ModelExecutionEvidence::NotDispatched(NoDispatchProof {
+            stage: kani::any(),
+            seal: Seal,
+        }),
+        _ => ModelExecutionEvidence::Terminated(TerminalReceipt {
+            fact: kani::any(),
+            seal: Seal,
+        }),
+    }
+}
+
 #[cfg(kani)]
 #[kani::proof]
 fn model_execution_reentry_requires_positive_evidence() {
     // R1 unknown => deny; R2 not dispatched / terminal => only the physical
     // gate opens. Retry policy and claim/budget remain separate authorities.
     let selector: u8 = kani::any();
-    let evidence = match selector % 3 {
-        0 => ModelExecutionEvidence::Unknown,
-        1 => ModelExecutionEvidence::NotDispatched,
-        _ => ModelExecutionEvidence::Terminated,
-    };
+    let evidence = any_evidence(selector);
     assert_eq!(evidence.permits_reentry(), selector % 3 != 0);
     // R3 missing journal + retained checkpoint => deny; R4 neither => fresh
     // entry allowed. Cross R1..R4 with each local phase: phase cannot authorize.
@@ -364,11 +654,7 @@ fn model_operation_history_preserves_distinct_subjects() {
     let second: u64 = kani::any();
     kani::assume(first > 0 && second > 0);
     let same_binding: bool = kani::any();
-    let evidence = match kani::any::<u8>() % 3 {
-        0 => ModelExecutionEvidence::Unknown,
-        1 => ModelExecutionEvidence::NotDispatched,
-        _ => ModelExecutionEvidence::Terminated,
-    };
+    let evidence = any_evidence(kani::any());
     let original = ModelOperation {
         ordinal: NonZeroU64::new(first).unwrap(),
         binding: ModelBinding::new("", "", ""),
@@ -411,6 +697,22 @@ fn model_operation_history_preserves_distinct_subjects() {
 mod tests {
     use super::*;
 
+    /// Simulate a provider receipt through the one public door an adapter
+    /// uses. There is deliberately no test-only backdoor: a fixture that
+    /// wants terminal evidence must produce the same wire fact production
+    /// code would have to produce.
+    fn terminated() -> ModelExecutionEvidence {
+        ModelExecutionEvidence::Terminated(
+            TerminalReceipt::from_wire_status(Some("completed")).unwrap(),
+        )
+    }
+
+    fn not_dispatched() -> ModelExecutionEvidence {
+        ModelExecutionEvidence::NotDispatched(NoDispatchProof::before_dispatch(
+            PreDispatchStage::RequestProjection,
+        ))
+    }
+
     #[tokio::test]
     async fn model_identity_is_reconstructible_exact_and_task_scoped() {
         use awaken_agent_contract::agent::{run::Id as RunId, thread::Id as ThreadId};
@@ -426,7 +728,7 @@ mod tests {
         let mut restored: ModelOperation =
             serde_json::from_value(serde_json::to_value(&record).unwrap()).unwrap();
         restored.phase = ModelOperationPhase::Returned;
-        restored.execution = ModelExecutionEvidence::Terminated;
+        restored.execution = terminated();
         assert_eq!(
             context,
             ModelOperationContext::from_operation(&thread, &run, &restored)
@@ -492,7 +794,7 @@ mod tests {
         let mut operation = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
         let mut entered = ActiveModelOperation::write(&Some(operation.clone()));
         entered.bind_run(&a);
-        operation.execution = ModelExecutionEvidence::Terminated;
+        operation.execution = terminated();
         let mut returned = ActiveModelOperation::write(&Some(operation));
         returned.bind_run(&a);
         let commands = [entered, returned];
@@ -509,7 +811,7 @@ mod tests {
                     } else if through < 3 {
                         Some(ModelExecutionEvidence::Unknown)
                     } else {
-                        Some(ModelExecutionEvidence::Terminated)
+                        Some(terminated())
                     }
                 );
             }
@@ -534,10 +836,10 @@ mod tests {
         let thread = ThreadId("thread".into());
         let one = ModelOperation::next(None, ModelBinding::new("p", "one", "b")).unwrap();
         let mut two = ModelOperation::next(Some(&one), ModelBinding::new("p", "two", "b")).unwrap();
-        two.execution = ModelExecutionEvidence::Terminated;
+        two.execution = terminated();
         let mut three =
             ModelOperation::next(Some(&two), ModelBinding::new("p", "three", "b")).unwrap();
-        three.execution = ModelExecutionEvidence::NotDispatched;
+        three.execution = not_dispatched();
         let command = |operation: &ModelOperation| {
             let mut command = ActiveModelOperation::write(&Some(operation.clone()));
             command.bind_run(&run);
@@ -550,7 +852,7 @@ mod tests {
         let mut wrong_scope = command(&one);
         wrong_scope.scope = Scope::Thread;
         let mut returned_one = one.clone();
-        returned_one.execution = ModelExecutionEvidence::Terminated;
+        returned_one.execution = terminated();
         let commands = [
             command(&one),
             foreign,
@@ -595,7 +897,7 @@ mod tests {
                     if through < 6 {
                         ModelExecutionEvidence::Unknown
                     } else {
-                        ModelExecutionEvidence::Terminated
+                        terminated()
                     }
                 );
             }
@@ -696,7 +998,7 @@ mod tests {
         );
         for index in [0, 511, 1025] {
             let mut update = recorded[index].clone();
-            update.execution = ModelExecutionEvidence::Terminated;
+            update.execution = terminated();
             assert!(fold_recorded_operation(&mut recorded, update.clone()));
             let before = recorded.clone();
             assert_eq!(recorded[index], update);
@@ -704,6 +1006,160 @@ mod tests {
             assert!(!fold_recorded_operation(&mut recorded, update));
             assert_eq!(recorded, before);
         }
+    }
+
+    #[test]
+    fn terminal_evidence_is_mintable_only_from_a_parsed_remote_receipt() {
+        // Causes: C1 the provider named a listed terminal status; C2 it named
+        // an unlisted one; C3 it named none at all (a local timeout, a dropped
+        // future, a transport error and an HTTP status line all land here,
+        // because none of them carries a status token); C4 the adapter instead
+        // decoded a response envelope it can name.
+        // Effects: E1 a receipt recording the exact wire fact; E2 refusal.
+        // Rules: R1 = C1 => E1(Status); R2 = C2 => E2; R3 = C3 => E2;
+        // R4 = C4 => E1(CompleteBody/StreamEndFrame). Every refusal leaves the
+        // caller with `Unknown`, which never permits re-entry — so an
+        // unrecognised or absent status can no longer be guessed into a
+        // terminal class the way a catch-all arm used to.
+        for status in TERMINAL_WIRE_STATUS {
+            let receipt = TerminalReceipt::from_wire_status(Some(status)).expect("R1");
+            assert_eq!(receipt.wire_fact(), TerminalWireFact::Status);
+            assert!(ModelExecutionEvidence::Terminated(receipt).permits_reentry());
+        }
+        for unlisted in [
+            "in_progress",
+            "queued",
+            "COMPLETED",
+            "completed ",
+            "",
+            "timeout",
+        ] {
+            assert_eq!(
+                TerminalReceipt::from_wire_status(Some(unlisted)),
+                Err(UnprovenTermination::UnrecognizedStatus(unlisted.to_owned())),
+                "R2 {unlisted:?}"
+            );
+        }
+        assert_eq!(
+            TerminalReceipt::from_wire_status(None),
+            Err(UnprovenTermination::AbsentStatus),
+            "R3"
+        );
+        assert!(!ModelExecutionEvidence::Unknown.permits_reentry());
+        for (envelope, fact) in [
+            (
+                ResponseEnvelope::CompleteBody,
+                TerminalWireFact::CompleteBody,
+            ),
+            (
+                ResponseEnvelope::StreamEndFrame,
+                TerminalWireFact::StreamEndFrame,
+            ),
+        ] {
+            let receipt = TerminalReceipt::from_response_envelope(envelope);
+            assert_eq!(receipt.wire_fact(), fact, "R4");
+            assert!(ModelExecutionEvidence::Terminated(receipt).permits_reentry());
+        }
+        // A no-dispatch proof names the pre-send stage and nothing else can
+        // say it; both stages open the same physical gate as a receipt.
+        for stage in [
+            PreDispatchStage::RequestProjection,
+            PreDispatchStage::ExecutorResolution,
+        ] {
+            let proof = NoDispatchProof::before_dispatch(stage);
+            assert_eq!(proof.stage(), stage);
+            assert!(ModelExecutionEvidence::NotDispatched(proof).permits_reentry());
+        }
+    }
+
+    #[test]
+    fn committed_evidence_round_trips_and_pre_receipt_history_stays_non_committal() {
+        // Causes: W1 each minted evidence value; W2 a pre-receipt journal that
+        // wrote the bare tag string; W3 a tagged record; W4 a corrupt tag,
+        // a corrupt payload, or two variants in one record.
+        // Effects: E1 exact round trip; E2 the recorded wire fact/stage is
+        // readable; E3 W2 restores as Unrecorded — the record still proves an
+        // adapter established the class, but no wire fact is invented for it;
+        // E4 W4 fails closed rather than decoding to some default.
+        let cases = [
+            (
+                ModelExecutionEvidence::Terminated(
+                    TerminalReceipt::from_wire_status(Some("failed")).unwrap(),
+                ),
+                serde_json::json!({ "Terminated": "status" }),
+            ),
+            (
+                ModelExecutionEvidence::Terminated(TerminalReceipt::from_response_envelope(
+                    ResponseEnvelope::StreamEndFrame,
+                )),
+                serde_json::json!({ "Terminated": "stream_end_frame" }),
+            ),
+            (
+                ModelExecutionEvidence::NotDispatched(NoDispatchProof::before_dispatch(
+                    PreDispatchStage::ExecutorResolution,
+                )),
+                serde_json::json!({ "NotDispatched": "executor_resolution" }),
+            ),
+            (
+                ModelExecutionEvidence::Unknown,
+                serde_json::json!("Unknown"),
+            ),
+        ];
+        for (value, wire) in cases {
+            assert_eq!(serde_json::to_value(value).unwrap(), wire, "W1/W3");
+            assert_eq!(
+                serde_json::from_value::<ModelExecutionEvidence>(wire).unwrap(),
+                value,
+                "E1"
+            );
+        }
+        for (legacy, fact, stage) in [
+            ("Terminated", Some(TerminalWireFact::Unrecorded), None),
+            ("NotDispatched", None, Some(PreDispatchStage::Unrecorded)),
+        ] {
+            let decoded: ModelExecutionEvidence =
+                serde_json::from_value(serde_json::json!(legacy)).unwrap();
+            assert!(decoded.permits_reentry(), "W2 keeps the historical class");
+            match decoded {
+                ModelExecutionEvidence::Terminated(receipt) => {
+                    assert_eq!(Some(receipt.wire_fact()), fact, "E3");
+                }
+                ModelExecutionEvidence::NotDispatched(proof) => {
+                    assert_eq!(Some(proof.stage()), stage, "E3");
+                }
+                ModelExecutionEvidence::Unknown => panic!("W2 must not erase the class"),
+            }
+        }
+        assert!(
+            serde_json::from_value::<ModelExecutionEvidence>(serde_json::json!("Returned"))
+                .unwrap_err()
+                .to_string()
+                .contains("unknown variant"),
+            "E4 tag"
+        );
+        for corrupt in [
+            serde_json::json!({ "Terminated": "handed_to_transport" }),
+            serde_json::json!({ "NotDispatched": "sent" }),
+            serde_json::json!({ "Terminated": "status", "Unknown": null }),
+            serde_json::json!({ "Returned": "status" }),
+            serde_json::json!(3),
+        ] {
+            assert!(
+                serde_json::from_value::<ModelExecutionEvidence>(corrupt.clone()).is_err(),
+                "E4 {corrupt}"
+            );
+        }
+        // E5 a wholly foreign shape says what it wanted. Evidence corruption is
+        // diagnosed from a run journal long after the fact, so the refusal has
+        // to name the subject rather than leave an operator guessing which
+        // cell rejected -- and guessing is how invented evidence gets written.
+        assert!(
+            serde_json::from_value::<ModelExecutionEvidence>(serde_json::json!(3))
+                .unwrap_err()
+                .to_string()
+                .contains("expected model execution evidence"),
+            "E5"
+        );
     }
 
     #[test]
@@ -727,8 +1183,8 @@ mod tests {
             assert!(!decoded.execution.permits_reentry());
             for execution in [
                 ModelExecutionEvidence::Unknown,
-                ModelExecutionEvidence::NotDispatched,
-                ModelExecutionEvidence::Terminated,
+                not_dispatched(),
+                terminated(),
             ] {
                 operation.execution = execution;
                 assert_eq!(
@@ -752,8 +1208,8 @@ mod tests {
         // re-entry. Wrapping an already annotated error remains flat.
         for execution in [
             ModelExecutionEvidence::Unknown,
-            ModelExecutionEvidence::NotDispatched,
-            ModelExecutionEvidence::Terminated,
+            not_dispatched(),
+            terminated(),
         ] {
             for error in [
                 Error::Binding("binding".into()),
