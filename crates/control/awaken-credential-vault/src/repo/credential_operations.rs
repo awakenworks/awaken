@@ -399,10 +399,44 @@ pub async fn enter_credential_with_materials(
 /// durable pending fact is recoverable, but the executable Source and Managed
 /// child become visible only in the repository's one atomic commit.
 pub async fn create_managed_credential(
-    mut command: ManagedCredentialCreateCommand,
+    command: ManagedCredentialCreateCommand,
     store: &dyn SecretStore,
     repo: &dyn ManagedCredentialRepository,
 ) -> Result<(CredentialSource, ManagedVaultCredential), ManagedCredentialCreationError> {
+    let stable_command = command.source_id.is_some();
+    let (pending, materials) = prepare_managed_credential_create(command)?;
+    if stable_command
+        && let Some(replayed) =
+            published_managed_credential_replay(&pending, &materials, store, repo).await?
+    {
+        return Ok(replayed);
+    }
+    match execute_managed_mutation(pending.clone(), materials.clone(), store, repo).await {
+        Ok(committed) => Ok((committed.after_source, committed.after_credential)),
+        Err(error) => {
+            // An identical concurrent owner may have published after our first
+            // read. Re-read the durable pair once; content verification remains
+            // the only path that can turn the transient conflict into replay.
+            if stable_command
+                && let Some(replayed) =
+                    published_managed_credential_replay(&pending, &materials, store, repo).await?
+            {
+                return Ok(replayed);
+            }
+            Err(error.into())
+        }
+    }
+}
+
+fn prepare_managed_credential_create(
+    mut command: ManagedCredentialCreateCommand,
+) -> Result<
+    (
+        PendingManagedCredentialMutation,
+        Vec<(crate::SecretRef, awaken_agent_contract::RedactedString)>,
+    ),
+    ManagedCredentialCreationError,
+> {
     validate_create_params(&command.source)?;
     validate_material_slots(command.auxiliary_materials.keys().map(String::as_str))?;
     let descriptor = command.descriptor.take();
@@ -445,8 +479,78 @@ pub async fn create_managed_credential(
         lifecycle: ManagedCredentialLifecycle::Active,
     };
     let pending = PendingManagedCredentialMutation::create(source, credential)?;
-    let committed = execute_managed_mutation(pending, materials, store, repo).await?;
-    Ok((committed.after_source, committed.after_credential))
+    Ok((pending, materials))
+}
+
+async fn published_managed_credential_replay(
+    expected: &PendingManagedCredentialMutation,
+    materials: &[(crate::SecretRef, awaken_agent_contract::RedactedString)],
+    store: &dyn SecretStore,
+    repo: &dyn ManagedCredentialRepository,
+) -> Result<Option<(CredentialSource, ManagedVaultCredential)>, ManagedCredentialCreationError> {
+    let Some(credential) = repo
+        .get_vault_credential(
+            &expected.after_credential.workspace_id,
+            &expected.after_credential.id,
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    let source = repo.get(&expected.after_source.id).await?;
+    if !logical_credential_source_matches(&source, &expected.after_source) {
+        return Err(CredentialError::MutationConflict(
+            "Managed credential Idempotency-Key was reused with different source content".into(),
+        )
+        .into());
+    }
+    if credential != expected.after_credential {
+        return Err(CredentialError::MutationConflict(
+            "Managed credential Idempotency-Key was reused with different child content".into(),
+        )
+        .into());
+    }
+    let mut expected_materials = materials.iter().map(|(_, material)| material);
+    if let Some(actual_reference) = source.material_ref.as_ref() {
+        let expected_material = expected_materials.next().ok_or_else(|| {
+            CredentialError::MutationConflict(
+                "Managed credential Idempotency-Key removed primary material".into(),
+            )
+        })?;
+        let actual = store.get(actual_reference).await?;
+        if actual.expose_secret() != expected_material.expose_secret() {
+            return Err(CredentialError::MutationConflict(
+                "Managed credential Idempotency-Key was reused with different material".into(),
+            )
+            .into());
+        }
+    }
+    for slot in expected.after_source.auxiliary_material_refs.keys() {
+        let expected_material = expected_materials.next().ok_or_else(|| {
+            CredentialError::MutationConflict(
+                "Managed credential Idempotency-Key removed auxiliary material".into(),
+            )
+        })?;
+        let actual_reference = source.auxiliary_material_refs.get(slot).ok_or_else(|| {
+            CredentialError::MutationConflict(
+                "Managed credential Idempotency-Key changed a material slot".into(),
+            )
+        })?;
+        let actual = store.get(actual_reference).await?;
+        if actual.expose_secret() != expected_material.expose_secret() {
+            return Err(CredentialError::MutationConflict(
+                "Managed credential Idempotency-Key was reused with different material".into(),
+            )
+            .into());
+        }
+    }
+    if expected_materials.next().is_some() {
+        return Err(CredentialError::MutationConflict(
+            "Managed credential Idempotency-Key added an unknown material slot".into(),
+        )
+        .into());
+    }
+    Ok(Some((source, credential)))
 }
 
 /// Durably retain the exact abort cleanup authority before compensating its
