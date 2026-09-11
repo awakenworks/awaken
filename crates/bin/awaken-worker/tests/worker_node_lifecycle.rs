@@ -980,10 +980,11 @@ async fn incompatible_control_registration_withdraws_before_runtime_startup() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn startup_failure_and_cancellation_share_one_registration_exit() {
     // Cause/effect table, first failed stage wins (later stages cannot run):
-    // S1 decorator error/unwind; S2 Memory factory error/unwind; S3 provider
-    // error/unwind/stall; S4 shutdown success/error while S3 is pending.
+    // S1 decorator error/unwind; S2 Memory factory error/unwind; S3 external
+    // relay bind failure; S4 provider error/unwind/stall; S5 shutdown
+    // success/error while S4 is pending.
     // All -> one registration and one exact deregistration, zero Ready/claims/
-    // warmups. S4-success returns Ok; other rows return Err without an unwind.
+    // warmups. S5-success returns Ok; other rows return Err without an unwind.
     // Existing normal/expired-receipt tests cover successful startup and late
     // heartbeat delivery. Timeouts are failure, not a successful probe receipt.
     for fault in [
@@ -991,6 +992,7 @@ async fn startup_failure_and_cancellation_share_one_registration_exit() {
         "decorator-panic",
         "memory-error",
         "memory-panic",
+        "relay-bind",
         "probe-error",
         "probe-panic",
         "probe-timeout",
@@ -1007,9 +1009,24 @@ async fn startup_failure_and_cancellation_share_one_registration_exit() {
             },
             ..Default::default()
         });
+        let relay_reservation = (fault == "relay-bind").then(|| {
+            std::net::TcpListener::bind("0.0.0.0:0")
+                .expect("reserve the configured relay port until startup fails")
+        });
+        let mut deployment = local_coordinator_deployment();
+        if let Some(reservation) = relay_reservation.as_ref() {
+            let port = reservation.local_addr().unwrap().port();
+            deployment.sandbox.container_mcp_relay = Some(
+                awaken_session_executor::ContainerMcpRelayExposure::new(
+                    format!("0.0.0.0:{port}").parse().unwrap(),
+                    format!("http://relay.awaken-cloud.svc:{port}"),
+                )
+                .unwrap(),
+            );
+        }
         let mut builder =
             lifecycle_worker(WorkerUpstream::new(upstream.url()).with_worker_id(fault))
-                .with_deployment_config(local_coordinator_deployment())
+                .with_deployment_config(deployment)
                 .with_session_container_provider("external-secure", provider.clone())
                 .with_manifest(manifest())
                 .without_admin_surface();
@@ -1054,7 +1071,7 @@ async fn startup_failure_and_cancellation_share_one_registration_exit() {
             vec!["/v1/worker/register", "/v1/worker/deregister"],
             "{fault}"
         );
-        if fault.starts_with("decorator") || fault.starts_with("memory") {
+        if fault.starts_with("decorator") || fault.starts_with("memory") || fault == "relay-bind" {
             assert_eq!(
                 provider.probe_calls.load(Ordering::SeqCst),
                 0,

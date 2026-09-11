@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use awaken_session_executor::{
-    AcpWorkerProfile, ContainerHandResidency, ContentCaptureSettings, ContentRedaction,
-    PackageImageBuilder, SandboxSettings, SandboxTier, Wake,
+    AcpWorkerProfile, ContainerHandResidency, ContainerMcpRelayExposure, ContentCaptureSettings,
+    ContentRedaction, PackageImageBuilder, SandboxSettings, SandboxTier, Wake,
 };
 
 use super::file_schema::FileConfig;
@@ -45,6 +45,23 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
         Some(other) => return Err(format!("invalid dispatch_wake={other:?}")),
     };
     let sandbox_defaults = SandboxSettings::default();
+    let container_mcp_relay = match (
+        file.container_mcp_relay_bind.as_deref(),
+        file.container_mcp_relay_url.as_deref(),
+    ) {
+        (None, None) => None,
+        (Some(bind), Some(url)) => Some(ContainerMcpRelayExposure::new(
+            bind.parse()
+                .map_err(|error| format!("invalid container_mcp_relay_bind={bind:?}: {error}"))?,
+            url,
+        )?),
+        _ => {
+            return Err(
+                "container_mcp_relay_bind and container_mcp_relay_url must be configured together"
+                    .into(),
+            );
+        }
+    };
     let sandbox = SandboxSettings {
         trusted_host_enabled: file.sandbox_trusted_host_enabled.unwrap_or(false),
         trusted_host_scoped_execution: file.sandbox_trusted_host_scoped_execution.unwrap_or(false),
@@ -60,6 +77,7 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
         // A no-bypass allowlist requires a deployment-mounted signing key and
         // an attested gateway; standalone configuration cannot synthesize it.
         container_allowlist_proxy: None,
+        container_mcp_relay,
         k8s_namespace: file
             .k8s_namespace
             .clone()
@@ -195,6 +213,44 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn container_mcp_relay_requires_one_externally_reachable_origin_pair() {
+        // Cause/effect table: R1 neither field => no exposure; R2 both fields =>
+        // delegate semantic validation to ContainerMcpRelayExposure; R3 exactly
+        // one field => reject before Host construction. Constructor tests own
+        // origin, address, and credential-free semantics so CLI parsing does not
+        // become a parallel policy implementation.
+        let data = Path::new("/tmp/awaken-config-test");
+        let absent = resolve(&FileConfig::default(), data).unwrap();
+        assert!(absent.sandbox.container_mcp_relay.is_none(), "E1");
+
+        let admitted = resolve(
+            &FileConfig {
+                container_mcp_relay_bind: Some("0.0.0.0:8082".into()),
+                container_mcp_relay_url: Some("http://awaken-worker.awaken-cloud.svc:8082".into()),
+                ..Default::default()
+            },
+            data,
+        )
+        .unwrap();
+        assert!(admitted.sandbox.container_mcp_relay.is_some(), "E2");
+
+        for (bind, url) in [
+            (Some("0.0.0.0:8082"), None),
+            (None, Some("http://relay.example.test:8082")),
+        ] {
+            let result = resolve(
+                &FileConfig {
+                    container_mcp_relay_bind: bind.map(str::to_owned),
+                    container_mcp_relay_url: url.map(str::to_owned),
+                    ..Default::default()
+                },
+                data,
+            );
+            assert!(result.is_err(), "E3 bind={bind:?} url={url:?}");
+        }
+    }
 
     #[test]
     fn scoped_execution_file_selection_reaches_the_shared_admission_rule() {

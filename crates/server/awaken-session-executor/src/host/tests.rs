@@ -10202,7 +10202,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // | H17 | non-bearer usage | exact holder/revision | stage | - | reject before materialization |
     // | H18 | authenticated ACP/Forbidden exposure | exact | stage | - | reject before relay/no lookup |
     // | H19 | expired predecessor/current same-epoch renewal | exact | stage+publish | admitted effects complete under current local authority |
-    // | H20 | authenticated ACP/complete provider evidence | exact | stage+publish+call | generation route injects; no inline secret |
+    // | H20 | authenticated ACP/provider evidence + prepared external relay + exact allowlist | exact | stage+publish | external opaque route; no inline secret |
     // | H21 | non-OAuth bearer/exact factory | exact | stage | - | one neutral challenge refresher; no Vault in Runtime |
     // | H22 | exact removed tombstone | exact request replay | stage | - | rebuild one staged projection/material |
     // | H24 | Managed prompts-as-skills | any backend | stage | - | reject before projection/materialization |
@@ -10210,6 +10210,10 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // | H26 | default weak / frozen BackendOwned strong | exact | stage | - | admit from selected strong provider |
     // | H27 | default strong / frozen BackendOwned weak | exact | stage | - | reject from selected weak provider |
     // | H28 | removed immutable binding | renewed same-owner lease | stage | - | rebuild exactly one projection, never renew absent effects |
+    // | H29 | external relay configured/not started + exact allowlist | exact | stage | - | reject before materialization |
+    // | H30 | external relay prepared + upstream-only allowlist | exact | stage | - | reject before materialization |
+    // | H31 | no external relay config + existing provider capability fixture | exact | stage+publish+call | - | legacy lazy loopback route injects bearer; no isolated reachability claim |
+    // | H32 | prepared external relay exits before a later stage | exact allowlist | stage | - | reject dead OnceCell owner before materialization |
     let exact_request = request("mcp-exact", "workspace-a", 1);
     let receipt = managed
         .stage_mcp_attachment(exact_request.clone())
@@ -10661,11 +10665,10 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H13"
     );
 
-    // H20 is the Host-side positive half of EF11. The provider's own
-    // substitution/no-bypass implementation remains an independently testable
-    // production-adapter responsibility; this fixture supplies its exact
-    // capability evidence and proves the Host consumes that single public seam
-    // without a second MCP credential/provider contract.
+    // H20 covers only Host admission and the external relay transport
+    // prerequisite. This fixture supplies capability fields but does not
+    // implement or observe provider substitution, no-bypass enforcement, or
+    // container reachability, so it is not G43 deployment evidence.
     struct SecureExternalProvider;
 
     #[async_trait::async_trait]
@@ -10716,8 +10719,20 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         }
     }
 
+    let relay_reservation = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let relay_port = relay_reservation.local_addr().unwrap().port();
+    drop(relay_reservation);
+    let relay_host = "relay.awaken-cloud.svc";
+    let mut secure_deployment = crate::DeploymentConfig::ephemeral();
+    secure_deployment.sandbox.container_mcp_relay = Some(
+        crate::ContainerMcpRelayExposure::new(
+            format!("0.0.0.0:{relay_port}").parse().unwrap(),
+            format!("http://{relay_host}:{relay_port}"),
+        )
+        .unwrap(),
+    );
     let secure_acp_host = Arc::new(
-        SharedHost::new(Arc::new(OkModel), "stub")
+        SharedHost::new_with_deployment(Arc::new(OkModel), "stub", secure_deployment)
             .with_acp(executor.clone())
             .with_session_container_provider(
                 Arc::new(SecureExternalProvider),
@@ -10727,10 +10742,174 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     secure_acp_host.register_thread_backend_projection("mcp-acp-secure", "acp:test");
     secure_acp_host.register_thread_backend_projection("mcp-acp-client", "acp:claude");
     secure_acp_host.register_thread_backend_projection("mcp-acp-refresh", "acp:claude");
+    secure_acp_host.register_thread_backend_projection("mcp-acp-unstarted", "acp:test");
+    secure_acp_host.register_thread_backend_projection("mcp-acp-wrong-network", "acp:test");
+    secure_acp_host.register_thread_backend_projection("mcp-acp-dead-relay", "acp:test");
+    secure_acp_host
+        .install_environment_projection(
+            "mcp-acp-secure",
+            &session_environment(
+                awaken_session_contract::SessionNetworkPolicy::Allowlist {
+                    hosts: vec![relay_host.into()],
+                },
+                serde_json::json!({}),
+            ),
+        )
+        .unwrap();
+    for session in [
+        "mcp-acp-unstarted",
+        "mcp-acp-wrong-network",
+        "mcp-acp-dead-relay",
+    ] {
+        secure_acp_host.register_thread_agent_projection(session, "assistant");
+        secure_acp_host
+            .retain_session_publication(session, Some(&host_acp_snapshot))
+            .unwrap();
+    }
+    secure_acp_host
+        .install_environment_projection(
+            "mcp-acp-unstarted",
+            &session_environment(
+                awaken_session_contract::SessionNetworkPolicy::Allowlist {
+                    hosts: vec![relay_host.into()],
+                },
+                serde_json::json!({}),
+            ),
+        )
+        .unwrap();
+    secure_acp_host
+        .install_environment_projection(
+            "mcp-acp-wrong-network",
+            &session_environment(
+                awaken_session_contract::SessionNetworkPolicy::Allowlist {
+                    hosts: vec!["upstream.example.test".into()],
+                },
+                serde_json::json!({}),
+            ),
+        )
+        .unwrap();
+    secure_acp_host
+        .install_environment_projection(
+            "mcp-acp-dead-relay",
+            &session_environment(
+                awaken_session_contract::SessionNetworkPolicy::Allowlist {
+                    hosts: vec![relay_host.into()],
+                },
+                serde_json::json!({}),
+            ),
+        )
+        .unwrap();
+    let external_gate = crate::ManagedHost::new(secure_acp_host.clone())
+        .with_credentials(credentials.clone(), secrets.clone());
+    assert_eq!(
+        external_gate
+            .stage_mcp_attachment(request("mcp-acp-unstarted", "workspace-a", 1))
+            .await
+            .unwrap_err()
+            .code,
+        "mcp_relay_unavailable",
+        "H29"
+    );
+    secure_acp_host
+        .prepare_container_mcp_relay()
+        .await
+        .expect("H20 external relay transport is bound before staging");
+    assert_eq!(
+        external_gate
+            .stage_mcp_attachment(request("mcp-acp-wrong-network", "workspace-a", 1))
+            .await
+            .unwrap_err()
+            .code,
+        "mcp_relay_network_not_frozen",
+        "H30"
+    );
     secure_acp_host.register_thread_agent_projection("mcp-acp-secure", "assistant");
     secure_acp_host
         .retain_session_publication("mcp-acp-secure", Some(&host_acp_snapshot))
         .expect("H20 exact HostExecutor publication");
+
+    // H31 preserves only the established loopback compatibility behavior. The
+    // provider fixture does not observe network topology, so this is not evidence
+    // that loopback is reachable from an isolated container or of G43 custody.
+    let default_relay_host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .with_acp(executor.clone())
+            .with_session_container_provider(
+                Arc::new(SecureExternalProvider),
+                Arc::new(UnusedHandFactory),
+            ),
+    );
+    default_relay_host.register_thread_backend_projection("mcp-acp-default-relay", "acp:test");
+    default_relay_host.register_thread_agent_projection("mcp-acp-default-relay", "assistant");
+    default_relay_host
+        .retain_session_publication("mcp-acp-default-relay", Some(&host_acp_snapshot))
+        .unwrap();
+    let default_relay_managed = crate::ManagedHost::new(default_relay_host.clone())
+        .with_credentials(credentials.clone(), secrets.clone());
+    let seen_before = seen.lock().unwrap().len();
+    let default_generation = generation("mcp-acp-default-relay");
+    default_relay_host
+        .install_session_realization_lease(
+            &default_generation.session_id,
+            awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: default_generation.runtime_incarnation.clone(),
+                epoch: default_generation.lease_epoch,
+                expires_at_unix_ms: default_generation.lease_expires_at_unix_ms,
+            },
+        )
+        .unwrap();
+    let default_receipt = default_relay_managed
+        .stage_mcp_attachment(request("mcp-acp-default-relay", "workspace-a", 1))
+        .await
+        .expect("H31 no-config relay keeps original lazy initialization");
+    default_relay_managed
+        .publish_mcp_generation(default_generation)
+        .await
+        .expect("H31 publish the exact loopback route");
+    let default_projection = default_relay_host
+        .mcp_projection(&default_receipt.generation)
+        .unwrap();
+    let default_transport = crate::mcp::project_mcp_session_transport(
+        default_projection.server.as_ref().unwrap(),
+        &default_projection.request,
+        default_relay_host.mcp_relay.get(),
+        &default_projection.receipt,
+        awaken_run_executor_acp::acp_cli("codex").unwrap(),
+    )
+    .unwrap();
+    assert!(
+        default_transport
+            .url
+            .as_deref()
+            .is_some_and(|url| url.starts_with("http://127.0.0.1:")),
+        "H31"
+    );
+    let default_route = default_transport.url.expect("H31 loopback route");
+    let transport = awaken_ext_mcp::HttpTransportBuilder::new(default_route)
+        .credential(awaken_ext_mcp::Credential::None)
+        .connect()
+        .await
+        .expect("H31 initialize through the default Worker relay");
+    assert_eq!(transport.list_tools().await.unwrap().len(), 1, "H31");
+    let result = transport
+        .call_tool("echo", serde_json::json!({"value": "worker-held"}))
+        .await
+        .expect("H31 tools/call");
+    assert_eq!(
+        serde_json::to_value(result).unwrap()["content"][0]["text"],
+        "worker-held",
+        "H31"
+    );
+    let seen = seen.lock().unwrap();
+    assert!(seen.len() > seen_before, "H31 route reached upstream");
+    assert!(
+        seen[seen_before..]
+            .iter()
+            .all(|(_, bearer)| bearer == "Bearer published-mcp-token"),
+        "H31 every relay request uses only Worker-held material: {seen:?}"
+    );
+    drop(seen);
 
     let backend_owned_snapshot =
         awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")
@@ -10750,8 +10929,20 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             )
             .build();
 
+    let backend_relay_reservation = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let backend_relay_port = backend_relay_reservation.local_addr().unwrap().port();
+    drop(backend_relay_reservation);
+    let mut backend_deployment = crate::DeploymentConfig::ephemeral();
+    backend_deployment.sandbox.container_mcp_relay = Some(
+        crate::ContainerMcpRelayExposure::new(
+            format!("0.0.0.0:{backend_relay_port}").parse().unwrap(),
+            format!("http://{relay_host}:{backend_relay_port}"),
+        )
+        .unwrap(),
+    );
     let mut backend_secure_host =
-        SharedHost::new(Arc::new(OkModel), "stub").with_acp(executor.clone());
+        SharedHost::new_with_deployment(Arc::new(OkModel), "stub", backend_deployment)
+            .with_acp(executor.clone());
     backend_secure_host.backend_owned_session_provider = Some(
         crate::session_environment::SessionEnvironmentProvider::container(
             Arc::new(SecureExternalProvider),
@@ -10762,6 +10953,21 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     );
     let backend_secure_host = Arc::new(backend_secure_host);
     backend_secure_host.register_thread_backend_projection("mcp-acp-backend-secure", "acp:test");
+    backend_secure_host
+        .install_environment_projection(
+            "mcp-acp-backend-secure",
+            &session_environment(
+                awaken_session_contract::SessionNetworkPolicy::Allowlist {
+                    hosts: vec![relay_host.into()],
+                },
+                serde_json::json!({}),
+            ),
+        )
+        .unwrap();
+    backend_secure_host
+        .prepare_container_mcp_relay()
+        .await
+        .expect("H26 external relay transport is bound before staging");
     backend_secure_host.register_thread_agent_projection("mcp-acp-backend-secure", "assistant");
     backend_secure_host
         .retain_session_publication("mcp-acp-backend-secure", Some(&backend_owned_snapshot))
@@ -10804,9 +11010,8 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let secure_managed =
         crate::ManagedHost::new(secure_acp_host.clone()).with_credentials(credentials, secrets);
     let secure_generation = generation("mcp-acp-secure");
-    // H20 performs an actual relay call, not just direct Stage admission.
-    // Mirror the production Control-installed root; an opaque capability must
-    // not turn a bare Stage assertion into ongoing execution authority.
+    // H20 mirrors the production Control-installed root before projecting the
+    // opaque external route. H31 owns the retained real relay/upstream call.
     secure_acp_host
         .install_session_realization_lease(
             &secure_generation.session_id,
@@ -10852,22 +11057,29 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         !route.contains(&mcp_url),
         "H20 original target is not exposed"
     );
-    let seen_before = seen.lock().unwrap().len();
-    let transport = awaken_ext_mcp::HttpTransportBuilder::new(route)
-        .credential(awaken_ext_mcp::Credential::None)
-        .connect()
-        .await
-        .expect("H20 initialize through Worker relay");
-    let tools = transport.list_tools().await.expect("H20 tools/list");
-    assert_eq!(tools.len(), 1, "H20");
-    let result = transport
-        .call_tool("echo", serde_json::json!({"value": "worker-held"}))
-        .await
-        .expect("H20 tools/call");
+    assert!(
+        route.starts_with(&format!("http://{relay_host}:{relay_port}/")),
+        "H20 projects only the prepared external transport origin: {route}"
+    );
+    secure_acp_host
+        .mcp_relay
+        .get()
+        .expect("H32 prepared relay")
+        .abort_for_test();
+    for _ in 0..100 {
+        if !secure_acp_host.mcp_relay.get().unwrap().is_live() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
     assert_eq!(
-        serde_json::to_value(result).unwrap()["content"][0]["text"],
-        "worker-held",
-        "H20"
+        secure_managed
+            .stage_mcp_attachment(request("mcp-acp-dead-relay", "workspace-a", 1))
+            .await
+            .unwrap_err()
+            .code,
+        "mcp_relay_unavailable",
+        "H32"
     );
 
     // H23 proves the distinct ClientInjection branch. The holder and mechanism
@@ -10949,14 +11161,6 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     assert!(
         !format!("{client_server:?}").contains("published-mcp-token"),
         "H23"
-    );
-    let seen = seen.lock().unwrap();
-    assert!(seen.len() > seen_before, "H20 route reached upstream");
-    assert!(
-        seen[seen_before..]
-            .iter()
-            .all(|(_, bearer)| bearer == "Bearer published-mcp-token"),
-        "H20 every relay request uses only Worker-held material: {seen:?}"
     );
 }
 
