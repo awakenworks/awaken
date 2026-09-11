@@ -330,6 +330,95 @@ const fn child_invocation_admission(
     }
 }
 
+/// Scalar projection of a recovered registry. Every fact here is a number or a
+/// single bit, which is what lets the recovery gate below be exhausted
+/// mechanically instead of sampled by example.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PersistedRegistryFacts {
+    limits: DelegationLimits,
+    parent_depth: u16,
+    lineage_ends_with_parent: bool,
+    total_started: u32,
+    delegation_count: usize,
+    call_count: usize,
+    active_count: usize,
+    parent_ended: bool,
+    has_open_relationship: bool,
+}
+
+/// One recovery defect, each owning exactly one durable message. Keeping the
+/// message on the defect rather than at the call site is what makes the gate's
+/// outcome a value the proof can compare.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersistedStateDefect {
+    ZeroLimit,
+    ParentDepthLeavesNoChildDepth,
+    LineageDoesNotEndWithParent,
+    IndexOrTotalMismatch,
+    TotalExceedsBudget,
+    ActiveExceedsParallelBudget,
+    EndedParentRetainsOpenRelationship,
+    DepthOverflow,
+}
+
+impl PersistedStateDefect {
+    const fn message(self) -> &'static str {
+        match self {
+            Self::ZeroLimit => "delegation limits must be non-zero",
+            Self::ParentDepthLeavesNoChildDepth => "parent depth leaves no legal child depth",
+            Self::LineageDoesNotEndWithParent => "lineage must end with parent agent",
+            Self::IndexOrTotalMismatch => "indexes and total must match relationships",
+            Self::TotalExceedsBudget => "started delegation count exceeds its budget",
+            Self::ActiveExceedsParallelBudget => {
+                "active delegation count exceeds its parallel budget"
+            }
+            Self::EndedParentRetainsOpenRelationship => {
+                "an ended parent cannot retain an open relationship"
+            }
+            Self::DepthOverflow => "delegation depth overflowed",
+        }
+    }
+}
+
+/// Heap-free recovery kernel shared by the aggregate and Kani. It owns every
+/// persisted invariant that ranges over scalars rather than over the persisted
+/// collections: non-zero budgets, a parent depth that still leaves a legal
+/// child depth, the lineage anchor, index/counter agreement, both budget
+/// ceilings, and parent termination. Relationship identity and Agent cycles
+/// stay in the aggregate because they range over the collections themselves.
+/// Returning the legal child depth makes this the single owner of that
+/// arithmetic, so the per-relationship loop cannot recompute it differently.
+fn validate_persisted_registry(facts: PersistedRegistryFacts) -> Result<u16, PersistedStateDefect> {
+    if facts.limits.max_depth == 0 || facts.limits.max_parallel == 0 || facts.limits.max_total == 0
+    {
+        return Err(PersistedStateDefect::ZeroLimit);
+    }
+    if facts.parent_depth >= facts.limits.max_depth {
+        return Err(PersistedStateDefect::ParentDepthLeavesNoChildDepth);
+    }
+    if !facts.lineage_ends_with_parent {
+        return Err(PersistedStateDefect::LineageDoesNotEndWithParent);
+    }
+    if usize::try_from(facts.total_started).ok() != Some(facts.delegation_count)
+        || facts.call_count != facts.delegation_count
+    {
+        return Err(PersistedStateDefect::IndexOrTotalMismatch);
+    }
+    if facts.total_started > facts.limits.max_total {
+        return Err(PersistedStateDefect::TotalExceedsBudget);
+    }
+    if facts.active_count > usize::from(facts.limits.max_parallel) {
+        return Err(PersistedStateDefect::ActiveExceedsParallelBudget);
+    }
+    if facts.parent_ended && facts.has_open_relationship {
+        return Err(PersistedStateDefect::EndedParentRetainsOpenRelationship);
+    }
+    facts
+        .parent_depth
+        .checked_add(1)
+        .ok_or(PersistedStateDefect::DepthOverflow)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransitionResult {
     Applied,
@@ -647,52 +736,21 @@ impl DelegationRegistry {
     }
 
     pub fn validate(&self) -> Result<(), DelegationError> {
-        if self.limits.max_depth == 0 || self.limits.max_parallel == 0 || self.limits.max_total == 0
-        {
-            return Err(DelegationError::InvalidPersistedState(
-                "delegation limits must be non-zero".into(),
-            ));
-        }
-        if self.parent_depth >= self.limits.max_depth {
-            return Err(DelegationError::InvalidPersistedState(
-                "parent depth leaves no legal child depth".into(),
-            ));
-        }
-        if self.lineage.last() != Some(&self.parent_agent_id) {
-            return Err(DelegationError::InvalidPersistedState(
-                "lineage must end with parent agent".into(),
-            ));
-        }
-        if usize::try_from(self.total_started).ok() != Some(self.delegations.len())
-            || self.calls.len() != self.delegations.len()
-        {
-            return Err(DelegationError::InvalidPersistedState(
-                "indexes and total must match relationships".into(),
-            ));
-        }
-        if self.total_started > self.limits.max_total {
-            return Err(DelegationError::InvalidPersistedState(
-                "started delegation count exceeds its budget".into(),
-            ));
-        }
-        if self.active_count() > usize::from(self.limits.max_parallel) {
-            return Err(DelegationError::InvalidPersistedState(
-                "active delegation count exceeds its parallel budget".into(),
-            ));
-        }
-        if self.parent_ended
-            && self
+        let expected_depth = validate_persisted_registry(PersistedRegistryFacts {
+            limits: self.limits,
+            parent_depth: self.parent_depth,
+            lineage_ends_with_parent: self.lineage.last() == Some(&self.parent_agent_id),
+            total_started: self.total_started,
+            delegation_count: self.delegations.len(),
+            call_count: self.calls.len(),
+            active_count: self.active_count(),
+            parent_ended: self.parent_ended,
+            has_open_relationship: self
                 .delegations
                 .values()
-                .any(|delegation| delegation.status == DelegationStatus::Open)
-        {
-            return Err(DelegationError::InvalidPersistedState(
-                "an ended parent cannot retain an open relationship".into(),
-            ));
-        }
-        let expected_depth = self.parent_depth.checked_add(1).ok_or_else(|| {
-            DelegationError::InvalidPersistedState("delegation depth overflowed".into())
-        })?;
+                .any(|delegation| delegation.status == DelegationStatus::Open),
+        })
+        .map_err(|defect| DelegationError::InvalidPersistedState(defect.message().into()))?;
         let mut child_runs = std::collections::HashSet::new();
         for (id, delegation) in &self.delegations {
             if id != &delegation.id
@@ -750,6 +808,63 @@ mod tests {
             target_agent_id: target.into(),
             recursive_self: false,
             child_run_id: RunId(format!("r{n}")),
+        }
+    }
+
+    fn invalid(message: &str) -> DelegationError {
+        DelegationError::InvalidPersistedState(message.into())
+    }
+
+    /// Cause/effect graph over the production transition kernel, in the exact
+    /// shape the Kani proof exhausts. `cargo test` cannot run that proof, so
+    /// this table is what keeps a deleted or widened row out of a release: a
+    /// stuttering retry must still report its successor, because the aggregate
+    /// distinguishes `Duplicate` from a rejection when it decides whether a
+    /// cancellation command is newly owed.
+    ///
+    /// | rule | status | transition | outcome |
+    /// |---|---|---|---|
+    /// | T1 | Open | Complete | Ok(Completed, Applied) |
+    /// | T2 | Open | RequestCancel | Ok(CancelRequested, Applied) |
+    /// | T3 | Completed | Complete | Ok(Completed, Duplicate) |
+    /// | T4 | CancelRequested | RequestCancel | Ok(CancelRequested, Duplicate) |
+    /// | T5 | Completed | RequestCancel | Err(InvalidTransition) |
+    /// | T6 | CancelRequested | Complete | Err(InvalidTransition) |
+    #[test]
+    fn relationship_transition_table_is_total() {
+        use DelegationStatus::{CancelRequested, Completed, Open};
+        use RelationshipTransition::{Complete, RequestCancel};
+        use TransitionResult::{Applied, Duplicate};
+
+        let table = [
+            ("T1", Open, Complete, Ok((Completed, Applied))),
+            ("T2", Open, RequestCancel, Ok((CancelRequested, Applied))),
+            ("T3", Completed, Complete, Ok((Completed, Duplicate))),
+            (
+                "T4",
+                CancelRequested,
+                RequestCancel,
+                Ok((CancelRequested, Duplicate)),
+            ),
+            (
+                "T5",
+                Completed,
+                RequestCancel,
+                Err(DelegationError::InvalidTransition),
+            ),
+            (
+                "T6",
+                CancelRequested,
+                Complete,
+                Err(DelegationError::InvalidTransition),
+            ),
+        ];
+        for (rule, status, transition, expected) in table {
+            assert_eq!(
+                transition_relationship(status, transition),
+                expected,
+                "{rule}"
+            );
         }
     }
 
@@ -1090,6 +1205,302 @@ mod tests {
         assert_eq!(nested.agent_lineage, vec!["root", "researcher"]);
     }
 
+    /// Cause/effect graph over nested lineage carry-forward. The lineage is the
+    /// ancestor chain every later cycle check reads, so exactly one identity may
+    /// be appended and only when the caller actually names one: an anonymous
+    /// caller that contributed an empty entry would both break the
+    /// `lineage.last() == parent_agent_id` recovery anchor and make every
+    /// empty-named target look like an ancestor.
+    ///
+    /// | rule | parent agent id | lineage tail | effect |
+    /// |---|---|---|---|
+    /// | N1 | named, differs from tail | appended once |
+    /// | N2 | named, equals tail | stuttering re-entry is not appended |
+    /// | N3 | empty (identity-free caller) | lineage carried forward unchanged |
+    #[test]
+    fn nested_lineage_appends_only_a_named_new_parent() {
+        let ancestors = vec!["root".to_owned(), "coordinator".to_owned()];
+        let named =
+            DelegationOrigin::nested_for_agent(RunId("p".into()), "c", 1, &ancestors, "researcher")
+                .expect("N1");
+        assert_eq!(
+            named.agent_lineage,
+            vec!["root", "coordinator", "researcher"],
+            "N1"
+        );
+
+        let repeated = DelegationOrigin::nested_for_agent(
+            RunId("p".into()),
+            "c",
+            1,
+            &ancestors,
+            "coordinator",
+        )
+        .expect("N2");
+        assert_eq!(repeated.agent_lineage, ancestors, "N2");
+
+        let anonymous = DelegationOrigin::nested_for_agent(
+            RunId("p".into()),
+            "c",
+            1,
+            &ancestors,
+            String::new(),
+        )
+        .expect("N3");
+        assert_eq!(anonymous.agent_lineage, ancestors, "N3");
+        assert_eq!(
+            DelegationOrigin::nested(RunId("p".into()), "c", 1)
+                .expect("N3 compatibility constructor")
+                .agent_lineage,
+            Vec::<String>::new(),
+            "N3 an identity-free root cannot seed an empty ancestor"
+        );
+    }
+
+    /// One recovered registry that satisfies every persisted invariant, so each
+    /// recovery test below can violate exactly one of them and attribute the
+    /// rejection to that cause alone.
+    fn recovered() -> DelegationRegistry {
+        let mut recovered = registry(2, 4);
+        recovered.request(request(1, "researcher")).unwrap();
+        recovered
+            .validate()
+            .expect("the recovery fixture must itself be valid");
+        recovered
+    }
+
+    fn sole_relationship(registry: &mut DelegationRegistry) -> &mut Delegation {
+        registry
+            .delegations
+            .get_mut(&DelegationId("d1".into()))
+            .expect("recovery fixture holds exactly one relationship")
+    }
+
+    /// Add a second consistent relationship so a counting invariant can be
+    /// violated without disturbing the index agreement the gate checks first.
+    fn add_second_relationship(registry: &mut DelegationRegistry, status: DelegationStatus) {
+        registry.delegations.insert(
+            DelegationId("d2".into()),
+            Delegation {
+                id: DelegationId("d2".into()),
+                parent_run_id: RunId("parent".into()),
+                parent_call_id: "c2".into(),
+                target_agent_id: "writer".into(),
+                recursive_self: false,
+                child_run_id: RunId("r2".into()),
+                depth: 1,
+                status,
+                cancellation_reference: None,
+            },
+        );
+        registry
+            .calls
+            .insert("c2".into(), DelegationId("d2".into()));
+        registry.total_started = 2;
+    }
+
+    /// Cause/effect graph over the recovery budget gate. The three limits are
+    /// independent causes: any one of them at zero makes the persisted state
+    /// unrecoverable, because a zero budget can never have admitted the
+    /// relationships the state already claims. A conjunction here would let a
+    /// registry with two live budgets and one dead one load.
+    ///
+    /// | rule | max_depth | max_parallel | max_total | effect |
+    /// |---|---|---|---|---|
+    /// | Z1 | 0 | live | live | rejected: limits must be non-zero |
+    /// | Z2 | live | 0 | live | rejected: limits must be non-zero |
+    /// | Z3 | live | live | 0 | rejected: limits must be non-zero |
+    /// | Z4 | live | live | live | accepted |
+    #[test]
+    fn each_zero_budget_alone_rejects_a_recovered_registry() {
+        for (rule, limits) in [
+            ("Z1", DelegationLimits::new(0, 2, 4)),
+            ("Z2", DelegationLimits::new(3, 0, 4)),
+            ("Z3", DelegationLimits::new(3, 2, 0)),
+        ] {
+            let mut zeroed = recovered();
+            zeroed.limits = limits;
+            assert_eq!(
+                zeroed.validate(),
+                Err(invalid("delegation limits must be non-zero")),
+                "{rule}"
+            );
+        }
+        recovered().validate().expect("Z4");
+    }
+
+    /// Cause/effect graph over the remaining scalar recovery causes. Each row
+    /// violates exactly one of them, so no row can be reported by a neighbour's
+    /// message.
+    ///
+    /// | rule | violated cause | effect |
+    /// |---|---|---|
+    /// | S1 | parent depth already consumed the depth budget | rejected: no legal child depth |
+    /// | S2 | lineage does not end at the parent Agent | rejected: lineage anchor |
+    /// | S3 | started counter disagrees with the relationships | rejected: indexes and total |
+    /// | S4 | call index size disagrees with the relationships | rejected: indexes and total |
+    /// | S5 | started counter exceeds its budget | rejected: budget |
+    /// | S6 | active count exceeds the parallel budget | rejected: parallel budget |
+    /// | S7 | an ended parent still holds an Open relationship | rejected: ended parent |
+    #[test]
+    fn each_scalar_recovery_cause_alone_rejects_a_recovered_registry() {
+        let mut deep = recovered();
+        deep.parent_depth = 2;
+        sole_relationship(&mut deep).depth = 3;
+        deep.validate()
+            .expect("S1 boundary: the last parent depth below the limit still has a child depth");
+        deep.parent_depth = 3;
+        assert_eq!(
+            deep.validate(),
+            Err(invalid("parent depth leaves no legal child depth")),
+            "S1"
+        );
+
+        let mut unanchored = recovered();
+        unanchored.lineage = vec!["root".into()];
+        assert_eq!(
+            unanchored.validate(),
+            Err(invalid("lineage must end with parent agent")),
+            "S2"
+        );
+
+        let mut inflated_counter = recovered();
+        inflated_counter.total_started = 2;
+        assert_eq!(
+            inflated_counter.validate(),
+            Err(invalid("indexes and total must match relationships")),
+            "S3"
+        );
+
+        let mut stale_index = recovered();
+        stale_index
+            .calls
+            .insert("c2".into(), DelegationId("d2".into()));
+        assert_eq!(
+            stale_index.validate(),
+            Err(invalid("indexes and total must match relationships")),
+            "S4"
+        );
+
+        let mut overspent = recovered();
+        add_second_relationship(&mut overspent, DelegationStatus::Completed);
+        overspent.limits.max_total = 2;
+        overspent
+            .validate()
+            .expect("S5 boundary: a budget of two exactly covers two started relationships");
+        overspent.limits.max_total = 1;
+        assert_eq!(
+            overspent.validate(),
+            Err(invalid("started delegation count exceeds its budget")),
+            "S5"
+        );
+
+        let mut crowded = recovered();
+        add_second_relationship(&mut crowded, DelegationStatus::Open);
+        crowded
+            .validate()
+            .expect("S6 boundary: two open relationships exactly fill a parallel budget of two");
+        crowded.limits.max_parallel = 1;
+        assert_eq!(
+            crowded.validate(),
+            Err(invalid(
+                "active delegation count exceeds its parallel budget"
+            )),
+            "S6"
+        );
+
+        let mut ended = recovered();
+        ended.parent_ended = true;
+        assert_eq!(
+            ended.validate(),
+            Err(invalid(
+                "an ended parent cannot retain an open relationship"
+            )),
+            "S7"
+        );
+    }
+
+    /// Cause/effect graph over the per-relationship identity chain. Recovery
+    /// must re-derive every fact the aggregate froze at admission time, and the
+    /// four facts are independent causes: a conjunction would let a registry
+    /// load whose call index points at a relationship it does not name.
+    ///
+    /// | rule | violated fact | effect |
+    /// |---|---|---|
+    /// | Y1 | map key is not the relationship id | rejected: identity or call index |
+    /// | Y2 | relationship names another parent Run | rejected: identity or call index |
+    /// | Y3 | call index points at another relationship | rejected: identity or call index |
+    /// | Y4 | relationship depth is not the one legal child depth | rejected: identity or call index |
+    /// | Y5 | every fact re-derives | accepted |
+    #[test]
+    fn each_relationship_identity_fact_alone_rejects_a_recovered_registry() {
+        let mismatch = Err(invalid("relationship identity or call index mismatch"));
+
+        let mut rekeyed = recovered();
+        let relationship = rekeyed
+            .delegations
+            .remove(&DelegationId("d1".into()))
+            .expect("recovery fixture holds exactly one relationship");
+        rekeyed
+            .delegations
+            .insert(DelegationId("d9".into()), relationship);
+        rekeyed.calls.insert("c1".into(), DelegationId("d9".into()));
+        assert_eq!(rekeyed.validate(), mismatch, "Y1");
+
+        let mut adopted = recovered();
+        sole_relationship(&mut adopted).parent_run_id = RunId("another-parent".into());
+        assert_eq!(adopted.validate(), mismatch, "Y2");
+
+        let mut misindexed = recovered();
+        misindexed
+            .calls
+            .insert("c1".into(), DelegationId("d9".into()));
+        assert_eq!(misindexed.validate(), mismatch, "Y3");
+
+        let mut misdepthed = recovered();
+        sole_relationship(&mut misdepthed).depth = 2;
+        assert_eq!(misdepthed.validate(), mismatch, "Y4");
+
+        recovered().validate().expect("Y5");
+    }
+
+    /// Cause/effect graph over the recovery cycle gate. The exemption is the
+    /// conjunction of an explicit published `self` bit and the target being the
+    /// immediate parent Agent; either half on its own must still be a cycle,
+    /// because a recovered ancestor edge would otherwise re-enter the lineage
+    /// forever. Widening the conjunction to a disjunction is the difference
+    /// between a recursive copy and an unbounded delegation loop surviving a
+    /// restart.
+    ///
+    /// | rule | target in lineage | recursive_self | target is parent Agent | effect |
+    /// |---|---|---|---|---|
+    /// | R1 | yes | true | yes | accepted: immediate recursive copy |
+    /// | R2 | yes | true | no (ancestor) | rejected: Agent cycle |
+    /// | R3 | yes | false | yes | rejected: Agent cycle |
+    /// | R4 | no | false | no | accepted |
+    #[test]
+    fn only_the_immediate_self_edge_is_exempt_from_recovery_cycle_detection() {
+        let cycle = Err(invalid("persisted relationship creates an Agent cycle"));
+
+        let mut recursive_copy = recovered();
+        let relationship = sole_relationship(&mut recursive_copy);
+        relationship.target_agent_id = "coordinator".into();
+        relationship.recursive_self = true;
+        recursive_copy.validate().expect("R1");
+
+        let mut ancestor = recovered();
+        let relationship = sole_relationship(&mut ancestor);
+        relationship.target_agent_id = "root".into();
+        relationship.recursive_self = true;
+        assert_eq!(ancestor.validate(), cycle, "R2");
+
+        let mut unpublished_self = recovered();
+        sole_relationship(&mut unpublished_self).target_agent_id = "coordinator".into();
+        assert_eq!(unpublished_self.validate(), cycle, "R3");
+
+        recovered().validate().expect("R4");
+    }
+
     #[test]
     fn persisted_registry_with_a_broken_call_index_is_rejected_at_decode() {
         let mut registry = registry(2, 2);
@@ -1133,26 +1544,47 @@ mod verification {
 
     #[kani::proof]
     fn every_relationship_effect_has_one_documented_precondition() {
+        // Cause/effect decision table over the production transition kernel.
+        // The assertion is deliberately total rather than conditional on a
+        // successful result: every (status, transition) pair names its exact
+        // successor and effect, so a deleted row cannot pass by degrading into
+        // a rejection that no rule documents. Only the two crossed terminal
+        // rows may reject.
+        //
+        // | rule | status | transition | outcome |
+        // |---|---|---|---|
+        // | T1 | Open | Complete | Ok(Completed, Applied) |
+        // | T2 | Open | RequestCancel | Ok(CancelRequested, Applied) |
+        // | T3 | Completed | Complete | Ok(Completed, Duplicate) |
+        // | T4 | CancelRequested | RequestCancel | Ok(CancelRequested, Duplicate) |
+        // | T5 | Completed | RequestCancel | Err(InvalidTransition) |
+        // | T6 | CancelRequested | Complete | Err(InvalidTransition) |
+        //
+        // The successor is compared through `Result::ok` rather than against a
+        // whole `DelegationError`: that error carries a `String` variant whose
+        // derived equality the model checker would have to unwind, and the
+        // rejected rows are pinned by their variant instead.
         let status = symbolic_status(kani::any());
         let transition = symbolic_transition(kani::any());
+        let expected = match (status, transition) {
+            (DelegationStatus::Open, RelationshipTransition::Complete) => {
+                Some((DelegationStatus::Completed, TransitionResult::Applied))
+            }
+            (DelegationStatus::Open, RelationshipTransition::RequestCancel) => {
+                Some((DelegationStatus::CancelRequested, TransitionResult::Applied))
+            }
+            (DelegationStatus::Completed, RelationshipTransition::Complete)
+            | (DelegationStatus::CancelRequested, RelationshipTransition::RequestCancel) => {
+                Some((status, TransitionResult::Duplicate))
+            }
+            _ => None,
+        };
         let result = transition_relationship(status, transition);
-        let expected_applied = matches!(
-            (status, transition),
-            (DelegationStatus::Open, RelationshipTransition::Complete)
-                | (
-                    DelegationStatus::Open,
-                    RelationshipTransition::RequestCancel
-                )
+        assert_eq!(result.as_ref().ok().copied(), expected);
+        assert!(
+            expected.is_some() || matches!(result, Err(DelegationError::InvalidTransition)),
+            "a rejected row must reject with the one documented error"
         );
-        assert_eq!(
-            result
-                .as_ref()
-                .is_ok_and(|(_, effect)| *effect == TransitionResult::Applied),
-            expected_applied
-        );
-        if let Ok((next, TransitionResult::Duplicate)) = result {
-            assert_eq!(next, status);
-        }
     }
 
     #[kani::proof]
@@ -1181,6 +1613,77 @@ mod verification {
         assert_eq!(result.is_ok(), expected);
         if let Ok(depth) = result {
             assert_eq!(Some(depth), parent_depth.checked_add(1));
+        }
+    }
+
+    #[kani::proof]
+    fn recovered_registry_requires_every_scalar_invariant() {
+        // Cause/effect decision table over the production recovery kernel. Each
+        // cause is independent, so the acceptance predicate is written as the
+        // conjunction of all of them rather than as a restatement of the
+        // implementation's early returns; every defect additionally has to name
+        // a cause that is actually violated.
+        //
+        // | cause | violated when | defect |
+        // |---|---|---|
+        // | V1 | any of the three budgets is zero | ZeroLimit |
+        // | V2 | parent depth leaves no legal child depth | ParentDepthLeavesNoChildDepth |
+        // | V3 | lineage does not end at the parent Agent | LineageDoesNotEndWithParent |
+        // | V4 | counter or call index disagrees with the relationships | IndexOrTotalMismatch |
+        // | V5 | started count exceeds its budget | TotalExceedsBudget |
+        // | V6 | active count exceeds the parallel budget | ActiveExceedsParallelBudget |
+        // | V7 | an ended parent still holds an Open relationship | EndedParentRetainsOpenRelationship |
+        //
+        // Effect: accepting exactly when no cause is violated, and then
+        // returning the one legal child depth.
+        let facts = PersistedRegistryFacts {
+            limits: DelegationLimits::new(kani::any(), kani::any(), kani::any()),
+            parent_depth: kani::any(),
+            lineage_ends_with_parent: kani::any(),
+            total_started: kani::any(),
+            delegation_count: kani::any(),
+            call_count: kani::any(),
+            active_count: kani::any(),
+            parent_ended: kani::any(),
+            has_open_relationship: kani::any(),
+        };
+        let budgets_are_live = facts.limits.max_depth != 0
+            && facts.limits.max_parallel != 0
+            && facts.limits.max_total != 0;
+        let depth_is_legal = facts.parent_depth < facts.limits.max_depth;
+        let indexes_agree = usize::try_from(facts.total_started).ok()
+            == Some(facts.delegation_count)
+            && facts.call_count == facts.delegation_count;
+        let budgets_hold = facts.total_started <= facts.limits.max_total
+            && facts.active_count <= usize::from(facts.limits.max_parallel);
+        let termination_holds = !(facts.parent_ended && facts.has_open_relationship);
+        let recoverable = budgets_are_live
+            && depth_is_legal
+            && facts.lineage_ends_with_parent
+            && indexes_agree
+            && budgets_hold
+            && termination_holds;
+
+        let result = validate_persisted_registry(facts);
+        assert_eq!(result.is_ok(), recoverable);
+        match result {
+            Ok(depth) => assert_eq!(Some(depth), facts.parent_depth.checked_add(1)),
+            Err(defect) => assert!(match defect {
+                PersistedStateDefect::ZeroLimit => !budgets_are_live,
+                PersistedStateDefect::ParentDepthLeavesNoChildDepth => !depth_is_legal,
+                PersistedStateDefect::LineageDoesNotEndWithParent =>
+                    !facts.lineage_ends_with_parent,
+                PersistedStateDefect::IndexOrTotalMismatch => !indexes_agree,
+                PersistedStateDefect::TotalExceedsBudget =>
+                    facts.total_started > facts.limits.max_total,
+                PersistedStateDefect::ActiveExceedsParallelBudget =>
+                    facts.active_count > usize::from(facts.limits.max_parallel),
+                PersistedStateDefect::EndedParentRetainsOpenRelationship => !termination_holds,
+                // A legal parent depth is strictly below `max_depth`, so the
+                // successor can never overflow. The defensive arm stays because
+                // the kernel owns the arithmetic; the proof pins it unreachable.
+                PersistedStateDefect::DepthOverflow => false,
+            }),
         }
     }
 
