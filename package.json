@@ -7,7 +7,7 @@
     "check:managed-sdk": "pnpm --filter @awaken/managed-sdk-oracle test && pnpm --filter @awaken/managed-sdk-oracle check",
     "lint": "node web/scripts/lint.mjs",
     "typecheck": "pnpm --filter @awaken/managed-session-projection typecheck && pnpm -C web typecheck",
-    "build": "pnpm --filter @awaken/managed-session-projection build && pnpm -C web build",
+    "build": "pnpm --filter @awaken/managed-sdk-oracle build && pnpm --filter @awaken/managed-session-projection build && pnpm -C web build",
     "dev": "pnpm -C web dev",
     "test:e2e-process-policy": "node --test e2e/awaken_cli_args.test.mjs",
     "test": "pnpm --filter @awaken/managed-session-projection test && pnpm -C web test && pnpm test:e2e-process-policy"

@@ -976,6 +976,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness sandbox_tool_recovery_claim_axis_is_exact_and_non_widening \
     --harness manifest_recovery_mapping_accepts_only_the_exact_installed_capability \
     --harness dynamic_evidence_can_only_restrict_ready_worker_admission \
+    --harness incompatible_capability_evidence_never_recovers_to_available \
     --harness process_readiness_after_startup_is_probe_independent \
     --harness worker_replacement_and_heartbeat_share_one_non_resurrection_boundary \
     --harness worker_registration_never_grants_authority_to_seen_or_unknown_history \
