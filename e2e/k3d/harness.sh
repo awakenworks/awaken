@@ -358,14 +358,19 @@ k3d_create_cluster() {
 k3d_import_storage_images() {
   local cluster="$1"
   shift
-  local provisioner_image="$(kubectl -n kube-system get deploy local-path-provisioner \
+  k3d_validate_name "$cluster" || {
+    echo "invalid k3d cluster name: $cluster" >&2
+    return 2
+  }
+  local context="k3d-$cluster"
+  local provisioner_image="$(kubectl --context "$context" -n kube-system get deploy local-path-provisioner \
     -o jsonpath='{.spec.template.spec.containers[0].image}')"
   [ -n "$provisioner_image" ] || {
     echo "local-path provisioner deployment has no image" >&2
     return 1
   }
   local helper_image="$(
-    kubectl -n kube-system get configmap local-path-config \
+    kubectl --context "$context" -n kube-system get configmap local-path-config \
       -o jsonpath='{.data.helperPod\.yaml}' \
       | awk '$1 == "image:" { print $2; exit }' \
       | tr -d '"'
@@ -382,8 +387,8 @@ k3d_import_storage_images() {
   # A provisioner Pod can enter registry backoff before the offline image import
   # completes. Recreate that disposable system Pod so it observes the imported
   # image immediately, then fence the PVC tests on actual provisioner readiness.
-  kubectl -n kube-system rollout restart deploy/local-path-provisioner >/dev/null || return "$?"
-  kubectl -n kube-system rollout status deploy/local-path-provisioner --timeout=120s
+  kubectl --context "$context" -n kube-system rollout restart deploy/local-path-provisioner >/dev/null || return "$?"
+  kubectl --context "$context" -n kube-system rollout status deploy/local-path-provisioner --timeout=120s
 }
 
 # Kubernetes adapter publication owns the opaque Session scope annotation.
@@ -463,11 +468,12 @@ k3d_import_images() {
     return 2
   }
   local node="k3d-$cluster-server-0"
+  local context="k3d-$cluster"
   local pause_image
   pause_image=$(docker exec "$node" sh -c 'grep -hoE "sandbox_image = \"[^\"]+\"" /var/lib/rancher/k3s/agent/etc/containerd/config.toml* 2>/dev/null | head -1 | cut -d\" -f2' 2>/dev/null || true)
   pause_image=${pause_image:-rancher/mirrored-pause:3.6}
   local coredns_image
-  coredns_image=$(kubectl -n kube-system get deploy coredns -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
+  coredns_image=$(kubectl --context "$context" -n kube-system get deploy coredns -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
   coredns_image=${coredns_image:-rancher/mirrored-coredns-coredns:1.10.1}
 
   local images=("$pause_image" "$coredns_image" "$@")
@@ -508,8 +514,8 @@ k3d_import_images() {
     >/dev/null 2>&1 || cleanup_status=$?
   (( status == 0 )) || return "$status"
   (( cleanup_status == 0 )) || return "$cleanup_status"
-  kubectl -n kube-system delete pod -l k8s-app=kube-dns >/dev/null 2>&1 || true
-  kubectl -n kube-system rollout status deploy/coredns --timeout=90s
+  kubectl --context "$context" -n kube-system delete pod -l k8s-app=kube-dns >/dev/null 2>&1 || true
+  kubectl --context "$context" -n kube-system rollout status deploy/coredns --timeout=90s
 }
 
 # resolve_cargo_executable <package> <binary> [feature arguments...]
@@ -603,13 +609,19 @@ k3d_harness_selftest() (
   # | H21  | failure     | absent        | original body failure |
   # | H22  | failure     | residue       | cleanup failure takes precedence |
   # The scenario tests own network and topology effects.
-  # Storage-image decision table: S1 both observed image coordinates + import
-  # succeeds => restart and wait; S2 either coordinate absent => no import/restart;
-  # S3 import fails => no restart; S4 restart/wait fails => propagate failure.
+  # Storage-image decision table: S1 exact cluster + both observed image
+  # coordinates + import succeeds => every Kubernetes read/write uses that
+  # cluster's explicit context, then restart and wait; S2 either coordinate
+  # absent => no import/restart; S3 import fails => no restart; S4 restart/wait
+  # fails => propagate failure; S5 invalid cluster => zero Kubernetes/import IO.
+  # The mock deliberately accepts no ambient-context call, so a developer's
+  # unrelated current context cannot satisfy S1.
   # Calls use the actual shared function, not a reimplementation of its decisions.
   (
     local mode calls
     kubectl() {
+      [[ "$1 $2" = "--context k3d-awaken-test" ]] || return 98
+      shift 2
       case "$*" in
         *"get deploy local-path-provisioner"*) [[ "$mode" = missing-provisioner ]] || printf provisioner:exact ;;
         *"get configmap local-path-config"*) [[ "$mode" = missing-helper ]] || printf 'image: helper:exact\n' ;;
@@ -637,6 +649,9 @@ k3d_harness_selftest() (
         restart-fails) [[ "$calls" = " import restart" ]] ;;
       esac
     done
+    mode=success calls=""
+    ! k3d_import_storage_images --all role:exact
+    [[ -z "$calls" ]]
   )
   # Session-selection decision table: Q1 one exact scope among foreign/absent
   # annotations => that Pod; Q2 zero/two exact matches => reject; Q3 the exact
@@ -966,9 +981,14 @@ print(json.dumps(value))
     fi
   }
   # The actual exporter subprocess matrix owns save flags and OCI preservation.
-  # Here the real shared import function must route each image through that owner.
+  # Here the real shared import function must route each image through that owner,
+  # and all post-import Kubernetes effects must use the requested cluster context.
+  # This mock rejects ambient-context calls, including when the caller's current
+  # context is unavailable or names another cluster.
   k3d_export_image() { docker_saves+=("$1"); }
   kubectl() {
+    [[ "$1 $2" = "--context k3d-awaken-test" ]] || return 98
+    shift 2
     if [[ "$*" = *"get deploy coredns"* ]]; then
       printf '%s' 'rancher/mirrored-coredns-coredns:1.10.1'
     fi

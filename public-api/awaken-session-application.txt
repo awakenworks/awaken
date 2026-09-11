@@ -305,7 +305,7 @@ pub fn awaken_session_application::SessionApplication::new(alloc::sync::Arc<dyn 
 pub fn awaken_session_application::SessionApplication::new_with_configuration(alloc::sync::Arc<dyn awaken_session_contract::session::SessionRuntime>, alloc::sync::Arc<dyn awaken_session_contract::session::McpAttachmentRealizer>, alloc::sync::Arc<dyn awaken_session_contract::session_repo::repository_port::ManagedSessionRepository>, alloc::sync::Arc<dyn awaken_session_application::SessionEnvironmentSource>, awaken_session_application::SessionApplicationConfiguration) -> Self
 pub fn awaken_session_application::SessionApplication::now_unix_ms(&self) -> u64
 pub async fn awaken_session_application::SessionApplication::reconcile_work_dispatches(&self) -> awaken_session_application::WorkDispatchReconciliation
-pub async fn awaken_session_application::SessionApplication::refresh_executable_projections(&self) -> core::result::Result<(), alloc::string::String>
+pub async fn awaken_session_application::SessionApplication::refresh_executable_projections(&self) -> core::result::Result<awaken_session_contract::executable_projection::ExecutableProjectionAdmission, alloc::string::String>
 pub fn awaken_session_application::SessionApplication::replace_environment_source(&mut self, alloc::sync::Arc<dyn awaken_session_application::SessionEnvironmentSource>)
 pub fn awaken_session_application::SessionApplication::replace_repository(&mut self, alloc::sync::Arc<dyn awaken_session_contract::session_repo::repository_port::ManagedSessionRepository>)
 pub fn awaken_session_application::SessionApplication::request_lifecycle_reconciliation(&self)
@@ -319,7 +319,7 @@ pub fn awaken_session_application::SessionApplication::session_repository_handle
 pub fn awaken_session_application::SessionApplication::set_config_source(&mut self, alloc::sync::Arc<dyn awaken_executable_agent_contract::session_profile::ExecutableAgentProfileSource>)
 pub fn awaken_session_application::SessionApplication::set_credential_material_ingress(&mut self, alloc::sync::Arc<dyn awaken_session_application::CredentialMaterialIngress>)
 pub fn awaken_session_application::SessionApplication::set_credential_source(&mut self, alloc::sync::Arc<dyn awaken_session_application::SessionCredentialSource>)
-pub fn awaken_session_application::SessionApplication::set_executable_projection_refresh(&mut self, alloc::sync::Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>) -> core::result::Result<(), &'static str>
+pub fn awaken_session_application::SessionApplication::set_executable_projection_refresh(&mut self, alloc::sync::Arc<awaken_session_contract::executable_projection::ExecutableProjectionRefresh>) -> core::result::Result<(), &'static str>
 pub fn awaken_session_application::SessionApplication::set_lifecycle_notifier(&self, alloc::sync::Arc<dyn awaken_session_contract::lifecycle::LifecycleFactNotifier>) -> core::result::Result<(), &'static str>
 pub fn awaken_session_application::SessionApplication::set_managed_list_price_provider(&mut self, alloc::sync::Arc<dyn awaken_session_contract::budget::ManagedListPriceProvider>)
 pub fn awaken_session_application::SessionApplication::set_model_publication_resolver(&mut self, alloc::sync::Arc<dyn awaken_session_contract::model_resolution::SessionModelPublicationResolver>)
