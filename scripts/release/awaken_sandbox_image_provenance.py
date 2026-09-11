@@ -33,6 +33,11 @@ LEGACY_COSIGN_SIGNATURE_TYPE = "cosign container image signature"
 SOURCE_REPOSITORY = "https://github.com/awakenworks/awaken"
 SOURCE_REPOSITORY_SLUG = "awakenworks/awaken"
 IMAGE_REPOSITORY = "ghcr.io/awakenworks/awaken-sandbox"
+SANDBOX_CONTRACT_LABELS = {
+    "org.awaken.environment-packages": "3",
+    "org.awaken.managed-agents-base-contract": "ubuntu-24.04-amd64-v1",
+    "org.awaken.sandbox-role-contract": "2",
+}
 WORKFLOW_PATH = ".github/workflows/release.yml"
 MAX_ATTESTATIONS_BYTES = 4 * 1024 * 1024
 MAX_ATTESTATION_COUNT = 64
@@ -237,6 +242,7 @@ def validate_image_labels(
         "org.opencontainers.image.version": _version_from_source_ref(
             expected_source_ref
         ),
+        **SANDBOX_CONTRACT_LABELS,
     }
     for name, value in expected.items():
         if labels.get(name) != value:
@@ -1096,7 +1102,7 @@ def self_test() -> list[str]:
         "org.opencontainers.image.source": SOURCE_REPOSITORY,
         "org.opencontainers.image.revision": revision,
         "org.opencontainers.image.version": "v1.2.3",
-        "org.awaken.environment-packages": "2",
+        **SANDBOX_CONTRACT_LABELS,
     }
     try:
         validate_image_labels(
@@ -1110,6 +1116,7 @@ def self_test() -> list[str]:
         "org.opencontainers.image.source",
         "org.opencontainers.image.revision",
         "org.opencontainers.image.version",
+        *SANDBOX_CONTRACT_LABELS,
     ):
         conflicting_labels = copy.deepcopy(labels)
         conflicting_labels[name] = "wrong"
