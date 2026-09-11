@@ -723,6 +723,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness object_store_configuration_accepts_exactly_the_provider_compatible_shape
   run_kani awaken-protocol-acp --features real-acp \
     --harness acp_read_ahead_admission_never_overflows_or_exceeds_either_bound \
+    --harness acp_prompt_admission_requires_exact_completed_handshake \
     --harness permission_consensus_is_a_conservative_order_independent_semilattice \
     --harness acp_permission_projection_is_total_exact_and_non_widening \
     --harness acp_session_load_preserves_the_exact_mcp_projection \
