@@ -60,7 +60,25 @@ impl SessionApplication {
             if !session.needs_outcome_reconciliation() {
                 continue;
             }
-            let session_id = session.session_id;
+            let session_id = session.session_id.clone();
+            // A replacement process knows this Session durably but has
+            // installed none of its frozen facts. Continuing the Outcome
+            // against that blank projection would let Session admission supply
+            // the flat-protocol `assistant` default, and the Outcome would pin
+            // and grade an Agent the operator never published. Restore the
+            // exact dispatch projection first, and leave the aggregate
+            // untouched when restoration is impossible.
+            let owner = match self.owner(&session_id).await {
+                Ok(owner) => owner,
+                Err(error) => {
+                    report.failures.push((session_id, error.to_string()));
+                    continue;
+                }
+            };
+            if let Err(error) = self.install_dispatch_projection(&owner, &session).await {
+                report.failures.push((session_id, error.to_string()));
+                continue;
+            }
             match self.runtime().continue_outcome(&session_id).await {
                 Ok(Some(OutcomeDrive::Completed(_))) => report.settled += 1,
                 Ok(Some(OutcomeDrive::Awaiting)) => report.pending += 1,
