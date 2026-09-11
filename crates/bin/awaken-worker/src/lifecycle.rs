@@ -20,7 +20,7 @@ pub(crate) use authority::WorkerAuthorityProof;
 pub(crate) use authority::authority_proof_started;
 
 const SESSION_REALIZATION_LEASE_TTL_MS: u64 = 20_000;
-const WORKER_REVOCATION_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+pub(crate) const WORKER_REVOCATION_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 
 #[derive(Clone)]
 enum WarmCapacityDemand {
@@ -108,6 +108,7 @@ pub(crate) enum WorkerRevocationStage {
     LocalFenceAndInterrupt,
     RuntimeReturn,
     SessionRetirement,
+    EnvironmentCapacity,
 }
 
 /// Result of the bounded local revocation observer. `Unconfirmed` deliberately
@@ -123,6 +124,18 @@ pub(crate) enum WorkerRevocationOutcome {
         interrupted: Option<usize>,
         detail: Option<String>,
     },
+}
+
+impl WorkerRevocationOutcome {
+    pub(crate) fn permits_quiescence_publication(&self, in_flight: u32) -> bool {
+        matches!(self, Self::Completed { .. }) && in_flight == 0
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct WorkerRevocationReport {
+    pub(crate) outcome: WorkerRevocationOutcome,
+    pub(crate) deadline: tokio::time::Instant,
 }
 
 #[derive(Clone)]
@@ -303,7 +316,7 @@ pub(crate) fn spawn_heartbeat(
     sequence: u64,
     timing: AuthorityLeaseTiming,
     environment_proof_started: Instant,
-) -> tokio::task::JoinHandle<()> {
+) -> tokio::task::JoinHandle<WorkerRevocationReport> {
     tokio::spawn(async move {
         // Independent, single-flight lanes under the same incarnation owner.
         // Neither a slow security probe nor a registry retry can extend the
@@ -327,14 +340,9 @@ pub(crate) fn spawn_heartbeat(
                 }
             }
             .boxed(),
-            || {
-                async {
-                    let _outcome = revoke_worker_session_authority(&lifecycle).await;
-                }
-                .boxed()
-            },
+            || async { revoke_worker_session_authority(&lifecycle).await }.boxed(),
         )
-        .await;
+        .await
     })
 }
 
@@ -346,9 +354,10 @@ pub(crate) fn spawn_heartbeat(
 async fn supervise_worker_authority<Revoke, Revocation>(
     heartbeat: impl std::future::Future<Output = ()>,
     revoke: Revoke,
-) where
+) -> Revocation::Output
+where
     Revoke: FnOnce() -> Revocation,
-    Revocation: std::future::Future<Output = ()>,
+    Revocation: std::future::Future,
 {
     if std::panic::AssertUnwindSafe(heartbeat)
         .catch_unwind()
@@ -360,7 +369,7 @@ async fn supervise_worker_authority<Revoke, Revocation>(
     }
     // The heartbeat future has been dropped before revocation. Borrowed
     // provider/transport state is never reused after an unwind.
-    revoke().await;
+    revoke().await
 }
 
 async fn renew_registry_authority(lifecycle: &WorkerSupervisor, mut sequence: u64) {
@@ -756,19 +765,57 @@ where
     }
 }
 
+async fn complete_worker_capacity_before<Capacity>(
+    deadline: tokio::time::Instant,
+    revocation: WorkerRevocationOutcome,
+    shutdown_capacity: Capacity,
+) -> WorkerRevocationOutcome
+where
+    Capacity: std::future::Future<Output = ()>,
+{
+    match (
+        revocation,
+        tokio::time::timeout_at(deadline, shutdown_capacity).await,
+    ) {
+        (WorkerRevocationOutcome::Completed { interrupted }, Ok(())) => {
+            WorkerRevocationOutcome::Completed { interrupted }
+        }
+        (WorkerRevocationOutcome::Completed { interrupted }, Err(_)) => {
+            WorkerRevocationOutcome::Unconfirmed {
+                stage: WorkerRevocationStage::EnvironmentCapacity,
+                interrupted: Some(interrupted),
+                detail: None,
+            }
+        }
+        (unconfirmed, _) => unconfirmed,
+    }
+}
+
 pub(crate) async fn revoke_worker_session_authority(
     lifecycle: &WorkerSupervisor,
+) -> WorkerRevocationReport {
+    let deadline = tokio::time::Instant::now() + WORKER_REVOCATION_BUDGET;
+    WorkerRevocationReport {
+        outcome: revoke_worker_session_authority_before(lifecycle, deadline).await,
+        deadline,
+    }
+}
+
+pub(crate) async fn revoke_worker_session_authority_before(
+    lifecycle: &WorkerSupervisor,
+    deadline: tokio::time::Instant,
 ) -> WorkerRevocationOutcome {
     // Root guard closes before selecting slots or awaiting any drain/owner lock.
     // A late/new Session cannot install authority outside this selected cohort.
     lifecycle.authority.close();
     awaken_observability::set_worker_authority_proof_remaining(std::time::Duration::ZERO);
     let revocation = lifecycle.host.begin_session_realization_revocation();
-    let deadline = tokio::time::Instant::now() + WORKER_REVOCATION_BUDGET;
     // Fail closed without racing terminal sandbox disposal against in-flight
-    // native tools. Every await shares one absolute deadline: cancellation and
-    // return observation retain the existing owner for the whole budget, while
-    // a stalled adapter can no longer prevent process exit indefinitely.
+    // native tools. Every revocation await shares one absolute deadline:
+    // cancellation and return observation retain the existing owner for the
+    // whole budget, while a stalled adapter cannot prevent process exit
+    // indefinitely. The report preserves this same deadline for the Worker's
+    // following capacity shutdown after background producers are stopped.
     let outcome = complete_worker_revocation_before(
         deadline,
         async {
@@ -808,6 +855,19 @@ pub(crate) async fn revoke_worker_session_authority(
     outcome
 }
 
+pub(crate) async fn shutdown_worker_capacity_before(
+    lifecycle: &WorkerSupervisor,
+    deadline: tokio::time::Instant,
+    revocation: WorkerRevocationOutcome,
+) -> WorkerRevocationOutcome {
+    complete_worker_capacity_before(
+        deadline,
+        revocation,
+        lifecycle.host.shutdown_environment_capacity(),
+    )
+    .await
+}
+
 /// The grace policy (pure): a SIGTERM (orchestrator scale-in) waits `configured` or
 /// the 20s default so in-flight runs finish; a SIGINT (developer ctrl-c) exits
 /// promptly (zero) so the foreground stop is snappy.
@@ -824,35 +884,44 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::{
-        WorkerRevocationOutcome, WorkerRevocationStage, complete_worker_revocation_before,
-        supervise_session_realization_reconciliation, supervise_worker_authority,
+        WorkerRevocationOutcome, WorkerRevocationStage, complete_worker_capacity_before,
+        complete_worker_revocation_before, supervise_session_realization_reconciliation,
+        supervise_worker_authority,
     };
 
     #[tokio::test(start_paused = true)]
     async fn bounded_revocation_retains_observation_and_never_converts_timeout_to_completion() {
         // Cause/effect decision table for the one bounded revocation owner:
         // C1 local fence/interruption completes; C2 Runtime return is observed;
-        // C3 Session retirement completes; C4 the absolute deadline expires.
-        // E1 Completed is emitted only for C1+C2+C3 before C4; E2 any failed or
+        // C3 Session retirement completes; C4 unused Environment capacity
+        // shuts down; C5 the absolute deadline expires. E1 Completed is emitted
+        // only for C1+C2+C3+C4 before C5; E2 any failed or
         // stalled phase emits typed Unconfirmed; E3 a pending return observer is
-        // retained until C4; E4 retirement still runs after an explicit false
-        // return observation, but cannot convert it to completion.
+        // retained until C5; E4 retirement still runs after an explicit false
+        // return observation, but cannot convert it to completion; E5 capacity
+        // shutdown is attempted after revocation and shares the same deadline.
+        // Constraint: capacity is the final phase and receives only the time
+        // remaining after R1-R5; R6 isolates its timeout partition.
         //
-        // | Rule | C1 | C2 | C3 | C4 | Effect |
-        // |---|---|---|---|---|---|
-        // | R1 | yes | yes | yes | no | E1 |
-        // | R2 | pending | - | - | yes | E2/Fence |
-        // | R3 | yes | pending | - | yes | E2+E3/Return |
-        // | R4 | yes | false | yes | no | E2+E4/Return |
-        // | R5 | yes | yes | pending | yes | E2/Retirement |
+        // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+        // |---|---|---|---|---|---|---|
+        // | R1 | yes | yes | yes | yes | no | E1+E5 |
+        // | R2 | pending | - | - | - | yes | E2/Fence |
+        // | R3 | yes | pending | - | - | yes | E2+E3/Return |
+        // | R4 | yes | false | yes | - | no | E2+E4/Return |
+        // | R5 | yes | yes | pending | - | yes | E2/Retirement |
+        // | R6 | yes | yes | yes | pending | yes | E2/Capacity+E5 |
         let budget = std::time::Duration::from_secs(5);
+        let completed_deadline = tokio::time::Instant::now() + budget;
         let completed = complete_worker_revocation_before(
-            tokio::time::Instant::now() + budget,
+            completed_deadline,
             async { Ok(2) },
             |_| async { true },
             async { Ok(()) },
         )
         .await;
+        let completed =
+            complete_worker_capacity_before(completed_deadline, completed, async {}).await;
         assert_eq!(
             completed,
             WorkerRevocationOutcome::Completed { interrupted: 2 },
@@ -969,6 +1038,49 @@ mod tests {
             ),
             "R5/E2"
         );
+
+        let capacity_timeout = complete_worker_capacity_before(
+            tokio::time::Instant::now() + budget,
+            WorkerRevocationOutcome::Completed { interrupted: 6 },
+            std::future::pending(),
+        )
+        .await;
+        assert!(
+            matches!(
+                capacity_timeout,
+                WorkerRevocationOutcome::Unconfirmed {
+                    stage: WorkerRevocationStage::EnvironmentCapacity,
+                    interrupted: Some(6),
+                    ..
+                }
+            ),
+            "R6/E2+E5"
+        );
+    }
+
+    #[test]
+    fn quiescence_publication_requires_completed_cleanup_and_zero_in_flight() {
+        // Causes: C1 the bounded cleanup is Completed or Unconfirmed; C2 the
+        // authoritative local in-flight count is zero or nonzero. Effects: E1
+        // permit Registry quiescence publication; E2 withhold it. Constraint:
+        // interrupted-count metadata does not weaken either prerequisite.
+        //
+        // | Rule | C1 | C2 | Effect |
+        // |---|---|---|---|
+        // | Q1 | Completed | zero | E1 |
+        // | Q2 | Completed | nonzero | E2 |
+        // | Q3 | Unconfirmed | zero | E2 |
+        // | Q4 | Unconfirmed | nonzero | E2 |
+        let completed = WorkerRevocationOutcome::Completed { interrupted: 2 };
+        let unconfirmed = WorkerRevocationOutcome::Unconfirmed {
+            stage: WorkerRevocationStage::EnvironmentCapacity,
+            interrupted: Some(2),
+            detail: None,
+        };
+        assert!(completed.permits_quiescence_publication(0), "Q1/E1");
+        assert!(!completed.permits_quiescence_publication(1), "Q2/E2");
+        assert!(!unconfirmed.permits_quiescence_publication(0), "Q3/E2");
+        assert!(!unconfirmed.permits_quiescence_publication(1), "Q4/E2");
     }
 
     #[tokio::test]
