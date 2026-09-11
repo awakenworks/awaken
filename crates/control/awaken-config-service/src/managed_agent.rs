@@ -258,6 +258,15 @@ fn managed_model_selection(model: Option<&Value>) -> Result<ModelSelection, Stri
             profile_id: profile_id.to_string(),
         });
     }
+    // Target selections carry catalog qualifiers (protocol endpoint id, ACP
+    // session configuration) that the public Managed model-id string cannot
+    // encode. The config plane therefore authors them in the canonical
+    // `ModelSelection` wire shape and lets its own deserializer validate them;
+    // the string codec stays the Managed-compatible input form.
+    if model.get("mode").and_then(Value::as_str) == Some("target") {
+        return serde_json::from_value(model.clone())
+            .map_err(|error| format!("invalid target model selection: {error}"));
+    }
     if let Some(object) = model.as_object()
         && object.get("mode").and_then(Value::as_str) == Some("backend_default")
     {
@@ -359,10 +368,18 @@ fn managed_model_selection(model: Option<&Value>) -> Result<ModelSelection, Stri
 pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value {
     let binding = config.model_binding.resolved();
     let model = match &config.model_binding {
-        ModelSelection::Target { .. } => Value::String(
-            render_managed_model_id(&config.model_binding)
-                .expect("validated target selection has a Managed model id"),
-        ),
+        // The Managed model-id string stays the projection whenever it can
+        // carry the whole selection. Qualifiers it cannot spell — a protocol
+        // endpoint id, an adapter-native Session configuration — keep the
+        // canonical authoring wire instead of being dropped on the way out.
+        ModelSelection::Target { configuration, .. } => {
+            match render_managed_model_id(&config.model_binding) {
+                Ok(id) if configuration.is_empty() => Value::String(id),
+                _ => {
+                    serde_json::to_value(&config.model_binding).expect("ModelSelection serializes")
+                }
+            }
+        }
         ModelSelection::BackendDefault { .. } | ModelSelection::BackendExact { .. } => {
             serde_json::to_value(&config.model_binding).expect("ModelSelection serializes")
         }
@@ -494,6 +511,77 @@ mod tests {
             config.lifecycle(),
             awaken_agent_config::AgentLifecycle::Published,
             "L1"
+        );
+    }
+
+    #[test]
+    fn target_model_authoring_round_trips_through_the_canonical_wire() {
+        // Decision table for the console's catalog route authoring:
+        // T1 a target naming a protocol endpoint the Managed model-id string
+        //    cannot encode -> accepted and projected back unchanged;
+        // T2 a target plus its ACP session configuration -> both survive;
+        // T3 a target without a model id -> rejected, never silently pinned;
+        // T4 a target the string can spell in full -> that string is kept.
+        let wire = json!({
+            "mode": "target",
+            "backend_ref": "genai",
+            "target": {
+                "model_id": "selected",
+                "provider_id": "selected-provider",
+                "protocol_endpoint_id": "chat",
+                "api_dialect": "open_ai_chat"
+            }
+        });
+        let config = agent_config_from_managed("target".into(), &json!({ "model": wire.clone() }))
+            .expect("T1");
+        assert_eq!(config.model_binding.backend_ref(), Some("genai"), "T1");
+        assert_eq!(
+            managed_from_agent_config(&config, false)["model"],
+            wire,
+            "T1"
+        );
+
+        let configured = json!({
+            "mode": "target",
+            "backend_ref": "acp:codex",
+            "target": { "model_id": "gpt-x" },
+            "configuration": { "mode": "plan" }
+        });
+        let config =
+            agent_config_from_managed("target-acp".into(), &json!({ "model": configured.clone() }))
+                .expect("T2");
+        assert_eq!(
+            managed_from_agent_config(&config, false)["model"],
+            configured,
+            "T2"
+        );
+
+        assert!(
+            agent_config_from_managed(
+                "target-empty".into(),
+                &json!({ "model": { "mode": "target", "backend_ref": "genai", "target": { "model_id": "" } } }),
+            )
+            .is_err(),
+            "T3"
+        );
+
+        // T4 a target the Managed model-id string can spell in full keeps that
+        // compatible projection, so object authoring never widens the wire.
+        let config = agent_config_from_managed(
+            "target-compatible".into(),
+            &json!({
+                "model": {
+                    "mode": "target",
+                    "backend_ref": "genai",
+                    "target": { "model_id": "gpt-5", "provider_id": "openai", "api_dialect": "open_ai_chat" }
+                }
+            }),
+        )
+        .expect("T4");
+        assert_eq!(
+            managed_from_agent_config(&config, false)["model"],
+            json!("gpt-5;provider=openai;api=open_ai_chat"),
+            "T4"
         );
     }
 
