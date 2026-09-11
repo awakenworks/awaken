@@ -1938,9 +1938,7 @@ mod tests {
         // admitted and R2 fails registration before publication/runtime drift.
         assert!(
             validate_web_credential_requirement(&WebSearchCredentialRequirement::Exact(
-                CredentialUsage::EnvironmentVariable {
-                    name: "SECRET".into()
-                }
+                CredentialUsage::process_env("SECRET")
             ))
             .is_err(),
             "R2"

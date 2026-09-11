@@ -9,7 +9,6 @@ use awaken_run_executor_acp::{
 };
 #[cfg(test)]
 use awaken_runtime_contract::CredentialRealizationKind;
-use awaken_runtime_contract::CredentialUsage;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{
     BackendModelSelection, ModelProvisioning, ResolvedModelCandidate,
@@ -196,14 +195,15 @@ impl PublishedAcpLaunchResolver {
             credentials
                 .plan_claimed_process_secret(candidate, context)
                 .map_err(OpenError)?
-                .map(
-                    |reference| match credential.as_ref().map(|access| &access.usage) {
-                        Some(CredentialUsage::EnvironmentVariable { name }) => {
-                            ProcessSecretRequirement::for_environment(reference, name)
-                        }
-                        _ => ProcessSecretRequirement::new(reference),
-                    },
-                )
+                .map(|reference| {
+                    match credential
+                        .as_ref()
+                        .and_then(|access| access.usage.process_env_name())
+                    {
+                        Some(name) => ProcessSecretRequirement::for_environment(reference, name),
+                        None => ProcessSecretRequirement::new(reference),
+                    }
+                })
         };
         if credential.is_some() && credential_artifact.is_none() && process_secret.is_none() {
             return Err(OpenError(

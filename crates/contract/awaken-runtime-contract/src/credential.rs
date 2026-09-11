@@ -69,12 +69,7 @@ pub fn compile_candidate_credential_bindings(
             Backend::Native if access.usage != CredentialUsage::ProviderAdapter => {
                 return Err(AttemptCredentialBindingError::InvalidCredentialUsage);
             }
-            Backend::Acp(_)
-                if !matches!(
-                    access.usage,
-                    CredentialUsage::ProviderAdapter | CredentialUsage::EnvironmentVariable { .. }
-                ) =>
-            {
+            Backend::Acp(_) if !access.usage.is_scalar_process_delivery() => {
                 return Err(AttemptCredentialBindingError::InvalidCredentialUsage);
             }
             Backend::Remote(_) if !matches!(access.usage, CredentialUsage::HttpHeader { .. }) => {
@@ -86,10 +81,17 @@ pub fn compile_candidate_credential_bindings(
             (Backend::Native, PlaintextBoundary::Worker) => {
                 CredentialRealizationKind::WorkerProviderAdapter
             }
+            // An ACP backend that advertises no last-mile mechanism is
+            // refused. Defaulting it to a process secret environment would
+            // hand plaintext to a Workload whose capability evidence never
+            // claimed it could receive one.
             (Backend::Acp(_), PlaintextBoundary::Workload) => installed
                 .acp_backend_realization_kind(&candidate.binding().backend_ref)
                 .map_err(AttemptCredentialBindingError::InvalidWorkerCapabilities)?
-                .unwrap_or(CredentialRealizationKind::ProcessSecretEnvironment),
+                .ok_or_else(|| AttemptCredentialBindingError::UnsupportedRealization {
+                    boundary: PlaintextBoundary::Workload,
+                    backend: candidate.binding().backend_ref.clone(),
+                })?,
             (Backend::Acp(_), PlaintextBoundary::Worker) => CredentialRealizationKind::WorkerRelay,
             (Backend::Remote(_), PlaintextBoundary::Worker) => {
                 CredentialRealizationKind::WorkerRelay
@@ -502,9 +504,7 @@ mod tests {
                 revision: 1,
             },
             CredentialMaterialSource::ControlPlaneReference,
-            CredentialUsage::EnvironmentVariable {
-                name: "CLAUDE_CODE_OAUTH_TOKEN".into(),
-            },
+            CredentialUsage::process_env("CLAUDE_CODE_OAUTH_TOKEN"),
             CredentialExecutionPolicy::self_hosted_provider(),
         );
         let candidate = ResolvedModelCandidate::try_provider_with_acp(
@@ -528,6 +528,9 @@ mod tests {
             },
         )
         .expect("coherent ACP provider candidate");
+        // The installed profile must advertise the exact last-mile mechanism
+        // of this ACP backend. Nothing infers it from the realization kind
+        // alone: an adapter that claims nothing receives nothing.
         let capabilities = CredentialRealizationCapabilities {
             holders: [holder.clone()].into_iter().collect(),
             material_sources: [CredentialMaterialSource::ControlPlaneReference]
@@ -536,6 +539,14 @@ mod tests {
             realization_kinds: [CredentialRealizationKind::ProcessSecretEnvironment]
                 .into_iter()
                 .collect(),
+            extension_consumers: [(
+                format!("{ACP_CREDENTIAL_CONSUMER_PREFIX}acp:claude"),
+                [PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE.to_string()]
+                    .into_iter()
+                    .collect(),
+            )]
+            .into_iter()
+            .collect(),
             ..Default::default()
         };
         assert_eq!(
@@ -569,6 +580,65 @@ mod tests {
         assert_eq!(
             compile_candidate_credential_bindings(&[&native], Some(&holder), &capabilities, 1, 0,),
             Err(AttemptCredentialBindingError::InvalidCredentialUsage)
+        );
+    }
+
+    /// An ACP backend that advertises no last-mile mechanism must be refused.
+    /// The retired behaviour silently defaulted it to a process secret
+    /// environment, handing plaintext to a Workload on evidence that never
+    /// claimed it could receive any.
+    #[test]
+    fn acp_backend_without_advertised_delivery_is_refused_not_defaulted() {
+        let holder =
+            PlaintextHolder::new(PlaintextBoundary::Workload, SELF_HOSTED_ACP_TRUST_DOMAIN);
+        let access = CredentialAccess::new(
+            CredentialRef {
+                id: "claude-setup".into(),
+                revision: 1,
+            },
+            CredentialMaterialSource::ControlPlaneReference,
+            CredentialUsage::process_env("CLAUDE_CODE_OAUTH_TOKEN"),
+            CredentialExecutionPolicy::self_hosted_provider(),
+        );
+        let candidate = ResolvedModelCandidate::try_provider_with_acp(
+            ModelBinding::new("anthropic", "claude-test", "acp:claude"),
+            "anthropic@1",
+            "anthropic-messages@1",
+            "workspace-a",
+            Some(access),
+            crate::InferenceEndpoint {
+                adapter_kind: "anthropic".into(),
+                api_dialect: "anthropic_messages".into(),
+                base_url: "https://api.anthropic.com/v1".into(),
+                upstream_model: "claude-test".into(),
+                processing_placement: None,
+            },
+            crate::resolved::AcpExecutionProfile {
+                supports_tool_aliases: false,
+                capability_fingerprint: "sha256:claude-capability".into(),
+                capability_adapter_version: "test".into(),
+                session_configuration: Default::default(),
+            },
+        )
+        .expect("coherent ACP provider candidate");
+        // Holder, material source and realization kind all match; only the
+        // per-backend mechanism declaration is absent.
+        let silent = CredentialRealizationCapabilities {
+            holders: [holder.clone()].into_iter().collect(),
+            material_sources: [CredentialMaterialSource::ControlPlaneReference]
+                .into_iter()
+                .collect(),
+            realization_kinds: [CredentialRealizationKind::ProcessSecretEnvironment]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        assert_eq!(
+            compile_candidate_credential_bindings(&[&candidate], Some(&holder), &silent, 1, 0),
+            Err(AttemptCredentialBindingError::UnsupportedRealization {
+                boundary: PlaintextBoundary::Workload,
+                backend: "acp:claude".into(),
+            })
         );
     }
 

@@ -30,7 +30,7 @@ pub use custody::{
 mod delivery_plan;
 pub use delivery_plan::{
     CredentialDeliveredAuthority, CredentialDeliveryCarrier, CredentialDeliveryPlan,
-    CredentialInvocationRoute, repository_git_credential_delivery,
+    CredentialInvocationRoute, credential_delivery_plan, repository_git_credential_delivery,
 };
 mod managed_rollout;
 pub use managed_rollout::{
@@ -40,7 +40,10 @@ pub use managed_rollout::{
 mod observation_admission;
 pub use observation_admission::require_exact_available_worker_reference;
 mod usage;
-pub use usage::{CredentialUsage, SignatureVerificationAlgorithm};
+pub use usage::{
+    CredentialUsage, PRIVATE_FILE_CONSUMER, PRIVATE_FILE_MATERIAL_TYPE, PROCESS_ENV_CONSUMER,
+    PROCESS_ENV_MATERIAL_TYPE, SignatureVerificationAlgorithm, is_core_delivery_consumer,
+};
 #[cfg(kani)]
 mod formal;
 mod material_resolution;
@@ -63,6 +66,13 @@ pub use realization_capabilities::{
 pub const SELF_HOSTED_WORKER_TRUST_DOMAIN: &str = "awaken.worker";
 pub const SELF_HOSTED_ACP_TRUST_DOMAIN: &str = "awaken.workload.acp";
 pub const SELF_HOSTED_SANDBOX_TRUST_DOMAIN: &str = "awaken.workload.sandbox";
+
+/// Trust domain of the platform-held egress mediator.
+///
+/// Every hosted deployment names this one domain. Without it each consumer
+/// invents its own Platform trust-domain string, and two deployments that mean
+/// the same mediator stop comparing equal.
+pub const PLATFORM_EGRESS_GATEWAY_TRUST_DOMAIN: &str = "awaken.platform.egress-gateway";
 
 /// A stable reference to one credential source revision.
 #[derive(
@@ -287,6 +297,15 @@ fn self_hosted_sandbox_holder() -> PlaintextHolder {
     )
 }
 
+/// The one platform-held mediator holder shared by every hosted deployment.
+#[must_use]
+pub fn platform_egress_gateway_holder() -> PlaintextHolder {
+    PlaintextHolder::new(
+        PlaintextBoundary::Platform,
+        PLATFORM_EGRESS_GATEWAY_TRUST_DOMAIN,
+    )
+}
+
 impl CredentialRealizationProfile {
     /// Canonical self-hosted profile for the in-process Native runtime.
     #[must_use]
@@ -296,6 +315,19 @@ impl CredentialRealizationProfile {
             inference_holder: worker.clone(),
             mcp_holder: worker,
             resource_holder: self_hosted_sandbox_holder(),
+        }
+    }
+
+    /// Canonical hosted-cloud profile. Every credential effect is performed by
+    /// the platform egress mediator, so no boundary below it ever holds
+    /// upstream plaintext; callers receive a delegated capability instead.
+    #[must_use]
+    pub fn hosted_cloud() -> Self {
+        let gateway = platform_egress_gateway_holder();
+        Self {
+            inference_holder: gateway.clone(),
+            mcp_holder: gateway.clone(),
+            resource_holder: gateway,
         }
     }
 
@@ -699,11 +731,16 @@ impl CredentialAccess {
         {
             return Err(CredentialAdmissionError::HolderNotAllowed);
         }
+        // A core delivery carrier is a runtime-owned transport, never an
+        // externally installed consumer, so it is never declared in
+        // `extension_consumers`. Only an external extension must prove an
+        // installed consumer for its exact material type.
         if let CredentialUsage::Extension {
             consumer_id,
             material_type,
             ..
         } = &self.usage
+            && !is_core_delivery_consumer(consumer_id)
             && !capabilities.supports_extension(consumer_id, material_type)
         {
             return Err(CredentialAdmissionError::ExtensionConsumerUnsupported);

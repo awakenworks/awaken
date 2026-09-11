@@ -16,9 +16,8 @@ use awaken_credential_contract::{
     CredentialAccess, CredentialEnvelope, CredentialEnvelopeIssuance, CredentialEnvelopeIssuer,
     CredentialMaterial, CredentialMaterialBinding, CredentialMaterialCapability,
     CredentialMaterialError, CredentialMaterialRequest, CredentialMaterialResolver,
-    CredentialMaterialSource, CredentialUsage, PlaintextBoundary, PlaintextHolder,
-    ResolvedCredentialMaterial, SealedCredentialEnvelopeRef,
-    credential_envelope_payload_fingerprint,
+    CredentialMaterialSource, PlaintextBoundary, PlaintextHolder, ResolvedCredentialMaterial,
+    SealedCredentialEnvelopeRef, credential_envelope_payload_fingerprint,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng, Payload};
@@ -152,12 +151,7 @@ impl RecipientKeyEnvelope {
         // Initial self-hosted delivery qualifies scalar Provider and process
         // credentials. Structured and OAuth bundles keep their existing owners;
         // this adapter must never reinterpret either as a scalar API key.
-        if access.refresh.is_some()
-            || !matches!(
-                access.usage,
-                CredentialUsage::ProviderAdapter | CredentialUsage::EnvironmentVariable { .. }
-            )
-        {
+        if access.refresh.is_some() || !access.usage.is_scalar_process_delivery() {
             return Err(CredentialMaterialError::MaterialKindMismatch);
         }
         let realization = match holder.boundary {

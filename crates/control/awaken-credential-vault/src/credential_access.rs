@@ -570,9 +570,7 @@ mod tests {
     fn exact_access_uses_the_source_owned_material_origin() {
         let (mut source, _, policy, holder, binding) = fixture();
         source.descriptor = None;
-        let usage = CredentialUsage::EnvironmentVariable {
-            name: "AWAKEN_TEST_KEY".into(),
-        };
+        let usage = CredentialUsage::process_env("AWAKEN_TEST_KEY");
 
         for (rule, kind, expected) in [
             (
@@ -714,9 +712,7 @@ mod tests {
                 ExactCredentialAccessRequest {
                     workspace_id: Some("workspace-a"),
                     target: None,
-                    usage: CredentialUsage::EnvironmentVariable {
-                        name: "AWAKEN_TEST_KEY".into(),
-                    },
+                    usage: CredentialUsage::process_env("AWAKEN_TEST_KEY"),
                     policy,
                     selected_holder: &holder,
                     binding: &binding,
