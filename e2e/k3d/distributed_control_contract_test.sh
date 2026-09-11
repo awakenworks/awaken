@@ -84,7 +84,8 @@ kubectl kustomize "$REPO_ROOT/deploy/k3d/distributed-control" >"$RENDERED"
 # startup. D11-D1=C1+C2+C3=>E1+E2. The Kani harness owns C3 for all SandboxTier
 # variants; this rendered contract owns absence of the redundant deployment path.
 # D12 Pod-bound hard-crash recovery: C1 Coordinator owns TokenReview plus exact
-# namespace Pod get/delete; C2 the test Pod is non-restarting, retained and
+# namespace Pod get/update/delete; C2 the admitted crash fixture is
+# non-restarting and retained before admission;
 # projected from one ServiceAccount token/Downward API identity; C3 the TLS edge
 # blocks only its predecessor finish ACK; C4 the live script hard-stops its CRI
 # container and never force-deletes the evidence object. E1 C1+C2+C3+C4 drives
@@ -162,8 +163,8 @@ grep -q 'name: adr71-coordinator-token-review' "$RENDERED"
 COORDINATOR_PROCESS_ROLE="$(sed -n '/metadata: { name: coordinator-worker-process }/,/^---$/p' \
   "$REPO_ROOT/deploy/k3d/distributed-control/resources.yaml" | head -12)"
 grep -q 'resources: \["pods"\]' <<<"$COORDINATOR_PROCESS_ROLE"
-grep -q 'verbs: \["get", "delete"\]' <<<"$COORDINATOR_PROCESS_ROLE"
-! grep -Eq '"(create|list|watch|update|patch)"' <<<"$COORDINATOR_PROCESS_ROLE"
+grep -q 'verbs: \["get", "update", "delete"\]' <<<"$COORDINATOR_PROCESS_ROLE"
+! grep -Eq '"(create|list|watch|patch)"' <<<"$COORDINATOR_PROCESS_ROLE"
 # Continuation-RBAC table: a retained Session needs C1 PVC create, C2 exact UID
 # observation, and C3 terminal delete. E1 all three render in one PVC-only rule;
 # E2 update/list/watch remain absent from that rule. KRB1=C1+C2+C3=>E1+E2.
@@ -215,6 +216,8 @@ grep -q 'NATIVE_CRASH_MARKER="ADR71-NATIVE-HARD-CRASH"' "$REPO_ROOT/e2e/k3d/dist
 grep -q 'worker_kubernetes_identity_directory' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'restartPolicy: Never' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'awaken.dev/worker-process-evidence' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'wait --for=delete "pod/$NATIVE_CRASH_OLD"' \
+  "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'prepare-native-crash' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'verify-native-crash' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'NATIVE_PROVIDER_BEFORE_CRASH' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"

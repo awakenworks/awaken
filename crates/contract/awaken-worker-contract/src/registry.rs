@@ -191,6 +191,64 @@ pub struct RegisteredWorker {
     pub registered_at_ms: u64,
     pub heartbeat_at_ms: u64,
     pub drain_deadline_ms: Option<u64>,
+    /// Immutable, provider-bound observation that this exact incarnation's
+    /// whole local process domain exited. The Registry owns this Worker-level
+    /// fact so every blocked attempt can reuse it after Pod evidence release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_exit: Option<WorkerProcessExit>,
+}
+
+/// Durable, non-secret exit evidence for one exact Worker incarnation.
+///
+/// Provider and execution coordinates are copied from the already-persisted
+/// attempt binding. `evidence_ref` identifies the provider observation. This
+/// receipt proves local process exit only; Dispatch still requires independent
+/// complete-attempt evidence before retiring any physical attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerProcessExit {
+    provider_id: String,
+    execution_ref: String,
+    evidence_ref: String,
+}
+
+impl WorkerProcessExit {
+    pub fn new(
+        provider_id: impl Into<String>,
+        execution_ref: impl Into<String>,
+        evidence_ref: impl Into<String>,
+    ) -> Result<Self, RegistryError> {
+        let receipt = Self {
+            provider_id: provider_id.into(),
+            execution_ref: execution_ref.into(),
+            evidence_ref: evidence_ref.into(),
+        };
+        receipt.validate()?;
+        Ok(receipt)
+    }
+
+    pub fn validate(&self) -> Result<(), RegistryError> {
+        if self.provider_id.trim().is_empty()
+            || self.execution_ref.trim().is_empty()
+            || self.evidence_ref.trim().is_empty()
+        {
+            Err(RegistryError::InvalidProcessExit)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn provider_id(&self) -> &str {
+        &self.provider_id
+    }
+
+    pub fn execution_ref(&self) -> &str {
+        &self.execution_ref
+    }
+
+    pub fn evidence_ref(&self) -> &str {
+        &self.evidence_ref
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -223,6 +281,27 @@ pub enum RegistryMutation {
     StaleIncarnation,
     StaleSequence,
     InvalidTransition,
+}
+
+/// Closed admission table for the sole durable Worker-process exit receipt.
+/// Exact replay is Applied; a different receipt can never overwrite history.
+#[must_use]
+pub const fn worker_process_exit_admission(
+    record_present: bool,
+    identity_matches: bool,
+    worker_closed: bool,
+    existing_receipt_present: bool,
+    existing_receipt_matches: bool,
+) -> RegistryMutation {
+    if !record_present {
+        RegistryMutation::NotFound
+    } else if !identity_matches {
+        RegistryMutation::StaleIncarnation
+    } else if !worker_closed || (existing_receipt_present && !existing_receipt_matches) {
+        RegistryMutation::InvalidTransition
+    } else {
+        RegistryMutation::Applied
+    }
 }
 
 /// Admission of a different incarnation from one atomic Registry history read.
@@ -401,6 +480,10 @@ pub enum RegistryError {
     Persistence(String),
     #[error("worker generation authority is exhausted for slot {worker_id}")]
     GenerationExhausted { worker_id: String },
+    #[error(
+        "worker process exit receipt requires non-empty provider, execution and evidence references"
+    )]
+    InvalidProcessExit,
 }
 
 /// Secret-free read projection of the current Worker authority.
@@ -453,6 +536,18 @@ pub trait WorkerDirectory: WorkerObservationSource {
 
     async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError>;
 
+    /// Read one exact historical incarnation. Unlike `current`, this remains
+    /// available after a replacement becomes the current generation.
+    async fn incarnation(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<Option<RegisteredWorker>, RegistryError> {
+        Ok(self
+            .current(&identity.worker_id)
+            .await?
+            .filter(|record| record.snapshot.identity == *identity))
+    }
+
     /// Atomically close only this expired incarnation. Already closed exact
     /// records return Applied without rewriting them; missing, live or replaced
     /// records grant no retirement. Late heartbeat/register retries cannot
@@ -462,6 +557,19 @@ pub trait WorkerDirectory: WorkerObservationSource {
         identity: &WorkerIdentity,
         now_ms: u64,
     ) -> Result<RegistryMutation, RegistryError>;
+
+    /// Persist or idempotently replay the sole exact process-exit receipt for a
+    /// closed incarnation. A conflicting receipt is rejected and never
+    /// overwrites the first provider observation.
+    async fn record_process_exit(
+        &self,
+        _identity: &WorkerIdentity,
+        _receipt: WorkerProcessExit,
+    ) -> Result<RegistryMutation, RegistryError> {
+        Err(RegistryError::Persistence(
+            "Worker directory does not persist process-exit receipts".into(),
+        ))
+    }
 }
 
 impl WorkerSnapshot {
@@ -499,6 +607,41 @@ impl WorkerSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_exit_receipt_admission_is_closed_exact_and_immutable() {
+        // Causes: C1 record present; C2 identity exact; C3 Worker closed; C4
+        // existing receipt absent/equal/conflicting. Effects: E1 only a closed
+        // exact absent/equal receipt applies; E2 missing is NotFound; E3 foreign
+        // identity is stale; E4 open or conflicting history is invalid.
+        // Decision rules exhaust all 32 Boolean rows and assert the same formula
+        // consumed by every Registry adapter.
+        for present in [false, true] {
+            for exact in [false, true] {
+                for closed in [false, true] {
+                    for existing in [false, true] {
+                        for equal in [false, true] {
+                            let expected = if !present {
+                                RegistryMutation::NotFound
+                            } else if !exact {
+                                RegistryMutation::StaleIncarnation
+                            } else if !closed || (existing && !equal) {
+                                RegistryMutation::InvalidTransition
+                            } else {
+                                RegistryMutation::Applied
+                            };
+                            assert_eq!(
+                                worker_process_exit_admission(
+                                    present, exact, closed, existing, equal
+                                ),
+                                expected
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn startup_readiness_is_independent_of_dynamic_probe_outcome() {
@@ -705,6 +848,29 @@ fn worker_replacement_and_heartbeat_share_one_non_resurrection_boundary() {
             worker_heartbeat_admission(true, true, true, true, WorkerState::Dead),
             RegistryMutation::Applied
         );
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn worker_process_exit_receipt_requires_closed_exact_immutable_history() {
+    let present = kani::any::<bool>();
+    let exact = kani::any::<bool>();
+    let closed = kani::any::<bool>();
+    let existing = kani::any::<bool>();
+    let equal = kani::any::<bool>();
+    let outcome = worker_process_exit_admission(present, exact, closed, existing, equal);
+    assert_eq!(outcome == RegistryMutation::NotFound, !present);
+    assert_eq!(
+        outcome == RegistryMutation::StaleIncarnation,
+        present && !exact
+    );
+    assert_eq!(
+        outcome == RegistryMutation::Applied,
+        present && exact && closed && (!existing || equal)
+    );
+    if existing && !equal {
+        assert_ne!(outcome, RegistryMutation::Applied);
     }
 }
 

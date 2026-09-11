@@ -35,6 +35,8 @@ struct StopSource {
     entered: Notify,
     release: Semaphore,
     attempt: Mutex<Option<Arc<AttemptStopProbe>>>,
+    evidence_release_calls: Mutex<Vec<AttemptExecutionBinding>>,
+    evidence_release_result: Mutex<Result<(), String>>,
 }
 
 #[async_trait::async_trait]
@@ -72,6 +74,33 @@ impl WorkerExecutionStopSource for StopSource {
             None => Ok(WorkerProcessStopStatus::Unknown),
             Some(reference) => command.observed_exit(reference),
         }
+    }
+
+    async fn release_closed_worker_evidence(
+        &self,
+        command: &ClosedWorkerExecution,
+    ) -> Result<(), ApplicationError> {
+        let binding = command.binding();
+        let record = self
+            .directory
+            .incarnation(binding.worker())
+            .await
+            .unwrap()
+            .unwrap();
+        let receipt = record
+            .process_exit
+            .expect("process exit must be durable before evidence release");
+        assert_eq!(receipt.provider_id(), binding.provider_id());
+        assert_eq!(receipt.execution_ref(), binding.execution_ref());
+        self.evidence_release_calls
+            .lock()
+            .unwrap()
+            .push(binding.clone());
+        self.evidence_release_result
+            .lock()
+            .unwrap()
+            .clone()
+            .map_err(ApplicationError::unavailable)
     }
 
     async fn observe_attempt_termination(
@@ -320,6 +349,8 @@ impl Fixture {
             entered: Notify::new(),
             release: Semaphore::new(0),
             attempt: Mutex::new(None),
+            evidence_release_calls: Mutex::new(Vec::new()),
+            evidence_release_result: Mutex::new(Ok(())),
         });
         let thread_id = request_thread_id(&tag);
         let recovery: Arc<dyn RunRecoverySource> = Arc::new(StaticRecoverySource {
@@ -442,12 +473,7 @@ async fn blocked_http_closes_exact_expired_worker_but_local_exit_never_clears_re
     }
     for directory in directories {
         let f = Fixture::new(directory, true, 50, 5_000).await;
-        for result in [
-            Ok(None),
-            Ok(Some("provider-revision-7".into())),
-            Err("lost provider reply".into()),
-            Ok(Some("provider-revision-7".into())),
-        ] {
+        for result in [Ok(None), Err("lost provider reply".into())] {
             *f.stop.result.lock().unwrap() = result.clone();
             f.stop.release.add_permits(1);
             let (status, body) = f.begin().await;
@@ -464,14 +490,15 @@ async fn blocked_http_closes_exact_expired_worker_but_local_exit_never_clears_re
             }
             f.assert_occupied().await;
         }
-        assert_eq!(*f.stop.calls.lock().unwrap(), vec![f.binding.clone(); 4]);
+        assert_eq!(*f.stop.calls.lock().unwrap(), vec![f.binding.clone(); 2]);
         // R14 simultaneous Coordinator observations close idempotently and both
         // target only the same frozen domain. Neither may release occupancy.
+        *f.stop.result.lock().unwrap() = Ok(None);
         f.stop.release.add_permits(2);
         let (a, b) = tokio::join!(f.begin(), f.begin());
         assert_eq!(a.1["admission"], "blocked");
         assert_eq!(b.1["admission"], "blocked");
-        assert_eq!(*f.stop.calls.lock().unwrap(), vec![f.binding.clone(); 6]);
+        assert_eq!(*f.stop.calls.lock().unwrap(), vec![f.binding.clone(); 4]);
         f.assert_occupied().await;
         let _ = f.stop.entered.notified().await; // consume prior notification
         let (reply, ()) = tokio::join!(f.begin(), async {
@@ -609,6 +636,76 @@ async fn timed_out_stop_remains_retryable_without_releasing_physical_occupancy()
     f.stop.release.add_permits(1);
     assert_eq!(f.begin().await.1["admission"], "blocked");
     assert_eq!(*f.stop.calls.lock().unwrap(), vec![f.binding.clone(); 2]);
+}
+
+#[tokio::test]
+async fn durable_process_exit_survives_release_failure_and_worker_replacement() {
+    // Crash/retry cause/effect graph: C1 exact local exit is observed; C2 its
+    // Registry commit succeeds; C3 provider finalizer release succeeds/fails;
+    // C4 the logical Worker slot is replaced before retry; C5 complete-attempt
+    // evidence is available. Effects: E1 C2 always precedes release; E2 release
+    // failure returns 503 and retains Dispatch; E3 retry reuses historical C2,
+    // never calls stop again, and may release after C4; E4 only C3+C5 retires
+    // the exact attempt. Rules D1=C1+C2+!C3=>E1+E2; D2=D1+C4+C3+C5=>E3+E4.
+    let f = Fixture::new(Arc::new(MemoryWorkerDirectory::new()), true, 50, 5_000).await;
+    let probe = AttemptStopProbe::install(&f);
+    *f.stop.result.lock().unwrap() = Ok(Some("local-exit-rv".into()));
+    *f.stop.evidence_release_result.lock().unwrap() = Err("release reply lost".into());
+    *probe.result.lock().unwrap() = Ok(Some("all-participants-terminal".into()));
+    f.stop.release.add_permits(1);
+
+    assert_eq!(
+        f.begin().await.0,
+        reqwest::StatusCode::SERVICE_UNAVAILABLE,
+        "D1"
+    );
+    f.assert_occupied().await;
+    let old = f
+        .directory
+        .incarnation(f.binding.worker())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        old.process_exit.as_ref().unwrap().evidence_ref(),
+        "local-exit-rv",
+        "D1/E1"
+    );
+    assert!(
+        probe.calls.lock().unwrap().is_empty(),
+        "D1 release gates proof query"
+    );
+
+    f.directory
+        .register(
+            WorkerRegistration {
+                worker_id: f.binding.worker().worker_id.clone(),
+                incarnation_id: "replacement-after-exit".into(),
+                manifest: old.snapshot.manifest,
+            },
+            201,
+            10_000,
+        )
+        .await
+        .unwrap();
+    *f.stop.evidence_release_result.lock().unwrap() = Ok(());
+    probe.release.add_permits(1);
+    assert_eq!(f.begin().await.1["admission"], "blocked", "D2");
+    assert_eq!(
+        *f.stop.calls.lock().unwrap(),
+        vec![f.binding.clone()],
+        "D2/E3"
+    );
+    assert_eq!(
+        *f.stop.evidence_release_calls.lock().unwrap(),
+        vec![f.binding.clone(); 2],
+        "D1/D2 release retry"
+    );
+    assert_eq!(
+        f.store.load_physical_attempt(&f.old.run_id).await.unwrap(),
+        None,
+        "D2/E4"
+    );
 }
 
 #[tokio::test]

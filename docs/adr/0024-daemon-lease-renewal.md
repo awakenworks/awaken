@@ -277,10 +277,18 @@ documents that kubelet/runtime state loss can cause unexpected reruns under
 Control-plane deletion intent and runtime exit reports remain trusted
 infrastructure facts, not a proof of node isolation or remote-operation stop.
 CAS conflicts and response loss retry without retargeting a replacement. The
-adapter never removes the finalizer or deletes Session/PVC participants. Its
-whole-Worker scope requires trusted recovery composition, not per-Run cancellation.
-Production deployment installation, post-retirement release of retention and
-remote-participant proof remain unavailable. ADR-0065 owns the Coordinator's
+adapter deletes no Session/PVC participant. The existing Worker Registry history
+now stores one immutable `WorkerProcessExit` for the exact incarnation, bound to
+the frozen provider and execution references. The application persists and reads
+back that receipt before the adapter may remove only
+`awaken.dev/worker-process-evidence` through the shared Pod finalizer CAS loop.
+After response loss or Worker replacement, retries read the historical receipt
+and never issue a second stop command. Supported non-restarting Worker Pod
+deployments must install the finalizer before admission; the bundled k3d crash
+fixture does so and grants Coordinator only Pod get/update/delete. The ordinary
+restartable StatefulSet remains outside this binding profile.
+Its whole-Worker scope requires trusted recovery composition, not per-Run
+cancellation. Remote-participant proof remains unavailable. ADR-0065 owns the Coordinator's
 local-stop and complete-assertion consumption: only the separately verified full
 assertion can reach exact retirement. The Kubernetes adapter retains Unknown for
 that assertion; local exit alone never retires an attempt.
@@ -343,10 +351,10 @@ It also recreates the same Pod name through the canonical provider: the old UID
 cannot bind or delete the live successor, and the successor's later exit proves
 only its fresh binding. The stale DELETE rule checks Kubernetes UID preconditions;
 the provider stop command separately rejects that old binding without a write.
-Fourteen model mutants and six positive observation/stop witnesses cover the finite
+Sixteen model mutants and six positive observation/stop witnesses cover the finite
 provider boundary; neither those
 checks nor the live test establish whole-attempt recovery or evidence retention
-after API history is removed.
+after API history is removed without the durable Registry receipt.
 The exit-before-stop regression crosses Completed/Error/OOMKilled and every
 existing stop-response-loss, CAS, replacement and retention-loss fault. Its KPT10
 extension in the existing live test hard-stops every container before invoking

@@ -170,6 +170,17 @@ pub trait WorkerExecutionStopSource: Send + Sync {
         execution: &ClosedWorkerExecution,
     ) -> Result<WorkerProcessStopStatus, ApplicationError>;
 
+    /// Release provider-retained process history only after the Registry has
+    /// durably stored this exact exit receipt. Implementations must target the
+    /// original binding idempotently; failure leaves Dispatch occupied and is
+    /// retried through the same blocked-successor path.
+    async fn release_closed_worker_evidence(
+        &self,
+        _execution: &ClosedWorkerExecution,
+    ) -> Result<(), ApplicationError> {
+        Ok(())
+    }
+
     /// Read complete termination evidence from independent providers, after
     /// verified local exit. This is READ ONLY: a concurrent durable handoff may
     /// transfer the remote operation after this observation subject was built.
@@ -224,13 +235,24 @@ pub async fn stop_expired_predecessor(
     binding
         .validate_for(&predecessor.claim)
         .map_err(|error| ApplicationError::internal(error.to_string()))?;
-    if directory
+    let expiry = directory
         .expire_incarnation(binding.worker(), now_ms)
         .await
-        .map_err(|error| ApplicationError::unavailable(error.to_string()))?
-        != crate::RegistryMutation::Applied
-    {
-        return Ok(None);
+        .map_err(|error| ApplicationError::unavailable(error.to_string()))?;
+    if expiry != crate::RegistryMutation::Applied {
+        let closed = directory
+            .incarnation(binding.worker())
+            .await
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+            .is_some_and(|record| {
+                matches!(
+                    record.snapshot.state,
+                    crate::WorkerState::Quiesced | crate::WorkerState::Dead
+                )
+            });
+        if !closed {
+            return Ok(None);
+        }
     }
     // The Registry transaction is over before any provider IO. A concurrent
     // normal ACK/handoff must not retarget this command to the successor slot.
@@ -243,11 +265,26 @@ pub async fn stop_expired_predecessor(
     {
         return Ok(None);
     }
-    let observation = source
-        .stop_closed_worker(&ClosedWorkerExecution {
-            binding: binding.clone(),
-        })
-        .await?;
+    let closed = ClosedWorkerExecution {
+        binding: binding.clone(),
+    };
+    let persisted = directory
+        .incarnation(binding.worker())
+        .await
+        .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+        .and_then(|record| record.process_exit);
+    let observation = if let Some(receipt) = persisted {
+        if receipt.provider_id() != binding.provider_id()
+            || receipt.execution_ref() != binding.execution_ref()
+        {
+            return Err(ApplicationError::internal(
+                "persisted Worker process exit names another execution",
+            ));
+        }
+        closed.observed_exit(receipt.evidence_ref())?
+    } else {
+        source.stop_closed_worker(&closed).await?
+    };
     if let WorkerProcessStopStatus::Exited(receipt) = &observation
         && receipt.binding() != binding
     {
@@ -256,6 +293,33 @@ pub async fn stop_expired_predecessor(
         ));
     }
     if let WorkerProcessStopStatus::Exited(process_exit) = &observation {
+        let receipt = crate::WorkerProcessExit::new(
+            binding.provider_id(),
+            binding.execution_ref(),
+            process_exit.evidence_ref(),
+        )
+        .map_err(|error| ApplicationError::internal(error.to_string()))?;
+        if directory
+            .record_process_exit(binding.worker(), receipt.clone())
+            .await
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+            != crate::RegistryMutation::Applied
+        {
+            return Err(ApplicationError::internal(
+                "Worker process exit could not be committed to its closed incarnation",
+            ));
+        }
+        let committed = directory
+            .incarnation(binding.worker())
+            .await
+            .map_err(|error| ApplicationError::unavailable(error.to_string()))?
+            .and_then(|record| record.process_exit);
+        if committed.as_ref() != Some(&receipt) {
+            return Err(ApplicationError::internal(
+                "Worker process exit readback did not match the committed receipt",
+            ));
+        }
+        source.release_closed_worker_evidence(&closed).await?;
         // Do not query a superseded subject after a late process observation.
         // Recheck after local IO, without holding a transaction over
         // the next provider call. A subsequent race is handled by exact finish.

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use awaken_worker_contract::{
     RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
-    WorkerIdentity, WorkerObservationSource, WorkerRegistration,
+    WorkerIdentity, WorkerObservationSource, WorkerProcessExit, WorkerRegistration,
 };
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::{PgConnection, Row};
@@ -138,6 +138,25 @@ impl PostgresWorkerDirectory {
         row.map(|row| decode(encoded_row(&row))).transpose()
     }
 
+    async fn read_incarnation(
+        conn: &mut PgConnection,
+        identity: &WorkerIdentity,
+        for_update: bool,
+    ) -> Result<Option<RegisteredWorker>, RegistryError> {
+        let generation = durable_i64("generation", identity.generation)?;
+        let suffix = if for_update { " FOR UPDATE" } else { "" };
+        let row = sqlx::query(&format!(
+            "SELECT {WORKER_COLUMNS} FROM worker_registry_worker WHERE worker_id = $1 AND generation = $2 AND incarnation_id = $3{suffix}"
+        ))
+        .bind(&identity.worker_id)
+        .bind(generation)
+        .bind(&identity.incarnation_id)
+        .fetch_optional(conn)
+        .await
+        .map_err(persist)?;
+        row.map(|row| decode(encoded_row(&row))).transpose()
+    }
+
     async fn write(
         conn: &mut PgConnection,
         record: &RegisteredWorker,
@@ -151,8 +170,8 @@ impl PostgresWorkerDirectory {
                  capability_fingerprint, in_flight, warm_environment_shapes_json, \
                  credential_observations_json, acp_capability_observations_json, \
                  expires_at_ms, heartbeat_sequence, observation_sequence, registered_at_ms, \
-                 heartbeat_at_ms, drain_deadline_ms) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
+                 heartbeat_at_ms, drain_deadline_ms, process_exit_json) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) \
              ON CONFLICT(worker_id, generation) DO UPDATE SET \
                 state = excluded.state, manifest_json = excluded.manifest_json, \
                 capability_fingerprint = excluded.capability_fingerprint, \
@@ -165,7 +184,8 @@ impl PostgresWorkerDirectory {
                 observation_sequence = excluded.observation_sequence, \
                 registered_at_ms = excluded.registered_at_ms, \
                 heartbeat_at_ms = excluded.heartbeat_at_ms, \
-                drain_deadline_ms = excluded.drain_deadline_ms",
+                drain_deadline_ms = excluded.drain_deadline_ms, \
+                process_exit_json = excluded.process_exit_json",
         )
         .bind(&record.snapshot.identity.worker_id)
         .bind(&record.snapshot.identity.incarnation_id)
@@ -201,6 +221,13 @@ impl PostgresWorkerDirectory {
             record
                 .drain_deadline_ms
                 .map(|value| durable_i64("drain_deadline_ms", value))
+                .transpose()?,
+        )
+        .bind(
+            record
+                .process_exit
+                .as_ref()
+                .map(|receipt| encode_json("process_exit_json", receipt))
                 .transpose()?,
         )
         .execute(conn)
@@ -337,6 +364,14 @@ impl WorkerDirectory for PostgresWorkerDirectory {
         row.map(|row| decode(encoded_row(&row))).transpose()
     }
 
+    async fn incarnation(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<Option<RegisteredWorker>, RegistryError> {
+        let mut conn = self.pool.acquire().await.map_err(persist)?;
+        Self::read_incarnation(&mut conn, identity, false).await
+    }
+
     async fn expire_incarnation(
         &self,
         identity: &WorkerIdentity,
@@ -344,6 +379,23 @@ impl WorkerDirectory for PostgresWorkerDirectory {
     ) -> Result<RegistryMutation, RegistryError> {
         durable_i64("now_ms", now_ms)?;
         self.mutate(identity, Mutation::Expire { now_ms }).await
+    }
+
+    async fn record_process_exit(
+        &self,
+        identity: &WorkerIdentity,
+        receipt: WorkerProcessExit,
+    ) -> Result<RegistryMutation, RegistryError> {
+        receipt.validate()?;
+        let mut tx = self.pool.begin().await.map_err(persist)?;
+        Self::lock_slot(&mut tx, &identity.worker_id).await?;
+        let record = Self::read_incarnation(&mut tx, identity, true).await?;
+        let (next, outcome) = transition::record_process_exit(record.as_ref(), identity, receipt)?;
+        if let Some(next) = next {
+            Self::write(&mut tx, &next).await?;
+        }
+        tx.commit().await.map_err(persist)?;
+        Ok(outcome)
     }
 }
 
@@ -365,6 +417,7 @@ fn encoded_row(row: &sqlx::postgres::PgRow) -> EncodedWorkerRow {
         registered_at_ms: row.get("registered_at_ms"),
         heartbeat_at_ms: row.get("heartbeat_at_ms"),
         drain_deadline_ms: row.get("drain_deadline_ms"),
+        process_exit_json: row.get("process_exit_json"),
     }
 }
 

@@ -140,6 +140,7 @@ pub mod worker_http {
             registered_at_ms: 0,
             heartbeat_at_ms: 0,
             drain_deadline_ms: None,
+            process_exit: None,
         };
         (Arc::new(CurrentWorkerDirectory(registered)), identity)
     }

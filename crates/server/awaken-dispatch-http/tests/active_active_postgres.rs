@@ -145,6 +145,7 @@ fn configured_worker() -> (WorkerIdentity, Arc<dyn WorkerDirectory>) {
         registered_at_ms: 0,
         heartbeat_at_ms: 0,
         drain_deadline_ms: None,
+        process_exit: None,
     };
     (identity, Arc::new(ConfiguredWorkerDirectory(worker)))
 }

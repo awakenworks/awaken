@@ -7,7 +7,9 @@ CONSTANTS MaxGeneration, Containers
 Generations == 1..MaxGeneration
 VARIABLES current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed, observation
 VARIABLES retained, protectedBindings, stopRequests, closedAdmission, stopObservation
-stopState == <<retained, protectedBindings, stopRequests, closedAdmission, stopObservation>>
+VARIABLES durableExitReceipts, releasedEvidence
+stopState == <<retained, protectedBindings, stopRequests, closedAdmission, stopObservation,
+               durableExitReceipts, releasedEvidence>>
 vars == <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed, observation, stopState>>
 Domain(g) == {<<g, c>> : c \in Containers}
 CompleteExit(g) == Domain(g) \subseteq exited
@@ -31,6 +33,8 @@ Init ==
     /\ stopRequests = {}
     /\ closedAdmission = {}
     /\ stopObservation = 0
+    /\ durableExitReceipts = {}
+    /\ releasedEvidence = {}
 
 \* Never-restart is a provider premise, not inferred from an empty status list.
 Start(g, c) ==
@@ -64,7 +68,7 @@ Bind ==
                                /\ current \in retained
                             THEN protectedBindings \cup {current}
                             ELSE protectedBindings
-    /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, failed, observation, retained, stopRequests, closedAdmission, stopObservation>>
+    /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, failed, observation, retained, stopRequests, closedAdmission, stopObservation, durableExitReceipts, releasedEvidence>>
 
 Crash(g, c) ==
     /\ <<g, c>> \in started \ exited
@@ -83,7 +87,7 @@ Delete(g) ==
     /\ observation' = 0
     /\ stopObservation' = 0
     /\ UNCHANGED <<current, started, exited, authenticated, authenticatedIncarnation, bound, failed,
-                    retained, protectedBindings, stopRequests, closedAdmission>>
+                    retained, protectedBindings, stopRequests, closedAdmission, durableExitReceipts, releasedEvidence>>
 
 Replace ==
     /\ current \notin present
@@ -93,7 +97,7 @@ Replace ==
     /\ observation' = 0
     /\ stopObservation' = 0
     /\ UNCHANGED <<started, exited, authenticated, authenticatedIncarnation, bound, failed,
-                    retained, protectedBindings, stopRequests, closedAdmission>>
+                    retained, protectedBindings, stopRequests, closedAdmission, durableExitReceipts, releasedEvidence>>
 
 \* Query a historical binding against the current name. Missing, replaced,
 \* phase-only and partially stopped observations fail closed.
@@ -114,15 +118,36 @@ ObserveStopped(g) ==
                                /\ StopRequested(g)
                            THEN g ELSE 0
     /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,
-                    observation, retained, protectedBindings, stopRequests, closedAdmission>>
+                    observation, retained, protectedBindings, stopRequests, closedAdmission, durableExitReceipts, releasedEvidence>>
 
 \* Trusted deployment installs retention; external loss remains possible and
-\* is not interpreted as proof. The stopper itself never releases this history.
+\* is not interpreted as proof. Authorized release is modeled separately below.
 Retention(g) ==
     /\ g \in present
+    /\ g \notin releasedEvidence
     /\ retained' \in {retained \cup {g}, retained \ {g}}
     /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,
-                    observation, protectedBindings, stopRequests, closedAdmission, stopObservation>>
+                    observation, protectedBindings, stopRequests, closedAdmission, stopObservation, durableExitReceipts, releasedEvidence>>
+
+\* The application commits the subject-bound provider observation into the
+\* existing Registry history before any finalizer update. This is a Worker-level
+\* fact, not Dispatch retirement or complete remote-attempt evidence.
+CommitExitReceipt(g) ==
+    /\ stopObservation = g
+    /\ durableExitReceipts' = durableExitReceipts \cup {g}
+    /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation,
+                    bound, failed, observation, retained, protectedBindings, stopRequests,
+                    closedAdmission, stopObservation, releasedEvidence>>
+
+\* Release is exact and idempotent. It may complete after absence or replacement,
+\* but only a durable old-generation receipt authorizes removing its retention.
+ReleaseEvidence(g) ==
+    /\ g \in durableExitReceipts
+    /\ releasedEvidence' = releasedEvidence \cup {g}
+    /\ retained' = retained \ {g}
+    /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation,
+                    bound, failed, observation, protectedBindings, stopRequests, closedAdmission,
+                    stopObservation, durableExitReceipts>>
 
 \* Interface fact supplied by exact Registry expiry, not a duplicate Registry
 \* state machine. Its atomic renewal/replacement rules have their own production
@@ -131,7 +156,7 @@ CloseAdmission(g) ==
     /\ <<g, g>> \in bound
     /\ closedAdmission' = closedAdmission \cup {g}
     /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,
-                    observation, retained, protectedBindings, stopRequests, stopObservation>>
+                    observation, retained, protectedBindings, stopRequests, stopObservation, durableExitReceipts, releasedEvidence>>
 
 \* UID/resourceVersion conditional DELETE linearizes at the API. A lost reply
 \* permits this exact retry, not an unconditional name-based write or receipt.
@@ -146,13 +171,14 @@ RequestStop(g) ==
     /\ stopRequests' = stopRequests \cup
          {<<g, current, g \in protectedBindings, current \in retained, g \in closedAdmission, CompleteExit(current)>>}
     /\ UNCHANGED <<current, present, started, exited, authenticated, authenticatedIncarnation, bound, failed,
-                    observation, retained, protectedBindings, closedAdmission, stopObservation>>
+                    observation, retained, protectedBindings, closedAdmission, stopObservation, durableExitReceipts, releasedEvidence>>
 
 Next ==
     \/ \E g \in Generations, c \in Containers: Start(g, c) \/ Crash(g, c)
     \/ (\E incarnation \in Generations: Authenticate(incarnation)) \/ Bind
     \/ \E g \in Generations: ControllerFailure(g) \/ Delete(g) \/ Observe(g)
                               \/ Retention(g) \/ RequestStop(g) \/ CloseAdmission(g) \/ ObserveStopped(g)
+                              \/ CommitExitReceipt(g) \/ ReleaseEvidence(g)
     \/ Replace
 
 TypeOK ==
@@ -170,6 +196,8 @@ TypeOK ==
     /\ protectedBindings \subseteq Generations
     /\ closedAdmission \subseteq Generations
     /\ stopRequests \subseteq (Generations \X Generations \X BOOLEAN \X BOOLEAN \X BOOLEAN \X BOOLEAN)
+    /\ durableExitReceipts \subseteq Generations
+    /\ releasedEvidence \subseteq Generations
 
 ExactCompleteObservation == observation # 0 =>
     /\ observation = current
@@ -184,6 +212,15 @@ StopObservationRequiresClosureAndExit == stopObservation # 0 =>
     /\ CompleteExit(stopObservation)
     /\ StopRequested(stopObservation)
     /\ stopObservation \in closedAdmission
+
+DurableExitRequiresExactClosedObservation == \A g \in durableExitReceipts :
+    /\ <<g, g>> \in bound
+    /\ g \in closedAdmission
+    /\ CompleteExit(g)
+
+EvidenceReleaseRequiresDurableExit ==
+    /\ releasedEvidence \subseteq durableExitReceipts
+    /\ releasedEvidence \intersect retained = {}
 
 \* Negative witness used by the mutation runner to reject vacuous proofs.
 NoObservedExit == observation = 0
@@ -205,5 +242,7 @@ NoPostExitStopReceipt == stopObservation = 0 \/
 Safety == TypeOK /\ ExactCompleteObservation /\ BindingMatchesAuthenticatedPod
           /\ StopRequestsAreExactAndRetained /\ AuthenticatedIncarnationIsPod
           /\ StopObservationRequiresClosureAndExit
+          /\ DurableExitRequiresExactClosedObservation
+          /\ EvidenceReleaseRequiresDurableExit
 Spec == Init /\ [][Next]_vars
 =============================================================================
