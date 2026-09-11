@@ -38,6 +38,8 @@ include!("commit_epoch.rs");
 
 include!("dispatch/delivery.rs");
 
+include!("dispatch/pending_settlement.rs");
+
 mod credential_admission;
 pub use credential_admission::{
     ClaimCredentialOperation, DispatchCredentialAdmissionError, can_admit_attempt_credentials,
