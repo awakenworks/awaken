@@ -813,7 +813,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness background_execution_admission_is_exact_fenced_live_and_phase_monotone \
     --harness cancellation_is_monotone_and_terminal_states_are_absorbing \
     --harness never_replay_recovery_requires_a_durable_remote_continuation \
-    --harness expired_background_recovery_is_exact_nonwrapping_and_never_invents_termination
+    --harness expired_reclaim_plan_advances_epoch_or_terminates
   run_kani awaken-runtime \
     --harness circuit_admission_is_capacity_bounded_nonwrapping_and_rejection_stutters \
     --harness circuit_completion_requires_exact_phase_and_generation_for_every_outcome \
