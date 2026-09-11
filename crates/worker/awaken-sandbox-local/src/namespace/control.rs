@@ -1029,7 +1029,7 @@ mod tests {
             assert!(socket.exists(), "N12 no repeated cleanup");
             drop(replacement);
             std::fs::remove_file(&socket).unwrap();
-            pc::Sandbox::dispose(&sandbox).await.unwrap();
+            sandbox.dispose().await.unwrap();
         }
     }
 
@@ -1112,7 +1112,7 @@ mod tests {
             .unwrap();
             drop(first);
             assert!(socket.exists(), "N7/E3");
-            pc::Sandbox::dispose(&sandbox).await.unwrap();
+            sandbox.dispose().await.unwrap();
             assert!(!socket.exists(), "N7/E4");
             assert!(
                 SandboxControlServicePublisher::publish_sandbox_control_service(

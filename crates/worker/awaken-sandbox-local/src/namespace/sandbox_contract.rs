@@ -2,6 +2,10 @@ use super::*;
 
 #[async_trait]
 impl pc::Sandbox for NamespaceSandbox {
+    async fn dispose_unattached(&self) -> Result<(), pc::SandboxError> {
+        self.dispose().await
+    }
+
     fn id(&self) -> &str {
         &self.id
     }
@@ -228,21 +232,6 @@ impl pc::Sandbox for NamespaceSandbox {
         Ok(())
     }
 
-    async fn dispose(&self) -> Result<(), pc::SandboxError> {
-        if self.realization.current().is_some() {
-            return Err(err(
-                "current durable sandbox disposal requires an aggregate effect fence",
-            ));
-        }
-        self.control_publication.close_for_dispose().await;
-        self.release_memory_mounts().await?;
-        self.shred_secrets()?;
-        crate::realization_marker::dispose_legacy(
-            self.root.root(),
-            self.realization.legacy_live_identity(),
-        )
-    }
-
     async fn acknowledge_memory_reconciliation(
         &self,
         effect_fence: &pc::SandboxEffectFence,
@@ -308,5 +297,25 @@ impl pc::Sandbox for NamespaceSandbox {
             self.control_publication.close_for_dispose(),
         )
         .await
+    }
+}
+
+impl NamespaceSandbox {
+    // Relocated from the Sandbox/SandboxProvider trait: the unfenced ports
+    // are no longer a trait obligation or a reachable escape hatch. They stay
+    // as this type's own implementation detail, used by its fenced edges.
+    pub async fn dispose(&self) -> Result<(), pc::SandboxError> {
+        if self.realization.current().is_some() {
+            return Err(err(
+                "current durable sandbox disposal requires an aggregate effect fence",
+            ));
+        }
+        self.control_publication.close_for_dispose().await;
+        self.release_memory_mounts().await?;
+        self.shred_secrets()?;
+        crate::realization_marker::dispose_legacy(
+            self.root.root(),
+            self.realization.legacy_live_identity(),
+        )
     }
 }

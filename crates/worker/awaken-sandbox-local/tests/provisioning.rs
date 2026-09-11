@@ -79,7 +79,7 @@ async fn provision_resource_mount_end_to_end() {
     let on_disk = base.join("e2e").join(".mnt/config/app.env");
     assert_eq!(std::fs::read_to_string(&on_disk).unwrap(), res_content);
 
-    env.dispose().await.unwrap();
+    env.dispose_unattached().await.unwrap();
 }
 
 #[tokio::test]
@@ -112,7 +112,7 @@ async fn carried_binary_resource_round_trips_to_the_sandbox_file() {
         env.realized()[0].content_hash,
         Some(content_fingerprint(&bytes))
     );
-    env.dispose().await.unwrap();
+    env.dispose_unattached().await.unwrap();
 }
 
 #[tokio::test]
@@ -170,5 +170,5 @@ async fn empty_spec_has_no_realized_mounts() {
     assert!(env.realized().is_empty());
     // The full built-in capability surface is still composed.
     assert!(!env.rooted_tools().is_empty());
-    env.dispose().await.unwrap();
+    env.dispose_unattached().await.unwrap();
 }

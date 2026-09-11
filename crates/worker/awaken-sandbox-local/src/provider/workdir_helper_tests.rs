@@ -450,7 +450,8 @@ async fn failed_creation_teardown_retains_guards_past_temporary_sandbox_drop() {
                         )
                         .await
                 } else {
-                    provider.create(&spec).await
+                    let __fx = pc::test_support::fixture_effect("fixture-create");
+                    provider.create_for_effect(&spec, &__fx.0, &__fx.1).await
                 };
                 let cause = result.err().expect("R1 later mount fails");
                 assert!(cause.to_string().contains("injected later mount failure"));

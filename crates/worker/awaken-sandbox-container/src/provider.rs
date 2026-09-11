@@ -1247,13 +1247,6 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
         self.probe_runtime_ready().await
     }
 
-    async fn create(
-        &self,
-        spec: &pc::SandboxSpec,
-    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
-        Ok(Box::new(self.create_container(spec).await?))
-    }
-
     async fn create_for_effect(
         &self,
         spec: &pc::SandboxSpec,
@@ -1290,13 +1283,6 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
             ContainerObservationPurpose::Recovery,
         )
         .await
-    }
-
-    async fn adopt(
-        &self,
-        handle: &pc::SandboxHandle,
-    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
-        Ok(Box::new(self.adopt_container(handle).await?))
     }
 
     async fn adopt_for_effect(
@@ -1355,5 +1341,23 @@ impl<R: ContainerRuntime + 'static> pc::SandboxProvider for ContainerProvider<R>
     ) -> Result<(), pc::SandboxError> {
         self.dispose_restore_target(spec, request, authorization, authority)
             .await
+    }
+}
+
+impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
+    // Relocated from the Sandbox/SandboxProvider trait: the unfenced ports
+    // are no longer a trait obligation or a reachable escape hatch. They stay
+    // as this type's own implementation detail, used by its fenced edges.
+    pub async fn create(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+        Ok(Box::new(self.create_container(spec).await?))
+    }
+    pub async fn adopt(
+        &self,
+        handle: &pc::SandboxHandle,
+    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+        Ok(Box::new(self.adopt_container(handle).await?))
     }
 }

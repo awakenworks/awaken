@@ -79,6 +79,10 @@ mod tests {
 
     #[async_trait]
     impl Sandbox for FakeSandbox {
+        async fn dispose_unattached(&self) -> Result<(), SandboxError> {
+            self.dispose().await
+        }
+
         fn id(&self) -> &str {
             &self.id
         }
@@ -114,6 +118,21 @@ mod tests {
             self.renews.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
+
+        async fn dispose_for_effect(
+            &self,
+            authorization: &crate::SandboxDisposalAuthorization,
+            authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<(), SandboxError> {
+            crate::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))?;
+            self.dispose().await
+        }
+    }
+
+    impl FakeSandbox {
+        // Relocated from the Sandbox/SandboxProvider trait: the unfenced ports
+        // are no longer a trait obligation or a reachable escape hatch. They stay
+        // as this type's own implementation detail, used by its fenced edges.
         async fn dispose(&self) -> Result<(), SandboxError> {
             Ok(())
         }
@@ -141,6 +160,32 @@ mod tests {
                 control_services: Default::default(),
             }
         }
+
+        async fn create_for_effect(
+            &self,
+            spec: &SandboxSpec,
+            effect_fence: &crate::SandboxEffectFence,
+            authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<Box<dyn Sandbox>, SandboxError> {
+            crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+            self.create(spec).await
+        }
+        async fn adopt_for_effect(
+            &self,
+            _spec: &SandboxSpec,
+            handle: &SandboxHandle,
+            effect_fence: &crate::SandboxEffectFence,
+            authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<Box<dyn Sandbox>, SandboxError> {
+            crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+            self.adopt(handle).await
+        }
+    }
+
+    impl FakeProvider {
+        // Relocated from the Sandbox/SandboxProvider trait: the unfenced ports
+        // are no longer a trait obligation or a reachable escape hatch. They stay
+        // as this type's own implementation detail, used by its fenced edges.
         async fn create(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
             Ok(Box::new(FakeSandbox {
                 id: spec.scope.clone(),
@@ -371,6 +416,32 @@ mod tests {
                 Err(SandboxError::new("backend not ready"))
             }
         }
+
+        async fn create_for_effect(
+            &self,
+            spec: &SandboxSpec,
+            effect_fence: &crate::SandboxEffectFence,
+            authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<Box<dyn Sandbox>, SandboxError> {
+            crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+            self.create(spec).await
+        }
+        async fn adopt_for_effect(
+            &self,
+            _spec: &SandboxSpec,
+            handle: &SandboxHandle,
+            effect_fence: &crate::SandboxEffectFence,
+            authority: &dyn crate::CurrentExecutionAuthority,
+        ) -> Result<Box<dyn Sandbox>, SandboxError> {
+            crate::with_current_sandbox_effect(effect_fence, authority, || Ok(()))?;
+            self.adopt(handle).await
+        }
+    }
+
+    impl ProbeProvider {
+        // Relocated from the Sandbox/SandboxProvider trait: the unfenced ports
+        // are no longer a trait obligation or a reachable escape hatch. They stay
+        // as this type's own implementation detail, used by its fenced edges.
         async fn create(&self, spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
             Ok(Box::new(FakeSandbox {
                 id: spec.scope.clone(),
@@ -742,15 +813,26 @@ mod tests {
             renews: renews.clone(),
         });
 
-        // Create, then persist the durable handle (as a host would to its store).
-        let sandbox = provider.create(&spec()).await.unwrap();
+        // Create through the fenced edge: it is the provider's only creation
+        // obligation now, so the fixture exercises the same port a durable
+        // Session uses rather than an unfenced shortcut that no longer exists.
+        let fence = crate::SandboxEffectFence::new("op-1", "owner-1", "runtime-1", 1, u64::MAX)
+            .expect("fixture effect fence");
+        let authority = crate::test_support::EffectAuthority::new(&fence);
+        let sandbox = provider
+            .create_for_effect(&spec(), &fence, &authority)
+            .await
+            .unwrap();
         let handle = sandbox.handle();
         let wire = serde_json::to_string(&handle).unwrap(); // handle is serializable
         drop(sandbox); // simulate the owning host process going away
 
         // Recovery: reconnect from the persisted handle alone.
         let recovered: SandboxHandle = serde_json::from_str(&wire).unwrap();
-        let sandbox = provider.adopt(&recovered).await.unwrap();
+        let sandbox = provider
+            .adopt_for_effect(&spec(), &recovered, &fence, &authority)
+            .await
+            .unwrap();
         assert_eq!(sandbox.id(), "thread-1");
         assert!(matches!(
             sandbox.status().await.unwrap(),
@@ -771,7 +853,25 @@ mod tests {
 
         sandbox.renew_lease().await.unwrap();
         assert_eq!(renews.load(Ordering::SeqCst), 1);
-        sandbox.dispose().await.unwrap();
+        // Teardown goes through the prepared/authorized pair, the only disposal
+        // obligation a Sandbox now carries. The generic unfenced `dispose` port
+        // was removed because it drove a destructive effect with no admission.
+        let preparation =
+            crate::SandboxDisposalPreparation::new(fence.clone(), "fixture-prepared").unwrap();
+        let disposal_fence = crate::SandboxEffectFence::new(
+            preparation.operation_id().unwrap(),
+            "owner-1",
+            "runtime-1",
+            1,
+            u64::MAX,
+        )
+        .unwrap();
+        let disposal = preparation.authorize(disposal_fence.clone()).unwrap();
+        let disposal_authority = crate::test_support::EffectAuthority::new(&disposal_fence);
+        sandbox
+            .dispose_for_effect(&disposal, &disposal_authority)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

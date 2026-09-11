@@ -1594,6 +1594,10 @@ impl ContainerCleanupState {
 
 #[async_trait]
 impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
+    async fn dispose_unattached(&self) -> Result<(), pc::SandboxError> {
+        self.dispose().await
+    }
+
     fn id(&self) -> &str {
         &self.id
     }
@@ -1745,17 +1749,6 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         )
     }
 
-    async fn dispose(&self) -> Result<(), pc::SandboxError> {
-        self.prepare_disposal(None, || Ok(())).await?;
-        self.lifecycle
-            .dispose_once(
-                self.runtime.as_ref(),
-                &self.container_id,
-                self.runtime_handle.as_ref(),
-            )
-            .await
-    }
-
     async fn prepare_disposal_for_effect(
         &self,
         effect_fence: &pc::SandboxEffectFence,
@@ -1830,6 +1823,22 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         expectation.retained_attempt = self.retained_attempt.as_ref();
         self.lifecycle
             .dispose_once_for_effect(self.runtime.as_ref(), expectation, authorization, authority)
+            .await
+    }
+}
+
+impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
+    // Relocated from the Sandbox/SandboxProvider trait: the unfenced ports
+    // are no longer a trait obligation or a reachable escape hatch. They stay
+    // as this type's own implementation detail, used by its fenced edges.
+    pub async fn dispose(&self) -> Result<(), pc::SandboxError> {
+        self.prepare_disposal(None, || Ok(())).await?;
+        self.lifecycle
+            .dispose_once(
+                self.runtime.as_ref(),
+                &self.container_id,
+                self.runtime_handle.as_ref(),
+            )
             .await
     }
 }

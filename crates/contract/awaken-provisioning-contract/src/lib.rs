@@ -53,8 +53,8 @@ pub use execution_policy::{
 };
 pub use lease::{
     AdoptionPlan, LeaseAction, LeaseFenceCause, LeaseGrant, LeaseLiveness, LeaseTimingError,
-    LeaseTimingPolicy, LivenessSignals, ReconcileOutcome, apply_adoption_plan, capped_expiry,
-    decide_lease_action, egress_permitted, reconcile_adoption, reconcile_and_apply,
+    LeaseTimingPolicy, LivenessSignals, capped_expiry, decide_lease_action, egress_permitted,
+    reconcile_adoption,
 };
 pub use prepare::{
     EnvironmentPlan, PrepareError, prepare_environment, prepare_trusted_host_environment,
