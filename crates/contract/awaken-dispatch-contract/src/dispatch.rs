@@ -1323,6 +1323,21 @@ mod tests {
             };
             let request = request_with_candidates(primary, fallbacks, requested_holder);
             let mut installed = capabilities(&selected_holder, realization);
+            // C5 for an ACP Workload covers the last-mile mechanism as well: the
+            // installed evidence must advertise the exact delivery extension for
+            // this backend, or no realization exists to admit.
+            if matches!(rule.fixture, BindingFixture::AcpWorkload) {
+                installed.extension_consumers.insert(
+                    format!(
+                        "{}{backend}",
+                        awaken_runtime_contract::credential::ACP_CREDENTIAL_CONSUMER_PREFIX
+                    ),
+                    BTreeSet::from([
+                        awaken_runtime_contract::credential::PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE
+                            .to_string(),
+                    ]),
+                );
+            }
             if matches!(rule.fixture, BindingFixture::HolderUnsupported) {
                 installed.holders.clear();
             }
