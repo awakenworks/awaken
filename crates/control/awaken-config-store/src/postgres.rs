@@ -305,7 +305,7 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         audit: &ManagementAuditRecord,
         effect: Option<&ManagementEffect>,
     ) -> Result<AuditedConfigWrite, ConfigStoreError> {
-        let audit_key = &audit.call_id;
+        let (audit_tool, audit_key) = audit.identity();
         let mut tx = self.pool.begin().await.map_err(reject)?;
         lock_config_revision(&mut tx, scope, &config.id).await?;
         let existing = sqlx::query(&format!(
@@ -314,7 +314,7 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         ))
         .bind(&scope.0)
         .bind(audit_key)
-        .bind(&audit.tool)
+        .bind(audit_tool)
         .fetch_optional(&mut *tx)
         .await
         .map_err(reject)?;
@@ -415,7 +415,7 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         ))
         .bind(&scope.0)
         .bind(audit_key)
-        .bind(&audit.tool)
+        .bind(audit_tool)
         .execute(&mut *tx)
         .await
         .map_err(reject)?;
@@ -494,14 +494,14 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         scope: &ScopeId,
         audit: &ManagementAuditRecord,
     ) -> Result<AuditedConfigWrite, ConfigStoreError> {
-        let audit_key = &audit.call_id;
+        let (audit_tool, audit_key) = audit.identity();
         let inserted = sqlx::query(&format!(
             "INSERT INTO {NS}_management_audit (scope_id, call_id, tool, record) VALUES ($1, $2, $3, $4) \
              ON CONFLICT (scope_id, tool, call_id) DO NOTHING RETURNING call_id"
         ))
         .bind(&scope.0)
         .bind(audit_key)
-        .bind(&audit.tool)
+        .bind(audit_tool)
         .bind(Json(audit))
         .fetch_optional(&self.pool)
         .await
@@ -514,7 +514,7 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         ))
         .bind(&scope.0)
         .bind(audit_key)
-        .bind(&audit.tool)
+        .bind(audit_tool)
         .fetch_one(&self.pool)
         .await
         .map_err(reject)?;

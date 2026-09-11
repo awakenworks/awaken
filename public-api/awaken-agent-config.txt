@@ -209,6 +209,8 @@ pub awaken_agent_config::ManagementAuditRecord::summary: alloc::string::String
 pub awaken_agent_config::ManagementAuditRecord::tool: alloc::string::String
 impl awaken_agent_config::ManagementAuditRecord
 pub fn awaken_agent_config::ManagementAuditRecord::admit_write(&self, core::option::Option<(&Self, i64)>) -> core::result::Result<awaken_agent_config::ManagementAuditAdmission, awaken_agent_config::ConfigStoreError>
+pub fn awaken_agent_config::ManagementAuditRecord::identity(&self) -> (&str, &str)
+pub fn awaken_agent_config::ManagementAuditRecord::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_agent_config::ManagementEffectReceipt
 impl awaken_agent_config::ManagementEffectReceipt
 pub fn awaken_agent_config::ManagementEffectReceipt::effect(&self) -> &awaken_agent_config::ManagementEffect
