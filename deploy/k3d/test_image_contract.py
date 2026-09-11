@@ -164,11 +164,11 @@ def main() -> None:
     ).read_text()
     assert 'if [[ "${engine##*/}" == "docker" ]]' in sandbox_build
     assert (
-        'run_with_deadline "$build_timeout_seconds" "$engine" build --load "$@"'
+        'run_with_deadline "$build_timeout_seconds" "$engine" build --load --platform linux/amd64 "$@"'
         in sandbox_build
     )
     assert (
-        'run_with_deadline "$build_timeout_seconds" "$engine" build "$@"'
+        'run_with_deadline "$build_timeout_seconds" "$engine" build --platform linux/amd64 "$@"'
         in sandbox_build
     )
     assert sandbox_build.count("  build_image ") == 2
@@ -181,6 +181,31 @@ def main() -> None:
     # fingerprint and rebuild behavior belong solely to the executable
     # e2e/fixtures/sandbox_image.test.mjs contract, not this static image test.
     sandbox = Path(__file__).parent.parent / "images" / "sandbox"
+    sandbox_dockerfile = (sandbox / "Dockerfile").read_text()
+    # The public Managed Agents foundation is one immutable, observable contract:
+    # Ubuntu 24.04/amd64 with Node 22, Go 1.24, and Ruby 3.3 as defaults. Build
+    # and reuse admission must test that same projection, while every external
+    # base is digest pinned.
+    assert "FROM docker.io/library/ubuntu:24.04@sha256:" in sandbox_dockerfile
+    assert "FROM docker.io/library/node:22-trixie-slim@sha256:" in sandbox_dockerfile
+    assert "FROM docker.io/library/golang:1.24-bookworm@sha256:" in sandbox_dockerfile
+    assert "FROM docker.io/library/ruby:3.3-bookworm@sha256:" in sandbox_dockerfile
+    assert "ARG RUST_TOOLCHAIN_IMAGE=docker.io/library/rust:1.96-bookworm@sha256:" in sandbox_dockerfile
+    assert "FROM ${RUST_TOOLCHAIN_IMAGE} AS rust-toolchain" in sandbox_dockerfile
+    assert sandbox_dockerfile.count("@sha256:") == 5
+    assert 'org.awaken.managed-agents-base-contract="ubuntu-24.04-amd64-v1"' in sandbox_dockerfile
+    assert 'org.awaken.sandbox-role-contract="2"' in sandbox_dockerfile
+    assert "build --load --platform linux/amd64" in sandbox_build
+    assert "build --platform linux/amd64" in sandbox_build
+    assert "accept_managed_agents_base" in sandbox_build
+    for role in (
+        "control-forwarder",
+        "control-forwarder-ready",
+        "repository-publish-noreplace",
+        "read-tree-nofollow",
+        "repository-effect",
+    ):
+        assert role in sandbox_build
     assert "--example image_runtime_contract" in sandbox_build
     assert not (sandbox / "acp-runtimes.json").exists()
     runtime_profiles = (

@@ -8,9 +8,10 @@ import {startCalcFixture} from './mcp_calc_fixture.mjs';
 import {assertContainerFixtureReachable, ensureCanonicalSandboxImage} from './sandbox_image.mjs';
 
 test('canonical image admission verifies selected ACP runtimes on reuse and after build', async () => {
-  // Causes: C1=image exists; C2=environment label; C3=Hand contracts;
-  // C4=quality tools; C5=selected runtime negotiates; C6=current inputs match;
-  // C7=build repairs C1-C6.
+  // Causes: C1=image exists; C2=all base/role contract labels; C3=documented
+  // Ubuntu/amd64/user/workdir/default-runtime foundation; C4=complete
+  // Hand/helper roles; C5=quality tools; C6=selected runtime negotiates;
+  // C7=current inputs match; C8=build repairs C1-C7.
   // Rules: I1 all required checks pass => no build; I2 any required check
   // fails + C6 => build once and recheck; I3 !C5+!C6 => reject even after
   // build. Empty selection requires no ACP; Claude requires a real handshake.
@@ -49,7 +50,10 @@ if(args[0]==='image'){
  if(args.includes('--format')){
   const format=args[args.indexOf('--format')+1];
   if(format.includes('build-input-fingerprint'))console.log(!repaired&&mode==='current'?'0'.repeat(64):process.env.ADMISSION_FINGERPRINT);
-  else console.log(!repaired&&mode==='label'?'old':'2');
+  else if(!repaired&&mode==='label')console.log('old');
+  else if(format.includes('environment-packages'))console.log('3');
+  else if(format.includes('managed-agents-base-contract'))console.log('ubuntu-24.04-amd64-v1');
+  else if(format.includes('sandbox-role-contract'))console.log('2');
  }
 }else if(args.includes('sha256sum')){
  const target=args.at(-1),bytes=target.includes('acp-runtimes')?Buffer.from('{}\\n'):fs.readFileSync(process.env.ADMISSION_BINARY);
@@ -57,7 +61,11 @@ if(args[0]==='image'){
  console.log(digest+'  '+target);
 }else if(args.includes('/usr/local/bin/awaken-verify-acp-runtimes')){
  if(mode==='unrepairable'||(!repaired&&mode==='runtime'))process.exit(1);
-}else if(!repaired&&((mode==='hand'&&args.includes('hand'))||(mode==='publish'&&args.includes('repository-publish-noreplace'))||(mode==='reader'&&args.includes('read-tree-nofollow'))||(mode==='tools'&&args.includes('/bin/sh'))))process.exit(1);
+}else if(args.includes('definitely-not-a-role')){
+ const roles=['acp','hand','git-credential','control-forwarder-ready','repository-publish-noreplace','read-tree-nofollow','channel-listen','channel-connect','scoped-exec','repository-effect'];
+ if(repaired||mode!=='roles')roles.push('control-forwarder');
+ console.error('unknown role (expected: '+roles.join(' | ')+')');process.exit(1);
+}else if(!repaired&&((mode==='base'&&args.includes('/bin/sh'))||(mode==='hand'&&args.includes('hand'))||(mode==='publish'&&args.includes('repository-publish-noreplace'))||(mode==='reader'&&args.includes('read-tree-nofollow'))||(mode==='tools'&&args.includes('/bin/sh'))))process.exit(1);
 `, { mode:0o755 });
     Object.assign(process.env, { PATH:bin + path.delimiter + previous.PATH,
       ADMISSION_CALLS:calls, ADMISSION_STATE:state, ADMISSION_BINARY:executable, ADMISSION_CACHE:path.join(root, 'cache'),
@@ -68,12 +76,14 @@ if(args[0]==='image'){
     const inputHashes = await Promise.all(staticInputs.map(name => fs.readFile(path.join(root, 'deploy/images/sandbox', name)).then(hash)));
     inputHashes.push(hash(await fs.readFile(executable)), hash(Buffer.from('{}\n')));
     for (const [runtimeIds, mode] of [['','ok'], ['claude','ok'], ['all','ok'], ['claude,codex','ok'], ['', 'runtime'], ['', 'current'],
-      ...['absent','label','hand','publish','reader','tools','runtime','unrepairable'].map(mode=>['claude', mode])]) {
+      ...['absent','label','base','roles','hand','publish','reader','tools','runtime','unrepairable'].map(mode=>['claude', mode])]) {
       await fs.writeFile(calls, ''); await fs.rm(state, { force:true });
       process.env.ADMISSION_MODE = mode;
       process.env.ADMISSION_FINGERPRINT = hash(Buffer.from(`runtime_ids=${runtimeIds}\n${inputHashes.join('\n')}\n`));
       const run = () => ensureCanonicalSandboxImage({engine:'docker',image:'exact-fixture',repoRoot:root,runtimeIds});
-      if (mode === 'unrepairable') assert.throws(run); else run();
+      if (mode === 'unrepairable') assert.throws(run); else {
+        try { run(); } catch (error) { error.message = `${runtimeIds}/${mode}: ${error.message}`; throw error; }
+      }
       const commands = (await fs.readFile(calls,'utf8')).trim().split('\n').map(JSON.parse);
       const mustBuild = mode !== 'ok' && !(runtimeIds === '' && mode === 'runtime');
       const builds = commands.filter(args=>args[0] === 'build');

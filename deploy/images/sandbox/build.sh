@@ -124,7 +124,7 @@ runtime_ids=${2-all}
 engine=${CONTAINER_ENGINE:-docker}
 build_timeout_seconds=${AWAKEN_SANDBOX_BUILD_TIMEOUT_SECONDS:-1800}
 operation_timeout_seconds=${AWAKEN_SANDBOX_OPERATION_TIMEOUT_SECONDS:-60}
-rust_toolchain_image=${AWAKEN_SANDBOX_RUST_TOOLCHAIN_IMAGE:-docker.io/library/rust:1.96-bookworm}
+rust_toolchain_image=${AWAKEN_SANDBOX_RUST_TOOLCHAIN_IMAGE:-docker.io/library/rust:1.96-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663}
 [[ $build_timeout_seconds =~ ^[1-9][0-9]*$ ]] || {
   echo "AWAKEN_SANDBOX_BUILD_TIMEOUT_SECONDS must be a positive integer" >&2
   exit 2
@@ -147,9 +147,9 @@ configure_release_image_labels
 # never a stale local tag or an unavailable BuildKit-only result.
 build_image() {
   if [[ "${engine##*/}" == "docker" ]]; then
-    run_with_deadline "$build_timeout_seconds" "$engine" build --load "$@"
+    run_with_deadline "$build_timeout_seconds" "$engine" build --load --platform linux/amd64 "$@"
   else
-    run_with_deadline "$build_timeout_seconds" "$engine" build "$@"
+    run_with_deadline "$build_timeout_seconds" "$engine" build --platform linux/amd64 "$@"
   fi
 }
 
@@ -183,7 +183,27 @@ accept_hand() {
     repository-publish-noreplace --check || return 1
   run_with_deadline "$operation_timeout_seconds" \
     "$engine" run --rm --entrypoint /usr/local/bin/awaken-sandbox "$image" \
-    read-tree-nofollow --check
+    read-tree-nofollow --check || return 1
+
+  # A Hand-capable image is also the source of every Pod-local helper role.
+  # Probe the closed role vocabulary so an older image cannot pass `--ensure-hand`
+  # and then fail only after a control-forwarder sidecar has been scheduled.
+  local role_output role_status=0
+  role_output=$(run_with_deadline "$operation_timeout_seconds" \
+    "$engine" run --rm --entrypoint /usr/local/bin/awaken-sandbox "$image" \
+    definitely-not-a-role 2>&1) || role_status=$?
+  [[ $role_status -ne 0 ]] || return 1
+  for role in acp hand git-credential control-forwarder control-forwarder-ready \
+    repository-publish-noreplace read-tree-nofollow channel-listen channel-connect \
+    scoped-exec repository-effect; do
+    grep -Eq "(^|[ |(])${role}([ |)]|$)" <<<"$role_output" || return 1
+  done
+}
+
+accept_managed_agents_base() {
+  run_with_deadline "$operation_timeout_seconds" \
+    "$engine" run --rm --entrypoint /bin/sh "$image" -c \
+    '. /etc/os-release && test "$ID" = ubuntu && test "$VERSION_ID" = 24.04 && test "$(uname -m)" = x86_64 && test "$(id -u)" = 10001 && test "$HOME" = /home/agent && test "$PWD" = /workspace && test "$(node -p '\''process.versions.node.split(`.`)[0]'\'')" = 22 && test "$(go env GOVERSION | cut -d. -f1-2)" = go1.24 && test "$(ruby -e '\''print RUBY_VERSION.split(`.`)[0,2].join(`.`)'\'')" = 3.3'
 }
 
 image_exists() {
@@ -205,7 +225,10 @@ accept_runtimes() {
 }
 
 accept_image() {
-  [[ $($engine image inspect --format '{{index .Config.Labels "org.awaken.environment-packages"}}' "$image" 2>/dev/null) == 2 ]] || return 1
+  [[ $($engine image inspect --format '{{index .Config.Labels "org.awaken.environment-packages"}}' "$image" 2>/dev/null) == 3 ]] || return 1
+  [[ $($engine image inspect --format '{{index .Config.Labels "org.awaken.managed-agents-base-contract"}}' "$image" 2>/dev/null) == ubuntu-24.04-amd64-v1 ]] || return 1
+  [[ $($engine image inspect --format '{{index .Config.Labels "org.awaken.sandbox-role-contract"}}' "$image" 2>/dev/null) == 2 ]] || return 1
+  accept_managed_agents_base || return 1
   accept_hand || return 1
   run_with_deadline "$operation_timeout_seconds" \
     "$engine" run --rm --entrypoint /bin/sh "$image" -c \

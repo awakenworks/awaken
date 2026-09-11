@@ -579,7 +579,7 @@ if [[ "$scenario" == config_failure ]]; then
 fi
 config_revision="{revision}"
 [[ "$scenario" != drift ]] || config_revision="{'c' * 40}"
-printf '{{"org.opencontainers.image.revision":"%s","org.opencontainers.image.source":"https://github.com/awakenworks/awaken","org.opencontainers.image.version":"v1.2.3"}}\\n' "$config_revision"
+printf '{{"org.awaken.environment-packages":"3","org.awaken.managed-agents-base-contract":"ubuntu-24.04-amd64-v1","org.awaken.sandbox-role-contract":"2","org.opencontainers.image.revision":"%s","org.opencontainers.image.source":"https://github.com/awakenworks/awaken","org.opencontainers.image.version":"v1.2.3"}}\\n' "$config_revision"
 """
     cases = (
         ("exact_present", "present", 0),
