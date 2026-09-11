@@ -237,15 +237,17 @@ fn cancellation_preserves_unknown_outcomes_and_rejected_finishes_are_atomic() {
 
 #[test]
 fn reclaim_boundary_decision_table_preserves_rejection_and_uncertainty() {
-    // Cause graph: phase/handle/recovery determine safe recovery; expiry gates
-    // ownership transfer; budget determines acquire/end; clock and revision
-    // capacity gate mutation. R1 invalid lease -> InvalidClaim; R2 clock
-    // overflow -> ClockOverflow; R3 not expired -> Busy; R4 revision exhausted
-    // -> RevisionOverflow; R5 unsafe recovery or remote budget exhaustion ->
-    // Indeterminate; R6 local budget exhaustion -> Failed; R7 otherwise acquire
-    // exact epoch+1 with unchanged phase/handle/policy. Every R1-R4 is a full
-    // aggregate stutter. Cross semantic classes and numeric boundary values;
-    // exhaustive numeric coverage belongs to Kani, not this finite matrix.
+    // Cause/effect decision table: phase/handle/recovery determine safe
+    // recovery; expiry gates ownership transfer; budget determines acquire/end;
+    // candidate clock and revision capacity gate mutation. R1 invalid lease ->
+    // InvalidClaim; R2 clock overflow -> ClockOverflow; R3 Requested/Ended ->
+    // InvalidTransition/Terminal; R4 live but not expired -> Busy; R5 admitted
+    // revision exhausted -> RevisionOverflow; R6 unsafe recovery or exhausted
+    // remote observation -> Indeterminate; R7 exhausted replayable local ->
+    // Failed; R8 otherwise acquire exact epoch+1 with unchanged phase/handle/
+    // policy. Every R1-R5 is a complete aggregate stutter; every R6-R8 applies
+    // exactly one production reclaim plan. This finite matrix crosses semantic
+    // classes and boundaries; the paired Kani harness exhausts scalar domains.
     for phase in 0..3 {
         for remote in [false, true] {
             if phase == 0 && remote {
@@ -311,7 +313,7 @@ fn reclaim_boundary_decision_table_preserves_rejection_and_uncertainty() {
                                 None
                             };
                             if let Some(error) = error {
-                                assert_eq!(result, Err(error), "R1-R4");
+                                assert_eq!(result, Err(error), "R1/R2/R4/R5");
                                 assert_eq!(task, before, "rejected mutation is inert");
                             } else {
                                 assert_eq!(task.revision, revision + 1);
@@ -320,7 +322,7 @@ fn reclaim_boundary_decision_table_preserves_rejection_and_uncertainty() {
                                     && (mode == ToolRecoveryMode::NeverReplay || phase == 2))
                                     || (remote && epoch >= 2)
                                 {
-                                    assert_eq!(result, Ok(TaskClaim::EndedIndeterminate), "R5");
+                                    assert_eq!(result, Ok(TaskClaim::EndedIndeterminate), "R6");
                                     assert!(matches!(
                                         task.lifecycle,
                                         BackgroundTaskLifecycle::Ended {
@@ -328,7 +330,7 @@ fn reclaim_boundary_decision_table_preserves_rejection_and_uncertainty() {
                                         }
                                     ));
                                 } else if epoch >= 2 {
-                                    assert_eq!(result, Ok(TaskClaim::EndedAttemptsExhausted), "R6");
+                                    assert_eq!(result, Ok(TaskClaim::EndedAttemptsExhausted), "R7");
                                     assert!(matches!(
                                         task.lifecycle,
                                         BackgroundTaskLifecycle::Ended {
@@ -342,7 +344,7 @@ fn reclaim_boundary_decision_table_preserves_rejection_and_uncertainty() {
                                             worker_id: "b".into(),
                                             epoch: epoch + 1
                                         })),
-                                        "R7"
+                                        "R8"
                                     );
                                     let mut expected = before;
                                     expected.revision += 1;
@@ -365,6 +367,26 @@ fn reclaim_boundary_decision_table_preserves_rejection_and_uncertainty() {
             }
         }
     }
+
+    let mut requested = task();
+    let before = requested.clone();
+    assert_eq!(
+        requested.reclaim("replacement", 10, 10),
+        Err(BackgroundTaskError::InvalidTransition),
+        "R3 Requested"
+    );
+    assert_eq!(requested, before, "R3 Requested stutter");
+
+    let mut ended = task();
+    let fence = ended.start("worker", 0, 10, replay_policy()).unwrap();
+    ended.finish(&fence, BackgroundTaskEnd::Cancelled).unwrap();
+    let before = ended.clone();
+    assert_eq!(
+        ended.reclaim("replacement", 10, 10),
+        Err(BackgroundTaskError::Terminal),
+        "R3 Ended"
+    );
+    assert_eq!(ended, before, "R3 Ended stutter");
 }
 
 #[test]
