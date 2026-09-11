@@ -1343,6 +1343,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-resource-contract",
  "awaken-runtime-contract",
  "schemars 1.2.1",
  "serde",

@@ -1208,6 +1208,7 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
         vec![pc::MemoryMaterializationHead {
             path: "value".into(),
             id: "head".into(),
+            version: 1,
             content_sha256: "digest".into(),
         }],
     )
@@ -1325,6 +1326,7 @@ async fn terminal_memory_reconstruction_accepts_only_exact_copy_evidence() {
         vec![pc::MemoryMaterializationHead {
             path: "value".into(),
             id: "head".into(),
+            version: 1,
             content_sha256: "different".into(),
         }],
     )

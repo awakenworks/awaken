@@ -55,43 +55,35 @@ impl PlatformMemoryHandle {
         &self,
         path: &str,
         content: &str,
-        expected_sha256: Option<&str>,
+        expected_generation: Option<&awaken_resource_contract::MemoryGeneration>,
     ) -> Result<awaken_resource_contract::Memory, String> {
         if !self.writable {
             return Err("memory store binding is read-only".into());
         }
-        match expected_sha256 {
+        match expected_generation {
             None => self
                 .fs
                 .create(&self.store_id, path, content)
                 .await
                 .map_err(|error| error.to_string()),
-            Some(expected) => {
-                let current = self
-                    .fs
-                    .get_by_path(&self.store_id, path)
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| format!("memory not found: {path}"))?;
-                self.fs
-                    .update(&self.store_id, &current.id, content, expected)
-                    .await
-                    .map_err(|error| error.to_string())
-            }
+            Some(expected) => self
+                .fs
+                .update_materialized(&self.store_id, path, expected, content)
+                .await
+                .map_err(|error| error.to_string()),
         }
     }
 
     pub(crate) async fn delete_exact(
         &self,
         path: &str,
-        expected_id: &str,
-        expected_sha256: &str,
+        expected_generation: &awaken_resource_contract::MemoryGeneration,
     ) -> Result<bool, String> {
         if !self.writable {
             return Err("memory store binding is read-only".into());
         }
         self.fs
-            .delete_if_match(&self.store_id, path, expected_id, expected_sha256)
+            .delete_if_match(&self.store_id, path, expected_generation)
             .await
             .map_err(|error| error.to_string())
     }
@@ -111,7 +103,7 @@ impl PlatformMemoryHandle {
                 path,
                 target_sha256: awaken_resource_contract::memory_sha256_hex(&content),
                 content,
-                observed_sha256: current.map(|memory| memory.content_sha256),
+                observed_generation: current.map(|memory| memory.generation()),
             });
         }
         Ok(mutations)
@@ -139,16 +131,21 @@ impl PlatformMemoryHandle {
                 already_applied: true,
             });
         }
-        match (current, mutation.observed_sha256.as_deref()) {
+        match (current, mutation.observed_generation.as_ref()) {
             (None, None) => {
                 self.fs
                     .create(&self.store_id, &mutation.path, &mutation.content)
                     .await
                     .map_err(|error| error.to_string())?;
             }
-            (Some(current), Some(expected)) if current.content_sha256 == expected => {
+            (Some(current), Some(expected)) if current.generation() == *expected => {
                 self.fs
-                    .update(&self.store_id, &current.id, &mutation.content, expected)
+                    .update_materialized(
+                        &self.store_id,
+                        &mutation.path,
+                        expected,
+                        &mutation.content,
+                    )
                     .await
                     .map_err(|error| error.to_string())?;
             }
@@ -182,12 +179,7 @@ impl MemoryStoreHandle for PlatformMemoryHandle {
         {
             Some(current) => self
                 .fs
-                .update(
-                    &self.store_id,
-                    &current.id,
-                    content,
-                    &current.content_sha256,
-                )
+                .update(&self.store_id, &current.generation(), content)
                 .await
                 .map_err(|error| error.to_string())?,
             None => self

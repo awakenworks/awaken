@@ -5,6 +5,7 @@ pub use awaken_memory_store::MemErr
 pub use awaken_memory_store::Memory
 pub use awaken_memory_store::MemoryActor
 pub use awaken_memory_store::MemoryEntry
+pub use awaken_memory_store::MemoryGeneration
 pub use awaken_memory_store::MemoryPurgeSummary
 pub use awaken_memory_store::MemoryRepository
 pub use awaken_memory_store::MemoryVersion
@@ -19,6 +20,7 @@ pub use awaken_memory_store::repository::MemErr
 pub use awaken_memory_store::repository::Memory
 pub use awaken_memory_store::repository::MemoryActor
 pub use awaken_memory_store::repository::MemoryEntry
+pub use awaken_memory_store::repository::MemoryGeneration
 pub use awaken_memory_store::repository::MemoryPurgeSummary
 pub use awaken_memory_store::repository::MemoryRepository
 pub use awaken_memory_store::repository::MemoryVersion

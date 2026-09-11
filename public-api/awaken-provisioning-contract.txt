@@ -348,6 +348,9 @@ pub struct awaken_provisioning_contract::MemoryMaterializationHead
 pub awaken_provisioning_contract::MemoryMaterializationHead::content_sha256: alloc::string::String
 pub awaken_provisioning_contract::MemoryMaterializationHead::id: alloc::string::String
 pub awaken_provisioning_contract::MemoryMaterializationHead::path: alloc::string::String
+pub awaken_provisioning_contract::MemoryMaterializationHead::version: u64
+impl awaken_provisioning_contract::MemoryMaterializationHead
+pub fn awaken_provisioning_contract::MemoryMaterializationHead::generation(&self) -> awaken_resource_contract::MemoryGeneration
 pub struct awaken_provisioning_contract::MemoryReconciliationAck
 impl awaken_provisioning_contract::MemoryReconciliationAck
 pub fn awaken_provisioning_contract::MemoryReconciliationAck::acknowledge(&self, &awaken_provisioning_contract::SandboxEffectFence, &dyn awaken_provisioning_contract::CurrentExecutionAuthority, &[awaken_provisioning_contract::MemoryMaterializationEvidence], &[awaken_provisioning_contract::MemoryMaterializationEvidence], impl core::ops::function::FnOnce() -> core::result::Result<(), awaken_provisioning_contract::SandboxError>) -> core::result::Result<(), awaken_provisioning_contract::SandboxError>

@@ -222,7 +222,19 @@ impl MemoryMountOutcome {
 pub struct MemoryMaterializationHead {
     pub path: String,
     pub id: String,
+    pub version: u64,
     pub content_sha256: String,
+}
+
+impl MemoryMaterializationHead {
+    #[must_use]
+    pub fn generation(&self) -> awaken_resource_contract::MemoryGeneration {
+        awaken_resource_contract::MemoryGeneration {
+            memory_id: self.id.clone(),
+            version: self.version,
+            content_sha256: self.content_sha256.clone(),
+        }
+    }
 }
 
 /// Provider-neutral evidence for one copy-backed Memory mount. The logical
@@ -280,6 +292,7 @@ impl MemoryMaterializationEvidence {
         for head in &self.heads {
             if head.path.trim().is_empty()
                 || head.id.trim().is_empty()
+                || head.version == 0
                 || head.content_sha256.trim().is_empty()
                 || previous_path.is_some_and(|previous| previous >= head.path.as_str())
             {

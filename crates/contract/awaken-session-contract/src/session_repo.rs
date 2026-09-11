@@ -352,6 +352,7 @@ mod mutation_tests {
             vec![awaken_provisioning_contract::MemoryMaterializationHead {
                 path: "/note.md".into(),
                 id: "memory-note".into(),
+                version: 1,
                 content_sha256: "sha-a".into(),
             }],
         )
@@ -457,6 +458,7 @@ mod mutation_tests {
             vec![awaken_provisioning_contract::MemoryMaterializationHead {
                 path: "/note.md".into(),
                 id: "memory-note".into(),
+                version: 1,
                 content_sha256: "sha-not-a".into(),
             }],
         )

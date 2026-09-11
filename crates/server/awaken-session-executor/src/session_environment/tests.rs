@@ -2780,6 +2780,7 @@ impl pc::MemoryMount for RestartMemoryMount {
             vec![pc::MemoryMaterializationHead {
                 path: "value.txt".into(),
                 id: "head".into(),
+                version: 1,
                 content_sha256: "digest".into(),
             }]
         })

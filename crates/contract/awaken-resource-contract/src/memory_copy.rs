@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 #[serde(deny_unknown_fields)]
 pub struct MemoryCopyBase {
     pub id: String,
+    pub version: u64,
     pub content_sha256: String,
 }
 
@@ -27,12 +28,24 @@ impl MemoryCopyConflict {
     /// (which may contain user content) as an error or telemetry field.
     pub fn id(&self) -> String {
         let mut hash = Sha256::new();
-        hash.update(b"awaken-memory-copy-conflict-v1");
+        hash.update(b"awaken-memory-copy-conflict-v2");
         // Presence tags distinguish absent base/deletion from empty content;
         // length framing prevents ambiguous concatenation of user strings.
         for field in [
             Some(self.path.as_str()),
             self.base.as_ref().map(|base| base.id.as_str()),
+        ] {
+            hash.update([u8::from(field.is_some())]);
+            if let Some(field) = field {
+                hash.update((field.len() as u64).to_be_bytes());
+                hash.update(field.as_bytes());
+            }
+        }
+        hash.update([u8::from(self.base.is_some())]);
+        if let Some(base) = &self.base {
+            hash.update(base.version.to_be_bytes());
+        }
+        for field in [
             self.base.as_ref().map(|base| base.content_sha256.as_str()),
             self.content.as_deref(),
         ] {
@@ -60,16 +73,20 @@ mod tests {
             path: "/目录/note.md".into(),
             base: Some(MemoryCopyBase {
                 id: "base".into(),
+                version: 7,
                 content_sha256: "a".repeat(64),
             }),
             content: Some("literal \n ${HOME}".into()),
         };
         let mut candidates = vec![original.clone()];
-        for axis in ["path", "id", "sha", "content", "empty", "delete", "new"] {
+        for axis in [
+            "path", "id", "version", "sha", "content", "empty", "delete", "new",
+        ] {
             let mut changed = original.clone();
             match axis {
                 "path" => changed.path.push('x'),
                 "id" => changed.base.as_mut().unwrap().id.push('x'),
+                "version" => changed.base.as_mut().unwrap().version += 1,
                 "sha" => changed.base.as_mut().unwrap().content_sha256 = "b".repeat(64),
                 "content" => changed.content.as_mut().unwrap().push('x'),
                 "empty" => changed.content = Some(String::new()),

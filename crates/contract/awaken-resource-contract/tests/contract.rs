@@ -239,7 +239,7 @@ fn conflict_display_embeds_current_path() {
     };
     assert_eq!(
         err.to_string(),
-        "cas conflict on /notes/a.md: base sha stale"
+        "cas conflict on /notes/a.md: base generation stale"
     );
 }
 

@@ -99,6 +99,7 @@ async fn retained_copy_candidates_use_store_visibility_and_explicit_content_view
     let store = create_store(&router, "conflicts").await;
     let base = MemoryCopyBase {
         id: "original".into(),
+        version: 1,
         content_sha256: "a".repeat(64),
     };
     let candidates = [
@@ -579,9 +580,9 @@ async fn memory_crud_with_precondition_and_version_log() {
     assert_eq!(got_basic["content"], Value::Null, "R4");
 
     // Causes: C1 an older SDK uses POST; C2 a canonical client uses PATCH; C3
-    // the supplied content hash is stale or current. Constraint: both verbs
+    // the supplied complete generation is stale or current. Constraint: both verbs
     // enter one update handler and therefore one CAS/version-history authority.
-    // Effects: E1 stale hashes conflict without mutation; E2 a current hash
+    // Effects: E1 stale generations conflict without mutation; E2 a current token
     // commits exactly one new version. Decision rules: C1+C3(stale) -> E1;
     // C2+C3(current) -> E2. Covering opposite verbs proves route aliases cannot
     // fork aggregate semantics.
@@ -589,7 +590,10 @@ async fn memory_crud_with_precondition_and_version_log() {
         &router,
         "POST",
         &format!("/v1/memory_stores/{store}/memories/{mid}"),
-        Some(json!({ "content": "new", "precondition": { "type":"content_sha256", "content_sha256": "0".repeat(64) } })),
+        Some(json!({ "content": "new", "precondition": {
+            "type":"generation", "memory_id": mid, "version": mem["generation"]["version"],
+            "content_sha256": "0".repeat(64)
+        } })),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
@@ -603,7 +607,10 @@ async fn memory_crud_with_precondition_and_version_log() {
         &router,
         "PATCH",
         &format!("/v1/memory_stores/{store}/memories/{mid}?view=full"),
-        Some(json!({ "content": "world", "precondition": { "type":"content_sha256", "content_sha256": sha } })),
+        Some(json!({ "content": "world", "precondition": {
+            "type":"generation", "memory_id": mid, "version": mem["generation"]["version"],
+            "content_sha256": sha
+        } })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{updated}");
@@ -619,7 +626,9 @@ async fn memory_crud_with_precondition_and_version_log() {
         &format!("/v1/memory_stores/{store}/memories/{mid}"),
         Some(json!({
             "content": "world",
-            "precondition": { "type":"content_sha256", "content_sha256": updated["content_sha256"] }
+            "precondition": { "type":"generation", "memory_id": mid,
+                "version": updated["generation"]["version"],
+                "content_sha256": updated["content_sha256"] }
         })),
     )
     .await;
@@ -818,17 +827,16 @@ async fn memory_crud_with_precondition_and_version_log() {
     assert_eq!(redacted["created_by"]["api_key_id"], "api_test", "A4");
     assert_eq!(redacted["redacted_by"]["api_key_id"], "api_test", "A4");
 
-    // Conditional-delete causal graph: a stale expected SHA must leave both the
-    // head and immutable history untouched; the live SHA atomically removes the
-    // exact id/head and appends one actor-attributed deleted version. The id is
-    // part of the repository CAS, closing delete/recreate ABA even when content
-    // hashes happen to match.
+    // Conditional-delete causal graph: a stale expected generation must leave
+    // head/history untouched; the live version+SHA atomically removes the exact
+    // id/head and appends one actor-attributed deleted version. The immutable id
+    // comes from the route, closing delete/recreate and same-content ABA.
     let (status, stale_delete) = call(
         &router,
         "DELETE",
         &format!(
-            "/v1/memory_stores/{store}/memories/{mid}?expected_content_sha256={}",
-            "0".repeat(64)
+            "/v1/memory_stores/{store}/memories/{mid}?expected_version={}&expected_content_sha256={}",
+            updated["generation"]["version"], "0".repeat(64)
         ),
         None,
     )
@@ -860,7 +868,8 @@ async fn memory_crud_with_precondition_and_version_log() {
         &router,
         "DELETE",
         &format!(
-            "/v1/memory_stores/{store}/memories/{mid}?expected_content_sha256={}",
+            "/v1/memory_stores/{store}/memories/{mid}?expected_version={}&expected_content_sha256={}",
+            updated["generation"]["version"],
             updated["content_sha256"].as_str().unwrap()
         ),
         None,
