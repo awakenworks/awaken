@@ -2902,11 +2902,13 @@ async fn custom_tool_use_await_and_result() {
     // selects only its stated effect and preserves the authority constraint.
     // Custom-result cause/effect decision table:
     // R1 matching pending id + text only -> resume and end; R2 matching id +
-    // text/image blocks -> preserve ordered blocks through SessionRuntime and the
-    // committed agent.tool_result; R3 wrong id/kind (covered by batch validation)
-    // -> reject without a partial event. R2's adapter effect is the same Thread's
-    // terminal committed prefix; aggregate Session settlement belongs to the
-    // Host observer and official SDK E2E, not this test fixture.
+    // text/image blocks -> preserve ordered blocks in the one admitted
+    // user.custom_tool_result while Runtime consumes its neutral ToolResult;
+    // R3 wrong id/kind (covered by batch validation) -> reject without a partial
+    // event. R2 suppresses the duplicate agent.tool_result projection because the
+    // client receipt already owns the public result. Its adapter effect is the
+    // same Thread's terminal committed prefix; aggregate Session settlement
+    // belongs to the Host observer and official SDK E2E, not this test fixture.
     let state = Arc::new(ManagedState::new(ToolAwaitingFake::custom()));
     let app = router(state.clone());
     let id = create(&app).await;
@@ -2998,18 +3000,31 @@ async fn custom_tool_use_await_and_result() {
         msgs.iter().any(|m| m.contains("got: 42")),
         "messages: {msgs:?}"
     );
-    let tool_result = list["data"]
+    let public_results: Vec<&serde_json::Value> = list["data"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|event| event["type"] == "agent.tool_result")
-        .expect("runtime result is projected");
-    assert_eq!(tool_result["content"][0]["text"], "42");
+        .filter(|event| event["type"] == "user.custom_tool_result")
+        .collect();
+    assert_eq!(public_results.len(), 1, "R2 has one public result");
+    let public_result = public_results[0];
+    assert_eq!(public_result["content"][0]["text"], "42");
     assert_eq!(
-        tool_result["content"][1]["source"]["media_type"],
+        public_result["content"][1]["source"]["media_type"],
         "image/png"
     );
-    assert_eq!(tool_result["content"][1]["source"]["data"], "iVBORw0KGgo=");
+    assert_eq!(
+        public_result["content"][1]["source"]["data"],
+        "iVBORw0KGgo="
+    );
+    assert!(
+        list["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event["type"] != "agent.tool_result"),
+        "R2 suppresses the Runtime projection duplicate"
+    );
     let last_idle = list["data"]
         .as_array()
         .unwrap()

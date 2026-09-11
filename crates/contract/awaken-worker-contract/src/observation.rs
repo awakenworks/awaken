@@ -4,6 +4,9 @@ use awaken_credential_contract::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::capability_agreement::{CapabilityEvidenceAgreement, merge_capability_evidence};
+use crate::registry::{RegisteredWorker, WorkerSnapshot};
+
 /// Closed lease rule for any dynamic Worker observation. Identity, state and
 /// coherence are supplied as one exact-match axis by the typed observation;
 /// time validity is a half-open interval so old evidence loses authority at
@@ -100,6 +103,89 @@ impl WorkerAcpCapabilityObservation {
             self.valid_until_ms,
         )
     }
+}
+
+/// One coherent ACP handshake that may be pinned into a publication or shown
+/// by a management read model. Selection remains in the Worker domain because
+/// only this domain owns the liveness, incarnation, credential, and observation
+/// fences that make the evidence usable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedAcpCapabilityEvidence {
+    pub adapter_version: String,
+    pub fingerprint: String,
+    pub negotiated: awaken_acp_contract::NegotiatedAcpCapabilities,
+}
+
+/// Exhaustive outcome of selecting live ACP evidence across every Worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerifiedAcpCapabilitySelection {
+    Available(VerifiedAcpCapabilityEvidence),
+    Unavailable,
+    Incompatible,
+}
+
+/// Select the one coherent live ACP profile across the current Worker view.
+/// A credential requirement, when present, must be satisfied by the same
+/// Worker snapshot as the capability observation.
+#[must_use]
+pub fn select_verified_acp_capability<'a>(
+    workers: impl IntoIterator<Item = &'a RegisteredWorker>,
+    backend_ref: &str,
+    credential: Option<&WorkerCredentialRevision>,
+    now_ms: u64,
+) -> VerifiedAcpCapabilitySelection {
+    let evidence = workers
+        .into_iter()
+        .map(|registered| &registered.snapshot)
+        .filter(|worker| worker_accepts_dynamic_evidence(worker, credential, now_ms))
+        .flat_map(|worker| worker.acp_capability_observations.iter())
+        .filter(|capability| {
+            capability.valid_until_ms > now_ms
+                && capability.observation.observed_at_ms() <= now_ms
+                && capability.observation.backend_ref() == backend_ref
+        })
+        .filter_map(|capability| {
+            capability.observation.clone().into_verified_evidence().map(
+                |(adapter_version, fingerprint, negotiated)| VerifiedAcpCapabilityEvidence {
+                    adapter_version,
+                    fingerprint,
+                    negotiated,
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut selected = None;
+    let mut agreement = CapabilityEvidenceAgreement::Empty;
+    for candidate in evidence {
+        let matches_selected = selected.as_ref() == Some(&candidate);
+        agreement = merge_capability_evidence(agreement, matches_selected);
+        if selected.is_none() {
+            selected = Some(candidate);
+        }
+    }
+    match (agreement, selected) {
+        (CapabilityEvidenceAgreement::Empty, None) => VerifiedAcpCapabilitySelection::Unavailable,
+        (CapabilityEvidenceAgreement::One, Some(only)) => {
+            VerifiedAcpCapabilitySelection::Available(only)
+        }
+        (CapabilityEvidenceAgreement::Conflict, _) => VerifiedAcpCapabilitySelection::Incompatible,
+        _ => unreachable!("evidence agreement and selected profile are coherent"),
+    }
+}
+
+fn worker_accepts_dynamic_evidence(
+    worker: &WorkerSnapshot,
+    credential: Option<&WorkerCredentialRevision>,
+    now_ms: u64,
+) -> bool {
+    worker.state.accepts_work()
+        && worker.expires_at_ms > now_ms
+        && credential.is_none_or(|credential| {
+            worker
+                .credential_observations
+                .iter()
+                .any(|observation| observation.is_selectable_at(credential, now_ms))
+        })
 }
 
 /// Exact dynamic ACP profile required by an immutable publication.

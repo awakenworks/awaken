@@ -14,6 +14,9 @@ use super::{
 pub(super) struct ProcessStartup {
     pub(super) service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
     pub(super) deployment: Option<awaken_session_executor::DeploymentConfig>,
+    /// Exact Cargo-built companion for test-only process composition. Production
+    /// leaves this absent and resolves the installed sibling executable.
+    pub(super) namespace_hand_path: Option<PathBuf>,
     pub(super) content_capture_ceiling: awaken_runtime_contract::ContentCapture,
     pub(super) org_id: Option<String>,
     /// Domain-separated from the durable Control seal key by the Data Subject

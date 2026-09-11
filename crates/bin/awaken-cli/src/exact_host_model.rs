@@ -3,6 +3,25 @@
 //! Provider-backed and hosted deployments use their own injected resolvers.
 //! This adapter exists only for the one-host-executor scenario path.
 
+fn select_test_namespace_hand_path(
+    sandbox: Option<std::ffi::OsString>,
+    awaken: Option<std::ffi::OsString>,
+) -> Option<std::path::PathBuf> {
+    sandbox.map(Into::into).or_else(|| {
+        awaken.map(|path| {
+            std::path::PathBuf::from(path)
+                .with_file_name(format!("awaken-sandbox{}", std::env::consts::EXE_SUFFIX))
+        })
+    })
+}
+
+fn cargo_test_namespace_hand_path() -> Option<std::path::PathBuf> {
+    select_test_namespace_hand_path(
+        std::env::var_os("CARGO_BIN_EXE_awaken-sandbox"),
+        std::env::var_os("CARGO_BIN_EXE_awaken"),
+    )
+}
+
 pub(super) fn local_test_process_options(stores: &super::ProcessStores) -> super::ProcessStartup {
     let mut deployment = awaken_session_executor::DeploymentConfig::ephemeral();
     deployment.sandbox_tier = awaken_session_executor::SandboxTier::Local;
@@ -15,6 +34,7 @@ pub(super) fn local_test_process_options(stores: &super::ProcessStores) -> super
     let worker_directory = awaken_coordinator::test_worker_directory();
     super::ProcessStartup {
         deployment: Some(deployment),
+        namespace_hand_path: cargo_test_namespace_hand_path(),
         worker_directory: Some(worker_directory.clone()),
         runtime_authority: None,
         worker_observations: Some(
@@ -72,5 +92,29 @@ impl awaken_config_service::ModelPublicationResolver for ExactHostModelPublicati
             None,
             None,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::select_test_namespace_hand_path;
+
+    #[test]
+    fn cargo_test_companion_uses_exact_artifact_coordinates() {
+        // Cause/effect table: C1 Cargo provides the sandbox binary -> use it
+        // exactly; C2 only the package binary is provided -> use its installed
+        // sibling; C3 neither exists -> preserve production resolution. R1 has
+        // precedence over R2, and no intermediate/build-dir search is added.
+        let sandbox = std::ffi::OsString::from("/final/debug/awaken-sandbox");
+        let awaken = std::ffi::OsString::from("/final/debug/awaken");
+        assert_eq!(
+            select_test_namespace_hand_path(Some(sandbox.clone()), Some(awaken.clone())),
+            Some(sandbox.into())
+        );
+        assert_eq!(
+            select_test_namespace_hand_path(None, Some(awaken)),
+            Some(std::path::PathBuf::from("/final/debug/awaken-sandbox"))
+        );
+        assert_eq!(select_test_namespace_hand_path(None, None), None);
     }
 }

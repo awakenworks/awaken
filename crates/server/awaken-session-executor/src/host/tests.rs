@@ -10901,15 +10901,16 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "worker-held",
         "H31"
     );
-    let seen = seen.lock().unwrap();
-    assert!(seen.len() > seen_before, "H31 route reached upstream");
-    assert!(
-        seen[seen_before..]
-            .iter()
-            .all(|(_, bearer)| bearer == "Bearer published-mcp-token"),
-        "H31 every relay request uses only Worker-held material: {seen:?}"
-    );
-    drop(seen);
+    {
+        let seen = seen.lock().unwrap();
+        assert!(seen.len() > seen_before, "H31 route reached upstream");
+        assert!(
+            seen[seen_before..]
+                .iter()
+                .all(|(_, bearer)| bearer == "Bearer published-mcp-token"),
+            "H31 every relay request uses only Worker-held material: {seen:?}"
+        );
+    }
 
     let backend_owned_snapshot =
         awaken_runtime_contract::ExecutableAgentSnapshot::builder("assistant")

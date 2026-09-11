@@ -874,16 +874,18 @@ impl AcpRunExecutor {
                 let client_call = async {
                     match owned_continuation {
                         Some(continuation) => continuation.next_client_execution().await,
-                        None => std::future::pending::<ToolCall>().await,
+                        None => std::future::pending::<Option<ToolCall>>().await,
                     }
                 };
                 tokio::select! {
                     biased;
                     () = owner_cancel => {},
                     call = client_call => {
-                        *client_execution_result
-                            .lock()
-                            .expect("ACP client execution lock poisoned") = Some(call);
+                        if let Some(call) = call {
+                            *client_execution_result
+                                .lock()
+                                .expect("ACP client execution lock poisoned") = Some(call);
+                        }
                     }
                 }
             };

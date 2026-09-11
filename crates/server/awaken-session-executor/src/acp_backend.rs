@@ -365,7 +365,7 @@ impl crate::host::SharedHost {
     /// supply Cargo's exact artifact rather than assuming that Cargo's separate
     /// intermediate directory is the release installation directory. This input
     /// never bypasses capability validation or changes provider selection.
-    pub(crate) async fn with_session_environment_from_deployment_at(
+    pub async fn with_session_environment_from_deployment_at(
         self,
         hand_factory: Option<Arc<dyn crate::HandExecutorFactory>>,
         namespace_hand_path: std::path::PathBuf,
