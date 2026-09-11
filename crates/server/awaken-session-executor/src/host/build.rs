@@ -939,7 +939,11 @@ impl SharedHost {
     /// its pool capacity, so draining auxiliary work first can miss that task.
     pub async fn drain_runtime(&self, timeout: std::time::Duration) -> bool {
         let deadline = tokio::time::Instant::now() + timeout;
-        let _local_fence = self.begin_pool_drain().await;
+        let Some(_local_fence) =
+            await_runtime_drain_fence_before(deadline, self.begin_pool_drain()).await
+        else {
+            return false;
+        };
         while self.pool_in_flight() != 0 {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
