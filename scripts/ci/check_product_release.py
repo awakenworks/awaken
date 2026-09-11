@@ -472,12 +472,10 @@ class ProductReleaseCheckerTests(unittest.TestCase):
             "          toolchain: 1.96.0\n"
         )
         for job in ("management_image", "github_release"):
-            marker = "  " + job + ":\n"
-            start, rest = inputs[0].split(marker, 1)
-            block, end = re.split(r"\n  (?=\S)", rest, maxsplit=1)
+            block = job_block(inputs[0], job)
             with self.subTest(job=job, cause="toolchain"):
                 self.assertTrue(validate(
-                    start + marker + block.replace(pinned, "", 1) + "\n  " + end,
+                    inputs[0].replace(block, block.replace(pinned, "", 1), 1),
                     *inputs[1:],
                 ))
         for name in ("Stage the exact packaged binary", "Validate every packaged proof manifest"):
