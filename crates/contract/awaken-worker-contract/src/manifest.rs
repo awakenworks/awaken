@@ -100,6 +100,59 @@ impl Default for WorkerCapacity {
     }
 }
 
+/// A manifest whose `max_concurrent` is zero can never be registered: the
+/// scheduler would place no work on it and the execution pool could install no
+/// slot. Reading the registered capacity is therefore fallible, and the failure
+/// is typed instead of hidden behind an `expect`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("registered Worker capacity must be greater than zero")]
+pub struct ZeroRegisteredCapacity;
+
+/// The execution capacity one Worker incarnation registered with the registry.
+///
+/// Placement decisions are made against [`WorkerCapacity::max_concurrent`], so
+/// the process that registered it must install exactly that many execution
+/// slots. Registered capacity and installed capacity previously diverged in
+/// silence because the number travelled as a bare integer that an execution
+/// pool was free to ignore in favour of a local CPU guess.
+///
+/// This newtype is the only currency the pool installer accepts. It has no
+/// `Default` and no `Clone`, its sole constructor reads a [`WorkerManifest`],
+/// and it is consumed by move when the pool is sized — so it cannot be read
+/// twice, cannot be conjured from an unrelated number, and cannot be derived
+/// and then quietly dropped: dropping it is an `unused_must_use`, which the
+/// workspace's `-D warnings` turns into a build failure.
+#[derive(Debug)]
+#[must_use = "registered capacity must be installed in the execution pool: dropping it \
+              restores a local default and lets registered and actual capacity diverge"]
+pub struct RegisteredCapacity(std::num::NonZeroUsize);
+
+impl RegisteredCapacity {
+    /// Read the capacity off the manifest this Worker registers. There is no
+    /// other constructor: a number that no manifest published cannot become a
+    /// `RegisteredCapacity`.
+    pub fn of(manifest: &WorkerManifest) -> Result<Self, ZeroRegisteredCapacity> {
+        std::num::NonZeroUsize::new(manifest.capacity.max_concurrent as usize)
+            .map(Self)
+            .ok_or(ZeroRegisteredCapacity)
+    }
+
+    /// Consume the registration, yielding the exact number of execution slots to
+    /// install. Taking `self` by value is what makes an unused registration a
+    /// compiler diagnostic rather than a silent divergence.
+    #[must_use]
+    pub fn into_slots(self) -> std::num::NonZeroUsize {
+        self.0
+    }
+
+    /// The registered slot count, for diagnostics and assertions that must not
+    /// consume the registration. This never installs anything.
+    #[must_use]
+    pub const fn slots(&self) -> std::num::NonZeroUsize {
+        self.0
+    }
+}
+
 /// Immutable capabilities for one worker incarnation. Dynamic health/load does
 /// not belong here and therefore cannot perturb the capability fingerprint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

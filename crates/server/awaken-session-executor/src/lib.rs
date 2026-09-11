@@ -118,8 +118,8 @@ pub use crate::host::{
 pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
 pub use crate::cache_volume::{CacheVolumeInitializer, CacheVolumeWarmup};
 pub use crate::host::{
-    AttemptExecutorDecorator, HostResume, RemoteAttemptInstallation, SharedHost,
-    remote_worker_placement, self_hosted_inference_holder,
+    AttemptExecutorDecorator, DispatchPoolSizing, HostResume, RemoteAttemptInstallation,
+    SharedHost, remote_worker_placement, self_hosted_inference_holder,
 };
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
 pub use crate::run_application_host::RunApplicationHost;

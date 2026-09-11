@@ -8364,32 +8364,53 @@ async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
 async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coordinator() {
     // Causes: C1 a local CPU-derived default; C2 registered manifest capacity is
     // lower/equal/higher than that default; C3 execution owner is Worker or
-    // Coordinator. Effects: R1 local Host retains C1; R2 Worker uses exactly C2
-    // (including I/O concurrency above CPU quota); R3 Coordinator owns no pool.
+    // Coordinator. Effects: R1 local Host retains C1 and reports it as the
+    // unregistered branch; R2 Worker installs exactly C2 slots (including I/O
+    // concurrency above CPU quota) and reports it as the registered branch; R3
+    // Coordinator owns no pool. Every capacity assertion observes the installed
+    // pool or the installed sizing — never the manifest it came from.
     // The existing pool_memory concurrent-Run tests own slot/execution bounds;
     // this regression owns the production Host transport-to-capacity wiring.
     let default =
         std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::new(4).unwrap());
     let local = SharedHost::new(Arc::new(OkModel), "stub");
-    assert_eq!(local.dispatch_pool_concurrency, default, "R1");
+    assert_eq!(
+        local.dispatch_pool_sizing(),
+        crate::DispatchPoolSizing::LocalParallelism(default),
+        "R1"
+    );
+    assert_eq!(local.dispatch_pool_sizing().registered(), None, "R1");
     for capacity in [1, default.get(), default.get() + 2] {
-        let capacity = std::num::NonZeroUsize::new(capacity).unwrap();
+        // The only constructor of a `RegisteredCapacity` is the manifest this
+        // Worker registers, so the installer cannot be handed a number the
+        // registry never saw.
+        let mut manifest = awaken_dispatch_contract::WorkerManifest::default();
+        manifest.capacity.max_concurrent = capacity as u32;
+        let registered = awaken_dispatch_contract::RegisteredCapacity::of(&manifest)
+            .expect("R2 non-zero registered capacity");
         let store = Arc::new(awaken_dispatch::MemoryDispatchStore::new());
         let worker = Arc::new(
-            SharedHost::new(Arc::new(OkModel), "stub").with_worker_dispatch(store, capacity),
+            SharedHost::new(Arc::new(OkModel), "stub").with_worker_dispatch(store, registered),
         );
         worker.ensure_dispatch_pool();
         assert_eq!(
             worker.dispatch_pool.get().unwrap().concurrency(),
-            capacity.get(),
+            capacity,
             "R2 actual slots"
+        );
+        assert_eq!(
+            worker.dispatch_pool_sizing(),
+            crate::DispatchPoolSizing::Registered(
+                std::num::NonZeroUsize::new(capacity).expect("R2")
+            ),
+            "R2 registered branch"
         );
         let _local_fence = worker.begin_pool_drain().await;
         let coordinator = Arc::new(
             SharedHost::new(Arc::new(OkModel), "stub")
                 .with_worker_dispatch(
                     Arc::new(awaken_dispatch::MemoryDispatchStore::new()),
-                    capacity,
+                    awaken_dispatch_contract::RegisteredCapacity::of(&manifest).expect("R3"),
                 )
                 .with_coordinator_dispatch_store(Arc::new(
                     awaken_dispatch::AnyDispatchStore::open_sqlite(":memory:").unwrap(),
@@ -8398,6 +8419,14 @@ async fn registered_dispatch_capacity_replaces_cpu_default_without_enabling_coor
         coordinator.ensure_dispatch_pool();
         assert!(coordinator.dispatch_pool.get().is_none(), "R3");
     }
+    // A manifest that registers no capacity yields no installable registration:
+    // the zero can never reach the installer as a silently clamped default.
+    let mut unregisterable = awaken_dispatch_contract::WorkerManifest::default();
+    unregisterable.capacity.max_concurrent = 0;
+    assert!(
+        awaken_dispatch_contract::RegisteredCapacity::of(&unregisterable).is_err(),
+        "R2 zero capacity is not a registration"
+    );
 }
 
 /// Restart authorization cause/effect graph: C1 the replacement realization
