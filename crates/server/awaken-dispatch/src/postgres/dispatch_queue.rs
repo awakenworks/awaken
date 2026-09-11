@@ -1464,16 +1464,19 @@ impl DispatchQueue for PostgresDispatchStore {
             false,
             false,
         );
-        let transition = crate::persisted_dispatch_transition(
-            &status,
-            persisted_epoch,
-            cancellation_requested != 0,
-        )?;
-        let transition = transition.settle(epoch, outcome == DispatchOutcome::Done, slot);
-        if matches!(
-            transition,
-            awaken_dispatch_contract::GuardedTransition::Fenced
-        ) {
+        let plan = pending_input_settlement_plan(
+            crate::persisted_dispatch_transition(
+                &status,
+                persisted_epoch,
+                cancellation_requested != 0,
+            )?,
+            epoch,
+            outcome,
+            slot,
+            run_id,
+            consumed,
+        );
+        if matches!(plan, PendingInputSettlementPlan::Fenced) {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
         }
@@ -1493,8 +1496,8 @@ impl DispatchQueue for PostgresDispatchStore {
         // current epoch. A stale owner (lower epoch) affects zero rows, so its settle
         // touches neither the dispatch nor its pending — the reclaimer's in-flight
         // state is inviolate.
-        let dispatch_rows = match transition {
-            awaken_dispatch_contract::GuardedTransition::Removed => sqlx::query(&format!(
+        let dispatch_rows = match plan {
+            PendingInputSettlementPlan::Done { .. } => sqlx::query(&format!(
                 "DELETE FROM {p}_dispatch WHERE run_id = $1 \
                  AND status = 'running' AND lease_epoch = $2"
             ))
@@ -1504,7 +1507,7 @@ impl DispatchQueue for PostgresDispatchStore {
             .await
             .map_err(store_error)?
             .rows_affected(),
-            awaken_dispatch_contract::GuardedTransition::Applied(next) => sqlx::query(&format!(
+            PendingInputSettlementPlan::Awaiting { next, .. } => sqlx::query(&format!(
                 "UPDATE {p}_dispatch SET status = $3, lease_owner = NULL, \
                  lease_until = NULL, attempt_count = 0 WHERE run_id = $1 \
                  AND status = 'running' AND lease_epoch = $2"
@@ -1516,7 +1519,7 @@ impl DispatchQueue for PostgresDispatchStore {
             .await
             .map_err(store_error)?
             .rows_affected(),
-            awaken_dispatch_contract::GuardedTransition::Fenced => unreachable!(),
+            PendingInputSettlementPlan::Fenced => unreachable!("handled before mutation"),
         };
         if dispatch_rows == 0 {
             // Fenced: the run was re-claimed under a higher epoch (or already gone).
@@ -1524,7 +1527,7 @@ impl DispatchQueue for PostgresDispatchStore {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
         }
-        if outcome == DispatchOutcome::Done {
+        if matches!(plan, PendingInputSettlementPlan::Done { .. }) {
             sqlx::query(&format!(
                 "INSERT INTO {p}_dispatch_completion \
                  (run_id, request_fingerprint, thread_id, session_thread_id) \
@@ -1545,8 +1548,8 @@ impl DispatchQueue for PostgresDispatchStore {
             .map_err(store_error)?;
         }
         // The fence held; now reconcile the run's pending input.
-        match outcome {
-            DispatchOutcome::Done => {
+        match plan {
+            PendingInputSettlementPlan::Done { run_id, consumed } => {
                 // Drop the run's own pending and anything else consumed this
                 // attempt (e.g. unbound idle-thread input, ADR-0021).
                 sqlx::query(&format!(
@@ -1558,7 +1561,7 @@ impl DispatchQueue for PostgresDispatchStore {
                 .await
                 .map_err(store_error)?;
             }
-            DispatchOutcome::Awaiting => {
+            PendingInputSettlementPlan::Awaiting { consumed, .. } => {
                 sqlx::query(&format!(
                     "DELETE FROM {p}_pending WHERE message_id = ANY($1)"
                 ))
@@ -1567,6 +1570,7 @@ impl DispatchQueue for PostgresDispatchStore {
                 .await
                 .map_err(store_error)?;
             }
+            PendingInputSettlementPlan::Fenced => unreachable!("handled before mutation"),
         }
         insert_operation(&mut tx, &DispatchOperation::Settled { claim, outcome }).await?;
         tx.commit().await.map_err(store_error)?;
