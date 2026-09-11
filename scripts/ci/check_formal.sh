@@ -846,6 +846,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness a_second_wait_is_never_admitted \
     --harness only_finalized_batches_expose_staged_publication \
     --harness recovery_reentry_requires_policy_capability_and_remaining_budget \
+    --harness child_result_is_recorded_once_and_duplicate_record_stutters \
     --harness child_result_is_consumed_only_from_ready \
     --harness terminal_delivery_phases_never_reopen \
     --harness live_inbox_closed_lifecycle_is_absorbing_for_every_mutation \
