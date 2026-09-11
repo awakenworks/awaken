@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use awaken_worker_contract::{
     RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
-    WorkerIdentity, WorkerObservationSource, WorkerRegistration,
+    WorkerIdentity, WorkerObservationSource, WorkerProcessExit, WorkerRegistration,
 };
 
 use crate::transition;
@@ -167,6 +167,20 @@ impl WorkerDirectory for MemoryWorkerDirectory {
             .cloned())
     }
 
+    async fn incarnation(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<Option<RegisteredWorker>, RegistryError> {
+        Ok(self
+            .workers
+            .lock()
+            .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?
+            .get(&identity.worker_id)
+            .and_then(|rows| rows.get(&identity.generation))
+            .filter(|record| record.snapshot.identity == *identity)
+            .cloned())
+    }
+
     async fn expire_incarnation(
         &self,
         identity: &WorkerIdentity,
@@ -175,6 +189,27 @@ impl WorkerDirectory for MemoryWorkerDirectory {
         self.mutate(identity, |current| {
             transition::expire(current, identity, now_ms)
         })
+    }
+
+    async fn record_process_exit(
+        &self,
+        identity: &WorkerIdentity,
+        receipt: WorkerProcessExit,
+    ) -> Result<RegistryMutation, RegistryError> {
+        receipt.validate()?;
+        let mut workers = self
+            .workers
+            .lock()
+            .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?;
+        let record = workers
+            .get_mut(&identity.worker_id)
+            .and_then(|rows| rows.get_mut(&identity.generation));
+        let (next, outcome) =
+            transition::record_process_exit(record.as_deref(), identity, receipt)?;
+        if let (Some(next), Some(record)) = (next, record) {
+            *record = next;
+        }
+        Ok(outcome)
     }
 }
 

@@ -843,16 +843,11 @@ NATIVE_REMAINING=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres 
   "SELECT count(*) FROM runtime_dispatch WHERE run_id = '${NATIVE_RUN_ID}'" | tr -d '[:space:]')
 [ "$NATIVE_REMAINING" = "0" ] \
   || { err "recovered Native dispatch was not settled"; exit 1; }
-NATIVE_OLD_DELETION=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_OLD" \
-  -o jsonpath='{.metadata.deletionTimestamp}')
-NATIVE_OLD_FINALIZERS=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_OLD" \
-  -o jsonpath='{.metadata.finalizers[*]}')
+kubectl -n "$NS" wait --for=delete "pod/$NATIVE_CRASH_OLD" --timeout=120s
 NATIVE_NEXT_DELETION=$(kubectl -n "$NS" get pod "$NATIVE_CRASH_NEXT" \
   -o jsonpath='{.metadata.deletionTimestamp}')
-[ -n "$NATIVE_OLD_DELETION" ] \
-  && grep -qw 'awaken.dev/worker-process-evidence' <<<"$NATIVE_OLD_FINALIZERS" \
-  && [ -z "$NATIVE_NEXT_DELETION" ] \
-  || { err "exact predecessor deletion evidence or successor isolation was lost"; exit 1; }
+[ -z "$NATIVE_NEXT_DELETION" ] \
+  || { err "exact predecessor evidence release affected the successor"; exit 1; }
 NATIVE_PROVIDER_REQUESTS=$(kubectl -n "$NS" logs -l app=provider -c provider --since=30m \
   | grep -Fc "ADR71_PROVIDER_REQUEST \"${NATIVE_CRASH_MARKER}\"" || true)
 [ "$NATIVE_PROVIDER_REQUESTS" = "1" ] \

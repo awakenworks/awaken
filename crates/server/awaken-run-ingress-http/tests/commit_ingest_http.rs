@@ -167,6 +167,7 @@ async fn registered_worker_commits_one_idempotent_versioned_operation() {
         registered_at_ms: 0,
         heartbeat_at_ms: 0,
         drain_deadline_ms: None,
+        process_exit: None,
     }));
     let dispatch = Arc::new(MemoryDispatchStore::new());
     dispatch

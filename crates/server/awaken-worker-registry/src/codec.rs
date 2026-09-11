@@ -1,4 +1,6 @@
-use awaken_worker_contract::{RegisteredWorker, RegistryError, WorkerIdentity, WorkerSnapshot};
+use awaken_worker_contract::{
+    RegisteredWorker, RegistryError, WorkerIdentity, WorkerProcessExit, WorkerSnapshot,
+};
 
 use crate::transition;
 
@@ -6,7 +8,7 @@ pub(crate) const WORKER_COLUMNS: &str = "worker_id, incarnation_id, generation, 
     manifest_json, capability_fingerprint, in_flight, warm_environment_shapes_json, \
     credential_observations_json, acp_capability_observations_json, expires_at_ms, \
     heartbeat_sequence, observation_sequence, registered_at_ms, heartbeat_at_ms, \
-    drain_deadline_ms";
+    drain_deadline_ms, process_exit_json";
 
 pub(crate) fn current_workers_query() -> String {
     format!(
@@ -33,6 +35,7 @@ pub(crate) struct EncodedWorkerRow {
     pub registered_at_ms: i64,
     pub heartbeat_at_ms: i64,
     pub drain_deadline_ms: Option<i64>,
+    pub process_exit_json: Option<String>,
 }
 
 fn persistence(message: impl Into<String>) -> RegistryError {
@@ -67,6 +70,14 @@ pub(crate) fn decode(row: EncodedWorkerRow) -> Result<RegisteredWorker, Registry
             row.in_flight
         ))
     })?;
+    let process_exit = row
+        .process_exit_json
+        .as_deref()
+        .map(|value| decode_json::<WorkerProcessExit>("process_exit_json", value))
+        .transpose()?;
+    if let Some(receipt) = &process_exit {
+        receipt.validate()?;
+    }
     Ok(RegisteredWorker {
         snapshot: WorkerSnapshot {
             identity: WorkerIdentity::new(
@@ -100,5 +111,6 @@ pub(crate) fn decode(row: EncodedWorkerRow) -> Result<RegisteredWorker, Registry
             .drain_deadline_ms
             .map(|value| unsigned("drain_deadline_ms", value))
             .transpose()?,
+        process_exit,
     })
 }

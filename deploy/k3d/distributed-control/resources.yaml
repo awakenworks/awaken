@@ -297,10 +297,11 @@ kind: Role
 metadata: { name: coordinator-worker-process }
 rules:
   # TokenReview establishes the Pod UID; this namespace-scoped capability then
-  # freezes and stops only that exact retained process domain.
+  # freezes, stops, and releases evidence only for that exact retained process
+  # domain after the Registry has durably recorded its exit.
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get", "delete"]
+    verbs: ["get", "update", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

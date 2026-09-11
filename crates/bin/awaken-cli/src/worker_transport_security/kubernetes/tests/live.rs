@@ -486,6 +486,16 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     .expect("independent exact local exit");
     assert_eq!(receipt.binding(), original.binding.as_ref().unwrap());
     assert!(!receipt.evidence_ref().is_empty());
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            match pods.get(&created[0].metadata.name.clone().unwrap()).await {
+                Err(kube::Error::Api(error)) if error.code == 404 => break,
+                _ => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
+    })
+    .await
+    .expect("durable receipt allows exact old Pod evidence release");
     assert_eq!(
         store
             .load_physical_attempt(&old_claim.run_id)
@@ -514,7 +524,7 @@ async fn real_pod_identity_survives_reopen_and_complete_evidence_retires_exact_a
     server.stop().await;
     // Only these test-owned retention markers are released. The enclosing
     // cluster harness is also the cleanup authority if any assertion panics.
-    for pod in created {
+    for pod in created.into_iter().skip(1) {
         let pod_name = pod.metadata.name.unwrap();
         let current = pods.get(&pod_name).await.unwrap();
         assert_eq!(current.metadata.uid, pod.metadata.uid);

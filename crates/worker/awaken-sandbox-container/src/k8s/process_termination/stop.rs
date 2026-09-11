@@ -2,6 +2,7 @@
 //! It never removes evidence or calls Dispatch/Session cleanup.
 
 use super::*;
+use crate::k8s::finalizer::{ExactFinalizerReleaseAdmission, release_exact_pod_finalizer};
 use kube::api::{DeleteParams, Preconditions};
 
 /// A trusted recovery application may request termination of a whole Worker
@@ -77,6 +78,38 @@ impl PodProcessStopper {
             .await
             .map_err(backend)?;
         Ok(PodProcessTermination::Unknown)
+    }
+
+    /// Release only the evidence finalizer for the exact bound process domain.
+    /// The trusted application calls this after its durable Registry readback.
+    /// Missing or replacement Pods mean the old UID can no longer be retained;
+    /// a matching Pod is updated through the shared resourceVersion CAS loop.
+    pub async fn release_evidence(&self, binding: &PodProcessBinding) -> Result<(), RuntimeError> {
+        if binding.namespace != self.observer.namespace {
+            return Err(backend("Pod process binding belongs to another namespace"));
+        }
+        if !binding.retained {
+            return Err(backend(
+                "Worker process evidence was not retained before binding",
+            ));
+        }
+        release_exact_pod_finalizer(
+            &self.observer.pods,
+            &binding.name,
+            WORKER_PROCESS_EVIDENCE_FINALIZER,
+            &|| Ok(()),
+            &|pod| {
+                if pod.metadata.uid.as_deref() != Some(binding.uid.as_str())
+                    || !evidence_is_retained(pod)
+                {
+                    Ok(ExactFinalizerReleaseAdmission::Complete)
+                } else {
+                    Ok(ExactFinalizerReleaseAdmission::Remove)
+                }
+            },
+            &|_| {},
+        )
+        .await
     }
 }
 

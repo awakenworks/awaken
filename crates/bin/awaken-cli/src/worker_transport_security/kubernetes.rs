@@ -93,12 +93,11 @@ struct KubernetesWorkerStops {
     provider_id: String,
 }
 
-#[async_trait::async_trait]
-impl WorkerExecutionStopSource for KubernetesWorkerStops {
-    async fn stop_closed_worker(
+impl KubernetesWorkerStops {
+    fn process_for(
         &self,
         execution: &ClosedWorkerExecution,
-    ) -> Result<WorkerProcessStopStatus, ApplicationError> {
+    ) -> Result<PodProcessBinding, ApplicationError> {
         let binding = execution.binding();
         let pod = KubernetesPodIdentity::from_worker_id(&binding.worker().worker_id)
             .map_err(ApplicationError::invalid)?;
@@ -113,6 +112,17 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
                 "closed Worker binding does not belong to this Kubernetes execution domain",
             ));
         }
+        Ok(process)
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkerExecutionStopSource for KubernetesWorkerStops {
+    async fn stop_closed_worker(
+        &self,
+        execution: &ClosedWorkerExecution,
+    ) -> Result<WorkerProcessStopStatus, ApplicationError> {
+        let process = self.process_for(execution)?;
         // Uses Coordinator credentials, not the dead Pod's now-revoked token.
         // Exact UID/resourceVersion CAS and retention are owned by the provider.
         match self.stopper.request_stop(&process).await.map_err(|_| {
@@ -123,6 +133,18 @@ impl WorkerExecutionStopSource for KubernetesWorkerStops {
                 execution.observed_exit(receipt.resource_version())
             }
         }
+    }
+
+    async fn release_closed_worker_evidence(
+        &self,
+        execution: &ClosedWorkerExecution,
+    ) -> Result<(), ApplicationError> {
+        let process = self.process_for(execution)?;
+        self.stopper.release_evidence(&process).await.map_err(|_| {
+            ApplicationError::unavailable(
+                "exact Kubernetes Worker process evidence release is unavailable",
+            )
+        })
     }
 
     async fn observe_attempt_termination(

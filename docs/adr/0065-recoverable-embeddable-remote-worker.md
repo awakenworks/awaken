@@ -293,10 +293,10 @@ binding cannot gain stop capability by observing a later finalizer.
 
 On `Blocked` admission, the same Coordinator application path checks the current
 successor claim and reads the original physical slot. Only a different Worker
-with a persisted binding can be considered. Exact `expire_incarnation` must
-return Applied before constructing the private `ClosedWorkerExecution` command;
-the slot is reread before provider IO. Live, replaced, absent or unbound subjects
-do not reach the stopper. Kubernetes validates the configured provider, immutable
+with a persisted binding can be considered. Exact `expire_incarnation` closes the
+current Worker; a retry after replacement may continue only from that exact
+historical incarnation in Quiesced/Dead state. The slot is reread before provider
+IO. Live, absent or unbound subjects do not reach the stopper. Kubernetes validates the configured provider, immutable
 Worker UID and frozen coordinate, then uses the existing conditional Pod stop.
 Its credentials belong to Coordinator; the dead Worker's token is unnecessary.
 Normal Worker admission retries drive this path, with bounded IO and no new
@@ -306,7 +306,12 @@ only the same closed domain. A late local observation never clears a successor.
 The resulting `WorkerProcessStopStatus` is deliberately local-only and has no
 Dispatch mutation capability. An Exited observation preserves the original
 binding and provider evidence reference; blank references and cross-domain cached
-receipts reject. Neither the closed command nor the observation is deserializable.
+receipts reject. The application commits one immutable, exact `WorkerProcessExit`
+into the existing Registry incarnation history and verifies readback before it
+asks the provider to release retained evidence. Store failure leaves the Pod
+finalizer intact; release failure leaves Dispatch occupied; either retry reuses
+the same receipt. A replacement or absent Pod cannot redirect finalizer removal.
+Neither the closed command nor the observation is deserializable.
 The same trusted `WorkerExecutionStopSource` has a separate, read-only
 `observe_attempt_termination` method. Its default is Unknown, including for the
 current Kubernetes adapter. The application constructs its private

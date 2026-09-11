@@ -1,6 +1,6 @@
 use awaken_worker_contract::{
     RegisteredWorker, RegistryError, RegistryMutation, WorkerHeartbeat, WorkerIdentity,
-    WorkerRegistration, WorkerSnapshot, WorkerState,
+    WorkerProcessExit, WorkerRegistration, WorkerSnapshot, WorkerState,
 };
 
 fn identity_matches(record: &RegisteredWorker, identity: &WorkerIdentity) -> bool {
@@ -96,9 +96,40 @@ pub(crate) fn register(
             registered_at_ms: now_ms,
             heartbeat_at_ms: now_ms,
             drain_deadline_ms: None,
+            process_exit: None,
         },
         true,
     ))
+}
+
+pub(crate) fn record_process_exit(
+    record: Option<&RegisteredWorker>,
+    identity: &WorkerIdentity,
+    receipt: WorkerProcessExit,
+) -> Result<(Option<RegisteredWorker>, RegistryMutation), RegistryError> {
+    receipt.validate()?;
+    let outcome = awaken_worker_contract::worker_process_exit_admission(
+        record.is_some(),
+        record.is_some_and(|record| identity_matches(record, identity)),
+        record.is_some_and(|record| {
+            matches!(
+                record.snapshot.state,
+                WorkerState::Quiesced | WorkerState::Dead
+            )
+        }),
+        record.is_some_and(|record| record.process_exit.is_some()),
+        record.is_some_and(|record| record.process_exit.as_ref() == Some(&receipt)),
+    );
+    if outcome != RegistryMutation::Applied
+        || record.is_some_and(|record| record.process_exit.as_ref() == Some(&receipt))
+    {
+        return Ok((None, outcome));
+    }
+    let mut next = record
+        .expect("Applied process exit requires an exact persisted incarnation")
+        .clone();
+    next.process_exit = Some(receipt);
+    Ok((Some(next), outcome))
 }
 
 trait Fingerprint {

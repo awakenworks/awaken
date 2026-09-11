@@ -1002,6 +1002,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness incompatible_capability_evidence_never_recovers_to_available \
     --harness process_readiness_after_startup_is_probe_independent \
     --harness worker_replacement_and_heartbeat_share_one_non_resurrection_boundary \
+    --harness worker_process_exit_receipt_requires_closed_exact_immutable_history \
     --harness worker_registration_never_grants_authority_to_seen_or_unknown_history \
     --harness changed_worker_observation_always_mints_a_strictly_fresh_fence \
     --harness observation_publication_fence_is_success_owned_exact_and_failure_stable \

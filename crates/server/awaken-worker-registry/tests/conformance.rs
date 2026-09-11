@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use awaken_worker_contract::{
     RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
-    WorkerManifest, WorkerRegistration, WorkerState,
+    WorkerManifest, WorkerProcessExit, WorkerRegistration, WorkerState,
 };
 #[cfg(feature = "test-support")]
 use awaken_worker_registry::MemoryWorkerDirectory;
@@ -193,6 +193,97 @@ async fn assert_registry(directory: Arc<dyn WorkerDirectory>, worker_id: &str) {
     assert_exact_expiry(directory, worker_id).await;
 }
 
+async fn assert_process_exit_receipt(
+    directory: Arc<dyn WorkerDirectory>,
+    prefix: &str,
+) -> awaken_worker_contract::WorkerIdentity {
+    // Worker-process receipt cause/effect graph: C1 exact historical identity;
+    // C2 Worker state open/closed; C3 receipt absent/equal/conflicting; C4 a
+    // successor generation may become current. Effects: E1 open/missing facts
+    // cannot write; E2 the first closed exact receipt is stored; E3 exact replay
+    // stutters; E4 conflict cannot overwrite; E5 replacement keeps the old
+    // receipt addressable while the new generation has none.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | Effect |
+    // |---|---|---|---|---|---|
+    // | P1 | no | any | any | no | E1 NotFound |
+    // | P2 | yes | open | absent | no | E1 InvalidTransition |
+    // | P3 | yes | closed | absent | no | E2 Applied |
+    // | P4 | yes | closed | equal | no | E3 Applied, unchanged |
+    // | P5 | yes | closed | conflict | no | E4 InvalidTransition |
+    // | P6 | yes | closed | equal | yes | E5 historical read |
+    let worker_id = format!("{prefix}-process-exit-{}", std::process::id());
+    let missing = awaken_worker_contract::WorkerIdentity::new("missing", "boot", 1);
+    let receipt = WorkerProcessExit::new("cluster", "pod-uid-a", "resource-version-7").unwrap();
+    assert_eq!(
+        directory
+            .record_process_exit(&missing, receipt.clone())
+            .await
+            .unwrap(),
+        RegistryMutation::NotFound,
+        "P1"
+    );
+    let old = directory
+        .register(registration(&worker_id, "boot-a"), 0, 10)
+        .await
+        .unwrap();
+    let identity = old.snapshot.identity.clone();
+    assert_eq!(
+        directory
+            .record_process_exit(&identity, receipt.clone())
+            .await
+            .unwrap(),
+        RegistryMutation::InvalidTransition,
+        "P2"
+    );
+    assert_eq!(
+        directory.expire_incarnation(&identity, 10).await.unwrap(),
+        RegistryMutation::Applied
+    );
+    assert_eq!(
+        directory
+            .record_process_exit(&identity, receipt.clone())
+            .await
+            .unwrap(),
+        RegistryMutation::Applied,
+        "P3"
+    );
+    assert_eq!(
+        directory
+            .record_process_exit(&identity, receipt.clone())
+            .await
+            .unwrap(),
+        RegistryMutation::Applied,
+        "P4"
+    );
+    let conflicting = WorkerProcessExit::new("cluster", "pod-uid-a", "resource-version-8").unwrap();
+    assert_eq!(
+        directory
+            .record_process_exit(&identity, conflicting)
+            .await
+            .unwrap(),
+        RegistryMutation::InvalidTransition,
+        "P5"
+    );
+    let replacement = directory
+        .register(registration(&worker_id, "boot-b"), 11, 10)
+        .await
+        .unwrap();
+    assert_eq!(replacement.snapshot.identity.generation, 2);
+    assert_eq!(replacement.process_exit, None);
+    assert_eq!(
+        directory
+            .incarnation(&identity)
+            .await
+            .unwrap()
+            .unwrap()
+            .process_exit,
+        Some(receipt),
+        "P6"
+    );
+    identity
+}
+
 async fn assert_exact_expiry(directory: Arc<dyn WorkerDirectory>, prefix: &str) {
     // Cause/effect table (all stores execute this same trace): E1 missing ->
     // NotFound; E2 another incarnation/generation -> StaleIncarnation, no write;
@@ -369,6 +460,7 @@ async fn memory_registry_conforms() {
     // fitness owns R1; this conformance case owns R2.
     let directory = Arc::new(MemoryWorkerDirectory::new());
     assert_registry(directory.clone(), "dwr-memory").await;
+    let _ = assert_process_exit_receipt(directory.clone(), "memory").await;
     assert_registration_history(directory.clone(), directory.clone(), "memory").await;
     assert_expiry_race(directory.clone(), directory, "memory").await;
 }
@@ -384,7 +476,8 @@ async fn sqlite_registry_conforms_and_reopens() {
     let path = dir.path().join("workers.sqlite");
     let path = path.to_str().unwrap();
     let store = Arc::new(SqliteWorkerDirectory::open(path).unwrap());
-    assert_registry(store, "dwr-sqlite").await;
+    assert_registry(store.clone(), "dwr-sqlite").await;
+    let process_identity = assert_process_exit_receipt(store, "sqlite").await;
     let reopened = SqliteWorkerDirectory::open(path).unwrap();
     let record: RegisteredWorker = reopened
         .current("dwr-sqlite")
@@ -393,6 +486,18 @@ async fn sqlite_registry_conforms_and_reopens() {
         .expect("tombstone survives restart");
     assert_eq!(record.snapshot.identity.generation, 2);
     assert_eq!(record.snapshot.state, WorkerState::Dead);
+    assert_eq!(
+        reopened
+            .incarnation(&process_identity)
+            .await
+            .unwrap()
+            .unwrap()
+            .process_exit
+            .unwrap()
+            .evidence_ref(),
+        "resource-version-7",
+        "P6 receipt survives SQLite reopen"
+    );
     let reopened = Arc::new(reopened);
     assert_registration_history(
         reopened.clone(),
@@ -453,6 +558,21 @@ async fn postgres_registry_conforms_when_configured() {
         .await
         .unwrap();
     assert_registry(store.clone(), "dwr-postgres").await;
+    let process_identity = assert_process_exit_receipt(store.clone(), "postgres").await;
+    assert_eq!(
+        PostgresWorkerDirectory::connect_existing(&url, 5)
+            .await
+            .unwrap()
+            .incarnation(&process_identity)
+            .await
+            .unwrap()
+            .unwrap()
+            .process_exit
+            .unwrap()
+            .evidence_ref(),
+        "resource-version-7",
+        "P6 receipt survives PostgreSQL reconnect"
+    );
     assert_registration_history(
         store.clone(),
         Arc::new(
