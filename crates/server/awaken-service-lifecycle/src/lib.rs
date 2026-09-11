@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
@@ -264,19 +264,33 @@ struct Inner {
     first_failure: Arc<Mutex<Option<TaskFailure>>>,
     failure_tx: mpsc::UnboundedSender<TaskFailure>,
     failure_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<TaskFailure>>,
-    registry: Mutex<TaskRegistry<TaskHandle>>,
-    shutdown_guard: tokio::sync::Mutex<()>,
+    registry: Mutex<TaskRegistry<TaskHandle, Arc<Result<(), ShutdownError>>>>,
+    shutdown_changed: watch::Sender<()>,
 }
 
-struct TaskRegistry<T> {
-    accepting: bool,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RegistryPhase<R> {
+    Accepting,
+    Draining,
+    Complete(R),
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum ShutdownAdmission<T, R> {
+    Lead(Vec<T>),
+    Wait,
+    Complete(R),
+}
+
+struct TaskRegistry<T, R = ()> {
+    phase: RegistryPhase<R>,
     tasks: Vec<T>,
 }
 
-impl<T> TaskRegistry<T> {
+impl<T, R> TaskRegistry<T, R> {
     fn new() -> Self {
         Self {
-            accepting: true,
+            phase: RegistryPhase::Accepting,
             tasks: Vec::new(),
         }
     }
@@ -285,26 +299,47 @@ impl<T> TaskRegistry<T> {
     /// deliberately retained behind the accepting check so rejection cannot
     /// construct or detach work.
     fn register_with(&mut self, build: impl FnOnce() -> T) -> bool {
-        if !self.accepting {
+        if !matches!(&self.phase, RegistryPhase::Accepting) {
             return false;
         }
         self.tasks.push(build());
         true
     }
 
-    /// Close registration and transfer the complete owned task set exactly
-    /// once. Closing is absorbing; every later transfer is empty.
-    fn close_and_take(&mut self) -> Vec<T> {
-        self.accepting = false;
-        mem::take(&mut self.tasks)
+    /// Admit one shutdown caller through the same lifecycle owner as task
+    /// registration. The first caller transfers the exact task set; callers
+    /// arriving during that drain must wait, and only a finished drain admits
+    /// immediate completion.
+    fn begin_shutdown(&mut self) -> ShutdownAdmission<T, R>
+    where
+        R: Clone,
+    {
+        match &self.phase {
+            RegistryPhase::Accepting => {
+                self.phase = RegistryPhase::Draining;
+                ShutdownAdmission::Lead(mem::take(&mut self.tasks))
+            }
+            RegistryPhase::Draining => ShutdownAdmission::Wait,
+            RegistryPhase::Complete(result) => ShutdownAdmission::Complete(result.clone()),
+        }
+    }
+
+    /// Publish completion only after the unique drain task has classified every
+    /// transferred handle. The result channel is a projection of this phase,
+    /// never a second lifecycle authority.
+    fn finish_shutdown(&mut self, result: R) {
+        assert!(matches!(&self.phase, RegistryPhase::Draining));
+        self.phase = RegistryPhase::Complete(result);
     }
 }
 
 impl Drop for Inner {
     fn drop(&mut self) {
         self.cancellation.cancel();
-        if let Ok(registry) = self.registry.get_mut() {
-            for task in registry.close_and_take() {
+        if let Ok(registry) = self.registry.get_mut()
+            && let ShutdownAdmission::Lead(tasks) = registry.begin_shutdown()
+        {
+            for task in tasks {
                 task.task_abort.abort();
                 task.watcher.abort();
             }
@@ -328,6 +363,7 @@ impl ServiceLifecycle {
     #[must_use]
     pub fn new() -> Self {
         let (failure_tx, failure_rx) = mpsc::unbounded_channel();
+        let (shutdown_changed, _) = watch::channel(());
         Self {
             inner: Arc::new(Inner {
                 cancellation: CancellationToken::new(),
@@ -336,7 +372,7 @@ impl ServiceLifecycle {
                 failure_tx,
                 failure_rx: tokio::sync::Mutex::new(failure_rx),
                 registry: Mutex::new(TaskRegistry::new()),
-                shutdown_guard: tokio::sync::Mutex::new(()),
+                shutdown_changed,
             }),
         }
     }
@@ -432,48 +468,85 @@ impl ServiceLifecycle {
     /// Broadcast cancellation, join every registered task until one shared
     /// deadline, then abort only the tasks that ignored cooperative shutdown.
     pub async fn shutdown(&self, timeout: Duration) -> Result<(), ShutdownError> {
-        // Clones may initiate shutdown concurrently. Only one caller may own
-        // the transferred task set; followers wait for that complete drain
-        // before observing the already-empty registry. Without this barrier a
-        // follower returned Ok while the leader still had live tasks and could
-        // later report a timeout.
-        let _shutdown_guard = self.inner.shutdown_guard.lock().await;
-        let tasks = {
+        // The registry is the sole lifecycle authority. The first caller moves
+        // it to Draining and transfers the tasks to an independently spawned
+        // drain owner. Followers and even a cancelled leader therefore wait on
+        // one completion projection instead of dropping or replacing the owner.
+        let mut changed = self.inner.shutdown_changed.subscribe();
+        let admission = {
             let mut registry = self
                 .inner
                 .registry
                 .lock()
                 .expect("service lifecycle registry lock poisoned");
             self.inner.cancellation.cancel();
-            registry.close_and_take()
+            registry.begin_shutdown()
         };
-        if tasks.is_empty() {
-            return Ok(());
+        let returns_drain_result = matches!(&admission, ShutdownAdmission::Lead(_));
+
+        if let ShutdownAdmission::Lead(tasks) = admission {
+            let inner = self.inner.clone();
+            tokio::spawn(async move {
+                let deadline = tokio::time::Instant::now() + timeout;
+                let mut timed_out = Vec::new();
+                for mut task in tasks {
+                    if task.watcher.is_finished() {
+                        let _ = task.watcher.await;
+                        continue;
+                    }
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if remaining.is_zero()
+                        || tokio::time::timeout(remaining, &mut task.watcher)
+                            .await
+                            .is_err()
+                    {
+                        timed_out.push(task.name);
+                        task.task_abort.abort();
+                        task.watcher.abort();
+                        let _ = task.watcher.await;
+                    }
+                }
+                let result = Arc::new(if timed_out.is_empty() {
+                    Ok(())
+                } else {
+                    Err(ShutdownError { timed_out })
+                });
+                inner
+                    .registry
+                    .lock()
+                    .expect("service lifecycle registry lock poisoned")
+                    .finish_shutdown(result);
+                inner.shutdown_changed.send_replace(());
+            });
         }
 
-        let deadline = tokio::time::Instant::now() + timeout;
-        let mut timed_out = Vec::new();
-        for mut task in tasks {
-            if task.watcher.is_finished() {
-                let _ = task.watcher.await;
-                continue;
+        loop {
+            let completion = self
+                .inner
+                .registry
+                .lock()
+                .expect("service lifecycle registry lock poisoned")
+                .begin_shutdown();
+            if let ShutdownAdmission::Complete(result) = completion {
+                // Preserve the established public contract: only the caller
+                // that initiated the drain receives its timeout diagnostic.
+                // Followers and repeated calls wait for completion, then return
+                // Ok after observing the already-drained lifecycle.
+                return if returns_drain_result {
+                    match result.as_ref() {
+                        Ok(()) => Ok(()),
+                        Err(error) => Err(ShutdownError {
+                            timed_out: error.timed_out.clone(),
+                        }),
+                    }
+                } else {
+                    Ok(())
+                };
             }
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero()
-                || tokio::time::timeout(remaining, &mut task.watcher)
-                    .await
-                    .is_err()
-            {
-                timed_out.push(task.name);
-                task.task_abort.abort();
-                task.watcher.abort();
-                let _ = task.watcher.await;
-            }
-        }
-        if timed_out.is_empty() {
-            Ok(())
-        } else {
-            Err(ShutdownError { timed_out })
+            changed
+                .changed()
+                .await
+                .expect("service lifecycle retains the shutdown wake sender");
         }
     }
 }
@@ -481,23 +554,28 @@ impl ServiceLifecycle {
 #[cfg(test)]
 mod tests {
     use super::{
-        COMPOSED_ASYNC_TEST_STACK_BYTES, ProcessRole, StartupComponent, TaskRegistry,
-        block_on_service, run_composed_async_test,
+        COMPOSED_ASYNC_TEST_STACK_BYTES, ProcessRole, ShutdownAdmission, StartupComponent,
+        TaskRegistry, block_on_service, run_composed_async_test,
     };
 
     #[test]
     fn task_registry_closes_absorbingly_and_transfers_the_exact_prefix() {
-        // Cause/effect graph: C1 the registry is open; C2 two ordered builders
-        // are supplied; C3 close occurs; C4 a later builder is supplied; C5 close
-        // repeats. Effects: E1 each open builder runs exactly once and appends in
-        // order; E2 close transfers exactly that sequence and empties the owner;
-        // E3 closure is absorbing; E4 the late builder is not invoked; E5 repeat
-        // close transfers nothing. Decision table: R1=C1+C2 -> E1;
-        // R2=R1+C3 -> E2+E3; R3=R2+C4 -> E3+E4; R4=R2+C5 -> E3+E5.
+        // Cause/effect graph: C1 the registry accepts two ordered builders; C2
+        // shutdown begins; C3 a later builder arrives; C4 a follower arrives
+        // before finish; C5 finish publishes an exact result and another follower
+        // arrives. Effects: E1 each open builder runs once in order; E2 C2 alone
+        // transfers that sequence; E3 C3 is rejected without builder execution;
+        // E4 C4 receives only Wait; E5 C5 receives exact Complete. Decision table:
+        // R1=C1 -> E1; R2=R1+C2 -> E2; R3=R2+C3 -> E3;
+        // R4=R2+C4 -> E4; R5=R2+C5 -> E5.
         let mut registry = TaskRegistry::new();
         assert!(registry.register_with(|| 11_u8), "R1 first builder");
         assert!(registry.register_with(|| 29_u8), "R1 second builder");
-        assert_eq!(registry.close_and_take(), vec![11, 29], "R2");
+        assert_eq!(
+            registry.begin_shutdown(),
+            ShutdownAdmission::Lead(vec![11, 29]),
+            "R2"
+        );
 
         let late_builder_called = std::cell::Cell::new(false);
         assert!(
@@ -508,7 +586,13 @@ mod tests {
             "R3"
         );
         assert!(!late_builder_called.get(), "R3/R4");
-        assert!(registry.close_and_take().is_empty(), "R4");
+        assert_eq!(registry.begin_shutdown(), ShutdownAdmission::Wait, "R4");
+        registry.finish_shutdown(());
+        assert_eq!(
+            registry.begin_shutdown(),
+            ShutdownAdmission::Complete(()),
+            "R5"
+        );
     }
 
     #[test]
@@ -631,7 +715,7 @@ mod verification {
     struct ExpectedRegistry {
         tasks: [u8; 3],
         len: usize,
-        closed: bool,
+        phase: RegistryPhase<()>,
     }
 
     fn assert_task_prefix(actual: &[u8], expected: &ExpectedRegistry) {
@@ -654,53 +738,73 @@ mod verification {
         task: u8,
     ) {
         if close {
-            let transferred = registry.close_and_take();
-            assert_task_prefix(&transferred, expected);
-            expected.len = 0;
-            expected.closed = true;
+            match expected.phase {
+                RegistryPhase::Accepting => {
+                    let ShutdownAdmission::Lead(transferred) = registry.begin_shutdown() else {
+                        panic!("the first shutdown caller must lead");
+                    };
+                    assert_task_prefix(&transferred, expected);
+                    expected.len = 0;
+                    expected.phase = RegistryPhase::Draining;
+                }
+                RegistryPhase::Draining => {
+                    assert_eq!(registry.begin_shutdown(), ShutdownAdmission::Wait);
+                }
+                RegistryPhase::Complete(()) => {
+                    assert_eq!(registry.begin_shutdown(), ShutdownAdmission::Complete(()));
+                }
+            }
         } else {
             let builder_called = std::cell::Cell::new(false);
             let admitted = registry.register_with(|| {
                 builder_called.set(true);
                 task
             });
-            assert_eq!(admitted, !expected.closed);
-            assert_eq!(builder_called.get(), !expected.closed);
+            let accepting = expected.phase == RegistryPhase::Accepting;
+            assert_eq!(admitted, accepting);
+            assert_eq!(builder_called.get(), accepting);
             if admitted {
                 expected.tasks[expected.len] = task;
                 expected.len += 1;
             }
         }
-        assert_eq!(registry.accepting, !expected.closed);
+        assert_eq!(registry.phase, expected.phase);
         assert_task_prefix(&registry.tasks, expected);
     }
 
     #[kani::proof]
     fn shutdown_registry_fences_registration_and_transfers_exactly_once() {
-        // Cause/effect graph: C1 the registry is open; C2 any of three ordered
-        // registration/close operations closes it; C3 a registration builder
-        // has an observable effect. Effects: E1 open registration constructs
-        // exactly once and appends in order; E2 close transfers the complete
-        // current sequence and leaves it empty; E3 close is absorbing; E4 every
-        // post-close registration is rejected without invoking its builder.
-        // Decision table: R1=C1+register -> E1; R2=C1+close -> E2+E3;
-        // R3=!C1+register+C3 -> E4; R4=!C1+close -> E2(empty)+E3.
-        // Three symbolic operation positions cover every close placement while
-        // the final forced close and late registration close both terminal rows.
+        // Cause/effect graph: C1 the registry is Accepting; C2 any of three
+        // ordered operations begins shutdown; C3 a builder has an observable
+        // effect; C4 finish is published. Effects: E1 registration while C1 runs
+        // the builder once and appends in order; E2 the first C2 transfers the
+        // exact current sequence; E3 later C2 receives Wait and no second transfer;
+        // E4 every post-C2 registration rejects without C3; E5 C4 admits exact
+        // Complete. Decision table: R1=C1+register -> E1;
+        // R2=C1+C2 -> E2; R3=!C1+C2+!C4 -> E3;
+        // R4=!C1+register+C3 -> E4; R5=C4+C2 -> E5.
+        // Three symbolic positions exhaust every first-shutdown placement; the
+        // forced shutdown, late registration, waiting and finish calls close all rows.
         let closes: [bool; 3] = kani::any();
         let mut registry = TaskRegistry::<u8>::new();
         let mut expected = ExpectedRegistry {
             tasks: [0; 3],
             len: 0,
-            closed: false,
+            phase: RegistryPhase::Accepting,
         };
         exercise_registry_step(&mut registry, &mut expected, closes[0], 0);
         exercise_registry_step(&mut registry, &mut expected, closes[1], 1);
         exercise_registry_step(&mut registry, &mut expected, closes[2], 2);
 
-        let transferred = registry.close_and_take();
-        assert_task_prefix(&transferred, &expected);
-        assert!(!registry.accepting);
+        match registry.begin_shutdown() {
+            ShutdownAdmission::Lead(transferred) => {
+                assert_eq!(expected.phase, RegistryPhase::Accepting);
+                assert_task_prefix(&transferred, &expected);
+            }
+            ShutdownAdmission::Wait => assert_eq!(expected.phase, RegistryPhase::Draining),
+            ShutdownAdmission::Complete(()) => panic!("the drain was not completed"),
+        }
+        assert_eq!(registry.phase, RegistryPhase::Draining);
         assert!(registry.tasks.is_empty());
 
         let late_builder_called = std::cell::Cell::new(false);
@@ -709,7 +813,41 @@ mod verification {
             u8::MAX
         }));
         assert!(!late_builder_called.get());
-        assert!(registry.close_and_take().is_empty());
+        assert_eq!(registry.begin_shutdown(), ShutdownAdmission::Wait);
+        registry.finish_shutdown(());
+        assert_eq!(registry.begin_shutdown(), ShutdownAdmission::Complete(()));
+    }
+
+    #[kani::proof]
+    fn concurrent_shutdown_admission_waits_for_the_active_drain() {
+        // Cause/effect graph: C1 the first caller transfers the production
+        // registry; C2 a follower arrives before or after finish. Effects: E1
+        // C1 alone receives Lead with the exact tasks; E2 a follower before
+        // finish receives only Wait; E3 only finish admits Complete. Decision
+        // table: R1=C1 -> E1; R2=C1+C2+!finish -> E2;
+        // R3=C1+C2+finish -> E3. The symbolic finish placement exhausts both
+        // follower rows through the exact production phase owner.
+        let finish_before_follower: bool = kani::any();
+        let first_task: u8 = kani::any();
+        let second_task: u8 = kani::any();
+        let exact_result: u8 = kani::any();
+        let mut registry: TaskRegistry<u8, u8> = TaskRegistry::new();
+        assert!(registry.register_with(|| first_task));
+        assert!(registry.register_with(|| second_task));
+        assert_eq!(
+            registry.begin_shutdown(),
+            ShutdownAdmission::Lead(vec![first_task, second_task])
+        );
+
+        if finish_before_follower {
+            registry.finish_shutdown(exact_result);
+            assert_eq!(
+                registry.begin_shutdown(),
+                ShutdownAdmission::Complete(exact_result)
+            );
+        } else {
+            assert_eq!(registry.begin_shutdown(), ShutdownAdmission::Wait);
+        }
     }
 
     #[kani::proof]
