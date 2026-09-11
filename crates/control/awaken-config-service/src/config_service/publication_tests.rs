@@ -154,8 +154,8 @@ async fn publish_maps_a_publication_persist_failure_to_store() {
 async fn publish_never_installs_an_artifact_from_a_stale_source_revision() {
     // Cause/effect decision table: C1 prepare observes source revision 7; C2
     // every one of the bounded current-state retries loses to durable revision
-    // 8; C3 the canonical caller supplies publication.source_revision as the
-    // expected CAS revision; C4 an observed registrar counts effect entry.
+    // 8; C3 the sole store method derives its fence from the publication's own
+    // source revision; C4 an observed registrar counts effect entry.
     // R1(C1+C2+C3+C4) -> StaleRevision(8), zero registrar calls and no current
     // catalog entry; C5 a malformed store reports a committed revision that
     // does not match the artifact. R2(C1 + one C2 transition) -> re-prepare revision 8,
