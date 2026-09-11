@@ -12,6 +12,60 @@ struct WorkerContentAdapters {
     memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
 }
 
+/// How the one process-level [`DispatchPool`] got its slot count.
+///
+/// The two paths are deliberately distinct variants instead of one integer with
+/// a default baked into the constructor. A registered Worker publishes
+/// `WorkerCapacity::max_concurrent` to the registry and the scheduler places
+/// against it; installing a locally guessed number instead is exactly the
+/// "registered value nobody consumed" divergence, and it used to be invisible
+/// because both numbers had the same type. Now the CPU guess is a named branch
+/// that only [`SharedHost::new`] can produce, and [`Registered`] is reachable
+/// only by moving a [`RegisteredCapacity`] into
+/// [`SharedHost::with_worker_dispatch`].
+///
+/// [`Registered`]: DispatchPoolSizing::Registered
+/// [`RegisteredCapacity`]: awaken_dispatch_contract::RegisteredCapacity
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchPoolSizing {
+    /// No Worker registration in this topology (a direct or coordinator-embedded
+    /// Host). No registry ever published a capacity for this process, so local
+    /// parallelism is the whole truth and cannot contradict anything.
+    LocalParallelism(std::num::NonZeroUsize),
+    /// A registered Worker installed its validated manifest capacity. This is
+    /// the number the registry handed the scheduler, so it is also the exact
+    /// number of execution slots the pool installs.
+    Registered(std::num::NonZeroUsize),
+}
+
+impl DispatchPoolSizing {
+    /// Slots to install. Both branches are resolved here so no caller can read
+    /// one variant and forget the other.
+    #[must_use]
+    pub const fn slots(self) -> std::num::NonZeroUsize {
+        match self {
+            Self::LocalParallelism(value) | Self::Registered(value) => value,
+        }
+    }
+
+    /// The registered capacity when this process is a registered Worker.
+    #[must_use]
+    pub const fn registered(self) -> Option<std::num::NonZeroUsize> {
+        match self {
+            Self::Registered(value) => Some(value),
+            Self::LocalParallelism(_) => None,
+        }
+    }
+
+    /// The CPU-derived sizing used by a Host that registered no capacity.
+    fn local_parallelism() -> Self {
+        Self::LocalParallelism(
+            std::thread::available_parallelism()
+                .unwrap_or(std::num::NonZeroUsize::new(4).expect("nonzero local fallback")),
+        )
+    }
+}
+
 struct LocalResourceAdapters {
     memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
     #[cfg(any(test, feature = "test-support"))]
@@ -158,16 +212,24 @@ impl SharedHost {
         self
     }
 
-    /// Install the dispatch service and validated registered execution capacity.
-    /// CPU quota governs CPU time, not the number of concurrent I/O-bound Session
-    /// preparations. The registered manifest is the Worker capacity authority.
+    /// Install the dispatch service together with the capacity its Worker
+    /// registered. CPU quota governs CPU time, not the number of concurrent
+    /// I/O-bound Session preparations, so the registered manifest — never a
+    /// local guess — is the Worker capacity authority.
+    ///
+    /// The capacity is taken by value: a Worker that reads
+    /// [`RegisteredCapacity::of`] and does not reach this installer gets an
+    /// `unused_must_use` diagnostic instead of a pool that quietly disagrees
+    /// with the registry.
+    ///
+    /// [`RegisteredCapacity::of`]: awaken_dispatch_contract::RegisteredCapacity::of
     #[must_use]
     pub fn with_worker_dispatch(
         mut self,
         dispatch: Arc<dyn awaken_dispatch_contract::Dispatch>,
-        capacity: std::num::NonZeroUsize,
+        capacity: awaken_dispatch_contract::RegisteredCapacity,
     ) -> Self {
-        self.dispatch_pool_concurrency = capacity;
+        self.dispatch_pool_sizing = crate::DispatchPoolSizing::Registered(capacity.into_slots());
         self.with_dispatch_store(Arc::new(
             awaken_dispatch::AnyDispatchStore::from_dispatch(dispatch),
         ))
@@ -493,8 +555,7 @@ impl SharedHost {
             memory_mounter: std::sync::RwLock::new(None),
             gate_override: None,
             dispatch_pool: std::sync::OnceLock::new(),
-            dispatch_pool_concurrency: std::thread::available_parallelism()
-                .unwrap_or(std::num::NonZeroUsize::new(4).expect("nonzero local fallback")),
+            dispatch_pool_sizing: crate::DispatchPoolSizing::local_parallelism(),
             dispatch_reconciler: std::sync::OnceLock::new(),
             terminal_scan: Default::default(),
             dispatch_store_override: None,
@@ -783,6 +844,15 @@ impl SharedHost {
     #[must_use]
     pub fn runs_local_dispatch_pool(&self) -> bool {
         !self.deployment.disable_local_pool
+    }
+
+    /// How this process's dispatch pool is sized, and therefore whether the
+    /// number came from a Worker registration or from local parallelism. Reading
+    /// this observes the installed execution side; it is not a second copy of
+    /// the registry.
+    #[must_use]
+    pub fn dispatch_pool_sizing(&self) -> crate::DispatchPoolSizing {
+        self.dispatch_pool_sizing
     }
 
     /// Stable logical identity used by both local dispatch claims and local
@@ -1535,7 +1605,7 @@ impl SharedHost {
             host: Arc::downgrade(self),
         });
         let config = DispatchServiceConfig::default();
-        let concurrency = self.dispatch_pool_concurrency.get();
+        let concurrency = self.dispatch_pool_sizing.slots().get();
         // On the Postgres backend with `AWAKEN_DISPATCH_WAKE=pg-notify` or `=nats`,
         // spawn the pool with the cross-node wake so a peer's enqueue nudges this pool
         // without busy-poll; otherwise the in-process `LocalWakeSignal` suffices.

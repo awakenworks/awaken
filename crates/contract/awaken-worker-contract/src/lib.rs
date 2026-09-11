@@ -17,8 +17,9 @@ pub use awaken_credential_contract::{
 pub use manifest::{
     CURRENT_CONTRACT_VERSION, CURRENT_RUNTIME_PROTOCOL_VERSION, FingerprintError,
     HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
-    REPOSITORY_CREDENTIALS_CAPABILITY, SESSION_RESOURCES_CAPABILITY, TRUSTED_HOST_SANDBOX_BACKEND,
-    VersionRange, WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerCapacity, WorkerManifest,
+    REPOSITORY_CREDENTIALS_CAPABILITY, RegisteredCapacity, SESSION_RESOURCES_CAPABILITY,
+    TRUSTED_HOST_SANDBOX_BACKEND, VersionRange, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
+    WorkerCapacity, WorkerManifest, ZeroRegisteredCapacity,
 };
 #[cfg(any(test, kani))]
 pub(crate) use observation::dynamic_observation_admitted;
@@ -593,6 +594,42 @@ mod tests {
                 actual: ToolRecoveryCapability::NonRecoverable,
             }),
             "R3"
+        );
+    }
+
+    #[test]
+    fn registered_capacity_has_exactly_one_source_and_no_silent_zero() {
+        // Cause/effect decision table for the one currency the execution pool
+        // installer accepts. C1 the manifest registers a positive capacity; C2 it
+        // registers zero. R1 C1 => a registration carrying exactly the published
+        // number, readable once and consumable once; R2 C2 => no registration at
+        // all, so the installer can never be handed a clamped placeholder for a
+        // capacity the scheduler was never told about.
+        //
+        // This is the type-level half of the "registered but unconsumed"
+        // guard: `of` is the only constructor, so a slot count that no manifest
+        // published cannot reach `with_worker_dispatch`, and `into_slots`
+        // consumes by value so a registration that is read but never installed
+        // is a compiler diagnostic rather than a silent divergence.
+        let mut manifest = manifest("capacity-worker", 0).manifest;
+        for published in [1_u32, 4, 97] {
+            manifest.capacity.max_concurrent = published;
+            let registered = RegisteredCapacity::of(&manifest).expect("R1");
+            assert_eq!(registered.slots().get(), published as usize, "R1 exact");
+            assert_eq!(
+                registered.into_slots().get(),
+                published as usize,
+                "R1 installs the published number"
+            );
+        }
+
+        manifest.capacity.max_concurrent = 0;
+        assert!(
+            matches!(
+                RegisteredCapacity::of(&manifest),
+                Err(ZeroRegisteredCapacity)
+            ),
+            "R2"
         );
     }
 
