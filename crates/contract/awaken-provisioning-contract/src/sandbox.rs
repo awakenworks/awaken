@@ -1320,6 +1320,7 @@ mod tests {
             vec![MemoryMaterializationHead {
                 path: "notes.txt".into(),
                 id: "head-a".into(),
+                version: 1,
                 content_sha256: "sha-a".into(),
             }],
         )
@@ -1349,6 +1350,7 @@ mod tests {
                     vec![MemoryMaterializationHead {
                         path: "notes.txt".into(),
                         id: "head-b".into(),
+                        version: 1,
                         content_sha256: "sha-b".into(),
                     }],
                 )

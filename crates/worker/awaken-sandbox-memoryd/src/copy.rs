@@ -207,6 +207,7 @@ pub async fn materialize(
             MemoryMaterializationHead {
                 path,
                 id: memory.id,
+                version: memory.version,
                 content_sha256: memory.content_sha256,
             },
         );
@@ -327,7 +328,7 @@ async fn reconcile_files(
                     continue;
                 }
                 match fs
-                    .update_materialized(store, path, &base.id, content, &base.content_sha256)
+                    .update_materialized(store, path, &base.generation(), content)
                     .await
                 {
                     Ok(updated) => {
@@ -336,6 +337,7 @@ async fn reconcile_files(
                             MemoryMaterializationHead {
                                 path: path.clone(),
                                 id: updated.id,
+                                version: updated.version,
                                 content_sha256: updated.content_sha256,
                             },
                         );
@@ -348,6 +350,7 @@ async fn reconcile_files(
                                 path: path.clone(),
                                 base: Some(MemoryCopyBase {
                                     id: base.id,
+                                    version: base.version,
                                     content_sha256: base.content_sha256,
                                 }),
                                 content: Some(content.clone()),
@@ -364,6 +367,7 @@ async fn reconcile_files(
                         MemoryMaterializationHead {
                             path: path.clone(),
                             id: created.id,
+                            version: created.version,
                             content_sha256: created.content_sha256,
                         },
                     );
@@ -379,6 +383,7 @@ async fn reconcile_files(
                             MemoryMaterializationHead {
                                 path: path.clone(),
                                 id: current.id,
+                                version: current.version,
                                 content_sha256: current.content_sha256,
                             },
                         );
@@ -407,10 +412,7 @@ async fn reconcile_files(
         .map(|(path, head)| (path.clone(), head.clone()))
         .collect();
     for (path, base) in removed {
-        match fs
-            .delete_if_match(store, &path, &base.id, &base.content_sha256)
-            .await
-        {
+        match fs.delete_if_match(store, &path, &base.generation()).await {
             Ok(deleted) => {
                 snapshot.heads.remove(&path);
                 report.changed += usize::from(deleted);
@@ -420,6 +422,7 @@ async fn reconcile_files(
                     path,
                     base: Some(MemoryCopyBase {
                         id: base.id,
+                        version: base.version,
                         content_sha256: base.content_sha256,
                     }),
                     content: None,
@@ -576,9 +579,8 @@ mod tests {
         async fn update_head(
             &self,
             _store: &str,
-            _id: &str,
+            _base: &awaken_resource_contract::MemoryGeneration,
             _content: &str,
-            _base_sha: &str,
             _target_path: Option<&str>,
         ) -> Result<Memory, MemErr> {
             unreachable!("snapshot test performs no writes")
@@ -596,8 +598,7 @@ mod tests {
             &self,
             _store: &str,
             _path: &str,
-            _base_id: &str,
-            _base_sha: &str,
+            _base: &awaken_resource_contract::MemoryGeneration,
         ) -> Result<bool, MemErr> {
             unreachable!("snapshot test performs no writes")
         }
@@ -681,7 +682,9 @@ mod tests {
         // detecting a racy read-then-update fallback in the contract default.
         let fs = SnapshotOnlyRepository { heads: vec![] };
         assert!(
-            matches!(fs.update_materialized("s", "/a", "id", "edit", "sha").await,
+            matches!(fs.update_materialized("s", "/a", &awaken_resource_contract::MemoryGeneration {
+                memory_id: "id".into(), version: 1, content_sha256: "sha".into()
+            }, "edit").await,
             Err(MemErr::Storage(message)) if message.contains("unsupported"))
         );
     }
@@ -853,7 +856,7 @@ mod tests {
         let mut snapshot = rt.block_on(materialize(&*fs, "s", &dir)).unwrap();
 
         std::fs::write(dir.join("note.md"), "local-v2").unwrap();
-        rt.block_on(fs.update("s", &original.id, "remote-v2", &original.content_sha256))
+        rt.block_on(fs.update("s", &original.generation(), "remote-v2"))
             .unwrap();
 
         let report = rt
@@ -905,7 +908,7 @@ mod tests {
         let mut snapshot = rt.block_on(materialize(&*fs, "s", &dir)).unwrap();
 
         std::fs::remove_file(dir.join("note.md")).unwrap();
-        rt.block_on(fs.update("s", &original.id, "remote-v2", &original.content_sha256))
+        rt.block_on(fs.update("s", &original.generation(), "remote-v2"))
             .unwrap();
         let report = rt
             .block_on(harvest(&*fs, "s", &dir, &mut snapshot))

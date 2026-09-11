@@ -111,14 +111,13 @@ impl MemoryRepository for InvalidatingMemoryRepository {
     async fn update_head(
         &self,
         store: &str,
-        id: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
         content: &str,
-        base_sha: &str,
         target_path: Option<&str>,
     ) -> Result<Memory, MemErr> {
         let memory = self
             .inner
-            .update_head(store, id, content, base_sha, target_path)
+            .update_head(store, base, content, target_path)
             .await?;
         // A path-changing aggregate update can displace another head. Broadcast a
         // store-wide invalidation so peers cannot retain either old path; the
@@ -135,13 +134,12 @@ impl MemoryRepository for InvalidatingMemoryRepository {
         &self,
         store: &str,
         path: &str,
-        id: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
         content: &str,
-        base_sha: &str,
     ) -> Result<Memory, MemErr> {
         let memory = self
             .inner
-            .update_materialized(store, path, id, content, base_sha)
+            .update_materialized(store, path, base, content)
             .await?;
         self.invalidator.publish(store, path);
         Ok(memory)
@@ -164,24 +162,21 @@ impl MemoryRepository for InvalidatingMemoryRepository {
         &self,
         store: &str,
         path: &str,
-        base_id: &str,
-        base_sha: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
     ) -> Result<bool, MemErr> {
-        self.delete_if_match_as(store, path, base_id, base_sha, None)
-            .await
+        self.delete_if_match_as(store, path, base, None).await
     }
 
     async fn delete_if_match_as(
         &self,
         store: &str,
         path: &str,
-        base_id: &str,
-        base_sha: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
         actor: Option<&MemoryActor>,
     ) -> Result<bool, MemErr> {
         let deleted = self
             .inner
-            .delete_if_match_as(store, path, base_id, base_sha, actor)
+            .delete_if_match_as(store, path, base, actor)
             .await?;
         if deleted {
             self.invalidator.publish(store, path);
@@ -226,13 +221,13 @@ mod tests {
         let bus = Arc::new(LocalInvalidator::new(16));
         let mut rx = bus.subscribe();
         let fs = InvalidatingMemoryRepository::new(inner.clone(), bus);
-        fs.update_materialized("s", "/a", &base.id, "edit", &base.content_sha256)
+        fs.update_materialized("s", "/a", &base.generation(), "edit")
             .await
             .unwrap();
         assert_eq!(rx.try_recv().unwrap(), ("s".into(), "/a".into()));
         inner.rename("s", "/a", "/b").await.unwrap();
         assert!(matches!(
-            fs.update_materialized("s", "/a", &base.id, "edit", &base.content_sha256)
+            fs.update_materialized("s", "/a", &base.generation(), "edit")
                 .await,
             Err(MemErr::Conflict { .. })
         ));
@@ -260,10 +255,7 @@ mod tests {
         );
 
         // update → invalidation for the memory's path.
-        let updated = fs
-            .update("s", &m.id, "two", &m.content_sha256)
-            .await
-            .unwrap();
+        let updated = fs.update("s", &m.generation(), "two").await.unwrap();
         assert_eq!(
             rx.recv().await.unwrap(),
             ("s".to_string(), "/a.md".to_string())
@@ -271,7 +263,7 @@ mod tests {
 
         // A combined content/path update may also displace a destination, so it
         // emits the store-root sentinel consumed as a full cache clear.
-        fs.update_head("s", &m.id, "three", &updated.content_sha256, Some("/b.md"))
+        fs.update_head("s", &updated.generation(), "three", Some("/b.md"))
             .await
             .unwrap();
         assert_eq!(rx.recv().await.unwrap(), ("s".to_string(), "/".to_string()));
@@ -333,8 +325,10 @@ mod tests {
 
         // A duplicate create (PathConflict) fails → no publish.
         assert!(fs.create("s", "/a.md", "dup").await.is_err());
-        // A CAS update on a stale base sha (Conflict) fails → no publish.
-        assert!(fs.update("s", &m.id, "two", "deadbeef").await.is_err());
+        // A CAS update on a stale generation (Conflict) fails → no publish.
+        let mut stale = m.generation();
+        stale.content_sha256 = "deadbeef".into();
+        assert!(fs.update("s", &stale, "two").await.is_err());
         // A delete of an id-less path still succeeds (idempotent) — but a create/update
         // that errored above left the bus silent.
         assert!(

@@ -425,6 +425,7 @@ mod tests {
             vec![awaken_provisioning_contract::MemoryMaterializationHead {
                 path: original.path,
                 id: original.id,
+                version: original.version,
                 content_sha256: original.content_sha256,
             }],
         )

@@ -1787,6 +1787,7 @@ mod terminal_memory_reconciliation_contract_tests {
             vec![MemoryMaterializationHead {
                 path: "value".into(),
                 id: "head".into(),
+                version: 1,
                 content_sha256: "digest".into(),
             }],
         )
@@ -1815,6 +1816,7 @@ mod terminal_memory_reconciliation_contract_tests {
             vec![MemoryMaterializationHead {
                 path: "value".into(),
                 id: "head-a".into(),
+                version: 1,
                 content_sha256: "digest-a".into(),
             }],
         )
@@ -1825,6 +1827,7 @@ mod terminal_memory_reconciliation_contract_tests {
             vec![MemoryMaterializationHead {
                 path: "value".into(),
                 id: "head-b".into(),
+                version: 1,
                 content_sha256: "digest-b".into(),
             }],
         )

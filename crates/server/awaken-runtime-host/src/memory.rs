@@ -440,24 +440,21 @@ impl BoundMemory {
         &self,
         path: &str,
         content: &str,
-        expected_sha256: Option<&str>,
+        expected_generation: Option<&awaken_resource_contract::MemoryGeneration>,
     ) -> Result<awaken_resource_contract::Memory, String> {
         self.validate_live_resource()?;
         self.platform
-            .write_exact(path, content, expected_sha256)
+            .write_exact(path, content, expected_generation)
             .await
     }
 
     pub(crate) async fn delete_bound_memory(
         &self,
         path: &str,
-        expected_id: &str,
-        expected_sha256: &str,
+        expected_generation: &awaken_resource_contract::MemoryGeneration,
     ) -> Result<bool, String> {
         self.validate_live_resource()?;
-        self.platform
-            .delete_exact(path, expected_id, expected_sha256)
-            .await
+        self.platform.delete_exact(path, expected_generation).await
     }
 
     /// Durably enqueue one extraction keyed by the terminal commit, then drive it
@@ -1193,9 +1190,8 @@ mod tests {
         async fn update_head(
             &self,
             _store: &str,
-            _id: &str,
+            _base: &awaken_resource_contract::MemoryGeneration,
             _content: &str,
-            _base_sha: &str,
             _target_path: Option<&str>,
         ) -> Result<awaken_memory_store::Memory, awaken_memory_store::MemErr> {
             unreachable!("Recall snapshot test performs no writes")
@@ -1222,8 +1218,7 @@ mod tests {
             &self,
             _store: &str,
             _path: &str,
-            _base_id: &str,
-            _base_sha: &str,
+            _base: &awaken_resource_contract::MemoryGeneration,
         ) -> Result<bool, awaken_memory_store::MemErr> {
             unreachable!("Recall snapshot test performs no writes")
         }
@@ -1366,10 +1361,10 @@ mod tests {
 
     #[tokio::test]
     async fn platform_semantic_mutations_preserve_repository_cas_and_aba_fences() {
-        // Cause/effect decision table: R1 absent expected hash + absent path ->
-        // create; R2 absent hash + present path -> path conflict; R3 current hash
-        // -> update; R4 stale hash -> conflict/no clobber; R5 exact id+hash ->
-        // delete; R6 recreated path + stale id/hash -> conflict/no ABA delete.
+        // Cause/effect decision table: R1 absent expected generation + absent path ->
+        // create; R2 absent generation + present path -> path conflict; R3 current
+        // generation -> update; R4 stale generation -> conflict/no clobber; R5 exact
+        // generation -> delete; R6 recreated path + stale generation -> no ABA delete.
         let fs = Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
         let handle = PlatformMemoryHandle::new(fs.clone(), "store".into(), true);
         let created = handle
@@ -1384,12 +1379,12 @@ mod tests {
             "R2"
         );
         let updated = handle
-            .write_exact("/note.md", "v2", Some(&created.content_sha256))
+            .write_exact("/note.md", "v2", Some(&created.generation()))
             .await
             .expect("R3");
         assert!(
             handle
-                .write_exact("/note.md", "clobber", Some(&created.content_sha256))
+                .write_exact("/note.md", "clobber", Some(&created.generation()))
                 .await
                 .is_err(),
             "R4"
@@ -1407,7 +1402,7 @@ mod tests {
         );
         assert!(
             handle
-                .delete_exact("/note.md", &updated.id, &updated.content_sha256)
+                .delete_exact("/note.md", &updated.generation())
                 .await
                 .expect("R5"),
             "R5"
@@ -1418,7 +1413,7 @@ mod tests {
             .expect("recreate");
         assert!(
             handle
-                .delete_exact("/note.md", &updated.id, &updated.content_sha256)
+                .delete_exact("/note.md", &updated.generation())
                 .await
                 .is_err(),
             "R6"
@@ -1680,7 +1675,7 @@ mod tests {
                 vec![MemoryExtractionMutation {
                     path: "/maintenance.md".into(),
                     content: content.into(),
-                    observed_sha256: None,
+                    observed_generation: None,
                     target_sha256: target.clone(),
                 }],
             )

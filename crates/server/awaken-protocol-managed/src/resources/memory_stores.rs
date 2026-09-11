@@ -109,6 +109,7 @@ struct MemoryObject {
     memory_store_id: String,
     memory_version_id: String,
     path: String,
+    generation: awaken_resource_contract::MemoryGeneration,
     content: Option<String>,
     content_sha256: String,
     content_size_bytes: u64,
@@ -123,6 +124,9 @@ struct MemoryPrefix {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(untagged)]
+// This wire-only enum serializes immediately; boxing every memory item would
+// add a heap allocation solely to equalize it with the two-string prefix DTO.
+#[allow(clippy::large_enum_variant)]
 enum MemoryListItem {
     Memory(MemoryObject),
     Prefix(MemoryPrefix),
@@ -222,6 +226,11 @@ struct MemoryDeleteParams {
         deserialize_with = "crate::types::page::deserialize_optional_query_value"
     )]
     expected_content_sha256: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::page::deserialize_optional_query_value"
+    )]
+    expected_version: Option<u64>,
 }
 
 impl MemoryStoreListParams {
@@ -247,16 +256,25 @@ struct MemoryCreateParams {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum MemoryPrecondition {
-    ContentSha256 {
-        #[serde(default)]
-        content_sha256: Option<String>,
+    Generation {
+        memory_id: String,
+        version: u64,
+        content_sha256: String,
     },
 }
 
 impl MemoryPrecondition {
-    fn content_sha256(&self) -> Option<&str> {
+    fn generation(&self) -> awaken_resource_contract::MemoryGeneration {
         match self {
-            Self::ContentSha256 { content_sha256 } => content_sha256.as_deref(),
+            Self::Generation {
+                memory_id,
+                version,
+                content_sha256,
+            } => awaken_resource_contract::MemoryGeneration {
+                memory_id: memory_id.clone(),
+                version: *version,
+                content_sha256: content_sha256.clone(),
+            },
         }
     }
 }
@@ -341,6 +359,7 @@ fn project_memory(
         memory_store_id: store_id.to_string(),
         memory_version_id: memory_version_id.to_string(),
         path: mem.path.clone(),
+        generation: mem.generation(),
         content,
         content_sha256: mem.content_sha256.clone(),
         content_size_bytes: mem.content_size,
@@ -785,6 +804,7 @@ async fn list_memories(
             rolled_up.insert(format!("{prefix}{directory}/"));
             continue;
         }
+        let generation = entry.generation();
         // `basic` elides content (metadata only); `full` fetches the head content.
         let content = if view.includes_content() {
             entry.content
@@ -805,6 +825,7 @@ async fn list_memories(
             memory_store_id: id.clone(),
             memory_version_id: memory_version_id.to_string(),
             path: entry.path,
+            generation,
             content,
             content_sha256: entry.content_sha256,
             content_size_bytes: entry.content_size,
@@ -863,7 +884,7 @@ async fn get_memory(
 }
 
 /// `POST|PATCH /v1/memory_stores/:id/memories/:mid` — update a memory's content (and/or
-/// path). A `content_sha256` precondition that does not match the durable head is a
+/// path). A complete generation precondition that does not match the durable head is a
 /// `409` (the SDK's `memory_precondition_failed_error`), enforced as a compare-and-
 /// swap in the store. Content, optional rename-replace, and history are one atomic
 /// aggregate operation and append one `modified` version for the updated memory.
@@ -889,13 +910,13 @@ async fn update_memory(
         Ok(None) | Err(MemErr::NotFound(_)) => return not_found("memory"),
         Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
-    // The CAS base: an explicit precondition (stale → conflict) else the live sha.
-    let base_sha = body
+    // The CAS base: an explicit complete generation (stale -> conflict), else
+    // the live generation captured by this request.
+    let base = body
         .precondition
         .as_ref()
-        .and_then(MemoryPrecondition::content_sha256)
-        .unwrap_or(&current.content_sha256)
-        .to_string();
+        .map(MemoryPrecondition::generation)
+        .unwrap_or_else(|| current.generation());
     let new_content = body
         .content
         .flatten()
@@ -906,9 +927,8 @@ async fn update_memory(
         .memories
         .update_head_as(
             &id,
-            &mid,
+            &base,
             &new_content,
-            &base_sha,
             target_path.as_deref(),
             actor.as_ref().map(|actor| &actor.0.0),
         )
@@ -939,16 +959,31 @@ async fn delete_memory(
         Ok(false) => return not_found("memory_store"),
         Err(error) => return application_error(error),
     }
-    let path = match memory_by_id(&state, &id, &mid).await {
-        Ok(Some(memory)) => memory.path,
+    let current = match memory_by_id(&state, &id, &mid).await {
+        Ok(Some(memory)) => memory,
         Ok(None) | Err(MemErr::NotFound(_)) => return not_found("memory"),
         Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
     let actor = actor.as_ref().map(|actor| &actor.0.0);
-    if let Some(expected_sha) = query.expected_content_sha256.as_deref() {
+    let path = current.path.clone();
+    if query.expected_content_sha256.is_some() || query.expected_version.is_some() {
+        let (Some(expected_sha), Some(expected_version)) = (
+            query.expected_content_sha256.as_deref(),
+            query.expected_version,
+        ) else {
+            return err(
+                StatusCode::BAD_REQUEST,
+                "expected_version and expected_content_sha256 must be supplied together",
+            );
+        };
+        let base = awaken_resource_contract::MemoryGeneration {
+            memory_id: mid.clone(),
+            version: expected_version,
+            content_sha256: expected_sha.into(),
+        };
         match state
             .memories
-            .delete_if_match_as(&id, &path, &mid, expected_sha, actor)
+            .delete_if_match_as(&id, &path, &base, actor)
             .await
         {
             Ok(true) => {}
@@ -1332,9 +1367,10 @@ mod tests {
     #[test]
     fn memory_list_union_and_delete_receipts_have_closed_wire_shapes() {
         // Cause/effect decision table: M1 stored memory -> full typed memory
-        // fields; M2 depth rollup -> prefix-only fields; M3 deletion -> id/type
-        // receipt. The untagged enum selects one DTO and never merges the two
-        // variants or relies on object indexing.
+        // fields plus the immutable-id/version/content generation token; M2
+        // depth rollup -> prefix-only fields; M3 deletion -> id/type receipt.
+        // The untagged enum selects one DTO and never merges the two variants
+        // or relies on object indexing.
         let memory = serde_json::to_value(MemoryListItem::Memory(MemoryObject {
             id: "mem_1".into(),
             kind: "memory",
@@ -1343,6 +1379,11 @@ mod tests {
             memory_store_id: "memstore_1".into(),
             memory_version_id: "memver_1".into(),
             path: "/notes.md".into(),
+            generation: awaken_resource_contract::MemoryGeneration {
+                memory_id: "mem_1".into(),
+                version: 1,
+                content_sha256: "0".repeat(64),
+            },
             content: None,
             content_sha256: "0".repeat(64),
             content_size_bytes: 0,

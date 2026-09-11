@@ -942,7 +942,7 @@ mod tests {
                 vec![MemoryExtractionMutation {
                     path: "/customer.md".into(),
                     content: "Sunday 02:00-04:00".into(),
-                    observed_sha256: None,
+                    observed_generation: None,
                     target_sha256: "target".into(),
                 }],
             )
@@ -1074,7 +1074,7 @@ mod tests {
                 vec![MemoryExtractionMutation {
                     path: "/customer.md".into(),
                     content: "remember".into(),
-                    observed_sha256: None,
+                    observed_generation: None,
                     target_sha256: "expected".into(),
                 }],
             )
@@ -1249,7 +1249,7 @@ mod tests {
             MemoryExtractionOutcome::Mutations(vec![MemoryExtractionMutation {
                 path: "/customer.md".into(),
                 content: "remember".into(),
-                observed_sha256: None,
+                observed_generation: None,
                 target_sha256: "target".into(),
             }])
         }

@@ -16,6 +16,7 @@ mod shared;
 async fn volatile_materialized_path_cas() {
     let fs = VolatileMemoryRepository::new();
     shared::materialized_path_cas(&fs).await;
+    shared::complete_generation_rejects_same_content_aba(&fs).await;
     shared::materialized_update_races_rename(&fs).await;
 }
 
@@ -24,6 +25,7 @@ async fn volatile_materialized_path_cas() {
 async fn sqlite_materialized_path_cas() {
     let fs = awaken_memory_store::SqliteMemoryRepository::open_in_memory().unwrap();
     shared::materialized_path_cas(&fs).await;
+    shared::complete_generation_rejects_same_content_aba(&fs).await;
     shared::materialized_update_races_rename(&fs).await;
 }
 #[allow(unused_imports)]
@@ -42,18 +44,18 @@ async fn conditional_delete_never_removes_a_changed_or_recreated_head(fs: &dyn M
     // Causes: C1 path absent/present; C2 present id matches; C3 present hash
     // matches; C4 a deleted path is recreated with equal content but fresh id.
     // Effects: E1 absent returns false and leaves history unchanged; E2 either
-    // mismatch conflicts and leaves head/history unchanged; E3 exact id+hash
+    // generation mismatch conflicts and leaves head/history unchanged; E3 exact token
     // returns true, removes that head and appends its one deletion version.
     // Decision rules: D1=!C1=>E1; D2=C1&&(!C2||!C3)=>E2;
     // D3=C1&&C2&&C3=>E3; D4=C4 implies !C2 and therefore E2.
     let first = fs.create("guarded", "/note.md", "v1").await.unwrap();
     let changed = fs
-        .update("guarded", &first.id, "v2", &first.content_sha256)
+        .update("guarded", &first.generation(), "v2")
         .await
         .unwrap();
     let before_stale = fs.list_versions("guarded").await.unwrap();
     assert!(matches!(
-        fs.delete_if_match("guarded", "/note.md", &first.id, &first.content_sha256)
+        fs.delete_if_match("guarded", "/note.md", &first.generation())
             .await,
         Err(MemErr::Conflict { .. })
     ));
@@ -68,7 +70,7 @@ async fn conditional_delete_never_removes_a_changed_or_recreated_head(fs: &dyn M
         Some("v2")
     );
     assert!(
-        fs.delete_if_match("guarded", "/note.md", &changed.id, &changed.content_sha256)
+        fs.delete_if_match("guarded", "/note.md", &changed.generation())
             .await
             .unwrap()
     );
@@ -80,7 +82,7 @@ async fn conditional_delete_never_removes_a_changed_or_recreated_head(fs: &dyn M
     );
     assert_eq!(after_delete.last().unwrap().memory_id, changed.id);
     assert!(
-        !fs.delete_if_match("guarded", "/note.md", &changed.id, &changed.content_sha256)
+        !fs.delete_if_match("guarded", "/note.md", &changed.generation())
             .await
             .unwrap(),
         "an already absent head is an idempotent no-op"
@@ -91,7 +93,7 @@ async fn conditional_delete_never_removes_a_changed_or_recreated_head(fs: &dyn M
     assert_ne!(recreated.id, changed.id);
     let before_recreated_stale = fs.list_versions("guarded").await.unwrap();
     assert!(matches!(
-        fs.delete_if_match("guarded", "/note.md", &changed.id, &changed.content_sha256)
+        fs.delete_if_match("guarded", "/note.md", &changed.generation())
             .await,
         Err(MemErr::Conflict { .. })
     ));
@@ -247,6 +249,7 @@ mod postgres {
         atomic_head_update_conformance(&fs).await;
         conditional_delete_never_removes_a_changed_or_recreated_head(&fs).await;
         shared::materialized_path_cas(&fs).await;
+        shared::complete_generation_rejects_same_content_aba(&fs).await;
         shared::materialized_update_races_rename(&fs).await;
         shared::rename_replace_orphans_the_destination_id(&fs).await;
     }

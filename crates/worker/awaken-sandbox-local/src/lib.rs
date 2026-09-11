@@ -697,6 +697,7 @@ mod memory_mount_release_tests {
             vec![pc::MemoryMaterializationHead {
                 path: "value".into(),
                 id: "head-a".into(),
+                version: 1,
                 content_sha256: "digest-a".into(),
             }],
         )
@@ -707,6 +708,7 @@ mod memory_mount_release_tests {
             vec![pc::MemoryMaterializationHead {
                 path: "value".into(),
                 id: "head-b".into(),
+                version: 1,
                 content_sha256: "digest-b".into(),
             }],
         )

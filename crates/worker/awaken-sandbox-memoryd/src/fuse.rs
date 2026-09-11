@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use awaken_resource_contract::{MemErr, Memory, MemoryRepository};
+use awaken_resource_contract::{MemErr, Memory, MemoryGeneration, MemoryRepository};
 use fuser::{
     BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyCreate,
     ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow,
@@ -318,8 +318,7 @@ struct Node {
 
 #[derive(Clone)]
 struct OpenFile {
-    memory_id: String,
-    base_sha256: String,
+    generation: MemoryGeneration,
     buffer: Vec<u8>,
     dirty: bool,
 }
@@ -641,8 +640,7 @@ impl MemoryFuse {
             buffer.clear();
         }
         let fh = self.allocate_fh(OpenFile {
-            memory_id: memory.id.clone(),
-            base_sha256: memory.content_sha256.clone(),
+            generation: memory.generation(),
             buffer,
             dirty: false,
         });
@@ -659,8 +657,7 @@ impl MemoryFuse {
             .block_on(self.fs.create(&self.store_id, path, ""))?;
         let (ino, node) = self.intern_memory(&memory);
         let fh = self.allocate_fh(OpenFile {
-            memory_id: memory.id.clone(),
-            base_sha256: memory.content_sha256.clone(),
+            generation: memory.generation(),
             buffer: Vec::new(),
             dirty: false,
         });
@@ -686,7 +683,7 @@ impl MemoryFuse {
         let fhs: Vec<u64> = table
             .open_files
             .iter()
-            .filter(|(_, open)| open.memory_id == memory_id)
+            .filter(|(_, open)| open.generation.memory_id == memory_id)
             .map(|(fh, _)| *fh)
             .collect();
         if fhs.is_empty() {
@@ -784,12 +781,7 @@ impl MemoryFuse {
             bytes.resize(size, 0);
             let content = String::from_utf8(bytes).map_err(|e| MemErr::Storage(e.to_string()))?;
             self.fs
-                .update(
-                    &self.store_id,
-                    &current.id,
-                    &content,
-                    &current.content_sha256,
-                )
+                .update(&self.store_id, &current.generation(), &content)
                 .await
         })?;
         self.cache_put(memory.clone());
@@ -857,29 +849,29 @@ impl MemoryFuse {
         }
         let content = String::from_utf8(open.buffer.clone())
             .map_err(|e| FuseError::Internal(e.to_string()))?;
-        let updated = match self.runtime.block_on(self.fs.update(
-            &self.store_id,
-            &open.memory_id,
-            &content,
-            &open.base_sha256,
-        )) {
-            Ok(updated) => updated,
-            Err(MemErr::Conflict { current }) => {
-                tracing::warn!(
-                    memory_id = %open.memory_id,
-                    expected_sha256 = %open.base_sha256,
-                    current_sha256 = %current.content_sha256,
-                    current_content_size = current.content_size,
-                    "memory FUSE fd flush conflict — buffer kept, EAGAIN surfaced"
-                );
-                return Err(FuseError::Mem(MemErr::Conflict { current }));
-            }
-            Err(error) => return Err(error.into()),
-        };
+        let updated =
+            match self
+                .runtime
+                .block_on(self.fs.update(&self.store_id, &open.generation, &content))
+            {
+                Ok(updated) => updated,
+                Err(MemErr::Conflict { current }) => {
+                    tracing::warn!(
+                        memory_id = %open.generation.memory_id,
+                        expected_version = open.generation.version,
+                        expected_sha256 = %open.generation.content_sha256,
+                        current_sha256 = %current.content_sha256,
+                        current_content_size = current.content_size,
+                        "memory FUSE fd flush conflict — buffer kept, EAGAIN surfaced"
+                    );
+                    return Err(FuseError::Mem(MemErr::Conflict { current }));
+                }
+                Err(error) => return Err(error.into()),
+            };
         {
             let mut table = self.inodes.lock().expect("inode table mutex poisoned");
             if let Some(current) = table.open_files.get_mut(&fh) {
-                current.base_sha256 = updated.content_sha256.clone();
+                current.generation = updated.generation();
                 current.dirty = false;
             }
             Self::mark_fh_clean(&mut table, fh);
@@ -898,6 +890,33 @@ impl MemoryFuse {
         if removed.is_some() {
             self.mount_state.open_fds.fetch_sub(1, Ordering::SeqCst);
         }
+    }
+
+    fn rename_path(&self, old_path: &str, new_path: &str) -> Result<Memory, FuseError> {
+        let memory = self
+            .runtime
+            .block_on(self.fs.rename(&self.store_id, old_path, new_path))?;
+        let generation = memory.generation();
+        self.cache_remove_path(old_path);
+        self.cache_put(memory.clone());
+        let mut table = self.inodes.lock().expect("inode table mutex poisoned");
+        if let Some(ino) = table.by_path.remove(old_path) {
+            table.by_path.insert(memory.path.clone(), ino);
+            if let Some(node) = table.by_ino.get_mut(&ino) {
+                node.path = memory.path.clone();
+                node.size = memory.content_size;
+                node.updated = memory.updated_unix_nanos;
+            }
+        }
+        // The FUSE rename and open-descriptor token update are one adapter
+        // transition. An external rename cannot refresh this table, so its old
+        // token conflicts at flush instead of bypassing generation.
+        for open in table.open_files.values_mut() {
+            if open.generation.memory_id == generation.memory_id {
+                open.generation = generation.clone();
+            }
+        }
+        Ok(memory)
     }
 
     fn errno(error: FuseError) -> i32 {
@@ -1147,26 +1166,9 @@ impl Filesystem for MemoryFuse {
             reply.error(ENOENT);
             return;
         };
-        match self
-            .runtime
-            .block_on(self.fs.rename(&self.store_id, &old_path, &new_path))
-        {
-            Ok(memory) => {
-                self.cache_remove_path(&old_path);
-                self.cache_put(memory.clone());
-                // Remap the inode in place so already-open fds keep their id/buffer.
-                let mut table = self.inodes.lock().expect("inode table mutex poisoned");
-                if let Some(ino) = table.by_path.remove(&old_path) {
-                    table.by_path.insert(memory.path.clone(), ino);
-                    if let Some(node) = table.by_ino.get_mut(&ino) {
-                        node.path = memory.path;
-                        node.size = memory.content_size;
-                        node.updated = memory.updated_unix_nanos;
-                    }
-                }
-                reply.ok();
-            }
-            Err(error) => reply.error(Self::errno(error.into())),
+        match self.rename_path(&old_path, &new_path) {
+            Ok(_) => reply.ok(),
+            Err(error) => reply.error(Self::errno(error)),
         }
     }
 

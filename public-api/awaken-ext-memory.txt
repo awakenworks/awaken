@@ -104,7 +104,7 @@ pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::transcript_cursor(
 pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::validate(&self) -> core::result::Result<(), awaken_ext_memory::extraction::MemoryExtractionError>
 pub struct awaken_ext_memory::extraction::MemoryExtractionMutation
 pub awaken_ext_memory::extraction::MemoryExtractionMutation::content: alloc::string::String
-pub awaken_ext_memory::extraction::MemoryExtractionMutation::observed_sha256: core::option::Option<alloc::string::String>
+pub awaken_ext_memory::extraction::MemoryExtractionMutation::observed_generation: core::option::Option<awaken_resource_contract::MemoryGeneration>
 pub awaken_ext_memory::extraction::MemoryExtractionMutation::path: alloc::string::String
 pub awaken_ext_memory::extraction::MemoryExtractionMutation::target_sha256: alloc::string::String
 pub struct awaken_ext_memory::extraction::MemoryExtractionPolicy
@@ -360,7 +360,7 @@ pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::transcript_cursor(
 pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::validate(&self) -> core::result::Result<(), awaken_ext_memory::extraction::MemoryExtractionError>
 pub struct awaken_ext_memory::MemoryExtractionMutation
 pub awaken_ext_memory::MemoryExtractionMutation::content: alloc::string::String
-pub awaken_ext_memory::MemoryExtractionMutation::observed_sha256: core::option::Option<alloc::string::String>
+pub awaken_ext_memory::MemoryExtractionMutation::observed_generation: core::option::Option<awaken_resource_contract::MemoryGeneration>
 pub awaken_ext_memory::MemoryExtractionMutation::path: alloc::string::String
 pub awaken_ext_memory::MemoryExtractionMutation::target_sha256: alloc::string::String
 pub struct awaken_ext_memory::MemoryExtractionPolicy

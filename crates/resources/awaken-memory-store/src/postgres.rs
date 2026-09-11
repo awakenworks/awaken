@@ -91,8 +91,8 @@ use crate::repository::{
     under_prefix, validate_path, validate_size,
 };
 use crate::{
-    MemErr, Memory, MemoryActor, MemoryEntry, MemoryPurgeSummary, MemoryRepository, MemoryVersion,
-    MemoryVersionOperation, VersionAppend, sha256_hex,
+    MemErr, Memory, MemoryActor, MemoryEntry, MemoryGeneration, MemoryPurgeSummary,
+    MemoryRepository, MemoryVersion, MemoryVersionOperation, VersionAppend, sha256_hex,
 };
 
 fn mem_err(err: impl std::fmt::Display) -> MemErr {
@@ -552,25 +552,23 @@ impl MemoryRepository for PostgresMemoryRepository {
     async fn update_head(
         &self,
         store: &str,
-        id: &str,
+        base: &MemoryGeneration,
         content: &str,
-        base_sha: &str,
         target_path: Option<&str>,
     ) -> Result<Memory, MemErr> {
-        self.update_head_as(store, id, content, base_sha, target_path, None)
+        self.update_head_as(store, base, content, target_path, None)
             .await
     }
 
     async fn update_head_as(
         &self,
         store: &str,
-        id: &str,
+        base: &MemoryGeneration,
         content: &str,
-        base_sha: &str,
         target_path: Option<&str>,
         actor: Option<&MemoryActor>,
     ) -> Result<Memory, MemErr> {
-        self.update_head_checked(store, id, content, base_sha, target_path, actor, None)
+        self.update_head_checked(store, base, content, target_path, actor, None)
             .await
     }
 
@@ -578,11 +576,10 @@ impl MemoryRepository for PostgresMemoryRepository {
         &self,
         store: &str,
         path: &str,
-        id: &str,
+        base: &MemoryGeneration,
         content: &str,
-        base_sha: &str,
     ) -> Result<Memory, MemErr> {
-        self.update_head_checked(store, id, content, base_sha, None, None, Some(path))
+        self.update_head_checked(store, base, content, None, None, Some(path))
             .await
     }
 
@@ -731,19 +728,16 @@ impl MemoryRepository for PostgresMemoryRepository {
         &self,
         store: &str,
         path: &str,
-        base_id: &str,
-        base_sha: &str,
+        base: &MemoryGeneration,
     ) -> Result<bool, MemErr> {
-        self.delete_if_match_as(store, path, base_id, base_sha, None)
-            .await
+        self.delete_if_match_as(store, path, base, None).await
     }
 
     async fn delete_if_match_as(
         &self,
         store: &str,
         path: &str,
-        base_id: &str,
-        base_sha: &str,
+        base: &MemoryGeneration,
         actor: Option<&MemoryActor>,
     ) -> Result<bool, MemErr> {
         let mut tx = self.pool.begin().await.map_err(mem_err)?;
@@ -759,7 +753,11 @@ impl MemoryRepository for PostgresMemoryRepository {
         let admission = ConditionalDeleteAdmission::new(row.as_ref().map(|row| {
             let id: String = row.get("id");
             let sha: String = row.get("sha");
-            (id == base_id, sha == base_sha)
+            (
+                id == base.memory_id,
+                domain_version(row.get("version")).is_ok_and(|version| version == base.version),
+                sha == base.content_sha256,
+            )
         }));
         match admission {
             ConditionalDeleteAdmission::Absent => return Ok(false),
@@ -791,7 +789,7 @@ impl MemoryRepository for PostgresMemoryRepository {
             &mut tx,
             VersionAppend {
                 store,
-                memory_id: base_id,
+                memory_id: &base.memory_id,
                 operation: MemoryVersionOperation::Deleted,
                 path,
                 content: None,
@@ -915,9 +913,8 @@ impl PostgresMemoryRepository {
     async fn update_head_checked(
         &self,
         store: &str,
-        id: &str,
+        base: &MemoryGeneration,
         content: &str,
-        base_sha: &str,
         target_path: Option<&str>,
         actor: Option<&MemoryActor>,
         expected_path: Option<&str>,
@@ -935,11 +932,11 @@ impl PostgresMemoryRepository {
              WHERE store_id = $1 AND id = $2 FOR UPDATE"
         ))
         .bind(store)
-        .bind(id)
+        .bind(&base.memory_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(mem_err)?
-        .ok_or_else(|| MemErr::NotFound(id.to_string()))?;
+        .ok_or_else(|| MemErr::NotFound(base.memory_id.clone()))?;
         let (path, cur_sha, cur_content, version, created, updated): (
             String,
             String,
@@ -960,12 +957,14 @@ impl PostgresMemoryRepository {
         let already_current = cur_sha == new_sha && path == requested_path;
         match HeadUpdateAdmission::new(
             expected_path.is_none_or(|expected| expected == path),
-            cur_sha == base_sha,
+            true,
+            domain_version(version)? == base.version,
+            cur_sha == base.content_sha256,
             already_current,
         ) {
             HeadUpdateAdmission::Conflict => {
                 let current = to_memory(
-                    id.into(),
+                    base.memory_id.clone(),
                     path,
                     cur_content,
                     cur_sha,
@@ -979,7 +978,7 @@ impl PostgresMemoryRepository {
             }
             HeadUpdateAdmission::Current => {
                 return to_memory(
-                    id.into(),
+                    base.memory_id.clone(),
                     path,
                     cur_content,
                     cur_sha,
@@ -1022,7 +1021,7 @@ impl PostgresMemoryRepository {
         .bind(&new_sha)
         .bind(now)
         .bind(store)
-        .bind(id)
+        .bind(&base.memory_id)
         .execute(&mut *tx)
         .await
         .map_err(mem_err)?;
@@ -1045,7 +1044,7 @@ impl PostgresMemoryRepository {
             &mut tx,
             VersionAppend {
                 store,
-                memory_id: id,
+                memory_id: &base.memory_id,
                 operation: MemoryVersionOperation::Modified,
                 path: requested_path,
                 content: Some(content),
@@ -1058,7 +1057,7 @@ impl PostgresMemoryRepository {
         Ok(Memory {
             content_size: content.len() as u64,
             content: Some(content.to_string()),
-            id: id.to_string(),
+            id: base.memory_id.clone(),
             path: requested_path.to_string(),
             content_sha256: new_sha,
             version: next_domain_version(version)?,

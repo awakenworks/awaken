@@ -119,7 +119,7 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
             if operation == "CONFLICT" {
                 let base = &evidence.heads[0];
                 repository
-                    .update("s", &base.id, "winner", &base.content_sha256)
+                    .update("s", &base.generation(), "winner")
                     .await
                     .unwrap();
             }
@@ -183,12 +183,12 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
                     initial_history.len() + usize::from(operation != "CONFLICT")
                 );
             }
-            tokio::time::timeout(std::time::Duration::from_secs(5), retry)
+            let retry_result = tokio::time::timeout(std::time::Duration::from_secs(5), retry)
                 .await
-                .unwrap()
                 .unwrap();
+            assert_eq!(retry_result.is_err(), operation == "UPDATE");
             if operation != "CONFLICT" {
-                mount.teardown().await.unwrap();
+                assert_eq!(mount.teardown().await.is_err(), operation == "UPDATE");
             }
             let heads = repository.snapshot_heads("s").await.unwrap();
             let history = repository.list_versions("s").await.unwrap();
@@ -197,7 +197,11 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
                 initial_history.len() + usize::from(operation != "CONFLICT")
             );
             let retained = repository.list_copy_conflicts("s").await.unwrap();
-            assert_eq!(retained.len(), usize::from(operation == "CONFLICT"));
+            assert_eq!(
+                retained.len(),
+                usize::from(operation == "CONFLICT"),
+                "operation={operation} retry_before_commit={retry_before_commit}"
+            );
             assert_eq!(
                 heads.first().and_then(|h| h.content.as_deref()),
                 if operation == "DELETE" {
@@ -220,7 +224,12 @@ async fn sqlite_commit_continues_after_caller_abort_and_retry_converges() {
                 .unwrap();
             assert_eq!(reopened.snapshot_heads("s").await.unwrap(), heads);
             assert_eq!(reopened.list_versions("s").await.unwrap(), history);
-            assert_eq!(reopened.list_copy_conflicts("s").await.unwrap(), retained);
+            let reopened_retained = reopened.list_copy_conflicts("s").await.unwrap();
+            assert_eq!(
+                reopened_retained.len(),
+                usize::from(matches!(operation, "CONFLICT" | "UPDATE")),
+                "recovered old generation retains an UPDATE proposal"
+            );
         }
     }
 }
@@ -388,48 +397,36 @@ impl MemoryRepository for FaultRepository {
     async fn update_head(
         &self,
         s: &str,
-        id: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
         c: &str,
-        base: &str,
         target: Option<&str>,
     ) -> Result<Memory, MemErr> {
-        let (inner, s, id, c, base, target) = (
+        let (inner, s, base, c, target) = (
             self.inner.clone(),
             s.to_owned(),
-            id.to_owned(),
+            base.clone(),
             c.to_owned(),
-            base.to_owned(),
             target.map(str::to_owned),
         );
-        self.mutate(async move {
-            inner
-                .update_head(&s, &id, &c, &base, target.as_deref())
-                .await
-        })
-        .await
+        self.mutate(async move { inner.update_head(&s, &base, &c, target.as_deref()).await })
+            .await
     }
     async fn update_materialized(
         &self,
         s: &str,
         path: &str,
-        id: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
         content: &str,
-        base: &str,
     ) -> Result<Memory, MemErr> {
-        let (inner, s, path, id, content, base) = (
+        let (inner, s, path, base, content) = (
             self.inner.clone(),
             s.to_owned(),
             path.to_owned(),
-            id.to_owned(),
+            base.clone(),
             content.to_owned(),
-            base.to_owned(),
         );
-        self.mutate(async move {
-            inner
-                .update_materialized(&s, &path, &id, &content, &base)
-                .await
-        })
-        .await
+        self.mutate(async move { inner.update_materialized(&s, &path, &base, &content).await })
+            .await
     }
     async fn rename(&self, s: &str, a: &str, b: &str) -> Result<Memory, MemErr> {
         self.inner.rename(s, a, b).await
@@ -441,17 +438,10 @@ impl MemoryRepository for FaultRepository {
         &self,
         s: &str,
         p: &str,
-        id: &str,
-        base: &str,
+        base: &awaken_resource_contract::MemoryGeneration,
     ) -> Result<bool, MemErr> {
-        let (inner, s, p, id, base) = (
-            self.inner.clone(),
-            s.to_owned(),
-            p.to_owned(),
-            id.to_owned(),
-            base.to_owned(),
-        );
-        self.mutate(async move { inner.delete_if_match(&s, &p, &id, &base).await })
+        let (inner, s, p, base) = (self.inner.clone(), s.to_owned(), p.to_owned(), base.clone());
+        self.mutate(async move { inner.delete_if_match(&s, &p, &base).await })
             .await
     }
     async fn list_versions(&self, s: &str) -> Result<Vec<MemoryVersion>, MemErr> {
@@ -499,7 +489,7 @@ async fn interrupted_conflict_retention_retries_without_losing_the_proposal() {
                 } else {
                     let base = &evidence.heads[0];
                     repository
-                        .update("s", &base.id, "winner", &base.content_sha256)
+                        .update("s", &base.generation(), "winner")
                         .await
                         .unwrap();
                 }
@@ -721,7 +711,7 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                                 let head =
                                     repository.get_by_path("s", "/z.md").await.unwrap().unwrap();
                                 repository
-                                    .update_head("s", &head.id, "newer", &head.content_sha256, None)
+                                    .update_head("s", &head.generation(), "newer", None)
                                     .await
                                     .unwrap();
                             }
@@ -747,7 +737,12 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                         );
                     }
                     for _ in 0..2 {
-                        assert_eq!(mount.teardown().await.is_err(), competitor, "F4/F6 retry");
+                        let stale_update = operation == "update" && (after || detached);
+                        assert_eq!(
+                            mount.teardown().await.is_err(),
+                            competitor || stale_update,
+                            "F4/F6 retry operation={operation} after={after} detached={detached} prefix={prefix}"
+                        );
                     }
                     let expected = repository.snapshot_heads("s").await.unwrap();
                     let history = repository.list_versions("s").await.unwrap();
@@ -783,16 +778,22 @@ async fn interrupted_writeback_preserves_commit_truth_and_exact_retry() {
                     let conflicts = repository.list_copy_conflicts("s").await.unwrap();
                     assert_eq!(
                         conflicts.len(),
-                        usize::from(competitor),
+                        usize::from(prefix) + usize::from(competitor || operation == "update"),
                         "F6 exact conflict retention"
                     );
-                    if competitor {
-                        assert_eq!(conflicts[0].path, "/z.md");
+                    if prefix {
+                        assert!(conflicts.iter().any(|conflict| conflict.path == "/a.md"));
+                    }
+                    if competitor || operation == "update" {
+                        let conflict = conflicts
+                            .iter()
+                            .find(|conflict| conflict.path == "/z.md")
+                            .expect("z proposal retained");
                         assert_eq!(
-                            conflicts[0].content.as_deref(),
+                            conflict.content.as_deref(),
                             (operation != "delete").then_some("edit")
                         );
-                        assert_eq!(conflicts[0].base.is_none(), operation == "create");
+                        assert_eq!(conflict.base.is_none(), operation == "create");
                     }
                     assert_eq!(repository.snapshot_heads("s").await.unwrap(), expected);
                     assert_eq!(repository.list_versions("s").await.unwrap(), history);

@@ -490,6 +490,7 @@ async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
         vec![pc::MemoryMaterializationHead {
             path: "value".into(),
             id: "head".into(),
+            version: 1,
             content_sha256: "digest".into(),
         }],
     )
@@ -551,6 +552,7 @@ async fn cold_namespace_copy_requires_exact_effect_scoped_ack() {
         vec![pc::MemoryMaterializationHead {
             path: "value".into(),
             id: "head".into(),
+            version: 1,
             content_sha256: "different".into(),
         }],
     )

@@ -329,14 +329,20 @@ fn content_lru_cache_evicts_oldest_and_refreshes_on_get() {
 fn open_fd_count_tracks_allocated_handles() {
     let fs = test_fs();
     let a = fs.allocate_fh(OpenFile {
-        memory_id: "m1".into(),
-        base_sha256: sha256_hex("one"),
+        generation: MemoryGeneration {
+            memory_id: "m1".into(),
+            version: 1,
+            content_sha256: sha256_hex("one"),
+        },
         buffer: b"one".to_vec(),
         dirty: false,
     });
     let b = fs.allocate_fh(OpenFile {
-        memory_id: "m2".into(),
-        base_sha256: sha256_hex("two"),
+        generation: MemoryGeneration {
+            memory_id: "m2".into(),
+            version: 1,
+            content_sha256: sha256_hex("two"),
+        },
         buffer: b"two".to_vec(),
         dirty: false,
     });
@@ -352,16 +358,22 @@ fn dirty_fd_budget_fails_closed_at_the_limit() {
     let fs = test_fs();
     for index in 0..MAX_DIRTY_OPEN_FILES {
         let fh = fs.allocate_fh(OpenFile {
-            memory_id: format!("m{index}"),
-            base_sha256: sha256_hex("clean"),
+            generation: MemoryGeneration {
+                memory_id: format!("m{index}"),
+                version: 1,
+                content_sha256: sha256_hex("clean"),
+            },
             buffer: Vec::new(),
             dirty: false,
         });
         fs.write_fh_bytes(fh, 0, b"x").expect("dirty fd admitted");
     }
     let blocked = fs.allocate_fh(OpenFile {
-        memory_id: "blocked".into(),
-        base_sha256: sha256_hex("blocked"),
+        generation: MemoryGeneration {
+            memory_id: "blocked".into(),
+            version: 1,
+            content_sha256: sha256_hex("blocked"),
+        },
         buffer: Vec::new(),
         dirty: false,
     });
@@ -394,10 +406,10 @@ fn a_stale_open_fd_conflicts_and_does_not_clobber_a_newer_write() {
     let fh = fuse.open_file_for_path("/c.md", 0).unwrap();
 
     // Another writer advances the store out from under the open fd.
-    rt.block_on(backend.update(store, &created.id, "server-wins", &created.content_sha256))
+    rt.block_on(backend.update(store, &created.generation(), "server-wins"))
         .unwrap();
 
-    // The stale fd writes and flushes: CAS on the now-stale base sha conflicts,
+    // The stale fd writes and flushes: CAS on the now-stale generation conflicts,
     // the buffer is kept, and the store's newer content is NOT clobbered.
     fuse.write_fh_bytes(fh, 0, b"stale-write").unwrap();
     assert!(
@@ -632,18 +644,18 @@ fn an_open_fd_survives_rename_and_flushes_to_the_renamed_memory() {
     let fuse = MemoryFuse::new(backend.clone(), store.into()).unwrap();
     let fh = fuse.open_file_for_path("/old.md", 0).unwrap();
 
-    // Rename the memory while the fd is open (through the fs, as the FUSE rename
-    // does); the fd keeps its buffer and id.
-    rt.block_on(backend.rename(store, "/old.md", "/new.md"))
-        .unwrap();
+    // Cause/effect rule FR1: a FUSE-owned rename advances the durable generation
+    // and refreshes every open descriptor for the same immutable id; its buffer
+    // survives and a later flush follows the renamed head. An external rename is
+    // covered separately by the stale-generation conflict tests.
+    fuse.rename_path("/old.md", "/new.md").unwrap();
     assert_eq!(
         fuse.read_fh_bytes(fh, 0, 64).unwrap(),
         b"snapshot",
         "the open fd still reads its captured content after rename"
     );
 
-    // A write + close-flush on that fd lands on the renamed memory (same id,
-    // unchanged sha, so the CAS succeeds).
+    // FR1 effect: a write + close-flush uses the refreshed complete generation.
     fuse.write_fh_bytes(fh, 0, b"after-rename").unwrap();
     fuse.flush_fh(fh).expect("flush after rename succeeds");
     let moved = rt
@@ -721,7 +733,7 @@ fn a_flush_conflict_keeps_the_buffer_dirty_for_a_re_drive() {
     let fh = fuse.open_file_for_path("/c.md", 0).unwrap();
 
     // Advance the store out from under the open fd, then write + flush the stale fd.
-    rt.block_on(backend.update(store, &created.id, "server", &created.content_sha256))
+    rt.block_on(backend.update(store, &created.generation(), "server"))
         .unwrap();
     fuse.write_fh_bytes(fh, 0, b"mine").unwrap();
     assert!(matches!(
@@ -866,7 +878,7 @@ fn cross_host_write_invalidates_a_peer_mounts_cache_end_to_end() {
     };
 
     // Host A updates /note.md → the write publishes an invalidation B must observe.
-    rt.block_on(fs_a.update("s", &seed.id, "v2", &seed.content_sha256))
+    rt.block_on(fs_a.update("s", &seed.generation(), "v2"))
         .unwrap();
 
     // B's cache drops the stale path (bounded poll on the real condition — the file's

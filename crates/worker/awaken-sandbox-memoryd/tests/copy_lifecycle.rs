@@ -51,7 +51,7 @@ async fn live_and_recovered_copy_do_not_follow_a_renamed_head() {
             std::fs::write(projection.join("note.md"), b"candidate").unwrap();
             if same_candidate {
                 repository
-                    .update("s", &base.id, "candidate", &base.content_sha256)
+                    .update("s", &base.generation(), "candidate")
                     .await
                     .unwrap();
             }
@@ -350,6 +350,7 @@ async fn recovery_preserves_logical_names_without_host_rematerialization() {
                 |head| awaken_provisioning_contract::MemoryMaterializationHead {
                     path: head.path.clone(),
                     id: head.id.clone(),
+                    version: head.version,
                     content_sha256: head.content_sha256.clone(),
                 },
             )
@@ -1073,7 +1074,7 @@ async fn partial_copy_commit_keeps_per_file_truth_across_retry_and_reopen() {
             z_base
         } else {
             repository
-                .update("s", &z_base.id, "z-winner", &z_base.content_sha256)
+                .update("s", &z_base.generation(), "z-winner")
                 .await
                 .unwrap()
         };
@@ -1116,7 +1117,8 @@ async fn partial_copy_commit_keeps_per_file_truth_across_retry_and_reopen() {
         );
         assert_eq!(
             repository.list_copy_conflicts("s").await.unwrap().len(),
-            usize::from(!oversized)
+            2 * usize::from(!oversized),
+            "a repeated harvest with old generation evidence retains both stale proposals"
         );
         assert_eq!(
             repository.get_by_path("s", "/a.md").await.unwrap(),
@@ -1142,7 +1144,8 @@ async fn partial_copy_commit_keeps_per_file_truth_across_retry_and_reopen() {
 #[tokio::test]
 async fn recovered_copy_retries_committed_write_without_a_second_version() {
     // R5: durable commit + lost response/local snapshot + process replacement
-    // => retry exact bytes with ORIGINAL materialization evidence is idempotent.
+    // => original generation evidence is stale even for exact committed bytes;
+    // the proposal is retained once and the durable head remains unchanged.
     // R6: another writer advances after R5 => old proposal is retained, never
     // reverts the head or adds a successful version.
     // This exercises the real SQLite commit boundary, not a mocked CAS result;
@@ -1163,7 +1166,7 @@ async fn recovered_copy_retries_committed_write_without_a_second_version() {
     )
     .unwrap();
     let committed = repository
-        .update("s", &base.id, "committed", &base.content_sha256)
+        .update("s", &base.generation(), "committed")
         .await
         .unwrap();
     drop(mount);
@@ -1183,7 +1186,7 @@ async fn recovered_copy_retries_committed_write_without_a_second_version() {
         );
     }
     let newer = repository
-        .update("s", &base.id, "newer", &committed.content_sha256)
+        .update("s", &committed.generation(), "newer")
         .await
         .unwrap();
     replacement
@@ -1207,7 +1210,8 @@ async fn concurrent_identical_edits_converge_but_different_creates_conflict() {
     // Decision table completes the operation/equality partition of the race:
     // R7 absent base + different creates => 1 success / 1 conflict / version 1.
     // R8 absent base + identical creates => 2 successes / version 1.
-    // R9 present base + identical updates => 2 successes / version 2.
+    // R9 present base + identical updates => 1 success + 1 retained conflict;
+    // the old same-content generation cannot masquerade as a retry.
     // R10 present base + two deletes => 2 successes / absent head.
     // All retries preserve the exact head including version and timestamps.
     // The barrier is after BOTH materializations and edits, not before mount.
@@ -1267,7 +1271,11 @@ async fn concurrent_identical_edits_converge_but_different_creates_conflict() {
         let successes = usize::from(a.is_ok()) + usize::from(b.is_ok());
         assert_eq!(
             successes,
-            if rule == "different-create" { 1 } else { 2 },
+            if matches!(rule, "different-create" | "same-update") {
+                1
+            } else {
+                2
+            },
             "{rule}"
         );
         let durable = repository.get_by_path("s", "/note.md").await.unwrap();
@@ -1278,7 +1286,11 @@ async fn concurrent_identical_edits_converge_but_different_creates_conflict() {
             assert_eq!(head.version, if seeded { 2 } else { 1 });
             assert_eq!(
                 head.content.as_deref(),
-                Some(if a.is_ok() { "left" } else { "right" })
+                Some(if rule == "different-create" && a.is_err() {
+                    "right"
+                } else {
+                    "left"
+                })
             );
         }
         assert_eq!(left.teardown().await.is_ok(), a.is_ok());

@@ -1126,6 +1126,7 @@ impl pc::MemoryMount for HarvestingMemoryMount {
         Some(vec![pc::MemoryMaterializationHead {
             path: "seed.txt".into(),
             id: "seed-head".into(),
+            version: 1,
             content_sha256: "seed-sha256".into(),
         }])
     }

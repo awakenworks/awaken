@@ -64,8 +64,8 @@ use crate::repository::{
     under_prefix, validate_path, validate_size,
 };
 use crate::{
-    MemErr, Memory, MemoryActor, MemoryEntry, MemoryPurgeSummary, MemoryRepository, MemoryVersion,
-    MemoryVersionOperation, VersionAppend, sha256_hex,
+    MemErr, Memory, MemoryActor, MemoryEntry, MemoryGeneration, MemoryPurgeSummary,
+    MemoryRepository, MemoryVersion, MemoryVersionOperation, VersionAppend, sha256_hex,
 };
 
 fn mem_err(err: impl std::fmt::Display) -> MemErr {
@@ -548,25 +548,23 @@ impl MemoryRepository for SqliteMemoryRepository {
     async fn update_head(
         &self,
         store: &str,
-        id: &str,
+        base: &MemoryGeneration,
         content: &str,
-        base_sha: &str,
         target_path: Option<&str>,
     ) -> Result<Memory, MemErr> {
-        self.update_head_as(store, id, content, base_sha, target_path, None)
+        self.update_head_as(store, base, content, target_path, None)
             .await
     }
 
     async fn update_head_as(
         &self,
         store: &str,
-        id: &str,
+        base: &MemoryGeneration,
         content: &str,
-        base_sha: &str,
         target_path: Option<&str>,
         actor: Option<&MemoryActor>,
     ) -> Result<Memory, MemErr> {
-        self.update_head_checked(store, id, content, base_sha, target_path, actor, None)
+        self.update_head_checked(store, base, content, target_path, actor, None)
             .await
     }
 
@@ -574,11 +572,10 @@ impl MemoryRepository for SqliteMemoryRepository {
         &self,
         store: &str,
         path: &str,
-        id: &str,
+        base: &MemoryGeneration,
         content: &str,
-        base_sha: &str,
     ) -> Result<Memory, MemErr> {
-        self.update_head_checked(store, id, content, base_sha, None, None, Some(path))
+        self.update_head_checked(store, base, content, None, None, Some(path))
             .await
     }
 
@@ -734,26 +731,22 @@ impl MemoryRepository for SqliteMemoryRepository {
         &self,
         store: &str,
         path: &str,
-        base_id: &str,
-        base_sha: &str,
+        base: &MemoryGeneration,
     ) -> Result<bool, MemErr> {
-        self.delete_if_match_as(store, path, base_id, base_sha, None)
-            .await
+        self.delete_if_match_as(store, path, base, None).await
     }
 
     async fn delete_if_match_as(
         &self,
         store: &str,
         path: &str,
-        base_id: &str,
-        base_sha: &str,
+        base: &MemoryGeneration,
         actor: Option<&MemoryActor>,
     ) -> Result<bool, MemErr> {
-        let (store, path, base_id, base_sha, actor) = (
+        let (store, path, base, actor) = (
             store.to_string(),
             path.to_string(),
-            base_id.to_string(),
-            base_sha.to_string(),
+            base.clone(),
             actor.cloned(),
         );
         with_conn_mem(&self.conn, move |conn| {
@@ -778,10 +771,14 @@ impl MemoryRepository for SqliteMemoryRepository {
                 )
                 .optional()
                 .map_err(mem_err)?;
-            let admission = ConditionalDeleteAdmission::new(
-                row.as_ref()
-                    .map(|(id, _, sha, _, _, _)| (id == &base_id, sha == &base_sha)),
-            );
+            let admission =
+                ConditionalDeleteAdmission::new(row.as_ref().map(|(id, _, sha, version, _, _)| {
+                    (
+                        id == &base.memory_id,
+                        domain_version(*version).is_ok_and(|version| version == base.version),
+                        sha == &base.content_sha256,
+                    )
+                }));
             match admission {
                 ConditionalDeleteAdmission::Absent => return Ok(false),
                 ConditionalDeleteAdmission::Conflict => {
@@ -804,7 +801,7 @@ impl MemoryRepository for SqliteMemoryRepository {
                 &tx,
                 VersionAppend {
                     store: &store,
-                    memory_id: &base_id,
+                    memory_id: &base.memory_id,
                     operation: MemoryVersionOperation::Deleted,
                     path: &path,
                     content: None,
@@ -931,9 +928,8 @@ impl SqliteMemoryRepository {
     async fn update_head_checked(
         &self,
         store: &str,
-        id: &str,
+        base: &MemoryGeneration,
         content: &str,
-        base_sha: &str,
         target_path: Option<&str>,
         actor: Option<&MemoryActor>,
         expected_path: Option<&str>,
@@ -945,11 +941,10 @@ impl SqliteMemoryRepository {
         if let Some(path) = target_path {
             validate_path(path)?;
         }
-        let (store, id, content, base_sha, target_path) = (
+        let (store, base, content, target_path) = (
             store.to_string(),
-            id.to_string(),
+            base.clone(),
             content.to_string(),
-            base_sha.to_string(),
             target_path.map(str::to_string),
         );
         let actor = actor.cloned();
@@ -962,7 +957,7 @@ impl SqliteMemoryRepository {
                         "SELECT path, sha, content, version, created, updated FROM {NS}_memories \
                          WHERE store_id = ?1 AND id = ?2"
                     ),
-                    params![store, id],
+                    params![store, base.memory_id],
                     |r| {
                         Ok((
                             r.get::<_, String>(0)?,
@@ -977,7 +972,7 @@ impl SqliteMemoryRepository {
                 .optional()
                 .map_err(mem_err)?;
             let (path, cur_sha, cur_content, version, created, updated) =
-                row.ok_or_else(|| MemErr::NotFound(id.clone()))?;
+                row.ok_or_else(|| MemErr::NotFound(base.memory_id.clone()))?;
             let requested_path = target_path.unwrap_or_else(|| path.clone());
             let new_sha = sha256_hex(&content);
             let already_current = cur_sha == new_sha && path == requested_path;
@@ -985,18 +980,35 @@ impl SqliteMemoryRepository {
                 expected_path
                     .as_deref()
                     .is_none_or(|expected| expected == path),
-                cur_sha == base_sha,
+                true,
+                domain_version(version)? == base.version,
+                cur_sha == base.content_sha256,
                 already_current,
             ) {
                 HeadUpdateAdmission::Conflict => {
-                    let current =
-                        row_memory(id, path, cur_content, cur_sha, version, created, updated)?;
+                    let current = row_memory(
+                        base.memory_id,
+                        path,
+                        cur_content,
+                        cur_sha,
+                        version,
+                        created,
+                        updated,
+                    )?;
                     return Err(MemErr::Conflict {
                         current: Box::new(current),
                     });
                 }
                 HeadUpdateAdmission::Current => {
-                    return row_memory(id, path, cur_content, cur_sha, version, created, updated);
+                    return row_memory(
+                        base.memory_id,
+                        path,
+                        cur_content,
+                        cur_sha,
+                        version,
+                        created,
+                        updated,
+                    );
                 }
                 HeadUpdateAdmission::Apply => {}
             }
@@ -1024,7 +1036,14 @@ impl SqliteMemoryRepository {
                     "UPDATE {NS}_memories SET path = ?1, content = ?2, sha = ?3, \
                      version = version + 1, updated = ?4 WHERE store_id = ?5 AND id = ?6"
                 ),
-                params![requested_path, content.as_bytes(), new_sha, now, store, id],
+                params![
+                    requested_path,
+                    content.as_bytes(),
+                    new_sha,
+                    now,
+                    store,
+                    base.memory_id
+                ],
             )
             .map_err(mem_err)?;
             if let Some(displaced_id) = displaced_id {
@@ -1045,7 +1064,7 @@ impl SqliteMemoryRepository {
                 &tx,
                 VersionAppend {
                     store: &store,
-                    memory_id: &id,
+                    memory_id: &base.memory_id,
                     operation: MemoryVersionOperation::Modified,
                     path: &requested_path,
                     content: Some(&content),
@@ -1057,7 +1076,7 @@ impl SqliteMemoryRepository {
             Ok(Memory {
                 content_size: content.len() as u64,
                 content: Some(content),
-                id,
+                id: base.memory_id,
                 path: requested_path,
                 content_sha256: new_sha,
                 version: next_domain_version(version)?,
@@ -1213,9 +1232,8 @@ mod memory_repository_tests {
                 .unwrap();
             fs.update_head_as(
                 "s",
-                &created.id,
+                &created.generation(),
                 "updated",
-                &created.content_sha256,
                 None,
                 Some(&api_actor),
             )
