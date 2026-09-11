@@ -218,6 +218,8 @@ cargo test -p awaken-ext-background-task --features loom --lib supervisor::loom_
 # The Kani predicate below is not sufficient evidence of the async wiring.
 # Exercise its aggregate projection and real post-concurrency-admission check.
 cargo test -p awaken-ext-background-task --test state_machine execution_admission
+cargo test -p awaken-runtime --test background_task_state \
+  terminal_reclaim_rejects_then_recovers_from_committed_thread_truth -- --exact
 cargo test -p awaken-session-executor --lib background_task::ownership::tests
 # The model's CommittedAuthority observation source is an async query policy,
 # not the process projection. Hold that projection stale while the production
