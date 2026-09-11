@@ -589,6 +589,7 @@ pub awaken_runtime_contract::llm::Error::Binding(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::ContentFiltered(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::ContextOverflow(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::InvalidRequest(alloc::string::String)
+pub awaken_runtime_contract::llm::Error::InvalidResponse(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::LoginRequired(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::ModelNotFound(alloc::string::String)
 pub awaken_runtime_contract::llm::Error::Observed
@@ -613,6 +614,7 @@ pub fn awaken_runtime_contract::llm::Error::execution_evidence(&self) -> awaken_
 pub fn awaken_runtime_contract::llm::Error::is_retryable(&self) -> bool
 pub fn awaken_runtime_contract::llm::Error::reset_hint(&self) -> core::option::Option<core::time::Duration>
 pub fn awaken_runtime_contract::llm::Error::retry_after(&self) -> core::option::Option<core::time::Duration>
+pub fn awaken_runtime_contract::llm::Error::retry_preserves_attempt_output(&self) -> bool
 pub fn awaken_runtime_contract::llm::Error::with_execution_evidence(self, awaken_runtime_contract::model_operation::ModelExecutionEvidence) -> Self
 impl awaken_runtime_contract::resilience::Classify for awaken_runtime_contract::llm::Error
 pub fn awaken_runtime_contract::llm::Error::disposition(&self) -> awaken_runtime_contract::resilience::Disposition
