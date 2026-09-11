@@ -90,6 +90,8 @@ const scenarios: Scenario[] = [
   { id: 'acp_permission', file: 'e2e/acp_permission_resume_e2e.mjs' },
   { id: 'acp_control', file: 'e2e/acp_control_lifecycle_e2e.ts' },
   { id: 'acp_ticket_corruption', file: 'e2e/acp_permission_corruption_e2e.ts' },
+  { id: 'managed_mcp_hot_swap', file: 'e2e/managed_mcp_hot_swap_e2e.ts' },
+  { id: 'managed_mcp_recovery', file: 'e2e/managed_mcp_recovery_e2e.ts' },
 ];
 
 const obligations: Obligation[] = [
@@ -257,9 +259,18 @@ const obligations: Obligation[] = [
   // substitution and no-bypass networking.
   //
   // | Rule | exact generation/source | live claim/holder | provider proof | Effect |
-  // | G42-P01..P06 | yes | yes | n/a | freeze/realize/recover one generation |
+  // | G42-P01..P06 | yes | yes | n/a | freeze, dispatch, fence, or fail closed |
+  // | G42-P07..P08 | yes | yes | n/a | replace/recover one MCP generation |
   // | G43-P01..P06 | yes | yes | n/a | materialize exact binding or reject |
   // | G43-P07 | yes | yes | no | reject before launch; never downgrade |
+  { id: 'G42-P01', stage: '9 guardrail promotion evidence', behavior: 'an official SDK Session returns its exact frozen Resource set and preserves its startup Skill snapshot across later Repository mutation', scenario: 'managed_full_chain' },
+  { id: 'G42-P02', stage: '9 guardrail promotion evidence', behavior: 'a public SDK Session Run executes from the Postgres-backed Control publication after process replacement', scenario: 'control_plane_postgres' },
+  { id: 'G42-P03', stage: '9 guardrail promotion evidence', behavior: 'Worker realization commands require the exact authenticated owner, incarnation and live monotonic lease before Control effects', scenario: 'worker_transport' },
+  { id: 'G42-P04', stage: '9 guardrail promotion evidence', behavior: 'replacement Worker recovery transfers exact frozen placement and Work authority while fencing the stale claim epoch', scenario: 'remote_worker_recovery' },
+  { id: 'G42-P05', stage: '9 guardrail promotion evidence', behavior: 'a frozen Resource manifest and Workspace cross the durable remote Worker boundary without widening an invalid request', scenario: 'worker_resource_manifest' },
+  { id: 'G42-P06', stage: '9 guardrail promotion evidence', behavior: 'corrupt, cross-Session, wrong-provider and missing physical Environment bindings fail recovery without replacement', scenario: 'session_environment_faults' },
+  { id: 'G42-P07', stage: '9 guardrail promotion evidence', behavior: 'full replacement publishes only the exact realized MCP generation while replay, conflict, removal and failed stage preserve durable truth', scenario: 'managed_mcp_hot_swap' },
+  { id: 'G42-P08', stage: '9 guardrail promotion evidence', behavior: 'process replacement recovers the exact active MCP generation and never resurrects a removed generation', scenario: 'managed_mcp_recovery' },
   { id: 'G43-P01', stage: '9 guardrail promotion evidence', behavior: 'credential materialization binds exact source, recipient, target, usage, payload and claim epoch', scenario: 'credential_materialization_worker' },
   { id: 'G43-P02', stage: '9 guardrail promotion evidence', behavior: 'mismatched payload or target cannot replay an envelope', scenario: 'credential_materialization_worker' },
   { id: 'G43-P03', stage: '9 guardrail promotion evidence', behavior: 'expired or wrong-recipient material fails before provider I/O', scenario: 'credential_materialization_worker' },

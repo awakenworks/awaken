@@ -39,6 +39,8 @@ DETERMINISTIC_RUNNER = (
 )
 REQUIRED_STAGE_SCENARIOS = (
     ("managed_full_chain", "managed_full_chain_e2e.mjs"),
+    ("managed_mcp_hot_swap", "managed_mcp_hot_swap_e2e.ts"),
+    ("managed_mcp_recovery", "managed_mcp_recovery_e2e.ts"),
 )
 REQUIRED_STAGE_ENVIRONMENTS = (
     (
@@ -721,17 +723,33 @@ def self_test() -> None:
             detached_sdk_behavior, deterministic_suites, stage_text, files, runners
         )
     ), "R2 SDK behavior remains under its sole deterministic compatibility owner"
-    missing_full_chain_stage = stage_text.replace(
-        "{ id: 'managed_full_chain', file: 'e2e/managed_full_chain_e2e.mjs' },",
-        "{ id: 'managed_full_chain_removed', file: 'e2e/managed_full_chain_e2e.mjs' },",
-        1,
-    )
-    assert any(
-        "does not bind managed_full_chain" in error
-        for error in orchestration_errors(
-            scripts, deterministic_suites, missing_full_chain_stage, files, runners
+    # Required-stage ownership table: C1=the canonical stage graph binds the
+    # required scenario id to its executable file; C2=the package graph does
+    # not execute that file separately. Effects: E1=C1+C2 accepts one owner;
+    # E2=!C1 rejects missing evidence; E3=!C2 rejects duplicate execution.
+    # Each required scenario takes R2 below, while the existing R10 mutation
+    # covers E3 without creating a second list of scenario commands.
+    #
+    # | Rule | C1 | C2 | Effect |
+    # | R1   | T  | T  | E1 accept one Stage owner |
+    # | R2   | F  | *  | E2 reject missing Stage binding |
+    # | R10  | T  | F  | E3 reject package/Stage overlap |
+    for scenario_id, relative in REQUIRED_STAGE_SCENARIOS:
+        missing_required_stage = stage_text.replace(
+            f"id: '{scenario_id}'",
+            f"id: '{scenario_id}_removed'",
+            1,
         )
-    ), "R2 full-chain closure remains in the stage aggregate"
+        assert any(
+            f"does not bind {scenario_id}" in error
+            for error in orchestration_errors(
+                scripts,
+                deterministic_suites,
+                missing_required_stage,
+                files,
+                runners,
+            )
+        ), f"R2 {scenario_id} remains in the Stage aggregate"
 
     duplicate_full_chain = [*deterministic_suites, "test:full-chain"]
     assert any(
