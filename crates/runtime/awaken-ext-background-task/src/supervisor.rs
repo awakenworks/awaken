@@ -28,6 +28,35 @@ pub struct BackgroundTaskWaitCandidate {
     pub renew_lease: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompletionFoldPlan {
+    /// Stage the exact candidate while retaining it for commit-loss retry.
+    StageRetainingCandidate,
+    /// A strictly newer committed epoch makes the observed candidate stale.
+    RetireStale,
+    /// No current attempt or an incomparable snapshot cannot authorize either.
+    Preserve,
+}
+
+/// Sole scalar admission plan from a process completion candidate to the
+/// ordinary durable fold. The supervisor applies retirement under its one slot
+/// lock; a matching candidate is deliberately read without being consumed.
+fn completion_fold_plan(
+    candidate: &TaskFence,
+    committed: Option<&TaskFence>,
+) -> CompletionFoldPlan {
+    let Some(committed) = committed else {
+        return CompletionFoldPlan::Preserve;
+    };
+    if candidate == committed {
+        CompletionFoldPlan::StageRetainingCandidate
+    } else if candidate.epoch < committed.epoch {
+        CompletionFoldPlan::RetireStale
+    } else {
+        CompletionFoldPlan::Preserve
+    }
+}
+
 enum SupervisorEntry {
     Active {
         fence: TaskFence,
@@ -246,6 +275,33 @@ impl BackgroundTaskSupervisor {
         {
             Some(SupervisorEntry::Completed(completion)) => Some(completion.clone()),
             Some(SupervisorEntry::Active { .. } | SupervisorEntry::Waiting(_)) | None => None,
+        }
+    }
+
+    /// Admit one completion candidate against the exact attempt in the caller's
+    /// committed snapshot. A matching candidate remains in the slot so a lost
+    /// or rejected State commit can stage the same result on the next StepStart.
+    /// A strictly older candidate is retired atomically; same/newer incomparable
+    /// candidates remain for a snapshot that can establish their authority.
+    pub(crate) fn completion_for_fold(
+        &self,
+        id: &BackgroundTaskId,
+        committed: Option<&TaskFence>,
+    ) -> Option<BackgroundTaskCompletion> {
+        let mut entries = self
+            .entries
+            .lock()
+            .expect("background supervisor mutex poisoned");
+        let Some(SupervisorEntry::Completed(completion)) = entries.get(id) else {
+            return None;
+        };
+        match completion_fold_plan(&completion.fence, committed) {
+            CompletionFoldPlan::StageRetainingCandidate => Some(completion.clone()),
+            CompletionFoldPlan::RetireStale => {
+                entries.remove(id);
+                None
+            }
+            CompletionFoldPlan::Preserve => None,
         }
     }
 
@@ -536,6 +592,41 @@ mod tests {
     }
 
     #[test]
+    fn completion_fold_admission_retains_retry_and_retires_only_strictly_stale() {
+        // Cause/effect decision table for the sole completion-fold admission:
+        // C1 a Completed slot exists; C2 a committed attempt exists; C3 its
+        // owner matches; C4 candidate epoch is below/equal/above committed.
+        // R1 C1+C2+C3+equal -> return the exact candidate repeatedly and retain
+        // the slot (E1 commit-loss retry); R2 C1+C2+below -> return nothing and
+        // retire the exact stale slot (E2 inert); R3 missing attempt,
+        // same-epoch different owner, or candidate above -> return nothing and
+        // preserve the slot (E3 an older/incomparable snapshot cannot evict).
+        // Constraint: durable Ended cleanup remains the separate absorbing-state
+        // observation; this admission never claims that a staged command committed.
+        for (committed, expected_first, expected_retained) in [
+            (Some(("worker", 2)), true, true),
+            (Some(("worker", 3)), false, false),
+            (Some(("other", 2)), false, true),
+            (Some(("worker", 1)), false, true),
+            (None, false, true),
+        ] {
+            let supervisor = BackgroundTaskSupervisor::new("worker");
+            let id = id();
+            supervisor.register(&id, &completion(2).fence).unwrap();
+            supervisor.complete(id.clone(), completion(2));
+            let committed = committed.map(|(worker_id, epoch)| TaskFence {
+                worker_id: worker_id.into(),
+                epoch,
+            });
+            let first = supervisor.completion_for_fold(&id, committed.as_ref());
+            assert_eq!(first.is_some(), expected_first);
+            let second = supervisor.completion_for_fold(&id, committed.as_ref());
+            assert_eq!(second.is_some(), expected_first, "R1 exact retry");
+            assert_eq!(supervisor.completion(&id).is_some(), expected_retained);
+        }
+    }
+
+    #[test]
     fn active_wait_commit_ack_and_poll_reuse_one_atomic_slot() {
         // Cause/effect decision table: R1 vacant wait delivery -> inert; R2
         // Active+wait -> one Waiting candidate and no completion; R3 wrong-fence
@@ -620,7 +711,7 @@ mod loom_tests {
                 stale.complete(id(), completion(1));
                 stale.wait(id(), wait_candidate(1));
                 stale.cancel(&id(), &observed.fence);
-                stale.retire(&id(), &observed.fence, &completion(2).fence);
+                let _ = stale.completion_for_fold(&id(), Some(&completion(2).fence));
             });
             let token = replacement.join().unwrap();
             callbacks.join().unwrap();
@@ -706,5 +797,78 @@ mod loom_tests {
             assert_ne!(first.join().unwrap(), second.join().unwrap());
             assert!(supervisor.is_active(&id(), &completion(1).fence));
         });
+    }
+
+    #[test]
+    fn completion_fold_observation_cannot_consume_newer_registration() {
+        // Causes: an exact epoch-1 completion fold races a committed epoch-2
+        // registration under the production slot mutex. R1 fold first -> return
+        // the retained epoch-1 receipt, then replacement installs epoch 2; R2
+        // replacement first -> fold observes no Completed candidate and stutters.
+        // Effect: both schedules end with the exact epoch-2 Active slot and its
+        // live token. Constraint: whether an already-staged epoch-1 command wins
+        // a ThreadCommit race is the durable CAS/async TCB, not this process lock.
+        loom::model(|| {
+            let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker"));
+            supervisor.register(&id(), &completion(1).fence).unwrap();
+            supervisor.complete(id(), completion(1));
+            let folding = supervisor.clone();
+            let folded = thread::spawn(move || {
+                folding.completion_for_fold(&id(), Some(&completion(1).fence))
+            });
+            let replacing = supervisor.clone();
+            let replacement =
+                thread::spawn(move || replacing.register(&id(), &completion(2).fence).unwrap());
+            if let Some(receipt) = folded.join().unwrap() {
+                assert_eq!(receipt.fence, completion(1).fence);
+            }
+            let token = replacement.join().unwrap();
+            assert!(supervisor.is_active(&id(), &completion(2).fence));
+            assert!(!token.is_cancelled());
+        });
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn process_completion_fold_retries_exact_candidate_and_stale_is_inert() {
+    // Cause/effect decision table over the production completion_fold_plan:
+    // C1 committed attempt absent/present; C2 owner equal/different; C3 all u64
+    // candidate and committed epochs. R1 present+exact owner+equal epoch yields
+    // StageRetainingCandidate on every observation; R2 any candidate epoch below
+    // committed yields RetireStale; R3 absent, same/newer mismatches yield Preserve.
+    // Effects: only R1 can reach BackgroundTask::finish and it does not consume
+    // the process candidate, so a rejected/lost durable commit retries identically;
+    // R2/R3 authorize no State mutation. The supervisor mutex, StateCommand,
+    // ThreadCommit/DB durability, heap allocation and async scheduling are outside
+    // this scalar proof and remain covered by native/Loom evidence or the TCB.
+    let candidate_epoch: u64 = kani::any();
+    let committed_epoch: u64 = kani::any();
+    let has_committed_attempt: bool = kani::any();
+    let same_owner: bool = kani::any();
+    let candidate = TaskFence {
+        worker_id: "candidate-worker".into(),
+        epoch: candidate_epoch,
+    };
+    let committed = TaskFence {
+        worker_id: if same_owner {
+            "candidate-worker"
+        } else {
+            "other-worker"
+        }
+        .into(),
+        epoch: committed_epoch,
+    };
+    let plan = completion_fold_plan(&candidate, has_committed_attempt.then_some(&committed));
+    let exact = has_committed_attempt && same_owner && candidate_epoch == committed_epoch;
+    let strictly_stale = has_committed_attempt && candidate_epoch < committed_epoch;
+    assert_eq!(plan == CompletionFoldPlan::StageRetainingCandidate, exact);
+    assert_eq!(plan == CompletionFoldPlan::RetireStale, strictly_stale);
+    assert_eq!(
+        plan == CompletionFoldPlan::Preserve,
+        !exact && !strictly_stale
+    );
+    if exact {
+        assert_eq!(completion_fold_plan(&candidate, Some(&committed)), plan);
     }
 }

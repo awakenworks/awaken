@@ -674,6 +674,7 @@ async fn completion_fold_case(cancelling: bool, end: BackgroundTaskEnd) {
 
     let retried = hook.on_phase(&ctx, &[], &durable).await;
     assert_eq!(retried.state.len(), 1, "R2 retry");
+    assert_eq!(retried.state, rejected.state, "R2 exact staged retry");
     durable.apply(&retried.state[0]);
     let ended = task_state_cell(&task.id)
         .load(&durable)
