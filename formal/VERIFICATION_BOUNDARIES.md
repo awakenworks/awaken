@@ -189,16 +189,16 @@ type checking are valuable executable evidence, but are not formal proofs.
   This closes pre-effect stale-read admission, not the database-read/network-effect
   atomicity gap, in-flight revocation, third-party receipt fencing or universal
   driver refinement. The whole BackgroundTask obligations retain abstract grades.
-- BackgroundTask's one process-local slot now carries owner/epoch in Active as
-  well as Waiting/Completed. Exact-fence wait, completion, cancellation and
-  retirement reject delayed callbacks; only a higher committed epoch replaces
-  an existing slot without inventing cancellation intent. Retirement additionally
-  requires a newer committed epoch, so an older Run snapshot cannot discard a
-  newer completion. Three decision-table tests cover 81 combinations, and four
-  Loom checks exercise the production mutex under selected two-thread schedules.
-  The existing process-completion obligation remains abstract-model grade:
-  these checks do not prove all Tokio internals, committed-observer freshness,
-  same-epoch adapter callback semantics, database atomicity or journey refinement.
+- BackgroundTask's single process-local Active/Waiting/Completed slot retains
+  owner/epoch under one mutex; only a higher committed epoch replaces it. The
+  supervisor's sole completion-fold plan returns an exact candidate without
+  consuming it, retires only a strictly older epoch, and preserves absent,
+  same-epoch-different-owner or newer evidence. Kani exhausts attempt presence,
+  owner equality and both u64 epochs. Native tables require an identical staged
+  command after commit loss; five Loom checks cover selected two-thread races.
+  This closes only the process-local candidate-to-fold kernel: caller freshness,
+  same-epoch callbacks, ThreadCommit/database durability, Tokio/async scheduling,
+  external effects and whole-driver refinement remain unproved or in the TCB.
 - BackgroundTask settlement preserves `Indeterminate` after cancel intent;
   neither a lost cancellation response nor a missing queryable handle proves
   remote termination. Reclaim keeps remote `Cancelling` and its exact handle

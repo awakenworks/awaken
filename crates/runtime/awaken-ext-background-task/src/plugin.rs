@@ -147,26 +147,16 @@ impl PhaseHook for ReconcileBackgroundTasks {
                 self.supervisor.retire_terminal(&task.id);
                 continue;
             }
-            if let Some(completion) = self.supervisor.completion(&task.id) {
-                match task.finish(&completion.fence, completion.end) {
-                    Ok(()) => {
-                        if let Ok(command) = task_state_cell(&task.id).write(&task) {
-                            commands.push(command);
-                        }
-                        continue;
-                    }
-                    Err(BackgroundTaskError::StaleFence) => {
-                        // This Run snapshot may be older OR newer than the
-                        // process candidate. The supervisor retires only an
-                        // exact observed slot below the committed epoch; an old
-                        // snapshot must not discard a newer completion.
-                        if let Some(attempt) = task.attempt() {
-                            self.supervisor
-                                .retire(&task.id, &completion.fence, &attempt.fence());
-                        }
-                    }
-                    Err(_) => continue,
+            let committed_fence = task.attempt().map(|attempt| attempt.fence());
+            if let Some(completion) = self
+                .supervisor
+                .completion_for_fold(&task.id, committed_fence.as_ref())
+                && task.finish(&completion.fence, completion.end).is_ok()
+            {
+                if let Ok(command) = task_state_cell(&task.id).write(&task) {
+                    commands.push(command);
                 }
+                continue;
             }
             if let Some(candidate) = self.supervisor.wait_candidate(&task.id) {
                 let folded = (|| {
