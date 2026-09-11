@@ -223,6 +223,7 @@ pub fn awaken_agent_contract::agent::delegation::DelegationOrigin::root_for_agen
 pub struct awaken_agent_contract::agent::delegation::DelegationRegistry
 impl awaken_agent_contract::agent::delegation::DelegationRegistry
 pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::active_count(&self) -> usize
+pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::admit_child_invocation(&self, &awaken_agent_contract::agent::delegation::RequestDelegation) -> core::result::Result<(), awaken_agent_contract::agent::delegation::DelegationError>
 pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::complete(&mut self, &awaken_agent_contract::agent::delegation::DelegationId) -> core::result::Result<awaken_agent_contract::agent::delegation::TransitionResult, awaken_agent_contract::agent::delegation::DelegationError>
 pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::delegations(&self) -> impl core::iter::traits::iterator::Iterator<Item = &awaken_agent_contract::agent::delegation::Delegation>
 pub fn awaken_agent_contract::agent::delegation::DelegationRegistry::end_parent(&mut self) -> alloc::vec::Vec<awaken_agent_contract::agent::delegation::ChildRunCancellation>

@@ -207,6 +207,10 @@ cargo test -p awaken-run-executor-a2a --lib send_windows
 # lost-response retry against the same committed remote task.
 cargo test -p awaken-agent-contract --lib \
   agent::delegation::tests::relationship_identity_and_cancel_redelivery_share_exact_durable_binding -- --exact
+cargo test -p awaken-agent-contract --lib \
+  agent::delegation::tests::child_invocation_admission_consumes_the_exact_open_relationship -- --exact
+cargo test -p awaken-runtime --test formal_refinement \
+  closed_delegation_relationship_never_reenters_the_child_executor -- --exact
 cargo test -p awaken-runtime --test delegation \
   cancelling_an_awaiting_parent_atomically_persists_child_cancel_intent -- --exact
 cargo test -p awaken-run-executor-a2a --lib \
@@ -352,6 +356,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness only_unsettled_relationships_occupy_a_parallel_slot \
     --harness every_relationship_effect_has_one_documented_precondition \
     --harness delegation_admission_requires_every_budget_and_lineage_guard \
+    --harness child_invocation_requires_one_exact_open_relationship \
     --harness cancellation_delivery_is_enabled_only_by_durable_intent \
     --harness operation_identity_replays_only_the_same_run_and_payload \
     --harness operation_append_requires_exact_prefix_and_nonwrapping_version \
