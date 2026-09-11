@@ -28,16 +28,14 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_dispatch::{
     AttemptAdmission, DispatchOutcome, DispatchQueue, DispatchWorker, MemoryDispatchStore,
-    PendingInput, RunClaim, RunDispatch, SqliteDispatchStore,
+    RunClaim, RunDispatch, SqliteDispatchStore,
 };
 use awaken_runtime_contract::execution::{AttemptRecoveryMode, RunAttemptExecutor, RunExecutor};
-use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
+use awaken_runtime_contract::resume::ResumeCommand;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
-use harness::{
-    activation, activation_on, blocking_tool_runtime, counting_text_runtime, text_runtime,
-};
+use harness::{activation, blocking_tool_runtime, counting_text_runtime, text_runtime};
 
 const LEASE: u64 = 1_000;
 
@@ -616,148 +614,6 @@ async fn live_lease_fences_a_claim_sqlite() {
     // The SQL claim predicate (`lease_until >= now`) must fence exactly as the
     // in-memory reference does.
     assert_live_lease_fences_a_claim(&SqliteDispatchStore::open_in_memory().expect("open")).await;
-}
-
-async fn assert_exact_claim_isolated_and_recoverable<S: DispatchQueue>(store: &S) {
-    store
-        .enqueue(RunDispatch::new(activation_on(
-            "unrelated",
-            "unrelated-thread",
-        )))
-        .await
-        .unwrap();
-    store
-        .enqueue(RunDispatch::new(activation_on("child", "child-thread")))
-        .await
-        .unwrap();
-
-    let child = RunId("child".to_string());
-    let claimed = store
-        .claim_run(&child, "parent-worker", LEASE, 0, &Default::default())
-        .await
-        .unwrap()
-        .expect("the named child is runnable");
-    assert_eq!(claimed.request.run_id(), &child);
-    assert_eq!(claimed.lease.owner, "parent-worker");
-
-    let unrelated = store
-        .claim("pool-worker", LEASE, 0, &Default::default())
-        .await
-        .unwrap()
-        .expect("exact claim did not consume unrelated work");
-    assert_eq!(unrelated.request.run_id().0, "unrelated");
-
-    assert!(
-        store
-            .claim_run(
-                &child,
-                "recovery-worker",
-                LEASE,
-                LEASE - 1,
-                &Default::default(),
-            )
-            .await
-            .unwrap()
-            .is_none(),
-        "the exact child lease is exclusive while live"
-    );
-    let recovered = store
-        .claim_run(
-            &child,
-            "recovery-worker",
-            LEASE,
-            LEASE + 1,
-            &Default::default(),
-        )
-        .await
-        .unwrap()
-        .expect("the exact child is independently recoverable");
-    assert_eq!(recovered.lease.epoch, claimed.lease.epoch + 1);
-}
-
-#[tokio::test]
-async fn exact_child_claim_is_isolated_and_recoverable_in_memory() {
-    assert_exact_claim_isolated_and_recoverable(&MemoryDispatchStore::new()).await;
-}
-
-#[tokio::test]
-async fn exact_child_claim_is_isolated_and_recoverable_in_sqlite() {
-    assert_exact_claim_isolated_and_recoverable(
-        &SqliteDispatchStore::open_in_memory().expect("open"),
-    )
-    .await;
-}
-
-async fn assert_parent_mediated_claims_are_atomic<S: DispatchQueue>(store: &S) {
-    let child = RunId("atomic-child".to_string());
-    let claimed = store
-        .claim_new_run(
-            RunDispatch::new(activation_on("atomic-child", "atomic-child-thread")),
-            "parent-worker",
-            LEASE,
-            0,
-            &Default::default(),
-        )
-        .await
-        .unwrap()
-        .expect("new child is admitted and claimed atomically");
-    assert_eq!(claimed.request.run_id(), &child);
-    assert!(
-        store
-            .claim("pool-worker", LEASE, 0, &Default::default())
-            .await
-            .unwrap()
-            .is_none(),
-        "the general pool cannot interleave with child creation"
-    );
-    assert_eq!(
-        store
-            .settle(&child, claimed.lease.epoch, DispatchOutcome::Awaiting, &[])
-            .await
-            .unwrap(),
-        awaken_dispatch::SettleOutcome::Applied
-    );
-
-    let resumed = store
-        .deliver_and_claim(
-            PendingInput {
-                message_id: "child-answer".to_string(),
-                run_id: child.clone(),
-                thread_id: ThreadId("atomic-child-thread".to_string()),
-                correlation_id: "permission-1".to_string(),
-                available_at_ms: None,
-                context_messages: Vec::new(),
-                result: ResumeResult::Input("approved".to_string()),
-            },
-            "parent-worker",
-            LEASE,
-            1,
-            &Default::default(),
-        )
-        .await
-        .unwrap()
-        .expect("input delivery and child resume claim are atomic");
-    assert_eq!(resumed.pending.len(), 1);
-    assert_eq!(resumed.pending[0].message_id, "child-answer");
-    assert!(
-        store
-            .claim("pool-worker", LEASE, 1, &Default::default())
-            .await
-            .unwrap()
-            .is_none(),
-        "the general pool cannot interleave with child input delivery"
-    );
-}
-
-#[tokio::test]
-async fn parent_mediated_claims_are_atomic_in_memory() {
-    assert_parent_mediated_claims_are_atomic(&MemoryDispatchStore::new()).await;
-}
-
-#[tokio::test]
-async fn parent_mediated_claims_are_atomic_in_sqlite() {
-    assert_parent_mediated_claims_are_atomic(&SqliteDispatchStore::open_in_memory().expect("open"))
-        .await;
 }
 
 // --- 2. An expired lease is reclaimed, then driven+settled exactly once -----

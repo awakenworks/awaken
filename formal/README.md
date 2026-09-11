@@ -60,9 +60,9 @@ The named harnesses in the strict gate invoke production pure functions directly
     restart or authorized reassignment advances the epoch exactly once and
     exhaustion fails closed.
 - `awaken-dispatch-contract`
-  - the physical-attempt slot installs only for an empty current claim, clears
-    only for its exact owner/epoch, never normalizes a torn persisted pair, and
-    is the reducer called by Memory, SQLite, and PostgreSQL.
+  - distinct parent-Session affinity retains the child's own Run/Thread; claim
+    advances one exact lease epoch and preserves the frozen dispatch; the physical
+    slot admits exact authority. Memory, SQLite, and PostgreSQL share these reducers.
 - `awaken-worker-contract`
   - Worker replacement and heartbeat share one non-resurrection boundary: a
     replaceable slot cannot accept a late heartbeat, and an applied heartbeat
