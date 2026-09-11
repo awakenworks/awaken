@@ -750,9 +750,14 @@ where
     // lock/transaction serialization boundary, E1 exactly one state-changing
     // Apply wins, E2 generation advances exactly once, E3 every loser returns
     // Conflict carrying that winner, E4 exactly one Modified history row is
-    // appended. This is real adapter cross-evidence; mutex/SQL atomicity remains
-    // TCB and is not promoted by the scalar HeadUpdateAdmission proof.
+    // appended. C3 unrelated history may already exist (R1 absent / R2 present);
+    // both rules require the complete pre-CAS prefix to remain unchanged and
+    // exactly one new row bound to the winner. list_versions is store-scoped,
+    // so a fixed total or filtering away other memories cannot prove E4.
+    // This is real adapter cross-evidence; mutex/SQL atomicity remains TCB and
+    // is not promoted by the scalar HeadUpdateAdmission proof.
     let m = fs.create("s", "/c.md", "v0").await.unwrap();
+    let before = fs.list_versions("s").await.unwrap();
     let mut handles = Vec::new();
     for i in 0..8u32 {
         let (fs, id, base) = (fs.clone(), m.id.clone(), m.content_sha256.clone());
@@ -784,8 +789,11 @@ where
         "E1/E2"
     );
     let history = fs.list_versions("s").await.unwrap();
-    assert_eq!(history.len(), 2, "E4");
-    assert_eq!(history[1].memory_id, winner.id, "E4");
-    assert_eq!(history[1].operation, MemoryVersionOperation::Modified, "E4");
-    assert_eq!(history[1].content, winner.content, "E4");
+    assert_eq!(history.len(), before.len() + 1, "E4");
+    assert_eq!(&history[..before.len()], before.as_slice(), "E4 prefix");
+    let appended = &history[before.len()];
+    assert_eq!(appended.memory_id, winner.id, "E4");
+    assert_eq!(appended.operation, MemoryVersionOperation::Modified, "E4");
+    assert_eq!(appended.path, winner.path, "E4");
+    assert_eq!(appended.content, winner.content, "E4");
 }

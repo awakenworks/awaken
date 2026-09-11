@@ -137,7 +137,18 @@ async fn sqlite_concurrent_create_has_exactly_one_winner() {
 #[tokio::test]
 async fn sqlite_concurrent_cas_has_exactly_one_winner() {
     use awaken_memory_store::SqliteMemoryRepository;
-    concurrent_cas_one_winner(Arc::new(SqliteMemoryRepository::open_in_memory().unwrap())).await;
+    // Fixture decision table: R1 fresh store; R2 an unrelated committed create
+    // precedes CAS in the same store (as in the PostgreSQL gate). Both require
+    // one CAS winner, one appended Modified row and an unchanged history prefix.
+    // Separate repositories isolate the two rules; R2 deliberately shares its
+    // repository across create and CAS so an empty-store assumption is exposed.
+    for with_history in [false, true] {
+        let fs = Arc::new(SqliteMemoryRepository::open_in_memory().unwrap());
+        if with_history {
+            concurrent_create_one_winner(fs.clone()).await;
+        }
+        concurrent_cas_one_winner(fs).await;
+    }
 }
 
 /// Live Postgres conformance on a fresh schema. An explicitly configured
