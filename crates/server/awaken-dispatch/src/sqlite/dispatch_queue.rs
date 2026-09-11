@@ -1420,16 +1420,20 @@ impl DispatchQueue for SqliteDispatchStore {
             let slot = awaken_dispatch_contract::PhysicalAttemptSlot::from_facts(
                 attempt_owner.is_some(), active_attempt.is_some(), false, false,
             );
-            let transition = crate::persisted_dispatch_transition(
-                &status,
-                persisted_epoch,
-                cancellation_requested != 0,
-            )?
-            .settle(epoch, outcome == DispatchOutcome::Done, slot);
-            if matches!(
-                transition,
-                awaken_dispatch_contract::GuardedTransition::Fenced
-            ) {
+            let settled_run_id = RunId(run_id.clone());
+            let plan = pending_input_settlement_plan(
+                crate::persisted_dispatch_transition(
+                    &status,
+                    persisted_epoch,
+                    cancellation_requested != 0,
+                )?,
+                epoch,
+                outcome,
+                slot,
+                &settled_run_id,
+                &consumed,
+            );
+            if matches!(plan, PendingInputSettlementPlan::Fenced) {
                 let _ = tx.rollback();
                 return Ok(SettleOutcome::Fenced);
             }
@@ -1447,8 +1451,8 @@ impl DispatchQueue for SqliteDispatchStore {
             // Fence first: mutate the dispatch row ONLY while the caller still holds
             // the current epoch. A stale owner (lower epoch) affects zero rows, so
             // its settle touches neither the dispatch nor its pending.
-            let dispatch_rows = match transition {
-                awaken_dispatch_contract::GuardedTransition::Removed => tx
+            let dispatch_rows = match plan {
+                PendingInputSettlementPlan::Done { .. } => tx
                     .execute(
                         &format!(
                             "DELETE FROM {p}_dispatch WHERE run_id = ?1 \
@@ -1457,7 +1461,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         params![run_id, epoch_i64],
                     )
                     .map_err(store_error)?,
-                awaken_dispatch_contract::GuardedTransition::Applied(next) => tx
+                PendingInputSettlementPlan::Awaiting { next, .. } => tx
                     .execute(
                         &format!(
                             "UPDATE {p}_dispatch SET status = ?3, lease_owner = NULL, \
@@ -1467,7 +1471,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         params![run_id, epoch_i64, crate::dispatch_state_db(next.state)],
                     )
                     .map_err(store_error)?,
-                awaken_dispatch_contract::GuardedTransition::Fenced => unreachable!(),
+                PendingInputSettlementPlan::Fenced => unreachable!("handled before mutation"),
             };
             if dispatch_rows == 0 {
                 // Fenced: re-claimed under a higher epoch (or already gone). Change
@@ -1475,7 +1479,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 let _ = tx.rollback();
                 return Ok(SettleOutcome::Fenced);
             }
-            if outcome == DispatchOutcome::Done {
+            if matches!(plan, PendingInputSettlementPlan::Done { .. }) {
                 tx.execute(
                     &format!(
                         "INSERT INTO {p}_dispatch_completion \
@@ -1493,16 +1497,16 @@ impl DispatchQueue for SqliteDispatchStore {
                 .map_err(store_error)?;
             }
             // The fence held; now reconcile the run's pending input.
-            match outcome {
-                DispatchOutcome::Done => {
+            match plan {
+                PendingInputSettlementPlan::Done { run_id, consumed } => {
                     tx.execute(
                         &format!("DELETE FROM {p}_pending WHERE run_id = ?1"),
-                        params![run_id],
+                        params![run_id.0],
                     )
                     .map_err(store_error)?;
                     // Also drop anything else consumed this attempt (e.g. unbound
                     // idle-thread input, ADR-0021).
-                    for message_id in &consumed {
+                    for message_id in consumed {
                         tx.execute(
                             &format!("DELETE FROM {p}_pending WHERE message_id = ?1"),
                             params![message_id],
@@ -1510,8 +1514,8 @@ impl DispatchQueue for SqliteDispatchStore {
                         .map_err(store_error)?;
                     }
                 }
-                DispatchOutcome::Awaiting => {
-                    for message_id in &consumed {
+                PendingInputSettlementPlan::Awaiting { consumed, .. } => {
+                    for message_id in consumed {
                         tx.execute(
                             &format!("DELETE FROM {p}_pending WHERE message_id = ?1"),
                             params![message_id],
@@ -1519,6 +1523,7 @@ impl DispatchQueue for SqliteDispatchStore {
                         .map_err(store_error)?;
                     }
                 }
+                PendingInputSettlementPlan::Fenced => unreachable!("handled before mutation"),
             }
             insert_operation(&tx, p, &DispatchOperation::Settled { claim, outcome })?;
             tx.commit().map_err(store_error)?;

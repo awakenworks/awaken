@@ -23,15 +23,16 @@ use crate::dispatch::{
     ClaimCredentialOperation, Claimed, CommitEpochGuard, ContinuationAdmission,
     CredentialRealizationPersistenceDecision, CredentialRealizationReceipt, DispatchCompletion,
     DispatchError, DispatchOutcome, DispatchQueue, DispatchState, DispatchSummary, ExactClaimMode,
-    Inbox, Lease, LeaseRenewalOutcome, Outbox, PendingInput, PendingRecord, PhysicalAttempt,
-    RunClaim, RunIdentityDecision, SessionChildAdmission, SessionRunReservationActivation,
-    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome,
-    StoredRunIdentity, SubmitOptions, can_admit_claim_credentials, claim_credential_operation,
-    claim_with_frozen, classify_completed_session_run_reservation, classify_exact_claim_mode,
-    classify_live_session_run_reservation, classify_session_run_reservation_activation,
-    compile_claim_credential_bindings, credential_realization_persistence_decision,
-    decide_lease_renewal, decide_run_identity, ensure_session_child_capacity,
-    installed_worker_credential_capabilities, normalize_pending_millis, session_child_parent,
+    Inbox, Lease, LeaseRenewalOutcome, Outbox, PendingInput, PendingInputSettlementPlan,
+    PendingRecord, PhysicalAttempt, RunClaim, RunIdentityDecision, SessionChildAdmission,
+    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
+    SettleOutcome, StoredRunIdentity, SubmitOptions, can_admit_claim_credentials,
+    claim_credential_operation, claim_with_frozen, classify_completed_session_run_reservation,
+    classify_exact_claim_mode, classify_live_session_run_reservation,
+    classify_session_run_reservation_activation, compile_claim_credential_bindings,
+    credential_realization_persistence_decision, decide_lease_renewal, decide_run_identity,
+    ensure_session_child_capacity, installed_worker_credential_capabilities,
+    normalize_pending_millis, pending_input_settlement_plan, session_child_parent,
     session_child_thread, validate_executable_dispatch_admission, validate_outbox_continuation,
     validate_session_resume_activity_transition, validate_session_resume_evidence,
     validate_session_resume_target, validate_session_run_replacement_candidates,
@@ -50,6 +51,7 @@ use awaken_dispatch_contract::{
 
 mod outbox;
 mod physical_attempt;
+mod settlement;
 mod store;
 pub use store::MemoryDispatchStore;
 
@@ -1666,77 +1668,7 @@ impl DispatchQueue for MemoryDispatchStore {
         outcome: DispatchOutcome,
         consumed: &[String],
     ) -> Result<SettleOutcome, DispatchError> {
-        let _authority = self.authority.lock().await;
-        let mut state = lock(&self.state)?;
-        // Fence: apply only while the caller still holds the current epoch. A stale
-        // owner (lower epoch, or a gone row) changes nothing — the reclaimer's
-        // in-flight state is inviolate.
-        let Some((transition, lease)) = state.rows.get(run_id).and_then(|row| {
-            let slot = PhysicalAttemptSlot::from_facts(
-                row.active_attempt.is_some(),
-                row.active_attempt.is_some(),
-                false,
-                false,
-            );
-            let transition = row
-                .transition()
-                .settle(epoch, outcome == DispatchOutcome::Done, slot);
-            row.lease.clone().map(|lease| (transition, lease))
-        }) else {
-            return Ok(SettleOutcome::Fenced);
-        };
-        if transition == GuardedTransition::Fenced {
-            return Ok(SettleOutcome::Fenced);
-        }
-        let operation = DispatchOperation::Settled {
-            claim: RunClaim::from(&lease),
-            outcome,
-        };
-        match outcome {
-            DispatchOutcome::Done => {
-                debug_assert_eq!(transition, GuardedTransition::Removed);
-                let sequence = state.completions.len() as u64 + 1;
-                let request = state.rows.get(run_id).map(|row| {
-                    (
-                        row.request.thread_id().clone(),
-                        row.request.session_thread_id.clone(),
-                        row.request.admission_fingerprint(),
-                    )
-                });
-                state.completions.push(DispatchCompletion {
-                    sequence,
-                    run_id: run_id.clone(),
-                    thread_id: request.as_ref().map(|(thread, _, _)| thread.clone()),
-                    session_thread_id: request.as_ref().and_then(|(_, parent, _)| parent.clone()),
-                    request_fingerprint: request.map(|(_, _, fingerprint)| fingerprint),
-                });
-                state.rows.remove(run_id);
-                state.order.retain(|r| r != run_id);
-                // Drop the run's own pending and anything else the worker consumed
-                // this attempt (e.g. unbound idle-thread input, ADR-0021).
-                state.pending.retain(|p| {
-                    &p.input.run_id != run_id && !consumed.contains(&p.input.message_id)
-                });
-            }
-            DispatchOutcome::Awaiting => {
-                let GuardedTransition::Applied(next) = transition else {
-                    unreachable!("the transition kernel maps exact awaiting settlement")
-                };
-                if let Some(row) = state.rows.get_mut(run_id) {
-                    row.apply_transition(next);
-                    row.lease = None;
-                    // Reaching a checkpoint refreshes the crash-retry budget.
-                    row.attempt_count = 0;
-                }
-                // Drop only what the worker consumed; input that arrived during
-                // the attempt stays for the next wake.
-                state
-                    .pending
-                    .retain(|p| !consumed.contains(&p.input.message_id));
-            }
-        }
-        push_operation(&mut state, operation);
-        Ok(SettleOutcome::Applied)
+        self.settle_dispatch(run_id, epoch, outcome, consumed).await
     }
 
     async fn completion_events_after(
