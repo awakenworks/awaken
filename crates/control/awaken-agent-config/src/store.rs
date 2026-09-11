@@ -285,6 +285,22 @@ pub enum AuditedConfigWrite {
     Conflict { current_revision: Option<u64> },
 }
 
+impl AuditedConfigWrite {
+    /// Admit a business handler only after the durable begin authority applied
+    /// this exact request. Replays and conflicts remain observational results.
+    #[must_use]
+    pub const fn permits_business_write(self) -> bool {
+        matches!(self, Self::Applied)
+    }
+
+    /// A successful business response needs the matching durable completion;
+    /// failed business responses and non-applied begins must not advance audit.
+    #[must_use]
+    pub const fn requires_audit_completion(self, business_succeeded: bool) -> bool {
+        self.permits_business_write() && business_succeeded
+    }
+}
+
 /// The lifecycle spine (ADR-0031). The richer states (installing/active/
 /// superseded/rolled_back/rejected) are deferred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -781,6 +797,28 @@ fn management_audit_admission_requires_exact_intent_and_closed_state() {
         result.is_err(),
         !present || !exact || (state != 0 && state != 1)
     );
+
+    // B0 Applied is the sole business authority; B1 replay/conflict stutter.
+    // C0 completion is requested exactly for Applied plus business success.
+    // The repository/HTTP adapters consume these exact production decisions;
+    // database and async effect ordering remain outside this scalar proof.
+    let applied: bool = kani::any();
+    let replayed: bool = kani::any();
+    let write = if applied {
+        AuditedConfigWrite::Applied
+    } else if replayed {
+        AuditedConfigWrite::Replayed
+    } else {
+        AuditedConfigWrite::Conflict {
+            current_revision: kani::any(),
+        }
+    };
+    let business_succeeded: bool = kani::any();
+    assert_eq!(write.permits_business_write(), applied);
+    assert_eq!(
+        write.requires_audit_completion(business_succeeded),
+        applied && business_succeeded
+    );
 }
 
 #[cfg(test)]
@@ -825,6 +863,37 @@ mod audit_admission_tests {
                 if let Ok(entry) = decoded {
                     assert_eq!(entry.business_committed, state == 1);
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn durable_begin_result_owns_business_and_completion_admission() {
+        // Cause/effect decision table:
+        // | begin result | business success | business write | completion |
+        // | Applied      | false            | yes            | no         |
+        // | Applied      | true             | yes            | yes        |
+        // | Replay/Conflict | either        | no             | no         |
+        // Conflict crosses both absent/present revisions. This exercises the
+        // same finite owner consumed by Admin tools and the HTTP middleware.
+        let outcomes = [
+            AuditedConfigWrite::Applied,
+            AuditedConfigWrite::Replayed,
+            AuditedConfigWrite::Conflict {
+                current_revision: None,
+            },
+            AuditedConfigWrite::Conflict {
+                current_revision: Some(u64::MAX),
+            },
+        ];
+        for outcome in outcomes {
+            for business_succeeded in [false, true] {
+                let applied = outcome == AuditedConfigWrite::Applied;
+                assert_eq!(outcome.permits_business_write(), applied);
+                assert_eq!(
+                    outcome.requires_audit_completion(business_succeeded),
+                    applied && business_succeeded
+                );
             }
         }
     }

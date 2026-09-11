@@ -817,7 +817,7 @@ async fn audit(
         }
     };
     match begin {
-        AuditedConfigWrite::Applied => {
+        AuditedConfigWrite::Applied if begin.permits_business_write() => {
             sink.record(event.clone());
             Ok((event, false))
         }
@@ -843,6 +843,9 @@ async fn audit(
         AuditedConfigWrite::Conflict { current_revision } => Err(ToolError::Execution(format!(
             "durable audit begin conflicted unexpectedly (current revision: {current_revision:?})"
         ))),
+        AuditedConfigWrite::Applied => Err(ToolError::Execution(
+            "durable audit begin returned an inconsistent business admission".into(),
+        )),
     }
 }
 
