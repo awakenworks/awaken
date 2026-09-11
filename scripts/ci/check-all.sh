@@ -100,6 +100,8 @@ run static "commit-message self-test" python3 scripts/ci/check_commit_message.py
 run static "release-package self-test" python3 scripts/release/package.py --self-test
 run static "product release checker self-test" python3 scripts/ci/check_product_release.py --self-test
 run static "product release contract" python3 scripts/ci/check_product_release.py
+run static "observation-collapse self-test" python3 scripts/ci/check_observation_collapse.py --self-test
+run static "observation-collapse" python3 scripts/ci/check_observation_collapse.py
 run static "reliability checker self-test" python3 scripts/ci/check_reliability.py --self-test
 run static "reliability evidence contract" python3 scripts/ci/check_reliability.py
 run static "Cargo target isolation self-test" scripts/ci/_cargo_target.sh --self-test
