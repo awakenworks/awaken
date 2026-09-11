@@ -4,13 +4,16 @@ use std::sync::Arc;
 
 use awaken_executable_agent_catalog::PostgresExecutableAgentRegistrar;
 use awaken_executable_environment_catalog::PostgresExecutableEnvironmentRegistrar;
-use awaken_session_contract::ExecutableProjectionRefresh;
+use awaken_session_contract::{
+    ExecutableAgentProjectionRefresh, ExecutableEnvironmentProjectionRefresh,
+    ExecutableProjectionRefresh,
+};
 
 struct AgentProjectionRefresh(Arc<PostgresExecutableAgentRegistrar>);
 
 #[async_trait::async_trait]
-impl ExecutableProjectionRefresh for AgentProjectionRefresh {
-    async fn refresh(&self) -> Result<(), String> {
+impl ExecutableAgentProjectionRefresh for AgentProjectionRefresh {
+    async fn refresh_agent_projection(&self) -> Result<(), String> {
         self.0
             .refresh_projection()
             .await
@@ -21,8 +24,8 @@ impl ExecutableProjectionRefresh for AgentProjectionRefresh {
 struct EnvironmentProjectionRefresh(Arc<PostgresExecutableEnvironmentRegistrar>);
 
 #[async_trait::async_trait]
-impl ExecutableProjectionRefresh for EnvironmentProjectionRefresh {
-    async fn refresh(&self) -> Result<(), String> {
+impl ExecutableEnvironmentProjectionRefresh for EnvironmentProjectionRefresh {
+    async fn refresh_environment_projection(&self) -> Result<(), String> {
         self.0
             .refresh_projection()
             .await
@@ -30,35 +33,17 @@ impl ExecutableProjectionRefresh for EnvironmentProjectionRefresh {
     }
 }
 
-/// One ordered process adapter over the existing Agent and Environment
-/// high-water reconcilers. It owns no cursor or catalog state.
-struct ExecutableProjectionRefreshers {
-    agents: Arc<dyn ExecutableProjectionRefresh>,
-    environments: Arc<dyn ExecutableProjectionRefresh>,
-}
-
-impl ExecutableProjectionRefreshers {
-    fn from_refreshers(
-        agents: Option<Arc<dyn ExecutableProjectionRefresh>>,
-        environments: Option<Arc<dyn ExecutableProjectionRefresh>>,
-    ) -> Result<Option<Arc<Self>>, &'static str> {
-        match (agents, environments) {
-            (Some(agents), Some(environments)) => Ok(Some(Arc::new(Self {
-                agents,
-                environments,
-            }))),
-            (None, None) => Ok(None),
-            _ => Err("executable projection refresh requires both Agent and Environment adapters"),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl ExecutableProjectionRefresh for ExecutableProjectionRefreshers {
-    async fn refresh(&self) -> Result<(), String> {
-        self.agents.refresh().await?;
-        self.environments.refresh().await?;
-        Ok(())
+fn pair(
+    agents: Option<Arc<dyn ExecutableAgentProjectionRefresh>>,
+    environments: Option<Arc<dyn ExecutableEnvironmentProjectionRefresh>>,
+) -> Result<Option<Arc<ExecutableProjectionRefresh>>, &'static str> {
+    match (agents, environments) {
+        (Some(agents), Some(environments)) => Ok(Some(Arc::new(ExecutableProjectionRefresh::new(
+            agents,
+            environments,
+        )))),
+        (None, None) => Ok(None),
+        _ => Err("executable projection refresh requires both Agent and Environment adapters"),
     }
 }
 
@@ -67,12 +52,11 @@ impl ExecutableProjectionRefresh for ExecutableProjectionRefreshers {
 pub(crate) fn shared(
     agents: Option<Arc<PostgresExecutableAgentRegistrar>>,
     environments: Option<Arc<PostgresExecutableEnvironmentRegistrar>>,
-) -> Result<Option<Arc<dyn ExecutableProjectionRefresh>>, String> {
-    ExecutableProjectionRefreshers::from_refreshers(
+) -> Result<Option<Arc<ExecutableProjectionRefresh>>, String> {
+    pair(
         agents.map(|value| Arc::new(AgentProjectionRefresh(value)) as Arc<_>),
         environments.map(|value| Arc::new(EnvironmentProjectionRefresh(value)) as Arc<_>),
     )
-    .map(|refresh| refresh.map(|refresh| refresh as Arc<dyn ExecutableProjectionRefresh>))
     .map_err(str::to_owned)
 }
 
@@ -88,8 +72,16 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl ExecutableProjectionRefresh for RecordingRefresh {
-        async fn refresh(&self) -> Result<(), String> {
+    impl ExecutableAgentProjectionRefresh for RecordingRefresh {
+        async fn refresh_agent_projection(&self) -> Result<(), String> {
+            self.calls.lock().unwrap().push(self.name);
+            self.result.clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ExecutableEnvironmentProjectionRefresh for RecordingRefresh {
+        async fn refresh_environment_projection(&self) -> Result<(), String> {
             self.calls.lock().unwrap().push(self.name);
             self.result.clone()
         }
@@ -99,7 +91,7 @@ mod tests {
         calls: &Arc<Mutex<Vec<&'static str>>>,
         name: &'static str,
         result: Result<(), &str>,
-    ) -> Arc<dyn ExecutableProjectionRefresh> {
+    ) -> Arc<RecordingRefresh> {
         Arc::new(RecordingRefresh {
             calls: calls.clone(),
             name,
@@ -125,13 +117,13 @@ mod tests {
             environment: Result<(), &str>,
         ) -> (Vec<&'static str>, Result<(), String>) {
             let calls = Arc::new(Mutex::new(Vec::new()));
-            let refresh = ExecutableProjectionRefreshers::from_refreshers(
+            let refresh = pair(
                 Some(recorder(&calls, "agent", agent)),
                 Some(recorder(&calls, "environment", environment)),
             )
             .unwrap();
             let refresh = refresh.unwrap();
-            let result = refresh.refresh().await;
+            let result = refresh.refresh().await.map(|_| ());
             let recorded = calls.lock().unwrap().clone();
             (recorded, result)
         }
@@ -147,27 +139,14 @@ mod tests {
         let (calls, result) = exercise(Ok(()), Err("environment offline")).await;
         assert_eq!(calls, vec!["agent", "environment"], "D3");
         assert_eq!(result, Err("environment offline".into()), "D3");
-        assert!(
-            ExecutableProjectionRefreshers::from_refreshers(None, None)
-                .unwrap()
-                .is_none(),
-            "D4"
-        );
+        assert!(pair(None, None).unwrap().is_none(), "D4");
         let calls = Arc::new(Mutex::new(Vec::new()));
         assert!(
-            ExecutableProjectionRefreshers::from_refreshers(
-                Some(recorder(&calls, "agent", Ok(()))),
-                None,
-            )
-            .is_err(),
+            pair(Some(recorder(&calls, "agent", Ok(()))), None,).is_err(),
             "D5"
         );
         assert!(
-            ExecutableProjectionRefreshers::from_refreshers(
-                None,
-                Some(recorder(&calls, "environment", Ok(()))),
-            )
-            .is_err(),
+            pair(None, Some(recorder(&calls, "environment", Ok(()))),).is_err(),
             "D6"
         );
         assert!(calls.lock().unwrap().is_empty(), "D5/D6 startup only");

@@ -63,7 +63,8 @@ impl ManagedState {
         let recovered = recovered.ok_or(StateError::NotFound)?;
         let owner_scope = recovered.owner_scope;
         let persisted = recovered.session;
-        self.application
+        let admission = self
+            .application
             .refresh_executable_projections()
             .await
             .map_err(|error| {
@@ -77,7 +78,7 @@ impl ManagedState {
             .map_or_else(|| "assistant".to_string(), str::to_string);
         let session_revision = persisted.revision;
         let resource_state = persisted.resources.clone();
-        let session = self.rehydrated_session(id, &owner_scope, persisted)?;
+        let session = admission.enter(|| self.rehydrated_session(id, &owner_scope, persisted))?;
         let record = SessionRecord::new(
             agent_id,
             session,

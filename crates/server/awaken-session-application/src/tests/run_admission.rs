@@ -648,7 +648,7 @@ async fn admission_surfaces_dispatch_failure_and_preserves_retryable_intent() {
     refresh.fail.store(true, Ordering::SeqCst);
     let mut application = application(repo.clone(), environments.clone());
     application
-        .set_executable_projection_refresh(refresh.clone())
+        .set_executable_projection_refresh(paired_projection_refresh(refresh.clone()))
         .unwrap();
 
     // Projection prerequisite decision extension: C5 refresh unavailable;

@@ -201,12 +201,12 @@ impl SessionApplication {
         // Refresh only after the cheap root preflight identifies terminal work,
         // then re-read the root. The second snapshot, not the preflight value,
         // supplies every assignment and command fact below.
-        self.refresh_executable_projections()
+        let admission = self
+            .refresh_executable_projections()
             .await
             .map_err(SessionRealizationControlFailure::Unavailable)?;
-        let session = self
-            .session_repository()
-            .get(session_id)
+        let session = admission
+            .enter(|| self.session_repository().get(session_id))
             .await
             .map_err(repository_control)?;
         if !Self::terminal_cleanup_lease_matches(&session, lease) {

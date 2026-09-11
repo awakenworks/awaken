@@ -170,7 +170,7 @@ pub struct SessionApplication {
     /// Environment projections. It is late-bound by split-process composition;
     /// AllInOne has no cross-replica projection and leaves it absent.
     executable_projection_refresh:
-        Option<Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>>,
+        Option<Arc<awaken_session_contract::ExecutableProjectionRefresh>>,
     /// One process-owned wake channel for the durable lifecycle outbox.  This is
     /// late-bound because scenario composition shares an already-`Arc`'d
     /// application, and write-once so a second outbox consumer cannot replace
@@ -586,7 +586,7 @@ impl SessionApplication {
     /// error instead of allowing two freshness authorities to overlap.
     pub fn set_executable_projection_refresh(
         &mut self,
-        refresh: Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>,
+        refresh: Arc<awaken_session_contract::ExecutableProjectionRefresh>,
     ) -> Result<(), &'static str> {
         if self.executable_projection_refresh.is_some() {
             return Err("executable projection refresh is already installed");
@@ -597,10 +597,12 @@ impl SessionApplication {
 
     /// Advance the injected executable projections, or no-op in an AllInOne
     /// composition where the authoritative catalogs are process-local.
-    pub async fn refresh_executable_projections(&self) -> Result<(), String> {
+    pub async fn refresh_executable_projections(
+        &self,
+    ) -> Result<awaken_session_contract::ExecutableProjectionAdmission, String> {
         match self.executable_projection_refresh.as_ref() {
             Some(refresh) => refresh.refresh().await,
-            None => Ok(()),
+            None => Ok(awaken_session_contract::process_local_executable_projection_admission()),
         }
     }
 

@@ -749,7 +749,7 @@ pub struct ManagedApplicationServices {
         Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>>,
     pub dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
     pub executable_projection_refresh:
-        Option<Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>>,
+        Option<Arc<awaken_session_contract::ExecutableProjectionRefresh>>,
 }
 
 enum ApplicationAccessMount {
@@ -760,7 +760,7 @@ enum ApplicationAccessMount {
 
 struct RefreshingExecutableAgentInventory {
     source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>,
-    refresh: Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>,
+    refresh: Arc<awaken_session_contract::ExecutableProjectionRefresh>,
 }
 
 #[async_trait::async_trait]
@@ -774,16 +774,18 @@ impl awaken_executable_agent_contract::ExecutableAgentInventorySource
         Vec<awaken_executable_agent_contract::ExecutableAgentRegistration>,
         awaken_executable_agent_contract::ExecutableAgentRegistrationError,
     > {
-        self.refresh.refresh().await.map_err(|error| {
+        let admission = self.refresh.refresh().await.map_err(|error| {
             awaken_executable_agent_contract::ExecutableAgentRegistrationError::Unavailable(error)
         })?;
-        self.source.current_registrations(workspace_id).await
+        admission
+            .enter(|| self.source.current_registrations(workspace_id))
+            .await
     }
 }
 
 struct RefreshingEnvironmentWarmups {
     source: Arc<dyn awaken_session_contract::EnvironmentWarmupSource>,
-    refresh: Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>,
+    refresh: Arc<awaken_session_contract::ExecutableProjectionRefresh>,
 }
 
 #[async_trait::async_trait]
@@ -791,8 +793,10 @@ impl awaken_session_contract::EnvironmentWarmupSource for RefreshingEnvironmentW
     async fn current_environment_warmups(
         &self,
     ) -> Result<Vec<awaken_session_contract::EnvironmentSnapshot>, String> {
-        self.refresh.refresh().await?;
-        self.source.current_environment_warmups().await
+        let admission = self.refresh.refresh().await?;
+        admission
+            .enter(|| self.source.current_environment_warmups())
+            .await
     }
 }
 
@@ -808,8 +812,20 @@ mod executable_projection_refresh_tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_contract::ExecutableProjectionRefresh for ToggleRefresh {
-        async fn refresh(&self) -> Result<(), String> {
+    impl awaken_session_contract::ExecutableAgentProjectionRefresh for ToggleRefresh {
+        async fn refresh_agent_projection(&self) -> Result<(), String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail.load(Ordering::SeqCst) {
+                Err("projection unavailable".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_session_contract::ExecutableEnvironmentProjectionRefresh for ToggleRefresh {
+        async fn refresh_environment_projection(&self) -> Result<(), String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fail.load(Ordering::SeqCst) {
                 Err("projection unavailable".into())
@@ -857,19 +873,23 @@ mod executable_projection_refresh_tests {
         // its source is not read; E2 recovery delegates once. Constraints: K1
         // adapters own no cursor/cache; K2 Models and Dream share one wrapped
         // inventory. Decision table: D1 !C1+C2=>E1; D2 !C1+C3=>E1;
-        // D3 C1+C2+C3=>E2. Each rule also requires one refresh call per
-        // attempted handler entry so a false pass cannot come from bypassing
-        // the prerequisite altogether.
+        // D3 C1+C2+C3=>E2. Each rule requires one Agent attempt and, only after
+        // it succeeds, one Environment attempt per handler entry so a false
+        // pass cannot come from bypassing the prerequisite altogether.
         let refresh = Arc::new(ToggleRefresh::default());
+        let pair = Arc::new(awaken_session_contract::ExecutableProjectionRefresh::new(
+            refresh.clone(),
+            refresh.clone(),
+        ));
         let inventory = Arc::new(Inventory::default());
         let warmups = Arc::new(Warmups::default());
         let refreshing_inventory = RefreshingExecutableAgentInventory {
             source: inventory.clone(),
-            refresh: refresh.clone(),
+            refresh: pair.clone(),
         };
         let refreshing_warmups = RefreshingEnvironmentWarmups {
             source: warmups.clone(),
-            refresh: refresh.clone(),
+            refresh: pair,
         };
         refresh.fail.store(true, Ordering::SeqCst);
         assert!(
@@ -907,7 +927,7 @@ mod executable_projection_refresh_tests {
         .unwrap();
         assert_eq!(inventory.0.load(Ordering::SeqCst), 1, "D3/E2");
         assert_eq!(warmups.0.load(Ordering::SeqCst), 1, "D3/E2");
-        assert_eq!(refresh.calls.load(Ordering::SeqCst), 4, "D3 gate calls");
+        assert_eq!(refresh.calls.load(Ordering::SeqCst), 6, "D3 gate calls");
     }
 }
 

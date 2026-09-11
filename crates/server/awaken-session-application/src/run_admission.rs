@@ -423,7 +423,8 @@ impl SessionApplication {
         if recovered.session.is_terminal() {
             return Ok(Some(recovered));
         }
-        self.refresh_executable_projections()
+        let admission = self
+            .refresh_executable_projections()
             .await
             .map_err(|error| {
                 SessionProjectionRecoveryError::Unavailable(format!(
@@ -437,9 +438,11 @@ impl SessionApplication {
         // credential, and Resource reconciliation graph in their poll stack.
         // The owned aggregate still crosses exactly one domain boundary; this
         // is execution-shape isolation, not another persistence abstraction.
-        let session = Box::pin(self.reconcile_persisted_resources(&owner, recovered.session))
-            .await
-            .map_err(|error| SessionProjectionRecoveryError::Rejected(preparation_error(error)))?;
+        let session = Box::pin(
+            admission.enter(|| self.reconcile_persisted_resources(&owner, recovered.session)),
+        )
+        .await
+        .map_err(|error| SessionProjectionRecoveryError::Rejected(preparation_error(error)))?;
         let requires_external_realization = self.requires_external_realization(&session);
         let session = if requires_external_realization {
             self.install_dispatch_projection(&owner, &session)
@@ -600,7 +603,8 @@ impl SessionApplication {
             &resource_inputs,
             &repositories,
         )?;
-        self.refresh_executable_projections()
+        let admission = self
+            .refresh_executable_projections()
             .await
             .map_err(|error| {
                 RunError::unavailable_classified(
@@ -608,10 +612,12 @@ impl SessionApplication {
                     format!("Executable projections could not be refreshed: {error}"),
                 )
             })?;
-        let profile = source_revision.map_or_else(
-            || self.session_profile(&owner_scope, &agent_id),
-            |revision| self.session_profile_at_revision(&owner_scope, &agent_id, revision),
-        );
+        let profile = admission.enter(|| {
+            source_revision.map_or_else(
+                || self.session_profile(&owner_scope, &agent_id),
+                |revision| self.session_profile_at_revision(&owner_scope, &agent_id, revision),
+            )
+        });
         if let (Some(requested), Some(resolved)) = (source_revision, profile.as_ref())
             && !awaken_executable_agent_contract::requested_profile_revision_matches(
                 resolved.source_revision,

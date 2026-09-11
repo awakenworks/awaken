@@ -21,6 +21,7 @@ mod dream;
 mod environment;
 mod event_admission;
 mod event_batches;
+mod executable_projection;
 pub use event_admission::{
     DeletedSessionEventAdmissions, RetainedEventAdmission, SessionEventAdmission,
     event_admission_closed, event_admission_conflict,
@@ -87,6 +88,11 @@ pub use coordination::{
     session_agent_boundary_action, session_agent_report_messages, session_agent_report_text,
     session_agent_run_boundary, session_run_activity_operation_id,
 };
+pub use executable_projection::{
+    ExecutableAgentProjectionRefresh, ExecutableEnvironmentProjectionRefresh,
+    ExecutableProjectionAdmission, ExecutableProjectionRefresh,
+    process_local_executable_projection_admission,
+};
 pub use network_policy::SessionNetworkPolicy;
 
 /// Rebuildable desired Environment capacity exported by Coordinator. The
@@ -97,14 +103,6 @@ pub trait EnvironmentWarmupSource: Send + Sync {
     async fn current_environment_warmups(&self) -> Result<Vec<EnvironmentSnapshot>, String>;
 }
 
-/// Process-composed prerequisite that advances rebuildable executable
-/// projections before an application boundary consumes current or exact
-/// executable facts. Implementations own no cursor, cache, or durable state;
-/// those remain with the authoritative projection adapters.
-#[async_trait::async_trait]
-pub trait ExecutableProjectionRefresh: Send + Sync {
-    async fn refresh(&self) -> Result<(), String>;
-}
 pub use dream::{
     DREAM_MAX_INSTRUCTIONS_CHARS, DREAM_MAX_SESSIONS, DREAM_SUPPORTED_MODELS, Dream,
     DreamCleanupAdmission, DreamCreateParams, DreamError, DreamInput, DreamListParams,
