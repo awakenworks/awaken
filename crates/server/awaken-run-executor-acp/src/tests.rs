@@ -1,7 +1,7 @@
 //! End-to-end tests with in-memory fakes: a scripted duplex channel stands in for
 //! the launched CLI — no daemon, no network.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -2206,6 +2206,99 @@ async fn terminal_business_outcome_cleanup_gates_relaunch_without_consuming_stee
             }
         }
     }
+}
+
+#[tokio::test]
+async fn opening_a_session_retains_the_attempt_observer_until_the_typed_owner_returns() {
+    // Causes: C1 source.open returns an AgentSession; C2 it returns a launch
+    // error; C3 it has entered but never returns; C4 the caller/replacement
+    // drops that pending execution; C5 a later observer returns. Effects: E1
+    // C1/C2 disarm only the open observer; E2 C3+C4 monotonically vetoes the
+    // original attempt's ACK; E3 C5 cannot clear that stale-observer veto.
+    // Constraints: AgentSession is the typed process/channel owner handed to
+    // CleanupScope; a signal, EOF, timeout or stale replacement is not an exit
+    // receipt, and a later observer cannot clear AttemptQuiescence.
+    //
+    // | Rule | open result | typed owner returned | caller drops | ACK |
+    // | O1   | session     | yes                  | no           | yes |
+    // | O2   | error       | no launched owner    | no           | yes |
+    // | O3   | pending     | no                   | yes          | veto|
+    //
+    // Normal exit, TERM/KILL without observation, supervisor timeout and
+    // post-open Drop are covered by the adjacent cleanup/protocol matrices;
+    // O3 is the missing pre-handoff caller-cancellation/stale-observer row.
+    let successful = AcpRunExecutor::new(Arc::new(ScriptedSource {
+        frames: Vec::new(),
+        open_error: None,
+    }));
+    let context = RuntimeRunContext::new();
+    let session = open_session(
+        successful.source.as_ref(),
+        &activation_without_session_home(),
+        &context,
+    )
+    .await
+    .expect("O1 returns the typed owner");
+    drop(session);
+    assert!(context.physical_quiescence.can_acknowledge_return(), "O1");
+
+    let failed = AcpRunExecutor::new(Arc::new(ScriptedSource {
+        frames: Vec::new(),
+        open_error: Some("not launched".into()),
+    }));
+    let context = RuntimeRunContext::new();
+    assert!(
+        open_session(
+            failed.source.as_ref(),
+            &activation_without_session_home(),
+            &context,
+        )
+        .await
+        .is_err(),
+        "O2"
+    );
+    assert!(context.physical_quiescence.can_acknowledge_return(), "O2");
+
+    struct PendingOpen(Arc<AtomicBool>);
+    #[async_trait]
+    impl AgentChannelSource for PendingOpen {
+        async fn open(
+            &self,
+            _activation: &RunActivation,
+            _context: &RuntimeRunContext,
+        ) -> std::result::Result<AgentSession, OpenError> {
+            self.0.store(true, Ordering::SeqCst);
+            std::future::pending().await
+        }
+    }
+
+    let entered = Arc::new(AtomicBool::new(false));
+    let executor = AcpRunExecutor::new(Arc::new(PendingOpen(entered.clone())));
+    let context = RuntimeRunContext::new().with_ownership(Arc::new(ScriptedOwnership::new([
+        OwnershipDecision::Current,
+    ])));
+    let quiescence = context.physical_quiescence.clone();
+    let mut execution = Box::pin(executor.execute(activation_without_session_home(), context));
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(20), execution.as_mut())
+            .await
+            .is_err(),
+        "O3 source remains pending"
+    );
+    assert!(
+        entered.load(Ordering::SeqCst),
+        "O3 crossed the source boundary"
+    );
+    drop(execution);
+    assert!(
+        !quiescence.can_acknowledge_return(),
+        "O3 caller/replacement Drop loses the observer and must veto ACK"
+    );
+    quiescence.observe_return(async {}).await;
+    assert!(
+        !quiescence.can_acknowledge_return(),
+        "O3 a later observer cannot release the stale attempt"
+    );
 }
 
 // Reuse the scripted protocol and counting process; change only observation.

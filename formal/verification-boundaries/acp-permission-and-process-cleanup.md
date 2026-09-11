@@ -25,6 +25,10 @@ correctness/progress, peer receipt, remote tool effects nor OS process behavior.
 The cleanup slice retains its `abstract_model_checked` grade. `AcpBoundary`
 checks that returned TERM failure leaves same-handle KILL enabled, only observed
 exit permits acknowledgement, and cleanup timeout retains the original observer.
-Protocol and executor tables provide finite execution evidence. Provider signal
-delivery, process-tree quiescence, owner survival, remote recovery and unbounded
+The executor also observes every provider `open` Future until it returns the
+typed `AgentSession`; caller cancellation before that handoff monotonically
+vetoes acknowledgement, while the existing `CleanupScope` retains a returned
+session until same-handle exit observation. Protocol and executor tables provide
+finite execution evidence. Provider signal delivery, process-tree quiescence,
+owner survival across process/runtime loss, remote recovery and unbounded
 liveness remain external or executable boundaries rather than direct proofs.

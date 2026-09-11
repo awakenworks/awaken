@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 mod cleanup;
 pub mod host;
-use cleanup::CleanupScope;
+use cleanup::{CleanupScope, open_session, preserve_terminal_outcome};
 
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
@@ -67,21 +67,6 @@ use awaken_runtime_contract::resume::{
 };
 use awaken_runtime_contract::runtime_context::{AttemptOwnershipVerifier, RuntimeRunContext};
 use awaken_runtime_contract::terminal::{CommittedTerminalRun, deliver_committed_terminal};
-
-fn preserve_terminal_outcome<T>(
-    outcome: std::result::Result<T, AcpError>,
-    cleanup: std::result::Result<bool, AcpError>,
-    process_id: &str,
-) -> std::result::Result<T, AcpError> {
-    if let Err(cleanup_error) = cleanup {
-        tracing::warn!(
-            process_id,
-            error = %cleanup_error,
-            "ACP terminal process cleanup failed after the Step outcome was fixed"
-        );
-    }
-    outcome
-}
 
 /// An already-launched ACP agent: the duplex channel plus the process handle for
 /// reaping. The host produces this — locally by launching the CLI into a sandbox,
@@ -720,10 +705,11 @@ impl AcpRunExecutor {
             launch_sink,
             AcpLaunchEvent::stage(AcpLaunchStage::Launching),
         );
+        let source = self.source.as_ref();
 
         // The host opens the channel (sandbox launch / remote dial). A failure here
         // is a launch/config fault → classify at the Initialize stage.
-        cleanup.session = Some(match self.source.open(&activation, context).await {
+        cleanup.session = Some(match open_session(source, &activation, context).await {
             Ok(session) => session,
             Err(open) => {
                 notify(
@@ -980,7 +966,7 @@ impl AcpRunExecutor {
                             "ACP handshake interrupted; relaunching once",
                         ),
                     );
-                    *session = match self.source.open(&activation, context).await {
+                    *session = match open_session(source, &activation, context).await {
                         Ok(session) => session,
                         Err(open) => {
                             let failure =
@@ -1202,7 +1188,7 @@ impl AcpRunExecutor {
                     committed.extend(fold);
                     // Relaunch the CLI for the next Step (ACP is per-Step).
                     verify_attempt_ownership(context.ownership.as_deref()).await?;
-                    *session = match self.source.open(&activation, context).await {
+                    *session = match open_session(source, &activation, context).await {
                         Ok(session) => session,
                         Err(open) => {
                             let failure =
