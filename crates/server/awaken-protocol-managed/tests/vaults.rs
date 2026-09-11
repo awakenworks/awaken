@@ -224,7 +224,21 @@ async fn call_in_workspace(
     uri: &str,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
+    call_in_workspace_with_headers(app, workspace_id, method, uri, body, &[]).await
+}
+
+async fn call_in_workspace_with_headers(
+    app: &Router,
+    workspace_id: Option<&str>,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+    headers: &[(&str, &str)],
+) -> (StatusCode, Value) {
     let mut b = Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        b = b.header(*name, *value);
+    }
     let body = match body {
         Some(v) => {
             b = b.header("content-type", "application/json");
@@ -247,6 +261,62 @@ async fn call_in_workspace(
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
     (status, value)
+}
+
+#[tokio::test]
+async fn credential_create_idempotency_key_replays_one_secret_free_child() {
+    let h = harness();
+    let vault_id = create_vault(&h, "idempotent-credential").await;
+    let uri = format!("/v1/vaults/{vault_id}/credentials");
+    let body = json!({
+        "type": "static_bearer",
+        "mcp_server_url": "https://mcp.example.com/mcp",
+        "token": "write-only",
+        "display_name": "Docs MCP"
+    });
+
+    let first = call_in_workspace_with_headers(
+        &h.app,
+        Some("default"),
+        "POST",
+        &uri,
+        Some(body.clone()),
+        &[("idempotency-key", "console-command-1")],
+    )
+    .await;
+    let replay = call_in_workspace_with_headers(
+        &h.app,
+        Some("default"),
+        "POST",
+        &uri,
+        Some(body.clone()),
+        &[("idempotency-key", "console-command-1")],
+    )
+    .await;
+    assert_eq!(first.0, StatusCode::OK);
+    assert_eq!(replay, first);
+    assert!(first.1.get("token").is_none());
+
+    let mut changed = body;
+    changed["token"] = json!("different-write-only");
+    let conflict = call_in_workspace_with_headers(
+        &h.app,
+        Some("default"),
+        "POST",
+        &uri,
+        Some(changed),
+        &[("idempotency-key", "console-command-1")],
+    )
+    .await;
+    assert_eq!(conflict.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        h.credentials
+            .list_vault_credentials("default", &vault_id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]

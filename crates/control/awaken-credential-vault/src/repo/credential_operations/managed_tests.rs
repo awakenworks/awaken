@@ -202,6 +202,49 @@ async fn managed_creation_publishes_source_and_child_in_one_repository_step() {
     assert!(repo.pending_managed_rollouts().await.unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn stable_managed_creation_replays_the_published_pair_and_rejects_changed_material() {
+    let repo = InMemoryCredentialRepo::new();
+    let secrets = InMemorySecretStore::new();
+    repo.insert_vault("ws", managed_vault()).await.unwrap();
+
+    let first =
+        create_managed_credential(managed_command("https://mcp.example.com"), &secrets, &repo)
+            .await
+            .unwrap();
+    let replay =
+        create_managed_credential(managed_command("https://mcp.example.com"), &secrets, &repo)
+            .await
+            .unwrap();
+    assert_eq!(replay, first);
+    assert_eq!(secrets.inventory().await.unwrap().len(), 1);
+    assert_eq!(
+        repo.list_vault_credentials("ws", "vault-1")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let mut changed = managed_command("https://mcp.example.com");
+    changed.source.secret = Some(RedactedString::new("different-token"));
+    let error = create_managed_credential(changed, &secrets, &repo)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ManagedCredentialCreationError::Credential(CredentialError::MutationConflict(_))
+    ));
+    assert_eq!(secrets.inventory().await.unwrap().len(), 1);
+    assert_eq!(
+        repo.list_vault_credentials("ws", "vault-1")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
 /// Pending-follower rule: C1 one logical Managed create already owns a durable
 /// random attempt; C2 a follower prepares the same secret-free command under a
 /// fresh attempt; C3 plaintext cannot be compared in the WAL. C1+C2+C3 yields

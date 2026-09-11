@@ -62,10 +62,11 @@ use awaken_credential_vault::{
 };
 use awaken_session_application::{SessionCredentialAccessRequest, SessionCredentialSource};
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
+use crate::common::headers::parse_idempotency_key_header;
 use crate::common::scope::RequiredWorkspaceScope;
 use crate::routes::{ManagedJson, ManagedQuery, sha256_identity};
 use crate::types::vault::{
@@ -1304,6 +1305,7 @@ async fn create_credential(
     State(state): State<Arc<VaultState>>,
     RequiredWorkspaceScope(resource_workspace): RequiredWorkspaceScope,
     Path(vault_id): Path<String>,
+    headers: HeaderMap,
     ManagedJson(params): ManagedJson<CredentialCreateWire>,
 ) -> Result<(StatusCode, Json<Credential>), WireError> {
     let params = params.into_params();
@@ -1458,26 +1460,36 @@ async fn create_credential(
         }
     };
 
-    let id = format!("crd_{}", uuid::Uuid::now_v7().simple());
-    let (_, record) = create_managed_credential(
-        ManagedCredentialCreateCommand {
-            source,
-            descriptor,
-            source_id: None,
-            protocol_endpoint_id: None,
-            primary_material_ref: None,
-            auxiliary_materials,
-            credential_id: id,
-            vault_id,
-            auth,
-            metadata,
-            display_name,
-        },
-        state.secrets.as_ref(),
-        state.repository.as_ref(),
-    )
-    .await
-    .map_err(managed_creation_error)?;
+    let idempotency_key = parse_idempotency_key_header(&headers).map_err(bad_request)?;
+    let command_identity = idempotency_key.as_ref().map(|key| {
+        sha256_identity(
+            "managed-vault-credential-create-v1",
+            &[&resource_workspace, &vault_id, key],
+        )
+    });
+    let id = command_identity.as_ref().map_or_else(
+        || format!("crd_{}", uuid::Uuid::now_v7().simple()),
+        |identity| format!("crd_{}", &identity[..32]),
+    );
+    let command = ManagedCredentialCreateCommand {
+        source,
+        descriptor,
+        source_id: command_identity
+            .as_ref()
+            .map(|identity| CredentialSourceId(format!("cred:managed:{identity}"))),
+        protocol_endpoint_id: None,
+        primary_material_ref: None,
+        auxiliary_materials,
+        credential_id: id,
+        vault_id,
+        auth,
+        metadata,
+        display_name,
+    };
+    let (_, record) =
+        create_managed_credential(command, state.secrets.as_ref(), state.repository.as_ref())
+            .await
+            .map_err(managed_creation_error)?;
     let credential = VaultState::project_credential(&record);
     Ok((StatusCode::OK, Json(credential)))
 }
