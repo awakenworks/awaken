@@ -7,6 +7,7 @@ import argparse
 from contextlib import contextmanager
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -43,6 +44,14 @@ def shell_step(workflow: str, name: str) -> str:
     if "        shell: bash\n" not in block or block.count("        run: |\n") != 1:
         raise ValueError(f"release step {name!r} must be one literal Bash block")
     return textwrap.dedent(block.split("        run: |\n", 1)[1])
+
+
+def job_block(workflow: str, name: str) -> str:
+    """Read one top-level job from the canonical workflow's bounded layout."""
+    marker = "  " + name + ":\n"
+    if workflow.count(marker) != 1:
+        raise ValueError(f"expected exactly one release job {name!r}")
+    return re.split(r"\n  (?=\S)", workflow.split(marker, 1)[1], maxsplit=1)[0]
 
 
 def validate(
@@ -107,12 +116,27 @@ def validate(
             "expected one canonical release workflow, got " + ", ".join(release_workflows)
         )
 
-    # R8: both consumers must execute the one validator with exact requested
-    # profile and completed proof execution. The canonical validator makes a
-    # requested Verified profile imply fresh exact TCB admission; removing the
+    # R8: both consumers must have the pinned Rust toolchain needed by the one
+    # proof-checked admission kernel, then execute the canonical validator with
+    # exact requested profile and completed proof execution. The validator makes
+    # a requested Verified profile imply fresh exact TCB admission; removing the
     # profile binding would therefore bypass that stronger gate. Comments, a
     # command after extract, or a missing strict flag cannot satisfy this audit.
     # Actual shell decision-table tests live beside the production validator.
+    pinned_toolchain = (
+        "      - uses: dtolnay/rust-toolchain@"
+        "6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772\n"
+        "        with:\n"
+        "          toolchain: 1.96.0"
+    )
+    for job in ("management_image", "github_release"):
+        try:
+            if job_block(workflow, job).count(pinned_toolchain) != 1:
+                raise ValueError(
+                    f"{job}: missing exact release-admission Rust toolchain"
+                )
+        except ValueError as error:
+            failures.append(str(error))
     selection = ["python3", "../scripts/release/verification_manifest.py", "validate",
                  "--artifact", "$archive", "--manifest", "$archive.verification.json",
                  "--expected-profile", "$AWAKEN_RELEASE_PROFILE", "--require-proof-execution"]
@@ -432,14 +456,28 @@ class ProductReleaseCheckerTests(unittest.TestCase):
                     self.assertFalse((root / "removed").exists())
 
     def test_proof_consumer_binding_decision_table(self) -> None:
-        # Cause/effect table: C1 each consumer names the requested profile; C2 it
-        # requires completed proof execution; C3 the canonical validator runs;
-        # C4 Management validates before extraction. R1 all true accepts the
-        # graph. R2 independently remove C1, C2, or C3 and reject. R3 move C4
-        # after extraction and reject. This preserves the edge that turns a
-        # Verified profile request into mandatory TCB evidence admission.
+        # Cause/effect table: C1 each consumer has the pinned kernel toolchain;
+        # C2 names the requested profile; C3 requires completed proof execution;
+        # C4 runs the canonical validator; C5 Management validates before
+        # extraction. R1 all true accepts. R2 removes C1-C4 independently and
+        # rejects. R3 moves C5 after extraction and rejects. This preserves the
+        # edge from a Verified request through the production Rust disposition
+        # to mandatory TCB evidence admission.
         inputs = current_inputs()
         self.assertEqual(validate(*inputs), [])
+        pinned = (
+            "      - uses: dtolnay/rust-toolchain@"
+            "6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772\n"
+            "        with:\n"
+            "          toolchain: 1.96.0\n"
+        )
+        for job in ("management_image", "github_release"):
+            block = job_block(inputs[0], job)
+            with self.subTest(job=job, cause="toolchain"):
+                self.assertTrue(validate(
+                    inputs[0].replace(block, block.replace(pinned, "", 1), 1),
+                    *inputs[1:],
+                ))
         for name in ("Stage the exact packaged binary", "Validate every packaged proof manifest"):
             marker = "      - name: " + name + "\n"
             start, rest = inputs[0].split(marker, 1)

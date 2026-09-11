@@ -10,6 +10,7 @@ layer = "infrastructure"
 authority = "service-lifecycle"
 
 [features]
+standalone-release-admission = []
 test-support = []
 
 [dependencies]
@@ -18,3 +19,7 @@ tokio-util.workspace = true
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "awaken-verification-admission"
+path = "src/release_admission_main.rs"
