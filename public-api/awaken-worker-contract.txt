@@ -122,6 +122,11 @@ pub struct awaken_worker_contract::RankedWorker
 pub awaken_worker_contract::RankedWorker::identity: awaken_worker_contract::WorkerIdentity
 pub awaken_worker_contract::RankedWorker::reason: alloc::string::String
 pub awaken_worker_contract::RankedWorker::score: i64
+pub struct awaken_worker_contract::RegisteredCapacity(_)
+impl awaken_worker_contract::RegisteredCapacity
+pub fn awaken_worker_contract::RegisteredCapacity::into_slots(self) -> core::num::nonzero::NonZeroUsize
+pub fn awaken_worker_contract::RegisteredCapacity::of(&awaken_worker_contract::WorkerManifest) -> core::result::Result<Self, awaken_worker_contract::ZeroRegisteredCapacity>
+pub const fn awaken_worker_contract::RegisteredCapacity::slots(&self) -> core::num::nonzero::NonZeroUsize
 pub struct awaken_worker_contract::RegisteredWorker
 pub awaken_worker_contract::RegisteredWorker::drain_deadline_ms: core::option::Option<u64>
 pub awaken_worker_contract::RegisteredWorker::heartbeat_at_ms: u64
@@ -228,6 +233,7 @@ impl awaken_worker_contract::WorkerSnapshot
 pub fn awaken_worker_contract::WorkerSnapshot::accepts(&self, &awaken_worker_contract::PlacementRequirements, u64) -> bool
 impl core::convert::From<&awaken_worker_contract::WorkerSnapshot> for awaken_worker_contract::WorkerAssignment
 pub fn awaken_worker_contract::WorkerAssignment::from(&awaken_worker_contract::WorkerSnapshot) -> Self
+pub struct awaken_worker_contract::ZeroRegisteredCapacity
 pub const awaken_worker_contract::CURRENT_CONTRACT_VERSION: u32
 pub const awaken_worker_contract::CURRENT_RUNTIME_PROTOCOL_VERSION: u32
 pub const awaken_worker_contract::HOST_EXECUTOR_CAPABILITY: &str

@@ -195,10 +195,29 @@ pub(super) fn acp_configuration_to_preserve(
         .flatten()
 }
 
+/// The one Managed model-id string for a stored selection.
+///
+/// The Managed wire carries the model as a single opaque string, so a selection
+/// that string cannot spell — `Auto` before publication pins it, or a catalog
+/// `Target` naming a protocol endpoint — has no Managed representation at all.
+/// This used to be `unwrap_or_default()`, which answered the empty string: not
+/// merely lossy but actively wrong, because a client that read it and wrote it
+/// back would replace the Agent's real model with nothing. Report the exhausted
+/// vocabulary instead and leave such an Agent to the config plane that owns its
+/// richer wire.
+fn managed_model_id(selection: &ModelSelection) -> Result<String, ManagedAgentError> {
+    render_managed_model_id(selection).map_err(|error| {
+        ManagedAgentError::Invalid(format!(
+            "Agent model selection has no Managed model-id representation ({error}); \
+             read or edit this Agent through the config plane"
+        ))
+    })
+}
+
 pub(super) fn wire_tools(
     toolsets: &[ToolsetPolicy],
     client_tools: &[ToolDescriptor],
-) -> Vec<AgentTool> {
+) -> Result<Vec<AgentTool>, ManagedAgentError> {
     // Cause graph: server tool id -> runtime-only capability (no Managed wire
     // representation); toolset -> typed server capability; client descriptor ->
     // complete custom definition. Projecting a server id as `custom` would change
@@ -210,18 +229,29 @@ pub(super) fn wire_tools(
     // | typed toolset          | typed toolset              |
     // | client tool descriptor | complete `custom`          |
     let mut tools = resolved_toolsets(toolsets);
-    tools.extend(client_tools.iter().map(|tool| {
-        AgentTool::Custom {
+    // A stored client tool whose schema is not an object schema is a shape this
+    // wire cannot carry. The admission check that makes that impossible lives in
+    // another crate, so the guarantee cannot be asserted from here: report the
+    // mismatch rather than hiding it behind an `expect` that turns a config
+    // defect into a panic in the read path.
+    for tool in client_tools {
+        tools.push(AgentTool::Custom {
             name: tool.id.clone(),
             description: tool.description.clone(),
-            input_schema: CustomToolInputSchema::from_value(tool.model_parameters())
-                .expect("published client-tool schemas were validated at admission"),
-        }
-    }));
-    tools
+            input_schema: CustomToolInputSchema::from_value(tool.model_parameters()).map_err(
+                |error| {
+                    ManagedAgentError::Invalid(format!(
+                        "client tool `{}` has no Managed input_schema representation: {error}",
+                        tool.id
+                    ))
+                },
+            )?,
+        });
+    }
+    Ok(tools)
 }
 
-pub(super) fn project(revision: AgentConfigRevision) -> Agent {
+pub(super) fn project(revision: AgentConfigRevision) -> Result<Agent, ManagedAgentError> {
     let revision_number = revision.revision;
     let fallback_timestamp = lifecycle_timestamp();
     let created_at = revision
@@ -234,9 +264,9 @@ pub(super) fn project(revision: AgentConfigRevision) -> Agent {
         .unwrap_or(fallback_timestamp);
     let config = revision.config;
     let id = config.id.clone();
-    let model = render_managed_model_id(&config.model_binding).unwrap_or_default();
-    let tools = wire_tools(&config.toolsets, &config.client_tools);
-    Agent {
+    let model = managed_model_id(&config.model_binding)?;
+    let tools = wire_tools(&config.toolsets, &config.client_tools)?;
+    Ok(Agent {
         id: id.clone(),
         object_type: "agent",
         archived_at: config.archived_at,
@@ -305,5 +335,5 @@ pub(super) fn project(revision: AgentConfigRevision) -> Agent {
             WireMultiagent::Coordinator { agents }
         }),
         version: revision.revision,
-    }
+    })
 }

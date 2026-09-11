@@ -19,6 +19,12 @@ pub awaken_session_executor::ContentRedaction::Regex
 pub enum awaken_session_executor::DispatchBackend
 pub awaken_session_executor::DispatchBackend::Postgres
 pub awaken_session_executor::DispatchBackend::Sqlite
+pub enum awaken_session_executor::DispatchPoolSizing
+pub awaken_session_executor::DispatchPoolSizing::LocalParallelism(core::num::nonzero::NonZeroUsize)
+pub awaken_session_executor::DispatchPoolSizing::Registered(core::num::nonzero::NonZeroUsize)
+impl awaken_session_executor::DispatchPoolSizing
+pub const fn awaken_session_executor::DispatchPoolSizing::registered(self) -> core::option::Option<core::num::nonzero::NonZeroUsize>
+pub const fn awaken_session_executor::DispatchPoolSizing::slots(self) -> core::num::nonzero::NonZeroUsize
 pub enum awaken_session_executor::HostErrorKind
 pub awaken_session_executor::HostErrorKind::BadRequest
 pub awaken_session_executor::HostErrorKind::Conflict
@@ -381,6 +387,7 @@ pub async fn awaken_session_executor::SharedHost::discard_default_environment_ca
 pub async fn awaken_session_executor::SharedHost::discard_environment_snapshot_capacity(&self, &awaken_session_contract::baseline::EnvironmentSnapshot)
 pub fn awaken_session_executor::SharedHost::dispatch_completion_sink(&self) -> alloc::sync::Arc<dyn awaken_dispatch::pool::CompletionSink>
 pub fn awaken_session_executor::SharedHost::dispatch_owner(&self) -> &str
+pub fn awaken_session_executor::SharedHost::dispatch_pool_sizing(&self) -> awaken_session_executor::DispatchPoolSizing
 pub fn awaken_session_executor::SharedHost::dispatch_store(&self) -> core::result::Result<alloc::sync::Arc<awaken_dispatch::any::AnyDispatchStore>, awaken_session_executor::HostError>
 pub async fn awaken_session_executor::SharedHost::drain_runtime(&self, core::time::Duration) -> bool
 pub fn awaken_session_executor::SharedHost::ensure_dispatch_pool(&alloc::sync::Arc<Self>)
@@ -455,7 +462,7 @@ pub fn awaken_session_executor::SharedHost::with_state_machine(self, serde_json:
 pub fn awaken_session_executor::SharedHost::with_web_search_provider(self, alloc::sync::Arc<dyn awaken_ext_builtin_tools::web::WebSearchProvider>) -> core::result::Result<Self, awaken_ext_builtin_tools::web::WebSearchRegistryError>
 pub fn awaken_session_executor::SharedHost::with_web_search_provider_registry(self, awaken_ext_builtin_tools::web::WebSearchProviderRegistry) -> Self
 pub fn awaken_session_executor::SharedHost::with_worker_credential_resolver(self, alloc::sync::Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>) -> Self
-pub fn awaken_session_executor::SharedHost::with_worker_dispatch(self, alloc::sync::Arc<dyn awaken_dispatch_contract::dispatch::Dispatch>, core::num::nonzero::NonZeroUsize) -> Self
+pub fn awaken_session_executor::SharedHost::with_worker_dispatch(self, alloc::sync::Arc<dyn awaken_dispatch_contract::dispatch::Dispatch>, awaken_worker_contract::manifest::RegisteredCapacity) -> Self
 pub fn awaken_session_executor::SharedHost::with_worker_stream_publisher(self, alloc::sync::Arc<dyn awaken_dispatch_contract::claimed_stream::ClaimedStreamPublisher>) -> Self
 pub fn awaken_session_executor::SharedHost::with_worker_upstream(self, awaken_worker_transport_security::WorkerUpstream) -> Self
 impl awaken_session_executor::SharedHost

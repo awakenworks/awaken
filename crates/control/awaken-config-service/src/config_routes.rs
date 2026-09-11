@@ -493,7 +493,27 @@ pub(crate) async fn put_config(
         }
     };
     let observed_revision = current.as_ref().map_or(0, |revision| revision.revision);
-    if let Some(expected) = body.get("generation").and_then(Value::as_u64)
+    // An authored `generation` is the caller's optimistic-concurrency fence.
+    // Reading it with `as_u64` alone made a wrongly typed one — a string `"3"`,
+    // a float `3.0` — indistinguishable from an absent one, so a client that
+    // believed it was fencing had its write applied unfenced over whatever
+    // revision happened to be current. A present `generation` must be a
+    // revision number or the write is refused.
+    let expected_generation = match body.get("generation") {
+        None | Some(Value::Null) => None,
+        Some(value) => match value.as_u64() {
+            Some(expected) => Some(expected),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "generation must be a non-negative integer revision number",
+                    })),
+                );
+            }
+        },
+    };
+    if let Some(expected) = expected_generation
         && expected != observed_revision
     {
         return (
@@ -881,7 +901,7 @@ mod publication_projection_tests {
             State(plane.clone()),
             Some(Extension(WorkspaceScope(scope.as_str().into()))),
             Path(seeded.id.clone()),
-            Json(wire),
+            Json(wire.clone()),
         )
         .await;
         assert_eq!(status, StatusCode::CONFLICT, "O3");
@@ -895,6 +915,41 @@ mod publication_projection_tests {
             2,
             "O2 zero write"
         );
+
+        // O4: a `generation` the fence cannot read is refused, never treated as
+        // an absent fence. `as_u64` alone made a stringly-typed or fractional
+        // revision indistinguishable from no fence at all, so a caller who
+        // believed it was guarding against concurrent edits had its write
+        // applied unfenced. The stored revision is the consumer-side witness.
+        for unreadable in [json!("1"), json!(1.5), json!(true), json!([1])] {
+            let mut fenced = wire.clone();
+            fenced["generation"] = unreadable.clone();
+            let (status, body) = put_config(
+                State(plane.clone()),
+                Some(Extension(WorkspaceScope(scope.as_str().into()))),
+                Path(seeded.id.clone()),
+                Json(fenced),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "O4 {unreadable}");
+            assert!(
+                body["error"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("generation"),
+                "O4 names the field"
+            );
+            assert_eq!(
+                plane
+                    .get_versioned(&scope, &seeded.id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .revision,
+                2,
+                "O4 zero write"
+            );
+        }
     }
 
     #[tokio::test]

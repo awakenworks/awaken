@@ -19,6 +19,7 @@ pub use awaken_dispatch_contract::PlacementPolicy
 pub use awaken_dispatch_contract::PlacementRequirements
 pub use awaken_dispatch_contract::REPOSITORY_CREDENTIALS_CAPABILITY
 pub use awaken_dispatch_contract::RankedWorker
+pub use awaken_dispatch_contract::RegisteredCapacity
 pub use awaken_dispatch_contract::RegisteredWorker
 pub use awaken_dispatch_contract::RegistryError
 pub use awaken_dispatch_contract::RegistryMutation
