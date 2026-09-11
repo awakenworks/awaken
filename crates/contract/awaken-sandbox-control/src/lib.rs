@@ -876,3 +876,56 @@ mod tests {
         assert!(!debug.contains("valid-capability"), "CV4/E3 password");
     }
 }
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    fn publication_slot_directly_preserves_single_owner_stale_fence_and_absorbing_close() {
+        // Cause/effect decision table over the production slot itself:
+        // S1 Open+vacant reserves one owner and rejects a second; S2 Open+active
+        // admits current mutation/release but rejects a foreign owner; S3 after
+        // release and replacement, the retained predecessor cannot mutate or
+        // release the replacement and its allocation identity is never reused;
+        // S4 Close(active) retains exactly that value for cleanup and blocks all
+        // ordinary owner operations; S5 repeated close retains it until the one
+        // finish, then every close is empty; S6 Close(vacant) is also absorbing.
+        // These rows cover every non-poisoned PublicationSlotState shape.
+        let slot = SandboxControlPublicationSlot::default();
+        let first = slot.reserve(1_u8).unwrap();
+        assert!(slot.owns(&first), "S1 current owner");
+        assert!(slot.reserve(2).is_err(), "S1 one publication");
+        slot.with_current_mut(&first, |value| *value = 3).unwrap();
+
+        let foreign_slot = SandboxControlPublicationSlot::default();
+        let foreign = foreign_slot.reserve(9_u8).unwrap();
+        assert!(!slot.owns(&foreign), "S2 foreign owner");
+        assert!(slot.with_current_mut(&foreign, |_| ()).is_err(), "S2");
+        slot.release(&foreign);
+        assert!(slot.owns(&first), "S2 foreign release stutters");
+
+        slot.release(&first);
+        let second = slot.reserve(4_u8).unwrap();
+        assert!(!Arc::ptr_eq(&first.0, &second.0), "S3 no identity reuse");
+        slot.release(&first);
+        assert!(slot.owns(&second), "S3 stale release stutters");
+        assert!(slot.with_current_mut(&first, |_| ()).is_err(), "S3");
+
+        assert_eq!(slot.close(), Some(4), "S4 retained cleanup value");
+        assert!(!slot.owns(&second), "S4 no ordinary owner after close");
+        assert!(slot.reserve(5).is_err(), "S4 no reserve after close");
+        assert!(slot.with_current_mut(&second, |_| ()).is_err(), "S4");
+        assert!(slot.with_retained_mut(&foreign, |_| ()).is_err(), "S4");
+        slot.with_retained_mut(&second, |value| *value = 6).unwrap();
+        slot.release(&second);
+        assert_eq!(slot.close(), Some(6), "S5 close retry retains value");
+        slot.finish_close(|value| assert_eq!(*value, 6));
+        assert_eq!(slot.close(), None, "S5 one finish forgets value");
+        slot.finish_close(|_| panic!("S5 cleanup repeated"));
+
+        let vacant = SandboxControlPublicationSlot::<u8>::default();
+        assert_eq!(vacant.close(), None, "S6 vacant close");
+        assert!(vacant.reserve(1).is_err(), "S6 absorbing close");
+    }
+}
