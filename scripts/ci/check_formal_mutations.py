@@ -190,8 +190,9 @@ def mutate_unchecked_model(case_root: Path) -> None:
 
 
 def mutate_commented_release_self_test(case_root: Path) -> None:
-    # P1: the Python authority and model still exist, but its only executable
-    # strict-CI selection is commented out. Static text presence earns no link.
+    # P1: the Python authority, model and direct Rust kernel still exist, but the
+    # production entrypoint's only strict-CI self-test is commented out. Static
+    # source/harness presence cannot replace execution of the composing owner.
     gate = case_root / "scripts/ci/check_formal.sh"
     source = gate.read_text()
     anchor = "python3 scripts/release/verification_manifest.py self-test"
@@ -199,7 +200,7 @@ def mutate_commented_release_self_test(case_root: Path) -> None:
         raise SystemExit("release self-test mutation anchor drifted")
     gate.write_text(source.replace(anchor, "# " + anchor))
     must_fail(case_root, "check_formal_coverage.py", "comment-only Python self-test",
-              expected="assembly_role.verified_admission_requires_exact_fresh_tcb_fingerprint is model-linked without executable production evidence")
+              expected="assembly_role.verified_admission_requires_exact_fresh_tcb_fingerprint release entrypoint needs exactly one strict-CI self-test: scripts/release/verification_manifest.py")
 
 
 def mutate_missing_proof_grade(case_root: Path) -> None:
