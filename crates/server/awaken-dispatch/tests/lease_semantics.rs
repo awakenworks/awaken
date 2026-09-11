@@ -416,7 +416,12 @@ where
     operation.execution = if unknown {
         ModelExecutionEvidence::Unknown
     } else {
-        ModelExecutionEvidence::Terminated
+        ModelExecutionEvidence::Terminated(
+            awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
+                "completed",
+            ))
+            .unwrap(),
+        )
     };
     let commit = Arc::new(MemoryCommitCoordinator::new());
     commit

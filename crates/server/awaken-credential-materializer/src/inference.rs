@@ -315,8 +315,14 @@ impl LlmExecutor for PinnedCandidateExecutor {
         self.executor_for(&request.model_binding)
             .await
             .map_err(|error| {
+                // Candidate resolution failed, so no adapter was entered and
+                // no byte of this request reached a transport.
                 error.with_execution_evidence(
-                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched,
+                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(
+                        awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
+                            awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution,
+                        ),
+                    ),
                 )
             })?
             .infer(request)
@@ -331,8 +337,14 @@ impl LlmExecutor for PinnedCandidateExecutor {
         self.executor_for(&request.model_binding)
             .await
             .map_err(|error| {
+                // Candidate resolution failed, so no adapter was entered and
+                // no byte of this request reached a transport.
                 error.with_execution_evidence(
-                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched,
+                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(
+                        awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
+                            awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution,
+                        ),
+                    ),
                 )
             })?
             .infer_streaming(request, sink)
@@ -471,8 +483,17 @@ mod tests {
         // must never promote Unknown to Terminated merely because it returned.
         for evidence in [
             ModelExecutionEvidence::Unknown,
-            ModelExecutionEvidence::NotDispatched,
-            ModelExecutionEvidence::Terminated,
+            ModelExecutionEvidence::NotDispatched(
+                awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
+                    awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution,
+                ),
+            ),
+            ModelExecutionEvidence::Terminated(
+                awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
+                    "completed",
+                ))
+                .unwrap(),
+            ),
         ] {
             let executor = PinnedModelExecutor {
                 inner: Arc::new(Reject(evidence)),
@@ -779,7 +800,7 @@ mod tests {
                 .unwrap_err();
                 assert_eq!(
                     error.execution_evidence(),
-                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched
+                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution))
                 );
             }
         }
@@ -899,7 +920,7 @@ mod tests {
             .unwrap_err();
             assert_eq!(
                 error.execution_evidence(),
-                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution))
             );
         }
     }

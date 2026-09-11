@@ -1581,9 +1581,15 @@ async fn participant_veto_during_model_admission_waits_prevents_actual_provider_
             ActiveModelOperation::load(&awaken_store_inmem::replay_state(&commit.committed()))
                 .unwrap();
         match at {
+            // The executor returned a complete response, so Runtime records
+            // the receipt that response carries -- not a locally chosen class.
             0 => assert_eq!(
                 operation.unwrap().execution,
-                ModelExecutionEvidence::Terminated
+                ModelExecutionEvidence::Terminated(
+                    awaken_runtime_contract::model_operation::TerminalReceipt::from_response_envelope(
+                        awaken_runtime_contract::model_operation::ResponseEnvelope::CompleteBody
+                    )
+                )
             ),
             3 => {
                 let operation = operation.unwrap();

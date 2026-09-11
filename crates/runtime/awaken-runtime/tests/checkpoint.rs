@@ -57,7 +57,7 @@ impl LlmExecutor for DropOnceLlm {
             return Err(
                 Error::Timeout("provider-confirmed terminal deadline".to_string())
                     .with_execution_evidence(
-                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated,
+                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated(awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some("completed")).unwrap()),
                 ),
             );
         }
@@ -375,7 +375,12 @@ async fn filesystem_recovery_waits_for_reopened_committed_predecessor() {
                 let mut operation =
                     ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
                 operation.phase = ModelOperationPhase::Returned;
-                operation.execution = ModelExecutionEvidence::Terminated;
+                operation.execution = ModelExecutionEvidence::Terminated(
+                    awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(
+                        Some("completed"),
+                    )
+                    .unwrap(),
+                );
                 commit
                     .commit(ThreadCommit::assemble(
                         ThreadId(THREAD_ID.to_string()),

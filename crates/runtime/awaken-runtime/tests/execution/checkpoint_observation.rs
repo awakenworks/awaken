@@ -360,7 +360,12 @@ async fn checkpoint_observation_precedes_committed_tool_batch_recovery() {
             if unknown {
                 awaken_runtime_contract::model_operation::ModelExecutionEvidence::Unknown
             } else {
-                awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated(
+                    awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(
+                        Some("completed"),
+                    )
+                    .unwrap(),
+                )
             },
         )
         .await;
@@ -438,11 +443,18 @@ async fn checkpoint_observation_precedes_committed_tool_batch_recovery() {
 
 #[tokio::test]
 async fn early_cancellation_preserves_recovered_model_uncertainty() {
-    use awaken_runtime_contract::model_operation::ModelExecutionEvidence::{Terminated, Unknown};
+    use awaken_runtime_contract::model_operation::ModelExecutionEvidence::Unknown;
+    // The provider said so, through the same door an adapter uses.
+    let terminated = awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated(
+        awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
+            "completed",
+        ))
+        .unwrap(),
+    );
     // R1 no journal, R2 terminated journal => Cancelled without an invented veto.
     // R3 unknown journal => Cancelled but no physical ACK. Cancellation precedes
     // inference, so the inference-only guard cannot satisfy this test.
-    for evidence in [None, Some(Terminated), Some(Unknown)] {
+    for evidence in [None, Some(terminated), Some(Unknown)] {
         let durable = Arc::new(MemoryCommitCoordinator::new());
         if let Some(evidence) = evidence {
             commit_model_evidence(&durable, evidence).await;
@@ -471,13 +483,20 @@ async fn early_cancellation_preserves_recovered_model_uncertainty() {
 
 #[tokio::test]
 async fn control_completion_never_supplies_predecessor_stop_evidence() {
-    use awaken_runtime_contract::model_operation::ModelExecutionEvidence::{Terminated, Unknown};
+    use awaken_runtime_contract::model_operation::ModelExecutionEvidence::Unknown;
+    // The provider said so, through the same door an adapter uses.
+    let terminated = awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated(
+        awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
+            "completed",
+        ))
+        .unwrap(),
+    );
     // C1 cancel Run / cancel activation / budget stop; C2 absent/terminated/
     // unknown journal; C3 single record / followed by a different completed
     // invocation. Eighteen rules C1 x C2 x C3: preserve the logical outcome and
     // all journal writes; a later completion cannot erase the Unknown veto.
     for entry in ["cancel-run", "cancel-activation", "stop"] {
-        for (evidence, later_completed) in [None, Some(Terminated), Some(Unknown)]
+        for (evidence, later_completed) in [None, Some(terminated), Some(Unknown)]
             .into_iter()
             .flat_map(|evidence| [false, true].map(|later| (evidence, later)))
         {
@@ -492,7 +511,7 @@ async fn control_completion_never_supplies_predecessor_stop_evidence() {
                     ModelBinding::new("p", "m", "b"),
                 )
                 .unwrap();
-                later.execution = Terminated;
+                later.execution = terminated;
                 commit_model_operations(&durable, [later]).await;
             }
             let before = model_operations(&durable);

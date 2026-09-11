@@ -797,8 +797,13 @@ impl BrokeredCandidateExecutor {
         sink: Option<&dyn DeltaSink>,
     ) -> Result<ChatResponse, LlmError> {
         let lease = self.lease(&request.model_binding).await.map_err(|error| {
+            // The egress lease could not be acquired, so nothing was sent.
             error.with_execution_evidence(
-                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched,
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(
+                    awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
+                        awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution,
+                    ),
+                ),
             )
         })?;
         request.model_binding.model_ref.clone_from(&self.model);
@@ -807,8 +812,13 @@ impl BrokeredCandidateExecutor {
                 Some(sink) => executor.infer_streaming(request, sink).await,
                 None => executor.infer(request).await,
             },
+            // No executor could be built for the lease: never entered.
             Err(error) => Err(error.with_execution_evidence(
-                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched,
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(
+                    awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
+                        awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution,
+                    ),
+                ),
             )),
         };
         self.close(&lease).await;
@@ -1302,7 +1312,7 @@ mod tests {
             assert_eq!(error.code(), "binding_rejected");
             assert_eq!(
                 error.execution_evidence(),
-                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution))
             );
         }
         assert!(client.requests.lock().unwrap().is_empty());
@@ -1417,7 +1427,7 @@ mod tests {
                     assert_eq!(error.code(), "binding_rejected", "{rule}");
                     assert_eq!(
                         error.execution_evidence(),
-                        ModelExecutionEvidence::NotDispatched,
+                        ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution)),
                         "{rule}"
                     );
                 } else {

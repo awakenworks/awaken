@@ -69,7 +69,11 @@ impl LlmExecutor for RouteByProviderLlm {
                 message: format!("{provider} is down"),
                 retry_after: None,
             }
-            .with_execution_evidence(ModelExecutionEvidence::NotDispatched))
+            .with_execution_evidence(ModelExecutionEvidence::NotDispatched(
+                awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
+                    awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection,
+                ),
+            )))
         } else {
             Ok(ChatResponse {
                 output: AssistantOutput::text(format!("answered by {provider}")),
@@ -93,7 +97,11 @@ impl LlmExecutor for RouteLlm {
                 message: format!("{model} is down"),
                 retry_after: None,
             }
-            .with_execution_evidence(ModelExecutionEvidence::NotDispatched))
+            .with_execution_evidence(ModelExecutionEvidence::NotDispatched(
+                awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
+                    awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection,
+                ),
+            )))
         } else {
             Ok(ChatResponse {
                 output: AssistantOutput::text(format!("answered by {model}")),
@@ -136,7 +144,11 @@ impl LlmExecutor for TruncateThenFailPrimary {
                 message: "primary down".to_string(),
                 retry_after: None,
             }
-            .with_execution_evidence(ModelExecutionEvidence::NotDispatched)),
+            .with_execution_evidence(ModelExecutionEvidence::NotDispatched(
+                awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(
+                    awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection,
+                ),
+            ))),
             other => Ok(ChatResponse {
                 output: AssistantOutput::text(format!("answered by {other}")),
                 usage: None,
