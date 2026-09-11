@@ -12,6 +12,8 @@ use crate::state::ManagedState;
 fn project_execution_evidence(
     observation: awaken_session_application::SessionExecutionObservation,
 ) -> awaken_protocol_awaken::SessionExecutionEvidence {
+    let public_thread_id =
+        crate::state::public_thread_id(&observation.session_id, &observation.session_id);
     awaken_protocol_awaken::SessionExecutionEvidence {
         session_id: observation.session_id,
         session_revision: observation.session_revision,
@@ -28,7 +30,17 @@ fn project_execution_evidence(
                 run_id: run.run_id,
                 idempotency_key: run.idempotency_key,
                 state: run.state,
-                tool_use_ids: run.tool_use_ids,
+                tool_use_ids: run
+                    .tool_uses
+                    .into_iter()
+                    .map(|tool_use| {
+                        crate::project::managed_tool_event_id(
+                            &public_thread_id,
+                            &tool_use.source_message_id,
+                            &tool_use.call_id,
+                        )
+                    })
+                    .collect(),
                 model_requests: run
                     .model_requests
                     .into_iter()
@@ -91,7 +103,10 @@ mod tests {
                         run_id: RunId("run-observed".into()),
                         idempotency_key: Some("command-observed".into()),
                         state: RunState::Running,
-                        tool_use_ids: vec!["tool-submit".into()],
+                        tool_uses: vec![awaken_session_application::SessionToolUseObservation {
+                            source_message_id: "run-observed-assistant-0".into(),
+                            call_id: "tool-submit".into(),
+                        }],
                         model_requests: vec![
                             awaken_session_application::SessionModelRequestObservation {
                                 sequence: 11,
@@ -104,7 +119,7 @@ mod tests {
                         run_id: RunId("run-unobserved".into()),
                         idempotency_key: None,
                         state: RunState::Running,
-                        tool_use_ids: Vec::new(),
+                        tool_uses: Vec::new(),
                         model_requests: Vec::new(),
                     },
                 ],
@@ -116,7 +131,15 @@ mod tests {
             Some("command-observed"),
             "R1/E1"
         );
-        assert_eq!(projected.runs[0].tool_use_ids, ["tool-submit"], "R1/E1");
+        assert_eq!(
+            projected.runs[0].tool_use_ids,
+            [crate::project::managed_tool_event_id(
+                &crate::state::public_thread_id("session-1", "session-1"),
+                "run-observed-assistant-0",
+                "tool-submit",
+            )],
+            "R1/E1"
+        );
         assert_eq!(projected.runs[0].model_requests[0].sequence, 11, "R1/E1");
         assert!(projected.runs[1].model_requests.is_empty(), "R2/E2");
     }
