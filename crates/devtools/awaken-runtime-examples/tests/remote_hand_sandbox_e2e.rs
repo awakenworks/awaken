@@ -126,7 +126,15 @@ impl RawTool for SandboxEcho {
         };
         let run = |e: String| ToolError::Execution(e);
         let sandbox = provider
-            .create(&spec)
+            .create_for_effect(
+                &spec,
+                &pc::SandboxEffectFence::new("op-remote-hand", "owner", "runtime", 1, u64::MAX)
+                    .expect("fixture effect fence"),
+                &pc::test_support::EffectAuthority::new(
+                    &pc::SandboxEffectFence::new("op-remote-hand", "owner", "runtime", 1, u64::MAX)
+                        .expect("fixture effect fence"),
+                ),
+            )
             .await
             .map_err(|e| run(format!("create: {e:?}")))?;
 
@@ -161,7 +169,7 @@ impl RawTool for SandboxEcho {
             .await
             .map_err(|e| run(format!("read: {e:?}")))?;
         sandbox
-            .dispose()
+            .dispose_unattached()
             .await
             .map_err(|e| run(format!("dispose: {e:?}")))?;
 

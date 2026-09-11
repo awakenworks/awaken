@@ -48,3 +48,21 @@ impl CurrentExecutionAuthority for EffectAuthority {
         effect(fence, *remaining)
     }
 }
+
+/// A live fence plus its matching authority, for tests that own no aggregate
+/// effect yet must still drive the provider's fenced obligations. Production
+/// callers always carry a real Session-owned effect; this exists so a test
+/// never reaches for an unfenced shortcut that no longer exists.
+#[must_use]
+pub fn fixture_effect(operation_id: &str) -> (SandboxEffectFence, EffectAuthority) {
+    let fence = SandboxEffectFence::new(
+        operation_id,
+        "fixture-owner",
+        "fixture-runtime",
+        1,
+        u64::MAX,
+    )
+    .expect("fixture effect fence is well formed");
+    let authority = EffectAuthority::new(&fence);
+    (fence, authority)
+}

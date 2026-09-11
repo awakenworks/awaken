@@ -27,7 +27,7 @@ async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_di
                 .checkpoint(&checkpoint_request, &store)
                 .await
                 .unwrap();
-            source.dispose().await.unwrap();
+            source.dispose_unattached().await.unwrap();
             let request = exact_restore_request(&spec, &checkpoint_request, &checkpoint, "current");
             let evidence = request.evidence(&spec);
             let root = restoration_root(tmp.path(), &evidence).unwrap();
@@ -37,7 +37,7 @@ async fn terminal_restored_target_revalidates_after_lock_and_rejects_unfenced_di
                     .unwrap();
                 std::fs::write(root.join("retained"), b"original").unwrap();
                 assert!(
-                    target.target().dispose().await.is_err(),
+                    target.target().dispose_unattached().await.is_err(),
                     "R6 no alternate disposal"
                 );
             }
@@ -226,7 +226,7 @@ async fn checkpoint_dispose_restore_preserves_mutable_filesystem() {
         .checkpoint(&checkpoint_request, &store)
         .await
         .unwrap();
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
     assert!(!sandbox.workspace_path().exists(), "source terminated");
 
     let request = exact_restore_request(&spec, &checkpoint_request, &receipt, "fidelity");
@@ -476,7 +476,7 @@ async fn exact_restore_materialization_response_loss_is_idempotent() {
         .checkpoint(&checkpoint_request, &store)
         .await
         .unwrap();
-    source.dispose().await.unwrap();
+    source.dispose_unattached().await.unwrap();
     let request = exact_restore_request(&spec, &checkpoint_request, &receipt, "response-loss");
     let expected_evidence = request.evidence(&spec);
     let restored_root = restore_target::restoration_root(tmp.path(), &expected_evidence).unwrap();
@@ -572,7 +572,7 @@ async fn corrupt_checkpoint_is_rejected_before_restore() {
         .checkpoint(&checkpoint_request, &store)
         .await
         .unwrap();
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
     let original = {
         let mut objects = store.objects.lock().unwrap();
         let stored = objects.get_mut(&receipt.id).unwrap();

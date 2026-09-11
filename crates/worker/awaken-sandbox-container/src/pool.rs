@@ -68,13 +68,13 @@ async fn ready_candidate<R: ContainerRuntime + 'static>(
     match pc::Sandbox::status(&sandbox).await {
         Ok(pc::SandboxStatus::Ready) => Ok(sandbox),
         Ok(_) => {
-            let _ = pc::Sandbox::dispose(&sandbox).await;
+            let _ = sandbox.dispose().await;
             Err(pc::SandboxError::new(
                 "prewarmed container did not become ready",
             ))
         }
         Err(error) => {
-            let _ = pc::Sandbox::dispose(&sandbox).await;
+            let _ = sandbox.dispose().await;
             Err(error)
         }
     }
@@ -212,7 +212,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                 (ready, expired)
             };
             for sandbox in expired {
-                let _ = pc::Sandbox::dispose(&sandbox).await;
+                let _ = sandbox.dispose().await;
             }
             if ready >= target {
                 return Ok(ready);
@@ -258,10 +258,10 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                 }
             };
             for sandbox in evicted {
-                let _ = pc::Sandbox::dispose(&sandbox).await;
+                let _ = sandbox.dispose().await;
             }
             if let Some(excess) = excess {
-                let _ = pc::Sandbox::dispose(&excess).await;
+                let _ = excess.dispose().await;
                 if self.closed.load(Ordering::SeqCst) {
                     return Err(pc::SandboxError::new(
                         "warm container capacity is shut down",
@@ -304,7 +304,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
             .expect("warm prewarm gate mutex")
             .remove(&key);
         for sandbox in ready {
-            let _ = pc::Sandbox::dispose(&sandbox).await;
+            let _ = sandbox.dispose().await;
         }
     }
 
@@ -319,7 +319,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                 map.drain().flat_map(|(_, e)| e.ready).collect()
             };
             for sandbox in batch {
-                let _ = pc::Sandbox::dispose(&sandbox).await;
+                let _ = sandbox.dispose().await;
             }
             let changed = self.create_changed.notified();
             if self.in_flight_creates.load(Ordering::SeqCst) == 0 {
@@ -396,7 +396,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
                                 }
                             };
                             if let Some(excess) = over {
-                                let _ = pc::Sandbox::dispose(&excess).await;
+                                let _ = excess.dispose().await;
                                 return;
                             }
                         }
@@ -854,7 +854,7 @@ mod tests {
         let retained_environment = pool.create_environment(&retained).await.unwrap();
         assert_eq!(pool.ready_len(&retained), 0, "R2");
         assert_eq!(pool.ready_len(&ephemeral), 1, "R2 preserves capacity");
-        retained_environment.dispose().await.unwrap();
+        retained_environment.dispose_unattached().await.unwrap();
 
         let fence =
             crate::ContainerEffectFence::new("operation-1", "owner-1", "runtime-1", 1, u64::MAX)
@@ -894,7 +894,7 @@ mod tests {
                 "R4 stable context"
             );
         }
-        fenced.dispose().await.unwrap();
+        fenced.dispose_unattached().await.unwrap();
         pool.shutdown().await;
     }
 
@@ -1097,7 +1097,7 @@ mod tests {
         assert_eq!(runtime.creates.load(Ordering::SeqCst), 2);
         assert_eq!(runtime.removes.load(Ordering::SeqCst), 1, "E2");
         assert_eq!(pool.ready_len(&spec), 0, "E3");
-        environment.dispose().await.unwrap();
+        environment.dispose_unattached().await.unwrap();
     }
 
     #[test]

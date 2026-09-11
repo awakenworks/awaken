@@ -113,7 +113,7 @@ async fn full_declare_admit_prepare_realize_execute_retrieve() {
     );
 
     // 7. Tear down.
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
     assert!(matches!(
         sandbox.status().await.unwrap(),
         pc::SandboxStatus::Terminated

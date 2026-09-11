@@ -722,7 +722,7 @@ async fn memory_store_realizes_as_copy_on_the_container_tier() {
             .expect("M2 read-only memory copy is bound into the container");
         assert!(read_only.read_only, "M2/E2");
     }
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
     assert!(torn_down.load(Ordering::SeqCst));
 }
 
@@ -1194,7 +1194,7 @@ async fn native_memory_volume_seeds_and_harvests_through_the_same_mounter() {
         assert!(!mount.snapshot_tar.is_empty(), "E1 seeded snapshot");
     }
 
-    sandbox.dispose().await.expect("NM1 dispose");
+    sandbox.dispose_unattached().await.expect("NM1 dispose");
     assert_eq!(
         harvested.lock().unwrap().as_deref(),
         Some(b"changed-in-pod".as_slice()),
@@ -4968,7 +4968,7 @@ async fn control_publication_survives_idle_and_channel_failure_but_stops_before_
     let _reopened = take_control_peer(runtime.as_ref()).await;
     assert_eq!(runtime.st.lock().unwrap().control_channel_opens, 4, "B6/E2");
 
-    pc::Sandbox::dispose(&sandbox).await.expect("B7 dispose");
+    sandbox.dispose().await.expect("B7 dispose");
     {
         let state = runtime.st.lock().unwrap();
         assert_eq!(
@@ -5032,7 +5032,7 @@ async fn control_disposal_and_publisher_cancellation_reap_initial_channel_setup(
         if cancel_publisher {
             publishing.abort();
         }
-        pc::Sandbox::dispose(sandbox.as_ref()).await.unwrap();
+        sandbox.dispose().await.unwrap();
         assert!(
             dropped.load(Ordering::SeqCst),
             "B9/B10 setup reaped before disposal return"
@@ -5724,7 +5724,7 @@ async fn full_lifecycle_create_channel_process_artifacts_lease_dispose() {
     ));
     sandbox.renew_lease().await.unwrap();
     assert_eq!(rt.st.lock().unwrap().lease_touches, 1);
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
     assert!(matches!(
         sandbox.status().await.unwrap(),
         pc::SandboxStatus::Terminated
@@ -5791,7 +5791,7 @@ async fn a_second_node_adopts_a_running_container_over_the_shared_runtime() {
     sandbox_b.renew_lease().await.unwrap();
     assert_eq!(rt.st.lock().unwrap().lease_touches, 1);
 
-    sandbox_b.dispose().await.unwrap();
+    sandbox_b.dispose_unattached().await.unwrap();
     assert!(matches!(
         sandbox_b.status().await.unwrap(),
         pc::SandboxStatus::Terminated
@@ -6010,7 +6010,7 @@ async fn adopt_rejects_a_handle_whose_runtime_is_gone() {
     let sandbox_spec = spec("run-gone");
     let sandbox = p.create(&sandbox_spec).await.unwrap();
     let handle = sandbox.handle();
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
     assert!(
         ContainerEnvironmentProvider::adopt_environment(
             &p,
@@ -6055,7 +6055,7 @@ async fn create_fails_closed_on_bad_spec_and_backend_error_but_needs_no_attempt_
     let mut no_cmd = spec("run-4b");
     no_cmd.command.clear();
     let environment = p.create(&no_cmd).await.unwrap();
-    environment.dispose().await.unwrap();
+    environment.dispose_unattached().await.unwrap();
 
     // Backend create failure propagates.
     let rt = Arc::new(FakeRuntime {
@@ -6093,8 +6093,8 @@ async fn successful_host_staging_follows_the_physical_container_lifetime() {
         );
         let original = std::fs::read(&source).unwrap();
         if dispose {
-            sandbox.dispose().await.unwrap();
-            sandbox.dispose().await.unwrap();
+            sandbox.dispose_unattached().await.unwrap();
+            sandbox.dispose_unattached().await.unwrap();
         }
         drop(sandbox);
         drop(provider);
@@ -6817,7 +6817,7 @@ async fn failed_remote_credential_harvest_blocks_writeback_and_environment_remov
         .await
         .unwrap();
     assert!(
-        sandbox.dispose().await.is_err(),
+        sandbox.dispose_unattached().await.is_err(),
         "D2 read failure propagates"
     );
     assert!(
@@ -6846,7 +6846,7 @@ async fn failed_remote_credential_harvest_blocks_writeback_and_environment_remov
         .await
         .unwrap();
     assert!(
-        sandbox.dispose().await.is_err(),
+        sandbox.dispose_unattached().await.is_err(),
         "D3 broker rejection propagates"
     );
     assert!(

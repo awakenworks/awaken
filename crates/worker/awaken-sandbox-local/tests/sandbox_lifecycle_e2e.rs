@@ -114,7 +114,7 @@ async fn full_lifecycle_harvests_memory_collects_outputs_then_shreds_and_reaps()
     );
 
     // Teardown: harvest memory (persist the edit) → shred the secret → reap the dir.
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
 
     // The memory edit reached the durable store — harvest ran before the reap.
     assert_eq!(

@@ -118,7 +118,7 @@ async fn run_to_exit(
             None => tokio::time::sleep(Duration::from_millis(100)).await,
         }
     }
-    sandbox.dispose().await.expect("dispose");
+    sandbox.dispose_unattached().await.expect("dispose");
     code
 }
 

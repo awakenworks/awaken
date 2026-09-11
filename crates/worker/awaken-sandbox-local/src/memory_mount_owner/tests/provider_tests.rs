@@ -509,7 +509,7 @@ async fn namespace_attach_serializes_destination_admission_and_cancelled_mount_r
                 usize::from(cancel)
             );
             assert!(sandbox.attach(req).await.is_err());
-            sandbox.dispose().await.unwrap();
+            sandbox.dispose_unattached().await.unwrap();
             assert_eq!(
                 mounter.drops.load(Ordering::SeqCst),
                 if cancel { 2 } else { 1 }

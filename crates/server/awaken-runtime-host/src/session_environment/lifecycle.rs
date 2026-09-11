@@ -20,7 +20,7 @@ async fn dispose_container_after_closing_hand<S: pc::Sandbox + ?Sized>(
             "Hand reap was indeterminate; continuing with owning Environment disposal"
         );
     }
-    pc::Sandbox::dispose(sandbox).await
+    sandbox.dispose_unattached().await
 }
 
 impl SessionEnvironment {
@@ -102,11 +102,16 @@ impl SessionEnvironment {
         self.sandbox().spawn(command).await?.wait().await
     }
 
+    /// Reclaim an environment that reached no committed Session ownership:
+    /// a capability probe, pre-publication compensation, or a retirement whose
+    /// candidate was never published. Destruction of an owned realization goes
+    /// through the provider's `dispose_for_effect` obligation instead, which is
+    /// why this edge now names itself unattached at every call site.
     pub(crate) async fn dispose(&self) -> Result<(), pc::SandboxError> {
         match self {
             Self::Workdir { .. } | Self::Namespace { .. } => {
                 self.stop_bound_processes().await?;
-                self.sandbox().dispose().await
+                self.sandbox().dispose_unattached().await
             }
             Self::Container { sandbox, hand, .. } => {
                 // A resident Hand is terminated by disposal of its owning

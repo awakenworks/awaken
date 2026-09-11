@@ -112,8 +112,8 @@ async fn sandboxes_are_isolated_and_escapes_fail_closed() {
         .is_err()
     );
 
-    env_a.dispose().await.unwrap();
-    env_b.dispose().await.unwrap();
+    env_a.dispose_unattached().await.unwrap();
+    env_b.dispose_unattached().await.unwrap();
 }
 
 /// True only when bwrap + unprivileged userns work AND this host can actually reach
@@ -390,5 +390,5 @@ async fn workdir_bash_cwd_is_a_lexical_convenience_not_a_security_boundary() {
         leak.text()
     );
 
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
 }

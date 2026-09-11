@@ -1303,16 +1303,6 @@ pub trait SandboxProvider: Send + Sync {
 
     /// Realize a validated spec into a live sandbox (bind mounts, apply ro/env/
     /// network/limits). Callers should validate first via `prepare_environment`.
-    /// Unfenced realization, for callers that own no aggregate effect at all
-    /// (one-shot local tooling). Durable Session work must never reach here.
-    /// The default refuses: a provider opts in to the unfenced edge explicitly,
-    /// which inverts the previous obligation where this was the only mandatory
-    /// creation port and the fenced edge was the optional one.
-    async fn create(&self, _spec: &SandboxSpec) -> Result<Box<dyn Sandbox>, SandboxError> {
-        Err(SandboxError::new(
-            "sandbox provider does not offer unfenced creation",
-        ))
-    }
 
     /// Realize one Sandbox only after validating the aggregate-owned physical
     /// effect fence against the original captured current authority. Re-enter
@@ -1358,13 +1348,6 @@ pub trait SandboxProvider: Send + Sync {
     /// — the recovery path after a host restart, and the takeover path across
     /// hosts. For a local backend this re-opens the directory; for a remote one it
     /// rebuilds a client against the still-running pod/container.
-    /// Unfenced adoption, for callers that own no aggregate effect. The default
-    /// refuses; providers opt in explicitly.
-    async fn adopt(&self, _handle: &SandboxHandle) -> Result<Box<dyn Sandbox>, SandboxError> {
-        Err(SandboxError::new(
-            "sandbox provider does not offer unfenced adoption",
-        ))
-    }
 
     /// Adopt only after revalidating the exact aggregate-owned effect fence.
     /// The legacy port remains available for explicitly unfenced callers; a
@@ -1550,13 +1533,6 @@ pub trait Sandbox: Send + Sync {
     async fn renew_lease(&self) -> Result<(), SandboxError>;
 
     /// Tear down the environment. Idempotent; `Durable` mounts persist.
-    /// Unfenced teardown, for environments owned by no aggregate effect. The
-    /// default refuses; implementations opt in explicitly.
-    async fn dispose(&self) -> Result<(), SandboxError> {
-        Err(SandboxError::new(
-            "sandbox does not offer unfenced disposal",
-        ))
-    }
 
     /// Confirm that the Host completed every copy-backed Memory obligation for
     /// this aggregate effect and supplied the provider's exact complete ordered
@@ -1608,6 +1584,13 @@ pub trait Sandbox: Send + Sync {
     /// Re-enter after waits and hold the guard through synchronous destructive
     /// effects; the preparation receipt is not a grant across later I/O.
     /// Backend commit fencing remains the resource adapter's responsibility.
+    /// Reclaim an environment that no aggregate effect owns: a capability
+    /// probe, warm-pool capacity, or a candidate that never reached
+    /// publication. Required, so every implementation states how it is
+    /// reclaimed, and named so the call site declares which case it means.
+    /// Anything a committed Session owns must use [`Self::dispose_for_effect`].
+    async fn dispose_unattached(&self) -> Result<(), SandboxError>;
+
     /// This is the Sandbox's destructive obligation and carries no default, so
     /// an environment that cannot fence teardown fails to compile.
     async fn dispose_for_effect(

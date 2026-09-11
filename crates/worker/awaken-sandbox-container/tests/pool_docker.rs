@@ -205,7 +205,7 @@ async fn a_session_with_a_mount_bypasses_the_pool() {
     );
 
     environment
-        .dispose()
+        .dispose_unattached()
         .await
         .expect("dispose mounted environment");
     pool.shutdown().await;

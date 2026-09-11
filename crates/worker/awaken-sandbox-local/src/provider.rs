@@ -976,13 +976,6 @@ impl pc::SandboxProvider for LocalProvider {
         vec!["awaken-fs-tar-v1".into()]
     }
 
-    async fn create(
-        &self,
-        spec: &pc::SandboxSpec,
-    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
-        Ok(Box::new(self.create_sandbox(spec).await?))
-    }
-
     async fn create_for_effect(
         &self,
         spec: &pc::SandboxSpec,
@@ -1030,13 +1023,6 @@ impl pc::SandboxProvider for LocalProvider {
             handle.filesystem_physical_incarnation()?,
             Some(effect_fence),
         )
-    }
-
-    async fn adopt(
-        &self,
-        handle: &pc::SandboxHandle,
-    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
-        Ok(Box::new(self.adopt_sandbox(handle).await?))
     }
 
     async fn adopt_for_effect(
@@ -1104,6 +1090,24 @@ impl pc::SandboxProvider for LocalProvider {
     ) -> Result<(), pc::SandboxError> {
         self.dispose_restore_sandbox(spec, request, authorization, authority)
             .await
+    }
+}
+
+impl LocalProvider {
+    // Relocated from the Sandbox/SandboxProvider trait: the unfenced ports
+    // are no longer a trait obligation or a reachable escape hatch. They stay
+    // as this type's own implementation detail, used by its fenced edges.
+    pub async fn create(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+        Ok(Box::new(self.create_sandbox(spec).await?))
+    }
+    pub async fn adopt(
+        &self,
+        handle: &pc::SandboxHandle,
+    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+        Ok(Box::new(self.adopt_sandbox(handle).await?))
     }
 }
 
@@ -1548,6 +1552,10 @@ impl pc::RepositoryRealizer for LocalSandbox {
 
 #[async_trait]
 impl pc::Sandbox for LocalSandbox {
+    async fn dispose_unattached(&self) -> Result<(), pc::SandboxError> {
+        self.dispose().await
+    }
+
     fn id(&self) -> &str {
         &self.id
     }
@@ -1756,30 +1764,6 @@ impl pc::Sandbox for LocalSandbox {
         Ok(())
     }
 
-    async fn dispose(&self) -> Result<(), pc::SandboxError> {
-        if self
-            .adopted_handle
-            .as_ref()
-            .and_then(pc::SandboxHandle::restoration)
-            .is_some()
-        {
-            return Err(err(
-                "restored target disposal requires the exact provider request and current authority",
-            ));
-        }
-        if self.realization.current().is_some() {
-            return Err(err(
-                "current durable sandbox disposal requires an aggregate effect fence",
-            ));
-        }
-        self.release_memory_mounts().await?;
-        self.shred_secrets()?;
-        crate::realization_marker::dispose_legacy(
-            self.root.root(),
-            self.realization.legacy_live_identity(),
-        )
-    }
-
     async fn acknowledge_memory_reconciliation(
         &self,
         effect_fence: &pc::SandboxEffectFence,
@@ -1845,6 +1829,35 @@ impl pc::Sandbox for LocalSandbox {
             std::future::ready(()),
         )
         .await
+    }
+}
+
+impl LocalSandbox {
+    // Relocated from the Sandbox/SandboxProvider trait: the unfenced ports
+    // are no longer a trait obligation or a reachable escape hatch. They stay
+    // as this type's own implementation detail, used by its fenced edges.
+    pub async fn dispose(&self) -> Result<(), pc::SandboxError> {
+        if self
+            .adopted_handle
+            .as_ref()
+            .and_then(pc::SandboxHandle::restoration)
+            .is_some()
+        {
+            return Err(err(
+                "restored target disposal requires the exact provider request and current authority",
+            ));
+        }
+        if self.realization.current().is_some() {
+            return Err(err(
+                "current durable sandbox disposal requires an aggregate effect fence",
+            ));
+        }
+        self.release_memory_mounts().await?;
+        self.shred_secrets()?;
+        crate::realization_marker::dispose_legacy(
+            self.root.root(),
+            self.realization.legacy_live_identity(),
+        )
     }
 }
 

@@ -636,13 +636,6 @@ impl pc::SandboxProvider for NamespaceProvider {
         }
     }
 
-    async fn create(
-        &self,
-        spec: &pc::SandboxSpec,
-    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
-        Ok(Box::new(self.create_sandbox(spec).await?))
-    }
-
     async fn create_for_effect(
         &self,
         spec: &pc::SandboxSpec,
@@ -693,13 +686,6 @@ impl pc::SandboxProvider for NamespaceProvider {
         )
     }
 
-    async fn adopt(
-        &self,
-        handle: &pc::SandboxHandle,
-    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
-        Ok(Box::new(self.adopt_sandbox(handle).await?))
-    }
-
     async fn adopt_for_effect(
         &self,
         spec: &pc::SandboxSpec,
@@ -731,6 +717,24 @@ impl pc::SandboxProvider for NamespaceProvider {
             )
             .await?
             .map(|sandbox| Box::new(sandbox) as Box<dyn pc::Sandbox>))
+    }
+}
+
+impl NamespaceProvider {
+    // Relocated from the Sandbox/SandboxProvider trait: the unfenced ports
+    // are no longer a trait obligation or a reachable escape hatch. They stay
+    // as this type's own implementation detail, used by its fenced edges.
+    pub async fn create(
+        &self,
+        spec: &pc::SandboxSpec,
+    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+        Ok(Box::new(self.create_sandbox(spec).await?))
+    }
+    pub async fn adopt(
+        &self,
+        handle: &pc::SandboxHandle,
+    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+        Ok(Box::new(self.adopt_sandbox(handle).await?))
     }
 }
 

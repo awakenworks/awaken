@@ -150,7 +150,7 @@ async fn opaque_process_writes_to_the_artifact_scan_output_root() {
         sandbox.read_artifact(&artifact.id).await.unwrap(),
         b"staged"
     );
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
 }
 
 /// Signal graph: C1=real Namespace; C2=opaque/ordinary spawn; C3=TERM/INT/KILL;
@@ -254,7 +254,7 @@ async fn namespace_signals_reach_the_program_and_preserve_forced_cleanup() {
                 None
             };
             process.signal(pc::Signal::Term).await.unwrap();
-            sandbox.dispose().await.unwrap();
+            sandbox.dispose_unattached().await.unwrap();
             assert!(
                 remained_live,
                 "S4 ignores TERM until explicit KILL; opaque={opaque}"
@@ -368,7 +368,7 @@ console.log('dependency-loaded;runtime-readonly;parent-hidden');
         "export default 'hoisted-sdk';",
         "N2"
     );
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
 }
 
 #[tokio::test]
@@ -464,7 +464,7 @@ async fn seatbelt_enforces_files_env_cwd_and_outputs_on_macos() {
     write.stdio = pc::Stdio::Null;
     let write = sandbox.spawn(write).await.unwrap();
     assert_ne!(write.wait().await.unwrap().code, Some(0));
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
 }
 
 #[tokio::test]
@@ -488,7 +488,7 @@ async fn seatbelt_enforces_none_and_unrestricted_network_on_macos() {
         .await
         .unwrap();
     assert_ne!(denied_probe.wait().await.unwrap().code, Some(0));
-    denied.dispose().await.unwrap();
+    denied.dispose_unattached().await.unwrap();
 
     let allowed = NamespaceProvider::new(tmp.path())
         .create_sandbox(&spec("t-seatbelt-net-open"))
@@ -499,7 +499,7 @@ async fn seatbelt_enforces_none_and_unrestricted_network_on_macos() {
         .await
         .unwrap();
     assert_eq!(allowed_probe.wait().await.unwrap().code, Some(0));
-    allowed.dispose().await.unwrap();
+    allowed.dispose_unattached().await.unwrap();
 }
 
 #[tokio::test]
@@ -523,7 +523,7 @@ async fn dispose_reaps_and_shreds_a_secret_mounted_sandbox() {
         NamespaceProvider::new(tmp.path()).with_blob("broker://k", b"sk-secret".to_vec());
     let sandbox = provider.create_sandbox(&s).await.unwrap();
     assert_eq!(sandbox.realized().len(), 1);
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
     assert!(matches!(
         sandbox.status().await.unwrap(),
         pc::SandboxStatus::Terminated
@@ -583,7 +583,7 @@ async fn an_unbound_host_path_is_invisible_inside_the_namespace() {
         !body.contains("HOST-ONLY-SECRET"),
         "the host secret's bytes must never appear inside: {body}"
     );
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
 }
 
 /// Ungated companion to `dispose_reaps_and_shreds_a_secret_mounted_sandbox`: prove the
@@ -618,7 +618,7 @@ async fn dispose_zeroes_the_credential_bytes_before_reaping() {
     assert_eq!(std::fs::read(&secret).unwrap(), b"sk-secret");
     let mut observer = std::fs::File::open(&secret).unwrap();
 
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
 
     // The directory entry is gone, but the retained descriptor proves the bytes
     // were overwritten with zeros in place — a shred, not just an unlink.
@@ -704,7 +704,7 @@ async fn bwrap_exec_has_path_fidelity_and_collects_outputs() {
     assert_eq!(arts.len(), 1);
     assert!(arts[0].path.ends_with("/o.txt"));
     assert_eq!(sandbox.read_artifact(&arts[0].id).await.unwrap(), b"hi");
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
 }
 
 #[tokio::test]
@@ -748,7 +748,7 @@ async fn bwrap_read_only_mount_is_enforced() {
         Some(0),
         "read-only bind must reject writes"
     );
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
 }
 
 // ── Non-gated: realization + lifecycle without executing a process (no bwrap) ──
@@ -795,7 +795,7 @@ async fn create_realizes_env_and_lifecycle_without_executing() {
     assert!(sandbox.attach(req).await.is_err());
     assert!(sandbox.process("p").await.is_err());
 
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
     assert!(matches!(
         sandbox.status().await.unwrap(),
         pc::SandboxStatus::Terminated
@@ -971,7 +971,7 @@ async fn memory_store_realizes_as_copy_and_harvests_on_dispose() {
 
     // Edit + dispose → harvested back to the durable store.
     std::fs::write(&note, "v2").unwrap();
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
     assert_eq!(
         fs.get_by_path("s", "/note.md")
             .await
@@ -1071,7 +1071,7 @@ async fn bwrap_multiple_memory_store_access_and_parent_boundary_are_enforced() {
         .await
         .unwrap();
     assert_ne!(parent.wait().await.unwrap().code, Some(0), "PB1/E4");
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
 
     assert_eq!(
         fs.get_by_path("readonly", "/note.md")
@@ -1150,7 +1150,7 @@ async fn bwrap_splices_a_live_fuse_memory_mount_into_the_namespace() {
         .any(|m| m.mount_path == "/mnt/memory" && matches!(m.realization, pc::Realization::Fuse));
     if !is_fuse {
         eprintln!("skipping: memory realized as copy here, not FUSE (fallback covered elsewhere)");
-        sandbox.dispose().await.ok();
+        sandbox.dispose_unattached().await.ok();
         return;
     }
 
@@ -1179,7 +1179,7 @@ async fn bwrap_splices_a_live_fuse_memory_mount_into_the_namespace() {
     );
 
     // dispose unmounts the FUSE mount (write-through already flushed the edit to the store).
-    sandbox.dispose().await.unwrap();
+    sandbox.dispose_unattached().await.unwrap();
     assert_eq!(
         fs.get_by_path("s", "/note.md")
             .await

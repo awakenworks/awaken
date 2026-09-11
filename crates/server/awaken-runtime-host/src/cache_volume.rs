@@ -418,6 +418,10 @@ mod tests {
     ))]
     #[async_trait]
     impl pc::Sandbox for RecordingEnvironment {
+        async fn dispose_unattached(&self) -> Result<(), pc::SandboxError> {
+            self.dispose().await
+        }
+
         fn id(&self) -> &str {
             "cache-init"
         }
@@ -467,7 +471,17 @@ mod tests {
         async fn renew_lease(&self) -> Result<(), pc::SandboxError> {
             Ok(())
         }
+    }
 
+    #[cfg(any(
+        feature = "container-docker",
+        feature = "container-podman",
+        feature = "container-k8s"
+    ))]
+    impl RecordingEnvironment {
+        // Relocated off the Sandbox port: unfenced teardown is no longer a
+        // trait obligation, only this type's own detail behind its named
+        // unattached reclaim.
         async fn dispose(&self) -> Result<(), pc::SandboxError> {
             self.disposals.fetch_add(1, Ordering::SeqCst);
             Ok(())

@@ -338,8 +338,9 @@ async fn run_case(case: &Case, can_exec: bool) -> bool {
     pc::prepare_environment(&spec, &provider.capabilities())
         .unwrap_or_else(|e| panic!("{label}: spec should fit its tier: {e:?}"));
 
+    let __fx = pc::test_support::fixture_effect("fixture-create");
     let sandbox = provider
-        .create(&spec)
+        .create_for_effect(&spec, &__fx.0, &__fx.1)
         .await
         .unwrap_or_else(|e| panic!("{label}: create: {e:?}"));
 
@@ -380,7 +381,7 @@ async fn run_case(case: &Case, can_exec: bool) -> bool {
 
     // ── Teardown + post-dispose assertions. ───────────────────────────────────────
     sandbox
-        .dispose()
+        .dispose_unattached()
         .await
         .unwrap_or_else(|e| panic!("{label}: dispose: {e:?}"));
     assert!(

@@ -17857,6 +17857,10 @@ struct TerminalRecoveryEnvironment {
 
 #[async_trait::async_trait]
 impl pc::Sandbox for TerminalRecoveryEnvironment {
+    async fn dispose_unattached(&self) -> Result<(), pc::SandboxError> {
+        self.dispose().await
+    }
+
     fn id(&self) -> &str {
         &self.handle.sandbox_id
     }
@@ -17949,12 +17953,6 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
         }
     }
 
-    async fn dispose(&self) -> Result<(), pc::SandboxError> {
-        Err(pc::SandboxError::new(
-            "terminal recovery fixture requires the exact effect fence",
-        ))
-    }
-
     async fn acknowledge_memory_reconciliation(
         &self,
         effect_fence: &pc::SandboxEffectFence,
@@ -18014,6 +18012,17 @@ impl pc::Sandbox for TerminalRecoveryEnvironment {
             self.events.lock().unwrap().push("dispose-physical");
             Ok(())
         })
+    }
+}
+
+impl TerminalRecoveryEnvironment {
+    // Relocated from the Sandbox/SandboxProvider trait: the unfenced ports
+    // are no longer a trait obligation or a reachable escape hatch. They stay
+    // as this type's own implementation detail, used by its fenced edges.
+    async fn dispose(&self) -> Result<(), pc::SandboxError> {
+        Err(pc::SandboxError::new(
+            "terminal recovery fixture requires the exact effect fence",
+        ))
     }
 }
 
