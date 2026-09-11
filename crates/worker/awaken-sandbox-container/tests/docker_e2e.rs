@@ -93,7 +93,7 @@ async fn a_containerized_agent_speaks_the_wire_over_a_published_port() {
     assert_eq!(agent.process.wait().await.unwrap().code, Some(0));
 
     // Clean up the container before asserting, so a failure still reaps it.
-    let _ = pc::Sandbox::dispose(&sandbox).await;
+    let _ = sandbox.dispose().await;
 
     assert!(
         got.contains("sandboxed reply"),

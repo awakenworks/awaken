@@ -6,7 +6,12 @@
 
 use awaken_session_contract::{PersistedSession, SessionRevision};
 
-const CURRENT_AGGREGATE_FORMAT: &str = "awaken.session.v1";
+/// v2 carries the complete `McpGeneration` witness: an object of
+/// `{attachment_id, version, content_digest}` where v1 stored a bare `u64`.
+/// The break is deliberate and unshimmed, so the stamp is bumped to make the
+/// refusal self-describing — a v1 row is rejected by name here rather than
+/// failing later inside serde with an opaque field-type message.
+const CURRENT_AGGREGATE_FORMAT: &str = "awaken.session.v2";
 
 #[derive(serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -288,6 +293,7 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
 
 #[cfg(test)]
 mod tests {
+
     use awaken_session_contract::ManagedSessionRepository as _;
     use awaken_session_contract::resource_plane::{
         BindingId, FileId, InputResourceId, ResourceAccess,
@@ -296,6 +302,28 @@ mod tests {
     use rusqlite::params;
 
     use crate::{SqliteManagedSessionRepository, tests::create_fixture, tests::sample};
+
+    #[test]
+    fn a_v1_row_is_refused_by_format_not_by_an_opaque_field_error() {
+        // The complete-witness change made `McpGeneration` an object where v1
+        // stored a bare counter. Causes: C1 a stored row stamped v1; C2 a row
+        // stamped with the current format. Effects: E1 refusal naming the
+        // format; E2 acceptance. Rule R1=C1=>E1 exists so an operator reading
+        // the log learns the row predates the witness, instead of seeing serde
+        // complain about an integer where a struct was expected.
+        let current =
+            super::encode(&crate::tests::sample("format-witness")).expect("encode current");
+        let mut v1: serde_json::Value = serde_json::from_str(&current).expect("reparse");
+        v1["format"] = serde_json::json!("awaken.session.v1");
+        let refusal = super::decode_aggregate(&v1.to_string()).expect_err("C1/E1");
+        assert!(
+            refusal
+                .to_string()
+                .contains("unsupported managed Session aggregate format `awaken.session.v1`"),
+            "C1/E1 names the format: {refusal}"
+        );
+        super::decode_aggregate(&current).expect("C2/E2");
+    }
 
     fn completed_publication(
         mut session: awaken_session_contract::PersistedSession,
