@@ -1180,11 +1180,11 @@ struct SpyCheckpointStore {
 }
 #[async_trait]
 impl StreamCheckpointStore for SpyCheckpointStore {
-    async fn get(
-        &self,
-        run_id: &str,
-    ) -> std::result::Result<Option<StreamCheckpoint>, StreamCheckpointError> {
-        Ok(self.map.lock().unwrap().get(run_id).cloned())
+    async fn get(&self, run_id: &str) -> Observed<StreamCheckpoint> {
+        match self.map.lock().unwrap().get(run_id) {
+            Some(checkpoint) => Observed::Present(checkpoint.clone()),
+            None => Observed::Absent,
+        }
     }
     async fn put(
         &self,
@@ -2014,7 +2014,7 @@ async fn the_interruption_boundary_flushes_a_checkpoint_then_clears_it_on_return
         // It was cleared on return — it survives only a crash before that point.
         assert_eq!(*store.deletes.lock().unwrap(), vec!["run-x".to_string()]);
     }
-    assert!(store.get("run-x").await.expect("checkpoint read").is_none());
+    assert_eq!(store.get("run-x").await, Observed::Absent);
 }
 
 #[tokio::test]

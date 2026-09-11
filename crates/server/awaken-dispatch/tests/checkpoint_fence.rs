@@ -2,6 +2,7 @@ mod harness;
 
 use std::sync::Arc;
 
+use awaken_agent_contract::observation::{Observed, UnknownCause};
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_dispatch::{
     DispatchQueue, FencedStreamCheckpointStore, MemoryDispatchStore, RunClaim, RunDispatch,
@@ -9,6 +10,16 @@ use awaken_dispatch::{
 use awaken_store_inmem::MemoryStreamCheckpointStore;
 
 use harness::activation;
+
+/// The partial an observation found. An `Unknown` fails the assertion instead
+/// of reading as absence.
+fn present(observed: Observed<StreamCheckpoint>) -> StreamCheckpoint {
+    match observed {
+        Observed::Present(checkpoint) => checkpoint,
+        Observed::Absent => panic!("expected a checkpoint, the store reported absence"),
+        Observed::Unknown(cause) => panic!("the store could not answer: {cause}"),
+    }
+}
 
 fn checkpoint(text: &str) -> StreamCheckpoint {
     StreamCheckpoint {
@@ -46,12 +57,7 @@ async fn replacement_fences_stale_checkpoint_put_and_delete() {
     );
     first_store.put(checkpoint("first")).await.unwrap();
     assert_eq!(
-        inner
-            .get("run-fenced-checkpoint")
-            .await
-            .unwrap()
-            .unwrap()
-            .partial_text,
+        present(inner.get("run-fenced-checkpoint").await).partial_text,
         "first"
     );
 
@@ -66,16 +72,14 @@ async fn replacement_fences_stale_checkpoint_put_and_delete() {
         RunClaim::from(&second.lease),
     );
     // R4 stale reads also fail: no replacement checkpoint leaks to an old claim.
-    assert!(first_store.get("run-fenced-checkpoint").await.is_err());
+    assert!(matches!(
+        first_store.get("run-fenced-checkpoint").await,
+        Observed::Unknown(UnknownCause::Fenced(_))
+    ));
     assert!(first_store.put(checkpoint("stale")).await.is_err());
     assert!(first_store.delete("run-fenced-checkpoint").await.is_err());
     assert_eq!(
-        inner
-            .get("run-fenced-checkpoint")
-            .await
-            .unwrap()
-            .unwrap()
-            .partial_text,
+        present(inner.get("run-fenced-checkpoint").await).partial_text,
         "first",
         "stale checkpoint mutations are ignored"
     );
@@ -84,19 +88,17 @@ async fn replacement_fences_stale_checkpoint_put_and_delete() {
     let mut foreign = checkpoint("foreign");
     foreign.run_id = "other-run".into();
     assert!(second_store.put(foreign).await.is_err());
-    assert!(second_store.get("other-run").await.is_err());
+    assert!(matches!(
+        second_store.get("other-run").await,
+        Observed::Unknown(UnknownCause::Fenced(_))
+    ));
     assert!(second_store.delete("other-run").await.is_err());
-    assert!(inner.get("other-run").await.unwrap().is_none());
+    assert_eq!(inner.get("other-run").await, Observed::Absent);
     second_store.put(checkpoint("replacement")).await.unwrap();
     assert_eq!(
-        second_store
-            .get("run-fenced-checkpoint")
-            .await
-            .unwrap()
-            .unwrap()
-            .partial_text,
+        present(second_store.get("run-fenced-checkpoint").await).partial_text,
         "replacement"
     );
     second_store.delete("run-fenced-checkpoint").await.unwrap();
-    assert!(inner.get("run-fenced-checkpoint").await.unwrap().is_none());
+    assert_eq!(inner.get("run-fenced-checkpoint").await, Observed::Absent);
 }

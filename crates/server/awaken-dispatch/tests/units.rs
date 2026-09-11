@@ -252,7 +252,10 @@ async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
             );
             assert_eq!(assistant.len(), 1);
             assert_eq!(assistant[0].text_content(), "Resumed done");
-            assert!(checkpoints.get("run-ckpt").await.unwrap().is_none());
+            assert_eq!(
+                checkpoints.get("run-ckpt").await,
+                awaken_agent_contract::observation::Observed::Absent
+            );
             assert_eq!(store.dispatch_count(), 0);
         } else {
             assert_eq!(processed, None, "R1/R2 no physical settlement");
@@ -262,7 +265,10 @@ async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
                 "R1/R2 no reentry"
             );
             assert!(assistant.is_empty());
-            assert_eq!(checkpoints.get("run-ckpt").await.unwrap(), Some(partial));
+            assert_eq!(
+                checkpoints.get("run-ckpt").await,
+                awaken_agent_contract::observation::Observed::Present(partial)
+            );
             assert_eq!(store.dispatch_count(), 1, "R1/R2 retain dispatch fence");
         }
     }

@@ -2,6 +2,7 @@
 //! instance over the same directory reads a checkpoint a prior instance wrote —
 //! this is what makes an interrupted inference step resumable in a new process.
 
+use awaken_agent_contract::observation::{Observed, UnknownCause};
 use awaken_agent_contract::stream::checkpoint::{
     PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
 };
@@ -13,6 +14,17 @@ use std::time::Duration;
 const CRASH_MODE: &str = "AWAKEN_FS_CHECKPOINT_CRASH_MODE";
 const CRASH_DIRECTORY: &str = "AWAKEN_FS_CHECKPOINT_CRASH_DIRECTORY";
 const CRASH_MARKER: &str = "AWAKEN_FS_CHECKPOINT_CRASH_MARKER";
+
+/// The checkpoint an observation found, for the assertions whose premise is
+/// that the store answered. An `Unknown` fails the test rather than reading as
+/// absence — the collapse the tri-state read exists to prevent.
+fn present(observed: Observed<StreamCheckpoint>) -> StreamCheckpoint {
+    match observed {
+        Observed::Present(checkpoint) => checkpoint,
+        Observed::Absent => panic!("expected a checkpoint, the store reported absence"),
+        Observed::Unknown(cause) => panic!("the store could not answer: {cause}"),
+    }
+}
 
 fn sample(run_id: &str) -> StreamCheckpoint {
     StreamCheckpoint {
@@ -82,13 +94,13 @@ async fn acknowledged_checkpoint_mutations_survive_real_process_kill()
         let reopened = FsStreamCheckpointStore::open(&directory)?;
         match mode {
             "put" => assert_eq!(
-                reopened.get("crash-run").await?.expect("R1/E1 checkpoint"),
+                present(reopened.get("crash-run").await),
                 StreamCheckpoint {
                     partial_text: "after-acknowledged-put".to_string(),
                     ..sample("crash-run")
                 },
             ),
-            "delete" => assert!(reopened.get("crash-run").await?.is_none(), "R2/E2"),
+            "delete" => assert_eq!(reopened.get("crash-run").await, Observed::Absent, "R2/E2"),
             _ => unreachable!(),
         }
     }
@@ -110,15 +122,11 @@ async fn a_checkpoint_survives_a_fresh_instance_over_the_same_dir() {
     }
 
     let store = FsStreamCheckpointStore::open(&dir).expect("reopen");
-    let recovered = store
-        .get("run-1")
-        .await
-        .expect("read succeeds")
-        .expect("checkpoint survives");
+    let recovered = present(store.get("run-1").await);
     assert_eq!(recovered, sample("run-1"));
 
     store.delete("run-1").await.expect("delete");
-    assert!(store.get("run-1").await.expect("read").is_none());
+    assert_eq!(store.get("run-1").await, Observed::Absent);
     // delete is idempotent.
     store.delete("run-1").await.expect("idempotent delete");
 
@@ -142,11 +150,7 @@ async fn a_put_overwrites_and_path_bearing_ids_stay_scoped_to_the_dir() {
     second.partial_text = "second".to_string();
     store.put(second).await.expect("overwrite");
 
-    let recovered = store
-        .get("../evil/run 1")
-        .await
-        .expect("read")
-        .expect("found");
+    let recovered = present(store.get("../evil/run 1").await);
     assert_eq!(recovered.partial_text, "second");
     // The file landed inside `dir`, not at the escaped path.
     assert!(dir.read_dir().expect("readable").count() == 1);
@@ -185,11 +189,7 @@ async fn concurrent_same_run_puts_leave_one_complete_reopenable_checkpoint() {
     drop(second_store);
 
     let reopened = FsStreamCheckpointStore::open(&dir).expect("reopen");
-    let recovered = reopened
-        .get("one-run")
-        .await
-        .expect("read")
-        .expect("complete winner");
+    let recovered = present(reopened.get("one-run").await);
     assert!(recovered.partial_text.starts_with("writer-"));
     let entries = std::fs::read_dir(&dir)
         .expect("checkpoint directory")
@@ -204,9 +204,10 @@ async fn concurrent_same_run_puts_leave_one_complete_reopenable_checkpoint() {
 #[tokio::test]
 async fn corrupt_checkpoint_is_reported_instead_of_looking_absent() {
     // Test design — observational distinction required by the persistence
-    // contract: Missing reads as Ok(None), while Present --corrupt bytes--> must
-    // read as Err(Storage). Mapping both states to None would let a caller claim
-    // successful recovery while silently discarding durable evidence.
+    // contract: Missing reads as Observed::Absent, while Present --corrupt
+    // bytes--> must read as Observed::Unknown(Storage). Mapping both states to
+    // Absent would let a caller claim successful recovery while silently
+    // discarding durable evidence.
     let directory = std::env::temp_dir().join(format!(
         "awaken_ckpt_corrupt_{}_{}",
         std::process::id(),
@@ -230,13 +231,10 @@ async fn corrupt_checkpoint_is_reported_instead_of_looking_absent() {
         })
         .expect("checkpoint file");
     std::fs::write(path, b"not-json").expect("inject corruption");
-    assert!(store.get("corrupt-run").await.is_err());
-    assert!(
-        store
-            .get("missing-run")
-            .await
-            .expect("missing read")
-            .is_none()
-    );
+    assert!(matches!(
+        store.get("corrupt-run").await,
+        Observed::Unknown(UnknownCause::Storage(_))
+    ));
+    assert_eq!(store.get("missing-run").await, Observed::Absent);
     std::fs::remove_dir_all(directory).expect("cleanup checkpoint directory");
 }

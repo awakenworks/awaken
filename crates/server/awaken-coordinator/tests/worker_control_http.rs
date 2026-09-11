@@ -3,6 +3,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::observation::Observed;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_dispatch::{
     DispatchQueue, MemoryDispatchStore, PlacementRequirements, RunDispatch,
@@ -357,13 +358,10 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
             .is_err(),
         "a draining incarnation cannot receive new work"
     );
-    assert!(
-        checkpoints
-            .get(&claim.run_id.0)
-            .await
-            .expect("checkpoint read")
-            .is_some()
-    );
+    assert!(matches!(
+        checkpoints.get(&claim.run_id.0).await,
+        Observed::Present(_)
+    ));
 }
 
 #[tokio::test]

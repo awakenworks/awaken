@@ -16,6 +16,7 @@ use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunSta
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::record::Record as EventRecord;
+use awaken_agent_contract::observation::{Observed, UnknownCause};
 use awaken_agent_contract::stream::checkpoint::{
     StreamCheckpoint, StreamCheckpointError, StreamCheckpointStore,
 };
@@ -641,11 +642,16 @@ impl MemoryStreamCheckpointStore {
 
 #[async_trait]
 impl StreamCheckpointStore for MemoryStreamCheckpointStore {
-    async fn get(&self, run_id: &str) -> Result<Option<StreamCheckpoint>, StreamCheckpointError> {
-        self.checkpoints
-            .lock()
-            .map(|values| values.get(run_id).cloned())
-            .map_err(|error| StreamCheckpointError::Storage(error.to_string()))
+    async fn get(&self, run_id: &str) -> Observed<StreamCheckpoint> {
+        // A poisoned lock means another thread died mid-mutation: the map may or
+        // may not hold this run's partial, and we cannot tell which.
+        match self.checkpoints.lock() {
+            Ok(values) => match values.get(run_id) {
+                Some(checkpoint) => Observed::Present(checkpoint.clone()),
+                None => Observed::Absent,
+            },
+            Err(error) => Observed::Unknown(UnknownCause::Storage(error.to_string())),
+        }
     }
 
     async fn put(&self, checkpoint: StreamCheckpoint) -> Result<(), StreamCheckpointError> {
