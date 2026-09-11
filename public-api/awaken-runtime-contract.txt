@@ -650,6 +650,8 @@ pub struct awaken_runtime_contract::llm::ChatResponse
 pub awaken_runtime_contract::llm::ChatResponse::output: awaken_runtime_contract::llm::AssistantOutput
 pub awaken_runtime_contract::llm::ChatResponse::stop_reason: core::option::Option<awaken_runtime_contract::llm::StopReason>
 pub awaken_runtime_contract::llm::ChatResponse::usage: core::option::Option<awaken_agent_contract::audit::model_request::TokenUsage>
+impl awaken_runtime_contract::llm::ChatResponse
+pub const fn awaken_runtime_contract::llm::ChatResponse::terminal_receipt(&self) -> awaken_runtime_contract::model_operation::TerminalReceipt
 pub struct awaken_runtime_contract::llm::ModelRequestAdmissionRequest
 pub awaken_runtime_contract::llm::ModelRequestAdmissionRequest::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::llm::ModelRequestAdmissionRequest::thread_id: awaken_agent_contract::agent::thread::Id
@@ -732,15 +734,34 @@ pub fn awaken_runtime_contract::metrics::NoopRecorder::record_inference(&self, a
 pub fn awaken_runtime_contract::metrics::NoopRecorder::record_tool(&self, &str, &str, core::time::Duration)
 pub mod awaken_runtime_contract::model_operation
 pub enum awaken_runtime_contract::model_operation::ModelExecutionEvidence
-pub awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched
-pub awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated
+pub awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof)
+pub awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated(awaken_runtime_contract::model_operation::TerminalReceipt)
 pub awaken_runtime_contract::model_operation::ModelExecutionEvidence::Unknown
 impl awaken_runtime_contract::model_operation::ModelExecutionEvidence
 pub const fn awaken_runtime_contract::model_operation::ModelExecutionEvidence::permits_reentry(self) -> bool
+impl serde_core::ser::Serialize for awaken_runtime_contract::model_operation::ModelExecutionEvidence
+pub fn awaken_runtime_contract::model_operation::ModelExecutionEvidence::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::model_operation::ModelExecutionEvidence
+pub fn awaken_runtime_contract::model_operation::ModelExecutionEvidence::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub enum awaken_runtime_contract::model_operation::ModelOperationPhase
 pub awaken_runtime_contract::model_operation::ModelOperationPhase::Entered
 pub awaken_runtime_contract::model_operation::ModelOperationPhase::Returned
 pub awaken_runtime_contract::model_operation::ModelOperationPhase::TimedOut
+pub enum awaken_runtime_contract::model_operation::PreDispatchStage
+pub awaken_runtime_contract::model_operation::PreDispatchStage::ExecutorResolution
+pub awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection
+pub awaken_runtime_contract::model_operation::PreDispatchStage::Unrecorded
+pub enum awaken_runtime_contract::model_operation::ResponseEnvelope
+pub awaken_runtime_contract::model_operation::ResponseEnvelope::CompleteBody
+pub awaken_runtime_contract::model_operation::ResponseEnvelope::StreamEndFrame
+pub enum awaken_runtime_contract::model_operation::TerminalWireFact
+pub awaken_runtime_contract::model_operation::TerminalWireFact::CompleteBody
+pub awaken_runtime_contract::model_operation::TerminalWireFact::Status
+pub awaken_runtime_contract::model_operation::TerminalWireFact::StreamEndFrame
+pub awaken_runtime_contract::model_operation::TerminalWireFact::Unrecorded
+pub enum awaken_runtime_contract::model_operation::UnprovenTermination
+pub awaken_runtime_contract::model_operation::UnprovenTermination::AbsentStatus
+pub awaken_runtime_contract::model_operation::UnprovenTermination::UnrecognizedStatus(alloc::string::String)
 pub struct awaken_runtime_contract::model_operation::ActiveModelOperation
 impl awaken_runtime_contract::model_operation::ActiveModelOperation
 pub fn awaken_runtime_contract::model_operation::ActiveModelOperation::recorded<'a>(impl core::iter::traits::collect::IntoIterator<Item = &'a awaken_agent_contract::agent::state::Command>, &awaken_agent_contract::agent::run::Id) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::model_operation::ModelOperation>, awaken_agent_contract::agent::state::StateError>
@@ -764,6 +785,15 @@ pub fn awaken_runtime_contract::model_operation::ModelOperationContext::binding(
 pub fn awaken_runtime_contract::model_operation::ModelOperationContext::from_operation(&awaken_agent_contract::agent::thread::Id, &awaken_agent_contract::agent::run::Id, &awaken_runtime_contract::model_operation::ModelOperation) -> Self
 pub fn awaken_runtime_contract::model_operation::ModelOperationContext::operation_id(&self) -> alloc::string::String
 pub fn awaken_runtime_contract::model_operation::ModelOperationContext::run_id(&self) -> &awaken_agent_contract::agent::run::Id
+pub struct awaken_runtime_contract::model_operation::NoDispatchProof
+impl awaken_runtime_contract::model_operation::NoDispatchProof
+pub const fn awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage) -> Self
+pub const fn awaken_runtime_contract::model_operation::NoDispatchProof::stage(self) -> awaken_runtime_contract::model_operation::PreDispatchStage
+pub struct awaken_runtime_contract::model_operation::TerminalReceipt
+impl awaken_runtime_contract::model_operation::TerminalReceipt
+pub const fn awaken_runtime_contract::model_operation::TerminalReceipt::from_response_envelope(awaken_runtime_contract::model_operation::ResponseEnvelope) -> Self
+pub fn awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(core::option::Option<&str>) -> core::result::Result<Self, awaken_runtime_contract::model_operation::UnprovenTermination>
+pub const fn awaken_runtime_contract::model_operation::TerminalReceipt::wire_fact(self) -> awaken_runtime_contract::model_operation::TerminalWireFact
 pub fn awaken_runtime_contract::model_operation::current_model_operation_context() -> core::option::Option<awaken_runtime_contract::model_operation::ModelOperationContext>
 pub async fn awaken_runtime_contract::model_operation::with_model_operation_context<T>(core::option::Option<awaken_runtime_contract::model_operation::ModelOperationContext>, impl core::future::future::Future<Output = T>) -> T
 pub mod awaken_runtime_contract::model_routing
@@ -2214,6 +2244,8 @@ pub struct awaken_runtime_contract::ChatResponse
 pub awaken_runtime_contract::ChatResponse::output: awaken_runtime_contract::llm::AssistantOutput
 pub awaken_runtime_contract::ChatResponse::stop_reason: core::option::Option<awaken_runtime_contract::llm::StopReason>
 pub awaken_runtime_contract::ChatResponse::usage: core::option::Option<awaken_agent_contract::audit::model_request::TokenUsage>
+impl awaken_runtime_contract::llm::ChatResponse
+pub const fn awaken_runtime_contract::llm::ChatResponse::terminal_receipt(&self) -> awaken_runtime_contract::model_operation::TerminalReceipt
 pub struct awaken_runtime_contract::ChildRunResult
 pub awaken_runtime_contract::ChildRunResult::child_run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::ChildRunResult::text: alloc::string::String
