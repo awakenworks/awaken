@@ -375,6 +375,13 @@ mod result_tests {
 
     #[test]
     fn result_is_recorded_once_and_consumed_once() {
+        // Cause/effect decision table for the production inbox:
+        // C1 absent result + first record => E1 one Ready value/Recorded;
+        // C2 same Ready value + replay => E2 unchanged value/Duplicate;
+        // C3 Ready + consume => E3 exact value removed once;
+        // C4 absent-after-consume + consume => E4 NotFound/stutter.
+        // Identity mismatch and conflicting payload rejection are crossed by
+        // the adjacent fail-closed table rather than duplicating that owner.
         let id = DelegationId("d".into());
         let mut inbox = ChildRunResultInbox::default();
         assert_eq!(
@@ -444,6 +451,26 @@ mod delivery_verification {
             0 => DeliveryTransition::Record,
             1 => DeliveryTransition::Consume,
             _ => DeliveryTransition::EndParent,
+        }
+    }
+
+    #[kani::proof]
+    fn child_result_is_recorded_once_and_duplicate_record_stutters() {
+        // Cause/effect table over every production delivery phase: Absent
+        // records exactly one Ready value; a Ready replay is an unchanged
+        // duplicate; Consumed and Discarded cannot reopen by recording.
+        let phase = symbolic_phase(kani::any());
+        let result = transition_delivery(phase, DeliveryTransition::Record);
+        match phase {
+            DeliveryPhase::Absent => {
+                assert_eq!(result, Some((DeliveryPhase::Ready, true)));
+            }
+            DeliveryPhase::Ready => {
+                assert_eq!(result, Some((DeliveryPhase::Ready, false)));
+            }
+            DeliveryPhase::Consumed | DeliveryPhase::Discarded => {
+                assert_eq!(result, None);
+            }
         }
     }
 
