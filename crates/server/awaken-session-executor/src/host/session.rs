@@ -1883,12 +1883,17 @@ impl SharedHost {
                 None => run_context,
             };
             if background_tasks_enabled {
+                let background_commit = commit.committed_authority().ok_or_else(|| {
+                    HostError::internal(
+                        "BackgroundTask terminal observation requires committed local authority",
+                    )
+                })?;
                 terminal_observers.push(Arc::new(
                     crate::background_task::BackgroundTaskTerminalObserver::new(
                         runtime.clone(),
                         config.clone(),
                         run_context.clone(),
-                        commit.clone(),
+                        background_commit,
                         self.memory.background(),
                         awaken_ext_background_task::process_supervisor(),
                         thread.to_string(),

@@ -908,6 +908,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness terminal_state_classification_is_exact \
     --harness unknown_transition_trigger_and_result_fail_closed
   run_kani awaken-session-executor \
+    --harness recovery_projection_cannot_mint_committed_authority \
     --harness session_agent_message_admission_requires_every_committed_field \
     --harness session_realization_permit_admits_only_a_current_acquired_slot \
     --harness session_realization_control_permit_ownership_release_is_total_and_exact \

@@ -125,17 +125,73 @@ where
 /// non-authoritative recovery projection. The four local backends are polymorphic
 /// — the enum only discriminates local authoritative reads from projected remote
 /// reads, not the backend.
-pub(crate) enum HostCommit {
+pub(crate) enum HostCommitBoundary<A, R> {
     /// One of the interchangeable local backends (memory / sqlite / fs / postgres):
     /// polymorphic implementations of the same read+write store, chosen once at the
     /// process startup behind a trait object — no per-backend dispatch here.
-    Local(Arc<dyn crate::LocalCommit>),
+    Local(A),
     /// The database-independent Worker's read boundary. Authoritative writes go
     /// through the attempt's claim-fenced operation coordinator; reads use the
     /// [`awaken_dispatch::RecoveryProjection`]. It deliberately is not a
     /// [`crate::LocalCommit`]: the projection is an execution cache, never authoritative
     /// storage or an alternate commit path.
-    Remote(RemoteHostCommit),
+    Remote(R),
+}
+
+pub(crate) type HostCommit = HostCommitBoundary<Arc<dyn crate::LocalCommit>, RemoteHostCommit>;
+
+/// Capability for reads that must come from committed local truth.
+///
+/// Only [`HostCommit::committed_authority`] can mint this value. A database-less
+/// Worker's recovery projection can still serve its existing claim-scoped read
+/// paths, but it cannot be passed to a consumer that requires durable authority.
+#[derive(Clone)]
+pub(crate) struct CommittedAuthority<A>(A);
+
+impl<A> CommittedAuthority<A> {
+    fn authority(&self) -> &A {
+        &self.0
+    }
+}
+
+impl CommittedAuthority<Arc<dyn crate::LocalCommit>> {
+    pub(crate) async fn committed_state(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Vec<StateCommand>, String> {
+        self.authority()
+            .authoritative_committed_state(thread_id)
+            .await
+    }
+}
+
+impl<A: Clone, R> HostCommitBoundary<A, R> {
+    /// Narrow this mixed local/Worker boundary to committed local authority.
+    /// The returned capability is the only input accepted by consumers whose
+    /// decisions must never use a process-local recovery projection.
+    pub(crate) fn committed_authority(&self) -> Option<CommittedAuthority<A>> {
+        match self {
+            Self::Local(authority) => Some(CommittedAuthority(authority.clone())),
+            Self::Remote(_) => None,
+        }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn recovery_projection_cannot_mint_committed_authority() {
+    // Cause/effect decision table: R1 Local with any authority payload -> mint
+    // exactly one committed-authority capability; R2 Remote with any recovery
+    // payload -> no capability. The production boundary is generic only over
+    // its stored payloads, so this exhausts both actual source variants without
+    // constructing or mirroring either persistence implementation.
+    let is_local: bool = kani::any();
+    let source = if is_local {
+        HostCommitBoundary::<bool, bool>::Local(kani::any())
+    } else {
+        HostCommitBoundary::<bool, bool>::Remote(kani::any())
+    };
+    assert_eq!(source.committed_authority().is_some(), is_local);
 }
 
 pub(crate) struct RemoteHostCommit {
@@ -188,12 +244,21 @@ impl HostCommit {
         }
     }
 
-    pub(crate) async fn authoritative_committed_state(
+    /// Read the best committed State view available at this Host boundary.
+    /// Local execution reuses the sole authoritative receipt; a database-less
+    /// Worker receives only its claim-scoped recovery projection and must not
+    /// pass this mixed view to an authority-requiring consumer.
+    pub(crate) async fn committed_state_view(
         &self,
         thread_id: &ThreadId,
     ) -> Result<Vec<StateCommand>, String> {
         match self {
-            HostCommit::Local(store) => store.authoritative_committed_state(thread_id).await,
+            HostCommit::Local(_) => {
+                self.committed_authority()
+                    .expect("Local HostCommit always mints committed authority")
+                    .committed_state(thread_id)
+                    .await
+            }
             HostCommit::Remote(remote) => Ok(remote.projection.committed_state(thread_id)),
         }
     }

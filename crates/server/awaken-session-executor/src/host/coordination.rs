@@ -1010,7 +1010,7 @@ impl SharedHost {
     ) -> Result<awaken_agent_contract::ThreadDisposition, HostError> {
         let commit = self.commit_for_read(session_id).await?;
         let state = commit
-            .authoritative_committed_state(thread_id)
+            .committed_state_view(thread_id)
             .await
             .map_err(HostError::internal)?;
         awaken_agent_contract::thread_disposition_from_committed_state(&state).map_err(|error| {

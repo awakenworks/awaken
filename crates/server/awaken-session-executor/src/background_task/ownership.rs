@@ -7,27 +7,22 @@ use awaken_ext_background_task::{BackgroundTask, BackgroundTaskSupervisor, task_
 use awaken_runtime_contract::{AttemptOwnershipError, AttemptOwnershipVerifier, RuntimeRunContext};
 
 use super::BackgroundTaskTerminalObserver;
+use crate::store::CommittedAuthority;
+#[cfg(test)]
 use crate::store::HostCommit;
 
 struct BackgroundTaskOwnership {
     expected: BackgroundTask,
-    commit: Arc<HostCommit>,
+    commit: CommittedAuthority<Arc<dyn crate::LocalCommit>>,
     supervisor: Arc<BackgroundTaskSupervisor>,
 }
 
 #[async_trait::async_trait]
 impl AttemptOwnershipVerifier for BackgroundTaskOwnership {
     async fn verify_current(&self) -> Result<(), AttemptOwnershipError> {
-        // Worker recovery projections are not live authority. Startup already
-        // excludes this placement for BackgroundTask; enforce that boundary
-        // here too, rather than accepting cached state as a fresh lease check.
-        let HostCommit::Local(commit) = self.commit.as_ref() else {
-            return Err(AttemptOwnershipError::Unavailable(
-                "background execution requires a live local commit authority".into(),
-            ));
-        };
-        let commands = commit
-            .authoritative_committed_state(&self.expected.origin.thread_id)
+        let commands = self
+            .commit
+            .committed_state(&self.expected.origin.thread_id)
             .await
             .map_err(AttemptOwnershipError::Unavailable)?;
         let state = awaken_runtime_contract::Store::rebuild(&commands);
@@ -105,7 +100,9 @@ mod tests {
             Arc::new(Runtime::new()),
             remote_snapshot(),
             foreground,
-            local_commit(),
+            local_commit()
+                .committed_authority()
+                .expect("local test commit is authoritative"),
             Arc::new(BackgroundRuns::new()),
             Arc::new(BackgroundTaskSupervisor::new("worker")),
             "session".into(),
@@ -153,7 +150,9 @@ mod tests {
                 runtime,
                 remote_snapshot(),
                 RuntimeRunContext::new(),
-                commit.clone(),
+                commit
+                    .committed_authority()
+                    .expect("local test commit is authoritative"),
                 background.clone(),
                 supervisor.clone(),
                 "session".into(),
@@ -318,7 +317,9 @@ mod tests {
                     runtime.clone(),
                     remote_snapshot(),
                     context,
-                    commit.clone(),
+                    commit
+                        .committed_authority()
+                        .expect("local test commit is authoritative"),
                     background,
                     supervisor.clone(),
                     "session".into(),
@@ -455,7 +456,9 @@ mod tests {
                     runtime.clone(),
                     remote_snapshot(),
                     RuntimeRunContext::new(),
-                    commit.clone(),
+                    commit
+                        .committed_authority()
+                        .expect("local test commit is authoritative"),
                     Arc::new(BackgroundRuns::new()),
                     supervisor.clone(),
                     "session".into(),
@@ -557,9 +560,10 @@ mod tests {
     #[tokio::test]
     async fn missing_malformed_and_projected_authorities_fail_closed() {
         // R1 missing cell -> Lost; R2 malformed committed cell -> Unavailable;
-        // R3 Worker projection (not live authority) -> Unavailable; R4 live
-        // authority read failure -> exact Unavailable, no cached fallback. Neither a
-        // process token nor previously valid expected snapshot grants authority.
+        // R3 Worker projection (not live authority) -> cannot mint the receipt
+        // required to construct this verifier; R4 live authority read failure ->
+        // exact Unavailable, no cached fallback. Neither a process token nor a
+        // previously valid expected snapshot grants authority.
         let expected = task(0);
         let supervisor = Arc::new(BackgroundTaskSupervisor::new("worker"));
         supervisor
@@ -568,7 +572,9 @@ mod tests {
         let commit = local_commit();
         let authority = BackgroundTaskOwnership {
             expected: expected.clone(),
-            commit: commit.clone(),
+            commit: commit
+                .committed_authority()
+                .expect("local test commit is authoritative"),
             supervisor: supervisor.clone(),
         };
         assert!(matches!(
@@ -582,25 +588,18 @@ mod tests {
             authority.verify_current().await,
             Err(AttemptOwnershipError::Unavailable(_))
         ));
-        let projected = BackgroundTaskOwnership {
-            expected: expected.clone(),
-            commit: Arc::new(HostCommit::Remote(crate::store::RemoteHostCommit::new())),
-            supervisor: supervisor.clone(),
-        };
-        assert!(matches!(
-            projected.verify_current().await,
-            Err(AttemptOwnershipError::Unavailable(_))
-        ));
+        let projected: HostCommit = HostCommit::Remote(crate::store::RemoteHostCommit::new());
+        assert!(projected.committed_authority().is_none(), "R3");
+        let unavailable_commit: HostCommit =
+            HostCommit::Local(Arc::new(crate::LocalCommitAdapter::with_queries(
+                Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new()),
+                crate::authority::ScriptedStateQueries::new(Err("state read unavailable".into())),
+            )));
         let unavailable = BackgroundTaskOwnership {
             expected,
-            commit: Arc::new(HostCommit::Local(Arc::new(
-                crate::LocalCommitAdapter::with_queries(
-                    Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new()),
-                    crate::authority::ScriptedStateQueries::new(Err(
-                        "state read unavailable".into()
-                    )),
-                ),
-            ))),
+            commit: unavailable_commit
+                .committed_authority()
+                .expect("R4 local test commit is authoritative"),
             supervisor,
         };
         assert_eq!(
