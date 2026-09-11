@@ -698,6 +698,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness projected_binding_use_rechecks_the_exact_projection_after_probe \
     --harness mcp_client_credential_admission_has_no_gateway_or_adapter_fallback
   run_kani awaken-dispatch-contract \
+    --harness dispatch_admission_shape_keeps_child_affinity_independent \
     --harness claim_credential_operation_is_total_and_terminal_dominates \
     --harness claim_credential_binding_revalidation_rejects_missing_widened_reordered_or_stale_wire \
     --harness only_awaiting_or_already_superseded_is_replacement_safe \

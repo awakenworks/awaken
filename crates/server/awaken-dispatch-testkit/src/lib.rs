@@ -5,6 +5,7 @@
 //! wrapper preserves the worker-visible claim, fencing, and recovery semantics rather
 //! than merely delegating a convenient subset of methods.
 
+use awaken_agent_contract::agent::delegation::DelegationOrigin;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -18,11 +19,13 @@ use awaken_dispatch_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalFeed, LeaseLossReason,
 };
 use awaken_dispatch_contract::{
+    DispatchAdmissionShape, RunDispatch, SessionRunReplacement, SessionRuntimeEnvelope,
+};
+use awaken_dispatch_contract::{
     LeastLoadedPolicy, PlacementRequirements, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
     WorkerCredentialObservation, WorkerCredentialRevision, WorkerIdentity, WorkerManifest,
     WorkerSnapshot, WorkerState,
 };
-use awaken_dispatch_contract::{RunDispatch, SessionRunReplacement, SessionRuntimeEnvelope};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::resume::ResumeResult;
