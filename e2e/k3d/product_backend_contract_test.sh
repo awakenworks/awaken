@@ -13,7 +13,9 @@ trap 'rm -f "$RENDERED"' EXIT
 # trust projected from an externally provisioned Secret, and a bounded startup
 # grace plus readiness/liveness probes are declared; C4 ingress is
 # restricted to namespaces explicitly labelled as an
-# Awaken Design backend; C5 K8s sandbox uses the imported non-`latest` base while
+# Awaken Design backend; C5 K8s sandbox uses the imported non-`latest` base and
+# the canonical retained continuation PVC, with exact create/get/delete RBAC,
+# while
 # BuildKit Jobs, the derived-image Registry, and namespace-scoped RBAC including
 # Pod metadata update for resourceVersion-fenced reaper-lease transfer are
 # coherent through the Registry container's internal :5000 endpoint (the host
@@ -24,9 +26,10 @@ trap 'rm -f "$RENDERED"' EXIT
 # retaining attached exec only for bounded file operations; C7 model/provider
 # secret names or values appear in the manifest. Effects: E1 one
 # all-in-one backend can start from the canonical image;
-# E2 Awaken/Console and management APIs have no terminal-user ingress; E3 config
-# plus Awaken-owned provider configuration, Skills, Agents, and Sessions survive
-# Pod replacement; E4 only the product backend may reach port 8080; E5 K8s ACP
+# E2 Awaken/Console and management APIs have no terminal-user ingress; E3 config,
+# Awaken-owned provider configuration, Skills, Agents, Sessions, and each active
+# Session workspace survive their owning Pod replacement; E4 only the product
+# backend may reach port 8080; E5 K8s ACP
 # startup uses the already-owned resident channel rather than depending on an
 # apiserver exec-stream protocol, and may open that channel without broadening
 # authority beyond the Session namespace; E6 reject the deployment contract before a
@@ -54,6 +57,7 @@ grep -q 'no_browser = true' "$RENDERED"
 grep -q 'identity_mode = "self-managed"' "$RENDERED"
 grep -q 'worker_trust_credentials_file = "/etc/awaken-auth/worker-trust.json"' "$RENDERED"
 grep -q 'sandbox_tier = "k8s"' "$RENDERED"
+grep -q 'k8s_continuation_volume = { storage_class_name = "local-path", size = "1Gi" }' "$RENDERED"
 grep -q "container_image = \"$SANDBOX_IMAGE\"" "$RENDERED"
 ! grep -q '__AWAKEN_SANDBOX_IMAGE__' "$RENDERED"
 grep -q 'container_hand_residency = "resident"' "$RENDERED"
@@ -66,6 +70,13 @@ grep -q 'serviceAccountName: awaken-product' "$RENDERED"
 grep -q -- '- jobs' "$RENDERED"
 grep -q -- '- pods/exec' "$RENDERED"
 grep -q -- '- pods/portforward' "$RENDERED"
+PRODUCT_PVC_RULE="$(grep -A4 -- '- persistentvolumeclaims' "$RENDERED")"
+grep -q -- '- create' <<<"$PRODUCT_PVC_RULE"
+grep -q -- '- get' <<<"$PRODUCT_PVC_RULE"
+grep -q -- '- delete' <<<"$PRODUCT_PVC_RULE"
+! grep -q -- '- list' <<<"$PRODUCT_PVC_RULE"
+! grep -q -- '- watch' <<<"$PRODUCT_PVC_RULE"
+! grep -q -- '- update' <<<"$PRODUCT_PVC_RULE"
 PRODUCT_OBJECT_RULE="$(sed -n '14,34p' "$RENDERED")"
 grep -q -- '- create' <<<"$PRODUCT_OBJECT_RULE"
 grep -q -- '- update' <<<"$PRODUCT_OBJECT_RULE"

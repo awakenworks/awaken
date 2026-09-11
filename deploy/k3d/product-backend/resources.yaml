@@ -26,6 +26,7 @@ data:
     sandbox_tier = "k8s"
     sandbox_dir = "/var/lib/awaken/sandboxes"
     k8s_namespace = "awaken-system"
+    k8s_continuation_volume = { storage_class_name = "local-path", size = "1Gi" }
     container_image = "__AWAKEN_SANDBOX_IMAGE__"
     container_hand_residency = "resident"
     package_image_registry = "k3d-awaken-registry.localhost:5000/environments"
@@ -44,12 +45,15 @@ kind: Role
 metadata:
   name: awaken-product-runtime
 rules:
-  # This overlay does not enable k8s_continuation_volume. If that capability is
-  # enabled here, its same reviewed change must grant persistentvolumeclaims
-  # create/get/delete; the runtime must not rely on ambient cluster-admin access.
+  # Product Sessions use the canonical retained continuation PVC. The runtime
+  # needs exactly create/get/delete for allocation, UID-fenced rebuild, and
+  # terminal disposal; it receives no list/watch/update authority over claims.
   - apiGroups: [""]
     resources: ["pods", "configmaps"]
     verbs: ["create", "get", "list", "update", "delete", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["create", "get", "delete"]
   - apiGroups: [""]
     resources: ["pods/exec", "pods/portforward"]
     verbs: ["create", "get"]

@@ -11,7 +11,7 @@ copied cluster setup scripts.
 |---|---|
 | `bases/postgres/` | Ephemeral Postgres Service, readiness contract, test credentials, and storage policy |
 | `bases/durable-brain/` | Deterministic Postgres-backed brain Service and Deployment, typed scenario inputs, and unique dispatch ownership |
-| `product-backend/` | Private all-in-one product backend with durable state, no public Service/Ingress, and an ingress allowlist for Awaken Design backends |
+| `product-backend/` | Private all-in-one product backend with durable control state and retained Session workspaces, no public Service/Ingress, and an ingress allowlist for Awaken Design backends |
 | `distributed-control/` | ADR-0071 production Control/Coordinator/Worker composition, four owner databases on a primary/streaming-standby fixture, authenticated boundaries, and a single public edge |
 | `failover/`, `scaling/`, `cold-start/`, `nats-wake/`, `worker-failover/` | Placement, replica counts, dependencies, and fault behavior layered over the Postgres and durable-brain bases |
 | `e2e/k3d/harness.sh` | Tool admission, cluster lifecycle, Cargo executable resolution, single-platform image import, CoreDNS refresh, and collision-free IPv4 port forwarding |
@@ -55,6 +55,13 @@ apiserver exposes the attached-exec WebSocket protocol. The runtime
 ServiceAccount therefore owns namespace-scoped `pods/portforward` for that
 resident channel. Attached exec remains a runtime capability for bounded file
 operations, not a parallel ACP transport.
+
+The same overlay selects the existing `k8s_continuation_volume` policy. A
+retained Session therefore owns one UID-bound `local-path` PVC mounted at its
+active filesystem. Pod loss may replace only the Pod incarnation; rebuild must
+revalidate the persisted Pod UID and PVC UID before reusing those bytes. The
+product ServiceAccount receives only PVC `create`, `get`, and `delete`, matching
+the runtime's allocation, exact rebuild, and terminal disposal boundaries.
 
 ```bash
 deploy/images/sandbox/build.sh awaken-sandbox:local
