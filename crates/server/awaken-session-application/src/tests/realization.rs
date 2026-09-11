@@ -1430,12 +1430,13 @@ async fn terminal_root_renewal_preserves_frozen_mcp_cleanup_identity() {
         None,
     )
     .unwrap();
-    let attachment_id = session.mcp.attachments[0].attachment_id.clone();
+    // The witness carries the attachment identity, so the claim takes the
+    // observed head alone; a separate id could disagree with it.
+    let generation = session.mcp.attachments[0].generation.clone();
     session
         .mcp
         .claim_realization(
-            &attachment_id,
-            awaken_session_contract::McpGeneration(1),
+            &generation,
             awaken_session_contract::McpRealizationClaim {
                 realization_id: "browser-realization".into(),
                 runtime_incarnation: "terminal-worker/boot-1".into(),
@@ -1447,11 +1448,7 @@ async fn terminal_root_renewal_preserves_frozen_mcp_cleanup_identity() {
         .unwrap();
     session
         .mcp
-        .activate(
-            &attachment_id,
-            awaken_session_contract::McpGeneration(1),
-            "browser-realization",
-        )
+        .activate(&generation, "browser-realization")
         .unwrap();
     let frozen_mcp = session.mcp.clone();
     create(repo.as_ref(), session).await;
