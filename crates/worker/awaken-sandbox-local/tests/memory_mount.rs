@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use awaken_memory_store::{MemoryRepository, VolatileMemoryRepository};
 use awaken_provisioning_contract as pc;
-use awaken_provisioning_contract::SandboxProvider;
 use awaken_sandbox_local::LocalProvider;
 use awaken_sandbox_memoryd::MemoryStoreMounter;
 

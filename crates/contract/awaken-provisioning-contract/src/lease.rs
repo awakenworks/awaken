@@ -12,7 +12,9 @@
 //! pure function over them. The run↔sandbox binding itself lives in the dispatch
 //! aggregate (`Claimed`), never here.
 
-use crate::sandbox::{SandboxHandle, SandboxProvider};
+use crate::sandbox::SandboxHandle;
+#[cfg(test)]
+use crate::sandbox::SandboxProvider;
 
 /// A lease deadline over a realized sandbox — the dead-man switch the owner renews
 /// within `lease_ttl_secs`. `None` is an indefinite lease (dev/trusted).
