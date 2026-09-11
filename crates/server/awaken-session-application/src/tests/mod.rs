@@ -74,8 +74,8 @@ struct ToggleProjectionRefresh {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::ExecutableProjectionRefresh for ToggleProjectionRefresh {
-    async fn refresh(&self) -> Result<(), String> {
+impl awaken_session_contract::ExecutableAgentProjectionRefresh for ToggleProjectionRefresh {
+    async fn refresh_agent_projection(&self) -> Result<(), String> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.fail.load(Ordering::SeqCst) {
             Err("projection unavailable".into())
@@ -83,6 +83,27 @@ impl awaken_session_contract::ExecutableProjectionRefresh for ToggleProjectionRe
             Ok(())
         }
     }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::ExecutableEnvironmentProjectionRefresh for ToggleProjectionRefresh {
+    async fn refresh_environment_projection(&self) -> Result<(), String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail.load(Ordering::SeqCst) {
+            Err("projection unavailable".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn paired_projection_refresh(
+    refresh: Arc<ToggleProjectionRefresh>,
+) -> Arc<awaken_session_contract::ExecutableProjectionRefresh> {
+    Arc::new(awaken_session_contract::ExecutableProjectionRefresh::new(
+        refresh.clone(),
+        refresh,
+    ))
 }
 
 #[derive(Clone, Copy)]

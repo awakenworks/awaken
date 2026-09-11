@@ -470,12 +470,13 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   is admitted only after both independently captured high-water marks are
   covered. `ExecutableProjectionRefreshProof.tla` proves the unbounded inductive
   invariant, including the short install-before-cursor visibility window.
-  The strict gate cross-checks the async Rust boundary with injected refresh
-  failures at three independent production consumers: Coordinator inventory and
-  warmup handlers perform no source read, Session recovery performs no durable
-  mutation or dispatch, and Deployment scheduling performs no candidate mutation
-  or launch. These tests qualify representative entrypoint wiring; they do not
-  establish universal Rust refinement for every async call site.
+  The contract-owned concrete pair has distinct Agent and Environment ports and
+  is the only durable constructor of `ExecutableProjectionAdmission`. Its Kani
+  harness exhausts both domain outcomes through the actual typed completion and
+  `enter` path: only two ordered successes enter a handler. Strict async tables
+  inject failures at three production consumers: Coordinator performs no source
+  read, Session performs no durable mutation or dispatch, and Deployment performs
+  no candidate mutation or launch. Tokio/DB behavior remains outside this kernel.
   The shared loader issues an opaque `ProjectionTarget` only after validating a
   batch through the durable high-water. Both production registrars pass it to
   `ProjectionCursor::install_then_reconcile`, so a free scalar cannot replace
@@ -483,7 +484,8 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   installed-at-most-authority and adapter-only authority rollback: it lowers the
   private cursor before an older complete replay and restores the prior cursor
   on install error. Kani exhausts all prior/target `u64` pairs and both installer
-  outcomes; the native table cross-checks lower, equal, and higher targets. Separate Agent and Environment registrar tests capture a stable high-water,
+  outcomes; the native table cross-checks lower, equal, and higher targets. The
+  shared `ProjectionRefreshDomain` owns the actual Tokio permit plus cursor; its direct harness proves live-permit exclusion and release/reacquisition, while native Agent and Environment registrar tests capture a stable high-water,
   commit a higher command before the bounded range load, and require the first
   refresh to install only the captured prefix while the second refresh installs
   the later command. This binds the model's installed-at-most-authority invariant
@@ -1094,16 +1096,14 @@ the external credential/ACP sources. Those remain explicit environment and
 adapter obligations; a failed source refresh is modeled only as a safe retryable
 failure that cannot advance the published fence.
 
-`ExecutableProjectionRefresh` proves per-domain serialization, clone-install and
-cursor ordering for a monotonic authority, fail-closed middleware admission, and
-Agent-before-Environment refresh for concurrent requests. The allocation-free
-cursor kernel directly proves that a monotonic installed projection does not
-lead its opaque captured authority target, plus cursor ordering for a lower
-complete-replay target. It assumes success follows exact-target publication,
-ordinary error precedes publication, command stores return a stable bounded
-range through the captured high-water, and the database honors query and
-transaction contracts. Independently captured domain high-water marks do not
-establish an atomic cross-domain snapshot or eventual command delivery.
+`ExecutableProjectionRefresh` proves typed Agent-before-Environment admission, failed-refresh exclusion, per-domain permit topology, clone-install and cursor ordering. The direct capability kernel proves that both successes are required
+to enter a handler; the actual shared Tokio mutex wrapper proves that one live
+permit excludes another under Kani's sequential treatment of atomics. Native
+two-task tables and TLAPS retain the independent concurrency evidence. Database
+range and transaction truth, Tokio scheduling/cancellation/panic, and arbitrary
+future consumer wiring remain outside these kernels. Independently captured
+domain high-water marks do not establish an atomic cross-domain snapshot or
+eventual command delivery.
 
 The `host-executor/v1` capability pins the declared model identity and fails
 closed on a replacement that does not install that identity. Proving that two

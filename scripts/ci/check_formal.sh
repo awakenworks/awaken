@@ -134,6 +134,8 @@ cargo test -p awaken-session-application --lib realization::publication::collect
 cargo test -p awaken-coordinator --lib failed_refresh_never_enters_shared_inventory_or_warmup_handlers
 cargo test -p awaken-session-application --lib admission_surfaces_dispatch_failure_and_preserves_retryable_intent
 cargo test -p awaken-deployment-application --lib scheduler_refresh_failure_precedes_candidate_mutation_and_launch
+cargo test -p awaken-session-contract --lib \
+  executable_projection::tests::paired_refresh_capability_covers_every_domain_outcome
 # ManagementAuditIntent abstracts the repository and Axum middleware boundary.
 # Require the canonical protected router to attempt durable intent persistence
 # and leave its observable business handler untouched on repository failure.
@@ -143,6 +145,7 @@ cargo test -p awaken-control --lib \
 # canonical repository port, and real SQLite durable audit owner.
 cargo test -p awaken-control --lib management_audit_completion_
 cargo test -p awaken-durable-projection --lib install_reconciliation_covers_cursor_and_authority_outcomes
+cargo test -p awaken-durable-projection --lib refresh_domain_permit_is_exclusive
 cargo test -p awaken-executable-agent-catalog --lib active_active_peer_refreshes_the_durable_command_projection
 cargo test -p awaken-executable-environment-catalog --lib active_active_peer_refreshes_the_durable_environment_projection
 cargo test -p awaken-executable-agent-catalog --lib install_error_precedes_agent_target_publication
@@ -668,7 +671,10 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-executable-agent-catalog \
     --harness installed_lifecycle_revision_never_rolls_back
   run_kani awaken-durable-projection \
-    --harness projection_install_reconciliation_preserves_cursor_and_monotonic_authority
+    --harness projection_install_reconciliation_preserves_cursor_and_monotonic_authority \
+    --harness projection_refresh_domain_permit_is_exclusive
+  run_kani awaken-session-contract \
+    --harness executable_projection_admission_requires_both_ordered_refreshes
   run_kani awaken-credential-contract --solver minisat \
     --harness managed_rollout_identity_requires_every_payload_field
   run_kani awaken-credential-contract \

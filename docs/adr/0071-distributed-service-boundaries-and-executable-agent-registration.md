@@ -213,12 +213,14 @@ monotonic `command_sequence` through a deterministic versioned migration.
 Coordinator replicas compare the durable maximum with their last applied cursor
 at the application operation that first consumes an executable projection.
 Equal cursors require no command load; an advanced authority loads only the
-ordered tail. The contract-owned, stateless `ExecutableProjectionRefresh` port
-has no cache or cursor of its own. The CLI constructs one ordered Agent then
-Environment composite and shares that same handle with Session, Deployment, and
-Coordinator-owned inventory/warmup adapters.
+ordered tail. The contract-owned `ExecutableProjectionRefresh` concrete pair has
+distinct typed Agent and Environment ports and no cache or cursor of its own. It
+alone mints `ExecutableProjectionAdmission` after both ordered calls succeed;
+Session, Deployment, and Coordinator inventory/warmup consumers enter through
+that capability. The CLI only supplies the two durable domain adapters.
 
-The shared cursor accepts non-contiguous database identity values but requires
+The shared `ProjectionRefreshDomain` owns one Tokio permit and cursor per domain.
+It accepts non-contiguous database identity values but requires
 the batch to reach the observed high-water. A missing or out-of-order tail, or an
 authority high-water behind the local cursor, triggers complete replay through
 the owning catalog state machine into a replacement projection. Managed create

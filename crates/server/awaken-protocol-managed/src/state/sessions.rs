@@ -407,7 +407,8 @@ impl ManagedState {
                 super::resource::MAX_SESSION_FILE_RESOURCES
             ))));
         }
-        self.application
+        let admission = self
+            .application
             .refresh_executable_projections()
             .await
             .map_err(|error| {
@@ -420,34 +421,38 @@ impl ManagedState {
         // restarted processes cannot choose the same Session id. The repository
         // check remains the final collision fence; `ensure_session` is still the
         // only path that may reattach to a caller-supplied existing thread.
-        let id = match explicit_id {
-            Some(id) => id,
-            None => loop {
-                let sequence = self.session_seq.fetch_add(1, Ordering::SeqCst);
-                let candidate = format!(
-                    "sesn_{}",
-                    awaken_session_contract::stable_fingerprint(&(
-                        "managed-session",
-                        &self.application.runtime_incarnation(),
-                        sequence,
-                    ))
-                );
-                let repository_absent = match self.application.session(&candidate).await {
-                    Err(awaken_session_contract::SessionRepositoryError::NotFound) => true,
-                    Ok(_) => false,
-                    Err(error) => return Err(StateError::from(error)),
-                };
-                if !self
-                    .application
-                    .runtime_owns_thread(&candidate)
-                    .await
-                    .map_err(StateError::Run)?
-                    && repository_absent
-                {
-                    break candidate;
+        let id = admission
+            .enter(|| async {
+                match explicit_id {
+                    Some(id) => Ok(id),
+                    None => loop {
+                        let sequence = self.session_seq.fetch_add(1, Ordering::SeqCst);
+                        let candidate = format!(
+                            "sesn_{}",
+                            awaken_session_contract::stable_fingerprint(&(
+                                "managed-session",
+                                &self.application.runtime_incarnation(),
+                                sequence,
+                            ))
+                        );
+                        let repository_absent = match self.application.session(&candidate).await {
+                            Err(awaken_session_contract::SessionRepositoryError::NotFound) => true,
+                            Ok(_) => false,
+                            Err(error) => return Err(StateError::from(error)),
+                        };
+                        if !self
+                            .application
+                            .runtime_owns_thread(&candidate)
+                            .await
+                            .map_err(StateError::Run)?
+                            && repository_absent
+                        {
+                            break Ok(candidate);
+                        }
+                    },
                 }
-            },
-        };
+            })
+            .await?;
         let agent_id = req.agent.id().to_string();
         let initial_events =
             crate::types::initial_event::compile_session_initial_event_plan(&id, &initial_events)

@@ -111,7 +111,7 @@ impl ManagedState {
     #[cfg(test)]
     pub(crate) fn with_executable_projection_refresh(
         mut self,
-        refresh: Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>,
+        refresh: Arc<awaken_session_contract::ExecutableProjectionRefresh>,
     ) -> Self {
         self.application_mut()
             .set_executable_projection_refresh(refresh)

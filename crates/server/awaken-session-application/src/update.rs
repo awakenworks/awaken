@@ -374,13 +374,21 @@ impl SessionApplication {
             if receipt.payload_hash != record.payload_hash {
                 return Err(SessionUpdateError::IdempotencyMismatch);
             }
-            if command.mcp_update.is_some() {
-                self.refresh_executable_projections()
-                    .await
-                    .map_err(SessionUpdateError::Unavailable)?;
-            }
+            let admission = if command.mcp_update.is_some() {
+                Some(
+                    self.refresh_executable_projections()
+                        .await
+                        .map_err(SessionUpdateError::Unavailable)?,
+                )
+            } else {
+                None
+            };
             let session = if command.mcp_update.is_some() {
-                self.retry_failed_mcp_update_realization(session_id).await?
+                admission
+                    .as_ref()
+                    .expect("MCP retry acquired executable admission")
+                    .enter(|| self.retry_failed_mcp_update_realization(session_id))
+                    .await?
             } else {
                 self.session_repository()
                     .get(session_id)
@@ -433,17 +441,23 @@ impl SessionApplication {
             )));
         }
 
-        if command.mcp_update.is_some() {
-            self.refresh_executable_projections()
-                .await
-                .map_err(SessionUpdateError::Unavailable)?;
-        }
+        let admission = if command.mcp_update.is_some() {
+            Some(
+                self.refresh_executable_projections()
+                    .await
+                    .map_err(SessionUpdateError::Unavailable)?,
+            )
+        } else {
+            None
+        };
 
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            match self
-                .update_session_once(session_id, &command, command_record.clone())
-                .await
-            {
+            let update = || self.update_session_once(session_id, &command, command_record.clone());
+            let result = match admission.as_ref() {
+                Some(admission) => admission.enter(update).await,
+                None => update().await,
+            };
+            match result {
                 Err(SessionUpdateError::Conflict)
                     if command.if_match.is_none() && attempt + 1 < Self::ROOT_CAS_ATTEMPTS =>
                 {

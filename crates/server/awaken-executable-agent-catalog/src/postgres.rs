@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_durable_projection::{
-    ProjectionBatch, ProjectionCursor, ProjectionLoadError, ProjectionLog, Sequenced, load_full,
-    load_refresh,
+    ProjectionBatch, ProjectionLoadError, ProjectionLog, ProjectionRefreshDomain, Sequenced,
+    load_full, load_refresh,
 };
 use awaken_executable_agent_contract::{
     ExecutableAgentRegistrar, ExecutableAgentRegistration, ExecutableAgentRegistrationError,
@@ -17,7 +17,6 @@ use awaken_executable_agent_contract::{
     ExecutableAgentWithdrawalOutcome,
 };
 use sqlx::postgres::PgPool;
-use tokio::sync::Mutex;
 
 use crate::schema::{NS, executable_agent_catalog_bundle};
 use crate::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
@@ -216,8 +215,7 @@ struct DurableRegistrar {
     catalog: Arc<ExecutableAgentCatalog>,
     local: LocalExecutableAgentRegistrar,
     log: Arc<dyn CatalogCommandLog>,
-    mutation: Mutex<()>,
-    cursor: ProjectionCursor,
+    refresh: ProjectionRefreshDomain,
 }
 
 impl DurableRegistrar {
@@ -232,8 +230,7 @@ impl DurableRegistrar {
             catalog,
             local,
             log,
-            mutation: Mutex::new(()),
-            cursor: ProjectionCursor::at(target.through()),
+            refresh: ProjectionRefreshDomain::at(target.through()),
         })
     }
 
@@ -241,7 +238,7 @@ impl DurableRegistrar {
         &self,
         registration: ExecutableAgentRegistration,
     ) -> Result<ExecutableAgentRegistrationOutcome, ExecutableAgentRegistrationError> {
-        let _guard = self.mutation.lock().await;
+        let _guard = self.refresh.lock().await;
         let expected = self.catalog.preview_registration(registration.clone())?;
         let _sequence = self
             .log
@@ -257,8 +254,8 @@ impl DurableRegistrar {
     }
 
     async fn refresh_projection(&self) -> Result<(), ExecutableAgentRegistrationError> {
-        let _guard = self.mutation.lock().await;
-        match load_refresh(&self.cursor, self.log.as_ref())
+        let guard = self.refresh.lock().await;
+        match load_refresh(guard.cursor(), self.log.as_ref())
             .await
             .map_err(projection_load)?
         {
@@ -270,7 +267,8 @@ impl DurableRegistrar {
                     commands,
                 )
                 .await?;
-                self.cursor
+                guard
+                    .cursor()
                     .install_then_reconcile(target, || install_catalog(&self.catalog, &refreshed))
             }
             ProjectionBatch::FullReplay { target, commands } => {
@@ -280,7 +278,8 @@ impl DurableRegistrar {
                     commands,
                 )
                 .await?;
-                self.cursor
+                guard
+                    .cursor()
                     .install_then_reconcile(target, || install_catalog(&self.catalog, &refreshed))
             }
         }
@@ -290,7 +289,7 @@ impl DurableRegistrar {
         &self,
         withdrawal: ExecutableAgentWithdrawal,
     ) -> Result<ExecutableAgentWithdrawalOutcome, ExecutableAgentRegistrationError> {
-        let _guard = self.mutation.lock().await;
+        let _guard = self.refresh.lock().await;
         let expected = self.catalog.preview_withdrawal(withdrawal.clone())?;
         let _sequence = self
             .log
@@ -819,7 +818,7 @@ mod tests {
         ));
 
         registrar.refresh_projection().await.unwrap();
-        assert_eq!(registrar.cursor.applied(), 2, "R1");
+        assert_eq!(registrar.refresh.applied(), 2, "R1");
         assert_eq!(
             log.commands.lock().unwrap().last().unwrap().sequence,
             4,
@@ -838,7 +837,7 @@ mod tests {
         );
 
         registrar.refresh_projection().await.unwrap();
-        assert_eq!(registrar.cursor.applied(), 4, "R2");
+        assert_eq!(registrar.refresh.applied(), 4, "R2");
         assert_eq!(*log.load_after_calls.lock().unwrap(), vec![0, 2], "R2");
         assert_eq!(
             catalog
@@ -943,7 +942,7 @@ mod tests {
         assert_eq!(log.commands.lock().unwrap().len(), 3, "A4");
         log.commands.lock().unwrap().truncate(1);
         right.refresh_projection().await.unwrap();
-        assert_eq!(right.cursor.applied(), 2, "A5");
+        assert_eq!(right.refresh.applied(), 2, "A5");
         assert_eq!(
             right_catalog
                 .current("workspace-a", "agent-a")

@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_durable_projection::{
-    ProjectionBatch, ProjectionCursor, ProjectionLoadError, ProjectionLog, Sequenced, load_full,
-    load_refresh,
+    ProjectionBatch, ProjectionLoadError, ProjectionLog, ProjectionRefreshDomain, Sequenced,
+    load_full, load_refresh,
 };
 use awaken_executable_environment_contract::{
     ExecutableEnvironmentRegistrar, ExecutableEnvironmentRegistration,
@@ -17,7 +17,6 @@ use awaken_executable_environment_contract::{
     ExecutableEnvironmentWithdrawal, ExecutableEnvironmentWithdrawalOutcome,
 };
 use sqlx::postgres::PgPool;
-use tokio::sync::Mutex;
 
 use crate::schema::{NS, executable_environment_catalog_bundle};
 use crate::{ExecutableEnvironmentCatalog, LocalExecutableEnvironmentRegistrar};
@@ -199,8 +198,7 @@ struct DurableRegistrar {
     catalog: Arc<ExecutableEnvironmentCatalog>,
     local: LocalExecutableEnvironmentRegistrar,
     log: Arc<dyn CatalogCommandLog>,
-    mutation: Mutex<()>,
-    cursor: ProjectionCursor,
+    refresh: ProjectionRefreshDomain,
 }
 
 impl DurableRegistrar {
@@ -215,8 +213,7 @@ impl DurableRegistrar {
             catalog,
             local,
             log,
-            mutation: Mutex::new(()),
-            cursor: ProjectionCursor::at(target.through()),
+            refresh: ProjectionRefreshDomain::at(target.through()),
         })
     }
 
@@ -225,7 +222,7 @@ impl DurableRegistrar {
         registration: ExecutableEnvironmentRegistration,
     ) -> Result<ExecutableEnvironmentRegistrationOutcome, ExecutableEnvironmentRegistrationError>
     {
-        let _guard = self.mutation.lock().await;
+        let _guard = self.refresh.lock().await;
         let expected = self.catalog.preview_registration(registration.clone())?;
         let _sequence = self
             .log
@@ -241,8 +238,8 @@ impl DurableRegistrar {
     }
 
     async fn refresh_projection(&self) -> Result<(), ExecutableEnvironmentRegistrationError> {
-        let _guard = self.mutation.lock().await;
-        match load_refresh(&self.cursor, self.log.as_ref())
+        let guard = self.refresh.lock().await;
+        match load_refresh(guard.cursor(), self.log.as_ref())
             .await
             .map_err(projection_load)?
         {
@@ -254,7 +251,8 @@ impl DurableRegistrar {
                     commands,
                 )
                 .await?;
-                self.cursor
+                guard
+                    .cursor()
                     .install_then_reconcile(target, || install_catalog(&self.catalog, &refreshed))
             }
             ProjectionBatch::FullReplay { target, commands } => {
@@ -264,7 +262,8 @@ impl DurableRegistrar {
                     commands,
                 )
                 .await?;
-                self.cursor
+                guard
+                    .cursor()
                     .install_then_reconcile(target, || install_catalog(&self.catalog, &refreshed))
             }
         }
@@ -275,7 +274,7 @@ impl DurableRegistrar {
         withdrawal: ExecutableEnvironmentWithdrawal,
     ) -> Result<ExecutableEnvironmentWithdrawalOutcome, ExecutableEnvironmentRegistrationError>
     {
-        let _guard = self.mutation.lock().await;
+        let _guard = self.refresh.lock().await;
         let expected = self.catalog.preview_withdrawal(withdrawal.clone())?;
         let _sequence = self
             .log
@@ -682,7 +681,7 @@ mod tests {
         ));
 
         registrar.refresh_projection().await.unwrap();
-        assert_eq!(registrar.cursor.applied(), 2, "R1");
+        assert_eq!(registrar.refresh.applied(), 2, "R1");
         assert_eq!(
             log.commands.lock().unwrap().last().unwrap().sequence,
             4,
@@ -696,7 +695,7 @@ mod tests {
         );
 
         registrar.refresh_projection().await.unwrap();
-        assert_eq!(registrar.cursor.applied(), 4, "R2");
+        assert_eq!(registrar.refresh.applied(), 4, "R2");
         assert_eq!(*log.load_after_calls.lock().unwrap(), vec![0, 2], "R2");
         assert_eq!(
             catalog.current("env-a").unwrap().definition.name,
@@ -772,7 +771,7 @@ mod tests {
         assert_eq!(log.commands.lock().unwrap().len(), 3, "R4");
         log.commands.lock().unwrap().truncate(1);
         right.refresh_projection().await.unwrap();
-        assert_eq!(right.cursor.applied(), 2, "R5");
+        assert_eq!(right.refresh.applied(), 2, "R5");
         assert_eq!(
             right_catalog.current("env-a").unwrap().definition.name,
             "Environment A",

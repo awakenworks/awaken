@@ -518,10 +518,13 @@ impl SessionApplication {
         &self,
         session_id: &str,
     ) -> Result<PersistedSession, SessionRealizationError> {
-        self.refresh_executable_projections()
+        let admission = self
+            .refresh_executable_projections()
             .await
             .map_err(|error| SessionRealizationError::Control(unavailable(error)))?;
-        self.realize_session_after_refresh(session_id).await
+        admission
+            .enter(|| self.realize_session_after_refresh(session_id))
+            .await
     }
 
     /// Continue realization after the owning application operation refreshed
@@ -637,15 +640,21 @@ impl SessionApplication {
             quarantined: candidates.quarantined.clone(),
             ..Default::default()
         };
-        if let Err(error) = self.refresh_executable_projections().await {
-            report.failures.push(SessionReconciliationFailure {
-                session_id: "<executable-projections>".to_string(),
-                message: error,
-            });
-            return report;
-        }
+        let admission = match self.refresh_executable_projections().await {
+            Ok(admission) => admission,
+            Err(error) => {
+                report.failures.push(SessionReconciliationFailure {
+                    session_id: "<executable-projections>".to_string(),
+                    message: error,
+                });
+                return report;
+            }
+        };
         for candidate in &candidates.sessions {
-            let session = match self.session_repository().get(&candidate.session_id).await {
+            let session = match admission
+                .enter(|| self.session_repository().get(&candidate.session_id))
+                .await
+            {
                 Ok(session) => match DurableSessionRoot::from_recovery(session) {
                     Ok(root) => root,
                     Err(message) => {

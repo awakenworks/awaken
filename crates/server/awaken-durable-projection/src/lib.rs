@@ -156,6 +156,81 @@ impl ProjectionCursor {
     }
 }
 
+/// One in-process serialization owner for a projection domain. Keeping the
+/// mutation permit and cursor together prevents adapters from accidentally
+/// reading a refresh plan outside the lock that protects replay and install.
+pub struct ProjectionRefreshDomain {
+    mutation: tokio::sync::Mutex<()>,
+    cursor: ProjectionCursor,
+}
+
+impl ProjectionRefreshDomain {
+    #[must_use]
+    pub fn at(applied: u64) -> Self {
+        Self {
+            mutation: tokio::sync::Mutex::new(()),
+            cursor: ProjectionCursor::at(applied),
+        }
+    }
+
+    pub async fn lock(&self) -> ProjectionRefreshGuard<'_> {
+        ProjectionRefreshGuard {
+            _mutation: self.mutation.lock().await,
+            cursor: &self.cursor,
+        }
+    }
+
+    #[must_use]
+    pub fn applied(&self) -> u64 {
+        self.cursor.applied()
+    }
+
+    #[cfg(any(test, kani))]
+    fn try_lock(&self) -> Option<ProjectionRefreshGuard<'_>> {
+        self.mutation
+            .try_lock()
+            .ok()
+            .map(|mutation| ProjectionRefreshGuard {
+                _mutation: mutation,
+                cursor: &self.cursor,
+            })
+    }
+}
+
+/// Capability proving that the caller holds the one domain refresh mutex.
+pub struct ProjectionRefreshGuard<'a> {
+    _mutation: tokio::sync::MutexGuard<'a, ()>,
+    cursor: &'a ProjectionCursor,
+}
+
+impl ProjectionRefreshGuard<'_> {
+    #[must_use]
+    pub fn cursor(&self) -> &ProjectionCursor {
+        self.cursor
+    }
+}
+
+#[cfg(any(test, kani))]
+fn check_projection_refresh_domain_permit_is_exclusive() {
+    // Causes: C1 the domain is vacant; C2 one permit remains live; C3 that
+    // permit is released. Effects: E1 the first acquisition succeeds; E2 no
+    // overlapping permit is issued; E3 release permits exactly the next
+    // acquisition. Decision rules: D1 C1=>E1; D2 C2=>E2; D3 C3=>E3.
+    let domain = ProjectionRefreshDomain::at(0);
+    let first = domain.try_lock().expect("D1/E1");
+    assert!(domain.try_lock().is_none(), "D2/E2");
+    drop(first);
+    assert!(domain.try_lock().is_some(), "D3/E3");
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn projection_refresh_domain_permit_is_exclusive() {
+    // This invokes the actual Tokio mutex wrapper used by both production
+    // registrars; there is no separate lock state or modeled acquisition.
+    check_projection_refresh_domain_permit_is_exclusive();
+}
+
 #[cfg(any(test, kani))]
 fn check_install_then_reconcile(previous: u64, through: u64, succeeds: bool) {
     use std::cell::Cell;
@@ -297,6 +372,11 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+
+    #[test]
+    fn refresh_domain_permit_is_exclusive() {
+        check_projection_refresh_domain_permit_is_exclusive();
+    }
 
     #[test]
     fn install_reconciliation_covers_cursor_and_authority_outcomes() {

@@ -79,7 +79,7 @@ pub struct DeploymentApplication {
     repository: Option<Arc<dyn DeploymentRepository>>,
     executable_agents: Mutex<Option<Arc<dyn ExecutableAgentRegistrationSource>>>,
     executable_projection_refresh:
-        Mutex<Option<Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>>>,
+        Mutex<Option<Arc<awaken_session_contract::ExecutableProjectionRefresh>>>,
     scheduled_limit: usize,
 }
 
@@ -162,7 +162,7 @@ impl DeploymentApplication {
 
     pub fn bind_executable_projection_refresh(
         &self,
-        refresh: Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>,
+        refresh: Arc<awaken_session_contract::ExecutableProjectionRefresh>,
     ) {
         *self
             .executable_projection_refresh
@@ -170,7 +170,10 @@ impl DeploymentApplication {
             .expect("executable projection refresh lock") = Some(refresh);
     }
 
-    async fn refresh_executable_projections(&self) -> Result<(), DeploymentApplicationError> {
+    async fn refresh_executable_projections(
+        &self,
+    ) -> Result<awaken_session_contract::ExecutableProjectionAdmission, DeploymentApplicationError>
+    {
         let refresh = self
             .executable_projection_refresh
             .lock()
@@ -181,7 +184,7 @@ impl DeploymentApplication {
                 .refresh()
                 .await
                 .map_err(DeploymentApplicationError::Unavailable),
-            None => Ok(()),
+            None => Ok(awaken_session_contract::process_local_executable_projection_admission()),
         }
     }
 
@@ -248,9 +251,9 @@ impl DeploymentApplication {
     ) -> Result<DeploymentView, DeploymentApplicationError> {
         self.refresh().await?;
         validate_schedule(command.schedule.as_ref())?;
-        self.refresh_executable_projections().await?;
-        let agent = self
-            .resolve_agent(&command.workspace_id, &command.agent)
+        let admission = self.refresh_executable_projections().await?;
+        let agent = admission
+            .enter(|| self.resolve_agent(&command.workspace_id, &command.agent))
             .await?;
         let now = now_ms();
         let record = DeploymentRecord {
@@ -358,11 +361,17 @@ impl DeploymentApplication {
         if candidate.archived_at.is_some() {
             return Err(DeploymentApplicationError::Terminal);
         }
-        if command.agent.is_some() {
-            self.refresh_executable_projections().await?;
-        }
+        let admission = if command.agent.is_some() {
+            Some(self.refresh_executable_projections().await?)
+        } else {
+            None
+        };
         if let Some(agent) = command.agent {
-            candidate.agent = self.resolve_agent(workspace_id, &agent).await?;
+            candidate.agent = admission
+                .as_ref()
+                .expect("Agent update acquired executable admission")
+                .enter(|| self.resolve_agent(workspace_id, &agent))
+                .await?;
         }
         if let Some(value) = command.environment_id {
             candidate.environment_id = value;
@@ -549,9 +558,9 @@ impl DeploymentApplication {
         if deployment.archived_at.is_some() {
             return Err(DeploymentApplicationError::Terminal);
         }
-        self.refresh_executable_projections().await?;
+        let admission = self.refresh_executable_projections().await?;
         let run_id = format!("drun_{}", uuid::Uuid::new_v4().simple());
-        let launch = launch_for(&deployment, id, &run_id);
+        let launch = admission.enter(|| launch_for(&deployment, id, &run_id));
         let run = DeploymentRunRecord {
             created_at: timestamp(now_ms()),
             deployment_id: id.to_string(),

@@ -422,9 +422,9 @@ Control registration source and therefore no such recovery projection.
 
 Each PostgreSQL executable command log has a versioned, monotonic
 `command_sequence`. A Coordinator replica keeps only the last applied sequence
-in memory; the command log remains durable authority. One contract-owned,
-stateless async port composes Agent then Environment refresh and is shared with
-the application consumers that can admit work or read executable inventory:
+in memory; the command log remains durable authority. One contract-owned
+concrete pair composes distinct Agent then Environment ports and mints the
+capability used by consumers that admit work or read executable inventory:
 
 ```text
 read MAX(command_sequence)
@@ -437,7 +437,8 @@ read MAX(command_sequence)
 ```
 
 Database identity gaps are valid; failing to reach the observed high-water is
-not. `awaken-durable-projection` owns this cursor and validation decision once.
+not. `awaken-durable-projection` owns one `ProjectionRefreshDomain`, including
+the actual Tokio mutation permit, cursor and validation decision per domain.
 Its loader turns the observed high-water into the only constructible
 `ProjectionTarget`; both domain installers consume that target instead of a
 caller-supplied scalar. For a lower complete-replay target it lowers the private
@@ -450,8 +451,10 @@ catalog state machines. Managed create/cold recovery, Session profile
 creation/recovery/realization, Deployment commands/scheduling, and the existing
 Models/Dream/warmup source ports call the shared handle before their first
 catalog read, mutation, or external effect. Warm cached and already-frozen hot
-paths do not refresh. No URL predicate or Axum middleware participates in this
-correctness boundary. AllInOne omits the handle because local registration and
+paths do not refresh. The successful pair alone mints
+`ExecutableProjectionAdmission`; the consumers enter their handler through it.
+No URL predicate or Axum middleware participates in this correctness boundary.
+AllInOne uses the explicit process-local admission because registration and
 admission share those same catalog instances.
 
 ### 7.3 Conditional Resources process split
