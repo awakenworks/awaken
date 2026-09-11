@@ -26,6 +26,14 @@ pub fn awaken_durable_projection::ProjectionCursor::install_then_reconcile<E>(&s
 pub fn awaken_durable_projection::ProjectionCursor::plan(&self, u64) -> awaken_durable_projection::RefreshPlan
 pub fn awaken_durable_projection::ProjectionCursor::validates_full<C>(&[awaken_durable_projection::Sequenced<C>], u64) -> bool
 pub fn awaken_durable_projection::ProjectionCursor::validates_incremental<C>(&self, &[awaken_durable_projection::Sequenced<C>], u64) -> bool
+pub struct awaken_durable_projection::ProjectionRefreshDomain
+impl awaken_durable_projection::ProjectionRefreshDomain
+pub fn awaken_durable_projection::ProjectionRefreshDomain::applied(&self) -> u64
+pub fn awaken_durable_projection::ProjectionRefreshDomain::at(u64) -> Self
+pub async fn awaken_durable_projection::ProjectionRefreshDomain::lock(&self) -> awaken_durable_projection::ProjectionRefreshGuard<'_>
+pub struct awaken_durable_projection::ProjectionRefreshGuard<'a>
+impl awaken_durable_projection::ProjectionRefreshGuard<'_>
+pub fn awaken_durable_projection::ProjectionRefreshGuard<'_>::cursor(&self) -> &awaken_durable_projection::ProjectionCursor
 pub struct awaken_durable_projection::ProjectionTarget
 impl awaken_durable_projection::ProjectionTarget
 pub fn awaken_durable_projection::ProjectionTarget::through(self) -> u64

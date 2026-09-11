@@ -1,4 +1,47 @@
 pub mod awaken_service_lifecycle
+pub mod awaken_service_lifecycle::release_admission
+pub enum awaken_service_lifecycle::release_admission::ReleaseAdmission
+pub awaken_service_lifecycle::release_admission::ReleaseAdmission::Admit
+pub awaken_service_lifecycle::release_admission::ReleaseAdmission::ArtifactDigestMismatch
+pub awaken_service_lifecycle::release_admission::ReleaseAdmission::ArtifactNameMismatch
+pub awaken_service_lifecycle::release_admission::ReleaseAdmission::ManifestMismatch
+pub awaken_service_lifecycle::release_admission::ReleaseAdmission::ProfileMismatch
+pub awaken_service_lifecycle::release_admission::ReleaseAdmission::ProofIncomplete
+pub awaken_service_lifecycle::release_admission::ReleaseAdmission::SourceMismatch
+pub enum awaken_service_lifecycle::release_admission::TcbAdmission
+pub awaken_service_lifecycle::release_admission::TcbAdmission::Admit
+pub awaken_service_lifecycle::release_admission::TcbAdmission::ConfigurationMismatch
+pub awaken_service_lifecycle::release_admission::TcbAdmission::ContractMismatch
+pub awaken_service_lifecycle::release_admission::TcbAdmission::EvidenceExpired
+pub awaken_service_lifecycle::release_admission::TcbAdmission::InvalidEvidenceDigest
+pub awaken_service_lifecycle::release_admission::TcbAdmission::InvalidMaximumAge
+pub awaken_service_lifecycle::release_admission::TcbAdmission::InvalidObservationTime
+pub awaken_service_lifecycle::release_admission::TcbAdmission::InvalidObservedConfiguration
+pub awaken_service_lifecycle::release_admission::TcbAdmission::InvalidObservedVersion
+pub awaken_service_lifecycle::release_admission::TcbAdmission::InvalidTargetConfiguration
+pub awaken_service_lifecycle::release_admission::TcbAdmission::InvalidTargetVersion
+pub awaken_service_lifecycle::release_admission::TcbAdmission::VersionMismatch
+pub struct awaken_service_lifecycle::release_admission::ReleaseFacts
+pub awaken_service_lifecycle::release_admission::ReleaseFacts::artifact_digest_matches: bool
+pub awaken_service_lifecycle::release_admission::ReleaseFacts::artifact_name_matches: bool
+pub awaken_service_lifecycle::release_admission::ReleaseFacts::manifest_matches: bool
+pub awaken_service_lifecycle::release_admission::ReleaseFacts::profile_matches: bool
+pub awaken_service_lifecycle::release_admission::ReleaseFacts::proof_complete: bool
+pub awaken_service_lifecycle::release_admission::ReleaseFacts::source_matches: bool
+pub struct awaken_service_lifecycle::release_admission::TcbFacts
+pub awaken_service_lifecycle::release_admission::TcbFacts::configuration_matches: bool
+pub awaken_service_lifecycle::release_admission::TcbFacts::contract_matches: bool
+pub awaken_service_lifecycle::release_admission::TcbFacts::evidence_digest_valid: bool
+pub awaken_service_lifecycle::release_admission::TcbFacts::maximum_age_seconds: u64
+pub awaken_service_lifecycle::release_admission::TcbFacts::now_unix: u64
+pub awaken_service_lifecycle::release_admission::TcbFacts::observed_at_unix: u64
+pub awaken_service_lifecycle::release_admission::TcbFacts::observed_configuration_valid: bool
+pub awaken_service_lifecycle::release_admission::TcbFacts::observed_version_valid: bool
+pub awaken_service_lifecycle::release_admission::TcbFacts::target_configuration_valid: bool
+pub awaken_service_lifecycle::release_admission::TcbFacts::target_version_valid: bool
+pub awaken_service_lifecycle::release_admission::TcbFacts::version_matches: bool
+pub const fn awaken_service_lifecycle::release_admission::release_admission(awaken_service_lifecycle::release_admission::ReleaseFacts) -> awaken_service_lifecycle::release_admission::ReleaseAdmission
+pub const fn awaken_service_lifecycle::release_admission::tcb_admission(awaken_service_lifecycle::release_admission::TcbFacts) -> awaken_service_lifecycle::release_admission::TcbAdmission
 #[repr(u8)] pub enum awaken_service_lifecycle::ProcessRole
 pub awaken_service_lifecycle::ProcessRole::AllInOne = 0
 pub awaken_service_lifecycle::ProcessRole::Control = 1
