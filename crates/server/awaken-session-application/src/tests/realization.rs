@@ -1092,7 +1092,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
             ..Default::default()
         },
     );
-    app.set_executable_projection_refresh(refresh.clone())
+    app.set_executable_projection_refresh(paired_projection_refresh(refresh.clone()))
         .unwrap();
     let target = |incarnation: &str| awaken_session_contract::SessionRealizationTarget {
         owner: "worker".into(),
@@ -1328,7 +1328,7 @@ async fn lease_renewal_is_a_projection_free_root_cas() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     application
-        .set_executable_projection_refresh(refresh.clone())
+        .set_executable_projection_refresh(paired_projection_refresh(refresh.clone()))
         .unwrap();
 
     let renewed = application

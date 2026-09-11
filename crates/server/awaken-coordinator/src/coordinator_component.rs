@@ -83,7 +83,7 @@ pub struct CoordinatorDependencies {
     /// One stateless process-composed refresh prerequisite shared by every
     /// application consumer of rebuildable executable projections.
     pub executable_projection_refresh:
-        Option<Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>>,
+        Option<Arc<awaken_session_contract::ExecutableProjectionRefresh>>,
     pub environments: Arc<EnvironmentExecutionApplication>,
     pub sessions: Arc<dyn ManagedSessionRepository>,
     pub default_workspace: String,

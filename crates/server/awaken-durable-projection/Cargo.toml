@@ -11,9 +11,10 @@ authority = "coordinator-projection"
 
 [dependencies]
 async-trait.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 
 [lints]
 workspace = true

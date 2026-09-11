@@ -1364,7 +1364,8 @@ impl SessionApplication {
         &self,
         session_id: &str,
     ) -> Result<SessionTerminalCleanupAssignment, SessionRealizationControlFailure> {
-        self.refresh_executable_projections()
+        let admission = self
+            .refresh_executable_projections()
             .await
             .map_err(unavailable)?;
         let lease_expires_at_unix_ms = now_unix_ms()
@@ -1382,7 +1383,10 @@ impl SessionApplication {
         };
         validate_realization_target(&target)?;
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            let owner_scope = self.owner(session_id).await.map_err(mutation_control)?;
+            let owner_scope = admission
+                .enter(|| self.owner(session_id))
+                .await
+                .map_err(mutation_control)?;
             let session = self
                 .session_repository()
                 .get(session_id)
@@ -1539,10 +1543,13 @@ impl SessionRealizationControl for SessionApplication {
         command: BeginSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
         validate_target(&command)?;
-        self.refresh_executable_projections()
+        let admission = self
+            .refresh_executable_projections()
             .await
             .map_err(unavailable)?;
-        self.begin_session_realization_after_refresh(command).await
+        admission
+            .enter(|| self.begin_session_realization_after_refresh(command))
+            .await
     }
 
     async fn renew_session_realization(
@@ -1562,10 +1569,12 @@ impl SessionRealizationControl for SessionApplication {
         &self,
         command: ActivateSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-        self.refresh_executable_projections()
+        let admission = self
+            .refresh_executable_projections()
             .await
             .map_err(unavailable)?;
-        self.activate_session_realization_after_refresh(command)
+        admission
+            .enter(|| self.activate_session_realization_after_refresh(command))
             .await
     }
 
@@ -1573,10 +1582,12 @@ impl SessionRealizationControl for SessionApplication {
         &self,
         command: AcknowledgeSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
-        self.refresh_executable_projections()
+        let admission = self
+            .refresh_executable_projections()
             .await
             .map_err(unavailable)?;
-        self.acknowledge_session_realization_after_refresh(command)
+        admission
+            .enter(|| self.acknowledge_session_realization_after_refresh(command))
             .await
     }
 
@@ -1605,10 +1616,13 @@ impl SessionRealizationControl for SessionApplication {
                 "terminal cleanup recovery claims cannot reassign a live logical owner".into(),
             ));
         }
-        self.refresh_executable_projections()
+        let admission = self
+            .refresh_executable_projections()
             .await
             .map_err(unavailable)?;
-        self.claim_terminal_cleanup_after_refresh(target).await
+        admission
+            .enter(|| self.claim_terminal_cleanup_after_refresh(target))
+            .await
     }
 
     async fn terminal_cleanup_work(

@@ -81,8 +81,8 @@ impl DeploymentApplication {
         now: u64,
     ) -> Result<Vec<DeploymentRunView>, DeploymentApplicationError> {
         self.refresh().await?;
-        self.refresh_executable_projections().await?;
-        let candidates = self.tick(now)?;
+        let admission = self.refresh_executable_projections().await?;
+        let candidates = admission.enter(|| self.tick(now))?;
         let mut completed = Vec::with_capacity(candidates.len());
         for (run_id, launch, run, deployment, expected_revision) in candidates {
             if self
@@ -230,8 +230,20 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_contract::ExecutableProjectionRefresh for ToggleProjectionRefresh {
-        async fn refresh(&self) -> Result<(), String> {
+    impl awaken_session_contract::ExecutableAgentProjectionRefresh for ToggleProjectionRefresh {
+        async fn refresh_agent_projection(&self) -> Result<(), String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail.load(Ordering::SeqCst) {
+                Err("projection unavailable".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_session_contract::ExecutableEnvironmentProjectionRefresh for ToggleProjectionRefresh {
+        async fn refresh_environment_projection(&self) -> Result<(), String> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.fail.load(Ordering::SeqCst) {
                 Err("projection unavailable".into())
@@ -282,7 +294,12 @@ mod tests {
         // compiler. Decision table: D1 C1+!C2=>E1; D2 C1+C2+C3=>E2.
         let application = DeploymentApplication::new();
         let refresh = Arc::new(ToggleProjectionRefresh::default());
-        application.bind_executable_projection_refresh(refresh.clone());
+        application.bind_executable_projection_refresh(Arc::new(
+            awaken_session_contract::ExecutableProjectionRefresh::new(
+                refresh.clone(),
+                refresh.clone(),
+            ),
+        ));
         let calls = Arc::new(AtomicUsize::new(0));
         application.bind_launcher(Arc::new(OutcomeLauncher {
             outcome: DeploymentLaunchOutcome::Created {

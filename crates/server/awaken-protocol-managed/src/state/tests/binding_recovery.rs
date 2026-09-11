@@ -8,8 +8,8 @@ struct RecordingProjectionRefresh {
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::ExecutableProjectionRefresh for RecordingProjectionRefresh {
-    async fn refresh(&self) -> Result<(), String> {
+impl awaken_session_contract::ExecutableAgentProjectionRefresh for RecordingProjectionRefresh {
+    async fn refresh_agent_projection(&self) -> Result<(), String> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
             Err("secret-projection-canary".into())
@@ -17,6 +17,29 @@ impl awaken_session_contract::ExecutableProjectionRefresh for RecordingProjectio
             Ok(())
         }
     }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::ExecutableEnvironmentProjectionRefresh
+    for RecordingProjectionRefresh
+{
+    async fn refresh_environment_projection(&self) -> Result<(), String> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+            Err("secret-projection-canary".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn paired_projection_refresh(
+    refresh: Arc<RecordingProjectionRefresh>,
+) -> Arc<awaken_session_contract::ExecutableProjectionRefresh> {
+    Arc::new(awaken_session_contract::ExecutableProjectionRefresh::new(
+        refresh.clone(),
+        refresh,
+    ))
 }
 
 struct RevisionedProfiles(std::sync::atomic::AtomicU64);
@@ -106,7 +129,7 @@ async fn cold_projection_uses_the_session_pinned_agent_revision() {
     // child roster after restart (high severity, externally visible); the durable
     // `agent_revision` pin and exact profile lookup detect and eliminate it.
     // Projection-refresh causes: C5 create, C6 warm ensure, C7 cold ensure, C8
-    // refresh failure. Effects: E4 create/cold each refresh once; E5 warm cache
+    // refresh failure. Effects: E4 create/cold each refresh both domains; E5 warm cache
     // performs no refresh; E6 failure occurs before id mint or Session write.
     // Constraints: K1 the refresh owns no Session state. Decision rules:
     // D1 C5=>E4; D2 C6=>E5; D3 C7=>E4; D4 C8=>E6.
@@ -119,7 +142,7 @@ async fn cold_projection_uses_the_session_pinned_agent_revision() {
     let state = ManagedState::new_with_mcp(RehydrateFake::default())
         .with_config_source(profiles.clone())
         .with_session_repo(repo)
-        .with_executable_projection_refresh(refresh.clone());
+        .with_executable_projection_refresh(paired_projection_refresh(refresh.clone()));
     let request = serde_json::from_value(serde_json::json!({
         "agent":"coordinator", "environment_id":"env_local"
     }))
@@ -127,14 +150,14 @@ async fn cold_projection_uses_the_session_pinned_agent_revision() {
     let created = state.create_session(request, None).await.unwrap();
     assert_eq!(
         refresh.calls.load(std::sync::atomic::Ordering::SeqCst),
-        1,
+        2,
         "D1"
     );
     assert_eq!(created.agent.name, "coordinator-v7", "R1");
     state.ensure_session(&created.id).await.unwrap();
     assert_eq!(
         refresh.calls.load(std::sync::atomic::Ordering::SeqCst),
-        1,
+        2,
         "D2"
     );
     profiles.0.store(8, std::sync::atomic::Ordering::SeqCst);
@@ -142,7 +165,7 @@ async fn cold_projection_uses_the_session_pinned_agent_revision() {
     state.ensure_session(&created.id).await.unwrap();
     assert_eq!(
         refresh.calls.load(std::sync::atomic::Ordering::SeqCst),
-        2,
+        4,
         "D3"
     );
     let recovered = state.get_session(&created.id).unwrap();
@@ -1731,7 +1754,7 @@ async fn vault_rollout_reports_busy_and_postcommit_failure_then_replays_exact_ev
         let state = ManagedState::new_with_mcp(runtime.clone())
             .with_session_repo(repo.clone())
             .with_credential_source(Arc::new(RolloutCredentialSource))
-            .with_executable_projection_refresh(refresh.clone());
+            .with_executable_projection_refresh(paired_projection_refresh(refresh.clone()));
         let event = rollout_event("rollout-retry", 2, ManagedCredentialOperation::Update);
         let captured = awaken_reliability_testkit::events::CapturedEvents::default();
         assert_eq!(
