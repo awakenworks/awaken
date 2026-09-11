@@ -184,7 +184,7 @@ impl ConfigPlaneManagedAgentRepository {
                 .clone();
             revision.config.model_binding = ModelSelection::Pinned(binding);
         }
-        Ok(project(revision))
+        project(revision)
     }
 
     async fn publish_strict(&self, scope: &ScopeId, id: &str) -> Result<(), ManagedAgentError> {
@@ -514,7 +514,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                 ManagedAgentError::Invalid(format!("{}: {}", issue.path, issue.message))
             })?;
         if config == current.config {
-            return Ok(project(current));
+            return project(current);
         }
         match self
             .plane
@@ -555,7 +555,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                 .withdraw(workspace_id, id, current.revision)
                 .await
                 .map_err(ManagedAgentError::Storage)?;
-            return Ok(project(current));
+            return project(current);
         }
         let mut config = current.config;
         config.disabled_at = None;
@@ -575,10 +575,10 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                     .get_versioned(&scope, id)
                     .await
                     .map_err(ManagedAgentError::Storage)?
-                    .map(project)
                     .ok_or_else(|| {
                         ManagedAgentError::Storage("archived Agent is not readable".into())
                     })
+                    .and_then(project)
             }
             ConfigWrite::Conflict { current_revision } => Err(ManagedAgentError::Conflict(
                 format!("Agent changed concurrently (current version: {current_revision:?})"),
@@ -952,8 +952,55 @@ mod tests {
             revision: 1,
             created_at_unix_ms: None,
             updated_at_unix_ms: None,
-        });
+        })
+        .expect("projected");
         assert!(projected.tools.is_empty());
+    }
+
+    #[test]
+    fn a_model_the_managed_wire_cannot_spell_is_never_projected_as_no_model() {
+        // The Managed `agent.model.id` is one opaque string. A selection it
+        // cannot encode used to be projected as `""` — read-modify-write through
+        // this API would then have replaced the Agent's real model with nothing.
+        // Cause/effect: C1 the selection has a Managed string -> R1 project it;
+        // C2 it has none (a catalog Target naming a protocol endpoint, or an
+        // Auto no publication has pinned) -> R2 a typed rejection naming the
+        // config plane, never an empty model id.
+        let projected = |binding: ModelSelection| {
+            let mut config =
+                config_from_create("spell".into(), create_params("spell")).expect("config");
+            config.model_binding = binding;
+            project(AgentConfigRevision {
+                config,
+                revision: 1,
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
+            })
+        };
+        assert_eq!(
+            projected(ModelSelection::pinned("openai", "gpt-5", "genai"))
+                .expect("R1")
+                .model
+                .id,
+            "gpt-5;provider=openai",
+            "R1"
+        );
+        for unspellable in [
+            ModelSelection::Auto,
+            serde_json::from_value::<ModelSelection>(serde_json::json!({
+                "mode": "target",
+                "backend_ref": "genai",
+                "target": { "model_id": "selected", "protocol_endpoint_id": "chat" }
+            }))
+            .expect("canonical target wire"),
+        ] {
+            let error = projected(unspellable).expect_err("R2");
+            assert!(
+                matches!(&error, ManagedAgentError::Invalid(message)
+                    if message.contains("no Managed model-id representation")),
+                "R2: {error}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1506,7 +1553,8 @@ mod tests {
                 config,
                 created_at_unix_ms: Some(1_000),
                 updated_at_unix_ms: Some(2_000),
-            });
+            })
+            .expect("projected");
             let Some(WireMultiagent::Coordinator { agents }) = projected.multiagent else {
                 panic!("projected coordinator roster")
             };
@@ -1798,12 +1846,15 @@ mod tests {
             prompts_as_skills: false,
             credential: None,
         });
-        let projected = serde_json::to_value(project(AgentConfigRevision {
-            revision: 1,
-            config: config.clone(),
-            created_at_unix_ms: Some(1_000),
-            updated_at_unix_ms: Some(2_000),
-        }))
+        let projected = serde_json::to_value(
+            project(AgentConfigRevision {
+                revision: 1,
+                config: config.clone(),
+                created_at_unix_ms: Some(1_000),
+                updated_at_unix_ms: Some(2_000),
+            })
+            .expect("projected"),
+        )
         .unwrap();
         // T1: durable first-write time owns created_at; T2: this exact revision's
         // write time owns updated_at. Neither value is a protocol constant.

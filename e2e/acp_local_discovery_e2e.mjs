@@ -486,7 +486,10 @@ esac
     await assertAuthoringRejected(
       'local-blank-exact',
       { mode: 'backend_exact', model_ref: '', backend_ref: 'acp:codex' },
-      /backend-exact model requires a non-empty model_ref/,
+      // The domain type now words its own rejection: the config plane routes
+      // mode-tagged model authoring through `ModelSelection`'s deserializer
+      // instead of keeping a second, drift-prone reader beside it.
+      /exact model reference must be non-empty/,
     );
     await assertPublicationRejected(
       'local-unsupported-exact',

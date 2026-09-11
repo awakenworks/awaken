@@ -499,6 +499,13 @@ async fn put_subscription(
             })),
         );
     }
+    // Read the authored delivery switch exactly once, here, and let both the
+    // update patch and the create definition below consume that one value. The
+    // create path used to hardcode `false`, so `PUT` of a NEW subscription
+    // asking to be created disabled silently registered an enabled endpoint and
+    // started delivering to it — the validation just above proves the field is
+    // an input, which is precisely what made ignoring it invisible.
+    let authored_disabled = body.get("disabled").and_then(Value::as_bool);
 
     let workspace_id = scope_of(scope);
 
@@ -510,7 +517,7 @@ async fn put_subscription(
         workspace_id: workspace_id.clone(),
         url: url.clone(),
         event_types: event_types.clone(),
-        disabled: body.get("disabled").and_then(Value::as_bool),
+        disabled: authored_disabled,
     };
     match state.store.update_authored(patch.clone()) {
         Ok(WebhookAuthoringState::Updated(updated)) => {
@@ -533,7 +540,7 @@ async fn put_subscription(
         workspace_id: workspace_id.clone(),
         url: url.clone(),
         event_types: event_types.clone(),
-        disabled: false,
+        disabled: authored_disabled.unwrap_or(false),
         consecutive_failures: 0,
         secret_ref: secret_ref.clone(),
     };
@@ -588,7 +595,7 @@ async fn put_subscription(
             "workspace_id": workspace_id,
             "url": url,
             "event_types": event_types,
-            "disabled": false,
+            "disabled": def.disabled,
             "consecutive_failures": 0,
             "secret": secret,
         })),

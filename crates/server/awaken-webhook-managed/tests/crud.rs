@@ -451,6 +451,65 @@ async fn malformed_authoring_fields_are_rejected_without_side_effects() {
 }
 
 #[tokio::test]
+async fn an_authored_disabled_flag_is_honoured_when_the_subscription_is_created() {
+    // The create arm used to hardcode `disabled: false` while only the update
+    // arm forwarded the authored flag — so a subscription asked to be created
+    // disabled was stored enabled and immediately started delivering, with the
+    // response cheerfully echoing the value the caller never chose.
+    //
+    // Every assertion below reads the stored row and the delivery source — the
+    // consumers of the flag — not the request body it came from.
+    // C1 `disabled: true` on create; C2 `disabled: false` on create; C3 the
+    // field omitted. R1 the row and the delivery source honour C1; R2/R3 the
+    // endpoint is enabled and deliverable.
+    for (authored, expected_disabled) in [
+        (Some(true), true),
+        (Some(false), false),
+        (None::<bool>, false),
+    ] {
+        let store = Arc::new(MemStore::default());
+        let secrets = Arc::new(MemSecrets::ok());
+        let mut body = json!({
+            "url": "https://hooks.example.com/created",
+            "event_types": ["run.completed"],
+        });
+        if let Some(authored) = authored {
+            body["disabled"] = json!(authored);
+        }
+        let (status, response) = call(
+            store.clone(),
+            secrets.clone(),
+            "PUT",
+            "/v1/config/webhook-subscriptions/wh_created",
+            Some("ws_a"),
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "created");
+        let row = store.get("wh_created").expect("stored row");
+        assert_eq!(
+            row.disabled, expected_disabled,
+            "stored row honours authoring"
+        );
+        assert_eq!(
+            response["disabled"], expected_disabled,
+            "response reports what was stored"
+        );
+        // The delivery source is the ultimate consumer: a disabled endpoint must
+        // not be resolvable for dispatch at all.
+        let deliverable = ConfigPlaneSubscriptionSource::new(store.clone(), secrets.clone())
+            .matching("ws_a", "run.completed")
+            .await
+            .expect("subscription source");
+        assert_eq!(
+            deliverable.is_empty(),
+            expected_disabled,
+            "delivery honours the authored switch"
+        );
+    }
+}
+
+#[tokio::test]
 async fn an_ssrf_shaped_url_is_rejected_and_seals_no_secret() {
     // The dispatcher fetches the endpoint server-side, so a private/metadata/non-https
     // URL is rejected at admission: 400, no row stored, and (critically) no secret

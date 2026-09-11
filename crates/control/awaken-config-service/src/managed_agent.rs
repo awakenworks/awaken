@@ -228,10 +228,17 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
             .transpose()
             .map_err(|error| error.to_string())?
             .unwrap_or_default(),
+        // Every other authored section reports its parse failure. This one used
+        // to swallow it with `.ok()`, so a malformed compaction strategy became
+        // `None` and the hardcoded default window silently took over with no
+        // signal to the author that their configuration had been discarded.
         compaction: body
             .get("compaction")
             .filter(|value| !value.is_null())
-            .and_then(|value| serde_json::from_value(value.clone()).ok()),
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| format!("invalid compaction strategy: {error}"))?,
     };
     config.validate_managed_tool_bindings()?;
     config.canonicalize_mutable_authoring()
@@ -244,81 +251,22 @@ fn managed_model_selection(model: Option<&Value>) -> Result<ModelSelection, Stri
     if let Some(model) = model.as_str() {
         return parse_managed_model_id(model).map_err(|error| error.to_string());
     }
-    if model.get("mode").and_then(Value::as_str) == Some("auto") {
-        return Ok(ModelSelection::Auto);
-    }
-    if model.get("mode").and_then(Value::as_str) == Some("profile") {
-        let profile_id = model
-            .get("profile_id")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|profile_id| !profile_id.is_empty())
-            .ok_or_else(|| "profile model requires a non-empty profile_id".to_string())?;
-        return Ok(ModelSelection::Profile {
-            profile_id: profile_id.to_string(),
-        });
-    }
-    // Target selections carry catalog qualifiers (protocol endpoint id, ACP
-    // session configuration) that the public Managed model-id string cannot
-    // encode. The config plane therefore authors them in the canonical
-    // `ModelSelection` wire shape and lets its own deserializer validate them;
-    // the string codec stays the Managed-compatible input form.
-    if model.get("mode").and_then(Value::as_str) == Some("target") {
+    // Anything carrying the canonical `mode` discriminant IS a `ModelSelection`
+    // in its own authoring wire, so `ModelSelection`'s own deserializer decides
+    // it: every mode, `deny_unknown_fields`, and each per-mode invariant are
+    // owned once, by the domain type. A hand-rolled transcription of the same
+    // tagged enum used to live here, and it drifted exactly as a second parser
+    // must — it knew nothing of `{mode:"target"}` and silently rejected every
+    // catalog route the console authored. The parallel reader is deleted rather
+    // than extended so the next mode cannot reintroduce the divergence.
+    if model.get("mode").is_some() {
         return serde_json::from_value(model.clone())
-            .map_err(|error| format!("invalid target model selection: {error}"));
+            .map_err(|error| format!("invalid model selection: {error}"));
     }
-    if let Some(object) = model.as_object()
-        && object.get("mode").and_then(Value::as_str) == Some("backend_default")
-    {
-        let backend_ref = object
-            .get("backend_ref")
-            .and_then(Value::as_str)
-            .filter(|backend| !backend.is_empty())
-            .ok_or_else(|| "backend-default model requires a non-empty backend_ref".to_string())?;
-        let ambiguous = ["id", "model_ref", "provider_identity_ref"]
-            .iter()
-            .any(|key| {
-                object
-                    .get(*key)
-                    .and_then(Value::as_str)
-                    .is_some_and(|value| !value.trim().is_empty())
-            });
-        if ambiguous {
-            return Err(
-                "backend-default model cannot also name a model or provider identity".to_string(),
-            );
-        }
-        let configuration = object
-            .get("configuration")
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|error| format!("invalid backend ACP configuration: {error}"))?
-            .unwrap_or_default();
-        return ModelSelection::try_backend_default(backend_ref, configuration);
-    }
-    if let Some(object) = model.as_object()
-        && object.get("mode").and_then(Value::as_str) == Some("backend_exact")
-    {
-        let backend_ref = object
-            .get("backend_ref")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| "backend-exact model requires a non-empty backend_ref".to_string())?;
-        let model_ref = object
-            .get("model_ref")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| "backend-exact model requires a non-empty model_ref".to_string())?;
-        let configuration = object
-            .get("configuration")
-            .cloned()
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|error| format!("invalid backend ACP configuration: {error}"))?
-            .unwrap_or_default();
-        return ModelSelection::try_backend_exact(backend_ref, model_ref, configuration);
-    }
+    // Managed's own untagged model object is a genuinely different wire, not a
+    // second spelling of `ModelSelection`: an opaque `{id}` model-id string in
+    // a field, or a complete `{provider_identity_ref, model_ref|id,
+    // backend_ref}` pin. Those keep their Managed-compatibility codec.
     let (provider_identity_ref, model_ref, backend_ref) = match model {
         Value::Object(model)
             if !model.contains_key("provider_identity_ref")
@@ -582,6 +530,110 @@ mod tests {
             managed_from_agent_config(&config, false)["model"],
             json!("gpt-5;provider=openai;api=open_ai_chat"),
             "T4"
+        );
+    }
+
+    #[test]
+    fn mode_tagged_model_authoring_is_decided_only_by_the_domain_deserializer() {
+        // This seam must own no second transcription of `ModelSelection`'s
+        // tagged wire. Decision table over shapes only the domain type can
+        // judge, each of which a hand-rolled reader gets wrong in a different
+        // direction:
+        // D1 a mode the reader has never heard of -> rejected, never silently
+        //    reinterpreted as an untagged pinned object;
+        // D2 a field that belongs to no mode -> rejected by deny_unknown_fields
+        //    rather than dropped, for `auto` as much as for every other mode;
+        // D3 the domain's own per-mode invariant decides, and says so in the
+        //    domain's words;
+        // D4 the untagged Managed `{provider_identity_ref, id, backend_ref}`
+        //    pin is NOT this wire and keeps working.
+        let rejected = |model: Value| {
+            agent_config_from_managed("m".into(), &json!({ "model": model })).expect_err("rejected")
+        };
+        assert!(
+            rejected(json!({ "mode": "chaos", "backend_ref": "acp:codex" }))
+                .contains("unknown variant"),
+            "D1"
+        );
+        assert!(
+            rejected(json!({ "mode": "auto", "backend_ref": "acp:codex" }))
+                .contains("unknown field"),
+            "D2"
+        );
+        assert!(
+            rejected(json!({
+                "mode": "backend_exact",
+                "backend_ref": "acp:codex",
+                "model_ref": ""
+            }))
+            .contains("exact model reference must be non-empty"),
+            "D3"
+        );
+        let pinned = agent_config_from_managed(
+            "pin".into(),
+            &json!({
+                "model": {
+                    "id": "remote-model",
+                    "provider_identity_ref": "peer-a",
+                    "backend_ref": "genai"
+                }
+            }),
+        )
+        .expect("D4");
+        assert_eq!(
+            pinned
+                .model_binding
+                .resolved()
+                .map(|b| b.model_ref.as_str()),
+            Some("remote-model"),
+            "D4"
+        );
+    }
+
+    #[test]
+    fn malformed_compaction_authoring_is_reported_not_silently_defaulted() {
+        // A discarded compaction strategy is invisible at runtime: the agent
+        // simply uses the hardcoded default window. The author must be told
+        // their section was unusable instead of discovering it from behaviour.
+        // C1 a well-formed strategy is kept; C2 a malformed one is an error;
+        // C3 an absent/null section stays absent without complaint.
+        let kept = agent_config_from_managed(
+            "compaction-ok".into(),
+            &json!({ "compaction": { "window": 32_000, "keep_recent": 4 } }),
+        )
+        .expect("C1");
+        assert_eq!(
+            kept.compaction.as_ref().and_then(|c| c.window),
+            Some(32_000),
+            "C1"
+        );
+        assert!(
+            agent_config_from_managed(
+                "compaction-bad".into(),
+                // A console that sends its numbers as strings used to have the
+                // whole section dropped in silence.
+                &json!({ "compaction": { "window": "32000" } }),
+            )
+            .expect_err("C2")
+            .contains("invalid compaction strategy"),
+            "C2"
+        );
+        assert!(
+            agent_config_from_managed("compaction-absent".into(), &json!({}))
+                .expect("C3")
+                .compaction
+                .is_none(),
+            "C3"
+        );
+        assert!(
+            agent_config_from_managed(
+                "compaction-null".into(),
+                &json!({ "compaction": Value::Null })
+            )
+            .expect("C3")
+            .compaction
+            .is_none(),
+            "C3"
         );
     }
 
