@@ -230,6 +230,10 @@ def validate_manifest(
         raise ContractError("unknown manifest profile")
     if expected_profile is not None and (expected_profile not in PROFILES or manifest["profile"] != expected_profile):
         raise ContractError("manifest does not match the requested release profile")
+    # The release consumer already supplies the exact requested profile. Treat
+    # the Verified identity itself as the admission request so omitting the
+    # redundant flag cannot bypass its deployment-specific evidence boundary.
+    require_verified = require_verified or expected_profile == "awaken-verified-v1"
     if require_proof_execution and manifest.get("proof_execution") is None:
         raise ContractError("release consumption requires completed strict formal execution evidence")
     if manifest["artifact"]["name"] != artifact.name:
@@ -517,9 +521,13 @@ class VerificationManifestTests(unittest.TestCase):
                                       runtime_fingerprint=case["target"])
 
     def test_verified_manifest_forwards_target_to_canonical_admission(self) -> None:
-        # R4: after exact release/eligibility validation, the target must reach
-        # the same validator. Mock only the earlier proof/ledger gate, not TCB
-        # admission: matching succeeds; absent/foreign target must still fail.
+        # Cause/effect table: C1 explicit require_verified OR C2 the release
+        # consumer's expected profile is Verified requests deployment admission;
+        # C3 fresh TCB evidence and C4 an independently supplied exact target
+        # admit. R1 C1+C3+C4 and R2 C2+C3+C4 accept through the same validator;
+        # R3 either request with missing evidence, missing target, or a foreign
+        # target rejects. The earlier proof/ledger gate alone is mocked so this
+        # isolates admission wiring.
         manifest, evidence, target = self.tcb_case()
         with tempfile.TemporaryDirectory() as temporary:
             artifact = Path(temporary) / "awaken.tar.gz"
@@ -529,18 +537,34 @@ class VerificationManifestTests(unittest.TestCase):
             with patch(f"{__name__}.build_manifest", return_value=manifest):
                 validate_manifest(manifest, artifact, require_verified=True, tcb_evidence=evidence,
                                   runtime_fingerprint=target, now=150)
+                validate_manifest(manifest, artifact, expected_profile="awaken-verified-v1",
+                                  tcb_evidence=evidence, runtime_fingerprint=target, now=150)
                 foreign = copy.deepcopy(target)
                 foreign["dependencies"][1]["version"] = "foreign"
-                for rejected in (None, foreign):
-                    with self.assertRaises(ContractError):
-                        validate_manifest(manifest, artifact, require_verified=True, tcb_evidence=evidence,
-                                          runtime_fingerprint=rejected, now=150)
+                for rejected_evidence, rejected_target, message in (
+                    (None, target, "TCB evidence"),
+                    (evidence, None, "target runtime fingerprint"),
+                    (evidence, foreign, "fingerprint mismatch"),
+                ):
+                    with self.subTest(message=message), self.assertRaisesRegex(
+                        ContractError, message
+                    ):
+                        validate_manifest(
+                            manifest, artifact,
+                            expected_profile="awaken-verified-v1",
+                            tcb_evidence=rejected_evidence,
+                            runtime_fingerprint=rejected_target,
+                            now=150,
+                        )
 
     def test_verified_cli_requires_independent_target_snapshot(self) -> None:
-        # R5: the public CLI must load and forward the separate snapshot, not
-        # derive it from observations or accept an omitted argument. The earlier
-        # artifact/proof gate is mocked only to reach admission on today's
-        # deliberately ineligible ledger; real JSON loading and TCB checks run.
+        # Cause/effect table: C1 expected-profile=Verified; C2 evidence path;
+        # C3 independent target path. R1 C1+C2+C3 admits; R2 C1 without C2/C3
+        # rejects missing evidence; R3 C1+C2 without C3 rejects missing target.
+        # No explicit --require-verified flag is present: the public CLI must
+        # derive the stronger gate from the identity requested by release, then
+        # load and forward both existing file inputs. The earlier proof/ledger
+        # gate is mocked only to reach this real TCB decision.
         manifest, evidence, target = self.tcb_case()
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -551,13 +575,21 @@ class VerificationManifestTests(unittest.TestCase):
             for name, value in (("manifest", manifest), ("evidence", evidence), ("target", target)):
                 (directory / (name + ".json")).write_bytes(canonical_bytes(value))
             arguments = ["verification_manifest.py", "validate", "--artifact", str(artifact),
-                         "--manifest", str(directory / "manifest.json"), "--require-verified",
-                         "--tcb-evidence", str(directory / "evidence.json")]
+                         "--manifest", str(directory / "manifest.json"),
+                         "--expected-profile", "awaken-verified-v1"]
             with patch(f"{__name__}.build_manifest", return_value=manifest), patch("time.time", return_value=150):
                 with patch.object(sys, "argv", arguments):
+                    with self.assertRaisesRegex(ContractError, "TCB evidence"):
+                        main()
+                with patch.object(sys, "argv", arguments + [
+                    "--tcb-evidence", str(directory / "evidence.json")
+                ]):
                     with self.assertRaisesRegex(ContractError, "target runtime fingerprint"):
                         main()
-                with patch.object(sys, "argv", arguments + ["--runtime-fingerprint", str(directory / "target.json")]):
+                with patch.object(sys, "argv", arguments + [
+                    "--tcb-evidence", str(directory / "evidence.json"),
+                    "--runtime-fingerprint", str(directory / "target.json"),
+                ]):
                     with patch("builtins.print"):
                         self.assertEqual(main(), 0)
 
