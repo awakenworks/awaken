@@ -190,7 +190,9 @@ async fn concurrent_shutdown_cannot_return_before_the_active_drain_finishes() {
     // C1 the leader owns a non-cooperative task; C2 a follower calls shutdown
     // after cancellation is visible but before the leader's deadline. E1 the
     // follower remains blocked; E2 the leader reports/aborts the stuck task;
-    // E3 only then may the follower observe the drained registry and return.
+    // E3 only then may the follower observe the drained registry and return Ok,
+    // preserving the established follower/idempotent API rather than copying the
+    // leader-only timeout diagnostic.
     // Decision rules: R1=C1+C2+active deadline -> E1; R2=R1+deadline ->
     // E2+E3. The cooperative-success and multiple-follower row is separate.
     // The old check-and-take implementation violated E1 by returning Ok from
@@ -285,6 +287,58 @@ async fn concurrent_shutdown_followers_wait_for_successful_active_drain() {
             .expect("R3 follower task")
             .expect("R3 follower returns after the drained registry");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_shutdown_caller_cannot_orphan_the_active_drain() {
+    // Causes: C1 the first caller transfers a cooperative task; C2 that caller's
+    // shutdown Future is cancelled while the task is still held; C3 a follower
+    // calls shutdown; C4 the task is released. Effects: E1 the unique drain task
+    // retains ownership after C2; E2 the follower remains waiting through C3;
+    // E3 C4 lets the retained owner join the task and publish completion; E4 the
+    // follower then returns. Decision rules: R1=C1+C2 -> E1;
+    // R2=R1+C3+!C4 -> E2; R3=R1+C3+C4 -> E3+E4. This is the cancellation row
+    // omitted by a caller-owned local task Vec, which detached both handles when
+    // the leader Future was dropped.
+    let group = ServiceLifecycle::new();
+    let (cancelled_tx, cancelled_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    group.spawn("retained", move |cancel| async move {
+        cancel.cancelled().await;
+        let _ = cancelled_tx.send(());
+        let _ = release_rx.await;
+        Ok(())
+    });
+
+    let leader_group = group.clone();
+    let leader = tokio::spawn(async move { leader_group.shutdown(Duration::from_secs(1)).await });
+    cancelled_rx
+        .await
+        .expect("R1 leader transferred and cancelled the task set");
+    leader.abort();
+    assert!(
+        leader
+            .await
+            .expect_err("R1 leader is cancelled")
+            .is_cancelled(),
+        "R1 caller cancellation is observed"
+    );
+
+    let follower_group = group.clone();
+    let mut follower =
+        tokio::spawn(async move { follower_group.shutdown(Duration::from_secs(1)).await });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut follower)
+            .await
+            .is_err(),
+        "R2 follower remains behind the retained drain owner"
+    );
+
+    release_tx.send(()).expect("R3 release retained task");
+    follower
+        .await
+        .expect("R3 follower task")
+        .expect("R4 follower returns after retained drain completion");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

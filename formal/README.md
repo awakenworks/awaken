@@ -408,12 +408,12 @@ obligation when the development host is Linux.
   request is a stuttering transition.
 - `ServiceLifecycle.tla` and its TLAPS proof own the abstract recurring-task
   registry, one drain owner, waiting followers and empty-drain return barrier.
-  Production instead serializes the complete drain with one Tokio mutex; timeout
-  requests task abort, aborts and joins its watcher, then returns without claiming
-  that a non-yielding task Future or opaque physical work has already stopped.
-  The strict native cross-check holds both one timeout leader and one successful
-  cooperative leader inside that guard, requiring every concurrent follower to
-  wait; the successful row exercises two followers before releasing the task.
+  Production uses the same `TaskRegistry` as its unique phase/result owner: only
+  the first caller transfers tasks; `Draining` followers wait; the independent
+  drain stores `Complete(result)` after watcher join/abort. A unit watch channel
+  only wakes callers. Kani proves phase admission; native rows cross-check timeout,
+  success, two followers and caller cancellation without claiming a non-yielding
+  Future or opaque physical work has already stopped.
 - `BackgroundTask.tla` covers the Thread-state-owned aggregate: one fenced
   owner/epoch/lease, waiting/cancellation, heartbeat/finish, expiry reclaim,
   remote continuation identity, refreshable poll intervals, NeverReplay,
