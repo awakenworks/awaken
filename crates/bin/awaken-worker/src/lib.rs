@@ -1478,13 +1478,16 @@ impl WorkerNode {
         // process after the ordinary drain cleanup so Kubernetes/systemd can start
         // a newly registered incarnation. Reusing this process would make a stale
         // epoch capable of silently becoming authoritative again.
-        let (shutdown, authority_lost) = tokio::select! {
-            shutdown = &mut shutdown => (shutdown, false),
+        let (shutdown, authority_lost, heartbeat_cleanup) = tokio::select! {
+            shutdown = &mut shutdown => (shutdown, false, None),
             heartbeat = &mut heartbeat => {
-                if let Err(error) = heartbeat {
-                    eprintln!("worker heartbeat task failed: {error}; terminating incarnation");
+                match heartbeat {
+                    Ok(outcome) => (Ok(WorkerShutdown::Graceful), true, Some(outcome)),
+                    Err(error) => {
+                        eprintln!("worker heartbeat task failed: {error}; terminating incarnation");
+                        (Ok(WorkerShutdown::Graceful), true, None)
+                    }
                 }
-                (Ok(WorkerShutdown::Graceful), true)
             }
         };
         let graceful = shutdown
@@ -1511,7 +1514,22 @@ impl WorkerNode {
                 "awaken-worker drain registration exceeded 5s; local admission remains closed"
             ),
         }
-        if graceful {
+        let (mut cleanup, mut cleanup_deadline) = match heartbeat_cleanup {
+            Some(report) => (report.outcome, Some(report.deadline)),
+            None if authority_lost => (
+                lifecycle::WorkerRevocationOutcome::Unconfirmed {
+                    stage: lifecycle::WorkerRevocationStage::LocalFenceAndInterrupt,
+                    interrupted: None,
+                    detail: Some("heartbeat cleanup task did not return an outcome".to_string()),
+                },
+                None,
+            ),
+            None => (
+                lifecycle::WorkerRevocationOutcome::Completed { interrupted: 0 },
+                None,
+            ),
+        };
+        if graceful && !authority_lost {
             eprintln!(
                 "awaken-worker draining: finishing in-flight runs (≤{}s)",
                 grace.as_secs()
@@ -1522,8 +1540,14 @@ impl WorkerNode {
                 // before shutting down transport; otherwise an ordinary SIGTERM
                 // discards the only owner able to acknowledge physical return.
                 // Unknown external effects still retain their Dispatch slot.
-                let _cleanup =
-                    Box::pin(lifecycle::revoke_worker_session_authority(&lifecycle)).await;
+                let deadline =
+                    tokio::time::Instant::now() + lifecycle::WORKER_REVOCATION_BUDGET;
+                cleanup = Box::pin(lifecycle::revoke_worker_session_authority_before(
+                    &lifecycle,
+                    deadline,
+                ))
+                .await;
+                cleanup_deadline = Some(deadline);
             }
         }
         lifecycle.authority.close();
@@ -1534,8 +1558,15 @@ impl WorkerNode {
         if let Some(admin_task) = admin_task {
             admin_task.abort();
         }
-        host.shutdown_environment_capacity().await;
-        if host.pool_in_flight() == 0 {
+        // No producer can refill unused capacity after these aborts. When
+        // revocation ran, its original absolute deadline remains the one owner
+        // for this final effect; an exhausted deadline becomes Unconfirmed.
+        let deadline = cleanup_deadline
+            .unwrap_or_else(|| tokio::time::Instant::now() + lifecycle::WORKER_REVOCATION_BUDGET);
+        cleanup = lifecycle::shutdown_worker_capacity_before(&lifecycle, deadline, cleanup).await;
+        // A timeout carries no authority to publish quiescence, even when the
+        // instantaneous process-local counter happens to read zero.
+        if cleanup.permits_quiescence_publication(host.pool_in_flight()) {
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 control.mark_quiesced(&lifecycle.identity),

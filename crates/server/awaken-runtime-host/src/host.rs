@@ -97,6 +97,19 @@ fn sub_base(kind: &str) -> PathBuf {
     std::env::temp_dir().join("awaken-coordinator").join(name)
 }
 
+/// Retain the actual pool-drain fence future until the caller's absolute
+/// deadline. `Some(None)` is the valid direct-host case with no local pool;
+/// `None` alone means the fence owner did not return before the deadline.
+async fn await_runtime_drain_fence_before<F, T>(
+    deadline: tokio::time::Instant,
+    fence: F,
+) -> Option<T>
+where
+    F: std::future::Future<Output = T>,
+{
+    tokio::time::timeout_at(deadline, fence).await.ok()
+}
+
 mod build;
 mod completion;
 mod coordination;
