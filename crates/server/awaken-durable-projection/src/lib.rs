@@ -38,14 +38,33 @@ pub enum ProjectionLoadError<E> {
     Incomplete { through: u64 },
 }
 
+/// Exact durable high-water captured before loading one validated projection
+/// batch. Construction stays private so projection installers cannot substitute
+/// an unrelated scalar for the authority coordinate returned by [`ProjectionLog`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProjectionTarget {
+    through: u64,
+}
+
+impl ProjectionTarget {
+    fn captured(through: u64) -> Self {
+        Self { through }
+    }
+
+    #[must_use]
+    pub fn through(self) -> u64 {
+        self.through
+    }
+}
+
 pub enum ProjectionBatch<C> {
     Current,
     Incremental {
-        through: u64,
+        target: ProjectionTarget,
         commands: Vec<Sequenced<C>>,
     },
     FullReplay {
-        through: u64,
+        target: ProjectionTarget,
         commands: Vec<Sequenced<C>>,
     },
 }
@@ -109,7 +128,8 @@ impl ProjectionCursor {
     /// Install a projection at `through` without ever letting this cursor lead
     /// the installed projection. The caller must hold its domain mutation lock
     /// and the installer must return `Ok` only after publishing that exact
-    /// projection.
+    /// projection. The opaque target binds this transition to the high-water
+    /// captured by the shared loader.
     ///
     /// Ordinary forward refresh installs first and advances second. A complete
     /// replay can intentionally move to an authority high-water below the local
@@ -117,9 +137,10 @@ impl ProjectionCursor {
     /// installation returns an error.
     pub fn install_then_reconcile<E>(
         &self,
-        through: u64,
+        target: ProjectionTarget,
         install: impl FnOnce() -> Result<(), E>,
     ) -> Result<(), E> {
+        let through = target.through();
         let previous = self.applied();
         if through < previous {
             self.advance(through);
@@ -143,16 +164,25 @@ fn check_install_then_reconcile(previous: u64, through: u64, succeeds: bool) {
     // higher than the local cursor; C2 installing the exact target succeeds or
     // returns an error. Effects: R1 a forward/equal installer observes the old
     // cursor; R2 a rollback installer observes the cursor already lowered; R3
-    // success publishes the exact target and leaves the cursor equal to it; R4
-    // failure publishes nothing and restores/retains the old cursor. Every
-    // observable boundary preserves cursor <= installed.
+    // success publishes the exact captured target and leaves the cursor equal
+    // to it; R4 failure publishes nothing and restores/retains the old cursor;
+    // R5 under monotonic authority (target >= previous), installed never leads
+    // the captured authority. Every observable boundary preserves cursor <=
+    // installed. Decision table: D1 lower+success=>R2,R3; D2 lower+failure=>
+    // R2,R4; D3 equal/higher+success=>R1,R3,R5; D4 equal/higher+failure=>
+    // R1,R4,R5.
     let cursor = ProjectionCursor::at(previous);
     let installed = Cell::new(previous);
-    let result = cursor.install_then_reconcile(through, || {
+    let target = ProjectionTarget::captured(through);
+    let result = cursor.install_then_reconcile(target, || {
         assert!(cursor.applied() <= installed.get(), "R1/R2 entry");
+        if through >= previous {
+            assert!(installed.get() <= target.through(), "R5 entry");
+        }
         if succeeds {
-            installed.set(through);
+            installed.set(target.through());
             assert!(cursor.applied() <= installed.get(), "R1/R2 installed");
+            assert_eq!(installed.get(), target.through(), "R3 exact target");
             Ok(())
         } else {
             Err(())
@@ -169,19 +199,24 @@ fn check_install_then_reconcile(previous: u64, through: u64, succeeds: bool) {
         assert_eq!(cursor.applied(), previous, "R4");
     }
     assert!(cursor.applied() <= installed.get(), "R3/R4 terminal");
+    if through >= previous {
+        assert!(installed.get() <= target.through(), "R5 terminal");
+    }
 }
 
 #[cfg(kani)]
 #[kani::proof]
-fn projection_cursor_never_leads_installed_projection() {
+fn projection_install_reconciliation_preserves_cursor_and_monotonic_authority() {
     // No assumptions, stubs, or reduced domains: all prior and target u64
     // values cross both installer outcomes in the production ordering kernel.
+    // The target is created only through the same private constructor used by
+    // load_full/load_refresh after ProjectionLog::high_water succeeds.
     check_install_then_reconcile(kani::any(), kani::any(), kani::any());
 }
 
 pub async fn load_full<C, L>(
     log: &L,
-) -> Result<(u64, Vec<Sequenced<C>>), ProjectionLoadError<L::Error>>
+) -> Result<(ProjectionTarget, Vec<Sequenced<C>>), ProjectionLoadError<L::Error>>
 where
     C: Send,
     L: ProjectionLog<C> + ?Sized,
@@ -195,7 +230,7 @@ where
         .await
         .map_err(ProjectionLoadError::Source)?;
     if ProjectionCursor::validates_full(&commands, through) {
-        Ok((through, commands))
+        Ok((ProjectionTarget::captured(through), commands))
     } else {
         Err(ProjectionLoadError::Incomplete { through })
     }
@@ -221,7 +256,10 @@ where
                 .await
                 .map_err(ProjectionLoadError::Source)?;
             if ProjectionCursor::validates_full(&commands, through) {
-                Ok(ProjectionBatch::FullReplay { through, commands })
+                Ok(ProjectionBatch::FullReplay {
+                    target: ProjectionTarget::captured(through),
+                    commands,
+                })
             } else {
                 Err(ProjectionLoadError::Incomplete { through })
             }
@@ -232,14 +270,20 @@ where
                 .await
                 .map_err(ProjectionLoadError::Source)?;
             if cursor.validates_incremental(&commands, through) {
-                Ok(ProjectionBatch::Incremental { through, commands })
+                Ok(ProjectionBatch::Incremental {
+                    target: ProjectionTarget::captured(through),
+                    commands,
+                })
             } else {
                 let commands = log
                     .load_range(0, through)
                     .await
                     .map_err(ProjectionLoadError::Source)?;
                 if ProjectionCursor::validates_full(&commands, through) {
-                    Ok(ProjectionBatch::FullReplay { through, commands })
+                    Ok(ProjectionBatch::FullReplay {
+                        target: ProjectionTarget::captured(through),
+                        commands,
+                    })
                 } else {
                     Err(ProjectionLoadError::Incomplete { through })
                 }
@@ -255,7 +299,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn install_reconciliation_covers_forward_equal_and_rollback_outcomes() {
+    fn install_reconciliation_covers_cursor_and_authority_outcomes() {
         for (previous, through) in [(4, 7), (4, 4), (7, 4)] {
             check_install_then_reconcile(previous, through, true);
             check_install_then_reconcile(previous, through, false);
@@ -387,7 +431,7 @@ mod tests {
             ranges: Mutex::new(Vec::new()),
         };
         let ProjectionBatch::Incremental {
-            through,
+            target,
             commands: batch,
         } = load_refresh(&ProjectionCursor::at(4), &incremental)
             .await
@@ -395,7 +439,7 @@ mod tests {
         else {
             panic!("R2 expected incremental batch");
         };
-        assert_eq!(through, 9, "R2");
+        assert_eq!(target.through(), 9, "R2");
         assert_eq!(
             batch
                 .iter()
@@ -412,14 +456,14 @@ mod tests {
             omit_incremental_tail: true,
             ranges: Mutex::new(Vec::new()),
         };
-        let ProjectionBatch::FullReplay { through, commands } =
+        let ProjectionBatch::FullReplay { target, commands } =
             load_refresh(&ProjectionCursor::at(4), &incomplete)
                 .await
                 .unwrap()
         else {
             panic!("R4 expected full replay");
         };
-        assert_eq!(through, 9, "R4");
+        assert_eq!(target.through(), 9, "R4");
         assert_eq!(commands.len(), 3, "R4");
         assert_eq!(
             *incomplete.ranges.lock().unwrap(),

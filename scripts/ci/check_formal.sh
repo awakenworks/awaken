@@ -142,7 +142,7 @@ cargo test -p awaken-control --lib \
 # Bind successful completion and its failure window to the same public router,
 # canonical repository port, and real SQLite durable audit owner.
 cargo test -p awaken-control --lib management_audit_completion_
-cargo test -p awaken-durable-projection --lib install_reconciliation_covers_forward_equal_and_rollback_outcomes
+cargo test -p awaken-durable-projection --lib install_reconciliation_covers_cursor_and_authority_outcomes
 cargo test -p awaken-executable-agent-catalog --lib active_active_peer_refreshes_the_durable_command_projection
 cargo test -p awaken-executable-environment-catalog --lib active_active_peer_refreshes_the_durable_environment_projection
 cargo test -p awaken-executable-agent-catalog --lib install_error_precedes_agent_target_publication
@@ -661,7 +661,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-executable-agent-catalog \
     --harness installed_lifecycle_revision_never_rolls_back
   run_kani awaken-durable-projection \
-    --harness projection_cursor_never_leads_installed_projection
+    --harness projection_install_reconciliation_preserves_cursor_and_monotonic_authority
   run_kani awaken-credential-contract --solver minisat \
     --harness managed_rollout_identity_requires_every_payload_field
   run_kani awaken-credential-contract \
