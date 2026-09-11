@@ -57,6 +57,8 @@ pub(crate) struct DispatchSessionRuntime {
     pub(super) host: Weak<SharedHost>,
     pub(super) credentials: Option<PinnedCredentialMaterializer>,
     pub(super) credential_refresh_factory: Option<Arc<dyn CredentialRefreshFactory>>,
+    pub(super) platform_mcp_egress:
+        Option<Arc<dyn awaken_credential_materializer::PlatformMcpEgressProvisioner>>,
     pub(super) resource_validator:
         Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
     pub(super) repository_binding_verifier:
@@ -74,6 +76,7 @@ impl DispatchSessionRuntime {
             host,
             credentials: self.credentials.clone(),
             credential_refresh_factory: self.credential_refresh_factory.clone(),
+            platform_mcp_egress: self.platform_mcp_egress.clone(),
             resource_validator: self.resource_validator.clone(),
             repository_binding_verifier: self.repository_binding_verifier.clone(),
             mcp_realizer: None,

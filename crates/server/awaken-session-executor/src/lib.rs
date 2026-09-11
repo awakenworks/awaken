@@ -165,6 +165,8 @@ pub struct ManagedHost {
     host: Arc<SharedHost>,
     credentials: Option<PinnedCredentialMaterializer>,
     credential_refresh_factory: Option<Arc<dyn CredentialRefreshFactory>>,
+    platform_mcp_egress:
+        Option<Arc<dyn awaken_credential_materializer::PlatformMcpEgressProvisioner>>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
     repository_binding_verifier:
         Option<Arc<dyn RepositoryBindingVerifier<awaken_dispatch::ResourceOperationFence>>>,
