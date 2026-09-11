@@ -34,16 +34,16 @@ def main() -> None:
     # Each image owns the executable mode at COPY, independently of build-host
     # policy. Static coverage locks every shared/production entry path; the live
     # container probe supplies restrictive inputs and executes as UID 10001.
-    image_paths = [Path(__file__).parent / "Dockerfile.server"] + [
-        Path(__file__).parent.parent / "images" / role / "Dockerfile"
+    image_entries = [(Path(__file__).parent / "Dockerfile.server", "awaken-server")] + [
+        (Path(__file__).parent.parent / "images" / role / "Dockerfile", f"awaken-{role}")
         for role in ("worker", "control", "coordinator", "sandbox")
     ]
-    for image_path in image_paths:
+    for image_path, executable in image_entries:
         copies = [line for line in image_path.read_text().splitlines()
-                  if line.startswith("COPY ") and " /usr/local/bin/awaken-" in line
-                  and ("${BIN}" in line or "awaken-server " in line)]
+                  if line.startswith("COPY ")
+                  and line.endswith(f" /usr/local/bin/{executable}")]
         assert len(copies) == 1, image_path
-        assert copies[0].startswith("COPY --chmod=0755 "), image_path
+        assert "--chmod=0755" in copies[0].split(), image_path
     resources = (Path(__file__).parent / "distributed-control" / "resources.yaml").read_text()
     policy_graph = (
         Path(__file__).parent / "bases" / "sandbox-network-policy" / "resources.yaml"
@@ -70,15 +70,15 @@ def main() -> None:
     product_resources = (product / "resources.yaml").read_text()
     assert 'resources: ["networkpolicies"]' in product_resources
     assert 'verbs: ["get", "list", "watch"]' in product_resources
-    # Continuation-volume/RBAC cause-effect decision table. C1 distributed
-    # recovery binds the canonical retained PVC; C2 its Worker must allocate,
-    # observe by UID, and finally dispose that claim. C3 product-backend does not
-    # own that proven recovery flow. Effects: E1 C1+C2 grants only
-    # create/get/delete; E2 C3 retains no dormant PVC authority. KRB1=C1+C2=>E1;
-    # KRB2=C3=>E2. Pod update remains a separate rule and must not widen PVCs.
-    # KRB3: permission is insufficient; the actual Worker must select retained
-    # storage. Omitting configuration yields claim_uid=None and must reject
-    # rebuild. This assertion closes the false premise in KRB1 above.
+    # Continuation-volume/RBAC cause-effect decision table. C1 a topology runs
+    # retained Kubernetes Sessions; C2 its runtime selects the canonical PVC;
+    # C3 it can allocate, observe by UID, and finally dispose that claim.
+    # Effects: E1 C1+C2+C3 grants only create/get/delete; E2 a missing policy or
+    # permission rejects before a recoverable Session can be claimed. Both
+    # distributed and all-in-one product topologies reuse the same runtime
+    # policy and Kubernetes API contract; neither owns a parallel PVC registry.
+    # KRB1=C1+C2+C3=>E1; KRB2=C1+(!C2|!C3)=>E2. Pod update remains a separate
+    # rule and must not widen PVCs.
     import tomllib
     import textwrap
     worker = resources.split("  worker.toml: |\n", 1)[1].split("---", 1)[0]
@@ -87,13 +87,12 @@ def main() -> None:
     }
     assert 'resources: ["persistentvolumeclaims"]' in resources
     assert 'verbs: ["create", "get", "delete"]' in resources
-    product_active_yaml = "\n".join(
-        line
-        for line in product_resources.splitlines()
-        if not line.lstrip().startswith("#")
-    )
-    assert "k8s_continuation_volume" not in product_active_yaml
-    assert 'resources: ["persistentvolumeclaims"]' not in product_active_yaml
+    product_config = product_resources.split("  config.toml: |\n", 1)[1].split("---", 1)[0]
+    assert tomllib.loads(textwrap.dedent(product_config))["k8s_continuation_volume"] == {
+        "storage_class_name": "local-path", "size": "1Gi",
+    }
+    assert 'resources: ["persistentvolumeclaims"]' in product_resources
+    assert 'verbs: ["create", "get", "delete"]' in product_resources
     assert '/usr/local/bin/awaken-control", "database", "migrate"' in resources
     assert 'command: ["/usr/local/bin/awaken-server"]' in resources
     assert '/usr/local/bin/awaken-coordinator", "database", "migrate"' in resources
@@ -173,20 +172,16 @@ def main() -> None:
         in sandbox_build
     )
     assert sandbox_build.count("  build_image ") == 2
-    # C7 the catalog changes package/argv/auth/version facts; C8 Docker consumes
-    # an ACP contract; C9 the Node runtime matrix consumes ids/version probes.
-    # E4 build.sh generates the contract from the Rust catalog and passes that
-    # exact ephemeral file to Docker; E5 installer/verifier consume all generated
-    # requirements/executables; E6 Node executes the same generator and owns no
-    # literal ids or version table. Constraints: neither a checked-in JSON file
-    # nor a language-specific mirror may become another catalog. Decision rules:
-    # I6 C7+C8=>E4+E5; I7 C7+C9=>E6.
+    # C7 the catalog changes package/argv/auth/version facts; C8 the Node runtime
+    # matrix consumes ids/version probes. E4 installer/verifier consume all
+    # generated requirements/executables; E5 Node executes the same generator
+    # and owns no literal ids or version table. Constraints: neither a checked-in
+    # JSON file nor a language-specific mirror may become another catalog.
+    # Decision rules: I6 C7=>E4; I7 C7+C8=>E5. Exact named build-context,
+    # fingerprint and rebuild behavior belong solely to the executable
+    # e2e/fixtures/sandbox_image.test.mjs contract, not this static image test.
     sandbox = Path(__file__).parent.parent / "images" / "sandbox"
-    sandbox_dockerfile = (sandbox / "Dockerfile").read_text()
     assert "--example image_runtime_contract" in sandbox_build
-    assert sandbox_build.count("--build-arg ACP_RUNTIME_CONTRACT=") == 2
-    assert "ARG ACP_RUNTIME_CONTRACT=" in sandbox_dockerfile
-    assert "COPY ${ACP_RUNTIME_CONTRACT}" in sandbox_dockerfile
     assert not (sandbox / "acp-runtimes.json").exists()
     runtime_profiles = (
         Path(__file__).parent.parent.parent / "e2e" / "acp_runtime_profiles.mjs"
