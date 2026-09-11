@@ -11,6 +11,7 @@ use kube::Api;
 use kube::api::{DeleteParams, PostParams, Preconditions};
 
 use super::error::api_not_found;
+use super::finalizer::{ExactFinalizerReleaseAdmission, release_exact_pod_finalizer};
 use super::names::{continuation_claim_for_pod, continuation_claim_name};
 use super::pod_projection::CONTINUATION_VOLUME;
 use super::{
@@ -526,24 +527,21 @@ pub(super) async fn release_pod_cleanup_gate(
     pending: &PendingPodCleanup,
     admit: &(dyn Fn() -> Result<(), RuntimeError> + Sync),
 ) -> Result<(), RuntimeError> {
-    loop {
-        admit()?;
-        let observed = pods.get(&pending.name).await;
-        admit()?;
-        let observed = match observed {
-            Ok(pod) => pod,
-            Err(error) if api_not_found(&error) => return Ok(()),
-            Err(error) => return Err(backend(error)),
-        };
+    release_exact_pod_finalizer(
+        pods,
+        &pending.name,
+        CONTINUATION_CLEANUP_FINALIZER,
+        admit,
+        &|observed| {
         if observed.metadata.uid.as_deref() != Some(pending.uid.as_str()) {
             return Err(backend(
                 "Kubernetes Sandbox Pod incarnation changed before cleanup gate release",
             ));
         }
-        let observed_authorization = observed_pod_cleanup_authorization(&observed)?;
+        let observed_authorization = observed_pod_cleanup_authorization(observed)?;
         match pod_cleanup_gate_release_admission(
             observed.metadata.deletion_timestamp.is_some(),
-            pod_cleanup_gate_held(&observed),
+            pod_cleanup_gate_held(observed),
         ) {
             PodCleanupGateReleaseAdmission::Remove => {
                 if pod_cleanup_authorization_admission(
@@ -555,52 +553,25 @@ pub(super) async fn release_pod_cleanup_gate(
                         "Kubernetes continuation cleanup successor changed before gate release",
                     ));
                 }
+                Ok(ExactFinalizerReleaseAdmission::Remove)
             }
-            PodCleanupGateReleaseAdmission::AlreadyReleasedAfterDelete => return Ok(()),
+            PodCleanupGateReleaseAdmission::AlreadyReleasedAfterDelete => {
+                Ok(ExactFinalizerReleaseAdmission::Complete)
+            }
             PodCleanupGateReleaseAdmission::LostBeforeDelete => {
-                return Err(backend(
+                Err(backend(
                     "Kubernetes Sandbox Pod lost its continuation cleanup finalizer before deletion",
-                ));
+                ))
             }
-        }
-        if observed.metadata.resource_version.is_none() {
-            return Err(backend("Kubernetes Sandbox Pod has no resourceVersion"));
-        }
-        let finalizers = observed
-            .metadata
-            .finalizers
-            .clone()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|finalizer| finalizer != CONTINUATION_CLEANUP_FINALIZER)
-            .collect::<Vec<_>>();
-        let mut replacement = observed;
-        replacement.metadata.finalizers = Some(finalizers);
-        if let Some(annotations) = replacement.metadata.annotations.as_mut() {
-            annotations.remove(CONTINUATION_CLEANUP_GATE_ANNOTATION);
-        }
-        let replaced = pods
-            .replace(&pending.name, &PostParams::default(), &replacement)
-            .await;
-        admit()?;
-        match replaced {
-            Ok(patched)
-                if patched.metadata.uid.as_deref() == Some(pending.uid.as_str())
-                    && !pod_cleanup_gate_held(&patched)
-                    && pod_cleanup_authorization(&patched)?.is_none() =>
-            {
-                return Ok(());
             }
-            Ok(_) => {
-                return Err(backend(
-                    "Kubernetes Sandbox Pod cleanup gate release changed incarnation",
-                ));
+        },
+        &|replacement| {
+            if let Some(annotations) = replacement.metadata.annotations.as_mut() {
+                annotations.remove(CONTINUATION_CLEANUP_GATE_ANNOTATION);
             }
-            Err(error) if super::error::api_conflict(&error) => continue,
-            Err(error) if api_not_found(&error) => return Ok(()),
-            Err(error) => return Err(backend(error)),
-        }
-    }
+        },
+    )
+    .await
 }
 
 /// Closed admission decision for the irreversible PVC deletion API call. The

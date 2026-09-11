@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use awaken_worker_contract::{
     RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
-    WorkerIdentity, WorkerObservationSource, WorkerRegistration,
+    WorkerIdentity, WorkerObservationSource, WorkerProcessExit, WorkerRegistration,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::path::Path;
@@ -84,6 +84,24 @@ impl SqliteWorkerDirectory {
         encoded.map(decode).transpose()
     }
 
+    fn read_incarnation(
+        tx: &Transaction<'_>,
+        identity: &WorkerIdentity,
+    ) -> Result<Option<RegisteredWorker>, RegistryError> {
+        let generation = durable_i64("generation", identity.generation)?;
+        let encoded = tx
+            .query_row(
+                &format!(
+                    "SELECT {WORKER_COLUMNS} FROM worker_registry_worker WHERE worker_id = ?1 AND generation = ?2 AND incarnation_id = ?3"
+                ),
+                params![identity.worker_id, generation, identity.incarnation_id],
+                encoded_row,
+            )
+            .optional()
+            .map_err(persist)?;
+        encoded.map(decode).transpose()
+    }
+
     fn write(tx: &Transaction<'_>, record: &RegisteredWorker) -> Result<(), RegistryError> {
         let generation = durable_i64("generation", record.snapshot.identity.generation)?;
         let expires_at_ms = durable_i64("expires_at_ms", record.snapshot.expires_at_ms)?;
@@ -94,8 +112,8 @@ impl SqliteWorkerDirectory {
                  capability_fingerprint, in_flight, warm_environment_shapes_json, \
                  credential_observations_json, acp_capability_observations_json, \
                  expires_at_ms, heartbeat_sequence, observation_sequence, registered_at_ms, \
-                 heartbeat_at_ms, drain_deadline_ms) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) \
+                 heartbeat_at_ms, drain_deadline_ms, process_exit_json) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17) \
              ON CONFLICT(worker_id, generation) DO UPDATE SET \
                 state = excluded.state, manifest_json = excluded.manifest_json, \
                 capability_fingerprint = excluded.capability_fingerprint, \
@@ -108,7 +126,8 @@ impl SqliteWorkerDirectory {
                 observation_sequence = excluded.observation_sequence, \
                 registered_at_ms = excluded.registered_at_ms, \
                 heartbeat_at_ms = excluded.heartbeat_at_ms, \
-                drain_deadline_ms = excluded.drain_deadline_ms",
+                drain_deadline_ms = excluded.drain_deadline_ms, \
+                process_exit_json = excluded.process_exit_json",
             params![
                 record.snapshot.identity.worker_id,
                 record.snapshot.identity.incarnation_id,
@@ -137,6 +156,11 @@ impl SqliteWorkerDirectory {
                 record
                     .drain_deadline_ms
                     .map(|value| durable_i64("drain_deadline_ms", value))
+                    .transpose()?,
+                record
+                    .process_exit
+                    .as_ref()
+                    .map(|receipt| encode_json("process_exit_json", receipt))
                     .transpose()?,
             ],
         )
@@ -288,6 +312,18 @@ impl WorkerDirectory for SqliteWorkerDirectory {
         .await
     }
 
+    async fn incarnation(
+        &self,
+        identity: &WorkerIdentity,
+    ) -> Result<Option<RegisteredWorker>, RegistryError> {
+        let identity = identity.clone();
+        self.with_connection(move |conn| {
+            let tx = conn.transaction().map_err(persist)?;
+            Self::read_incarnation(&tx, &identity)
+        })
+        .await
+    }
+
     async fn expire_incarnation(
         &self,
         identity: &WorkerIdentity,
@@ -299,6 +335,28 @@ impl WorkerDirectory for SqliteWorkerDirectory {
             Self::mutate(conn, &identity, |current| {
                 transition::expire(current, &identity, now_ms)
             })
+        })
+        .await
+    }
+
+    async fn record_process_exit(
+        &self,
+        identity: &WorkerIdentity,
+        receipt: WorkerProcessExit,
+    ) -> Result<RegistryMutation, RegistryError> {
+        let identity = identity.clone();
+        self.with_connection(move |conn| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(persist)?;
+            let record = Self::read_incarnation(&tx, &identity)?;
+            let (next, outcome) =
+                transition::record_process_exit(record.as_ref(), &identity, receipt)?;
+            if let Some(next) = next {
+                Self::write(&tx, &next)?;
+            }
+            tx.commit().map_err(persist)?;
+            Ok(outcome)
         })
         .await
     }
@@ -322,6 +380,7 @@ fn encoded_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EncodedWorkerRow> {
         registered_at_ms: row.get(13)?,
         heartbeat_at_ms: row.get(14)?,
         drain_deadline_ms: row.get(15)?,
+        process_exit_json: row.get(16)?,
     })
 }
 

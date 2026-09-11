@@ -125,6 +125,11 @@ pub(crate) fn converged_registry_bundle() -> Result<MigrationBundle, MigrationEr
                 "retain every worker incarnation in the canonical registry",
                 include_str!("migrations/V0002__retain_incarnations.sql").trim(),
             )?,
+            Migration::new(
+                3,
+                "retain exact worker process exit evidence before provider history release",
+                include_str!("migrations/V0003__retain_worker_process_exit.sql").trim(),
+            )?,
         ],
     )
 }

@@ -54,6 +54,7 @@ mod client;
 mod continuation;
 mod creation;
 mod error;
+mod finalizer;
 mod lifecycle;
 mod live_inputs;
 mod memory;

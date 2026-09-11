@@ -70,9 +70,10 @@ pub use awaken_dispatch_contract::{
     TRUSTED_HOST_SANDBOX_BACKEND, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
     WorkerAcpCapabilityObservation, WorkerAcpCapabilityRequirement, WorkerAssignment,
     WorkerCredentialObservation, WorkerCredentialRevision, WorkerCredentialState, WorkerDirectory,
-    WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRecoveryMode,
-    WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally,
-    place_assignment, retry_exhaustion_eligible, worker_credential_realization_capabilities,
+    WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerProcessExit,
+    WorkerRecoveryMode, WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim,
+    can_claim_locally, place_assignment, retry_exhaustion_eligible,
+    worker_credential_realization_capabilities,
 };
 pub use awaken_dispatch_contract::{
     AttemptExecutionRequest, BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest,

@@ -16,6 +16,8 @@ enum Fault {
     Replacement,
     RetentionLost,
     PauseAfterDelete,
+    ReleaseConflict,
+    ReleaseResponseLost,
 }
 
 struct Facts {
@@ -23,6 +25,7 @@ struct Facts {
     read_status: u16,
     calls: Vec<(String, Value)>,
     accepted: usize,
+    released: usize,
     fault: Fault,
 }
 
@@ -63,6 +66,7 @@ impl Fixture {
             read_status: 200,
             calls: Vec::new(),
             accepted: 0,
+            released: 0,
             fault,
         }));
         let accepted = Arc::new(Notify::new());
@@ -129,6 +133,31 @@ impl Fixture {
                             }
                             (Response::new(Body::from(serde_json::to_vec(&json!({"apiVersion":"v1", "kind":"Status", "status":"Success"})).unwrap())), matches!(fault, Fault::PauseAfterDelete))
                         }
+                        "PUT" => {
+                            let fault = std::mem::take(&mut state.fault);
+                            let response = {
+                                let pod = state.pod.as_mut().unwrap();
+                                if matches!(fault, Fault::ReleaseConflict) {
+                                    pod.metadata.resource_version = Some("release-conflict".into());
+                                    return Ok(status(409));
+                                }
+                                if body["metadata"]["uid"] != json!(pod.metadata.uid)
+                                    || body["metadata"]["resourceVersion"]
+                                        != json!(pod.metadata.resource_version)
+                                {
+                                    return Ok(status(409));
+                                }
+                                let mut replacement: Pod = decode(body);
+                                replacement.metadata.resource_version = Some("released".into());
+                                *pod = replacement;
+                                serde_json::to_vec(pod).unwrap()
+                            };
+                            state.released += 1;
+                            if matches!(fault, Fault::ReleaseResponseLost) {
+                                return Err(disconnected());
+                            }
+                            (Response::new(Body::from(response)), false)
+                        }
                         _ => panic!("unexpected mutation: {method}"),
                     }
                 };
@@ -170,6 +199,74 @@ impl Fixture {
         pod.status = decode(terminal()).status;
         pod.metadata.resource_version = Some("exited".into());
     }
+}
+
+#[tokio::test]
+async fn durable_exit_allows_only_exact_idempotent_process_evidence_release() {
+    // Evidence-release cause/effect graph: C1 retained binding provenance; C2
+    // current Pod UID exact/replaced/absent; C3 target finalizer present/absent;
+    // C4 replace succeeds/conflicts/response is lost. Effects: E1 invalid C1
+    // performs no IO; E2 exact presence removes only the process finalizer; E3
+    // conflict rereads and retries; E4 lost success converges by observation;
+    // E5 absent/replaced/already released is complete because the caller has
+    // already committed the exit receipt. Rules F1=C1+exact+present+success=>E2;
+    // F2=F1+conflict=>E3+E2; F3=F1+lost reply=>E4; F4=C1+(absent|replaced|
+    // !present)=>E5; F5=!C1=>E1. The shared finalizer CAS owns all PUTs.
+    for fault in [Fault::None, Fault::ReleaseConflict] {
+        let fixture = Fixture::new(fault);
+        let binding = fixture.binding().await;
+        fixture.stopper().release_evidence(&binding).await.unwrap();
+        {
+            let state = fixture.facts.lock().unwrap();
+            let finalizers = state
+                .pod
+                .as_ref()
+                .unwrap()
+                .metadata
+                .finalizers
+                .as_ref()
+                .unwrap();
+            assert!(
+                !finalizers
+                    .iter()
+                    .any(|v| v == WORKER_PROCESS_EVIDENCE_FINALIZER)
+            );
+            assert!(finalizers.iter().any(|v| v == "other.example/keep"));
+            assert_eq!(state.released, 1, "F1/F2");
+        }
+        fixture.stopper().release_evidence(&binding).await.unwrap();
+        assert_eq!(fixture.facts.lock().unwrap().released, 1, "F4 idempotent");
+    }
+
+    let fixture = Fixture::new(Fault::ReleaseResponseLost);
+    let binding = fixture.binding().await;
+    assert!(fixture.stopper().release_evidence(&binding).await.is_err());
+    fixture.stopper().release_evidence(&binding).await.unwrap();
+    assert_eq!(fixture.facts.lock().unwrap().released, 1, "F3");
+
+    let fixture = Fixture::new(Fault::None);
+    let binding = fixture.binding().await;
+    fixture
+        .facts
+        .lock()
+        .unwrap()
+        .pod
+        .as_mut()
+        .unwrap()
+        .metadata
+        .uid = Some("replacement".into());
+    fixture.stopper().release_evidence(&binding).await.unwrap();
+    assert_eq!(fixture.facts.lock().unwrap().released, 0, "F4 replacement");
+    fixture.facts.lock().unwrap().pod = None;
+    fixture.stopper().release_evidence(&binding).await.unwrap();
+    assert_eq!(fixture.facts.lock().unwrap().released, 0, "F4 absent");
+
+    let fixture = Fixture::new(Fault::None);
+    let mut legacy = fixture.binding().await;
+    legacy.retained = false;
+    let before = fixture.facts.lock().unwrap().calls.len();
+    assert!(fixture.stopper().release_evidence(&legacy).await.is_err());
+    assert_eq!(fixture.facts.lock().unwrap().calls.len(), before, "F5");
 }
 
 #[tokio::test]

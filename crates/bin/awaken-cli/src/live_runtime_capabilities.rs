@@ -265,6 +265,7 @@ mod tests {
             registered_at_ms: 1,
             heartbeat_at_ms: now,
             drain_deadline_ms: None,
+            process_exit: None,
         }
     }
 

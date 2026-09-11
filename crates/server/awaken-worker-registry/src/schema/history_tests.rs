@@ -25,6 +25,7 @@ fn expected(generation: u64) -> RegisteredWorker {
         registered_at_ms: 100,
         heartbeat_at_ms: 101,
         drain_deadline_ms: Some(120),
+        process_exit: None,
     }
 }
 
@@ -34,9 +35,13 @@ fn seed_sql(generation: u64) -> String {
         .unwrap()
         .replace('\'', "''");
     format!(
-        "INSERT INTO worker_registry_worker ({}) VALUES \
+        "INSERT INTO worker_registry_worker (
+         worker_id, incarnation_id, generation, state, manifest_json,
+         capability_fingerprint, in_flight, warm_environment_shapes_json,
+         credential_observations_json, acp_capability_observations_json,
+         expires_at_ms, heartbeat_sequence, observation_sequence,
+         registered_at_ms, heartbeat_at_ms, drain_deadline_ms) VALUES \
         ('migrated','A',{generation},'dead','{manifest}','{}',2,'[]','[]','[]',150,3,4,100,101,120)",
-        crate::codec::WORKER_COLUMNS,
         row.snapshot.capability_fingerprint
     )
 }

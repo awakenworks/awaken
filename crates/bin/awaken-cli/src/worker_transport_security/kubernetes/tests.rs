@@ -17,6 +17,7 @@ struct Facts {
     reviews: AtomicUsize,
     reads: AtomicUsize,
     deletes: Mutex<Vec<Value>>,
+    updates: Mutex<Vec<Value>>,
 }
 
 fn running() -> Value {
@@ -45,6 +46,7 @@ fn fixture() -> (WorkerTransport, Arc<Facts>) {
         reviews: AtomicUsize::new(0),
         reads: AtomicUsize::new(0),
         deletes: Mutex::new(Vec::new()),
+        updates: Mutex::new(Vec::new()),
     });
     async fn review(State(facts): State<Arc<Facts>>, Json(body): Json<Value>) -> Json<Value> {
         assert_eq!(body["spec"]["token"], "fixture-token");
@@ -71,13 +73,25 @@ fn fixture() -> (WorkerTransport, Arc<Facts>) {
             json!("2026-09-09T00:01:00Z");
         Json(json!({"kind":"Status","apiVersion":"v1","status":"Success"}))
     }
+    async fn update(State(facts): State<Arc<Facts>>, Json(mut body): Json<Value>) -> Json<Value> {
+        let mut current = facts.pod.lock().unwrap();
+        assert_eq!(body["metadata"]["uid"], current.1["metadata"]["uid"]);
+        assert_eq!(
+            body["metadata"]["resourceVersion"],
+            current.1["metadata"]["resourceVersion"]
+        );
+        facts.updates.lock().unwrap().push(body.clone());
+        body["metadata"]["resourceVersion"] = json!("8");
+        current.1 = body.clone();
+        Json(body)
+    }
     // One actual kube Client over an in-process API transport. Only the exact
     // Pod stop is writable; unrelated provisioning has no route. Not k3d proof.
     let router = Router::new()
         .route("/apis/authentication.k8s.io/v1/tokenreviews", post(review))
         .route(
             "/api/v1/namespaces/workers/pods/worker-a",
-            get(pod).delete(delete),
+            get(pod).put(update).delete(delete),
         )
         .with_state(facts.clone());
     let transport = assemble(&policy(), kube::Client::new(router, "workers")).unwrap();
@@ -227,8 +241,9 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
     // => independent UID/resourceVersion stop with Coordinator client (no token
     // from the dead Worker). S2 accepted/delete-in-progress => Unknown. S3 exact
     // local exit => Exited, STILL occupied; remote effects are not inferred.
-    // S4 exact local exit + complete model-only ThreadCommit evidence => the
-    // existing exact finish transition clears only the old slot, after which a
+    // S4 exact local exit is committed to Registry before one exact finalizer
+    // update; complete model-only ThreadCommit evidence then lets the existing
+    // exact finish transition clear only the old slot, after which a
     // fresh successor admission applies. S5 provider/Worker/opaque-coordinate
     // mismatch => no API read/write. S6 absent/name-reused Pod => Unknown; an
     // old late query never stops the replacement.
@@ -395,6 +410,23 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
             };
             assert_eq!(receipt.binding(), &bound);
             assert_eq!(receipt.evidence_ref(), "7");
+            let persisted = directory
+                .incarnation(&worker)
+                .await
+                .unwrap()
+                .unwrap()
+                .process_exit
+                .unwrap();
+            assert_eq!(persisted.evidence_ref(), "7", "S4 commit before release");
+            assert_eq!(facts.updates.lock().unwrap().len(), 1, "S4 one release");
+            assert!(
+                !facts.pod.lock().unwrap().1["metadata"]["finalizers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|value| value == "awaken.dev/worker-process-evidence"),
+                "S4 process evidence released"
+            );
             assert_eq!(
                 facts.deletes.lock().unwrap().len(),
                 1,
@@ -402,6 +434,7 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
             );
         } else {
             assert!(facts.deletes.lock().unwrap().is_empty());
+            assert!(facts.updates.lock().unwrap().is_empty());
         }
         assert_eq!(
             facts.reviews.load(Ordering::SeqCst),
