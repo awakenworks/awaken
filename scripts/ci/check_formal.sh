@@ -818,6 +818,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness circuit_completion_requires_exact_phase_and_generation_for_every_outcome \
     --harness checkpoint_clear_requires_unvetoed_terminal_completion \
     --harness durable_watermark_successor_is_exact_or_rejected_without_rollback \
+    --harness child_cancellation_effect_requires_committed_intent \
     --harness a_resume_receipt_requires_consumption_of_the_exact_ticket
   run_kani awaken-runtime-contract --checked-loop-profile resume-validator-empty-object-v1 \
     --harness resume_validator_preserves_complete_binding_decision_table

@@ -19,6 +19,10 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{StateKey, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::thread::commit::coordinator::{
+    Coordinator as CommitCoordinator, Error as CommitError,
+};
+use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::delegation::{
@@ -52,6 +56,15 @@ const DELEGATE_TOOL: &str = "agent_run";
 const CALL_ID: &str = "d1";
 
 struct SuspendGate;
+
+struct RejectingCommit;
+
+#[async_trait::async_trait]
+impl CommitCoordinator for RejectingCommit {
+    async fn commit(&self, _commit: ThreadCommit) -> Result<CommitRecord, CommitError> {
+        Err(CommitError::Rejected("expected rejection".into()))
+    }
+}
 
 #[async_trait::async_trait]
 impl ToolGateHook for SuspendGate {
@@ -1082,13 +1095,14 @@ async fn delegation_awaiting_awaits_the_parent_on_a_delegation_ticket() {
 
 #[tokio::test]
 async fn cancelling_an_awaiting_parent_atomically_persists_child_cancel_intent() {
-    // Test design — Causes: C1 the parent is durably Awaiting on one child with
-    // an opaque cancellation reference; C2 cancellation targets that parent.
-    // Effects: the parent commits Cancelled, the relationship commits
-    // CancelRequested with the same reference, and the executor receives one
-    // exact child cancellation. Constraints/invariants: parent terminal state
-    // and child intent share the commit boundary; no process-local waiter owns
-    // recovery. Decision rule C1+C2=>all three facts, each exactly once.
+    // Cause/effect decision table after C1=the parent is durably Awaiting on one
+    // child with an opaque cancellation reference and C2=cancel targets it:
+    // | commit boundary | result | durable relationship | external effect |
+    // | absent          | Ended  | remains Open         | none            |
+    // | rejects         | Error  | remains Open         | none            |
+    // | succeeds        | Ended  | CancelRequested      | exact one       |
+    // Parent terminal state, finalized tool batch, and child intent share the
+    // successful commit; no process-local waiter becomes recovery authority.
     let executor = Arc::new(MockRunDelegationService::new(
         Step::Awaiting(serde_json::json!({ "task": "remote-42" })),
         Step::Fail("unused".to_string()),
@@ -1106,6 +1120,66 @@ async fn cancelling_an_awaiting_parent_atomically_persists_child_cancel_intent()
             .expect("delegation awaits"),
         RunState::Awaiting
     );
+
+    assert_eq!(
+        runtime
+            .cancel_run(
+                RunId("run-1".into()),
+                ThreadId("thread-1".into()),
+                RuntimeRunContext::new().with_reader(commit.clone()),
+            )
+            .await
+            .expect("a runtime without a commit port returns its local disposition"),
+        RunState::Ended(EndCause::Cancelled),
+        "absent commit boundary"
+    );
+    assert!(
+        executor.cancelled.lock().unwrap().is_empty(),
+        "absent commit boundary suppresses cancellation delivery"
+    );
+    let uncommitted = Store::rebuild(&commit.committed().state);
+    assert_eq!(
+        RunDelegations::load(&uncommitted)
+            .expect("valid unchanged relationship")
+            .expect("relationship remains present")
+            .delegations()
+            .next()
+            .expect("one relationship")
+            .status,
+        DelegationStatus::Open,
+        "absent commit boundary cannot publish cancellation intent"
+    );
+
+    assert!(
+        runtime
+            .cancel_run(
+                RunId("run-1".into()),
+                ThreadId("thread-1".into()),
+                RuntimeRunContext::new()
+                    .with_reader(commit.clone())
+                    .with_commit(Arc::new(RejectingCommit)),
+            )
+            .await
+            .is_err(),
+        "rejected commit boundary"
+    );
+    assert!(
+        executor.cancelled.lock().unwrap().is_empty(),
+        "rejected commit suppresses cancellation delivery"
+    );
+    let rejected = Store::rebuild(&commit.committed().state);
+    assert_eq!(
+        RunDelegations::load(&rejected)
+            .expect("valid unchanged relationship")
+            .expect("relationship remains present")
+            .delegations()
+            .next()
+            .expect("one relationship")
+            .status,
+        DelegationStatus::Open,
+        "rejected commit cannot publish cancellation intent"
+    );
+
     assert_eq!(
         runtime
             .cancel_run(

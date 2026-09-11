@@ -3,6 +3,15 @@
 use super::*;
 use awaken_runtime_contract::terminal::{CommittedTerminalRun, deliver_committed_terminal};
 
+/// Admit the post-commit cancellation effect only when this invocation both
+/// staged at least one durable intent and received a successful commit result.
+const fn committed_cancellation_delivery_is_admitted(
+    commit_succeeded: bool,
+    has_staged_intent: bool,
+) -> bool {
+    commit_succeeded && has_staged_intent
+}
+
 /// Validate the staged state batch, then commit. A conflict fails closed: the
 /// attempt becomes a `StateConflict` fault, drops any pause, and commits no
 /// state (G13). A run whose state did not commit cleanly must not be resumable.
@@ -166,10 +175,13 @@ pub(super) async fn finish_with_reader(
     }
 
     // The terminal commit is the outbox boundary: delivery happens only after
-    // the intent is durable. Failures leave `CancelRequested` in committed
+    // the intent is durable. Missing or rejected commits produce no effect;
+    // failures after a successful commit leave `CancelRequested` in committed
     // truth and are retried by the runtime reconciliation path.
-    for cancellation in cancellations {
-        let _ = runtime.deliver_child_cancellation(cancellation).await;
+    if committed_cancellation_delivery_is_admitted(committed, !cancellations.is_empty()) {
+        for cancellation in cancellations {
+            let _ = runtime.deliver_child_cancellation(cancellation).await;
+        }
     }
 
     if let RunState::Ended(EndCause::Error(failure)) = &run_state {
@@ -190,4 +202,17 @@ pub(super) async fn finish_with_reader(
     )
     .await;
     Ok(run_state)
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn child_cancellation_effect_requires_committed_intent() {
+    // Cause/effect table: only commit-success + staged-intent admits delivery;
+    // missing intent, missing coordinator, and rejected commit suppress it.
+    let commit_succeeded: bool = kani::any();
+    let has_staged_intent: bool = kani::any();
+    assert_eq!(
+        committed_cancellation_delivery_is_admitted(commit_succeeded, has_staged_intent),
+        commit_succeeded && has_staged_intent
+    );
 }
