@@ -459,7 +459,7 @@ pg_test cargo test -p awaken-session-store --features test-support --lib postgre
   || record_failure "$?"
 pg_test cargo test -p awaken-cli --lib installation_binding::tests::postgres_preflights_all_targets_then_binds_fresh_or_explicit_legacy -- --test-threads=1 --exact || record_failure "$?"
 pg_test cargo test -p awaken-coordinator application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact || record_failure "$?"
-pg_test cargo test -p awaken-config-store --test postgres || record_failure "$?"
+pg_test cargo test -p awaken-config-store --features test-support --test postgres || record_failure "$?"
 pg_test cargo test -p awaken-admin-config-api --features postgres --test postgres_store || record_failure "$?"
 pg_test cargo test -p awaken-store-postgres --test postgres_live || record_failure "$?"
 pg_test cargo test -p awaken-model-catalog-store --features postgres,test-support --test repo_conformance || record_failure "$?"

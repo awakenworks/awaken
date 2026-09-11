@@ -34,6 +34,35 @@ pub enum ConfigWrite {
     Conflict { current_revision: Option<u64> },
 }
 
+/// Durable result of the sole source-fenced publication write.
+///
+/// The committed revision is a receipt from the repository transaction. It is
+/// checked again at the registration boundary, so a stale/conflicting write or
+/// a malformed adapter result cannot authorize a Coordinator effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublicationWrite {
+    Committed { source_revision: u64 },
+    Conflict { current_revision: Option<u64> },
+}
+
+impl PublicationWrite {
+    /// Admit registration only for the exact durable publication revision.
+    pub const fn registration_admission(
+        self,
+        publication_source_revision: u64,
+    ) -> Result<(), Option<u64>> {
+        match self {
+            Self::Committed { source_revision }
+                if source_revision == publication_source_revision =>
+            {
+                Ok(())
+            }
+            Self::Committed { source_revision } => Err(Some(source_revision)),
+            Self::Conflict { current_revision } => Err(current_revision),
+        }
+    }
+}
+
 /// Pure classification of a publication attempt against already durable
 /// publications for the same Agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -431,17 +460,13 @@ pub trait ConfigRegistry: Send + Sync {
     /// config plane directly rather than the SDK-facing `/v1/agents` registry.
     async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError>;
 
-    /// Store a publication, idempotent by fingerprint.
-    async fn put_publication(
+    /// Atomically store the publication only while its own source revision is
+    /// still the current authored revision. No independent expected revision is
+    /// accepted, so callers cannot detach the durable fence from the artifact.
+    async fn put_publication_if_source_current(
         &self,
         publication: &StoredPublication,
-    ) -> Result<(), ConfigStoreError>;
-
-    async fn put_publication_if_config_revision(
-        &self,
-        publication: &StoredPublication,
-        expected_revision: u64,
-    ) -> Result<ConfigWrite, ConfigStoreError>;
+    ) -> Result<PublicationWrite, ConfigStoreError>;
 
     /// Load a publication by its fingerprint.
     async fn get_publication(
@@ -609,19 +634,13 @@ pub trait ScopedConfigRegistry: Send + Sync {
         scope: &ScopeId,
     ) -> Result<Vec<AgentConfig>, ConfigStoreError>;
 
-    /// Store a publication owned by `scope`, idempotent by fingerprint.
-    async fn put_publication_scoped(
+    /// Atomically store the scoped publication only while its embedded source
+    /// revision is current. This is the sole production publication write.
+    async fn put_publication_if_source_current_scoped(
         &self,
         scope: &ScopeId,
         publication: &StoredPublication,
-    ) -> Result<(), ConfigStoreError>;
-
-    async fn put_publication_if_config_revision_scoped(
-        &self,
-        scope: &ScopeId,
-        publication: &StoredPublication,
-        expected_revision: u64,
-    ) -> Result<ConfigWrite, ConfigStoreError>;
+    ) -> Result<PublicationWrite, ConfigStoreError>;
 
     /// Load a publication by fingerprint **within `scope`**.
     async fn get_publication_scoped(
@@ -944,6 +963,37 @@ fn publication_revision_decision_is_target_safe_fail_closed_and_replay_first() {
     );
 }
 
+#[cfg(kani)]
+#[kani::proof]
+fn publication_registration_requires_exact_commit_receipt() {
+    // Causes: C1 the repository returned Committed/Conflict; C2 a committed
+    // receipt revision equals/differs from the exact publication revision; C3
+    // a conflict reports an absent/present current revision. Effects: R1 only
+    // Committed+exact admits the registrar; R2 mismatched commit fails closed;
+    // R3 every conflict rejects while preserving its observed current revision.
+    let publication_source_revision: u64 = kani::any();
+    let receipt_revision: u64 = kani::any();
+    let conflict: bool = kani::any();
+    let current_revision: Option<u64> = kani::any();
+    let write = if conflict {
+        PublicationWrite::Conflict { current_revision }
+    } else {
+        PublicationWrite::Committed {
+            source_revision: receipt_revision,
+        }
+    };
+    let admission = write.registration_admission(publication_source_revision);
+    assert_eq!(
+        admission.is_ok(),
+        !conflict && receipt_revision == publication_source_revision
+    );
+    if conflict {
+        assert_eq!(admission, Err(current_revision));
+    } else if receipt_revision != publication_source_revision {
+        assert_eq!(admission, Err(Some(receipt_revision)));
+    }
+}
+
 /// The decorator that makes tenancy an edge aspect for the config plane: it
 /// implements the scope-free [`ConfigRegistry`] by binding one [`ScopeId`] and
 /// delegating to a [`ScopedConfigRegistry`]. Constructed at the management edge
@@ -1011,22 +1061,12 @@ impl<S: ScopedConfigRegistry + ?Sized> ConfigRegistry for ScopedConfig<S> {
         self.inner.list_configs_scoped(&self.scope).await
     }
 
-    async fn put_publication(
+    async fn put_publication_if_source_current(
         &self,
         publication: &StoredPublication,
-    ) -> Result<(), ConfigStoreError> {
+    ) -> Result<PublicationWrite, ConfigStoreError> {
         self.inner
-            .put_publication_scoped(&self.scope, publication)
-            .await
-    }
-
-    async fn put_publication_if_config_revision(
-        &self,
-        publication: &StoredPublication,
-        expected_revision: u64,
-    ) -> Result<ConfigWrite, ConfigStoreError> {
-        self.inner
-            .put_publication_if_config_revision_scoped(&self.scope, publication, expected_revision)
+            .put_publication_if_source_current_scoped(&self.scope, publication)
             .await
     }
 
@@ -1042,7 +1082,39 @@ impl<S: ScopedConfigRegistry + ?Sized> ConfigRegistry for ScopedConfig<S> {
 
 #[cfg(test)]
 mod publication_revision_tests {
-    use super::{ManagementEffect, PublicationRevisionDecision, publication_revision_decision};
+    use super::{
+        ManagementEffect, PublicationRevisionDecision, PublicationWrite,
+        publication_revision_decision,
+    };
+
+    #[test]
+    fn registration_requires_the_exact_durable_publication_receipt() {
+        // Cause/effect decision table owned by PublicationWrite:
+        // R1 committed revision equals publication -> admit registration;
+        // R2 committed revision is stale/future -> reject with that receipt;
+        // R3 conflict with absent/present current -> reject and preserve that
+        // exact observation. Zero/u64::MAX cross equality and mismatch edges.
+        for publication in [0, 1, u64::MAX] {
+            for committed in [0, 1, u64::MAX] {
+                let result = PublicationWrite::Committed {
+                    source_revision: committed,
+                }
+                .registration_admission(publication);
+                assert_eq!(result.is_ok(), committed == publication, "R1/R2");
+                if committed != publication {
+                    assert_eq!(result, Err(Some(committed)), "R2");
+                }
+            }
+            for current_revision in [None, Some(0), Some(1), Some(u64::MAX)] {
+                assert_eq!(
+                    PublicationWrite::Conflict { current_revision }
+                        .registration_admission(publication),
+                    Err(current_revision),
+                    "R3"
+                );
+            }
+        }
+    }
 
     #[test]
     fn management_effect_derives_its_index_from_typed_content() {

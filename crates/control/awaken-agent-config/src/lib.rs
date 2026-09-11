@@ -24,5 +24,6 @@ pub use store::{
     AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError, ConfigWrite,
     DEFAULT_SCOPE, ManagementAuditAdmission, ManagementAuditEntry, ManagementAuditRecord,
     ManagementEffect, ManagementEffectReceipt, PublicationRevisionDecision, PublicationState,
-    ScopedConfig, ScopedConfigRegistry, StoredPublication, publication_revision_decision,
+    PublicationWrite, ScopedConfig, ScopedConfigRegistry, StoredPublication,
+    publication_revision_decision,
 };
