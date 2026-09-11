@@ -15,6 +15,38 @@ use awaken_provisioning_contract as pc;
 use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
 use std::sync::Arc;
 
+/// An effect-owned environment is reclaimed through the prepared/authorized
+/// disposal pair, never as unattached capacity — the provider refuses the
+/// latter precisely because this sandbox has a current realization.
+async fn dispose_owned(
+    sandbox: &dyn pc::Sandbox,
+    fence: &pc::SandboxEffectFence,
+    authority: &pc::test_support::EffectAuthority,
+) {
+    let prepared = sandbox
+        .prepare_disposal_for_effect(fence, authority)
+        .await
+        .expect("prepare fenced disposal");
+    let preparation = pc::SandboxDisposalPreparation::new(prepared, "env-injection-prepared")
+        .expect("disposal preparation");
+    let disposal_fence = pc::SandboxEffectFence::new(
+        preparation.operation_id().expect("disposal operation id"),
+        fence.owner.clone(),
+        fence.runtime_incarnation.clone(),
+        fence.epoch,
+        fence.expires_at_unix_ms,
+    )
+    .expect("disposal successor fence");
+    let authorization = preparation
+        .authorize(disposal_fence.clone())
+        .expect("authorize disposal");
+    let disposal_authority = pc::test_support::EffectAuthority::new(&disposal_fence);
+    sandbox
+        .dispose_for_effect(&authorization, &disposal_authority)
+        .await
+        .expect("fenced disposal");
+}
+
 struct FixedBroker;
 
 #[async_trait::async_trait]
@@ -176,7 +208,7 @@ async fn run(tier: Tier, can_exec: bool) -> bool {
     );
     assert_ne!(secret, "broker://k", "{tier:?}: reference never leaks");
 
-    sandbox.dispose_unattached().await.unwrap();
+    dispose_owned(sandbox.as_ref(), &fence, &authority).await;
     true
 }
 
@@ -220,7 +252,7 @@ async fn missing_broker_fails_before_a_workdir_process_starts() {
     let sandbox = p.create_for_effect(&s, &fence, &authority).await.unwrap();
     assert!(sandbox.spawn(sh("exit 0".into())).await.is_err());
     assert!(sandbox.artifacts().await.unwrap().is_empty());
-    sandbox.dispose_unattached().await.unwrap();
+    dispose_owned(sandbox.as_ref(), &fence, &authority).await;
 }
 
 /// The reserved runtime-owned keys are rejected at admission before any provisioning —
