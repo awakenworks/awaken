@@ -560,8 +560,11 @@ async fn install_active_worker_relay(
 ) {
     let generation = awaken_session_contract::McpGenerationRef {
         session_id: thread.into(),
-        attachment_id: awaken_session_contract::McpAttachmentId("docs".into()),
-        generation: awaken_session_contract::McpGeneration(1),
+        generation: awaken_session_contract::McpGeneration::of_bare_target(
+            awaken_session_contract::McpAttachmentId("docs".into()),
+            1,
+            &awaken_session_contract::McpTarget::parse_http("https://fixture.test/mcp").unwrap(),
+        ),
         runtime_incarnation: "runtime-1".into(),
         lease_epoch: 1,
         lease_expires_at_unix_ms: u64::MAX,

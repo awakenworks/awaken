@@ -176,8 +176,7 @@ pub(crate) fn mcp_generation_ref(
         .ok_or_else(|| RunError::internal("MCP generation has no durable realization claim"))?;
     Ok(McpGenerationRef {
         session_id: session_id.to_string(),
-        attachment_id: attachment.attachment_id.clone(),
-        generation: attachment.generation,
+        generation: attachment.generation.clone(),
         runtime_incarnation: claim.runtime_incarnation.clone(),
         lease_epoch: claim.lease_epoch,
         lease_expires_at_unix_ms: claim.lease_expires_at_unix_ms,

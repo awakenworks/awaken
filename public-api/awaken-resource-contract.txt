@@ -322,6 +322,10 @@ pub struct awaken_resource_contract::MemoryGeneration
 pub awaken_resource_contract::MemoryGeneration::content_sha256: alloc::string::String
 pub awaken_resource_contract::MemoryGeneration::memory_id: alloc::string::String
 pub awaken_resource_contract::MemoryGeneration::version: u64
+impl awaken_resource_contract::CompleteGeneration for awaken_resource_contract::MemoryGeneration
+pub fn awaken_resource_contract::MemoryGeneration::content_digest(&self) -> &str
+pub fn awaken_resource_contract::MemoryGeneration::subject_id(&self) -> &str
+pub fn awaken_resource_contract::MemoryGeneration::version(&self) -> u64
 pub struct awaken_resource_contract::MemoryMaterializationReferenceError(_)
 impl awaken_resource_contract::MemoryMaterializationReferenceError
 pub fn awaken_resource_contract::MemoryMaterializationReferenceError::new(impl core::convert::Into<alloc::string::String>) -> Self
@@ -617,6 +621,14 @@ pub fn awaken_resource_contract::UnavailableArtifactPublisher::capture<'life0, '
 pub fn awaken_resource_contract::UnavailableArtifactPublisher::publish<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::ArtifactPublication<C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::ArtifactPublicationReceipt, awaken_resource_contract::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_resource_contract::UnavailableArtifactPublisher::recover<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::ArtifactRecovery<C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_resource_contract::ArtifactPublicationReceipt>, awaken_resource_contract::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_resource_contract::UnavailableArtifactPublisher::replace_capture<'life0, 'life1, 'async_trait>(&'life0 self, awaken_resource_contract::ReplaceArtifactCapture, core::option::Option<&'life1 C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::ReplaceArtifactCaptureOutcome, awaken_resource_contract::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_resource_contract::CompleteGeneration: sealed::Sealed
+pub fn awaken_resource_contract::CompleteGeneration::content_digest(&self) -> &str
+pub fn awaken_resource_contract::CompleteGeneration::subject_id(&self) -> &str
+pub fn awaken_resource_contract::CompleteGeneration::version(&self) -> u64
+impl awaken_resource_contract::CompleteGeneration for awaken_resource_contract::MemoryGeneration
+pub fn awaken_resource_contract::MemoryGeneration::content_digest(&self) -> &str
+pub fn awaken_resource_contract::MemoryGeneration::subject_id(&self) -> &str
+pub fn awaken_resource_contract::MemoryGeneration::version(&self) -> u64
 pub trait awaken_resource_contract::ExecutionResourceResolver: core::marker::Send + core::marker::Sync
 pub fn awaken_resource_contract::ExecutionResourceResolver::resolve_memory_store(&self, &str, &str) -> core::result::Result<awaken_resource_contract::MemoryStoreConfigVersion, awaken_resource_contract::ResourceRegistryError>
 pub fn awaken_resource_contract::ExecutionResourceResolver::resolve_repository(&self, &str, &str) -> core::result::Result<awaken_resource_contract::RepositoryConfigVersion, awaken_resource_contract::ResourceRegistryError>
@@ -760,6 +772,7 @@ pub fn awaken_resource_contract::SkillStore::snapshot_latest_versions<'life0, 'l
 pub fn awaken_resource_contract::SkillStore::version<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_resource_contract::SkillVersion>, awaken_resource_contract::SkillStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_resource_contract::SkillStore::workspace_ids<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_resource_contract::SkillStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_resource_contract::content_id(&[u8]) -> alloc::string::String
+pub fn awaken_resource_contract::generation_matches<Observed, Live>(&Observed, &Live) -> bool where Observed: awaken_resource_contract::CompleteGeneration + ?core::marker::Sized, Live: awaken_resource_contract::CompleteGeneration + ?core::marker::Sized
 pub fn awaken_resource_contract::harvest_idempotency_key(&str, &str, &str) -> alloc::string::String
 pub fn awaken_resource_contract::is_session_owned_repository(&awaken_resource_contract::RepositoryDefinition) -> bool
 pub fn awaken_resource_contract::memory_sha256_hex(&str) -> alloc::string::String

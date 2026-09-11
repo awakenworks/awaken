@@ -22,8 +22,7 @@ impl SessionMcpAttachmentSet {
                     .ok_or(McpAttachmentError::StaleRealizationClaim)?;
                 Ok(McpGenerationRef {
                     session_id: session_id.to_owned(),
-                    attachment_id: attachment.attachment_id.clone(),
-                    generation: attachment.generation,
+                    generation: attachment.generation.clone(),
                     runtime_incarnation: claim.runtime_incarnation.clone(),
                     lease_epoch: claim.lease_epoch,
                     lease_expires_at_unix_ms: claim.lease_expires_at_unix_ms,
@@ -113,13 +112,12 @@ mod tests {
             let generations = set
                 .attachments
                 .iter()
-                .map(|attachment| (attachment.attachment_id.clone(), attachment.generation))
+                .map(|attachment| attachment.generation.clone())
                 .collect::<Vec<_>>();
-            for (index, (attachment_id, generation)) in generations.iter().enumerate() {
+            for (index, generation) in generations.iter().enumerate() {
                 let realization_id = format!("realization-{index}");
                 set.claim_realization(
-                    attachment_id,
-                    *generation,
+                    generation,
                     McpRealizationClaim {
                         realization_id: realization_id.clone(),
                         runtime_incarnation: "worker-a/boot-1".into(),
@@ -129,9 +127,8 @@ mod tests {
                     },
                 )
                 .unwrap();
-                set.activate(attachment_id, *generation, &realization_id)
-                    .unwrap();
-                set.acknowledge_publication(attachment_id, *generation, &realization_id)
+                set.activate(generation, &realization_id).unwrap();
+                set.acknowledge_publication(generation, &realization_id)
                     .unwrap();
             }
             set
@@ -147,7 +144,7 @@ mod tests {
             .map(|attachment| {
                 (
                     attachment.state,
-                    attachment.generation,
+                    attachment.generation.clone(),
                     attachment.realization.clone(),
                 )
             })
@@ -173,7 +170,7 @@ mod tests {
                 .map(|attachment| {
                     (
                         attachment.state,
-                        attachment.generation,
+                        attachment.generation.clone(),
                         attachment.realization.clone(),
                     )
                 })

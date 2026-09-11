@@ -37,11 +37,18 @@ impl SessionApplication {
                     return;
                 }
             };
-            let attachments = root.mcp.attachments.iter().map(|a| serde_json::json!({
-                "key": serde_json::to_string(&(a.attachment_id.0.as_str(), a.generation.0)).unwrap(),
-                "state": a.state, "ack": a.publication_acknowledged,
-                "claim": a.realization,
-            })).collect::<Vec<_>>();
+            let attachments = root
+                .mcp
+                .attachments
+                .iter()
+                .map(|a| {
+                    serde_json::json!({
+                        "key": serde_json::to_string(&a.generation).unwrap(),
+                        "state": a.state, "ack": a.publication_acknowledged,
+                        "claim": a.realization,
+                    })
+                })
+                .collect::<Vec<_>>();
             observation::checkpoint(
                 point,
                 id,
@@ -281,7 +288,7 @@ impl SessionApplication {
                 .attachments
                 .iter()
                 .filter(|attachment| attachment.state == McpAttachmentState::Requested)
-                .map(|attachment| (attachment.attachment_id.clone(), attachment.generation))
+                .map(|attachment| attachment.generation.clone())
                 .collect::<Vec<_>>();
             // One authenticated logical owner may immediately fence its prior
             // process incarnation after restart. A different owner can do so
@@ -329,16 +336,15 @@ impl SessionApplication {
                                 | McpAttachmentState::Active
                         )
                     })
-                    .map(|attachment| (attachment.attachment_id.clone(), attachment.generation))
+                    .map(|attachment| attachment.generation.clone())
                     .collect::<Vec<_>>()
             } else {
                 requested
             };
-            for (attachment_id, generation) in to_claim {
+            for generation in to_claim {
                 let realization_id = awaken_session_contract::stable_fingerprint(&(
                     &session.session_id,
-                    &attachment_id,
-                    generation,
+                    &generation,
                     &lease.runtime_incarnation,
                     lease.epoch,
                 ));
@@ -349,17 +355,16 @@ impl SessionApplication {
                     lease_expires_at_unix_ms: lease.expires_at_unix_ms,
                     stage_idempotency_key: format!(
                         "stage:{}:{}:{}:{}",
-                        session.session_id, attachment_id.0, generation.0, lease.epoch
+                        session.session_id,
+                        generation.attachment_id().0,
+                        generation.version(),
+                        lease.epoch
                     ),
                 };
                 let result = if needs_assignment {
-                    session
-                        .mcp
-                        .claim_recovery(&attachment_id, generation, claim)
+                    session.mcp.claim_recovery(&generation, claim)
                 } else {
-                    session
-                        .mcp
-                        .claim_realization(&attachment_id, generation, claim)
+                    session.mcp.claim_realization(&generation, claim)
                 };
                 result.map_err(unavailable)?;
             }
@@ -435,10 +440,9 @@ impl SessionApplication {
         // requiring unrelated drains or authorizing their publication.
         for attachment in &session.mcp.attachments {
             if attachment.state == McpAttachmentState::Draining
-                && receipt_generations.iter().any(|generation| {
-                    generation.attachment_id == attachment.attachment_id
-                        && generation.generation == attachment.generation
-                })
+                && receipt_generations
+                    .iter()
+                    .any(|generation| generation.generation == attachment.generation)
             {
                 expected.push(
                     projection::stage_mcp_request(&owner_scope, &session.session_id, attachment)
@@ -532,19 +536,12 @@ impl SessionApplication {
                     .mcp
                     .attachments
                     .iter()
-                    .find(|attachment| {
-                        attachment.attachment_id == request.generation.attachment_id
-                            && attachment.generation == request.generation.generation
-                    })
+                    .find(|attachment| attachment.generation == request.generation.generation)
                     .ok_or(SessionRealizationControlFailure::NotReady)?;
                 if attachment.state == McpAttachmentState::Realizing {
                     session
                         .mcp
-                        .activate(
-                            &request.generation.attachment_id,
-                            request.generation.generation,
-                            &request.realization_id,
-                        )
+                        .activate(&request.generation.generation, &request.realization_id)
                         .map_err(unavailable)?;
                 }
             }
@@ -672,26 +669,19 @@ impl SessionApplication {
                 .mcp
                 .attachments
                 .iter()
-                .find(|attachment| {
-                    attachment.attachment_id == generation.attachment_id
-                        && attachment.generation == generation.generation
-                })
+                .find(|attachment| attachment.generation == generation.generation)
                 .and_then(|attachment| attachment.realization.as_ref())
                 .map(|claim| claim.realization_id.clone())
                 .ok_or(SessionRealizationControlFailure::NotReady)?;
             session
                 .mcp
-                .acknowledge_publication(
-                    &generation.attachment_id,
-                    generation.generation,
-                    &realization_id,
-                )
+                .acknowledge_publication(&generation.generation, &realization_id)
                 .map_err(unavailable)?;
         }
         for generation in expected_drain {
             session
                 .mcp
-                .finish_drain(&generation.attachment_id, generation.generation)
+                .finish_drain(&generation.generation)
                 .map_err(unavailable)?;
         }
         let initial_ready = !session.has_active_activities()
@@ -822,8 +812,7 @@ impl SessionApplication {
             .filter(|attachment| attachment.state == McpAttachmentState::Realizing)
             .map(|attachment| {
                 (
-                    attachment.attachment_id.clone(),
-                    attachment.generation,
+                    attachment.generation.clone(),
                     attachment
                         .realization
                         .as_ref()
@@ -831,12 +820,11 @@ impl SessionApplication {
                 )
             })
             .collect::<Vec<_>>();
-        for (attachment_id, generation, realization_id) in realizing {
+        for (generation, realization_id) in realizing {
             session
                 .mcp
                 .fail_realization(
-                    &attachment_id,
-                    generation,
+                    &generation,
                     realization_id
                         .as_deref()
                         .ok_or(SessionRealizationControlFailure::NotReady)?,

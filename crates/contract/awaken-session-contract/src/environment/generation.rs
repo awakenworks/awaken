@@ -1,6 +1,33 @@
 //! Immutable identity of one live Sandbox generation.
 
 /// Stable identity and immutable compatibility facts for one live Sandbox.
+///
+/// **Not an optimistic-concurrency witness**, and deliberately not an
+/// [`awaken_resource_contract::CompleteGeneration`]. It has no monotonic
+/// version because it never fences a conditional write against a moving head:
+///
+/// * It is assigned exactly once. [`SessionEnvironmentState::assign_generation`]
+///   refuses to replace a generation that is already present ("adoption never
+///   rotates it"), so there is no sequence of values to be behind.
+/// * Its [`SandboxGeneration::id`] is itself the content digest of every other
+///   coordinate — the session, both timestamps, and both fingerprints are
+///   hashed into it by [`SandboxGeneration::new`]. Two Sandboxes that differ in
+///   any coordinate have different ids, and the same id can never be reached
+///   twice by a different Sandbox, so the `A -> B -> A` cycle a version
+///   coordinate exists to catch is unrepresentable here.
+/// * Every consumer compares it as effect identity, not as a precondition:
+///   `QuiescenceReceipt`, `CheckpointReceipt`, `SourceDisposedReceipt`, and
+///   `RestoreReceipt` check `receipt.generation_id == generation.id` to confirm
+///   a receipt describes *this* physical effect, and
+///   [`SessionEnvironmentOperation::new`] folds the whole value into the
+///   effect-id preimage. None of those reads a durable head and writes it back.
+///
+/// Adding a version here would therefore be a coordinate with no consumer. If
+/// a conditional mutation of Sandbox state is ever introduced, that is the
+/// moment to give this type a version and implement `CompleteGeneration`.
+///
+/// [`SessionEnvironmentState::assign_generation`]: super::SessionEnvironmentState::assign_generation
+/// [`SessionEnvironmentOperation::new`]: super::SessionEnvironmentOperation::new
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SandboxGeneration {
     pub id: String,

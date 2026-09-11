@@ -141,11 +141,12 @@ pub use lifecycle::{
     SessionRuntimeIntervalStart,
 };
 pub use mcp_attachment::{
-    McpAttachmentDraft, McpAttachmentError, McpAttachmentId, McpAttachmentOrigin,
-    McpAttachmentState, McpDesiredSetFingerprint, McpGeneration, McpGenerationRef,
-    McpProjectionEffectKind, McpProjectionReceipt, McpRealizationClaim, McpRealizationReceipt,
-    McpRealizationReceiptError, McpReplacementPlan, McpSetRevision, McpTarget, McpTargetError,
-    McpTargetIdentity, SessionMcpAttachment, SessionMcpAttachmentSet, StageMcpAttachment,
+    McpAttachmentContentDigest, McpAttachmentDraft, McpAttachmentError, McpAttachmentId,
+    McpAttachmentOrigin, McpAttachmentState, McpDesiredSetFingerprint, McpGeneration,
+    McpGenerationRef, McpProjectionEffectKind, McpProjectionReceipt, McpRealizationClaim,
+    McpRealizationReceipt, McpRealizationReceiptError, McpReplacementPlan, McpSetRevision,
+    McpTarget, McpTargetError, McpTargetIdentity, SessionMcpAttachment, SessionMcpAttachmentSet,
+    StageMcpAttachment,
 };
 pub use mcp_probe::{McpProbe, McpProbeStatus};
 pub use model_resolution::{

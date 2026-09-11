@@ -1208,22 +1208,42 @@ pub awaken_session_contract::ManagedTokenListRates::cache_creation_micros_per_mi
 pub awaken_session_contract::ManagedTokenListRates::cache_read_micros_per_million: u64
 pub awaken_session_contract::ManagedTokenListRates::input_micros_per_million: u64
 pub awaken_session_contract::ManagedTokenListRates::output_micros_per_million: u64
+pub struct awaken_session_contract::McpAttachmentContentDigest(_)
+impl awaken_session_contract::McpAttachmentContentDigest
+pub fn awaken_session_contract::McpAttachmentContentDigest::as_str(&self) -> &str
+pub fn awaken_session_contract::McpAttachmentContentDigest::of_content(&awaken_agent_contract::mcp_target::McpTarget, bool, core::option::Option<&awaken_credential_contract::CredentialAccess>, awaken_session_contract::McpAttachmentOrigin) -> Self
 pub struct awaken_session_contract::McpAttachmentDraft
 pub awaken_session_contract::McpAttachmentDraft::credential: core::option::Option<awaken_credential_contract::CredentialAccess>
 pub awaken_session_contract::McpAttachmentDraft::name: alloc::string::String
 pub awaken_session_contract::McpAttachmentDraft::origin: awaken_session_contract::McpAttachmentOrigin
 pub awaken_session_contract::McpAttachmentDraft::prompts_as_skills: bool
 pub awaken_session_contract::McpAttachmentDraft::target: awaken_agent_contract::mcp_target::McpTarget
+impl awaken_session_contract::McpAttachmentDraft
+pub fn awaken_session_contract::McpAttachmentDraft::content_digest(&self) -> awaken_session_contract::McpAttachmentContentDigest
 pub struct awaken_session_contract::McpAttachmentId(pub alloc::string::String)
 pub struct awaken_session_contract::McpDesiredSetFingerprint(pub alloc::string::String)
-pub struct awaken_session_contract::McpGeneration(pub u64)
+pub struct awaken_session_contract::McpGeneration
+impl awaken_session_contract::McpGeneration
+pub fn awaken_session_contract::McpGeneration::at_version(&self, u64) -> Self
+pub const fn awaken_session_contract::McpGeneration::attachment_id(&self) -> &awaken_session_contract::McpAttachmentId
+pub const fn awaken_session_contract::McpGeneration::digest(&self) -> &awaken_session_contract::McpAttachmentContentDigest
+pub fn awaken_session_contract::McpGeneration::new(awaken_session_contract::McpAttachmentId, u64, awaken_session_contract::McpAttachmentContentDigest) -> Self
+pub fn awaken_session_contract::McpGeneration::of_bare_target(awaken_session_contract::McpAttachmentId, u64, &awaken_agent_contract::mcp_target::McpTarget) -> Self
+pub fn awaken_session_contract::McpGeneration::of_draft(awaken_session_contract::McpAttachmentId, u64, &awaken_session_contract::McpAttachmentDraft) -> Self
+pub const fn awaken_session_contract::McpGeneration::version(&self) -> u64
+impl awaken_resource_contract::generation::CompleteGeneration for awaken_session_contract::McpGeneration
+pub fn awaken_session_contract::McpGeneration::content_digest(&self) -> &str
+pub fn awaken_session_contract::McpGeneration::subject_id(&self) -> &str
+pub fn awaken_session_contract::McpGeneration::version(&self) -> u64
+impl awaken_resource_contract::generation::sealed::Sealed for awaken_session_contract::McpGeneration
 pub struct awaken_session_contract::McpGenerationRef
-pub awaken_session_contract::McpGenerationRef::attachment_id: awaken_session_contract::McpAttachmentId
 pub awaken_session_contract::McpGenerationRef::generation: awaken_session_contract::McpGeneration
 pub awaken_session_contract::McpGenerationRef::lease_epoch: u64
 pub awaken_session_contract::McpGenerationRef::lease_expires_at_unix_ms: u64
 pub awaken_session_contract::McpGenerationRef::runtime_incarnation: alloc::string::String
 pub awaken_session_contract::McpGenerationRef::session_id: alloc::string::String
+impl awaken_session_contract::McpGenerationRef
+pub const fn awaken_session_contract::McpGenerationRef::attachment_id(&self) -> &awaken_session_contract::McpAttachmentId
 pub struct awaken_session_contract::McpProjectionReceipt
 pub awaken_session_contract::McpProjectionReceipt::effect: awaken_session_contract::McpProjectionEffectKind
 pub awaken_session_contract::McpProjectionReceipt::effect_id: alloc::string::String
@@ -1248,8 +1268,8 @@ pub fn awaken_session_contract::McpRealizationReceipt::verify(&self, &awaken_ses
 pub fn awaken_session_contract::McpRealizationReceipt::verify_for_delivery(&self, &awaken_session_contract::StageMcpAttachment, awaken_credential_contract::realization_capabilities::McpCredentialDelivery, awaken_credential_contract::realization_capabilities::CredentialRealizationKind) -> core::result::Result<(), awaken_session_contract::McpRealizationReceiptError>
 pub struct awaken_session_contract::McpReplacementPlan
 pub awaken_session_contract::McpReplacementPlan::changed: bool
-pub awaken_session_contract::McpReplacementPlan::draining: alloc::vec::Vec<(awaken_session_contract::McpAttachmentId, awaken_session_contract::McpGeneration)>
-pub awaken_session_contract::McpReplacementPlan::requested: alloc::vec::Vec<(awaken_session_contract::McpAttachmentId, awaken_session_contract::McpGeneration)>
+pub awaken_session_contract::McpReplacementPlan::draining: alloc::vec::Vec<awaken_session_contract::McpGeneration>
+pub awaken_session_contract::McpReplacementPlan::requested: alloc::vec::Vec<awaken_session_contract::McpGeneration>
 pub struct awaken_session_contract::McpSetRevision(pub u64)
 pub struct awaken_session_contract::ObservedSessionRealizationLease
 pub awaken_session_contract::ObservedSessionRealizationLease::lease: awaken_session_contract::SessionRealizationLease
@@ -1733,16 +1753,16 @@ pub awaken_session_contract::SessionMcpAttachmentSet::desired_fingerprint: awake
 pub awaken_session_contract::SessionMcpAttachmentSet::desired_names: core::option::Option<alloc::collections::btree::set::BTreeSet<alloc::string::String>>
 pub awaken_session_contract::SessionMcpAttachmentSet::revision: awaken_session_contract::McpSetRevision
 impl awaken_session_contract::SessionMcpAttachmentSet
-pub fn awaken_session_contract::SessionMcpAttachmentSet::acknowledge_publication(&mut self, &awaken_session_contract::McpAttachmentId, awaken_session_contract::McpGeneration, &str) -> core::result::Result<(), awaken_session_contract::McpAttachmentError>
-pub fn awaken_session_contract::SessionMcpAttachmentSet::activate(&mut self, &awaken_session_contract::McpAttachmentId, awaken_session_contract::McpGeneration, &str) -> core::result::Result<(), awaken_session_contract::McpAttachmentError>
-pub fn awaken_session_contract::SessionMcpAttachmentSet::begin_drain(&mut self, &awaken_session_contract::McpAttachmentId, awaken_session_contract::McpGeneration) -> core::result::Result<(), awaken_session_contract::McpAttachmentError>
+pub fn awaken_session_contract::SessionMcpAttachmentSet::acknowledge_publication(&mut self, &awaken_session_contract::McpGeneration, &str) -> core::result::Result<(), awaken_session_contract::McpAttachmentError>
+pub fn awaken_session_contract::SessionMcpAttachmentSet::activate(&mut self, &awaken_session_contract::McpGeneration, &str) -> core::result::Result<(), awaken_session_contract::McpAttachmentError>
+pub fn awaken_session_contract::SessionMcpAttachmentSet::begin_drain(&mut self, &awaken_session_contract::McpGeneration) -> core::result::Result<(), awaken_session_contract::McpAttachmentError>
 pub fn awaken_session_contract::SessionMcpAttachmentSet::begin_obsolete_drains(&mut self) -> core::result::Result<(), awaken_session_contract::McpAttachmentError>
-pub fn awaken_session_contract::SessionMcpAttachmentSet::claim_realization(&mut self, &awaken_session_contract::McpAttachmentId, awaken_session_contract::McpGeneration, awaken_session_contract::McpRealizationClaim) -> core::result::Result<(), awaken_session_contract::McpAttachmentError>
-pub fn awaken_session_contract::SessionMcpAttachmentSet::claim_recovery(&mut self, &awaken_session_contract::McpAttachmentId, awaken_session_contract::McpGeneration, awaken_session_contract::McpRealizationClaim) -> core::result::Result<(), awaken_session_contract::McpAttachmentError>
+pub fn awaken_session_contract::SessionMcpAttachmentSet::claim_realization(&mut self, &awaken_session_contract::McpGeneration, awaken_session_contract::McpRealizationClaim) -> core::result::Result<(), awaken_session_contract::McpAttachmentError>
+pub fn awaken_session_contract::SessionMcpAttachmentSet::claim_recovery(&mut self, &awaken_session_contract::McpGeneration, awaken_session_contract::McpRealizationClaim) -> core::result::Result<(), awaken_session_contract::McpAttachmentError>
 pub fn awaken_session_contract::SessionMcpAttachmentSet::desired_attachments(&self) -> alloc::vec::Vec<&awaken_session_contract::SessionMcpAttachment>
 pub fn awaken_session_contract::SessionMcpAttachmentSet::extend_active_realization_leases(&mut self, &str, u64, u64) -> core::result::Result<usize, awaken_session_contract::McpAttachmentError>
-pub fn awaken_session_contract::SessionMcpAttachmentSet::fail_realization(&mut self, &awaken_session_contract::McpAttachmentId, awaken_session_contract::McpGeneration, &str, impl core::convert::Into<alloc::string::String>) -> core::result::Result<(), awaken_session_contract::McpAttachmentError>
-pub fn awaken_session_contract::SessionMcpAttachmentSet::finish_drain(&mut self, &awaken_session_contract::McpAttachmentId, awaken_session_contract::McpGeneration) -> core::result::Result<(), awaken_session_contract::McpAttachmentError>
+pub fn awaken_session_contract::SessionMcpAttachmentSet::fail_realization(&mut self, &awaken_session_contract::McpGeneration, &str, impl core::convert::Into<alloc::string::String>) -> core::result::Result<(), awaken_session_contract::McpAttachmentError>
+pub fn awaken_session_contract::SessionMcpAttachmentSet::finish_drain(&mut self, &awaken_session_contract::McpGeneration) -> core::result::Result<(), awaken_session_contract::McpAttachmentError>
 pub fn awaken_session_contract::SessionMcpAttachmentSet::from_initial(alloc::vec::Vec<awaken_session_contract::McpAttachmentDraft>, core::option::Option<awaken_credential_contract::PlaintextHolder>) -> core::result::Result<Self, awaken_session_contract::McpAttachmentError>
 pub fn awaken_session_contract::SessionMcpAttachmentSet::needs_reconciliation(&self) -> bool
 pub fn awaken_session_contract::SessionMcpAttachmentSet::request_full_replacement(&mut self, alloc::vec::Vec<awaken_session_contract::McpAttachmentDraft>, core::option::Option<awaken_credential_contract::PlaintextHolder>) -> core::result::Result<awaken_session_contract::McpReplacementPlan, awaken_session_contract::McpAttachmentError>

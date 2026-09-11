@@ -489,6 +489,99 @@ def check_tests_are_not_arch_owners() -> list[str]:
     return errors
 
 
+# L2 guard for the optimistic-concurrency witness (see
+# `awaken_resource_contract::CompleteGeneration`). A type whose name ends in
+# `Generation` is, by the repository's own vocabulary, the thing a conditional
+# mutation compares against a durable head. Such a type must be a complete
+# witness — immutable identity, monotonic version, observed content digest —
+# so that a bare counter or a bare digest can never become a CAS precondition.
+# Declaring one therefore requires either an `impl CompleteGeneration` beside
+# it or an entry here recording, in prose at the type, why it never gates a
+# conditional write.
+INCOMPLETE_GENERATION_EXEMPTIONS = {
+    # Assigned once and never rotated; its `id` is already the content digest
+    # of every other coordinate; every consumer compares it as effect identity
+    # on a receipt, never as a precondition on a durable head. The type carries
+    # the full argument.
+    "SandboxGeneration": "crates/contract/awaken-session-contract/src/environment/generation.rs",
+}
+
+
+def check_generation_witnesses_are_complete(
+    repo_root: Path = REPO_ROOT, crates: Path = CRATES
+) -> list[str]:
+    """Every `*Generation` value type is a complete CAS witness or a stated exception."""
+    errors: list[str] = []
+    declaration = re.compile(r"\bpub struct (\w*Generation)\b")
+    for path in sorted(crates.glob("*/*/src/**/*.rs")):
+        relative = path.relative_to(repo_root)
+        production = _crate_boundary_workspace.production_rust(
+            path.read_text(encoding="utf-8", errors="ignore")
+        )
+        for name in declaration.findall(production):
+            exemption = INCOMPLETE_GENERATION_EXEMPTIONS.get(name)
+            if exemption is not None:
+                if exemption == str(relative):
+                    continue
+                errors.append(
+                    f"{relative}: {name} is exempted from CompleteGeneration at "
+                    f"{exemption}, not here; move or re-justify the exemption"
+                )
+                continue
+            implemented = f"CompleteGeneration for {name}" in production
+            if not implemented:
+                errors.append(
+                    f"{relative}: {name} is a compare-and-set witness but does not "
+                    "implement awaken_resource_contract::CompleteGeneration; supply the "
+                    "identity, version and digest coordinates, or record in "
+                    "INCOMPLETE_GENERATION_EXEMPTIONS why it never gates a conditional write"
+                )
+    return errors
+
+
+def selftest_generation_witnesses() -> None:
+    """Cause/effect: an incomplete witness rejects; a complete or stated one admits."""
+    # C1 a `*Generation` type is declared with no `CompleteGeneration` impl;
+    # C2 the same file also implements the trait for it; C3 the name carries a
+    # recorded exemption at this path; C4 it carries one at another path;
+    # C5 the declaration is test-only. Effects: E1 reject; E2 admit.
+    #
+    # | Rule | impl | exempt here | exempt elsewhere | test-only | Effect |
+    # | G1   | F    | F           | F                | F         | E1     |
+    # | G2   | T    | F           | F                | F         | E2     |
+    # | G3   | F    | T           | F                | F         | E2     |
+    # | G4   | F    | F           | T                | F         | E1     |
+    # | G5   | F    | F           | F                | T         | E2     |
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        crates = root / "crates"
+        source = crates / "contract/example/src/lib.rs"
+        source.parent.mkdir(parents=True)
+        source.write_text("pub struct WidgetGeneration { version: u64 }\n", encoding="utf-8")
+        assert check_generation_witnesses_are_complete(root, crates)  # G1
+        source.write_text(
+            "pub struct WidgetGeneration { version: u64 }\n"
+            "impl CompleteGeneration for WidgetGeneration {}\n",
+            encoding="utf-8",
+        )
+        assert not check_generation_witnesses_are_complete(root, crates)  # G2
+        source.write_text("pub struct ExemptGeneration { id: String }\n", encoding="utf-8")
+        INCOMPLETE_GENERATION_EXEMPTIONS["ExemptGeneration"] = str(
+            source.relative_to(root)
+        )
+        try:
+            assert not check_generation_witnesses_are_complete(root, crates)  # G3
+            INCOMPLETE_GENERATION_EXEMPTIONS["ExemptGeneration"] = "crates/other/src/lib.rs"
+            assert check_generation_witnesses_are_complete(root, crates)  # G4
+        finally:
+            del INCOMPLETE_GENERATION_EXEMPTIONS["ExemptGeneration"]
+        source.write_text(
+            "#[cfg(test)] pub struct FixtureGeneration { version: u64 }\n",
+            encoding="utf-8",
+        )
+        assert not check_generation_witnesses_are_complete(root, crates)  # G5
+
+
 def check_cloud_placement_boundary(
     repo_root: Path = REPO_ROOT, crates: Path = CRATES
 ) -> list[str]:
@@ -553,6 +646,7 @@ def selftest_cloud_placement_boundary() -> None:
 
 def main() -> int:
     selftest_cloud_placement_boundary()
+    selftest_generation_witnesses()
     _crate_boundary_workspace.selftest()
     _crate_dependency_fitness.selftest()
     _arch_fitness.selftest()
@@ -573,6 +667,7 @@ def main() -> int:
         + check_background_task_is_state_only()
         + check_tests_are_not_arch_owners()
         + check_cloud_placement_boundary()
+        + check_generation_witnesses_are_complete()
         + _resource_plane_fitness.check_all(REPO_ROOT, CRATES)
         + _runtime_secret_boundary.check_all(REPO_ROOT, CRATES)
         + _provider_env_fitness.check_all(REPO_ROOT, CRATES)

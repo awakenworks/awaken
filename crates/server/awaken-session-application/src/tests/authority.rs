@@ -5933,7 +5933,8 @@ async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_
         "M2/E3 one failed generation plus one exact recovery generation"
     );
     assert_eq!(
-        desired[0].generation.0, 2,
+        desired[0].generation.version(),
+        2,
         "M2/E3 Failed -> N+1 uses the canonical MCP retry rule"
     );
     assert_eq!(
@@ -6885,12 +6886,11 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
             None,
         )
         .unwrap();
-        let attachment_id = session.mcp.attachments[0].attachment_id.clone();
+        let generation = session.mcp.attachments[0].generation.clone();
         session
             .mcp
             .claim_realization(
-                &attachment_id,
-                awaken_session_contract::McpGeneration(1),
+                &generation,
                 awaken_session_contract::McpRealizationClaim {
                     realization_id: "realization-1".into(),
                     runtime_incarnation: asserted_lease.runtime_incarnation.clone(),
@@ -6907,14 +6907,7 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
         )
         .unwrap();
         if already_active {
-            session
-                .mcp
-                .activate(
-                    &attachment_id,
-                    awaken_session_contract::McpGeneration(1),
-                    "realization-1",
-                )
-                .unwrap();
+            session.mcp.activate(&generation, "realization-1").unwrap();
             session
                 .mcp
                 .extend_active_realization_leases(
@@ -7026,7 +7019,8 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
         assert_eq!(publish.len(), 1, "F1/E2 publishes the one admitted claim");
         let renewed_generation = &publish[0];
         assert_eq!(
-            renewed_generation.attachment_id, admitted_request.generation.attachment_id,
+            renewed_generation.attachment_id(),
+            admitted_request.generation.attachment_id(),
             "F1/E2 preserves the admitted attachment"
         );
         assert_eq!(
@@ -7077,10 +7071,10 @@ async fn activation_preserves_completed_receipts_during_same_generation_renewal(
 async fn recovery_replacement_partitions_staged_receipts_and_replays_activation() {
     use awaken_session_contract::{
         AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
-        McpAttachmentDraft, McpAttachmentOrigin, McpAttachmentState, McpGeneration,
-        McpRealizationClaim, McpRealizationReceipt, RenewSessionRealization,
-        SessionMcpAttachmentSet, SessionRealizationAction, SessionRealizationControl,
-        SessionRealizationControlFailure, SessionRealizationLease, SessionRealizationTarget,
+        McpAttachmentDraft, McpAttachmentOrigin, McpAttachmentState, McpRealizationClaim,
+        McpRealizationReceipt, RenewSessionRealization, SessionMcpAttachmentSet,
+        SessionRealizationAction, SessionRealizationControl, SessionRealizationControlFailure,
+        SessionRealizationLease, SessionRealizationTarget,
     };
     // Cause/effect graph: C1 hot owner versus restarted owner; C2 renewal
     // between Stage and activation; C3 activation response loss/replay;
@@ -7134,13 +7128,12 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
             )
             .unwrap();
             for attachment in session.mcp.attachments.clone() {
-                let id = attachment.attachment_id;
+                let generation = attachment.generation;
                 let realization_id = format!("old-{}", attachment.name);
                 session
                     .mcp
                     .claim_realization(
-                        &id,
-                        McpGeneration(1),
+                        &generation,
                         McpRealizationClaim {
                             realization_id: realization_id.clone(),
                             runtime_incarnation: lease.runtime_incarnation.clone(),
@@ -7150,13 +7143,10 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
                         },
                     )
                     .unwrap();
+                session.mcp.activate(&generation, &realization_id).unwrap();
                 session
                     .mcp
-                    .activate(&id, McpGeneration(1), &realization_id)
-                    .unwrap();
-                session
-                    .mcp
-                    .acknowledge_publication(&id, McpGeneration(1), &realization_id)
+                    .acknowledge_publication(&generation, &realization_id)
                     .unwrap();
             }
             session
@@ -7259,16 +7249,14 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
                         .mcp
                         .attachments
                         .iter()
-                        .any(|a| a.attachment_id == generation.attachment_id
-                            && a.generation == generation.generation
+                        .any(|a| a.generation == generation.generation
                             && a.state == McpAttachmentState::Active),
                     "E2 active only"
                 );
                 assert!(
                     !drain
                         .iter()
-                        .any(|old| old.attachment_id == generation.attachment_id
-                            && old.generation == generation.generation),
+                        .any(|old| old.generation == generation.generation),
                     "E3 disjoint sets"
                 );
             }
@@ -7298,7 +7286,7 @@ async fn recovery_replacement_partitions_staged_receipts_and_replays_activation(
                 match fault {
                     "foreign" => {
                         let mut extra = invalid.mcp_receipts[0].clone();
-                        extra.generation.generation = McpGeneration(99);
+                        extra.generation.generation = extra.generation.generation.at_version(99);
                         invalid.mcp_receipts.push(extra);
                     }
                     "duplicate" => invalid.mcp_receipts.push(invalid.mcp_receipts[0].clone()),
