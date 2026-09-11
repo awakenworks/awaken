@@ -1301,9 +1301,6 @@ pub trait SandboxProvider: Send + Sync {
         Ok(())
     }
 
-    /// Realize a validated spec into a live sandbox (bind mounts, apply ro/env/
-    /// network/limits). Callers should validate first via `prepare_environment`.
-
     /// Realize one Sandbox only after validating the aggregate-owned physical
     /// effect fence against the original captured current authority. Re-enter
     /// that authority after asynchronous preparation and before publishing its
@@ -1344,14 +1341,10 @@ pub trait SandboxProvider: Send + Sync {
         ))
     }
 
-    /// Reconnect to an already-realized sandbox from a persisted [`SandboxHandle`]
-    /// — the recovery path after a host restart, and the takeover path across
-    /// hosts. For a local backend this re-opens the directory; for a remote one it
-    /// rebuilds a client against the still-running pod/container.
-
     /// Adopt only after revalidating the exact aggregate-owned effect fence.
-    /// The legacy port remains available for explicitly unfenced callers; a
-    /// durable Session must use this fail-closed edge. Re-enter the supplied
+    /// This is the provider's only adoption edge: reconnecting to an already
+    /// realized sandbox from a persisted [`SandboxHandle`] after a host restart
+    /// or across a takeover. Re-enter the supplied
     /// current authority after waits and before subsequent effects or success;
     /// the durable fence alone is not a process-local clock or admission proof.
     /// This is the provider's adoption obligation and carries no default, so a
@@ -1531,8 +1524,6 @@ pub trait Sandbox: Send + Sync {
     /// spec's `lease_ttl_secs`; if the owner vanishes and the lease expires, the
     /// backend reaps the sandbox. A local backend implements this as a no-op.
     async fn renew_lease(&self) -> Result<(), SandboxError>;
-
-    /// Tear down the environment. Idempotent; `Durable` mounts persist.
 
     /// Confirm that the Host completed every copy-backed Memory obligation for
     /// this aggregate effect and supplied the provider's exact complete ordered
