@@ -927,7 +927,13 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness publication_resolution_invokes_exactly_one_owner \
     --harness only_the_reserved_scope_selects_admin_catalog_membership \
     --harness every_non_reserved_scope_selects_strictly_global_membership
-  run_kani awaken-service-lifecycle \
+  # Cause/effect decision rule: the package now also owns a production CLI
+  # binary, so selecting its library target admits the exact library harnesses;
+  # omitting or changing that literal selector must not redirect this proof to
+  # another Cargo target. The strict coverage parser rejects every selector
+  # outside its closed unary-option set and still binds every exact harness.
+  run_kani awaken-service-lifecycle --lib \
+    --harness verified_release_and_tcb_admission_are_total_exact_and_fail_closed \
     --harness shutdown_registry_fences_registration_and_transfers_exactly_once \
     --harness startup_wiring_is_exact_for_every_service_role \
     --harness startup_wiring_requires_every_role_owned_component \

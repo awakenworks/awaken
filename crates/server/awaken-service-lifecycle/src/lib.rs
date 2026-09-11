@@ -13,6 +13,8 @@ use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
+pub mod release_admission;
+
 /// Run a service future on the canonical Awaken process runtime.
 ///
 /// Managed execution crosses durable ingress, materialization, connector, and

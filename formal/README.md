@@ -1013,6 +1013,13 @@ signed CI testimony rather than an independently checkable proof certificate.
 generation under `AWAKEN_RELEASE_PROFILE=awaken-verified-v1` additionally
 requires the P0 direct-proof denominator to be empty.
 
+The Python owner projects final release and per-dependency TCB facts into the
+single `awaken-service-lifecycle::release_admission` kernel. Its pinned Rust
+CLI fails closed on process, invocation, disposition, or fact rejection. Kani
+exhausts six release Booleans, every scalar TCB Boolean, and the full `u64` age
+relation. JSON projection, hashing, Git/receipt validation, compiler/subprocess
+integrity and authentication remain boundaries, not Python/workflow refinement.
+
 Management staging and final release both validate the requested profile and
 completed proof before extraction or attestation. Requesting
 `awaken-verified-v1` necessarily enables Verified admission, so omission of a

@@ -1052,19 +1052,19 @@ present one fresh, exact fingerprint for every TCB contract. Artifact, ledger,
 profile, proof-input, or TCB mismatch removes the Verified identity rather than
 weakening the safety claim.
 
-`verification_manifest.py` is the one release/TCB admission validator. Its
-`--runtime-fingerprint` input is a deployment snapshot, not a parallel TCB
-ledger: exact dependency IDs resolve back to the generated manifest contracts,
-and observations must match the independently supplied target versions and
-configuration digests. Both lists must be complete and unique; time is a
-nonnegative integer, observations cannot be future-dated, and maximum age is
-inclusive. `VerifiedProfileAdmission` abstracts this frozen decision with two
-dependencies and explicit finite time/match bounds. Its model mutants remove
-version, configuration and expiry guards; production tests own the corresponding
-cause/effect rules. This does not prove Python refinement or authenticate either
-JSON input. The deployment owner must authenticate and freeze the actual target,
-prevent check/use races, invalidate expired evidence, and bind Session execution
-to that identity before a runtime may advertise Verified.
+`verification_manifest.py` is the one release/TCB admission validator; `--runtime-fingerprint`
+supplies an independent snapshot, not a parallel ledger; IDs resolve to manifest
+contracts and observations match targets. Both lists are complete and unique; time
+is nonnegative, observations are not future-dated, and maximum age is inclusive.
+Every success consumes `awaken-service-lifecycle::release_admission` through its
+CLI. Kani exhausts release facts and exact/fresh TCB scalars over all `u64`
+times; checked subtraction rejects future observations without underflow.
+`VerifiedProfileAdmission` and its mutants remain independent bounded
+cross-evidence, not Python/Rust refinement. Python parsing/fact projection,
+JSON/String behavior, Cargo/rustc, subprocesses, SHA-256, and authentication
+remain boundaries. The deployment owner must freeze the target, prevent
+check/use races, invalidate expired evidence, and bind Session execution to
+that identity before advertising Verified.
 
 ### Durable inbox/outbox and event-sourced reducers
 

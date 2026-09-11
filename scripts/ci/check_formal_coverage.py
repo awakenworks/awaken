@@ -92,7 +92,7 @@ for line in formal_gate.replace("\\\n", " ").splitlines():
             if not checked_loop_override(tokens[1], tokens[2:index], tokens[index:], unstable_options):
                 fail("strict CI Kani selection permits only checked literal loop bounds")
             break
-        if flag == "--no-default-features":
+        if flag in {"--lib", "--no-default-features"}:
             index += 1
             continue
         if index + 1 >= len(tokens):
