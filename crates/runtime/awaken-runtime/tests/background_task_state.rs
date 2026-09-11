@@ -13,9 +13,14 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{Scope, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::thread::commit::RunDisposition;
+use awaken_agent_contract::thread::commit::coordinator::Coordinator;
+use awaken_agent_contract::thread::commit::staged::ThreadCommit;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_ext_background_task::{
-    BACKGROUND_TASK_PLUGIN_ID, BACKGROUND_TASK_STATE_PREFIX, BackgroundTask, BackgroundTaskConfig,
-    BackgroundTaskLifecycle, BackgroundTaskPlugin,
+    BACKGROUND_TASK_PLUGIN_ID, BACKGROUND_TASK_STATE_PREFIX, BackgroundInvocation, BackgroundTask,
+    BackgroundTaskConfig, BackgroundTaskEnd, BackgroundTaskId, BackgroundTaskLifecycle,
+    BackgroundTaskOrigin, BackgroundTaskPlugin, TaskClaim, TaskExecutionPolicy, task_state_cell,
 };
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
@@ -31,10 +36,11 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_contract::tool::{
-    RawTool, ToolConcurrency, ToolOutput, ToolRecoveryCapability, ToolRecoveryPolicy, ToolResource,
-    ToolResourceAccess,
+    RawTool, ToolConcurrency, ToolOutput, ToolRecoveryCapability, ToolRecoveryMode,
+    ToolRecoveryPolicy, ToolResource, ToolResourceAccess,
 };
 use awaken_store_inmem::MemoryCommitCoordinator;
+use awaken_store_sqlite::SqliteCommitCoordinator;
 
 struct Bash;
 
@@ -203,6 +209,178 @@ async fn runtime_commits_submission_through_the_ordinary_thread_state_boundary()
             "sandbox", "workdir"
         ))])
     );
+}
+
+#[tokio::test]
+async fn terminal_reclaim_rejects_then_recovers_from_committed_thread_truth() {
+    // Cause/effect decision table:
+    // C1 an expired local attempt is NeverReplay or replayable with epoch equal
+    // to its maximum; C2 its complete terminal State command is rejected by a
+    // real read-only SQLite transaction or accepted under a fresh Run; C3 the
+    // process-owned store is dropped and reopened after either outcome.
+    // R1 NeverReplay -> Indeterminate with no replacement attempt; R2 exhausted
+    // replay -> Failed with no replacement attempt; R3 R1/R2 + rejection + C3
+    // -> only the prior Running aggregate is recovered; R4 R3 + recompute +
+    // accepted fresh-Run commit + C3 -> the exact terminal aggregate is
+    // recovered. Rejection never publishes a partial terminal value and retry
+    // never replays the uncertain tool effect. SQLite/serde/async correctness
+    // remain adapter evidence, not part of the scalar Kani proof.
+    for (case, mode, maximum, expected_claim, indeterminate) in [
+        (
+            "never-replay",
+            ToolRecoveryMode::NeverReplay,
+            2,
+            TaskClaim::EndedIndeterminate,
+            true,
+        ),
+        (
+            "attempts-exhausted",
+            ToolRecoveryMode::ReplaySafe,
+            1,
+            TaskClaim::EndedAttemptsExhausted,
+            false,
+        ),
+    ] {
+        let directory = tempfile::tempdir().expect("temporary SQLite directory");
+        let database = directory.path().join(format!("{case}.db"));
+        let database = database.to_str().expect("temporary path is UTF-8");
+        let thread_id = ThreadId(format!("thread-{case}"));
+        let origin_run = RunId(format!("origin-{case}"));
+        let retry_run = RunId(format!("retry-{case}"));
+        let mut running = BackgroundTask::requested(
+            BackgroundTaskId::new(format!("task-{case}")).expect("valid task id"),
+            BackgroundTaskOrigin {
+                thread_id: thread_id.clone(),
+                run_id: origin_run.clone(),
+                operation_id: format!("operation-{case}"),
+            },
+            BackgroundInvocation {
+                call: ToolCall {
+                    call_id: format!("call-{case}"),
+                    tool_id: "bash".into(),
+                    arguments: serde_json::json!({"command":"do not replay"}),
+                },
+            },
+        );
+        running
+            .start(
+                "worker-old",
+                0,
+                1,
+                TaskExecutionPolicy {
+                    recovery: ToolRecoveryPolicy::try_new(mode, maximum)
+                        .expect("positive attempt budget"),
+                    concurrency: ToolConcurrency::Parallel,
+                },
+            )
+            .expect("requested task starts");
+
+        let store = SqliteCommitCoordinator::open(database).expect("open SQLite commit store");
+        store
+            .commit(ThreadCommit {
+                thread_id: thread_id.clone(),
+                run: RunDisposition::ended(origin_run, EndCause::NaturalEnd),
+                messages: Vec::new(),
+                state: vec![
+                    task_state_cell(&running.id)
+                        .write(&running)
+                        .expect("serialize running aggregate"),
+                ],
+                events: Vec::new(),
+            })
+            .await
+            .expect("initial Running aggregate commits");
+
+        let mut terminal = running.clone();
+        assert_eq!(
+            terminal.reclaim("worker-new", 1, 1),
+            Ok(expected_claim.clone()),
+            "{case}: R1/R2"
+        );
+        assert!(
+            terminal.attempt().is_none(),
+            "{case}: no replacement attempt"
+        );
+        assert!(
+            matches!(
+                (&terminal.lifecycle, indeterminate),
+                (
+                    BackgroundTaskLifecycle::Ended {
+                        end: BackgroundTaskEnd::Indeterminate { .. }
+                    },
+                    true
+                ) | (
+                    BackgroundTaskLifecycle::Ended {
+                        end: BackgroundTaskEnd::Failed { .. }
+                    },
+                    false
+                )
+            ),
+            "{case}: exact terminal class"
+        );
+
+        store
+            .make_read_only_for_test()
+            .expect("enable deterministic SQLite rejection");
+        assert!(
+            store
+                .commit(ThreadCommit {
+                    thread_id: thread_id.clone(),
+                    run: RunDisposition::ended(retry_run.clone(), EndCause::NaturalEnd),
+                    messages: Vec::new(),
+                    state: vec![
+                        task_state_cell(&terminal.id)
+                            .write(&terminal)
+                            .expect("serialize terminal aggregate")
+                    ],
+                    events: Vec::new(),
+                })
+                .await
+                .is_err(),
+            "{case}: R3 rejects the complete terminal commit"
+        );
+        drop(store);
+
+        let store = SqliteCommitCoordinator::open(database).expect("reopen after rejection");
+        let recovered_state =
+            Store::rebuild(&CommittedThreadView::committed_state(&store, &thread_id));
+        let mut recovered = task_state_cell(&running.id)
+            .load(&recovered_state)
+            .expect("decode committed aggregate")
+            .expect("prior aggregate remains present");
+        assert_eq!(recovered, running, "{case}: R3 rejection stutters");
+        assert_eq!(
+            recovered.reclaim("worker-new", 1, 1),
+            Ok(expected_claim),
+            "{case}: R4 recomputes the same terminal decision"
+        );
+        assert_eq!(recovered, terminal, "{case}: R4 exact terminal aggregate");
+        store
+            .commit(ThreadCommit {
+                thread_id: thread_id.clone(),
+                run: RunDisposition::ended(retry_run, EndCause::NaturalEnd),
+                messages: Vec::new(),
+                state: vec![
+                    task_state_cell(&recovered.id)
+                        .write(&recovered)
+                        .expect("serialize recovered terminal aggregate"),
+                ],
+                events: Vec::new(),
+            })
+            .await
+            .expect("fresh-Run terminal retry commits");
+        drop(store);
+
+        let reopened = SqliteCommitCoordinator::open(database).expect("reopen after success");
+        let final_state =
+            Store::rebuild(&CommittedThreadView::committed_state(&reopened, &thread_id));
+        let final_task = task_state_cell(&terminal.id)
+            .load(&final_state)
+            .expect("decode terminal aggregate after restart")
+            .expect("terminal aggregate remains present");
+        assert_eq!(final_task, terminal, "{case}: R4 durable terminal truth");
+        assert!(final_task.attempt().is_none(), "{case}: R4 cannot replay");
+    }
 }
 
 #[test]

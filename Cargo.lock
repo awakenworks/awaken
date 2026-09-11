@@ -2037,6 +2037,7 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-store-fs",
  "awaken-store-inmem",
+ "awaken-store-sqlite",
  "futures-util",
  "jsonschema",
  "parking_lot",
