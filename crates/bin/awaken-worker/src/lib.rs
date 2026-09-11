@@ -1199,6 +1199,14 @@ impl WorkerNode {
             &upstream,
             registration.snapshot.identity.clone(),
         );
+        // The capacity this incarnation just registered. It is read once, it has
+        // no `Clone`, and the only thing that can be done with it is to move it
+        // into the pool installer below — so the registry's number and the
+        // installed slot count cannot drift apart unnoticed.
+        let registered_capacity =
+            awaken_worker_contract::RegisteredCapacity::of(&self.manifest).map_err(|error| {
+                std::io::Error::other(format!("registered Worker capacity: {error}"))
+            })?;
 
         let managed_credential_materializer = self.credential_materializer.clone();
         let remote_memory = Arc::new(awaken_resource_worker_http::HttpMemoryRepository::new(
@@ -1232,11 +1240,7 @@ impl WorkerNode {
             awaken_resource_worker_http::HttpMemoryMaterializationReferenceEncoder,
         ))
         .with_worker_stream_publisher(stream_publisher)
-        .with_worker_dispatch(
-            dispatch,
-            std::num::NonZeroUsize::new(self.manifest.capacity.max_concurrent as usize)
-                .expect("Worker manifest capacity was validated before registration"),
-        )
+        .with_worker_dispatch(dispatch, registered_capacity)
         .with_skill_bundle_source(remote_skills)
         .with_web_search_provider_registry(self.web_search_providers)
         .with_admin_tools(self.admin_tools);
