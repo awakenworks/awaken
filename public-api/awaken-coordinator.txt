@@ -182,7 +182,7 @@ pub awaken_coordinator::CoordinatorDependencies::deployment_session_launcher: al
 pub awaken_coordinator::CoordinatorDependencies::dream_process_store: alloc::sync::Arc<dyn awaken_session_contract::dream::DreamProcessStore>
 pub awaken_coordinator::CoordinatorDependencies::environments: alloc::sync::Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>
 pub awaken_coordinator::CoordinatorDependencies::executable_agents: alloc::sync::Arc<dyn awaken_executable_agent_contract::ExecutableAgentRegistrationSource>
-pub awaken_coordinator::CoordinatorDependencies::executable_projection_refresh: core::option::Option<alloc::sync::Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>>
+pub awaken_coordinator::CoordinatorDependencies::executable_projection_refresh: core::option::Option<alloc::sync::Arc<awaken_session_contract::executable_projection::ExecutableProjectionRefresh>>
 pub awaken_coordinator::CoordinatorDependencies::host: alloc::sync::Arc<awaken_session_executor::host::SharedHost>
 pub awaken_coordinator::CoordinatorDependencies::managed_state: alloc::sync::Arc<awaken_protocol_managed::state::managed_state::ManagedState>
 pub awaken_coordinator::CoordinatorDependencies::memory_stores: alloc::sync::Arc<dyn awaken_resource_contract::memory_application::MemoryStoreApplicationService>
@@ -210,7 +210,7 @@ pub awaken_coordinator::CoordinatorPersistence::runtime_authority: alloc::sync::
 pub awaken_coordinator::CoordinatorPersistence::worker_directory: awaken_coordinator::WorkerDirectoryHandle
 pub struct awaken_coordinator::ManagedApplicationServices
 pub awaken_coordinator::ManagedApplicationServices::dream_process_store: alloc::sync::Arc<dyn awaken_session_contract::dream::DreamProcessStore>
-pub awaken_coordinator::ManagedApplicationServices::executable_projection_refresh: core::option::Option<alloc::sync::Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>>
+pub awaken_coordinator::ManagedApplicationServices::executable_projection_refresh: core::option::Option<alloc::sync::Arc<awaken_session_contract::executable_projection::ExecutableProjectionRefresh>>
 pub awaken_coordinator::ManagedApplicationServices::model_inventory: core::option::Option<alloc::sync::Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>>
 pub awaken_coordinator::ManagedApplicationServices::resource_registry: alloc::sync::Arc<dyn awaken_resource_contract::registry::ResourceRegistry>
 pub awaken_coordinator::ManagedApplicationServices::session_application: alloc::sync::Arc<awaken_session_application::SessionApplication>

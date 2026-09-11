@@ -133,6 +133,7 @@ pub awaken_config_service::ResolvedPublicationModels::primary: awaken_runtime_co
 impl awaken_config_service::ResolvedPublicationModels
 pub fn awaken_config_service::ResolvedPublicationModels::host(awaken_runtime_contract::resolved::ModelBinding, alloc::vec::Vec<awaken_runtime_contract::resolved::ModelBinding>, core::option::Option<u32>, core::option::Option<u32>) -> Self
 pub struct awaken_config_service::RuntimeCapability
+pub awaken_config_service::RuntimeCapability::backend_refs: alloc::vec::Vec<alloc::string::String>
 pub awaken_config_service::RuntimeCapability::cli: core::option::Option<alloc::string::String>
 pub awaken_config_service::RuntimeCapability::description: alloc::string::String
 pub awaken_config_service::RuntimeCapability::id: alloc::string::String

@@ -371,6 +371,7 @@ pub async fn awaken_session_executor::SharedHost::with_acp_launch_source(self, a
 pub fn awaken_session_executor::SharedHost::with_projected_acp(self, awaken_run_executor_acp::acp_cli::AcpCli, alloc::sync::Arc<dyn awaken_run_executor_acp::subprocess::LaunchResolver>, core::option::Option<std::path::PathBuf>) -> Self
 pub fn awaken_session_executor::SharedHost::with_projected_acp_argv(self, awaken_run_executor_acp::acp_cli::AcpCli, alloc::sync::Arc<dyn awaken_run_executor_acp::subprocess::LaunchResolver>, core::option::Option<std::path::PathBuf>, core::option::Option<alloc::vec::Vec<alloc::string::String>>) -> Self
 pub async fn awaken_session_executor::SharedHost::with_session_environment_from_deployment(self, core::option::Option<alloc::sync::Arc<dyn awaken_session_executor::HandExecutorFactory>>) -> core::result::Result<Self, alloc::string::String>
+pub async fn awaken_session_executor::SharedHost::with_session_environment_from_deployment_at(self, core::option::Option<alloc::sync::Arc<dyn awaken_session_executor::HandExecutorFactory>>, std::path::PathBuf) -> core::result::Result<Self, alloc::string::String>
 impl awaken_session_executor::SharedHost
 pub async fn awaken_session_executor::SharedHost::begin_pool_drain(&self) -> core::option::Option<awaken_session_executor::PoolDrainFence>
 pub fn awaken_session_executor::SharedHost::client_tools(&self) -> &std::collections::hash::set::HashSet<alloc::string::String>

@@ -1122,6 +1122,13 @@ impl awaken_session_contract::EventForwardingSink
 pub fn awaken_session_contract::EventForwardingSink::new(impl core::ops::function::Fn(awaken_agent_contract::event::agent::AgentEvent) -> core::result::Result<(), awaken_agent_contract::stream::sink::Error> + core::marker::Send + core::marker::Sync + 'static) -> Self
 impl awaken_agent_contract::stream::sink::Sink for awaken_session_contract::EventForwardingSink
 pub fn awaken_session_contract::EventForwardingSink::send<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_session_contract::ExecutableProjectionAdmission
+impl awaken_session_contract::ExecutableProjectionAdmission
+pub fn awaken_session_contract::ExecutableProjectionAdmission::enter<T>(&self, impl core::ops::function::FnOnce() -> T) -> T
+pub struct awaken_session_contract::ExecutableProjectionRefresh
+impl awaken_session_contract::ExecutableProjectionRefresh
+pub fn awaken_session_contract::ExecutableProjectionRefresh::new(alloc::sync::Arc<dyn awaken_session_contract::ExecutableAgentProjectionRefresh>, alloc::sync::Arc<dyn awaken_session_contract::ExecutableEnvironmentProjectionRefresh>) -> Self
+pub async fn awaken_session_contract::ExecutableProjectionRefresh::refresh(&self) -> core::result::Result<awaken_session_contract::ExecutableProjectionAdmission, alloc::string::String>
 pub struct awaken_session_contract::FailSessionRealization
 pub awaken_session_contract::FailSessionRealization::lease: awaken_session_contract::SessionRealizationLease
 pub awaken_session_contract::FailSessionRealization::prepared_resource_revision: core::option::Option<u64>
@@ -2155,8 +2162,10 @@ pub fn awaken_session_contract::DreamProcessStore::dream_policies(&self) -> core
 pub fn awaken_session_contract::DreamProcessStore::dream_processes(&self) -> core::result::Result<alloc::vec::Vec<awaken_session_contract::DreamProcessRecord>, awaken_session_contract::DreamProcessStoreError>
 pub trait awaken_session_contract::EnvironmentWarmupSource: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::EnvironmentWarmupSource::current_environment_warmups<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_session_contract::EnvironmentSnapshot>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub trait awaken_session_contract::ExecutableProjectionRefresh: core::marker::Send + core::marker::Sync
-pub fn awaken_session_contract::ExecutableProjectionRefresh::refresh<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_session_contract::ExecutableAgentProjectionRefresh: core::marker::Send + core::marker::Sync
+pub fn awaken_session_contract::ExecutableAgentProjectionRefresh::refresh_agent_projection<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_session_contract::ExecutableEnvironmentProjectionRefresh: core::marker::Send + core::marker::Sync
+pub fn awaken_session_contract::ExecutableEnvironmentProjectionRefresh::refresh_environment_projection<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_session_contract::LifecycleFactDelivery: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::LifecycleFactDelivery::deliver<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_session_contract::ManagedLifecycleFact) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl awaken_session_contract::LifecycleFactDelivery for awaken_session_contract::CompositeLifecycleFactDelivery
@@ -2348,6 +2357,7 @@ pub fn awaken_session_contract::is_controlled_modification_member(&str) -> bool
 pub fn awaken_session_contract::legacy_agent_publication_decision(&str, core::option::Option<&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>) -> awaken_session_contract::FrozenAgentPublicationDecision
 pub fn awaken_session_contract::paginate_history<'a>(&'a [awaken_agent_contract::agent::message::Message], core::option::Option<&str>, core::option::Option<usize>) -> core::result::Result<awaken_agent_contract::page::HistoryPage<'a, awaken_agent_contract::agent::message::Message>, awaken_agent_contract::page::UnknownCursor>
 pub fn awaken_session_contract::preserve_runtime_agent_overrides(&[awaken_agent_contract::toolset::ToolsetPolicy], &mut alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>, &alloc::collections::btree::set::BTreeSet<alloc::string::String>)
+pub fn awaken_session_contract::process_local_executable_projection_admission() -> awaken_session_contract::ExecutableProjectionAdmission
 pub fn awaken_session_contract::project_effective_agent_publication(core::option::Option<&awaken_session_contract::SessionModelOverride>, &awaken_session_contract::SessionSystemPromptSelection, &str, awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_session_contract::RunError>
 pub fn awaken_session_contract::project_epoch_millis(u128) -> u64
 pub fn awaken_session_contract::realization_generation_authorizes(&awaken_session_contract::McpGenerationRef, &awaken_session_contract::McpGenerationRef) -> bool
