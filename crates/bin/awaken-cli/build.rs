@@ -33,17 +33,21 @@ fn main() {
     println!("cargo:rerun-if-changed={}", web.join("public").display());
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let dist = out_dir.join("console");
-    build_console(&web, &dist);
+    println!(
+        "cargo:rerun-if-changed={}",
+        workspace.join("package.json").display()
+    );
+    build_console(workspace, &dist);
     build_support::generate_embedded_assets(&dist, &out_dir);
 }
 
-fn build_console(web: &Path, dist: &Path) {
-    let [install, build] = build_support::console_commands(cfg!(windows), dist);
-    run(&install, web);
-    let workspace = command(
-        &build_support::console_workspace_command(cfg!(windows)),
-        web,
-    )
+fn build_console(workspace: &Path, dist: &Path) {
+    let [install, build] = build_support::console_commands(cfg!(windows), workspace, dist);
+    run(&install);
+    let workspace = command(&build_support::console_workspace_command(
+        cfg!(windows),
+        workspace,
+    ))
     .output()
     .expect("query Console workspace dependencies");
     assert!(
@@ -54,21 +58,21 @@ fn build_console(web: &Path, dist: &Path) {
     for input in build_support::console_package_inputs(&workspace.stdout) {
         println!("cargo:rerun-if-changed={}", input.display());
     }
-    run(&build, web);
+    run(&build);
 }
 
-fn command(spec: &build_support::ConsoleCommand, current_dir: &Path) -> Command {
+fn command(spec: &build_support::ConsoleCommand) -> Command {
     // Ambient E2E TS loaders must not affect pnpm's package resolution.
     let mut command = Command::new(spec.program);
     command
         .env_remove("NODE_OPTIONS")
-        .current_dir(current_dir)
+        .current_dir(&spec.current_dir)
         .args(&spec.args);
     command
 }
 
-fn run(spec: &build_support::ConsoleCommand, current_dir: &Path) {
-    let status = command(spec, current_dir)
+fn run(spec: &build_support::ConsoleCommand) {
+    let status = command(spec)
         .status()
         .unwrap_or_else(|error| panic!("start {}: {error}", spec.program));
     assert!(
