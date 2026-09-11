@@ -1,6 +1,8 @@
 //! Pod authentication through the production registration/client path. The API
 //! review is a fixture; Registry persistence and HTTP are real, not k3d evidence.
 
+mod postgres_support;
+
 use std::sync::Arc;
 
 use awaken_dispatch::{
@@ -253,13 +255,19 @@ async fn immutable_pod_registration_sqlite() {
 
 #[tokio::test]
 async fn immutable_pod_registration_postgres_when_configured() {
-    let Ok(url) = std::env::var("AWAKEN_TEST_POSTGRES_URL") else {
-        eprintln!("AWAKEN_TEST_POSTGRES_URL not set; skipping Pod registration Postgres test");
+    let Some(url) = postgres_support::database_url() else {
         return;
     };
     assert_immutable_registration(
-        Arc::new(PostgresWorkerDirectory::connect(&url, 5).await.unwrap()),
+        Arc::new(postgres_support::connect(PostgresWorkerDirectory::connect(&url, 5)).await),
         "postgres",
     )
     .await;
+}
+
+#[test]
+fn postgres_configuration_contract() {
+    postgres_support::assert_configuration_contract(&[
+        "immutable_pod_registration_postgres_when_configured",
+    ]);
 }
