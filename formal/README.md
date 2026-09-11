@@ -414,15 +414,15 @@ obligation when the development host is Linux.
   The strict native cross-check holds both one timeout leader and one successful
   cooperative leader inside that guard, requiring every concurrent follower to
   wait; the successful row exercises two followers before releasing the task.
-- `BackgroundTask.tla` covers the Thread-state-owned background aggregate:
-  one fenced owner/epoch/lease, waiting and cancellation, exact heartbeat and
-  finish fences, expiry reclaim that preserves Waiting/Cancelling phase and
-  remote continuation identity, optional refreshable poll intervals that are
-  positive when present,
-  NeverReplay indeterminacy, bounded attempts, terminal owner clearing, and the
-  retry/loss/stale-fence behavior of the one process-local completion projection
-  before its next ordinary Thread commit.
-  The supervisor remains a driver, not a second durable task or result store.
+- `BackgroundTask.tla` covers the Thread-state-owned aggregate: one fenced
+  owner/epoch/lease, waiting/cancellation, heartbeat/finish, expiry reclaim,
+  remote continuation identity, refreshable poll intervals, NeverReplay,
+  bounded attempts, terminal clearing and the process-local completion slot.
+  The shared production heartbeat/finish mutation plan is checked directly
+  across every phase, both stale-fence partitions, both commands and all scalar
+  inputs; stale authority returns no plan before validation, so neither caller
+  can mutate. Rust `String` allocation, Thread persistence, async scheduling and
+  the read-to-effect interval remain outside the proof; Supervisor stays a driver.
 - `SandboxControlPublication.tla` covers retained setup/serving cleanup across
   concurrent, cancelled and retried disposers. The shared production slot is
   checked directly without a mirror: its actual Mutex/Arc methods admit one live
