@@ -158,7 +158,9 @@ async fn a_warm_pool_pre_provisions_capacity_and_hands_a_ready_agent_to_a_sessio
         got.contains("warm reply") && got.contains("turn_end"),
         "the warm agent served the session over the real wire: {got:?}"
     );
-    pc::Sandbox::dispose(environment.as_ref())
+    environment
+        .as_ref()
+        .dispose()
         .await
         .expect("W4 explicit Session cleanup removes the checked-out Environment");
 }
@@ -205,7 +207,7 @@ async fn a_session_with_a_mount_bypasses_the_pool() {
     );
 
     environment
-        .dispose_unattached()
+        .dispose()
         .await
         .expect("dispose mounted environment");
     pool.shutdown().await;

@@ -188,7 +188,9 @@ impl CacheVolumeInitializer for SandboxCacheVolumeInitializer {
                 }),
             Err(error) => Err(format!("spawn CacheVolume initializer: {error}")),
         };
-        let disposed = pc::Sandbox::dispose(environment.as_ref())
+        let disposed = environment
+            .as_ref()
+            .dispose_unattached()
             .await
             .map_err(|error| format!("dispose CacheVolume initializer Pod: {error}"));
         outcome.and(disposed)
@@ -419,6 +421,15 @@ mod tests {
     #[async_trait]
     impl pc::Sandbox for RecordingEnvironment {
         async fn dispose_unattached(&self) -> Result<(), pc::SandboxError> {
+            self.dispose().await
+        }
+
+        async fn dispose_for_effect(
+            &self,
+            authorization: &pc::SandboxDisposalAuthorization,
+            authority: &dyn pc::CurrentExecutionAuthority,
+        ) -> Result<(), pc::SandboxError> {
+            pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))?;
             self.dispose().await
         }
 
@@ -752,7 +763,7 @@ mod tests {
         .await
         .expect("spawn marker reader");
         assert_eq!(process.wait().await.unwrap().code, Some(0), "K4 E1");
-        environment.dispose().await.unwrap();
+        environment.dispose_unattached().await.unwrap();
         assert!(
             std::process::Command::new("kubectl")
                 .args(["delete", "pvc", &claim, "-n", &namespace, "--wait=true",])

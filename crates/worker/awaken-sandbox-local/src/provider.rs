@@ -1127,11 +1127,11 @@ pub struct LocalSandbox {
     secret_broker: Arc<std::sync::RwLock<Option<Arc<dyn pc::SecretBroker>>>>,
     realized: Vec<pc::RealizedMount>,
     /// Host paths of realized `Secret` mounts, **shredded** (overwritten) at
-    /// [`dispose`](pc::Sandbox::dispose) before the directory is reaped so a
+    /// [teardown](pc::Sandbox::dispose_for_effect) before the directory is reaped so a
     /// materialized credential does not linger in freed disk blocks (ADR-0023).
     secret_paths: Vec<PathBuf>,
     /// Live memory-store mounts (FUSE / copy), torn down (unmount / harvest) at
-    /// [`dispose`](pc::Sandbox::dispose) before the sandbox directory is reaped.
+    /// [teardown](pc::Sandbox::dispose_for_effect) before the sandbox directory is reaped.
     memory_mounts: crate::MemoryMountOwner,
     /// Canonical durable heads captured from copy-backed mounts at create, or
     /// recovered verbatim from a validated current handle at adoption.

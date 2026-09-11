@@ -1208,7 +1208,7 @@ async fn sqlite_original_history_converges_without_a_parallel_session_model() {
             |row| row.get(0),
         )
         .unwrap();
-    assert!(canonical.contains("\"format\":\"awaken.session.v1\""), "E2");
+    assert!(canonical.contains("\"format\":\"awaken.session.v2\""), "E2");
     let preserved: (i64, i64) = conn
         .query_row(
             "SELECT \
