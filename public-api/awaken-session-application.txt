@@ -501,7 +501,10 @@ pub awaken_session_application::SessionRunExecutionObservation::idempotency_key:
 pub awaken_session_application::SessionRunExecutionObservation::model_requests: alloc::vec::Vec<awaken_session_application::SessionModelRequestObservation>
 pub awaken_session_application::SessionRunExecutionObservation::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_session_application::SessionRunExecutionObservation::state: awaken_agent_contract::agent::run::RunState
-pub awaken_session_application::SessionRunExecutionObservation::tool_use_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_session_application::SessionRunExecutionObservation::tool_uses: alloc::vec::Vec<awaken_session_application::SessionToolUseObservation>
+pub struct awaken_session_application::SessionToolUseObservation
+pub awaken_session_application::SessionToolUseObservation::call_id: alloc::string::String
+pub awaken_session_application::SessionToolUseObservation::source_message_id: alloc::string::String
 pub struct awaken_session_application::SessionUpdateChanges
 pub awaken_session_application::SessionUpdateChanges::budget: bool
 pub awaken_session_application::SessionUpdateChanges::mcp: bool
