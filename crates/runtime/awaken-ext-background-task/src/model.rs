@@ -218,6 +218,70 @@ const fn cancellation_wins_completion(phase: TaskPhase, indeterminate: bool) -> 
     matches!(phase, TaskPhase::Cancelling) && !indeterminate
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FencedMutationRequest {
+    Heartbeat { now_ms: u64, lease_ms: u64 },
+    Finish { indeterminate: bool },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FencedMutationPlan {
+    Heartbeat {
+        lease_expires_at_ms: u64,
+        revision: u64,
+    },
+    Finish {
+        cancellation_wins: bool,
+        revision: u64,
+    },
+}
+
+/// Sole admission and scalar successor plan for fenced heartbeat and finish.
+///
+/// Exact owner+epoch rejection intentionally precedes command-specific input,
+/// clock, lease and revision checks. The caller applies a returned plan once;
+/// every error therefore leaves the complete aggregate unchanged.
+fn fenced_mutation_plan(
+    phase: TaskPhase,
+    attempt: Option<&TaskAttempt>,
+    fence: &TaskFence,
+    revision: u64,
+    request: FencedMutationRequest,
+) -> Result<FencedMutationPlan, BackgroundTaskError> {
+    let attempt = attempt
+        .filter(|attempt| attempt.owns(fence))
+        .ok_or(BackgroundTaskError::StaleFence)?;
+    match request {
+        FencedMutationRequest::Heartbeat { now_ms, lease_ms } => {
+            if lease_ms == 0 {
+                return Err(BackgroundTaskError::InvalidClaim);
+            }
+            let lease_expires_at_ms = now_ms
+                .checked_add(lease_ms)
+                .ok_or(BackgroundTaskError::ClockOverflow)?;
+            if lease_expires_at_ms <= attempt.lease_expires_at_ms {
+                return Err(BackgroundTaskError::NonMonotonicLease);
+            }
+            let revision = revision
+                .checked_add(1)
+                .ok_or(BackgroundTaskError::RevisionOverflow)?;
+            Ok(FencedMutationPlan::Heartbeat {
+                lease_expires_at_ms,
+                revision,
+            })
+        }
+        FencedMutationRequest::Finish { indeterminate } => {
+            let revision = revision
+                .checked_add(1)
+                .ok_or(BackgroundTaskError::RevisionOverflow)?;
+            Ok(FencedMutationPlan::Finish {
+                cancellation_wins: cancellation_wins_completion(phase, indeterminate),
+                revision,
+            })
+        }
+    }
+}
+
 const fn execution_is_admitted(
     current: TaskPhase,
     expected: TaskPhase,
@@ -484,32 +548,47 @@ impl BackgroundTask {
         now_ms: u64,
         lease_ms: u64,
     ) -> Result<(), BackgroundTaskError> {
-        self.owned_attempt(fence)?;
-        if lease_ms == 0 {
-            return Err(BackgroundTaskError::InvalidClaim);
-        }
-        let expires = now_ms
-            .checked_add(lease_ms)
-            .ok_or(BackgroundTaskError::ClockOverflow)?;
+        let FencedMutationPlan::Heartbeat {
+            lease_expires_at_ms,
+            revision,
+        } = fenced_mutation_plan(
+            self.lifecycle.phase(),
+            self.lifecycle.attempt(),
+            fence,
+            self.revision,
+            FencedMutationRequest::Heartbeat { now_ms, lease_ms },
+        )?
+        else {
+            unreachable!("heartbeat request returns a heartbeat plan")
+        };
         let lifecycle = match &self.lifecycle {
-            BackgroundTaskLifecycle::Running { attempt } => BackgroundTaskLifecycle::Running {
-                attempt: extended_attempt(attempt, expires)?,
-            },
+            BackgroundTaskLifecycle::Running { attempt } => {
+                let mut attempt = attempt.clone();
+                attempt.lease_expires_at_ms = lease_expires_at_ms;
+                BackgroundTaskLifecycle::Running { attempt }
+            }
             BackgroundTaskLifecycle::Waiting { attempt, wait } => {
+                let mut attempt = attempt.clone();
+                attempt.lease_expires_at_ms = lease_expires_at_ms;
                 BackgroundTaskLifecycle::Waiting {
-                    attempt: extended_attempt(attempt, expires)?,
+                    attempt,
                     wait: wait.clone(),
                 }
             }
             BackgroundTaskLifecycle::Cancelling { attempt, wait } => {
+                let mut attempt = attempt.clone();
+                attempt.lease_expires_at_ms = lease_expires_at_ms;
                 BackgroundTaskLifecycle::Cancelling {
-                    attempt: extended_attempt(attempt, expires)?,
+                    attempt,
                     wait: wait.clone(),
                 }
             }
-            _ => return Err(BackgroundTaskError::StaleFence),
+            BackgroundTaskLifecycle::Requested | BackgroundTaskLifecycle::Ended { .. } => {
+                unreachable!("fenced mutation plan rejects phases without an attempt")
+            }
         };
-        self.replace_lifecycle(lifecycle)
+        self.apply_planned_lifecycle(lifecycle, revision);
+        Ok(())
     }
 
     pub fn wait(
@@ -578,16 +657,28 @@ impl BackgroundTask {
         fence: &TaskFence,
         end: BackgroundTaskEnd,
     ) -> Result<(), BackgroundTaskError> {
-        self.owned_attempt(fence)?;
-        let end = if cancellation_wins_completion(
+        let FencedMutationPlan::Finish {
+            cancellation_wins,
+            revision,
+        } = fenced_mutation_plan(
             self.lifecycle.phase(),
-            matches!(end, BackgroundTaskEnd::Indeterminate { .. }),
-        ) {
+            self.lifecycle.attempt(),
+            fence,
+            self.revision,
+            FencedMutationRequest::Finish {
+                indeterminate: matches!(end, BackgroundTaskEnd::Indeterminate { .. }),
+            },
+        )?
+        else {
+            unreachable!("finish request returns a finish plan")
+        };
+        let end = if cancellation_wins {
             BackgroundTaskEnd::Cancelled
         } else {
             end
         };
-        self.end(end)
+        self.apply_planned_lifecycle(BackgroundTaskLifecycle::Ended { end }, revision);
+        Ok(())
     }
 
     /// Resolve the one current worker/epoch authority before a fenced command
@@ -614,6 +705,12 @@ impl BackgroundTask {
         self.lifecycle = lifecycle;
         self.revision = revision;
         Ok(())
+    }
+
+    fn apply_planned_lifecycle(&mut self, lifecycle: BackgroundTaskLifecycle, revision: u64) {
+        debug_assert_eq!(self.revision.checked_add(1), Some(revision));
+        self.lifecycle = lifecycle;
+        self.revision = revision;
     }
 
     fn validate(&self) -> Result<(), BackgroundTaskError> {
@@ -677,18 +774,6 @@ fn same_wait_target(current: &BackgroundWait, next: &BackgroundWait) -> bool {
 fn cancelling_accepts_wait(current: Option<&BackgroundWait>, next: &BackgroundWait) -> bool {
     matches!(next, BackgroundWait::Remote(_))
         && current.is_none_or(|current| same_wait_target(current, next))
-}
-
-fn extended_attempt(
-    attempt: &TaskAttempt,
-    expires: u64,
-) -> Result<TaskAttempt, BackgroundTaskError> {
-    if expires <= attempt.lease_expires_at_ms {
-        return Err(BackgroundTaskError::NonMonotonicLease);
-    }
-    let mut next = attempt.clone();
-    next.lease_expires_at_ms = expires;
-    Ok(next)
 }
 
 fn validate_attempt(attempt: &TaskAttempt) -> Result<(), BackgroundTaskError> {
