@@ -25561,3 +25561,140 @@ async fn repository_layout_conflict_fails_before_cache_prewarm() {
         "P1/P2 no prewarm effect"
     );
 }
+
+/// P4 — a Platform-held MCP credential is performed by the deployment's egress
+/// mediator, and the Runtime Host never holds the material.
+///
+/// | Rule | installed mediator | effect |
+/// |---|---|---|
+/// | G1 | none | refused; no projection |
+/// | G2 | one | staged on the mediated route, with no bearer in the Host |
+///
+/// The access below names a credential that was never stored, so any attempt
+/// to resolve material would fail G2 instead of producing a route. That is the
+/// property under test: mediation resolves nothing into this process.
+#[tokio::test]
+async fn platform_held_mcp_is_mediated_without_resolving_material_into_the_host() {
+    use awaken_credential_contract::{
+        CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
+        CredentialUsage, ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
+    };
+
+    use awaken_session_contract::McpAttachmentRealizer;
+
+    struct StubMediator {
+        url: String,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_credential_materializer::PlatformMcpEgressProvisioner for StubMediator {
+        async fn provision(
+            &self,
+            request: awaken_credential_materializer::PlatformMcpEgressRequest<'_>,
+        ) -> Result<
+            awaken_credential_materializer::MediatedMcpRoute,
+            awaken_credential_contract::CredentialMaterialError,
+        > {
+            assert_eq!(request.holder.boundary, PlaintextBoundary::Platform, "G2");
+            assert_eq!(request.session_id, "mcp-platform", "G2");
+            assert_eq!(request.runtime_incarnation, "runtime-1", "G2");
+            Ok(awaken_credential_materializer::MediatedMcpRoute {
+                url: self.url.clone(),
+                expires_at_unix_ms: u64::MAX,
+            })
+        }
+    }
+
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
+    let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+    // The real mediator injects credential material upstream. To this process a
+    // mediated route is simply a URL it may call without holding anything, so
+    // the stand-in requires no bearer.
+    let (mediated_url, _seen) = crate::test_mcp::start(None).await;
+
+    let holder = PlaintextHolder::new(
+        PlaintextBoundary::Platform,
+        awaken_credential_contract::PLATFORM_EGRESS_GATEWAY_TRUST_DOMAIN,
+    );
+    let upstream = "https://upstream.invalid/mcp";
+    let audience = awaken_session_contract::McpTarget::identity(upstream)
+        .unwrap()
+        .canonical_url();
+    let generation = awaken_session_contract::McpGenerationRef {
+        session_id: "mcp-platform".into(),
+        generation: awaken_session_contract::McpGeneration::of_bare_target(
+            awaken_session_contract::McpAttachmentId("mcp-docs".into()),
+            1,
+            &awaken_session_contract::McpTarget::parse_http(upstream).unwrap(),
+        ),
+        runtime_incarnation: "runtime-1".into(),
+        lease_epoch: 1,
+        lease_expires_at_unix_ms: u64::MAX - 1,
+    };
+    let request = awaken_session_contract::StageMcpAttachment {
+        workspace_id: "workspace-a".into(),
+        generation: generation.clone(),
+        realization_id: "realize-platform".into(),
+        stage_idempotency_key: "stage-platform".into(),
+        name: "docs".into(),
+        target: awaken_session_contract::McpTarget::parse_http(upstream).unwrap(),
+        prompts_as_skills: false,
+        credential: Some(
+            CredentialAccess::new(
+                CredentialRef {
+                    id: "credential-never-stored".into(),
+                    revision: 7,
+                },
+                CredentialMaterialSource::ControlPlaneReference,
+                CredentialUsage::HttpHeader {
+                    name: "authorization".into(),
+                    scheme: Some("Bearer".into()),
+                },
+                CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::VirtualOnly),
+            )
+            .with_target(awaken_runtime_contract::CredentialTarget::new(
+                awaken_credential_contract::CredentialPurpose::McpAuthorization,
+                audience,
+            )),
+        ),
+        selected_plaintext_holder: Some(holder),
+    };
+
+    let bare = crate::ManagedHost::new(host.clone())
+        .with_credentials(credentials.clone(), secrets.clone());
+    assert_eq!(
+        bare.stage_mcp_attachment(request.clone())
+            .await
+            .unwrap_err()
+            .code,
+        "mcp_gateway_provisioner_required",
+        "G1"
+    );
+    assert!(host.mcp_projection(&generation).is_none(), "G1");
+
+    let managed = crate::ManagedHost::new(host.clone())
+        .with_credentials(credentials, secrets)
+        .with_platform_mcp_egress_provisioner(Arc::new(StubMediator {
+            url: mediated_url.clone(),
+        }));
+    let receipt = managed
+        .stage_mcp_attachment(request)
+        .await
+        .expect("G2 mediated staging resolves no material");
+    assert_eq!(
+        receipt.actual_realization_kind,
+        Some(awaken_runtime_contract::CredentialRealizationKind::PlatformRelay),
+        "G2"
+    );
+    let server = host
+        .mcp_projection(&generation)
+        .expect("G2 projection")
+        .server
+        .expect("G2 transport");
+    assert_eq!(server.http_url(), Some(mediated_url.as_str()), "G2");
+    assert!(
+        server.bearer().is_none(),
+        "G2 the Host must hold no upstream material on a mediated route"
+    );
+}

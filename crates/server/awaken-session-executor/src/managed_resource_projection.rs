@@ -504,6 +504,19 @@ impl crate::ManagedHost {
         self
     }
 
+    /// Install the hosted deployment's platform MCP egress mediator.
+    ///
+    /// Without it, a Platform-held MCP credential is refused: the Host never
+    /// falls back to resolving upstream material it is not authorized to hold.
+    #[must_use]
+    pub fn with_platform_mcp_egress_provisioner(
+        mut self,
+        provisioner: Arc<dyn awaken_credential_materializer::PlatformMcpEgressProvisioner>,
+    ) -> Self {
+        self.platform_mcp_egress = Some(provisioner);
+        self
+    }
+
     /// Replace the local Host MCP realization adapter with one downstream
     /// implementation of the same exact-generation Session port. This is the
     /// sole injection seam used by durable Worker commands; desired state and
