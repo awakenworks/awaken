@@ -446,9 +446,12 @@ record_failure() {
 # new recovery suites and silently exercise them only without PostgreSQL.
 # Registry lineage and replacement must execute against the same real database;
 # a no-URL workspace pass is not PostgreSQL conformance evidence.
+# Keep HTTP branch receipts visible: passing Rust counts alone cannot identify
+# which database adapter ran. Configuration-contract subprocesses reject silent
+# fallback before these same entries run against this live fixture.
 pg_test cargo test -p awaken-worker-registry --features test-support --lib --test conformance || record_failure "$?"
 pg_test cargo test -p awaken-dispatch --features test-support || record_failure "$?"
-pg_test cargo test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http -- --test-threads=1 \
+pg_test cargo test -p awaken-dispatch-http --test active_active_postgres --test pod_worker_registration_http --test worker_registration_history_http --test predecessor_stop_http -- --test-threads=1 --show-output \
   || record_failure "$?"
 pg_test cargo test -p awaken-session-store --features test-support --test session_repo_conformance -- --test-threads=1 \
   || record_failure "$?"

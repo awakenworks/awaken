@@ -1,6 +1,8 @@
 //! Historical registration through the actual signed client, HTTP handler and
 //! Registry adapters. The signer is re-run per request: these are valid
 //! application retries, not an attempt to bypass the signature nonce cache.
+mod postgres_support;
+
 use awaken_dispatch::{MemoryDispatchStore, WorkerDirectory, WorkerManifest};
 use awaken_dispatch_http::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_worker_registry::{
@@ -133,18 +135,20 @@ async fn sqlite_signed_registration_rejects_historical_incarnation() {
 
 #[tokio::test]
 async fn postgres_signed_registration_rejects_historical_incarnation() {
-    let url = match std::env::var("AWAKEN_TEST_DATABASE_URL") {
-        Ok(url) => url,
-        Err(std::env::VarError::NotPresent) => {
-            eprintln!("AWAKEN_TEST_DATABASE_URL absent; skipping PG HTTP registration");
-            return;
-        }
-        Err(error) => panic!("invalid PostgreSQL fixture configuration: {error}"),
+    let Some(url) = postgres_support::database_url() else {
+        return;
     };
-    let directory = PostgresWorkerDirectory::connect(&url, 3).await.unwrap();
+    let directory = postgres_support::connect(PostgresWorkerDirectory::connect(&url, 3)).await;
     assert_registration_history(
         Arc::new(directory),
         &format!("history-http-pg-{}", std::process::id()),
     )
     .await;
+}
+
+#[test]
+fn postgres_configuration_contract() {
+    postgres_support::assert_configuration_contract(&[
+        "postgres_signed_registration_rejects_historical_incarnation",
+    ]);
 }
