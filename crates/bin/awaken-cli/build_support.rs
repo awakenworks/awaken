@@ -6,6 +6,7 @@ use std::path::{Component, Path, PathBuf};
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ConsoleCommand {
     pub(crate) program: &'static str,
+    pub(crate) current_dir: PathBuf,
     pub(crate) args: Vec<OsString>,
 }
 
@@ -13,14 +14,20 @@ fn pnpm(windows: bool) -> &'static str {
     if windows { "pnpm.cmd" } else { "pnpm" }
 }
 
-pub(crate) fn console_commands(windows: bool, dist: &Path) -> [ConsoleCommand; 2] {
+pub(crate) fn console_commands(
+    windows: bool,
+    workspace: &Path,
+    dist: &Path,
+) -> [ConsoleCommand; 2] {
     [
         ConsoleCommand {
             program: pnpm(windows),
+            current_dir: workspace.to_owned(),
             args: ["install", "--frozen-lockfile"].map(OsString::from).into(),
         },
         ConsoleCommand {
             program: pnpm(windows),
+            current_dir: workspace.to_owned(),
             args: vec![
                 "build".into(),
                 "--outDir".into(),
@@ -31,9 +38,10 @@ pub(crate) fn console_commands(windows: bool, dist: &Path) -> [ConsoleCommand; 2
     ]
 }
 
-pub(crate) fn console_workspace_command(windows: bool) -> ConsoleCommand {
+pub(crate) fn console_workspace_command(windows: bool, workspace: &Path) -> ConsoleCommand {
     ConsoleCommand {
         program: pnpm(windows),
+        current_dir: workspace.to_owned(),
         args: [
             "--filter",
             "awaken-console...",
@@ -48,10 +56,10 @@ pub(crate) fn console_workspace_command(windows: bool) -> ConsoleCommand {
     }
 }
 
-/// pnpm owns the dependency closure; each package's published entrypoints own
-/// its inputs. Watch entrypoint directories as well as manifests so new source
-/// files and export changes invalidate Cargo without watching node_modules or
-/// the mutable Console development distribution. Vendored UI dist is an input.
+/// pnpm owns the dependency closure; exported assets and local TypeScript build
+/// configurations own its inputs. Watch source directories and manifests so new
+/// source files and export changes invalidate Cargo without watching node_modules
+/// or generated distributions. Vendored UI dist remains an input.
 pub(crate) fn console_package_inputs(metadata: &[u8]) -> Vec<PathBuf> {
     let packages: serde_json::Value =
         serde_json::from_slice(metadata).expect("parse pnpm workspace graph");
@@ -76,6 +84,26 @@ pub(crate) fn console_package_inputs(metadata: &[u8]) -> Vec<PathBuf> {
         inputs.insert(manifest);
         for key in ["exports", "main", "module", "types"] {
             collect_export_inputs(root, &body[key], &mut inputs);
+        }
+        // Compiled workspace packages publish dist, but Cargo must observe the
+        // compiler's source root and configuration. Vendored distributions have
+        // no local build config and remain inputs; local generated outputs do not.
+        let build_config = root.join("tsconfig.build.json");
+        if build_config.is_file() {
+            let config: serde_json::Value =
+                serde_json::from_slice(&fs::read(&build_config).unwrap()).unwrap();
+            let source = config["compilerOptions"]["rootDir"]
+                .as_str()
+                .expect("workspace TypeScript build requires rootDir");
+            let output = config["compilerOptions"]["outDir"]
+                .as_str()
+                .expect("workspace TypeScript build requires outDir");
+            inputs.remove(&root.join(output));
+            collect_export_inputs(root, &serde_json::Value::String(source.into()), &mut inputs);
+            if let Some(base) = config["extends"].as_str() {
+                collect_export_inputs(root, &serde_json::Value::String(base.into()), &mut inputs);
+            }
+            inputs.insert(build_config);
         }
     }
     inputs.into_iter().collect()
@@ -166,10 +194,16 @@ mod tests {
         // B1 absent/partial/complete dependencies => frozen install before build.
         // B2 Windows/Unix x output path with spaces => one literal output argument,
         // never shared web/dist or shell interpolation. Only the program differs.
+        // B3 dependencies publish compiled exports => install AND build run at
+        // workspace root, whose build script owns dependency order before Vite.
+        // Running only web/build can silently depend on an earlier manual build.
+        let workspace = Path::new("workspace with spaces");
         let dist = Path::new("build with spaces/console");
         for (windows, program) in [(false, "pnpm"), (true, "pnpm.cmd")] {
-            let [install, build] = console_commands(windows, dist);
+            let [install, build] = console_commands(windows, workspace, dist);
             assert_eq!(install.program, program);
+            assert_eq!(install.current_dir, workspace);
+            assert_eq!(build.current_dir, workspace);
             assert_eq!(
                 install.args,
                 ["install", "--frozen-lockfile"].map(OsString::from)
@@ -185,7 +219,9 @@ mod tests {
                 ]
                 .map(OsString::from)
             );
-            assert_eq!(console_workspace_command(windows).program, program);
+            let graph = console_workspace_command(windows, workspace);
+            assert_eq!(graph.program, program);
+            assert_eq!(graph.current_dir, workspace);
         }
     }
 
@@ -195,6 +231,8 @@ mod tests {
         // conditions; I3 duplicate entrypoints => one watch; I4 null exclusion.
         // E1 all published input directories and manifests are watched; E2 the
         // Console's generated dist and dependency installation stay unwatched.
+        // I6 compiled exports => source/config changes invalidate Cargo even
+        // with unchanged dist; rebuilding dist itself must not invalidate it.
         let temp = tempfile::tempdir().unwrap();
         let mut packages = Vec::new();
         for (name, exports) in [
@@ -203,6 +241,7 @@ mod tests {
                 "projection",
                 serde_json::json!({".": {"import":"./src/index.ts", "types":"./src/index.ts"}}),
             ),
+            ("compiled", serde_json::json!({".": "./dist/index.js"})),
             (
                 "ui",
                 serde_json::json!({".":["./dist/index.js"], "./styles":"./dist/style.css", "./private":null}),
@@ -210,6 +249,12 @@ mod tests {
         ] {
             let root = temp.path().join(name);
             fs::create_dir(&root).unwrap();
+            if name == "compiled" {
+                fs::create_dir(root.join("src")).unwrap();
+                fs::write(root.join("tsconfig.json"), "{}").unwrap();
+                fs::write(root.join("tsconfig.build.json"),
+                    r#"{"extends":"./tsconfig.json","compilerOptions":{"rootDir":"src","outDir":"dist"}}"#).unwrap();
+            }
             fs::write(
                 root.join("package.json"),
                 serde_json::to_vec(&serde_json::json!({"exports":exports})).unwrap(),
@@ -220,6 +265,10 @@ mod tests {
         let inputs = console_package_inputs(&serde_json::to_vec(&packages).unwrap());
         let expected: BTreeSet<_> = [
             "console/package.json",
+            "compiled/package.json",
+            "compiled/src",
+            "compiled/tsconfig.json",
+            "compiled/tsconfig.build.json",
             "projection/package.json",
             "projection/src",
             "ui/package.json",
