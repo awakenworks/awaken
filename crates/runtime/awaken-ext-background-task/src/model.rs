@@ -340,6 +340,79 @@ const fn expired_recovery_decision(
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ReclaimMutationFacts {
+    lease_expires_at_ms: u64,
+    mode: ToolRecoveryMode,
+    remote: bool,
+    cancelling: bool,
+    epoch: u64,
+    maximum: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReclaimMutationPlan {
+    Acquire {
+        epoch: u64,
+        lease_expires_at_ms: u64,
+        revision: u64,
+    },
+    EndIndeterminate {
+        remote: bool,
+        revision: u64,
+    },
+    EndAttemptsExhausted {
+        revision: u64,
+    },
+}
+
+/// Sole scalar successor plan for reclaiming an expired attempt.
+///
+/// The aggregate supplies facts from its one lifecycle and applies one returned
+/// plan. Rejected phase, expiry, or revision admission produces no plan, while
+/// every admitted plan either advances the epoch exactly once or ends the task.
+const fn reclaim_mutation_plan(
+    phase: TaskPhase,
+    facts: Option<ReclaimMutationFacts>,
+    now_ms: u64,
+    lease_expires_at_ms: u64,
+    revision: u64,
+) -> Result<ReclaimMutationPlan, BackgroundTaskError> {
+    let facts = match phase {
+        TaskPhase::Requested => return Err(BackgroundTaskError::InvalidTransition),
+        TaskPhase::Ended => return Err(BackgroundTaskError::Terminal),
+        TaskPhase::Running | TaskPhase::Waiting | TaskPhase::Cancelling => match facts {
+            Some(facts) if facts.lease_expires_at_ms <= now_ms => facts,
+            _ => return Err(BackgroundTaskError::Busy),
+        },
+    };
+    let decision = expired_recovery_decision(
+        facts.mode,
+        facts.remote,
+        facts.cancelling,
+        facts.epoch,
+        facts.maximum,
+    );
+    let revision = match revision.checked_add(1) {
+        Some(revision) => revision,
+        None => return Err(BackgroundTaskError::RevisionOverflow),
+    };
+    match decision {
+        ExpiredRecoveryDecision::Acquire(epoch) => Ok(ReclaimMutationPlan::Acquire {
+            epoch,
+            lease_expires_at_ms,
+            revision,
+        }),
+        ExpiredRecoveryDecision::Indeterminate => Ok(ReclaimMutationPlan::EndIndeterminate {
+            remote: facts.remote,
+            revision,
+        }),
+        ExpiredRecoveryDecision::AttemptsExhausted => {
+            Ok(ReclaimMutationPlan::EndAttemptsExhausted { revision })
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "BackgroundTaskWire")]
 pub struct BackgroundTask {
@@ -476,49 +549,68 @@ impl BackgroundTask {
             .ok_or(BackgroundTaskError::ClockOverflow)?;
         let remote_reconnectable = self.lifecycle.remote_wait().is_some();
         let cancelling = matches!(self.lifecycle, BackgroundTaskLifecycle::Cancelling { .. });
-        let (epoch, policy) = match &self.lifecycle {
-            BackgroundTaskLifecycle::Running { attempt }
-            | BackgroundTaskLifecycle::Waiting { attempt, .. }
-            | BackgroundTaskLifecycle::Cancelling { attempt, .. }
-                if attempt.lease_expires_at_ms <= now_ms =>
-            {
-                match expired_recovery_decision(
-                    attempt.policy.recovery.mode(),
-                    remote_reconnectable,
-                    cancelling,
-                    attempt.epoch,
-                    attempt.policy.recovery.max_attempts().get(),
-                ) {
-                    ExpiredRecoveryDecision::Indeterminate => {
-                        let message = if remote_reconnectable {
-                            "remote background task observation budget exhausted; remote outcome is unknown"
-                        } else {
-                            "worker lease expired without a safe recovery or cancellation observation"
-                        };
-                        self.end(BackgroundTaskEnd::Indeterminate {
+        let facts = self
+            .lifecycle
+            .attempt()
+            .map(|attempt| ReclaimMutationFacts {
+                lease_expires_at_ms: attempt.lease_expires_at_ms,
+                mode: attempt.policy.recovery.mode(),
+                remote: remote_reconnectable,
+                cancelling,
+                epoch: attempt.epoch,
+                maximum: attempt.policy.recovery.max_attempts().get(),
+            });
+        let plan = reclaim_mutation_plan(
+            self.lifecycle.phase(),
+            facts,
+            now_ms,
+            expires,
+            self.revision,
+        )?;
+        let (epoch, lease_expires_at_ms, revision) = match plan {
+            ReclaimMutationPlan::EndIndeterminate { remote, revision } => {
+                let message = if remote {
+                    "remote background task observation budget exhausted; remote outcome is unknown"
+                } else {
+                    "worker lease expired without a safe recovery or cancellation observation"
+                };
+                self.apply_planned_lifecycle(
+                    BackgroundTaskLifecycle::Ended {
+                        end: BackgroundTaskEnd::Indeterminate {
                             message: message.into(),
-                        })?;
-                        return Ok(TaskClaim::EndedIndeterminate);
-                    }
-                    ExpiredRecoveryDecision::AttemptsExhausted => {
-                        self.end(BackgroundTaskEnd::Failed {
+                        },
+                    },
+                    revision,
+                );
+                return Ok(TaskClaim::EndedIndeterminate);
+            }
+            ReclaimMutationPlan::EndAttemptsExhausted { revision } => {
+                self.apply_planned_lifecycle(
+                    BackgroundTaskLifecycle::Ended {
+                        end: BackgroundTaskEnd::Failed {
                             message: "background task recovery attempt budget exhausted".into(),
-                        })?;
-                        return Ok(TaskClaim::EndedAttemptsExhausted);
-                    }
-                    ExpiredRecoveryDecision::Acquire(epoch) => (epoch, attempt.policy.clone()),
-                }
+                        },
+                    },
+                    revision,
+                );
+                return Ok(TaskClaim::EndedAttemptsExhausted);
             }
-            BackgroundTaskLifecycle::Ended { .. } => return Err(BackgroundTaskError::Terminal),
-            BackgroundTaskLifecycle::Requested => {
-                return Err(BackgroundTaskError::InvalidTransition);
-            }
-            _ => return Err(BackgroundTaskError::Busy),
+            ReclaimMutationPlan::Acquire {
+                epoch,
+                lease_expires_at_ms,
+                revision,
+            } => (epoch, lease_expires_at_ms, revision),
         };
+        let policy = self
+            .lifecycle
+            .attempt()
+            .expect("reclaim plan admits only a live attempt")
+            .policy
+            .clone();
         let attempt = TaskAttempt {
             worker_id,
             epoch,
-            lease_expires_at_ms: expires,
+            lease_expires_at_ms,
             policy,
         };
         let fence = attempt.fence();
@@ -538,7 +630,7 @@ impl BackgroundTask {
                 return Err(BackgroundTaskError::InvalidTransition);
             }
         };
-        self.replace_lifecycle(lifecycle)?;
+        self.apply_planned_lifecycle(lifecycle, revision);
         Ok(TaskClaim::Acquired(fence))
     }
 
@@ -688,10 +780,6 @@ impl BackgroundTask {
             .attempt()
             .filter(|attempt| attempt.owns(fence))
             .ok_or(BackgroundTaskError::StaleFence)
-    }
-
-    fn end(&mut self, end: BackgroundTaskEnd) -> Result<(), BackgroundTaskError> {
-        self.replace_lifecycle(BackgroundTaskLifecycle::Ended { end })
     }
 
     fn replace_lifecycle(
@@ -919,40 +1007,96 @@ fn never_replay_recovery_requires_a_durable_remote_continuation() {
 
 #[cfg(kani)]
 #[kani::proof]
-fn expired_background_recovery_is_exact_nonwrapping_and_never_invents_termination() {
-    // All u64 epochs, all u16 budgets (including defensively handled zero),
-    // all recovery modes and both remote/cancel facts. R1 non-remote cancellation
-    // or NeverReplay => unknown; R2 exhausted remote => unknown; R3 exhausted
-    // replayable local => Failed; R4 otherwise exact successor. Preconditions:
-    // caller has admitted expiry. Heap payload/frame, clock admission, aggregate
-    // revision atomicity and async commit refinement are not claimed here.
-    let raw: u8 = kani::any();
-    kani::assume(raw < 4);
-    let mode = match raw {
+fn expired_reclaim_plan_advances_epoch_or_terminates() {
+    // Cause/effect decision table over the production scalar plan: C1 all five
+    // phases; C2 attempt present/absent; C3 all u64 lease deadlines/times; C4
+    // all four recovery modes, remote/cancelling facts, u64 epochs, u16 budgets;
+    // C5 all u64 revisions and successor lease values. R1 Requested/Ended use
+    // their exact errors; R2 a live missing/non-expired attempt is Busy; R3 an
+    // admitted revision overflow yields no plan; R4 every other admitted expiry
+    // either advances epoch exactly once or returns a conservative terminal
+    // disposition. String/payload construction and durable commit are outside
+    // this scalar obligation.
+    let phase_raw: u8 = kani::any();
+    kani::assume(phase_raw < 5);
+    let phase = match phase_raw {
+        0 => TaskPhase::Requested,
+        1 => TaskPhase::Running,
+        2 => TaskPhase::Waiting,
+        3 => TaskPhase::Cancelling,
+        _ => TaskPhase::Ended,
+    };
+    let mode_raw: u8 = kani::any();
+    kani::assume(mode_raw < 4);
+    let mode = match mode_raw {
         0 => ToolRecoveryMode::NeverReplay,
         1 => ToolRecoveryMode::ReplaySafe,
         2 => ToolRecoveryMode::Idempotent,
         _ => ToolRecoveryMode::DurableRequest,
     };
+    let has_facts: bool = kani::any();
     let remote: bool = kani::any();
     let cancelling: bool = kani::any();
     let epoch: u64 = kani::any();
     let maximum: u16 = kani::any();
-    let decision = expired_recovery_decision(mode, remote, cancelling, epoch, maximum);
-    let unknown = (!remote && (raw == 0 || cancelling))
+    let current_lease_expires_at_ms: u64 = kani::any();
+    let now_ms: u64 = kani::any();
+    let next_lease_expires_at_ms: u64 = kani::any();
+    let revision: u64 = kani::any();
+    let facts = has_facts.then_some(ReclaimMutationFacts {
+        lease_expires_at_ms: current_lease_expires_at_ms,
+        mode,
+        remote,
+        cancelling,
+        epoch,
+        maximum,
+    });
+    let plan = reclaim_mutation_plan(phase, facts, now_ms, next_lease_expires_at_ms, revision);
+    if phase == TaskPhase::Requested {
+        assert_eq!(plan, Err(BackgroundTaskError::InvalidTransition));
+        return;
+    }
+    if phase == TaskPhase::Ended {
+        assert_eq!(plan, Err(BackgroundTaskError::Terminal));
+        return;
+    }
+    if !has_facts || current_lease_expires_at_ms > now_ms {
+        assert_eq!(plan, Err(BackgroundTaskError::Busy));
+        return;
+    }
+    if revision == u64::MAX {
+        assert_eq!(plan, Err(BackgroundTaskError::RevisionOverflow));
+        return;
+    }
+    let unknown = (!remote && (mode_raw == 0 || cancelling))
         || (remote && u128::from(epoch) >= u128::from(maximum));
-    let exhausted = !remote && raw != 0 && !cancelling && u128::from(epoch) >= u128::from(maximum);
-    assert_eq!(decision == ExpiredRecoveryDecision::Indeterminate, unknown);
-    assert_eq!(
-        decision == ExpiredRecoveryDecision::AttemptsExhausted,
-        exhausted
-    );
-    match decision {
-        ExpiredRecoveryDecision::Acquire(next) => {
+    let exhausted =
+        !remote && mode_raw != 0 && !cancelling && u128::from(epoch) >= u128::from(maximum);
+    match plan.expect("admitted expiry and revision capacity return a plan") {
+        ReclaimMutationPlan::Acquire {
+            epoch: next,
+            lease_expires_at_ms,
+            revision: next_revision,
+        } => {
             assert!(!unknown && !exhausted);
             assert_eq!(u128::from(next), u128::from(epoch) + 1);
             assert!(next <= u64::from(maximum));
+            assert_eq!(lease_expires_at_ms, next_lease_expires_at_ms);
+            assert_eq!(next_revision, revision + 1);
         }
-        _ => assert!(unknown || exhausted),
+        ReclaimMutationPlan::EndIndeterminate {
+            remote: planned_remote,
+            revision: next_revision,
+        } => {
+            assert!(unknown);
+            assert_eq!(planned_remote, remote);
+            assert_eq!(next_revision, revision + 1);
+        }
+        ReclaimMutationPlan::EndAttemptsExhausted {
+            revision: next_revision,
+        } => {
+            assert!(exhausted);
+            assert_eq!(next_revision, revision + 1);
+        }
     }
 }
