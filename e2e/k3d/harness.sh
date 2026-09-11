@@ -80,7 +80,43 @@ k3d_render_sandbox_image() {
 k3d_capacity_preflight() {
   local nodes="$1"
   shift
+  # `capacity.py` owns the arithmetic. A caller with a non-default absolute
+  # kubelet threshold passes `--eviction-threshold <quantity>` here so the same
+  # plan retains both the trigger and minimum-reclaim margin after import.
   python3 "$(dirname "${BASH_SOURCE[0]}")/capacity.py" --nodes "$nodes" "$@"
+}
+
+# Read the eviction threshold from the node's actual k3s command. This keeps
+# post-create image admission tied to the policy that kubelet is running,
+# rather than asking scenario callers to repeat configuration from memory.
+k3d_observed_eviction_threshold() {
+  local cluster="${1:-}" observed="" hard_prefix="--kubelet-arg=eviction-hard=imagefs.available<"
+  k3d_validate_name "$cluster" || return 2
+  observed=$(docker inspect --format '{{range .Config.Cmd}}{{println .}}{{end}}' \
+    -- "k3d-$cluster-server-0") || return "$?"
+
+  local command hard="" minimum="" threshold="" hard_count=0 minimum_count=0
+  while IFS= read -r command; do
+    case "$command" in
+      --kubelet-arg=eviction-hard=*)
+        hard_count=$((hard_count + 1))
+        hard="$command"
+        ;;
+      --kubelet-arg=eviction-minimum-reclaim=*)
+        minimum_count=$((minimum_count + 1))
+        minimum="$command"
+        ;;
+    esac
+  done <<<"$observed"
+  [[ "$hard_count" = 1 && "$minimum_count" = 1 && "$hard" == "$hard_prefix"* ]] || return 2
+  threshold=${hard#"$hard_prefix"}
+  threshold=${threshold%%,*}
+
+  local expected=()
+  mapfile -t expected < <(k3d_eviction_policy "$threshold") || return "$?"
+  [[ "$hard" = "--kubelet-arg=${expected[0]}" \
+    && "$minimum" = "--kubelet-arg=${expected[1]}" ]] || return 2
+  printf '%s\n' "$threshold"
 }
 
 k3d_ensure_images() {
@@ -328,7 +364,8 @@ k3d_create_cluster() {
     }
     images=("${images[@]:2}")
   fi
-  k3d_capacity_preflight "$((agents + 1))" "${images[@]}" || return "$?"
+  k3d_capacity_preflight "$((agents + 1))" \
+    --eviction-threshold "$eviction" "${images[@]}" || return "$?"
   k3d_delete_cluster "$cluster" || return "$?"
   local args=(
     cluster create "$cluster" --agents "$agents" --wait --timeout 180s
@@ -491,7 +528,13 @@ k3d_import_images() {
   local nodes
   nodes=$(docker ps -a --filter "label=k3d.cluster=$cluster" \
     --format '{{.Label "k3d.role"}}' | awk '$0 == "server" || $0 == "agent" {n++} END {print n+0}') || return "$?"
-  k3d_capacity_preflight "$nodes" "${unique[@]}" || return "$?"
+  local eviction
+  eviction=$(k3d_observed_eviction_threshold "$cluster") || {
+    echo "cannot prove the running cluster's eviction threshold" >&2
+    return 2
+  }
+  k3d_capacity_preflight "$nodes" \
+    --eviction-threshold "$eviction" "${unique[@]}" || return "$?"
   archive_dir=$(mktemp -d)
   local archives=() status=0
   for image in "${unique[@]}"; do
@@ -696,7 +739,7 @@ print(json.dumps(value))
   )
   local k3d_calls=() docker_saves=() docker_execs=() docker_builds=() deadline_calls=()
   local delete_fails=0 observation_error="" residue="" import_failure=0 transport_failure=0
-  local capacity_failure=0 capacity_calls=() volume_missing=0
+  local capacity_failure=0 capacity_calls=() volume_missing=0 eviction_observation_fault=""
   k3d_capacity_preflight() {
     capacity_calls+=("$*")
     return "$capacity_failure"
@@ -778,6 +821,7 @@ print(json.dumps(value))
   done
   k3d_create_cluster "awaken-test-1" 2
   [[ "${k3d_calls[0]}" = "cluster delete awaken-test-1" ]]
+  [[ "${capacity_calls[${#capacity_calls[@]} - 1]}" = "3 --eviction-threshold 128Mi" ]]
   [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<128Mi,nodefs.available<128Mi@server:*"* ]]
   [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-minimum-reclaim=imagefs.available=128Mi,nodefs.available=128Mi@server:*"* ]]
   [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<128Mi,nodefs.available<128Mi@agent:*"* ]]
@@ -805,7 +849,8 @@ print(json.dumps(value))
   k3d_calls=()
   k3d_create_cluster "awaken-test" 3 128Mi "" --shared-volume "$volume_id" roles:exact
   [[ "${k3d_calls[1]}" = *"--volume $volume_id:/var/lib/awaken-continuation@all"* ]]
-  [[ "${capacity_calls[${#capacity_calls[@]} - 1]}" = "4 roles:exact" ]]
+  [[ "${capacity_calls[${#capacity_calls[@]} - 1]}" = \
+    "4 --eviction-threshold 128Mi roles:exact" ]]
   k3d_calls=()
   local bad_volume
   for bad_volume in "" --all /tmp/foo abc; do
@@ -833,6 +878,7 @@ print(json.dumps(value))
   done
   k3d_calls=()
   k3d_create_cluster "awaken-test-1" 1 2Gi
+  [[ "${capacity_calls[${#capacity_calls[@]} - 1]}" = "2 --eviction-threshold 2Gi" ]]
   [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<2Gi,nodefs.available<2Gi@server:*"* ]]
   [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-minimum-reclaim=imagefs.available=2Gi,nodefs.available=2Gi@server:*"* ]]
   [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<2Gi,nodefs.available<2Gi@agent:*"* ]]
@@ -844,7 +890,8 @@ print(json.dumps(value))
   capacity_failure=1
   ! k3d_create_cluster "awaken-test" 3 128Mi "" roles:exact
   (( ${#k3d_calls[@]} == 0 ))
-  [[ "${capacity_calls[${#capacity_calls[@]} - 1]}" = "4 roles:exact" ]]
+  [[ "${capacity_calls[${#capacity_calls[@]} - 1]}" = \
+    "4 --eviction-threshold 128Mi roles:exact" ]]
   capacity_failure=0
   ! k3d_create_cluster "--all" 1
   ! k3d_create_cluster "awaken-test" many
@@ -976,6 +1023,33 @@ print(json.dumps(value))
       printf '%s\n' server agent
     elif [[ "$1 $2" = "image inspect" ]]; then
       return 0
+    elif [[ "$1" = inspect ]]; then
+      case "$eviction_observation_fault" in
+        missing)
+          printf '%s\n' \
+            server \
+            '--kubelet-arg=eviction-hard=imagefs.available<128Mi,nodefs.available<128Mi'
+          ;;
+        mismatch)
+          printf '%s\n' \
+            server \
+            '--kubelet-arg=eviction-hard=imagefs.available<128Mi,nodefs.available<128Mi' \
+            '--kubelet-arg=eviction-minimum-reclaim=imagefs.available=2Gi,nodefs.available=2Gi'
+          ;;
+        duplicate)
+          printf '%s\n' \
+            server \
+            '--kubelet-arg=eviction-hard=imagefs.available<128Mi,nodefs.available<128Mi' \
+            '--kubelet-arg=eviction-hard=imagefs.available<128Mi,nodefs.available<128Mi' \
+            '--kubelet-arg=eviction-minimum-reclaim=imagefs.available=128Mi,nodefs.available=128Mi'
+          ;;
+        *)
+          printf '%s\n' \
+            server \
+            '--kubelet-arg=eviction-hard=imagefs.available<128Mi,nodefs.available<128Mi' \
+            '--kubelet-arg=eviction-minimum-reclaim=imagefs.available=128Mi,nodefs.available=128Mi'
+          ;;
+      esac
     elif [[ "$1 $2" = "build --network" || "$1" = build ]]; then
       docker_builds+=("$*")
     fi
@@ -998,7 +1072,23 @@ print(json.dumps(value))
   (( ${#docker_saves[@]} == 4 ))
   [[ "${docker_saves[*]}" = *"app:latest postgres:16"* ]]
   [[ "${k3d_calls[0]}" = image\ import* ]]
+  [[ "${capacity_calls[${#capacity_calls[@]} - 1]}" = \
+    "2 --eviction-threshold 128Mi rancher/mirrored-pause:3.6 rancher/mirrored-coredns-coredns:1.10.1 app:latest postgres:16" ]]
   [[ "${docker_execs[${#docker_execs[@]} - 1]}" = "exec k3d-awaken-test-server-0 find /k3d/images -mindepth 1 -maxdepth 1 -type f -delete" ]]
+
+  # Post-create capacity decision table: I1 the exact running hard and minimum
+  # policies agree => import admission uses that quantity; I2 either setting is
+  # missing, conflicting or duplicated => fail closed before capacity planning,
+  # export or image import. The node command is the authority, so callers cannot
+  # accidentally repeat a stale threshold.
+  local prior_capacity=${#capacity_calls[@]} prior_saves=${#docker_saves[@]} prior_imports=${#k3d_calls[@]}
+  for eviction_observation_fault in missing mismatch duplicate; do
+    ! k3d_import_images "awaken-test" app:latest >/dev/null 2>&1
+    (( ${#capacity_calls[@]} == prior_capacity ))
+    (( ${#docker_saves[@]} == prior_saves ))
+    (( ${#k3d_calls[@]} == prior_imports ))
+  done
+  eviction_observation_fault=""
 
   # K2/K3/K5/K6: capacity fails before archive/import; import failure and
   # transport-cleanup failure each remain failures. A successful mock import

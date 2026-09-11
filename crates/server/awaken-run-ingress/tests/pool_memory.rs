@@ -1190,6 +1190,114 @@ async fn failed_post_commit_observation_relinquishes_and_self_retries() {
     pool.shutdown().await;
 }
 
+#[tokio::test]
+async fn unavailable_settlement_observer_does_not_starve_an_independent_thread() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct UnavailableObserver(AtomicUsize);
+
+    #[async_trait]
+    impl DispatchSettlementObserver for UnavailableObserver {
+        async fn before_settle(
+            &self,
+            _dispatch: &RunDispatch,
+            _claim: &RunClaim,
+            _committed_state: &RunState,
+            _cancellation_requested: bool,
+        ) -> Result<(), DispatchSettlementError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(DispatchSettlementError(
+                "predecessor physical quiescence remains unknown".into(),
+            ))
+        }
+    }
+
+    // Causes: C1 an earlier coordinated Run has committed terminal truth; C2
+    // its exact Session observer remains unavailable; C3 an unrelated Thread is
+    // runnable behind it; C4 pool width is one and the coarse poll is one hour.
+    // Effects: E1 only C1 is durably deferred; E2 C3 executes without inheriting
+    // a pool-wide fault backoff; E3 C1 stays retained and is never re-executed.
+    //
+    // | Rule | observer | unrelated row | Effect |
+    // | R1 | unavailable | absent | retain and retry after local deadline |
+    // | R2 | unavailable | present | E1+E2+E3 |
+    // | R3 | infrastructure/store fault | any | shared fault gate (separate tests) |
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let observer = Arc::new(UnavailableObserver(AtomicUsize::new(0)));
+    let (runtime, infers) = counting_text_runtime();
+    let worker = Arc::new(
+        DispatchWorker::new(runtime, store.clone(), commit.clone(), "observer-isolation")
+            .with_settlement_observer(observer.clone()),
+    );
+    store
+        .enqueue_session_child(
+            RunDispatch::new(activation_on("blocked-observer", "blocked-session"))
+                .for_session(ThreadId("parent-session".into()))
+                .with_session_activity_epoch(1),
+            SessionChildAdmission::new(25, Vec::new()),
+        )
+        .await
+        .expect("admit coordinated run");
+    store
+        .enqueue(RunDispatch::new(activation_on(
+            "independent-after-observer",
+            "healthy-thread",
+        )))
+        .await
+        .expect("enqueue unrelated run");
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(SystemClock),
+        "observer-isolation",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(3_600),
+            ..DispatchServiceConfig::default()
+        },
+        Arc::new(MapResolver {
+            workers: HashMap::from([
+                ("parent-session".to_string(), worker.clone()),
+                ("healthy-thread".to_string(), worker),
+            ]),
+        }),
+        1,
+        Arc::new(BlackholeWake),
+    );
+
+    let progressed = tokio::time::timeout(
+        Duration::from_millis(500),
+        wait_for(|| {
+            commit
+                .run_state(&RunId("independent-after-observer".into()))
+                .is_some()
+        }),
+    )
+    .await
+    .is_ok_and(|progressed| progressed);
+    pool.shutdown().await;
+
+    assert!(progressed, "R2/E2 unrelated Thread was starved");
+    assert_eq!(
+        infers.load(Ordering::SeqCst),
+        2,
+        "R2/E3 one inference per Run"
+    );
+    assert!(
+        store
+            .list_dispatches()
+            .await
+            .expect("list retained dispatches")
+            .iter()
+            .any(|row| row.run_id == RunId("blocked-observer".into())),
+        "R1/E1 unavailable observer must retain its exact dispatch",
+    );
+    assert!(
+        observer.0.load(Ordering::SeqCst) >= 1,
+        "R2 exercised observer"
+    );
+}
+
 /// Exact-claim renewal ownership cause/effect decision table. C1 is the Pool
 /// claim, C2 is resolver completion, C3 is the exact Worker drive, C4 is
 /// cancellation, C5 is resolver failure, C6 is expiry/replacement, and C7 is an
