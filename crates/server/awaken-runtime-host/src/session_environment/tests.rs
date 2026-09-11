@@ -445,6 +445,15 @@ impl pc::Sandbox for FakeContainer {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
+
+    async fn dispose_for_effect(
+        &self,
+        authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<(), pc::SandboxError> {
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))?;
+        self.dispose().await
+    }
 }
 
 pub(crate) fn spec() -> SandboxSpec {

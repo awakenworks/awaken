@@ -1280,6 +1280,15 @@ impl pc::Sandbox for BatchArtifactContainer {
     async fn dispose(&self) -> Result<(), pc::SandboxError> {
         Ok(())
     }
+
+    async fn dispose_for_effect(
+        &self,
+        authorization: &pc::SandboxDisposalAuthorization,
+        authority: &dyn pc::CurrentExecutionAuthority,
+    ) -> Result<(), pc::SandboxError> {
+        pc::with_current_sandbox_effect(authorization.effect_fence(), authority, || Ok(()))?;
+        self.dispose().await
+    }
 }
 
 async fn install_batch_artifact_environment(host: &SharedHost, thread: &str, workspace: &str) {
