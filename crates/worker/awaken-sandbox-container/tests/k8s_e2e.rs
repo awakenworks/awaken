@@ -511,7 +511,7 @@ async fn gated_k8s_marker_readiness_and_first_real_helper_roundtrip() {
         "GKC1/E2"
     );
     lease.close().await;
-    pc::Sandbox::dispose(&sandbox).await.expect("GKC1/E3");
+    sandbox.dispose().await.expect("GKC1/E3");
     assert!(
         String::from_utf8_lossy(
             &kubectl(&["-n", &namespace, "get", "pod", &pod, "--ignore-not-found",]).stdout,
@@ -642,7 +642,8 @@ async fn a_k8s_pod_rotates_and_persists_a_native_credential_file() {
         .signal(pc::Signal::Term)
         .await
         .expect("terminate the agent exec");
-    pc::Sandbox::dispose(&sandbox)
+    sandbox
+        .dispose()
         .await
         .expect("harvest the credential before deleting the Pod");
     assert_eq!(broker.current.lock().unwrap().as_slice(), refreshed);
@@ -706,7 +707,8 @@ async fn live_credential_failures_preserve_the_k8s_environment_for_retry() {
     assert!(removed.status.success(), "remove live credential fixture");
     let mut read_error = None;
     for _ in 0..4 {
-        let error = pc::Sandbox::dispose(&sandbox)
+        let error = sandbox
+            .dispose()
             .await
             .expect_err("KCF2 remote read failure must block disposal");
         if error.to_string().contains("exit code") {
@@ -742,7 +744,8 @@ async fn live_credential_failures_preserve_the_k8s_environment_for_retry() {
     let pod = pod_of(&sandbox);
     let mut write_error = None;
     for _ in 0..4 {
-        let error = pc::Sandbox::dispose(&sandbox)
+        let error = sandbox
+            .dispose()
             .await
             .expect_err("KCF3 broker rejection must block disposal");
         if error.to_string().contains("broker rejection") {
@@ -809,7 +812,8 @@ async fn a_pod_agent_speaks_the_wire_over_the_exec_channel() {
         .await
         .expect("exchange ACP frames over the Kubernetes exec channel");
     process_lifecycle::verify_wait_cancellation_and_signal(runtime.as_ref(), &pod).await;
-    pc::Sandbox::dispose(&sandbox)
+    sandbox
+        .dispose()
         .await
         .expect("KRP1 E3 production exact disposal removes the Pod");
 
@@ -917,7 +921,7 @@ async fn a_live_managed_file_is_replaceable_by_the_runtime_and_read_only_to_the_
         "projection root remains mounted"
     );
 
-    pc::Sandbox::dispose(&sandbox).await.unwrap();
+    sandbox.dispose().await.unwrap();
 }
 
 #[tokio::test]
@@ -1077,7 +1081,8 @@ async fn inline_content_reaches_the_pod_as_a_configmap_volume() {
     let got = exchange(&sandbox, cat_mount_argv())
         .await
         .expect("read the ConfigMap mount from the agent exec");
-    pc::Sandbox::dispose(&sandbox)
+    sandbox
+        .dispose()
         .await
         .expect("KMR1 E3 production exact disposal removes the Pod and ConfigMap");
 
@@ -1319,7 +1324,8 @@ async fn a_file_resolved_from_the_blob_source_reaches_the_pod() {
     let got = exchange(&sandbox, cat_mount_argv())
         .await
         .expect("read the resolved File mount from the agent exec");
-    pc::Sandbox::dispose(&sandbox)
+    sandbox
+        .dispose()
         .await
         .expect("KMR2 E4 production exact disposal removes the Pod");
 
@@ -1378,7 +1384,8 @@ async fn a_binary_file_reaches_the_pod_via_configmap_binary_data() {
     let got = exchange(&sandbox, grep_binary_argv())
         .await
         .expect("read the binaryData mount from the agent exec");
-    pc::Sandbox::dispose(&sandbox)
+    sandbox
+        .dispose()
         .await
         .expect("KMR3 E4 production exact disposal removes the Pod");
 
@@ -1504,9 +1511,7 @@ async fn an_expired_hand_exec_is_indeterminate_but_a_later_call_uses_the_same_se
         .wait()
         .await
         .expect("observe replacement exit");
-    pc::Sandbox::dispose(&sandbox)
-        .await
-        .expect("dispose the Session Pod");
+    sandbox.dispose().await.expect("dispose the Session Pod");
 }
 
 #[tokio::test]

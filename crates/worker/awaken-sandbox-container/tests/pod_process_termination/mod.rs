@@ -234,7 +234,8 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
         "KPT4 cannot restart the old domain"
     );
     k8s_common::set_test_finalizer(&pods, &pod, finalizer, false).await;
-    pc::Sandbox::dispose(&sandbox)
+    sandbox
+        .dispose()
         .await
         .expect("dispose exact owned fixture");
     assert_eq!(
@@ -370,5 +371,5 @@ async fn independent_observer_requires_exact_runtime_exit_and_retains_missing_hi
         "KPT8 successor exit cannot repair old missing history"
     );
     k8s_common::set_test_finalizer(&pods, &pod, finalizer, false).await;
-    pc::Sandbox::dispose(&replacement).await.unwrap();
+    replacement.dispose().await.unwrap();
 }

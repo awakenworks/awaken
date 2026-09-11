@@ -162,7 +162,7 @@ async fn native_acp_and_hand_share_one_production_container() {
     assert!(
         hand_process.wait().await.unwrap().signaled || hand_process.poll().await.unwrap().is_some()
     );
-    pc::Sandbox::dispose(&sandbox).await.unwrap();
+    sandbox.dispose().await.unwrap();
     assert!(matches!(
         runtime.inspect(&container_id).await,
         Err(_) | Ok(ContainerState::Gone)
