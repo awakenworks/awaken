@@ -107,9 +107,7 @@ mod tests {
         }
         assert_eq!(
             materialized_http_credential(
-                &http_access(CredentialUsage::EnvironmentVariable {
-                    name: "SECRET".into()
-                }),
+                &http_access(CredentialUsage::process_env("SECRET")),
                 &material,
             ),
             Err(CredentialMaterialError::MaterialKindMismatch),
