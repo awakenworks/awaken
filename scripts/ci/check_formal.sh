@@ -725,6 +725,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness acp_read_ahead_admission_never_overflows_or_exceeds_either_bound \
     --harness acp_prompt_admission_requires_exact_completed_handshake \
     --harness permission_consensus_is_a_conservative_order_independent_semilattice \
+    --harness acp_permission_effect_plan_preserves_authority_order \
     --harness acp_permission_projection_is_total_exact_and_non_widening \
     --harness acp_session_load_preserves_the_exact_mcp_projection \
     --harness acp_permission_tool_identity_normalization_is_exact

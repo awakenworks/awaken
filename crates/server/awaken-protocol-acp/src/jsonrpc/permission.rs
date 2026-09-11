@@ -154,6 +154,66 @@ fn normalize_tool_identity_source<Id: PartialEq>(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PermissionEffect {
+    ProjectCall,
+    ResolveAuthority,
+    SendResponse,
+    NoEffect,
+}
+
+/// The sole local effect plan for one valid ACP permission request. Normal
+/// prompt handling first projects the exact call; settlement has already closed
+/// projection and therefore starts at the same authority-resolution edge.
+const fn permission_effect_plan(project_call: bool) -> [PermissionEffect; 3] {
+    if project_call {
+        [
+            PermissionEffect::ProjectCall,
+            PermissionEffect::ResolveAuthority,
+            PermissionEffect::SendResponse,
+        ]
+    } else {
+        [
+            PermissionEffect::ResolveAuthority,
+            PermissionEffect::SendResponse,
+            PermissionEffect::NoEffect,
+        ]
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn acp_permission_effect_plan_preserves_authority_order() {
+    // Cause/effect decision table for the production-consumed local plan:
+    // | project open | first effect      | second effect     | third effect |
+    // | true         | project exact call | resolve authority | send response |
+    // | false        | resolve authority  | send response     | none          |
+    // Therefore every response follows exactly one authority resolution, and
+    // an enabled projection precedes both. Async completion and remote effects
+    // are intentionally outside this allocation-free sequencing proof.
+    let project_call: bool = kani::any();
+    let plan = permission_effect_plan(project_call);
+    if project_call {
+        assert_eq!(
+            plan,
+            [
+                PermissionEffect::ProjectCall,
+                PermissionEffect::ResolveAuthority,
+                PermissionEffect::SendResponse,
+            ]
+        );
+    } else {
+        assert_eq!(
+            plan,
+            [
+                PermissionEffect::ResolveAuthority,
+                PermissionEffect::SendResponse,
+                PermissionEffect::NoEffect,
+            ]
+        );
+    }
+}
+
 /// Answer an agent→client request: a permission request is decided by `resolver`
 /// (the neutral `ToolPermissionPolicy`) and projected back onto the agent's own
 /// offered option — allow or reject, once-preferred over always; `cancelled` when
@@ -169,14 +229,39 @@ pub(super) async fn answer_request(
     context: &mut PermissionContext,
     projection: (&mut dyn RunFactAppender, &mut u64),
 ) -> Result<(), AcpError> {
-    if method == CLIENT_METHOD_NAMES.session_request_permission {
-        let outcome = match params.and_then(|p| {
-            parse::<RequestPermissionRequest>(p.clone())
-                .ok()
-                .map(|r| (p, r))
-        }) {
-            Some((raw, req)) if context.accepts_session(&req.session_id) => {
-                let ask = permission_ask(&raw, context);
+    if method != CLIENT_METHOD_NAMES.session_request_permission {
+        return wire
+            .send(&OutError {
+                jsonrpc: JSONRPC,
+                id,
+                error: RpcErrorBody {
+                    code: METHOD_NOT_FOUND,
+                    message: "capability not supported by this client",
+                },
+            })
+            .await;
+    }
+    let parsed = params.and_then(|raw| {
+        parse::<RequestPermissionRequest>(raw.clone())
+            .ok()
+            .map(|request| (raw, request))
+    });
+    let Some((raw, request)) =
+        parsed.filter(|(_, request)| context.accepts_session(&request.session_id))
+    else {
+        return wire
+            .send(&OutResult {
+                jsonrpc: JSONRPC,
+                id,
+                result: RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled),
+            })
+            .await;
+    };
+    let ask = permission_ask(&raw, context);
+    let mut verdict = None;
+    for effect in permission_effect_plan(!context.is_settling()) {
+        match effect {
+            PermissionEffect::ProjectCall => {
                 // Permission carries the resolved target and complete execution
                 // input. Refine the same call before policy/dispatch so transcript,
                 // one-shot grant and later streaming results share one identity.
@@ -185,48 +270,43 @@ pub(super) async fn answer_request(
                     name: ask.tool.clone(),
                     input: ask.arguments.clone(),
                 };
-                if !context.is_settling() {
-                    *projection.1 += 1;
-                    projection.0.append(*projection.1, &event).await?;
-                    context.observe(&event);
-                }
-                match resolver.resolve(&ask).await {
-                    PermissionVerdict::Await { correlation_id } => {
-                        wire.send(&OutResult {
-                            jsonrpc: JSONRPC,
-                            id,
-                            result: RequestPermissionResponse::new(
-                                RequestPermissionOutcome::Cancelled,
-                            ),
-                        })
-                        .await?;
-                        return Err(AcpError::PermissionAwait {
-                            correlation_id,
-                            ask: Box::new(ask),
-                        });
-                    }
-                    verdict => select_outcome(&req, verdict),
-                }
+                *projection.1 += 1;
+                projection.0.append(*projection.1, &event).await?;
+                context.observe(&event);
             }
-            _ => RequestPermissionOutcome::Cancelled,
-        };
-        return wire
-            .send(&OutResult {
-                jsonrpc: JSONRPC,
-                id,
-                result: RequestPermissionResponse::new(outcome),
-            })
-            .await;
+            PermissionEffect::ResolveAuthority => {
+                verdict = Some(resolver.resolve(&ask).await);
+            }
+            PermissionEffect::SendResponse => {
+                let verdict = verdict.take().ok_or_else(|| {
+                    AcpError::Frame("ACP permission response preceded authority resolution".into())
+                })?;
+                let (outcome, awaiting) = match verdict {
+                    PermissionVerdict::Await { correlation_id } => {
+                        (RequestPermissionOutcome::Cancelled, Some(correlation_id))
+                    }
+                    verdict => (select_outcome(&request, verdict), None),
+                };
+                wire.send(&OutResult {
+                    jsonrpc: JSONRPC,
+                    id: id.clone(),
+                    result: RequestPermissionResponse::new(outcome),
+                })
+                .await?;
+                return match awaiting {
+                    Some(correlation_id) => Err(AcpError::PermissionAwait {
+                        correlation_id,
+                        ask: Box::new(ask.clone()),
+                    }),
+                    None => Ok(()),
+                };
+            }
+            PermissionEffect::NoEffect => {}
+        }
     }
-    wire.send(&OutError {
-        jsonrpc: JSONRPC,
-        id,
-        error: RpcErrorBody {
-            code: METHOD_NOT_FOUND,
-            message: "capability not supported by this client",
-        },
-    })
-    .await
+    Err(AcpError::Frame(
+        "ACP permission effect plan ended before response".into(),
+    ))
 }
 
 /// Project a raw `session/request_permission` params object into a neutral
@@ -409,6 +489,218 @@ fn acp_permission_projection_is_total_exact_and_non_widening() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type EffectLog = std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>;
+
+    struct EffectSink {
+        log: EffectLog,
+        fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl RunFactAppender for EffectSink {
+        async fn append(
+            &mut self,
+            _seq: u64,
+            _event: &AcpProjectedEvent,
+        ) -> Result<(), AppendError> {
+            self.log.lock().unwrap().push("project");
+            if self.fail {
+                Err(AppendError::Append("injected projection failure".into()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    struct EffectResolver {
+        log: EffectLog,
+        verdict: PermissionVerdict,
+    }
+
+    #[async_trait::async_trait]
+    impl PermissionResolver for EffectResolver {
+        async fn resolve(&self, _ask: &PermissionAsk) -> PermissionVerdict {
+            self.log.lock().unwrap().push("resolve");
+            self.verdict.clone()
+        }
+    }
+
+    struct EffectChannel {
+        log: EffectLog,
+        fail: bool,
+    }
+
+    impl tokio::io::AsyncRead for EffectChannel {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl tokio::io::AsyncWrite for EffectChannel {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            let channel = self.get_mut();
+            channel.log.lock().unwrap().push("send");
+            if channel.fail {
+                std::task::Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "injected response failure",
+                )))
+            } else {
+                std::task::Poll::Ready(Ok(buf.len()))
+            }
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn permission_effect_plan_orders_projection_authority_and_response() {
+        // Cause/effect table over answer_request and its production effect plan:
+        // | rule | valid | projection open | append | verdict | send | effects |
+        // | R1 | yes | yes | ok | allow | ok | project, resolve, send; success |
+        // | R2 | yes | yes | ok | await | ok | project, resolve, send; Await |
+        // | R3 | yes | no  | n/a| deny  | ok | resolve, send; success |
+        // | R4 | yes | yes | fail | any | n/a | project only; append error |
+        // | R5 | yes | yes | ok | deny | fail | project, resolve, send; I/O error |
+        // | R6 | no  | any | n/a | n/a | ok | send cancelled; no authority call |
+        // Effects are observed at the actual appender, resolver and Wire writer.
+        // Tokio scheduling and what a remote peer does after write remain TCB.
+        let request = serde_json::json!({
+            "sessionId":"s",
+            "toolCall":{"toolCallId":"call","title":"bash","rawInput":{"cmd":"echo ok"}},
+            "options":[
+                {"optionId":"allow","name":"Allow","kind":"allow_once"},
+                {"optionId":"deny","name":"Deny","kind":"reject_once"}
+            ]
+        });
+        for (rule, valid, settling, append_fails, verdict, send_fails, expected, outcome) in [
+            (
+                "R1",
+                true,
+                false,
+                false,
+                PermissionVerdict::Allow,
+                false,
+                vec!["project", "resolve", "send"],
+                "ok",
+            ),
+            (
+                "R2",
+                true,
+                false,
+                false,
+                PermissionVerdict::Await {
+                    correlation_id: "ticket".into(),
+                },
+                false,
+                vec!["project", "resolve", "send"],
+                "await",
+            ),
+            (
+                "R3",
+                true,
+                true,
+                false,
+                PermissionVerdict::Deny,
+                false,
+                vec!["resolve", "send"],
+                "ok",
+            ),
+            (
+                "R4",
+                true,
+                false,
+                true,
+                PermissionVerdict::Allow,
+                false,
+                vec!["project"],
+                "append",
+            ),
+            (
+                "R5",
+                true,
+                false,
+                false,
+                PermissionVerdict::Deny,
+                true,
+                vec!["project", "resolve", "send"],
+                "io",
+            ),
+            (
+                "R6",
+                false,
+                false,
+                false,
+                PermissionVerdict::Allow,
+                false,
+                vec!["send"],
+                "ok",
+            ),
+        ] {
+            let log = EffectLog::default();
+            let resolver = EffectResolver {
+                log: log.clone(),
+                verdict,
+            };
+            let mut sink = EffectSink {
+                log: log.clone(),
+                fail: append_fails,
+            };
+            let mut channel = EffectChannel {
+                log: log.clone(),
+                fail: send_fails,
+            };
+            let mut context = PermissionContext::for_session(&SessionId::new("s"));
+            if settling {
+                context.begin_settlement("prior");
+            }
+            let params = valid
+                .then(|| request.clone())
+                .or_else(|| Some(serde_json::json!({"sessionId":"s","invalid":true})));
+            let result = answer_request(
+                &mut Wire::new(&mut channel),
+                serde_json::json!(42),
+                CLIENT_METHOD_NAMES.session_request_permission,
+                params,
+                &resolver,
+                &mut context,
+                (&mut sink, &mut 0),
+            )
+            .await;
+            assert_eq!(*log.lock().unwrap(), expected, "{rule}");
+            assert!(
+                match outcome {
+                    "ok" => result.is_ok(),
+                    "await" => matches!(result, Err(AcpError::PermissionAwait { .. })),
+                    "append" => matches!(result, Err(AcpError::Append(_))),
+                    "io" => matches!(result, Err(AcpError::Io(_))),
+                    _ => false,
+                },
+                "{rule}: {result:?}"
+            );
+        }
+    }
 
     #[test]
     fn permission_ask_uses_only_the_matching_observed_tool() {
