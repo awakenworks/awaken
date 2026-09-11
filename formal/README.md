@@ -988,93 +988,56 @@ event-sourced reducers, commit receipts, and durable inbox/outbox identities can
 move additional adapter behavior under proof without claiming that networks,
 LLM semantics, database engines, kernels, or humans were verified.
 
-`formal/features.json` supplies the independent product denominator. Every row
-in the canonical functional coverage matrix has exactly one machine-readable
-feature, entrypoint list, criticality, and requirement classification. The
-feature gate rejects orphaned formal obligations and external assumptions, so a
-high claim-oriented ratio cannot hide a product area that was omitted from the
-denominator. The same file owns the ordered product-assurance journeys that
-compose those features into managed execution, multi-agent/background
-recovery, Control publication, extension/protocol, and storage/evidence paths.
-The gate requires every feature, formal obligation, and external assumption to
-be reachable from at least one journey and requires every declared formal
-anchor to be consumed by a journey stage. This is the product-wide composition
-contract: local proofs remain small and independently checkable, while the
-journey graph makes their end-to-end coverage and every environmental cut
-explicit. It is not a claim that a single monolithic state space or theorem
-proves third-party systems. `formal/assumptions.json` records the environmental contracts that
-repository-owned proofs consume, including their integration and runtime
-evidence. An `evidenced` external assumption means its boundary has executable
-or operational detection evidence; it does not promote third-party correctness
-into a repository theorem. Run `scripts/ci/check_feature_coverage.py
---require-complete` to make
-unverified product requirements or open external assumptions fatal; the normal
-formal gate always validates the inventory and reports those remaining gaps.
+`formal/features.json` supplies the independent product denominator: each
+machine-readable feature has entrypoints, criticality, requirements, and an
+ordered assurance journey. The feature gate rejects orphaned obligations,
+assumptions, features, and formal anchors, so the claim-oriented ledger cannot
+hide an omitted product area. Local proofs remain independently checkable while
+the journey graph exposes composition and environmental cuts; it does not claim
+one theorem over third-party systems. `formal/assumptions.json` owns those
+environmental contracts, their evidence, exact version/configuration
+fingerprints, validity windows, and fail-closed behavior. `evidenced` means the
+boundary has executable or operational detection, never that the dependency is
+proved. `check_feature_coverage.py --require-complete` makes an open requirement
+or assumption fatal and reports external evidence separately from proved
+components; the latter count remains zero by definition.
 
-Each TCB row additionally owns its required version/configuration fingerprint,
-dependency contract, evidence-validity window, and fail-closed behavior.
-Consequently “zero external evidence gaps” is reported separately from “zero
-external components proved”; the latter remains zero by definition.
+`scripts/release/verification_manifest.py` is the single proof-carrying release
+and TCB admission owner. Its schema binds source and archive digests, proof
+inputs/toolchain/bounds/exclusions, every TCB contract, and the completed
+`check_formal.sh` receipt. Executed manifests hash committed Git blobs, so
+platform line endings reproduce while semantic edits, dirty source, changed
+toolchains, missing proof execution, or an earlier schema reject. The receipt is
+signed CI testimony rather than an independently checkable proof certificate.
+`standard` packages carry exact gaps without claiming Verified; package
+generation under `AWAKEN_RELEASE_PROFILE=awaken-verified-v1` additionally
+requires the P0 direct-proof denominator to be empty.
 
-scripts/release/verification_manifest.py generates the single proof-carrying
-release manifest from these ledgers. It binds the source commit, archive digest,
-proof-input digest, proof toolchain contract, bounds, exclusions, and every TCB
-contract. The existing release artifact attestation signs the generated file
-with the other dist subjects. AWAKEN_RELEASE_PROFILE=awaken-verified-v1 turns
-package generation into the strong gate; ordinary releases use standard and
-carry the exact non-eligibility gap set without displaying a Verified identity.
-Manifest schema 3 additionally binds `proof_execution`, the completion receipt
-emitted by the one strict `check_formal.sh` invocation. It replaces any previous
-receipt with `running` before checks and publishes `passed` only after every
-tool stage succeeds. Packaging consumes the exact quality invocation artifact;
-Verified generation rejects absent/incomplete execution, changed source or
-toolchain contracts, and dirty candidate trees. Standard local packages may
-explicitly carry null execution evidence. The receipt is CI testimony signed
-through the existing release attestation, not an independently checkable proof
-certificate; tool and runner trust remain explicit.
-Executed manifests hash the committed Git blobs for source ledgers and proof
-inputs, sharing the runner's source-identity mechanism. LF/CRLF checkouts of
-the same clean commit therefore reproduce the same manifest; semantic edits
-still invalidate the receipt. `source_digest_basis` distinguishes `git-blob`
-release identity from `working-tree` local diagnostics. Artifact hashes always
-cover exact physical archive bytes. Earlier manifest schemas are rejected.
-The Management package staging and final release jobs both invoke the canonical
-validator with `--expected-profile` and `--require-proof-execution` before
-extracting or attesting archives. Standard releases require executed proof
-evidence too; local diagnostic packages with null receipts cannot pass these
-consumer gates. Final archive/sidecar sets must be nonempty and paired. Tests
-execute these local workflow blocks using synthetic packages; they do not
-claim a successful registry publication or a live deployment attestation.
-The Management image includes that exact original manifest as the read-only
-`/usr/share/awaken/verification.json`, not a rewritten image-specific ledger.
-One shared payload check compares executable/manifest bytes and OCI source,
-revision and version for both fresh and reused images. Reuse also pins the
-signature workflow commit. Temporary inspection containers and their anonymous
-volumes are reclaimed on success and check failure; Docker availability remains
-an external assumption. The admission model includes the optional exact-image
-payload prerequisite before TCB admission. Carrying this signed image content
-does not itself authenticate a deployment or freeze a Session's proof identity.
-The release-side validator offers `validate --require-verified --tcb-evidence
-evidence.json --runtime-fingerprint target.json`. The caller must independently
-authenticate both inputs. Evidence owns `observations`; the target snapshot owns
-`dependencies`, each with exactly `id`, `version`, and `configuration_digest`.
-Both must contain every non-semantic TCB contract exactly once, and observation
-version/configuration must equal the target. Missing/unknown/duplicate dependency
-IDs, unknown fields, malformed digests and invalid clocks fail closed; the
-maximum-age boundary is inclusive. This snapshot is not a second assumption
-ledger and cannot be derived from the evidence it is meant to check.
-`VerifiedProfileAdmission` composes the bounded release prerequisite and
-point-in-time TCB decision, including artifact/profile/proof/source mismatch,
-per-dependency mismatch and expiry mutants; Python decision-table tests exercise
-the production validator and its CLI. Neither is universal implementation
-refinement. Authenticating the observer/actual deployment, preventing snapshot
-TOCTOU, runtime invalidation and Session recovery integration remain required.
-Passing the offline validator is not a live runtime Verified identity.
+Management staging and final release both validate the requested profile and
+completed proof before extraction or attestation. Requesting
+`awaken-verified-v1` necessarily enables Verified admission, so omission of a
+separate `--require-verified` flag cannot bypass fresh TCB evidence or the exact
+runtime fingerprint. Standard release consumption remains unchanged. The
+Management image carries the original manifest read-only, and the existing
+payload check binds executable/manifest bytes and OCI source/revision/version
+for fresh and reused images; carrying it does not authenticate a deployment.
 
-`scripts/ci/formal_profile.py` owns the shared requirement resolution and P0
-qualification used by feature coverage, formal coverage, and release packaging.
-A ledger's structural eligibility does not attest that proof tools ran or that
-deployed TCB fingerprints were authenticated.
+Verified admission accepts the existing `--tcb-evidence evidence.json` and
+`--runtime-fingerprint target.json` inputs. The former owns `observations`; the
+latter independently owns `dependencies` with exact `id`, `version`, and
+`configuration_digest`. Both must contain every non-semantic TCB contract once;
+contract/version/configuration mismatch, missing or duplicate IDs, malformed
+digests, invalid clocks, and expired observations fail closed. The repository
+has no authority that produces or authenticates these files, so its release
+workflow rejects the Verified identity until the deployment owner provides that
+handoff. Observer authentication, target snapshot TOCTOU, runtime invalidation,
+and Session recovery binding remain external work; passing this offline bounded
+decision is not a live runtime Verified identity. Detailed model and adapter
+bounds remain in `formal/VERIFICATION_BOUNDARIES.md`.
+
+`scripts/ci/formal_profile.py` remains the shared requirement/P0 qualification
+owner for feature coverage, formal coverage, and packaging. Structural
+eligibility alone proves neither tool execution nor deployed TCB authenticity.
 
 Formal metadata mutation checks require an unmodified green fixture before each
 mutation, the named semantic rejection (not merely nonzero exit), and a green

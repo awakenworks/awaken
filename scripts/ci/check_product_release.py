@@ -108,9 +108,11 @@ def validate(
         )
 
     # R8: both consumers must execute the one validator with exact requested
-    # profile and completed proof execution. Comments, a command after extract,
-    # or a missing strict flag cannot satisfy this binding audit. Actual shell
-    # decision-table tests live beside the production manifest validator.
+    # profile and completed proof execution. The canonical validator makes a
+    # requested Verified profile imply fresh exact TCB admission; removing the
+    # profile binding would therefore bypass that stronger gate. Comments, a
+    # command after extract, or a missing strict flag cannot satisfy this audit.
+    # Actual shell decision-table tests live beside the production validator.
     selection = ["python3", "../scripts/release/verification_manifest.py", "validate",
                  "--artifact", "$archive", "--manifest", "$archive.verification.json",
                  "--expected-profile", "$AWAKEN_RELEASE_PROFILE", "--require-proof-execution"]
@@ -430,17 +432,20 @@ class ProductReleaseCheckerTests(unittest.TestCase):
                     self.assertFalse((root / "removed").exists())
 
     def test_proof_consumer_binding_decision_table(self) -> None:
-        # R8: independently remove each consumer's required proof flag, turn its
-        # exact invocation into a comment, or move validation after extraction.
-        # A valid baseline is mandatory; checking a marker somewhere in another
-        # job must not hide the missing edge at this particular consumer.
+        # Cause/effect table: C1 each consumer names the requested profile; C2 it
+        # requires completed proof execution; C3 the canonical validator runs;
+        # C4 Management validates before extraction. R1 all true accepts the
+        # graph. R2 independently remove C1, C2, or C3 and reject. R3 move C4
+        # after extraction and reject. This preserves the edge that turns a
+        # Verified profile request into mandatory TCB evidence admission.
         inputs = current_inputs()
         self.assertEqual(validate(*inputs), [])
         for name in ("Stage the exact packaged binary", "Validate every packaged proof manifest"):
             marker = "      - name: " + name + "\n"
             start, rest = inputs[0].split(marker, 1)
             block, end = rest.split("      - name:", 1)
-            for changed in (block.replace("--require-proof-execution", ""),
+            for changed in (block.replace('--expected-profile "$AWAKEN_RELEASE_PROFILE"', ""),
+                            block.replace("--require-proof-execution", ""),
                             block.replace("python3 ../scripts/release/verification_manifest.py validate", "# omitted validator")):
                 with self.subTest(step=name):
                     self.assertTrue(validate(start + marker + changed + "      - name:" + end, *inputs[1:]))
