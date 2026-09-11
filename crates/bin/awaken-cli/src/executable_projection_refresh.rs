@@ -33,33 +33,31 @@ impl ExecutableProjectionRefresh for EnvironmentProjectionRefresh {
 /// One ordered process adapter over the existing Agent and Environment
 /// high-water reconcilers. It owns no cursor or catalog state.
 struct ExecutableProjectionRefreshers {
-    agents: Option<Arc<dyn ExecutableProjectionRefresh>>,
-    environments: Option<Arc<dyn ExecutableProjectionRefresh>>,
+    agents: Arc<dyn ExecutableProjectionRefresh>,
+    environments: Arc<dyn ExecutableProjectionRefresh>,
 }
 
 impl ExecutableProjectionRefreshers {
     fn from_refreshers(
         agents: Option<Arc<dyn ExecutableProjectionRefresh>>,
         environments: Option<Arc<dyn ExecutableProjectionRefresh>>,
-    ) -> Option<Arc<Self>> {
-        (agents.is_some() || environments.is_some()).then(|| {
-            Arc::new(Self {
+    ) -> Result<Option<Arc<Self>>, &'static str> {
+        match (agents, environments) {
+            (Some(agents), Some(environments)) => Ok(Some(Arc::new(Self {
                 agents,
                 environments,
-            })
-        })
+            }))),
+            (None, None) => Ok(None),
+            _ => Err("executable projection refresh requires both Agent and Environment adapters"),
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl ExecutableProjectionRefresh for ExecutableProjectionRefreshers {
     async fn refresh(&self) -> Result<(), String> {
-        if let Some(agents) = &self.agents {
-            agents.refresh().await?;
-        }
-        if let Some(environments) = &self.environments {
-            environments.refresh().await?;
-        }
+        self.agents.refresh().await?;
+        self.environments.refresh().await?;
         Ok(())
     }
 }
@@ -69,12 +67,13 @@ impl ExecutableProjectionRefresh for ExecutableProjectionRefreshers {
 pub(crate) fn shared(
     agents: Option<Arc<PostgresExecutableAgentRegistrar>>,
     environments: Option<Arc<PostgresExecutableEnvironmentRegistrar>>,
-) -> Option<Arc<dyn ExecutableProjectionRefresh>> {
+) -> Result<Option<Arc<dyn ExecutableProjectionRefresh>>, String> {
     ExecutableProjectionRefreshers::from_refreshers(
         agents.map(|value| Arc::new(AgentProjectionRefresh(value)) as Arc<_>),
         environments.map(|value| Arc::new(EnvironmentProjectionRefresh(value)) as Arc<_>),
     )
-    .map(|refresh| refresh as Arc<dyn ExecutableProjectionRefresh>)
+    .map(|refresh| refresh.map(|refresh| refresh as Arc<dyn ExecutableProjectionRefresh>))
+    .map_err(str::to_owned)
 }
 
 #[cfg(test)]
@@ -110,13 +109,17 @@ mod tests {
 
     #[tokio::test]
     async fn composite_refresh_is_ordered_fail_closed_and_absent_for_all_in_one() {
-        // Causes: C1 Agent refresh succeeds/fails; C2 Environment refresh
-        // succeeds/fails; C3 neither durable adapter is installed. Effects: E1
-        // invoke Agent then Environment and succeed; E2 stop at the first
-        // failure; E3 construct no composite. Constraints: K1 the composite
-        // owns no cursor or cache; K2 Environment never runs after Agent fails.
-        // Decision table: D1 TT=>[A,E]/Ok; D2 F-=>[A]/Err;
-        // D3 TF=>[A,E]/Err; D4 absent=>None.
+        // Causes: C1 Agent adapter is present/absent; C2 Environment adapter is
+        // present/absent; C3 each admitted adapter refresh succeeds/fails.
+        // Effects: E1 construct the sole ordered pair; E2 construct no gate for
+        // process-local AllInOne; E3 reject a mixed process at startup; E4 call
+        // Agent then Environment and succeed; E5 stop on the first failure.
+        // Constraints: K1 the pair owns no cursor or cache; K2 no successful
+        // gate can omit either domain; K3 Environment never runs after Agent
+        // fails. Decision table: D1 present/present + TT=>E1,[A,E]/Ok(E4);
+        // D2 present/present + F-=>E1,[A]/Err(E5); D3 present/present +
+        // TF=>E1,[A,E]/Err(E5); D4 absent/absent=>None(E2); D5
+        // present/absent=>Err(E3); D6 absent/present=>Err(E3).
         async fn exercise(
             agent: Result<(), &str>,
             environment: Result<(), &str>,
@@ -127,6 +130,7 @@ mod tests {
                 Some(recorder(&calls, "environment", environment)),
             )
             .unwrap();
+            let refresh = refresh.unwrap();
             let result = refresh.refresh().await;
             let recorded = calls.lock().unwrap().clone();
             (recorded, result)
@@ -144,8 +148,28 @@ mod tests {
         assert_eq!(calls, vec!["agent", "environment"], "D3");
         assert_eq!(result, Err("environment offline".into()), "D3");
         assert!(
-            ExecutableProjectionRefreshers::from_refreshers(None, None).is_none(),
+            ExecutableProjectionRefreshers::from_refreshers(None, None)
+                .unwrap()
+                .is_none(),
             "D4"
         );
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        assert!(
+            ExecutableProjectionRefreshers::from_refreshers(
+                Some(recorder(&calls, "agent", Ok(()))),
+                None,
+            )
+            .is_err(),
+            "D5"
+        );
+        assert!(
+            ExecutableProjectionRefreshers::from_refreshers(
+                None,
+                Some(recorder(&calls, "environment", Ok(()))),
+            )
+            .is_err(),
+            "D6"
+        );
+        assert!(calls.lock().unwrap().is_empty(), "D5/D6 startup only");
     }
 }

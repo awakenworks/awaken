@@ -110,7 +110,7 @@ pub(super) async fn prepare_runtime_routers(
     let executable_projection_refresh = executable_projection_refresh::shared(
         executable_agent_projection_refresher,
         executable_environment_projection_refresher,
-    );
+    )?;
     let executable_environment_private_router = executable_environment_wiring.private_router;
     let executable_environment_image_builds = executable_environment_wiring.image_builds;
     let coordinator_content_eraser =
