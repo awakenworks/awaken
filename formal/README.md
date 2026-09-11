@@ -1124,9 +1124,9 @@ durable pending audit followed by the config store's atomic business commit and
 pending→committed transition across exact `(scope, tool, call_id)` identities;
 delimiter-colliding tuples and conflicting summaries are distinct inputs, and
 stable committed-call replay is a no-op. The config-domain admission kernel has
-a bounded Kani proof, while live backend conformance and history-migration tests
-exercise SQL behavior. These are not a universal SQL/driver refinement. Tracing is
-an observability projection rather than the durable audit authority.
+a bounded Kani proof over exact admission and shared Admin/HTTP entry/completion decisions, directly proving local absent/replay gates; backend/migration tests cover SQL.
+Identity, database atomicity/durability, HTTP completion, crashes and async
+execution remain model, executable or TCB boundaries; tracing is observational.
 
 `ManagedCredentialCreation` owns the bounded abstract material-attempt protocol
 shared by Source-only and Managed creation.

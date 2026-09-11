@@ -240,8 +240,8 @@ async fn durable_management_audit(
         call_id,
         summary: format!("body_sha256={body_hash}"),
     };
-    match plane.record(&scope, &audit).await {
-        Ok(AuditedConfigWrite::Applied) => {}
+    let admission = match plane.record(&scope, &audit).await {
+        Ok(admission) if admission.permits_business_write() => admission,
         Ok(AuditedConfigWrite::Replayed) => {
             // The prior attempt may have committed business state and crashed
             // before recording completion. Never execute an ambiguous retry.
@@ -260,6 +260,13 @@ async fn durable_management_audit(
             )
                 .into_response();
         }
+        Ok(AuditedConfigWrite::Applied) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "durable management audit returned an inconsistent admission",
+            )
+                .into_response();
+        }
         Err(error) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -267,11 +274,11 @@ async fn durable_management_audit(
             )
                 .into_response();
         }
-    }
+    };
     let response = next
         .run(Request::from_parts(parts, Body::from(bytes)))
         .await;
-    if response.status().is_success()
+    if admission.requires_audit_completion(response.status().is_success())
         && let Err(error) = plane
             .mark_committed(&scope, &audit.tool, &audit.call_id)
             .await
