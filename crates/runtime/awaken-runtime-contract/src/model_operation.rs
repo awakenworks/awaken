@@ -1149,6 +1149,17 @@ mod tests {
                 "E4 {corrupt}"
             );
         }
+        // E5 a wholly foreign shape says what it wanted. Evidence corruption is
+        // diagnosed from a run journal long after the fact, so the refusal has
+        // to name the subject rather than leave an operator guessing which
+        // cell rejected -- and guessing is how invented evidence gets written.
+        assert!(
+            serde_json::from_value::<ModelExecutionEvidence>(serde_json::json!(3))
+                .unwrap_err()
+                .to_string()
+                .contains("expected model execution evidence"),
+            "E5"
+        );
     }
 
     #[test]
