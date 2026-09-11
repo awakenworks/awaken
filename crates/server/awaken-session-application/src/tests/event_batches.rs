@@ -41,6 +41,7 @@ struct EventBatchRuntime {
     outcome_busy: AtomicBool,
     outcome_active: AtomicBool,
     outcome_continue_calls: AtomicUsize,
+    dispatch_projection_installs: Mutex<Vec<String>>,
     outcome_completed: AtomicBool,
     tool_reply_prior_epoch: AtomicU64,
     tool_reply_calls: AtomicUsize,
@@ -132,6 +133,15 @@ impl SessionRuntime for EventBatchRuntime {
                 .push(format!("project:{thread}:{}", projection.resource_revision));
             *self.projected_resources.lock().unwrap() =
                 Some((projection.resource_revision, projection.resources.clone()));
+        }
+        if matches!(
+            mode,
+            awaken_session_contract::SessionProjectionInstallMode::Dispatch
+        ) {
+            self.dispatch_projection_installs
+                .lock()
+                .unwrap()
+                .push(thread.to_string());
         }
         install_complete_test_projection(self, thread, projection, mode).await
     }
@@ -4975,9 +4985,23 @@ async fn cold_supervisor_continues_only_the_thread_owned_outcome_truth() {
         repository,
         Arc::new(RecordingEnvironmentSource::default()),
     );
+    runtime.dispatch_projection_installs.lock().unwrap().clear();
     let awaiting = cold.reconcile_outcome_continuations().await;
     assert_eq!(awaiting.pending, 1, "C1/E1+E2");
     assert_eq!(runtime.outcome_continue_calls.load(Ordering::SeqCst), 1);
+    // C4/E5 a replacement process must restore this Session's exact frozen
+    // dispatch projection before continuing its Outcome. Without it Session
+    // admission would fall back to the flat-protocol `assistant` identity and
+    // the Outcome would pin and grade an Agent that was never published.
+    assert_eq!(
+        runtime
+            .dispatch_projection_installs
+            .lock()
+            .unwrap()
+            .as_slice(),
+        ["outcome-cold-continuation"],
+        "C4/E5 exactly one restore of the continued Session precedes its Outcome"
+    );
 
     runtime.outcome_completed.store(true, Ordering::SeqCst);
     let completed = cold.reconcile_outcome_continuations().await;
