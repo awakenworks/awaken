@@ -14,6 +14,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
+use awaken_agent_contract::observation::Observed;
 use awaken_agent_contract::stream::checkpoint::{
     PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
 };
@@ -614,6 +615,19 @@ async fn stream_sink_records_events_in_send_order() {
 
 // ---- MemoryStreamCheckpointStore: overwrite + delete idempotency ----------
 
+/// Reduce an observation to the partial text it carries.
+///
+/// Every assertion below presumes the store actually answered, so an `Unknown`
+/// observation fails the test loudly rather than reading as absence — the
+/// collapse the tri-state return exists to prevent.
+fn observed_text(observed: Observed<StreamCheckpoint>) -> Option<String> {
+    match observed {
+        Observed::Present(checkpoint) => Some(checkpoint.partial_text),
+        Observed::Absent => None,
+        Observed::Unknown(cause) => panic!("checkpoint observation failed: {cause}"),
+    }
+}
+
 fn checkpoint(run: &str, text: &str) -> StreamCheckpoint {
     StreamCheckpoint {
         run_id: run.to_string(),
@@ -632,39 +646,39 @@ fn checkpoint(run: &str, text: &str) -> StreamCheckpoint {
 #[tokio::test]
 async fn checkpoint_store_get_put_overwrite_delete() {
     let store = MemoryStreamCheckpointStore::new();
-    // Empty read → None (resume nothing).
-    assert!(store.get("r").await.unwrap().is_none());
+    // Empty read → a reported absence (resume nothing), never an Unknown.
+    assert_eq!(store.get("r").await, Observed::Absent);
 
     store.put(checkpoint("r", "first")).await.unwrap();
     assert_eq!(
-        store.get("r").await.unwrap().map(|c| c.partial_text),
+        observed_text(store.get("r").await),
         Some("first".to_string())
     );
 
     // put overwrites the prior partial for the same run_id (last write wins).
     store.put(checkpoint("r", "second")).await.unwrap();
     assert_eq!(
-        store.get("r").await.unwrap().map(|c| c.partial_text),
+        observed_text(store.get("r").await),
         Some("second".to_string())
     );
 
     // A distinct run_id is kept independently.
     store.put(checkpoint("r2", "other")).await.unwrap();
     assert_eq!(
-        store.get("r2").await.unwrap().map(|c| c.partial_text),
+        observed_text(store.get("r2").await),
         Some("other".to_string())
     );
 
     // delete removes only the targeted key.
     store.delete("r").await.unwrap();
-    assert!(store.get("r").await.unwrap().is_none());
+    assert_eq!(store.get("r").await, Observed::Absent);
     assert!(
-        store.get("r2").await.unwrap().is_some(),
+        observed_text(store.get("r2").await).is_some(),
         "unrelated key untouched"
     );
 
     // delete is idempotent: deleting an absent key is a no-op, not an error.
     store.delete("r").await.unwrap();
     store.delete("never-existed").await.unwrap();
-    assert!(store.get("r").await.unwrap().is_none());
+    assert_eq!(store.get("r").await, Observed::Absent);
 }

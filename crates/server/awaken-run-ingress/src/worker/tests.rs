@@ -755,16 +755,15 @@ async fn child_attempt_rebinds_every_parent_run_authority_to_its_claim() {
         None,
     );
 
-    assert!(
+    assert_eq!(
         context
             .stream_checkpoint
             .as_ref()
             .expect("R1/E1 child checkpoint")
             .get(&child_run.0)
-            .await
-            .expect("R1/E1 checkpoint accepts child")
-            .is_none(),
-        "R1/E1"
+            .await,
+        awaken_agent_contract::observation::Observed::Absent,
+        "R1/E1 the child's fenced store answers, and answers that nothing is stored"
     );
     assert!(
         Arc::ptr_eq(

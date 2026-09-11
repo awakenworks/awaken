@@ -13,6 +13,7 @@ use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::StateKey;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
+use awaken_agent_contract::observation::Observed;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime::Runtime;
@@ -254,8 +255,8 @@ async fn model_evidence_write_faults_never_retry_or_fail_over_execution() {
         );
         assert!(committed_model_requests(&durable).is_empty());
         assert_eq!(
-            checkpoints.get("run-1").await.unwrap(),
-            Some(prior_checkpoint),
+            checkpoints.get("run-1").await,
+            Observed::Present(prior_checkpoint),
             "E5"
         );
     }
@@ -315,8 +316,8 @@ async fn cancellation_drains_model_evidence_commit_before_terminalizing() {
         // R10/R11 also preserve interrupted-stream recovery state: cancellation
         // is not a successful consumption/terminal acknowledgement of it.
         assert_eq!(
-            checkpoints.get("run-1").await.unwrap(),
-            Some(prior_checkpoint)
+            checkpoints.get("run-1").await,
+            Observed::Present(prior_checkpoint)
         );
         assert_eq!(
             pause.entries.load(Ordering::SeqCst),
@@ -840,8 +841,8 @@ async fn returned_unknown_model_error_blocks_retry_failover_and_outer_tolerance(
             awaken_runtime_contract::model_operation::ModelExecutionEvidence::Unknown
         );
         assert_eq!(
-            checkpoints.get(&checkpoint.run_id).await.unwrap(),
-            Some(checkpoint)
+            checkpoints.get(&checkpoint.run_id).await,
+            Observed::Present(checkpoint)
         );
     }
 }
@@ -916,8 +917,8 @@ async fn restored_unknown_invocation_blocks_checkpoint_salvage_and_provider_reen
             assert_eq!(model.0.load(Ordering::SeqCst), 0);
             assert!(!quiescence.can_acknowledge_return());
             assert_eq!(
-                checkpoints.get(&checkpoint.run_id).await.unwrap(),
-                Some(checkpoint)
+                checkpoints.get(&checkpoint.run_id).await,
+                Observed::Present(checkpoint)
             );
             if phase == "Missing" {
                 assert!(
@@ -964,7 +965,7 @@ async fn restored_checkpoint_with_confirmed_termination_continues_once() {
     );
     let operations = model_operations(&durable);
     assert_eq!(operations.last().unwrap().ordinal.get(), 2);
-    assert!(checkpoints.get(&checkpoint.run_id).await.unwrap().is_none());
+    assert_eq!(checkpoints.get(&checkpoint.run_id).await, Observed::Absent);
 }
 
 struct AdvisorThenTextLlm {

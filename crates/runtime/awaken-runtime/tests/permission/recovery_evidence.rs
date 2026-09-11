@@ -1,5 +1,6 @@
 use super::*;
 use awaken_agent_contract::agent::state::{StateKey, Store};
+use awaken_agent_contract::observation::{Observed, UnknownCause};
 use awaken_agent_contract::stream::checkpoint::{
     StreamCheckpoint, StreamCheckpointError, StreamCheckpointStore,
 };
@@ -47,14 +48,12 @@ async fn make_model_unknown(fixture: &PermissionHandoffFixture, shadowed: bool) 
 
 #[async_trait::async_trait]
 impl StreamCheckpointStore for RecoveryFault {
-    async fn get(&self, _: &str) -> Result<Option<StreamCheckpoint>, StreamCheckpointError> {
+    async fn get(&self, _: &str) -> Observed<StreamCheckpoint> {
         if matches!(self, Self::StalledCheckpoint) {
             return std::future::pending().await;
         }
         assert!(matches!(self, Self::UnavailableCheckpoint));
-        Err(StreamCheckpointError::Storage(
-            "injected read failure".into(),
-        ))
+        Observed::Unknown(UnknownCause::Storage("injected read failure".into()))
     }
     async fn put(&self, _: StreamCheckpoint) -> Result<(), StreamCheckpointError> {
         panic!("no write during uncertain recovery")

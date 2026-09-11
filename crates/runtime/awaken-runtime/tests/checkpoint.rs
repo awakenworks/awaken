@@ -11,6 +11,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::StateKey;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::observation::Observed;
 use awaken_agent_contract::stream::checkpoint::{
     StreamCheckpoint, StreamCheckpointError, StreamCheckpointStore,
 };
@@ -186,10 +187,7 @@ struct DeleteFailingCheckpointStore {
 
 #[async_trait::async_trait]
 impl StreamCheckpointStore for DeleteFailingCheckpointStore {
-    async fn get(
-        &self,
-        run_id: &str,
-    ) -> std::result::Result<Option<StreamCheckpoint>, StreamCheckpointError> {
+    async fn get(&self, run_id: &str) -> Observed<StreamCheckpoint> {
         self.inner.get(run_id).await
     }
 
@@ -239,13 +237,7 @@ async fn an_interrupted_step_recovers_in_process_and_leaves_no_checkpoint() {
     assert_eq!(assistant_text(&commit), "Hello world");
     // The run concluded in-process, so the checkpoint it flushed at the boundary
     // was cleared — nothing lingers to resume.
-    assert!(
-        checkpoints
-            .get(RUN_ID)
-            .await
-            .expect("checkpoint read")
-            .is_none()
-    );
+    assert_eq!(checkpoints.get(RUN_ID).await, Observed::Absent);
 }
 
 #[tokio::test]
@@ -283,12 +275,7 @@ async fn checkpoint_delete_failure_withholds_terminal_completion_and_retains_res
         "R2/E2: retire only the current Run checkpoint"
     );
     assert!(
-        checkpoints
-            .inner
-            .get(RUN_ID)
-            .await
-            .expect("checkpoint read")
-            .is_some(),
+        matches!(checkpoints.inner.get(RUN_ID).await, Observed::Present(_)),
         "R2/E2: failed retirement preserves resumable truth"
     );
     assert!(
@@ -336,13 +323,10 @@ async fn a_historical_checkpoint_without_invocation_evidence_cannot_resume() {
             .all(|m| m.role != Role::Assistant),
         "historical partial cannot authorize a new assistant response"
     );
-    assert!(
-        checkpoints
-            .get(RUN_ID)
-            .await
-            .expect("checkpoint read")
-            .is_some()
-    );
+    assert!(matches!(
+        checkpoints.get(RUN_ID).await,
+        Observed::Present(_)
+    ));
 }
 
 #[tokio::test]
@@ -439,11 +423,14 @@ async fn filesystem_recovery_waits_for_reopened_committed_predecessor() {
                     .text_content(),
                 "Resumed and done"
             );
-            assert!(checkpoints.get(RUN_ID).await.unwrap().is_none(), "R2/E2");
+            assert_eq!(checkpoints.get(RUN_ID).await, Observed::Absent, "R2/E2");
         } else {
             assert_eq!(state, RunState::Ended(EndCause::Indeterminate), "R1/E1");
             assert_eq!(model.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-            assert!(checkpoints.get(RUN_ID).await.unwrap().is_some(), "R1/E1");
+            assert!(
+                matches!(checkpoints.get(RUN_ID).await, Observed::Present(_)),
+                "R1/E1"
+            );
         }
     }
 }

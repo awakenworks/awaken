@@ -1,6 +1,7 @@
 //! PostgreSQL persistence for interrupted inference stream checkpoints.
 
 use async_trait::async_trait;
+use awaken_agent_contract::observation::{Observed, UnknownCause};
 use awaken_agent_contract::stream::checkpoint::{
     StreamCheckpoint, StreamCheckpointError, StreamCheckpointStore,
 };
@@ -60,20 +61,25 @@ impl PostgresStreamCheckpointStore {
 
 #[async_trait]
 impl StreamCheckpointStore for PostgresStreamCheckpointStore {
-    async fn get(&self, run_id: &str) -> Result<Option<StreamCheckpoint>, StreamCheckpointError> {
-        let row = sqlx::query(&format!(
+    async fn get(&self, run_id: &str) -> Observed<StreamCheckpoint> {
+        let row = match sqlx::query(&format!(
             "SELECT checkpoint FROM {NS}_stream_checkpoint WHERE run_id = $1"
         ))
         .bind(run_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|error| StreamCheckpointError::Storage(error.to_string()))?;
-        row.map(|row| {
-            row.try_get::<Json<StreamCheckpoint>, _>("checkpoint")
-                .map(|value| value.0)
-                .map_err(|error| StreamCheckpointError::Storage(error.to_string()))
-        })
-        .transpose()
+        {
+            // Only a query that ran and returned no row is evidence of absence.
+            Ok(None) => return Observed::Absent,
+            Ok(Some(row)) => row,
+            Err(error) => return Observed::Unknown(UnknownCause::Storage(error.to_string())),
+        };
+        // The row exists; a column that will not decode is corruption, not
+        // emptiness, so it must not read as "no checkpoint".
+        match row.try_get::<Json<StreamCheckpoint>, _>("checkpoint") {
+            Ok(value) => Observed::Present(value.0),
+            Err(error) => Observed::Unknown(UnknownCause::Storage(error.to_string())),
+        }
     }
 
     async fn put(&self, checkpoint: StreamCheckpoint) -> Result<(), StreamCheckpointError> {

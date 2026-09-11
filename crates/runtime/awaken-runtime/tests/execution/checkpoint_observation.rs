@@ -1,6 +1,7 @@
 //! Checkpoint observation is an execution precondition, not best-effort absence.
 
 use super::*;
+use awaken_agent_contract::observation::{Observed, UnknownCause};
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointError;
 
 enum ReadOutcome {
@@ -71,17 +72,18 @@ impl CheckpointObservation {
 
 #[async_trait::async_trait]
 impl StreamCheckpointStore for CheckpointObservation {
-    async fn get(&self, run_id: &str) -> Result<Option<StreamCheckpoint>, StreamCheckpointError> {
+    async fn get(&self, run_id: &str) -> Observed<StreamCheckpoint> {
         assert_eq!(run_id, "run-1");
         self.reads.fetch_add(1, Ordering::SeqCst);
         self.entered.notify_one();
         match &self.outcome {
-            ReadOutcome::Storage => Err(StreamCheckpointError::Storage("injected".into())),
-            ReadOutcome::Fenced => Err(StreamCheckpointError::Fenced("injected".into())),
-            ReadOutcome::Value(value) => Ok(value.clone()),
+            ReadOutcome::Storage => Observed::Unknown(UnknownCause::Storage("injected".into())),
+            ReadOutcome::Fenced => Observed::Unknown(UnknownCause::Fenced("injected".into())),
+            ReadOutcome::Value(Some(checkpoint)) => Observed::Present(checkpoint.clone()),
+            ReadOutcome::Value(None) => Observed::Absent,
             ReadOutcome::DelayedAbsence(delay) => {
                 tokio::time::sleep(*delay).await;
-                Ok(None)
+                Observed::Absent
             }
             ReadOutcome::Pending => std::future::pending().await,
         }

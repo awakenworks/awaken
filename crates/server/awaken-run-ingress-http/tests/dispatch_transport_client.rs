@@ -8,6 +8,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::observation::Observed;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
@@ -351,8 +352,8 @@ async fn db_less_worker_drives_runs_over_real_http() {
     let remote_checkpoint =
         FencedStreamCheckpointStore::new(None, queue.clone(), original_claim.clone());
     assert_eq!(
-        remote_checkpoint.get("run-A").await.unwrap(),
-        Some(checkpoint("current")),
+        remote_checkpoint.get("run-A").await,
+        Observed::Present(checkpoint("current")),
         "R1 inner=None delegates through authenticated HTTP"
     );
     assert_eq!(
@@ -443,8 +444,8 @@ async fn db_less_worker_drives_runs_over_real_http() {
     let replacement_checkpoint =
         FencedStreamCheckpointStore::new(None, recovery_queue.clone(), replacement_claim.clone());
     assert_eq!(
-        replacement_checkpoint.get("run-A").await.unwrap(),
-        Some(checkpoint("replacement")),
+        replacement_checkpoint.get("run-A").await,
+        Observed::Present(checkpoint("replacement")),
         "R3 inner=None reads through replacement authority"
     );
     assert_eq!(

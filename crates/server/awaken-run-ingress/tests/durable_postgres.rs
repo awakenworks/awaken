@@ -13,6 +13,7 @@ use std::sync::atomic::Ordering;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::observation::Observed;
 use awaken_agent_contract::stream::checkpoint::{
     PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
 };
@@ -221,15 +222,15 @@ async fn postgres_stream_checkpoint_survives_restart_overwrites_and_deletes() {
     let store = PostgresStreamCheckpointStore::with_pool(pool.clone())
         .await
         .expect("checkpoint store");
-    assert_eq!(store.get("run-checkpoint").await.unwrap(), None);
+    assert_eq!(store.get("run-checkpoint").await, Observed::Absent);
 
     store
         .put(stream_checkpoint("run-checkpoint", "partial-a"))
         .await
         .unwrap();
     assert_eq!(
-        store.get("run-checkpoint").await.unwrap(),
-        Some(stream_checkpoint("run-checkpoint", "partial-a"))
+        store.get("run-checkpoint").await,
+        Observed::Present(stream_checkpoint("run-checkpoint", "partial-a"))
     );
 
     let restarted = PostgresStreamCheckpointStore::with_pool(pool)
@@ -240,12 +241,12 @@ async fn postgres_stream_checkpoint_survives_restart_overwrites_and_deletes() {
         .await
         .unwrap();
     assert_eq!(
-        restarted.get("run-checkpoint").await.unwrap(),
-        Some(stream_checkpoint("run-checkpoint", "partial-b"))
+        restarted.get("run-checkpoint").await,
+        Observed::Present(stream_checkpoint("run-checkpoint", "partial-b"))
     );
     restarted.delete("run-checkpoint").await.unwrap();
     restarted.delete("run-checkpoint").await.unwrap();
-    assert_eq!(restarted.get("run-checkpoint").await.unwrap(), None);
+    assert_eq!(restarted.get("run-checkpoint").await, Observed::Absent);
 }
 
 /// Single-writer-per-thread (ADR-0022), topology-independent: two runs of the SAME

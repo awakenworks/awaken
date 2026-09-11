@@ -685,6 +685,6 @@ async fn any_postgres_connect_and_claim() {
             .expect("restarted wrapper carries checkpoint store")
             .get("any-checkpoint")
             .await,
-        Ok(Some(partial))
+        awaken_agent_contract::observation::Observed::Present(partial)
     );
 }
