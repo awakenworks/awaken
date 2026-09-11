@@ -28,7 +28,7 @@ Spawn(task) ==
     /\ UNCHANGED <<accepting, owner, draining, stopped,
                     waiting, returned, timedOut>>
 
-\* The async shutdown guard is the admission point. The first caller becomes
+\* The lifecycle registry phase is the admission point. The first caller becomes
 \* drain owner and atomically transfers the registry. Every concurrent caller
 \* only waits; it cannot inspect the now-empty registry and return early.
 CallShutdown(caller) ==

@@ -114,13 +114,16 @@ python3 scripts/ci/check_formal_web_surface.py
 python3 scripts/ci/check_proof_boundaries.py
 python3 scripts/ci/check_formal_mutations.py
 
-# Bind the abstract one-owner/waiting-follower theorem to the production Tokio
-# shutdown guard across both timeout and cooperative leader outcomes. The second
-# row also requires two independent followers to remain blocked until drain.
+# Bind the abstract one-owner/waiting-follower theorem to the production
+# TaskRegistry phase across timeout, cooperative, and caller-cancellation rows.
+# The successful row requires two independent followers; the cancellation row
+# proves dropping the initiating Future cannot drop the unique drain owner.
 cargo test -p awaken-service-lifecycle --test service_lifecycle \
   concurrent_shutdown_cannot_return_before_the_active_drain_finishes -- --exact
 cargo test -p awaken-service-lifecycle --test service_lifecycle \
   concurrent_shutdown_followers_wait_for_successful_active_drain -- --exact
+cargo test -p awaken-service-lifecycle --test service_lifecycle \
+  cancelled_shutdown_caller_cannot_orphan_the_active_drain -- --exact
 
 # The abstract network algebra is not Rust String/Vec refinement. Exercise the
 # actual owner and frozen SQLite root alongside its TLAPS/TLC checks below.
@@ -949,6 +952,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-service-lifecycle --lib \
     --harness verified_release_and_tcb_admission_are_total_exact_and_fail_closed \
     --harness shutdown_registry_fences_registration_and_transfers_exactly_once \
+    --harness concurrent_shutdown_admission_waits_for_the_active_drain \
     --harness startup_wiring_is_exact_for_every_service_role \
     --harness startup_wiring_requires_every_role_owned_component \
     --harness startup_wiring_fails_closed_for_unknown_missing_or_extra_authority \
