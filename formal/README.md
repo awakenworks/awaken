@@ -28,8 +28,8 @@ The named harnesses in the strict gate invoke production pure functions directly
     parallel capacity;
   - every delegation relationship effect has its unique documented
     precondition.
-  - delegation admission requires the parent lifecycle, depth, lineage,
-    parallel, and total-budget guards simultaneously.
+  - delegation admission requires all lifecycle, lineage and budget guards;
+    child invocation also requires its exact committed Open relationship.
   - cancellation delivery is enabled only by a durable cancellation-requested
     relationship.
 - `awaken-session-contract`

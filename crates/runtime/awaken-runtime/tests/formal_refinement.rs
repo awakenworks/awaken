@@ -1384,6 +1384,68 @@ async fn durable_delegation_crash_recovery_reuses_the_child_relationship() {
 }
 
 #[tokio::test]
+async fn closed_delegation_relationship_never_reenters_the_child_executor() {
+    // Cause/effect decision table: R1 an Executing durable-request ToolBatch
+    // plus its exact Open relationship may recover by entering the child once
+    // (covered by durable_delegation_crash_recovery_reuses_the_child_relationship);
+    // R2 the same batch plus an exact Completed relationship must produce a
+    // fail-closed tool result without entering the child. The production gate
+    // reads committed RunDelegations immediately before the external call, so
+    // a closed relationship cannot be reopened by recovery control flow.
+    let trace = TracingCoordinator::default();
+    let call = tool_call("closed_agent_recovery_call", "agent_run");
+    let run_id = RunId(RUN_ID.to_string());
+    let origin =
+        DelegationOrigin::root_for_agent(run_id.clone(), call.call_id.clone(), "formal-agent");
+    let mut registry =
+        DelegationRegistry::new(run_id, "formal-agent", Vec::new(), 0, Default::default());
+    registry
+        .request(RequestDelegation {
+            id: origin.delegation_id.clone(),
+            parent_call_id: call.call_id.clone(),
+            target_agent_id: "researcher".to_string(),
+            recursive_self: false,
+            child_run_id: origin.child_run_id(),
+        })
+        .expect("seed exact delegation relationship");
+    registry
+        .complete(&origin.delegation_id)
+        .expect("seed closed relationship");
+    seed_executing_batch(
+        &trace,
+        call,
+        ToolRecoveryPolicy::durable_request(),
+        vec![RunDelegations::write(&Some(registry))],
+    )
+    .await;
+
+    let snapshot = snapshot(&["agent_run"]);
+    let invocations = Arc::new(AtomicUsize::new(0));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(TextOnly))
+        .with_run_delegation(Arc::new(CompletingDelegation {
+            trace: trace.clone(),
+            invocations: invocations.clone(),
+        }));
+    register_snapshot(&runtime, &snapshot);
+
+    assert_eq!(
+        runtime
+            .execute(
+                activation(snapshot),
+                RuntimeRunContext::new()
+                    .with_commit(Arc::new(trace.clone()))
+                    .with_reader(Arc::new(trace.inner.clone())),
+            )
+            .await
+            .expect("closed child recovery fails closed as a tool result"),
+        RunState::Ended(EndCause::NaturalEnd),
+        "R2"
+    );
+    assert_eq!(invocations.load(Ordering::SeqCst), 0, "R2");
+}
+
+#[tokio::test]
 async fn retryable_child_owner_crash_produces_a_refinement_trace() {
     let trace = TracingCoordinator::default();
     let snapshot = snapshot(&["agent_run"]);

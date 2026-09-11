@@ -283,6 +283,54 @@ pub struct RequestDelegation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RelationshipIdentityFacts {
+    call_index_matches: bool,
+    id_matches: bool,
+    parent_call_matches: bool,
+    target_matches: bool,
+    recursive_self_matches: bool,
+    child_run_matches: bool,
+    status: DelegationStatus,
+}
+
+impl RelationshipIdentityFacts {
+    const fn exact(self) -> bool {
+        self.call_index_matches
+            && self.id_matches
+            && self.parent_call_matches
+            && self.target_matches
+            && self.recursive_self_matches
+            && self.child_run_matches
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChildInvocationAdmission {
+    Admit,
+    Missing,
+    IdentityConflict,
+    Closed,
+}
+
+/// Heap-free production admission for the external child-effect boundary.
+/// The aggregate projects its exact durable relationship into these facts;
+/// only one present, exact, still-open relationship may enter the executor.
+const fn child_invocation_admission(
+    facts: Option<RelationshipIdentityFacts>,
+) -> ChildInvocationAdmission {
+    let Some(facts) = facts else {
+        return ChildInvocationAdmission::Missing;
+    };
+    if !facts.exact() {
+        ChildInvocationAdmission::IdentityConflict
+    } else if !matches!(facts.status, DelegationStatus::Open) {
+        ChildInvocationAdmission::Closed
+    } else {
+        ChildInvocationAdmission::Admit
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransitionResult {
     Applied,
     Duplicate,
@@ -423,10 +471,8 @@ impl DelegationRegistry {
                     "call index points at a missing delegation".into(),
                 )
             })?;
-            return if existing.id == request.id
-                && existing.target_agent_id == request.target_agent_id
-                && existing.recursive_self == request.recursive_self
-                && existing.child_run_id == request.child_run_id
+            return if Self::identity_facts(Some(existing_id), Some(existing), &request)
+                .is_some_and(RelationshipIdentityFacts::exact)
             {
                 Ok(TransitionResult::Duplicate)
             } else {
@@ -485,6 +531,43 @@ impl DelegationRegistry {
         self.calls.insert(call_id, id);
         self.total_started += 1;
         Ok(TransitionResult::Applied)
+    }
+
+    fn identity_facts(
+        indexed_id: Option<&DelegationId>,
+        relationship: Option<&Delegation>,
+        request: &RequestDelegation,
+    ) -> Option<RelationshipIdentityFacts> {
+        relationship.map(|relationship| RelationshipIdentityFacts {
+            call_index_matches: indexed_id == Some(&request.id),
+            id_matches: relationship.id == request.id,
+            parent_call_matches: relationship.parent_call_id == request.parent_call_id,
+            target_matches: relationship.target_agent_id == request.target_agent_id,
+            recursive_self_matches: relationship.recursive_self == request.recursive_self,
+            child_run_matches: relationship.child_run_id == request.child_run_id,
+            status: relationship.status,
+        })
+    }
+
+    /// Require the exact durable relationship before entering a delegated
+    /// child executor. This is a read-only gate: rejection cannot create,
+    /// reopen, or otherwise mutate a relationship.
+    pub fn admit_child_invocation(
+        &self,
+        request: &RequestDelegation,
+    ) -> Result<(), DelegationError> {
+        let relationship = self.delegations.get(&request.id);
+        let facts = Self::identity_facts(
+            self.calls.get(&request.parent_call_id),
+            relationship,
+            request,
+        );
+        match child_invocation_admission(facts) {
+            ChildInvocationAdmission::Admit => Ok(()),
+            ChildInvocationAdmission::Missing => Err(DelegationError::NotFound),
+            ChildInvocationAdmission::IdentityConflict => Err(DelegationError::IdentityConflict),
+            ChildInvocationAdmission::Closed => Err(DelegationError::InvalidTransition),
+        }
     }
 
     pub fn complete(&mut self, id: &DelegationId) -> Result<TransitionResult, DelegationError> {
@@ -917,6 +1000,81 @@ mod tests {
     }
 
     #[test]
+    fn child_invocation_admission_consumes_the_exact_open_relationship() {
+        // Cause/effect decision table: I1 no relationship -> NotFound; I2 one
+        // exact Open tuple -> admit; I3-I7 any id/call/target/self/
+        // child mismatch -> conflict or missing; I9 exact Completed and I10
+        // exact CancelRequested -> InvalidTransition. The gate is read-only, so
+        // every row must preserve the complete serialized registry.
+        let exact = request(1, "researcher");
+        let empty = registry(2, 2);
+        let empty_before = serde_json::to_value(&empty).unwrap();
+        assert_eq!(
+            empty.admit_child_invocation(&exact),
+            Err(DelegationError::NotFound),
+            "I1"
+        );
+        assert_eq!(serde_json::to_value(&empty).unwrap(), empty_before, "I1");
+
+        let mut open = registry(2, 2);
+        open.request(exact.clone()).unwrap();
+        assert_eq!(open.admit_child_invocation(&exact), Ok(()), "I2");
+        let open_before = serde_json::to_value(&open).unwrap();
+        let mut mismatches = Vec::new();
+        let mut changed_id = exact.clone();
+        changed_id.id = DelegationId("other-id".into());
+        mismatches.push(("I3", changed_id, DelegationError::NotFound));
+        let mut changed_call = exact.clone();
+        changed_call.parent_call_id = "other-call".into();
+        mismatches.push(("I4", changed_call, DelegationError::IdentityConflict));
+        let mut changed_target = exact.clone();
+        changed_target.target_agent_id = "writer".into();
+        mismatches.push(("I5", changed_target, DelegationError::IdentityConflict));
+        let mut changed_self = exact.clone();
+        changed_self.recursive_self = true;
+        mismatches.push(("I6", changed_self, DelegationError::IdentityConflict));
+        let mut changed_child = exact.clone();
+        changed_child.child_run_id = RunId("other-child".into());
+        mismatches.push(("I7", changed_child, DelegationError::IdentityConflict));
+        for (rule, request, expected) in mismatches {
+            assert_eq!(
+                open.admit_child_invocation(&request),
+                Err(expected),
+                "{rule}"
+            );
+            assert_eq!(serde_json::to_value(&open).unwrap(), open_before, "{rule}");
+        }
+
+        let mut completed = open.clone();
+        completed.complete(&exact.id).unwrap();
+        let completed_before = serde_json::to_value(&completed).unwrap();
+        assert_eq!(
+            completed.admit_child_invocation(&exact),
+            Err(DelegationError::InvalidTransition),
+            "I9"
+        );
+        assert_eq!(
+            serde_json::to_value(&completed).unwrap(),
+            completed_before,
+            "I9"
+        );
+
+        let mut cancelled = open;
+        assert_eq!(cancelled.end_parent().len(), 1);
+        let cancelled_before = serde_json::to_value(&cancelled).unwrap();
+        assert_eq!(
+            cancelled.admit_child_invocation(&exact),
+            Err(DelegationError::InvalidTransition),
+            "I10"
+        );
+        assert_eq!(
+            serde_json::to_value(&cancelled).unwrap(),
+            cancelled_before,
+            "I10"
+        );
+    }
+
+    #[test]
     fn origin_identity_is_stable_and_nested_depth_survives() {
         let root = DelegationOrigin::root_for_agent(RunId("p".into()), "c", "root");
         assert_eq!(root.child_run_id(), root.child_run_id());
@@ -1023,6 +1181,38 @@ mod verification {
         assert_eq!(result.is_ok(), expected);
         if let Ok(depth) = result {
             assert_eq!(Some(depth), parent_depth.checked_add(1));
+        }
+    }
+
+    #[kani::proof]
+    fn child_invocation_requires_one_exact_open_relationship() {
+        // Cause/effect decision table over the production executor gate:
+        // absent relationship -> Missing; any call/id/target/self/child mismatch
+        // -> IdentityConflict; an exact Completed/CancelRequested relationship
+        // -> Closed; only the exact Open row -> Admit. No rejecting row can
+        // create or reopen a relationship because the gate is read-only.
+        let present: bool = kani::any();
+        let facts = present.then(|| RelationshipIdentityFacts {
+            call_index_matches: kani::any(),
+            id_matches: kani::any(),
+            parent_call_matches: kani::any(),
+            target_matches: kani::any(),
+            recursive_self_matches: kani::any(),
+            child_run_matches: kani::any(),
+            status: symbolic_status(kani::any()),
+        });
+        let result = child_invocation_admission(facts);
+        let expected = facts
+            .is_some_and(|facts| facts.exact() && matches!(facts.status, DelegationStatus::Open));
+        assert_eq!(result == ChildInvocationAdmission::Admit, expected);
+        if !present {
+            assert_eq!(result, ChildInvocationAdmission::Missing);
+        } else if facts.is_some_and(|facts| !facts.exact()) {
+            assert_eq!(result, ChildInvocationAdmission::IdentityConflict);
+        } else if facts
+            .is_some_and(|facts| facts.exact() && !matches!(facts.status, DelegationStatus::Open))
+        {
+            assert_eq!(result, ChildInvocationAdmission::Closed);
         }
     }
 

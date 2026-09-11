@@ -1138,15 +1138,15 @@ failed replacement and retry. Together these connect the root write to the
 already-modeled closed-generation fence. The scalar proof does not prove SQL
 atomicity or an arbitrary transport outage's eventual recovery.
 
-Local coordination admission and child execution reuse one `AbortOnDropTask`
-owner. The local Session application call installs a child projection before
-execution begins, so it needs the same poll-stack boundary as direct and durable
-child execution. Default-stack Coordinator HTTP and scenario-factory tests cover
-that complete chain; runtime-host tests require actual application/model-future
-Drop receipts when their owning future is dropped. These native checks validate
-stack and cancellation behavior. The TLA+ relation does not model Rust frame
-sizes or prove Tokio's scheduler/abort implementation, and logical cancellation
-alone remains insufficient evidence of physical model termination.
+Local coordination admission and child execution reuse one `AbortOnDropTask` owner. The local
+Session application call installs a child projection before execution and needs the same poll-stack
+boundary as direct and durable child execution. Default-stack Coordinator HTTP and scenario-factory
+tests cover that chain; runtime-host tests require actual application/model-future Drop receipts.
+These native checks validate stack and cancellation behavior. The TLA+ relation does not model Rust
+frame sizes or prove Tokio abort scheduling; logical cancellation alone does not prove termination.
+Delegated child invocation consumes the sole durable `DelegationRegistry` immediately before
+`executor.start`; Kani proves only an exact Open relationship admits this scalar gate. Native tests
+cross the real aggregate and closed recovery; serialization, durability, scheduling and executor behavior remain executable evidence or TCB.
 
 The Managed WorkQueue proof covers queue state, transactional single-active
 claim, lease epoch/expiry, heartbeat compare-and-set, exact-boundary reclaim,
