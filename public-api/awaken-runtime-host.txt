@@ -129,6 +129,9 @@ pub awaken_runtime_host::ContainerEnvironmentComponents::cache_volume_initialize
 pub awaken_runtime_host::ContainerEnvironmentComponents::capacity: core::option::Option<alloc::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>
 pub awaken_runtime_host::ContainerEnvironmentComponents::extra_mounts: alloc::vec::Vec<awaken_provisioning_contract::vocab::MountRequirement>
 pub awaken_runtime_host::ContainerEnvironmentComponents::provider: alloc::sync::Arc<dyn awaken_sandbox_container::provider_contract::ContainerEnvironmentProvider>
+pub struct awaken_runtime_host::ContainerMcpRelayExposure
+impl awaken_runtime_host::ContainerMcpRelayExposure
+pub fn awaken_runtime_host::ContainerMcpRelayExposure::new(core::net::socket_addr::SocketAddr, impl core::convert::AsRef<str>) -> core::result::Result<Self, alloc::string::String>
 pub struct awaken_runtime_host::ContentCaptureSettings
 pub awaken_runtime_host::ContentCaptureSettings::level: awaken_runtime_contract::capture::ContentCapture
 pub awaken_runtime_host::ContentCaptureSettings::redaction: awaken_runtime_host::ContentRedaction
@@ -334,6 +337,7 @@ pub awaken_runtime_host::SandboxSettings::container_forward_proxy: core::option:
 pub awaken_runtime_host::SandboxSettings::container_hand_bin: alloc::string::String
 pub awaken_runtime_host::SandboxSettings::container_hand_idle_secs: u64
 pub awaken_runtime_host::SandboxSettings::container_hand_residency: awaken_runtime_host::ContainerHandResidency
+pub awaken_runtime_host::SandboxSettings::container_mcp_relay: core::option::Option<awaken_runtime_host::ContainerMcpRelayExposure>
 pub awaken_runtime_host::SandboxSettings::inherit_agent_stderr: bool
 pub awaken_runtime_host::SandboxSettings::k8s_buildkit_image: alloc::string::String
 pub awaken_runtime_host::SandboxSettings::k8s_continuation_volume: core::option::Option<awaken_sandbox_container::runtime::K8sContinuationVolume>
@@ -504,6 +508,8 @@ impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::harvest_thread_artifacts(&self, &str) -> core::result::Result<awaken_runtime_host::provisioning::HarvestedArtifacts, awaken_resource_contract::lifecycle::ResourcePurgeError>
 impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::live_inbox(&self, &str) -> core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
+impl awaken_runtime_host::SharedHost
+pub async fn awaken_runtime_host::SharedHost::prepare_container_mcp_relay(&alloc::sync::Arc<Self>) -> core::result::Result<(), core::io::error::Error>
 impl awaken_runtime_host::SharedHost
 pub async fn awaken_runtime_host::SharedHost::quiesce_terminal_delegations(&self, &str) -> core::result::Result<awaken_session_contract::session::run_coordination::DelegatedRunSnapshot, awaken_runtime_host::HostError>
 impl awaken_runtime_host::SharedHost

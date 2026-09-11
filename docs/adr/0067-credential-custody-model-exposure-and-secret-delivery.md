@@ -932,6 +932,27 @@ networking; built-in providers fail closed when they cannot prove that cell.
 Platform ACP/MCP realization and automatic LLM Vault authoring remain separately
 gated work and cannot be inferred from the implemented Native platform contract.
 
+The Runtime Host accepts one typed deployment-owned container relay exposure: an
+exact non-loopback bind plus a credential-free HTTP origin. The existing `McpRelay`
+remains the sole bearer holder and route owner. A configured Worker binds before
+Ready; staging requires that live matching owner and a frozen Environment allowlist
+that contains the relay hostname and excludes the exact upstream MCP hostname.
+Missing, `Unrestricted`, upstream-only, relay-plus-upstream, and unstarted cases
+fail before materialization. Without external exposure, the same owner retains its
+legacy lazy loopback path, which proves neither isolated reachability nor G43 custody.
+
+This transport prerequisite never sets or proves `secret_egress_substitution`,
+`enforced_network_allowlist`, gateway identity, or deployment. Those remain
+independent attestations in the existing fail-closed conjunction. The HTTP origin
+is only an internal hop inside that separately attested no-bypass cluster network.
+
+G43 remains Target until the canonical k3d suite makes an authenticated ACP MCP
+call through a real egress gateway, observes its upstream bearer, scans the Sandbox
+projection for secret absence, and combines that result with the same-namespace
+wrong-role, foreign-namespace copied-role, and stale/drain/revoke/expiry negatives.
+The gateway must consume the existing allowlist and relay origin as a deployment
+adapter; it cannot become another credential holder or MCP lifecycle owner.
+
 ## 2026-08-15 amendment: Session MCP admission joins the existing claim boundary
 
 The frozen Session runtime projection is now a public run-ingress contract value
