@@ -641,12 +641,16 @@ fn persisted_shape_drift_and_empty_task_id_fail_closed() {
 
 #[test]
 fn failed_transitions_are_atomic_and_persisted_invariants_fail_closed() {
-    // Failure-mode effects analysis:
-    // C1 clock overflow; C2 cancellation revision overflow; C3 invalid wait;
-    // C4 stale finish; C5 heartbeat revision overflow; C6 empty durable call
-    // identity; C7 impossible Requested revision. E1 every transition error is
-    // a stutter; E2 malformed persisted aggregates are rejected. This prevents
-    // callers from accidentally committing a half-applied mutation.
+    // Cause/effect decision table: C1 start clock overflow; C2 cancellation
+    // revision overflow; C3 invalid wait; C4 stale finish; C5 exact heartbeat
+    // with zero lease/clock overflow/non-advancing lease/revision overflow;
+    // C6 stale heartbeat/finish combined with otherwise-invalid command input;
+    // C7 empty durable call identity; C8 impossible Requested revision.
+    // R1 any stale owner/epoch returns StaleFence before command validation;
+    // R2 an exact heartbeat reports its first command-specific error in the C5
+    // order; R3 every rejected transition leaves the complete aggregate equal;
+    // R4 malformed persisted aggregates fail closed. These rules cross the
+    // actual heartbeat/finish methods that consume the shared production plan.
     let mut clock_overflow = task();
     let before = clock_overflow.clone();
     assert_eq!(
@@ -697,31 +701,62 @@ fn failed_transitions_are_atomic_and_persisted_invariants_fail_closed() {
             },
         ),
         Err(BackgroundTaskError::StaleFence),
-        "C4/E1"
+        "C4/R1"
     );
-    assert_eq!(active, before, "C4/E1");
+    assert_eq!(active, before, "C4/R3");
+
+    for (now_ms, lease_ms, error) in [
+        (0, 0, BackgroundTaskError::InvalidClaim),
+        (u64::MAX, 1, BackgroundTaskError::ClockOverflow),
+        (0, 1, BackgroundTaskError::NonMonotonicLease),
+    ] {
+        let mut rejected = active.clone();
+        let before = rejected.clone();
+        assert_eq!(
+            rejected.heartbeat(&fence, now_ms, lease_ms),
+            Err(error),
+            "C5/R2"
+        );
+        assert_eq!(rejected, before, "C5/R3");
+    }
 
     active.revision = u64::MAX;
     let before = active.clone();
     assert_eq!(
         active.heartbeat(&fence, 10, 10),
         Err(BackgroundTaskError::RevisionOverflow),
-        "C5/E1"
+        "C5/R2"
     );
-    assert_eq!(active, before, "C5/E1");
+    assert_eq!(active, before, "C5/R3");
+    let stale = TaskFence {
+        worker_id: "other".into(),
+        epoch: fence.epoch.wrapping_add(1),
+    };
+    assert_eq!(
+        active.heartbeat(&stale, u64::MAX, 0),
+        Err(BackgroundTaskError::StaleFence),
+        "C6/R1 heartbeat"
+    );
+    assert_eq!(active, before, "C6/R3 heartbeat");
+    assert_eq!(
+        active.finish(&stale, BackgroundTaskEnd::Cancelled),
+        Err(BackgroundTaskError::StaleFence),
+        "C6/R1 finish"
+    );
+    assert_eq!(active, before, "C6/R3 finish");
 
     let mut mismatched_call = serde_json::to_value(task()).expect("task serializes");
     mismatched_call["invocation"]["call"]["call_id"] = serde_json::json!("");
     assert!(
         serde_json::from_value::<BackgroundTask>(mismatched_call).is_err(),
-        "C6/E2"
+        "C7/R4"
     );
 
     let mut impossible_revision = serde_json::to_value(task()).expect("task serializes");
     impossible_revision["revision"] = serde_json::json!(1);
     assert!(
         serde_json::from_value::<BackgroundTask>(impossible_revision).is_err(),
-        "C7/E2"
+        "C8/R4"
     );
 }
 
