@@ -41,5 +41,9 @@ schema = ["awaken-agent-config/schema"]
 name = "integration"
 required-features = ["test-support"]
 
+[[test]]
+name = "postgres"
+required-features = ["test-support"]
+
 [lints]
 workspace = true

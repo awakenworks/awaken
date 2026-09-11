@@ -7,7 +7,7 @@
 
 use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError,
-    ConfigWrite, ModelSelection, ScopedConfig, StoredPublication,
+    ConfigWrite, ModelSelection, PublicationWrite, ScopedConfig, StoredPublication,
 };
 use awaken_config_resolver::{
     AgentInputConfig, BindingId, InputBinding, InputResourceId, MemoryStoreId, ResourceAccess,
@@ -336,18 +336,10 @@ impl ConfigRegistry for ArchiveBetweenAdmissionAndCas {
         Ok(vec![self.current.lock().unwrap().config.clone()])
     }
 
-    async fn put_publication(
+    async fn put_publication_if_source_current(
         &self,
         _publication: &StoredPublication,
-    ) -> Result<(), ConfigStoreError> {
-        panic!("test does not publish")
-    }
-
-    async fn put_publication_if_config_revision(
-        &self,
-        _publication: &StoredPublication,
-        _expected_revision: u64,
-    ) -> Result<ConfigWrite, ConfigStoreError> {
+    ) -> Result<PublicationWrite, ConfigStoreError> {
         panic!("test does not publish")
     }
 
@@ -382,14 +374,10 @@ impl ConfigRegistry for FailingRegistry {
     async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {
         Err(ConfigStoreError("boom".into()))
     }
-    async fn put_publication(&self, _p: &StoredPublication) -> Result<(), ConfigStoreError> {
-        Err(ConfigStoreError("boom".into()))
-    }
-    async fn put_publication_if_config_revision(
+    async fn put_publication_if_source_current(
         &self,
         _publication: &StoredPublication,
-        _expected_revision: u64,
-    ) -> Result<ConfigWrite, ConfigStoreError> {
+    ) -> Result<PublicationWrite, ConfigStoreError> {
         Err(ConfigStoreError("boom".into()))
     }
     async fn get_publication(
@@ -401,7 +389,7 @@ impl ConfigRegistry for FailingRegistry {
 }
 
 /// Reads a stored pinned config fine, but fails when persisting the publication
-/// — isolates the `put_publication` → `Store` branch (P6).
+/// — isolates the source-fenced publication write → `Store` branch (P6).
 struct PublishFailRegistry;
 #[async_trait::async_trait]
 impl ConfigRegistry for PublishFailRegistry {
@@ -425,14 +413,10 @@ impl ConfigRegistry for PublishFailRegistry {
     async fn list_configs(&self) -> Result<Vec<AgentConfig>, ConfigStoreError> {
         Ok(vec![])
     }
-    async fn put_publication(&self, _p: &StoredPublication) -> Result<(), ConfigStoreError> {
-        Err(ConfigStoreError("publication store down".into()))
-    }
-    async fn put_publication_if_config_revision(
+    async fn put_publication_if_source_current(
         &self,
         _publication: &StoredPublication,
-        _expected_revision: u64,
-    ) -> Result<ConfigWrite, ConfigStoreError> {
+    ) -> Result<PublicationWrite, ConfigStoreError> {
         Err(ConfigStoreError("publication store down".into()))
     }
     async fn get_publication(
@@ -445,7 +429,9 @@ impl ConfigRegistry for PublishFailRegistry {
 
 /// Simulates an authoring write that wins after publish reads generation 7
 /// but before it tries to persist/install the compiled artifact.
-struct StalePublishRegistry;
+struct StalePublishRegistry {
+    write: PublicationWrite,
+}
 
 #[async_trait::async_trait]
 impl ConfigRegistry for StalePublishRegistry {
@@ -473,20 +459,12 @@ impl ConfigRegistry for StalePublishRegistry {
         Ok(Vec::new())
     }
 
-    async fn put_publication(&self, _p: &StoredPublication) -> Result<(), ConfigStoreError> {
-        panic!("generation-fenced publish must use the atomic method")
-    }
-
-    async fn put_publication_if_config_revision(
+    async fn put_publication_if_source_current(
         &self,
         publication: &StoredPublication,
-        expected_generation: u64,
-    ) -> Result<ConfigWrite, ConfigStoreError> {
+    ) -> Result<PublicationWrite, ConfigStoreError> {
         assert_eq!(publication.source_revision, 7);
-        assert_eq!(expected_generation, 7);
-        Ok(ConfigWrite::Conflict {
-            current_revision: Some(8),
-        })
+        Ok(self.write)
     }
 
     async fn get_publication(
@@ -535,23 +513,17 @@ impl ConfigRegistry for AdvancingPublishRegistry {
         Ok(Vec::new())
     }
 
-    async fn put_publication(&self, _p: &StoredPublication) -> Result<(), ConfigStoreError> {
-        panic!("generation-fenced publish must use the atomic method")
-    }
-
-    async fn put_publication_if_config_revision(
+    async fn put_publication_if_source_current(
         &self,
         publication: &StoredPublication,
-        expected_generation: u64,
-    ) -> Result<ConfigWrite, ConfigStoreError> {
-        assert_eq!(publication.source_revision, expected_generation);
-        if expected_generation == 7 {
-            Ok(ConfigWrite::Conflict {
+    ) -> Result<PublicationWrite, ConfigStoreError> {
+        if publication.source_revision == 7 {
+            Ok(PublicationWrite::Conflict {
                 current_revision: Some(8),
             })
         } else {
-            assert_eq!(expected_generation, 8);
-            Ok(ConfigWrite::Applied { revision: 8 })
+            assert_eq!(publication.source_revision, 8);
+            Ok(PublicationWrite::Committed { source_revision: 8 })
         }
     }
 
@@ -598,19 +570,11 @@ impl ScopedConfigRegistry for FailingScopedRegistry {
     ) -> Result<Vec<AgentConfig>, ConfigStoreError> {
         Err(ConfigStoreError("boom".into()))
     }
-    async fn put_publication_scoped(
-        &self,
-        _s: &ScopeId,
-        _p: &StoredPublication,
-    ) -> Result<(), ConfigStoreError> {
-        Err(ConfigStoreError("boom".into()))
-    }
-    async fn put_publication_if_config_revision_scoped(
+    async fn put_publication_if_source_current_scoped(
         &self,
         _scope: &ScopeId,
         _publication: &StoredPublication,
-        _expected_revision: u64,
-    ) -> Result<ConfigWrite, ConfigStoreError> {
+    ) -> Result<PublicationWrite, ConfigStoreError> {
         Err(ConfigStoreError("boom".into()))
     }
     async fn get_publication_scoped(

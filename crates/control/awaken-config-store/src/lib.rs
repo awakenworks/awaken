@@ -7,6 +7,8 @@ mod postgres;
 mod schema;
 mod sqlite;
 
+#[cfg(any(test, kani))]
+use awaken_agent_config::PublicationWrite;
 use awaken_agent_config::{ManagementEffect, ManagementEffectReceipt};
 use awaken_sql_storage::{StoredU64, StoredU64Error};
 
@@ -15,8 +17,8 @@ pub use schema::config_bundle;
 pub use sqlite::{SqliteConfigStore, StoreError as SqliteStoreError};
 
 /// Admission of supplied source-revision facts, before publication-history I/O.
-/// The adapters own the authoritative read and transaction; the caller owns
-/// pairing `expected` with the prepared publication's source revision.
+/// The adapters own the authoritative read and transaction and derive the
+/// compared revision directly from the prepared publication.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PublicationSourceAdmission {
     Current,
@@ -33,32 +35,45 @@ impl PublicationSourceAdmission {
 }
 
 #[cfg(any(test, kani))]
-fn check_publication_source_admission(current: Option<u64>, expected: u64) {
-    // Causes: C1 source present; C2 current compared with expected. Effects:
-    // P1 absent -> Conflict(None); P2 current > expected (stale candidate) ->
-    // Conflict(current); P3 current < expected (future candidate) -> Conflict;
-    // P4 exact -> Current. Zero and u64::MAX are ordinary supplied facts here;
-    // this owner neither encodes SQL integers nor establishes their provenance.
-    let admitted = PublicationSourceAdmission::new(current, expected);
-    match current.map(|revision| revision.cmp(&expected)) {
+fn check_publication_source_admission(current: Option<u64>, source_revision: u64) {
+    // Causes: C1 source present; C2 current compared with the revision embedded
+    // in the publication. Effects: P1 absent -> Conflict(None); P2 current >
+    // source (stale candidate) -> Conflict(current); P3 current < source
+    // (future candidate) -> Conflict;
+    // P4 exact -> Current. R1 only P4 can mint the exact committed receipt that
+    // the production ConfigService registration gate accepts. Zero and
+    // u64::MAX are ordinary supplied facts; this owner does not encode SQL.
+    let admitted = PublicationSourceAdmission::new(current, source_revision);
+    let write = match admitted {
+        PublicationSourceAdmission::Current => PublicationWrite::Committed { source_revision },
+        PublicationSourceAdmission::Conflict { current_revision } => {
+            PublicationWrite::Conflict { current_revision }
+        }
+    };
+    match current.map(|revision| revision.cmp(&source_revision)) {
         Some(std::cmp::Ordering::Equal) => {
             assert_eq!(admitted, PublicationSourceAdmission::Current);
+            assert_eq!(write.registration_admission(source_revision), Ok(()));
         }
-        _ => assert_eq!(
-            admitted,
-            PublicationSourceAdmission::Conflict {
-                current_revision: current,
-            }
-        ),
+        _ => {
+            assert_eq!(
+                admitted,
+                PublicationSourceAdmission::Conflict {
+                    current_revision: current,
+                }
+            );
+            assert_eq!(write.registration_admission(source_revision), Err(current));
+        }
     }
 }
 
 #[cfg(kani)]
 #[kani::proof]
 fn publication_source_admission_requires_present_exact_revision() {
-    // No assumptions: all Option<u64> x u64 supplied facts reach the production
-    // owner. SQL read/locking, zero-write frames and zero registrar calls are
-    // separately exercised at their actual adapter and ConfigService boundaries.
+    // No assumptions: all Option<u64> current source states x every embedded
+    // publication revision reach the production owner and exact registration
+    // receipt gate. SQL read/locking, commit durability and async registrar
+    // invocation remain cross-checked at their actual production boundaries.
     check_publication_source_admission(kani::any(), kani::any());
 }
 

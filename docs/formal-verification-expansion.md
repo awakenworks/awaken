@@ -86,9 +86,10 @@ pure kernels.
   no claim can begin after it returns. The Worker lifecycle closes that local
   gate before publishing `Draining` to the remote Registry; a blocked Control
   acknowledgement cannot reopen admission or create a rejected claim window.
-- Config activation (2): publications carry their authoring generation; SQLite
-  and PostgreSQL compare that generation in the publication transaction, and the
-  live catalog never replaces a newer installed generation with an older one.
+- Config activation (2): the sole production write derives its SQL fence from
+  the publication's own authoring revision; only an exact durable receipt admits
+  registration, and the live catalog never replaces a newer lifecycle revision
+  with an older one.
 - Schema migration (3): bundles must be dense from version one; the production
   step kernel cannot roll back or skip, and replay of an applied plan is a no-op.
 

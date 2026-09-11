@@ -154,13 +154,15 @@ async fn publish_maps_a_publication_persist_failure_to_store() {
 async fn publish_never_installs_an_artifact_from_a_stale_source_revision() {
     // Cause/effect decision table: C1 prepare observes source revision 7; C2
     // every one of the bounded current-state retries loses to durable revision
-    // 8; C3 the canonical caller supplies publication.source_revision as the
-    // expected CAS revision; C4 an observed registrar counts effect entry.
+    // 8; C3 the sole store method derives its fence from the publication's own
+    // source revision; C4 an observed registrar counts effect entry.
     // R1(C1+C2+C3+C4) -> StaleRevision(8), zero registrar calls and no current
-    // catalog entry. R2(C1 + one C2 transition) -> re-prepare revision 8,
+    // catalog entry; C5 a malformed store reports a committed revision that
+    // does not match the artifact. R2(C1 + one C2 transition) -> re-prepare revision 8,
     // persist once and register only that current artifact; the next test owns
-    // R2. The SQL method alone cannot establish C3, so this test covers the
-    // caller seam while the adapter tables cover the transaction decision.
+    // R2. R3(C1+C5) -> fail closed before registration. The SQL method derives
+    // C3 by construction; this test crosses its typed receipt with the sole
+    // caller effect gate while adapter tables cover the transaction decision.
     struct ObservedRegistrar {
         inner: LocalExecutableAgentRegistrar,
         calls: std::sync::atomic::AtomicUsize,
@@ -181,27 +183,42 @@ async fn publish_never_installs_an_artifact_from_a_stale_source_revision() {
             self.inner.withdraw(command).await
         }
     }
-    let catalog = Arc::new(ExecutableAgentCatalog::new());
-    let registrar = Arc::new(ObservedRegistrar {
-        inner: LocalExecutableAgentRegistrar::new(catalog.clone()),
-        calls: std::sync::atomic::AtomicUsize::new(0),
-    });
-    let service = ConfigService::new(Arc::new(FakeResolver), registrar.clone());
-    let err = service
-        .publish(&scope(DEFAULT_SCOPE), &StalePublishRegistry, "a", &[])
-        .await
-        .unwrap_err();
+    for (write, rejected_revision, rule) in [
+        (
+            PublicationWrite::Conflict {
+                current_revision: Some(8),
+            },
+            8,
+            "R1",
+        ),
+        (PublicationWrite::Committed { source_revision: 6 }, 6, "R3"),
+    ] {
+        let catalog = Arc::new(ExecutableAgentCatalog::new());
+        let registrar = Arc::new(ObservedRegistrar {
+            inner: LocalExecutableAgentRegistrar::new(catalog.clone()),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let service = ConfigService::new(Arc::new(FakeResolver), registrar.clone());
+        let registry = StalePublishRegistry { write };
+        let err = service
+            .publish(&scope(DEFAULT_SCOPE), &registry, "a", &[])
+            .await
+            .unwrap_err();
 
-    assert!(matches!(err, PublishError::StaleRevision(Some(8))));
-    assert_eq!(
-        registrar.calls.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "P1 zero registrar calls"
-    );
-    assert!(
-        catalog.current(DEFAULT_SCOPE, "a").is_none(),
-        "a stale publication must not enter the live catalog"
-    );
+        assert!(
+            matches!(err, PublishError::StaleRevision(Some(revision)) if revision == rejected_revision),
+            "{rule}: {err:?}"
+        );
+        assert_eq!(
+            registrar.calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "{rule}: zero registrar calls"
+        );
+        assert!(
+            catalog.current(DEFAULT_SCOPE, "a").is_none(),
+            "{rule}: rejected publication must not enter the live catalog"
+        );
+    }
 }
 
 #[tokio::test]
@@ -762,7 +779,7 @@ async fn reconcile_advances_source_revision_before_changed_policy_fingerprint() 
     assert_eq!(legacy_duplicate.source_revision, 1, "C4");
     assert_ne!(legacy_duplicate.fingerprint, first.fingerprint, "C4");
     store
-        .put_publication_scoped(&scope, &legacy_duplicate)
+        .seed_publication_history_for_test(&scope, &legacy_duplicate)
         .await
         .unwrap();
     assert!(
