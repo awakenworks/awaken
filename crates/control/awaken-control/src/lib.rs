@@ -235,11 +235,11 @@ async fn durable_management_audit(
         .map(|workspace| ScopeId::from(workspace.0.clone()))
         .unwrap_or_else(|| ScopeId::from(DEFAULT_SCOPE));
     let body_hash = format!("{:x}", Sha256::digest(&bytes));
-    let audit = ManagementAuditRecord {
-        tool: format!("http:{}:{}", parts.method, parts.uri.path()),
+    let audit = ManagementAuditRecord::new(
+        format!("http:{}:{}", parts.method, parts.uri.path()),
         call_id,
-        summary: format!("body_sha256={body_hash}"),
-    };
+        format!("body_sha256={body_hash}"),
+    );
     let admission = match plane.record(&scope, &audit).await {
         Ok(admission) if admission.permits_business_write() => admission,
         Ok(AuditedConfigWrite::Replayed) => {
@@ -278,10 +278,9 @@ async fn durable_management_audit(
     let response = next
         .run(Request::from_parts(parts, Body::from(bytes)))
         .await;
+    let (tool, call_id) = audit.identity();
     if admission.requires_audit_completion(response.status().is_success())
-        && let Err(error) = plane
-            .mark_committed(&scope, &audit.tool, &audit.call_id)
-            .await
+        && let Err(error) = plane.mark_committed(&scope, tool, call_id).await
     {
         // The business write already succeeded. Keep the durable pending audit
         // visible for reconciliation instead of masking the real response.

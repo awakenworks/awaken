@@ -661,6 +661,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-skill-store \
     --harness skill_version_retirement_is_visibility_only_and_total
   run_kani awaken-agent-config \
+    --harness management_audit_call_identity_is_stable_and_tuple_exact \
     --harness management_audit_admission_requires_exact_intent_and_closed_state \
     --harness management_effect_confirmation_requires_positive_exact_readback \
     --harness management_effect_enqueue_is_exact_replay_or_absent_insert \

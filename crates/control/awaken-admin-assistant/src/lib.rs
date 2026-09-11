@@ -303,10 +303,11 @@ pub struct TracingAuditSink;
 
 impl AuditSink for TracingAuditSink {
     fn record(&self, event: AdminAuditEvent) {
+        let (tool, call_id) = event.identity();
         tracing::info!(
             target: "awaken::admin_audit",
-            tool = %event.tool,
-            call_id = %event.call_id,
+            tool = %tool,
+            call_id = %call_id,
             summary = %event.summary,
             "management tool call",
         );
@@ -783,23 +784,19 @@ async fn audit(
     summary: impl Into<String>,
 ) -> Result<(AdminAuditEvent, bool), ToolError> {
     let operation_id = current_tool_operation_id().unwrap_or_else(|| call_id.to_string());
-    let event = AdminAuditEvent {
-        tool: tool.to_string(),
-        call_id: operation_id,
-        summary: summary.into(),
-    };
+    let event = AdminAuditEvent::new(tool, operation_id, summary);
     let begin = match store.record_audit(&event).await {
         Ok(begin) => begin,
         Err(error) => {
-            let existing =
-                store
-                    .get_audit(&event.tool, &event.call_id)
-                    .await
-                    .map_err(|read_error| {
-                        ToolError::Execution(format!(
-                            "durable audit failed: {error}; compatibility read failed: {read_error}"
-                        ))
-                    })?;
+            let (tool, operation_id) = event.identity();
+            let existing = store
+                .get_audit(tool, operation_id)
+                .await
+                .map_err(|read_error| {
+                    ToolError::Execution(format!(
+                        "durable audit failed: {error}; compatibility read failed: {read_error}"
+                    ))
+                })?;
             if let Some(existing) = existing
                 && is_legacy_audit_for(&existing.record, &event)
             {
@@ -822,8 +819,9 @@ async fn audit(
             Ok((event, false))
         }
         AuditedConfigWrite::Replayed => {
+            let (tool, operation_id) = event.identity();
             let existing = store
-                .get_audit(&event.tool, &event.call_id)
+                .get_audit(tool, operation_id)
                 .await
                 .map_err(|error| {
                     ToolError::Execution(format!("durable audit read failed: {error}"))
@@ -853,8 +851,7 @@ const MUTATING_TOOL_ARGUMENTS_DOMAIN: &str = "awaken.admin-assistant.tool-argume
 const REQUEST_SHA256_SEPARATOR: &str = "; request_sha256=";
 
 fn is_legacy_audit_for(existing: &AdminAuditEvent, request: &AdminAuditEvent) -> bool {
-    existing.tool == request.tool
-        && existing.call_id == request.call_id
+    existing.identity() == request.identity()
         && fingerprinted_summary(&existing.summary).is_none()
         && fingerprinted_summary(&request.summary)
             .is_some_and(|(target, _)| target == existing.summary)
@@ -899,11 +896,12 @@ async fn already_applied_output(
             "committed operation effect recovery failed: {error}"
         ))
     })?;
+    let (_, operation_id) = audit.identity();
     Ok(ToolOutput::ok(
         call_id,
         serde_json::json!({
             "status": "already_applied",
-            "operation_id": audit.call_id,
+            "operation_id": operation_id,
             "note": "The exact audited management operation was already committed."
         })
         .to_string(),
@@ -919,8 +917,9 @@ async fn error_or_committed(
     audit: &AdminAuditEvent,
     message: impl Into<String>,
 ) -> Result<ToolOutput, ToolError> {
+    let (tool, operation_id) = audit.identity();
     let existing = store
-        .get_audit(&audit.tool, &audit.call_id)
+        .get_audit(tool, operation_id)
         .await
         .map_err(|error| ToolError::Execution(format!("durable audit read failed: {error}")))?;
     if existing.is_some_and(|entry| entry.business_committed) {

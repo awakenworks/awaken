@@ -116,6 +116,13 @@ pub struct ManagementAuditRecord {
     pub summary: String,
 }
 
+/// Preserve the two opaque audit identity coordinates as a tuple. This is the
+/// only production projection used to construct and index a management audit;
+/// neither coordinate is parsed or concatenated with the other.
+fn management_audit_identity<T>(tool: T, call_id: T) -> (T, T) {
+    (tool, call_id)
+}
+
 /// Authorization for an audited write, not evidence that a transaction committed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManagementAuditAdmission {
@@ -137,6 +144,27 @@ fn management_audit_admission(
 }
 
 impl ManagementAuditRecord {
+    /// Construct one durable audit record from its exact opaque identity tuple.
+    #[must_use]
+    pub fn new(
+        tool: impl Into<String>,
+        call_id: impl Into<String>,
+        summary: impl Into<String>,
+    ) -> Self {
+        let (tool, call_id) = management_audit_identity(tool.into(), call_id.into());
+        Self {
+            tool,
+            call_id,
+            summary: summary.into(),
+        }
+    }
+
+    /// Borrow the exact tuple used by durable repository indexes.
+    #[must_use]
+    pub fn identity(&self) -> (&str, &str) {
+        management_audit_identity(&self.tool, &self.call_id)
+    }
+
     /// Admit only the exact durable intent. Adapters must hold their transaction
     /// fence from this observation through the business write and audit update.
     pub fn admit_write(
@@ -795,6 +823,28 @@ mod effect_receipt_tests {
 
 #[cfg(kani)]
 #[kani::proof]
+fn management_audit_call_identity_is_stable_and_tuple_exact() {
+    // Causes: C1 exact retry repeats both opaque coordinates; C2 only tool
+    // changes; C3 only call changes; C4 both change. Effects: E1 exact retry
+    // produces the same identity; E2-E4 every coordinate change is distinct.
+    // Decision rules are the four complete equality classes over two u64
+    // representatives. The production generic tuple projection never parses or
+    // concatenates values; String equality and persistence remain outside Kani.
+    let tool: u64 = kani::any();
+    let call_id: u64 = kani::any();
+    let other_tool: u64 = kani::any();
+    let other_call_id: u64 = kani::any();
+    let identity = management_audit_identity(tool, call_id);
+    assert_eq!(identity, management_audit_identity(tool, call_id), "C1/E1");
+    assert_eq!(
+        identity == management_audit_identity(other_tool, other_call_id),
+        tool == other_tool && call_id == other_call_id,
+        "C2-C4/E2-E4"
+    );
+}
+
+#[cfg(kani)]
+#[kani::proof]
 fn management_audit_admission_requires_exact_intent_and_closed_state() {
     // Cause/effect rules: A0 absent => reject; A1 any changed record => reject;
     // A2 exact/pending(0) => Commit; A3 exact/committed(1) => Replay;
@@ -843,6 +893,36 @@ fn management_audit_admission_requires_exact_intent_and_closed_state() {
 #[cfg(test)]
 mod audit_admission_tests {
     use super::*;
+
+    #[test]
+    fn call_identity_projection_is_stable_and_delimiter_safe() {
+        // Cause/effect table: R1 clone or JSON round-trip of one record keeps
+        // the exact tool/call tuple; R2 summary-only change keeps its identity;
+        // R3 a delimiter-colliding legacy concatenation with either coordinate
+        // changed remains a distinct tuple; R4 empty and Unicode coordinates
+        // survive construction and JSON round-trip. Effects are exact borrowed
+        // String equality, with no parsing, hashing, or normalization.
+        let cases = [
+            ("http:POST", "a:b"),
+            ("http", "POST:a:b"),
+            ("", ""),
+            ("管理:工具", "调用:λ"),
+        ];
+        for (tool, call_id) in cases {
+            let record = ManagementAuditRecord::new(tool, call_id, "body_sha256=one");
+            assert_eq!(record.identity(), (tool, call_id), "R1/R4 construct");
+            assert_eq!(record.clone().identity(), record.identity(), "R1 clone");
+            let decoded: ManagementAuditRecord =
+                serde_json::from_str(&serde_json::to_string(&record).unwrap()).unwrap();
+            assert_eq!(decoded.identity(), record.identity(), "R1/R4 JSON");
+            let changed_summary = ManagementAuditRecord::new(tool, call_id, "body_sha256=two");
+            assert_eq!(changed_summary.identity(), record.identity(), "R2");
+            assert_ne!(changed_summary, record, "summary remains intent content");
+        }
+        let left = ManagementAuditRecord::new("http:POST", "a:b", "one");
+        let right = ManagementAuditRecord::new("http", "POST:a:b", "one");
+        assert_ne!(left.identity(), right.identity(), "R3");
+    }
 
     #[test]
     fn record_projection_and_durable_decode_follow_the_admission_table() {

@@ -265,8 +265,9 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         let config = config.clone();
         let id = config.id.clone();
         let scope = scope.0.clone();
-        let call_id = audit.call_id.clone();
-        let tool = audit.tool.clone();
+        let (tool, call_id) = audit.identity();
+        let call_id = call_id.to_owned();
+        let tool = tool.to_owned();
         let audit = audit.clone();
         let effect = effect.cloned();
         self.with_conn(move |conn, p| {
@@ -465,6 +466,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         let audit = audit.clone();
         let data = serde_json::to_string(&audit).map_err(reject)?;
         self.with_conn(move |conn, p| {
+            let (tool, call_id) = audit.identity();
             // The unique tuple arbitrates across connections, not a process-local
             // read-before-insert race. Exact retry compares domain data, not JSON text.
             let inserted = conn
@@ -474,7 +476,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                      VALUES (?1, ?2, ?3, ?4) \
                      ON CONFLICT (scope_id, tool, call_id) DO NOTHING"
                     ),
-                    params![scope, audit.tool, audit.call_id, data],
+                    params![scope, tool, call_id, data],
                 )
                 .map_err(reject)?;
             if inserted == 1 {
@@ -486,7 +488,7 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                         "SELECT record FROM {p}_management_audit \
                      WHERE scope_id = ?1 AND tool = ?2 AND call_id = ?3"
                     ),
-                    params![scope, audit.tool, audit.call_id],
+                    params![scope, tool, call_id],
                     |row| row.get(0),
                 )
                 .map_err(reject)?;

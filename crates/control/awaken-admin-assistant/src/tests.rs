@@ -117,7 +117,8 @@ impl DraftStore for MemDraftStore {
         audit: &AdminAuditEvent,
         resources: Option<Vec<InputSpec>>,
     ) -> Result<(), String> {
-        let audit_key = (audit.tool.clone(), audit.call_id.clone());
+        let (tool, call_id) = audit.identity();
+        let audit_key = (tool.to_owned(), call_id.to_owned());
         {
             let audits = self.audits.lock().unwrap();
             let recorded = audits
@@ -174,7 +175,8 @@ impl DraftStore for MemDraftStore {
         Ok(())
     }
     async fn record_audit(&self, audit: &AdminAuditEvent) -> Result<AuditedConfigWrite, String> {
-        let audit_key = (audit.tool.clone(), audit.call_id.clone());
+        let (tool, call_id) = audit.identity();
+        let audit_key = (tool.to_owned(), call_id.to_owned());
         let mut audits = self.audits.lock().unwrap();
         if let Some((existing, _)) = audits.get(&audit_key) {
             audit
