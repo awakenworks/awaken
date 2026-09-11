@@ -332,8 +332,29 @@ pub(super) async fn invoke_delegation(
         Ok(agent_id) => agent_id,
         Err(error) => return Some(Err(error)),
     };
-    let request = DelegationRequest {
+    let relationship_request = RequestDelegation {
+        id: id.clone(),
+        parent_call_id: call.call_id.clone(),
+        target_agent_id: target_agent_id.0.clone(),
+        recursive_self: executor.allows_recursive_target(&target_agent_id),
         child_run_id: origin.child_run_id(),
+    };
+    let registry = match RunDelegations::load(store) {
+        Ok(Some(registry)) => registry,
+        Ok(None) => {
+            return Some(Err(DelegationExecutionError::new(
+                "delegation relationship is not committed",
+            )));
+        }
+        Err(error) => return Some(Err(DelegationExecutionError::new(error.to_string()))),
+    };
+    if let Err(error) = registry.admit_child_invocation(&relationship_request) {
+        return Some(Err(DelegationExecutionError::new(format!(
+            "delegation relationship does not admit child invocation: {error}"
+        ))));
+    }
+    let request = DelegationRequest {
+        child_run_id: relationship_request.child_run_id,
         parent_thread_id: parent.thread_id.clone(),
         context: parent.context.for_child_run(),
         origin,
