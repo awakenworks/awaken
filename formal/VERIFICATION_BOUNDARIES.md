@@ -168,14 +168,14 @@ type checking are valuable executable evidence, but are not formal proofs.
   Invalid history fails transactionally without a migration receipt. Both SQL
   adapters and the management test fake consume the config domain's single
   exact-intent admission; SQLite retries compare decoded records and concurrent
-  begin uses the same unique-key arbitration contract as PostgreSQL. Kani checks
-  presence/equality classes and all signed state values; the existing AuditCommit
-  model now explores multiple scopes, delimiter-colliding tuples and conflicting
-  summaries, with exact-intent and duplicate-write mutants. Shared backend tests
-  cover tuple isolation and replay, with migration/rollback and cross-connection
-  checks. SQL selection/locking, arbitrary heap equality, cross-store effects and
-  universal implementation refinement remain outside this scalar proof: the
-  existing audit obligations retain their abstract-model grades.
+  begin uses the same unique-key arbitration contract as PostgreSQL. The common
+  durable-begin result owns the business-entry and completion-attempt predicates
+  consumed by Admin tools and protected HTTP. Kani exhausts presence/equality,
+  every signed state, every begin result and both business outcomes, directly
+  proving local absent/replay gates. AuditCommit owns multi-scope, identity,
+  atomicity and crash schedules; backend tests cover tuple isolation, replay,
+  migration/cross-connection behavior. SQL/heap equality, durability and async effects remain outside the kernel; identity, atomicity, HTTP completion
+  and crash preservation retain model grades.
 - BackgroundTask's detached context now supplies the existing Runtime ownership
   verifier at the common post-concurrency-admission effect boundary. It reads
   live local committed state and consumes the aggregate's exact request/policy/
