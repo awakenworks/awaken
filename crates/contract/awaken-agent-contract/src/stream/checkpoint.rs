@@ -17,9 +17,16 @@
 //! that no checkpoint exists. Runtime validates the recovered Run/Thread identity
 //! and independent invocation evidence before using the partial; neither a
 //! backend nor its caller may manufacture successful absence from a read error.
+//!
+//! The read is typed [`Observed<StreamCheckpoint>`] rather than
+//! `Result<Option<StreamCheckpoint>, _>` so that manufacturing absence is not
+//! merely forbidden by this comment but unrepresentable: there is no `Result`
+//! to discard and no `Option` to flatten into.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+
+use crate::observation::{Observed, UnknownCause};
 
 /// One tool call as it stood when the stream was interrupted. `raw_arguments` is
 /// the provider's accumulated-so-far argument text — raw, unparsed JSON that may
@@ -54,6 +61,9 @@ pub struct StreamCheckpoint {
     pub retry_count: u32,
 }
 
+/// A write (`put`/`delete`) that did not take effect. Writes keep a `Result`:
+/// unlike a read, a failed write has no third outcome to confuse — it simply did
+/// not happen, and the caller is told so.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StreamCheckpointError {
     #[error("stream checkpoint storage unavailable: {0}")]
@@ -62,13 +72,30 @@ pub enum StreamCheckpointError {
     Fenced(String),
 }
 
+impl From<StreamCheckpointError> for UnknownCause {
+    /// A failed checkpoint operation leaves the reader ignorant, never informed
+    /// of absence. Every error variant therefore becomes an `Unknown` cause and
+    /// carries its own diagnostic across the boundary.
+    fn from(error: StreamCheckpointError) -> Self {
+        match error {
+            StreamCheckpointError::Storage(detail) => UnknownCause::Storage(detail),
+            StreamCheckpointError::Fenced(detail) => UnknownCause::Fenced(detail),
+        }
+    }
+}
+
 /// Where the runtime flushes and reads an interrupted step's partial. Keyed by
 /// `run_id`; `delete` is idempotent. Every method reports storage/fencing errors;
 /// callers must not treat an unread checkpoint as permission for fresh execution.
 #[async_trait]
 pub trait StreamCheckpointStore: Send + Sync {
-    /// The checkpoint for `run_id`, or `None` if there is none.
-    async fn get(&self, run_id: &str) -> Result<Option<StreamCheckpoint>, StreamCheckpointError>;
+    /// Observe the checkpoint for `run_id`.
+    ///
+    /// [`Observed::Absent`] is a *finding*: the backend answered and there is no
+    /// checkpoint. A backend that could not answer must return
+    /// [`Observed::Unknown`] — returning `Absent` on a storage failure or a
+    /// fenced read is the fail-open defect this signature exists to prevent.
+    async fn get(&self, run_id: &str) -> Observed<StreamCheckpoint>;
     /// Persist (overwriting any prior) the in-flight partial for its `run_id`.
     async fn put(&self, checkpoint: StreamCheckpoint) -> Result<(), StreamCheckpointError>;
     /// Remove the checkpoint for `run_id`; a no-op if absent.
@@ -95,5 +122,25 @@ mod tests {
         }))
         .expect("R1/E1");
         assert_eq!(checkpoint.retry_count, 0, "R1/E1");
+    }
+
+    #[test]
+    fn every_checkpoint_error_becomes_an_unknown_cause_not_absence() {
+        // Cause C2: a checkpoint operation fails with storage or fencing.
+        // Effect E2: converting it for a reader yields the matching
+        // UnknownCause with its detail intact. Decision rule R2=C2=>E2.
+        // Constraints/invariants: no error variant maps to Absent; the
+        // conversion is total, so a new error variant cannot silently acquire
+        // "nothing is there" semantics.
+        assert_eq!(
+            UnknownCause::from(StreamCheckpointError::Storage("disk".into())),
+            UnknownCause::Storage("disk".into()),
+            "R2/E2"
+        );
+        assert_eq!(
+            UnknownCause::from(StreamCheckpointError::Fenced("stale".into())),
+            UnknownCause::Fenced("stale".into()),
+            "R2/E2"
+        );
     }
 }

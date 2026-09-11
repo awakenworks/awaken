@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use tracing::Instrument;
 
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
+use awaken_agent_contract::observation::Observed;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
@@ -894,11 +895,17 @@ async fn get_checkpoint(
         else {
             return Ok(json!({ "checkpoint": null }));
         };
-        let checkpoint = checkpoint_store(&service)?
+        // The wire carries only present-or-absent. An observation that
+        // established nothing must therefore leave as a transport failure, so a
+        // remote worker never decodes ignorance as a `null` checkpoint.
+        match checkpoint_store(&service)?
             .get(&request.claim.run_id.0)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
-        Ok(json!({ "checkpoint": checkpoint }))
+        {
+            Observed::Present(checkpoint) => Ok(json!({ "checkpoint": checkpoint })),
+            Observed::Absent => Ok(json!({ "checkpoint": null })),
+            Observed::Unknown(cause) => Err(HostError::internal(cause.to_string())),
+        }
     }
     .await;
     respond(result)

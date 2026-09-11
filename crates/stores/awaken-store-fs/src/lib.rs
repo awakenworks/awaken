@@ -26,6 +26,7 @@ use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunSta
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::record::Record as EventRecord;
+use awaken_agent_contract::observation::{Observed, UnknownCause};
 use awaken_agent_contract::stream::checkpoint::{
     StreamCheckpoint, StreamCheckpointError, StreamCheckpointStore,
 };
@@ -485,8 +486,8 @@ impl RunRecoverySource for FsCommitCoordinator {
 /// leaves the prior checkpoint intact, never a torn one), and `delete` removes it.
 /// Durable across process restarts — this is the backend that makes an interrupted
 /// inference step recoverable in a fresh process. Only a missing file reads as
-/// `None`; I/O and decoding errors remain explicit so Runtime cannot mistake
-/// unavailable recovery evidence for a fresh invocation.
+/// `Observed::Absent`; I/O and decoding errors read as `Observed::Unknown` so
+/// Runtime cannot mistake unavailable recovery evidence for a fresh invocation.
 pub struct FsStreamCheckpointStore {
     dir: PathBuf,
 }
@@ -519,15 +520,19 @@ impl FsStreamCheckpointStore {
 
 #[async_trait]
 impl StreamCheckpointStore for FsStreamCheckpointStore {
-    async fn get(&self, run_id: &str) -> Result<Option<StreamCheckpoint>, StreamCheckpointError> {
+    async fn get(&self, run_id: &str) -> Observed<StreamCheckpoint> {
         let bytes = match std::fs::read(self.path_for(run_id)) {
             Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(StreamCheckpointError::Storage(error.to_string())),
+            // Only a missing file is evidence of absence. Any other I/O failure
+            // leaves us ignorant of whether a partial is on disk.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Observed::Absent,
+            Err(error) => return Observed::Unknown(UnknownCause::Storage(error.to_string())),
         };
-        serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|error| StreamCheckpointError::Storage(error.to_string()))
+        // A file that exists but will not decode is corruption, not emptiness.
+        match serde_json::from_slice(&bytes) {
+            Ok(checkpoint) => Observed::Present(checkpoint),
+            Err(error) => Observed::Unknown(UnknownCause::Storage(error.to_string())),
+        }
     }
 
     async fn put(&self, checkpoint: StreamCheckpoint) -> Result<(), StreamCheckpointError> {

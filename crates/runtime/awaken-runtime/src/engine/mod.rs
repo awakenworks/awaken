@@ -23,6 +23,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::draft::Draft as EventDraft;
 use awaken_agent_contract::audit::run_event::RunEvent;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
+use awaken_agent_contract::observation::{Observed, UnknownCause};
 use awaken_agent_contract::stream::checkpoint::{
     PartialToolCall, StreamCheckpoint, StreamCheckpointStore,
 };

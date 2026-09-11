@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_agent_contract::observation::{Observed, UnknownCause};
 use awaken_agent_contract::stream::checkpoint::{
     StreamCheckpoint, StreamCheckpointError, StreamCheckpointStore,
 };
@@ -37,25 +38,30 @@ impl FencedStreamCheckpointStore {
 
 #[async_trait]
 impl StreamCheckpointStore for FencedStreamCheckpointStore {
-    async fn get(&self, run_id: &str) -> Result<Option<StreamCheckpoint>, StreamCheckpointError> {
+    async fn get(&self, run_id: &str) -> Observed<StreamCheckpoint> {
         if run_id != self.claim.run_id.0 {
-            return Err(StreamCheckpointError::Fenced(
+            return Observed::Unknown(UnknownCause::Fenced(
                 "checkpoint run does not match claim".into(),
             ));
         }
         match self.dispatch.lock_commit_epoch(&self.claim).await {
             Ok(Some(_guard)) => match &self.inner {
                 Some(inner) => inner.get(run_id).await,
-                None => Ok(None),
+                // No local store was ever wired behind this guard, so nothing
+                // was written here to find. This is a finding, not ignorance.
+                None => Observed::Absent,
             },
-            Ok(None) => Err(StreamCheckpointError::Fenced(
+            Ok(None) => Observed::Unknown(UnknownCause::Fenced(
                 "checkpoint claim is no longer current".into(),
             )),
-            Err(_) => self
-                .dispatch
-                .load_stream_checkpoint(&self.claim)
-                .await
-                .map_err(|error| StreamCheckpointError::Storage(error.to_string())),
+            // Fall back to the authority over the transport. Its Result is
+            // translated here, once and explicitly: a transport failure is
+            // ignorance about the remote checkpoint, never its absence.
+            Err(_) => match self.dispatch.load_stream_checkpoint(&self.claim).await {
+                Ok(Some(checkpoint)) => Observed::Present(checkpoint),
+                Ok(None) => Observed::Absent,
+                Err(error) => Observed::Unknown(UnknownCause::Storage(error.to_string())),
+            },
         }
     }
 

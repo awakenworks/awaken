@@ -103,37 +103,40 @@ async fn observe_checkpoint(
         Err(_) => return Ok(RecoveryObservation::End(uncertain())),
     };
     let checkpoint = match context.stream_checkpoint.as_ref() {
+        // No checkpoint store is wired at all: this deployment never flushes a
+        // partial, so there is nothing to salvage and nothing was missed.
         None => None,
         Some(checkpoints) => {
             let read = async {
                 tokio::time::timeout(CHECKPOINT_OBSERVATION_TIMEOUT, checkpoints.get(&run_id.0))
                     .await
                     .unwrap_or_else(|_| {
-                        Err(awaken_agent_contract::stream::checkpoint::StreamCheckpointError::Storage(
+                        // The deadline expired with the read still outstanding.
+                        // We learned nothing; we did not learn there is nothing.
+                        Observed::Unknown(UnknownCause::Interrupted(
                             "checkpoint observation deadline exceeded".into(),
                         ))
                     })
             };
+            // Every arm is written out: the only path that proceeds to fresh or
+            // resumed execution is one where the store actually answered.
             match inference::model_read(context.cancellation.as_ref(), read).await {
-                Some(Ok(checkpoint))
-                    if checkpoint.as_ref().is_none_or(|checkpoint| {
-                        checkpoint.run_id == run_id.0 && checkpoint.thread_id == thread_id.0
-                    }) =>
+                Some(Observed::Present(checkpoint))
+                    if checkpoint.run_id == run_id.0 && checkpoint.thread_id == thread_id.0 =>
                 {
-                    checkpoint
+                    Some(checkpoint)
                 }
-                observation => {
-                    match observation {
-                        Some(Err(error)) => {
-                            tracing::warn!(run_id = %run_id.0, %error, "failed to load stream checkpoint")
-                        }
-                        Some(Ok(_)) => {
-                            tracing::warn!(run_id = %run_id.0, "stream checkpoint identity mismatch")
-                        }
-                        None => {}
-                    }
+                Some(Observed::Absent) => None,
+                Some(Observed::Present(_)) => {
+                    tracing::warn!(run_id = %run_id.0, "stream checkpoint identity mismatch");
                     return Ok(RecoveryObservation::End(uncertain()));
                 }
+                Some(Observed::Unknown(cause)) => {
+                    tracing::warn!(run_id = %run_id.0, error = %cause, "failed to load stream checkpoint");
+                    return Ok(RecoveryObservation::End(uncertain()));
+                }
+                // Cancelled mid-read: the observation never completed.
+                None => return Ok(RecoveryObservation::End(uncertain())),
             }
         }
     };
