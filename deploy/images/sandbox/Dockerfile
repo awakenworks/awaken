@@ -11,20 +11,37 @@
 #
 # Build (binary is built ON THE HOST, then staged into the Docker context):
 #   deploy/images/sandbox/build.sh ghcr.io/awaken/sandbox:<ver>
-# The bridge binary is built on the worker host and copied in below. Trixie's glibc
-# is new enough for binaries built on current Linux distributions (including Ubuntu
-# 24.04/glibc 2.39); bookworm's 2.36 made the container exit before opening ACP.
+# The bridge binary is built by `stage-binary.sh` and copied in below. The final
+# rootfs is fixed independently at Ubuntu 24.04; the post-build acceptance starts
+# the real binary there, so an incompatible host glibc fails this build instead
+# of silently selecting another Sandbox operating system.
 # Fully qualified sources are the single Docker/Podman contract: Docker may
 # resolve short names implicitly, while a secure Podman host has no ambient
 # unqualified-search registry and must still build these exact public images.
 ARG RUST_TOOLCHAIN_SERIES=1.96
-ARG RUST_TOOLCHAIN_IMAGE=docker.io/library/rust:${RUST_TOOLCHAIN_SERIES}-bookworm
+ARG RUST_TOOLCHAIN_IMAGE=docker.io/library/rust:1.96-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663
 FROM ${RUST_TOOLCHAIN_IMAGE} AS rust-toolchain
 ARG RUST_TOOLCHAIN_SERIES
 RUN rustc --version | grep -Eq "^rustc ${RUST_TOOLCHAIN_SERIES}\\." \
     && rustup component add clippy rustfmt
 
-FROM docker.io/library/node:22-trixie-slim
+FROM docker.io/library/node:22-trixie-slim@sha256:7b8a0c89c54499bee567618f96578e1a12a800f062fbdbfd1fb6a443fa6f6284 AS node-toolchain
+FROM docker.io/library/golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac AS go-toolchain
+FROM docker.io/library/ruby:3.3-bookworm@sha256:daf7fa54695b1fcb24fadd7b8cd18ff847e20ce76fe5a908e3cfe9af9147bc46 AS ruby-toolchain
+
+# Anthropic's public Cloud Sandbox reference specifies Ubuntu 24.04 LTS on
+# amd64. The canonical build owner supplies `--platform linux/amd64`; the digest
+# below prevents the named OS baseline from moving independently of review.
+# https://platform.claude.com/docs/en/managed-agents/cloud-sandboxes-reference
+FROM docker.io/library/ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
+
+# Node 22, Go 1.24, and Ruby 3.3 are the documented default Managed Agents
+# runtimes. Copy exact official toolchains rather than letting Ubuntu's package
+# versions silently redefine that public surface.
+COPY --from=node-toolchain /usr/local/bin/ /usr/local/bin/
+COPY --from=node-toolchain /usr/local/lib/node_modules/ /usr/local/lib/node_modules/
+COPY --from=go-toolchain /usr/local/go/ /usr/local/go/
+COPY --from=ruby-toolchain /usr/local/ /usr/local/
 
 # Keep one pinned, complete Rust toolchain in the sandbox base. Debian's `cargo`
 # package does not include rustup components such as Clippy, which makes a
@@ -38,22 +55,24 @@ COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
 # repo work, rg for search), plus the six package-manager runtimes supported by
 # Managed Environment provisioning.
 # Python packages live in an image-owned virtual environment so pip never mutates
-# Debian's externally-managed system interpreter.
-RUN apt-get update \
+# the distribution's externally-managed system interpreter.
+RUN DEBIAN_FRONTEND=noninteractive apt-get update \
     && apt-get install -y --no-install-recommends \
-      ca-certificates curl git golang-go python3 python3-venv ripgrep ruby tini \
+      ca-certificates curl git libgmp10 libyaml-0-2 python3 python3-venv ripgrep tini \
     && python3 -m venv /opt/awaken-python \
     && rm -rf /var/lib/apt/lists/*
 ENV CARGO_HOME="/usr/local/cargo" \
     HOME="/home/agent" \
-    PATH="/usr/local/cargo/bin:/opt/awaken-python/bin:${PATH}" \
+    PATH="/usr/local/cargo/bin:/usr/local/go/bin:/opt/awaken-python/bin:${PATH}" \
     RUSTUP_HOME="/usr/local/rustup"
 
 # The E2E harness checks this capability label before reusing a locally cached
 # base image, preventing an older image without the package runtimes from being
 # mistaken for a complete Environment base.
-LABEL org.awaken.environment-packages="2" \
-      org.awaken.acp-runtime-contract="1"
+LABEL org.awaken.environment-packages="3" \
+      org.awaken.acp-runtime-contract="1" \
+      org.awaken.managed-agents-base-contract="ubuntu-24.04-amd64-v1" \
+      org.awaken.sandbox-role-contract="2"
 ARG AWAKEN_BUILD_INPUT_FINGERPRINT
 LABEL org.awaken.build-input-fingerprint="${AWAKEN_BUILD_INPUT_FINGERPRINT}"
 

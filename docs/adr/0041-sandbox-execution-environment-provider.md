@@ -1085,3 +1085,27 @@ is an explicit capability boundary, not a write-through-to-copy fallback. The
 recovery guarantee covers Worker process loss while the backend-bound staging
 directory remains available; host loss and cross-node staging recovery remain
 outside this contract and fail closed.
+
+## Amendment 9 (2026-09-11): one documented Managed Agents base contract
+
+The production Sandbox image follows the stable, publicly observable foundation
+of Anthropic's Cloud Sandbox reference: Ubuntu 24.04 LTS on amd64, Node 22, Go
+1.24, and Ruby 3.3 as the documented defaults, non-root execution, and
+`/workspace` as the working tree. This is behavioral compatibility with the
+published reference, not a claim that Awaken can reproduce Anthropic's
+unpublished image bytes or private hardening.
+
+`deploy/images/sandbox/Dockerfile` remains the image recipe and
+`deploy/images/sandbox/build.sh` remains its only build and acceptance owner.
+Every external base is digest-pinned, the build fixes `linux/amd64`, and the
+accepted image carries a versioned Managed Agents base label plus a versioned
+Sandbox role-surface label. Acceptance executes the OS/architecture/user/path/
+default-runtime checks and the complete closed `awaken-sandbox` role vocabulary.
+Both fresh build and local reuse pass the same checks; `--ensure-hand` is not
+permission to reuse an image missing another Pod-local helper.
+
+The signed release-label verifier requires those contract labels in addition to
+the exact source revision. Therefore a previous Debian image, a moving base, or
+an image missing `control-forwarder` cannot be promoted or silently reused after
+the contract changes. Environment package layers continue to derive only from
+the admitted base image identity; they do not own another base-image recipe.
