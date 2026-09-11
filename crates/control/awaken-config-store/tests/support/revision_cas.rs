@@ -1,5 +1,5 @@
 use awaken_agent_config::{
-    AgentConfig, AgentConfigRevision, ConfigWrite, ScopeId, ScopedConfigRegistry,
+    AgentConfig, AgentConfigRevision, ConfigWrite, PublicationWrite, ScopeId, ScopedConfigRegistry,
 };
 
 // Readback projection only: no CAS predicate, successor calculation or model.
@@ -38,7 +38,8 @@ pub(super) async fn frame(store: &impl ScopedConfigRegistry, scope: &ScopeId, id
 pub async fn publication_source_table(store: &impl ScopedConfigRegistry) {
     // P1 source absent; P2 stale expected; P3 future expected; P4 exact source.
     // All candidates use the real compiler and StoredPublication, with nonempty
-    // instructions and a resolved model. Expected/source pairing is explicit.
+    // instructions and a resolved model. The interface derives its fence from
+    // the publication, so an independent expected/source pairing is impossible.
     // Rejection must preserve BOTH the full authored/history frame and every
     // durable publication byte, with empty AND populated publication history.
     // This suite does not claim registrar execution.
@@ -86,7 +87,7 @@ pub async fn publication_source_table(store: &impl ScopedConfigRegistry) {
             let durable_before =
                 serde_json::to_value(store.list_published_scoped(&scope).await.unwrap()).unwrap();
             let outcome = store
-                .put_publication_if_config_revision_scoped(&scope, &publication, expected)
+                .put_publication_if_source_current_scoped(&scope, &publication)
                 .await
                 .unwrap();
             assert_eq!(
@@ -96,7 +97,11 @@ pub async fn publication_source_table(store: &impl ScopedConfigRegistry) {
             );
             let durable = store.list_published_scoped(&scope).await.unwrap();
             if present && expected == 2 {
-                assert_eq!(outcome, ConfigWrite::Applied { revision: 2 }, "P4");
+                assert_eq!(
+                    outcome,
+                    PublicationWrite::Committed { source_revision: 2 },
+                    "P4"
+                );
                 assert_eq!(
                     serde_json::to_value(&durable).unwrap(),
                     serde_json::json!([publication]),
@@ -104,7 +109,7 @@ pub async fn publication_source_table(store: &impl ScopedConfigRegistry) {
                 );
                 assert_eq!(
                     store
-                        .put_publication_if_config_revision_scoped(&scope, &publication, expected)
+                        .put_publication_if_source_current_scoped(&scope, &publication)
                         .await
                         .unwrap(),
                     outcome,
@@ -119,7 +124,7 @@ pub async fn publication_source_table(store: &impl ScopedConfigRegistry) {
             } else {
                 assert_eq!(
                     outcome,
-                    ConfigWrite::Conflict {
+                    PublicationWrite::Conflict {
                         current_revision: if present { Some(2) } else { None }
                     },
                     "P1-P3"

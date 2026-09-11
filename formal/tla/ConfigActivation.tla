@@ -8,8 +8,9 @@ CONSTANT MaxGeneration
 \* durable revision late or repeatedly. Current is a lifecycle high-water mark;
 \* exact historical registrations survive withdrawal. There is no whole-catalog
 \* install generation and no requirement that delivery match the latest draft.
-\* Fingerprint/content identity and source-to-expected pairing are assumptions
-\* of this abstraction, owned by the existing production publication chain.
+\* Fingerprint/content identity remains an assumption of this abstraction. The
+\* production write derives its source fence from the publication and its direct
+\* Kani receipt gate discharges source pairing outside this finite model.
 VARIABLE authorGeneration, preparedGeneration, publications, registeredRevisions,
          installedGeneration, lastInstalledGeneration, currentAvailable, lastStep
 

@@ -81,6 +81,14 @@ ExecutableAgentSnapshot, including its fingerprint
 AgentConfigView frozen from the same revision
 ```
 
+Control has one production publication-write port:
+`put_publication_if_source_current`. It accepts the complete
+`StoredPublication`, derives the SQL source fence from that artifact's own
+`source_revision`, and returns a `PublicationWrite` durable receipt. There is no
+independent expected-revision argument or unfenced production write. Test-only
+history injection exists behind `test-support` for codec, migration, and
+quarantine fixtures and is not part of the repository trait.
+
 Execution placement is deliberately absent: ADR-0073 derives it from the frozen
 Environment and durable Worker capabilities.
 
@@ -214,6 +222,17 @@ An outer publication CAS conflict can rerun preparation. Future polling and
 cancellation, Catalog and Credential repository consistency, Agent Card and
 provider observations, persistence and fingerprinting, async transport,
 materialization, and executor behavior remain native evidence or explicit TCB.
+
+For source freshness, Kani exhausts every optional current revision and every
+publication revision at the exact SQLite/PostgreSQL admission owner. Only exact
+equality can produce a committed `PublicationWrite`; a second direct harness
+exhausts committed/conflict receipts and proves that ConfigService admits the
+registrar only when that durable revision equals the publication. The native
+adapter table additionally checks absent, stale, future, exact, empty-history,
+populated-history, and retry frames, while the async ConfigService test observes
+zero registrar calls and an unchanged catalog for both a stale conflict and a
+malformed commit receipt. SQL locking, transaction durability, async scheduling,
+serialization, and transport remain declared TCB rather than Rust theorems.
 
 The cause/effect design for implementation tests is:
 

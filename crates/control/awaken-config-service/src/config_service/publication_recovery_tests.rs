@@ -139,7 +139,10 @@ async fn startup_reconciliation_converges_legacy_duplicate_source_revisions() {
         .unwrap();
     assert_eq!(first.source_revision, last.source_revision, "R1");
     assert_ne!(first.fingerprint, last.fingerprint, "R1");
-    store.put_publication_scoped(&scope, &last).await.unwrap();
+    store
+        .seed_publication_history_for_test(&scope, &last)
+        .await
+        .unwrap();
 
     let (cold, catalog) = test_service_and_catalog();
     assert_eq!(
@@ -193,7 +196,10 @@ async fn startup_reconciliation_quarantines_one_bad_history_without_blocking_goo
     orphan.source_revision = 99;
     orphan.publication_id = "orphan-publication".into();
     orphan.fingerprint = "orphan-publication".into();
-    store.put_publication_scoped(&scope, &orphan).await.unwrap();
+    store
+        .seed_publication_history_for_test(&scope, &orphan)
+        .await
+        .unwrap();
 
     let (cold, catalog) = test_service_and_catalog();
     let error = cold

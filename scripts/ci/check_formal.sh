@@ -270,10 +270,9 @@ cargo test -p awaken-control --lib management_effect
 cargo test -p awaken-config-store --features test-support --test integration management_effect
 cargo test -p awaken-config-store --features test-support --lib audit_identity
 cargo test -p awaken-config-store --features test-support --test integration audit_identity
-# The store's direct source-admission proof classifies supplied revision facts,
-# but cannot establish the async caller's source/expected pairing or absence of
-# Coordinator effects. Exercise that sole ConfigService seam and require an
-# observed stale CAS to return without entering the registrar.
+# The source-fenced store has no independent expected-revision input. Cross its
+# typed durable receipt with the sole ConfigService effect gate and require both
+# a stale conflict and a malformed commit receipt to stop before the registrar.
 cargo test -p awaken-config-service --lib \
   publish_never_installs_an_artifact_from_a_stale_source_revision
 # The scalar admission proofs below rely on the actual adapters and reclaimer
@@ -660,7 +659,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness management_effect_confirmation_requires_positive_exact_readback \
     --harness management_effect_enqueue_is_exact_replay_or_absent_insert \
     --harness processing_geography_requires_exact_evidence_from_every_candidate \
-    --harness publication_revision_decision_is_target_safe_fail_closed_and_replay_first
+    --harness publication_revision_decision_is_target_safe_fail_closed_and_replay_first \
+    --harness publication_registration_requires_exact_commit_receipt
   run_kani awaken-config-store \
     --harness config_revision_admission_is_exact_and_nonwrapping \
     --harness publication_source_admission_requires_present_exact_revision \

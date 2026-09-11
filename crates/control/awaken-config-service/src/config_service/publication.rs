@@ -4,7 +4,7 @@
 //! refresh remains delegated to the existing reconciliation authority. This
 //! module only owns their ConfigService orchestration boundary.
 
-use awaken_agent_config::{ConfigRegistry, ConfigWrite, StoredPublication};
+use awaken_agent_config::{ConfigRegistry, StoredPublication};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
 
@@ -107,13 +107,12 @@ impl ConfigService {
             )
             .await?;
         let write = registry
-            .put_publication_if_config_revision(
-                &prepared.publication,
-                prepared.publication.source_revision,
-            )
+            .put_publication_if_source_current(&prepared.publication)
             .await
             .map_err(|e| PublishError::Store(e.to_string()))?;
-        if let ConfigWrite::Conflict { current_revision } = write {
+        if let Err(current_revision) =
+            write.registration_admission(prepared.publication.source_revision)
+        {
             return Err(PublishError::StaleRevision(current_revision));
         }
         self.registrar

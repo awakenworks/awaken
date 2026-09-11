@@ -3,8 +3,8 @@
 
 use awaken_agent_config::{
     AgentConfig, AuditedConfigWrite, ConfigRegistry, ConfigWrite, ManagementAuditRecord,
-    ManagementEffect, PublicationState, ScopeId, ScopedConfigRegistry, StoredPublication,
-    compile_resolved,
+    ManagementEffect, PublicationState, PublicationWrite, ScopeId, ScopedConfigRegistry,
+    StoredPublication, compile_resolved,
 };
 use awaken_config_store::PostgresConfigStore;
 use awaken_runtime_contract::resolved::ToolDescriptor;
@@ -624,13 +624,20 @@ async fn postgres_config_store_round_trips_config_and_publication() {
         serde_json::json!({"type": "object"}),
     )];
     let publication = compile(&config, &tools).expect("compile");
-    let stored = StoredPublication::published(publication.clone(), &config.id, "default");
-    store
-        .put_publication(&stored)
-        .await
-        .expect("put publication");
+    let stored =
+        StoredPublication::published_at_revision(publication.clone(), &config.id, 1, "default");
+    assert_eq!(
+        store
+            .put_publication_if_source_current(&stored)
+            .await
+            .expect("put publication"),
+        PublicationWrite::Committed { source_revision: 1 }
+    );
     // Idempotent by fingerprint.
-    store.put_publication(&stored).await.expect("re-put");
+    store
+        .put_publication_if_source_current(&stored)
+        .await
+        .expect("re-put");
 
     let loaded = store
         .get_publication(&publication.fingerprint.0)
@@ -681,17 +688,17 @@ async fn postgres_conditional_publication_fences_one_fingerprint_per_source_revi
     assert_ne!(first.fingerprint, second.fingerprint, "P3");
     assert_eq!(
         store
-            .put_publication_if_config_revision_scoped(&scope, &first, 1)
+            .put_publication_if_source_current_scoped(&scope, &first)
             .await
             .expect("P2"),
-        ConfigWrite::Applied { revision: 1 }
+        PublicationWrite::Committed { source_revision: 1 }
     );
     assert_eq!(
         store
-            .put_publication_if_config_revision_scoped(&scope, &second, 1)
+            .put_publication_if_source_current_scoped(&scope, &second)
             .await
             .expect("P3"),
-        ConfigWrite::Conflict {
+        PublicationWrite::Conflict {
             current_revision: Some(1)
         }
     );
@@ -737,10 +744,10 @@ async fn postgres_allows_one_source_revision_in_distinct_execution_workspaces() 
     for publication in [&first, &second] {
         assert_eq!(
             store
-                .put_publication_if_config_revision_scoped(&scope, publication, 1)
+                .put_publication_if_source_current_scoped(&scope, publication)
                 .await
                 .expect("targeted publication"),
-            ConfigWrite::Applied { revision: 1 }
+            PublicationWrite::Committed { source_revision: 1 }
         );
     }
     assert_eq!(store.list_published_scoped(&scope).await.unwrap().len(), 2);
@@ -786,15 +793,24 @@ async fn postgres_list_published_reloads_published_rows_of_the_scope() {
     let p_b = publication_for("b1", "ws_b");
     let p1_b = publication_for("a1", "ws_b");
 
-    store.put_publication_scoped(&a, &p1).await.expect("p1");
-    store.put_publication_scoped(&a, &p2).await.expect("p2");
     store
-        .put_publication_scoped(&a, &p_compiled)
+        .seed_publication_history_for_test(&a, &p1)
+        .await
+        .expect("p1");
+    store
+        .seed_publication_history_for_test(&a, &p2)
+        .await
+        .expect("p2");
+    store
+        .seed_publication_history_for_test(&a, &p_compiled)
         .await
         .expect("p_compiled");
-    store.put_publication_scoped(&b, &p_b).await.expect("p_b");
     store
-        .put_publication_scoped(&b, &p1_b)
+        .seed_publication_history_for_test(&b, &p_b)
+        .await
+        .expect("p_b");
+    store
+        .seed_publication_history_for_test(&b, &p1_b)
         .await
         .expect("the same fingerprint is independently owned by b");
 
@@ -865,9 +881,18 @@ async fn postgres_list_published_warm_load_same_agent_reloads_the_full_set() {
     let v1 = pub_v("v1");
     let v2 = pub_v("v2");
     let v3 = pub_v("v3");
-    store.put_publication_scoped(&a, &v1).await.expect("v1");
-    store.put_publication_scoped(&a, &v2).await.expect("v2");
-    store.put_publication_scoped(&a, &v3).await.expect("v3");
+    store
+        .seed_publication_history_for_test(&a, &v1)
+        .await
+        .expect("v1");
+    store
+        .seed_publication_history_for_test(&a, &v2)
+        .await
+        .expect("v2");
+    store
+        .seed_publication_history_for_test(&a, &v3)
+        .await
+        .expect("v3");
 
     let listed = store.list_published_scoped(&a).await.expect("list");
     // Every published row of the agent is reloaded (set parity with sqlite).

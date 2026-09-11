@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use awaken_agent_config::{
     AgentConfig, AuditedConfigWrite, ConfigRegistry, ConfigWrite, DEFAULT_SCOPE,
-    ManagementAuditRecord, ManagementEffect, ModelSelection, PublicationState, ScopeId,
-    ScopedConfig, ScopedConfigRegistry, StoredPublication, compile_resolved,
+    ManagementAuditRecord, ManagementEffect, ModelSelection, PublicationState, PublicationWrite,
+    ScopeId, ScopedConfig, ScopedConfigRegistry, StoredPublication, compile_resolved,
 };
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -610,14 +610,15 @@ async fn config_compiles_stores_and_the_runtime_executes_the_snapshot() {
     let publication = compile(&config, &tool_catalog()).expect("compile");
     let store = SqliteConfigStore::open_in_memory().expect("store");
     store.put_config(&config).await.expect("put config");
-    store
-        .put_publication(&StoredPublication::published(
-            publication.clone(),
-            &config.id,
-            DEFAULT_SCOPE,
-        ))
-        .await
-        .expect("put publication");
+    let stored =
+        StoredPublication::published_at_revision(publication.clone(), &config.id, 1, DEFAULT_SCOPE);
+    assert_eq!(
+        store
+            .put_publication_if_source_current(&stored)
+            .await
+            .expect("put publication"),
+        PublicationWrite::Committed { source_revision: 1 }
+    );
 
     // Reload the publication by its fingerprint — the durable round trip.
     let loaded = store
@@ -688,7 +689,7 @@ async fn legacy_publication_inherits_its_durable_configuration_scope() {
     {
         let store = SqliteConfigStore::open(path.to_str().unwrap()).expect("store");
         store
-            .put_publication_scoped(
+            .seed_publication_history_for_test(
                 &scope,
                 &StoredPublication::published(publication, "support-agent", "old-target"),
             )
@@ -1079,7 +1080,7 @@ async fn reconciliation_scope_inventory_is_distinct_sorted_and_secret_free() {
 
 fn publication_for(cfg: &AgentConfig, execution_workspace: &str) -> StoredPublication {
     let snapshot = compile(cfg, &tool_catalog()).expect("compile");
-    StoredPublication::published(snapshot, &cfg.id, execution_workspace)
+    StoredPublication::published_at_revision(snapshot, &cfg.id, 1, execution_workspace)
 }
 
 #[tokio::test]
@@ -1092,7 +1093,16 @@ async fn a_publication_written_under_scope_a_is_invisible_to_scope_b() {
     let b = ScopedConfig::new(store.clone(), ScopeId::from("ws_b"));
     let publication = publication_for(&agent_with("shared", "hello"), "ws_a");
     let fp = publication.fingerprint.clone();
-    a.put_publication(&publication).await.expect("put a");
+    store
+        .put_config_scoped(&ScopeId::from("ws_a"), &agent_with("shared", "hello"))
+        .await
+        .expect("source a");
+    assert_eq!(
+        a.put_publication_if_source_current(&publication)
+            .await
+            .expect("put a"),
+        PublicationWrite::Committed { source_revision: 1 }
+    );
     assert!(a.get_publication(&fp).await.expect("get a").is_some());
     assert!(b.get_publication(&fp).await.expect("get b").is_none());
 }
@@ -1108,8 +1118,21 @@ async fn the_same_publication_fingerprint_can_be_owned_independently_by_each_sco
     let pub_a = publication_for(&agent_with("shared", "same-bytes"), "ws_a");
     let pub_b = publication_for(&agent_with("shared", "same-bytes"), "ws_b");
     assert_eq!(pub_a.fingerprint, pub_b.fingerprint); // content-addressed → identical
-    a.put_publication(&pub_a).await.expect("put a");
-    b.put_publication(&pub_b).await.expect("put b");
+    let source = agent_with("shared", "same-bytes");
+    store
+        .put_config_scoped(&ScopeId::from("ws_a"), &source)
+        .await
+        .expect("source a");
+    store
+        .put_config_scoped(&ScopeId::from("ws_b"), &source)
+        .await
+        .expect("source b");
+    a.put_publication_if_source_current(&pub_a)
+        .await
+        .expect("put a");
+    b.put_publication_if_source_current(&pub_b)
+        .await
+        .expect("put b");
     assert!(
         a.get_publication(&pub_a.fingerprint)
             .await
@@ -1125,17 +1148,19 @@ async fn the_same_publication_fingerprint_can_be_owned_independently_by_each_sco
 }
 
 #[tokio::test]
-async fn put_publication_scoped_is_idempotent_by_fingerprint() {
+async fn source_fenced_publication_is_idempotent_by_fingerprint() {
     // Re-putting the same publication is a no-op (DO NOTHING), not an error.
     let store = SqliteConfigStore::open_in_memory().expect("store");
     let a = ScopeId::from("ws_a");
-    let publication = publication_for(&agent_with("agent", "body"), "ws_a");
+    let source = agent_with("agent", "body");
+    store.put_config_scoped(&a, &source).await.expect("source");
+    let publication = publication_for(&source, "ws_a");
     store
-        .put_publication_scoped(&a, &publication)
+        .put_publication_if_source_current_scoped(&a, &publication)
         .await
         .expect("put");
     store
-        .put_publication_scoped(&a, &publication)
+        .put_publication_if_source_current_scoped(&a, &publication)
         .await
         .expect("re-put idempotent");
     assert!(
@@ -1176,17 +1201,17 @@ async fn conditional_publication_fences_a_second_fingerprint_at_one_source_revis
     assert_ne!(first.fingerprint, second.fingerprint);
     assert_eq!(
         store
-            .put_publication_if_config_revision_scoped(&scope, &first, 1)
+            .put_publication_if_source_current_scoped(&scope, &first)
             .await
             .expect("first publication"),
-        ConfigWrite::Applied { revision: 1 }
+        PublicationWrite::Committed { source_revision: 1 }
     );
     assert_eq!(
         store
-            .put_publication_if_config_revision_scoped(&scope, &second, 1)
+            .put_publication_if_source_current_scoped(&scope, &second)
             .await
             .expect("revision fence"),
-        ConfigWrite::Conflict {
+        PublicationWrite::Conflict {
             current_revision: Some(1)
         }
     );
@@ -1222,10 +1247,10 @@ async fn conditional_publication_allows_one_source_revision_in_distinct_executio
     for publication in [&first, &second] {
         assert_eq!(
             store
-                .put_publication_if_config_revision_scoped(&scope, publication, 1)
+                .put_publication_if_source_current_scoped(&scope, publication)
                 .await
                 .expect("targeted publication"),
-            ConfigWrite::Applied { revision: 1 }
+            PublicationWrite::Committed { source_revision: 1 }
         );
     }
     let durable = store.list_published_scoped(&scope).await.unwrap();
@@ -1257,13 +1282,22 @@ async fn list_published_returns_only_published_rows_of_the_scope_in_insertion_or
     p_compiled.state = PublicationState::Compiled; // must be excluded
     let p_b = publication_for(&agent_with("b1", "other-scope"), "ws_b");
 
-    store.put_publication_scoped(&a, &p1).await.expect("p1");
-    store.put_publication_scoped(&a, &p2).await.expect("p2");
     store
-        .put_publication_scoped(&a, &p_compiled)
+        .seed_publication_history_for_test(&a, &p1)
+        .await
+        .expect("p1");
+    store
+        .seed_publication_history_for_test(&a, &p2)
+        .await
+        .expect("p2");
+    store
+        .seed_publication_history_for_test(&a, &p_compiled)
         .await
         .expect("p_compiled");
-    store.put_publication_scoped(&b, &p_b).await.expect("p_b");
+    store
+        .seed_publication_history_for_test(&b, &p_b)
+        .await
+        .expect("p_b");
 
     // A: only the two published rows, oldest-first (insertion order).
     let a_fps: Vec<String> = store
@@ -1309,9 +1343,18 @@ async fn list_published_warm_load_latest_per_agent_is_deterministic_on_sqlite() 
     assert_ne!(v1.fingerprint, v2.fingerprint);
     assert_ne!(v2.fingerprint, v3.fingerprint);
 
-    store.put_publication_scoped(&a, &v1).await.expect("v1");
-    store.put_publication_scoped(&a, &v2).await.expect("v2");
-    store.put_publication_scoped(&a, &v3).await.expect("v3");
+    store
+        .seed_publication_history_for_test(&a, &v1)
+        .await
+        .expect("v1");
+    store
+        .seed_publication_history_for_test(&a, &v2)
+        .await
+        .expect("v2");
+    store
+        .seed_publication_history_for_test(&a, &v3)
+        .await
+        .expect("v3");
 
     let listed = store.list_published_scoped(&a).await.expect("list");
     // rowid ASC == insertion order, deterministically.

@@ -559,7 +559,7 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   their ID. The shared Memory conformance suite covers SQLite/Postgres/volatile
   adapters; real HTTP and live/recovered Copy tests exercise both callers.
 - `AuditCommit.tla` covers audit/replay fencing; `ConfigActivation.tla` covers ADR-0071 publication CAS,
-  delayed per-Agent registration, exact history and monotonic withdrawal. Neither proves Rust/SQL refinement.
+  delayed registration, exact history and monotonic withdrawal. Direct Kani covers the production source fence and receipt gate; SQL/async/transport remain TCB.
 - `AcpBoundary.tla`, `CredentialEffectBoundary.tla`, and
   `SessionRealizationMutex.tla` cover handshake-before-prompt and conservative
   permission projection, exact-claim materialization/publication, and exclusive

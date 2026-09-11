@@ -14,7 +14,7 @@ use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError,
     ConfigWrite, DEFAULT_SCOPE, ManagementAuditAdmission, ManagementAuditEntry,
     ManagementAuditRecord, ManagementEffect, ManagementEffectReceipt, PublicationRevisionDecision,
-    ScopedConfigRegistry, StoredPublication, publication_revision_decision,
+    PublicationWrite, ScopedConfigRegistry, StoredPublication, publication_revision_decision,
 };
 
 /// The config component's table namespace (ADR-0029/ADR-0031). Built in, so the
@@ -97,6 +97,41 @@ impl PostgresConfigStore {
             .map_err(|error| StoreError::Schema(error.to_string()))?;
         Ok(Self { pool })
     }
+
+    /// Inject immutable history for codec, recovery, and quarantine tests.
+    /// Production publication has only the source-fenced trait method.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn seed_publication_history_for_test(
+        &self,
+        scope: &ScopeId,
+        publication: &StoredPublication,
+    ) -> Result<(), ConfigStoreError> {
+        insert_publication(&self.pool, scope, publication).await
+    }
+}
+
+async fn insert_publication<'e, E>(
+    executor: E,
+    scope: &'e ScopeId,
+    publication: &'e StoredPublication,
+) -> Result<(), ConfigStoreError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    sqlx::query(&format!(
+        "INSERT INTO {NS}_publication (fingerprint, agent_id, state, record, scope_id) \
+         VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (scope_id, fingerprint) DO NOTHING"
+    ))
+    .bind(&publication.fingerprint)
+    .bind(&publication.agent_id)
+    .bind(publication.state.as_str())
+    .bind(Json(publication))
+    .bind(&scope.0)
+    .execute(executor)
+    .await
+    .map_err(reject)?;
+    Ok(())
 }
 
 async fn selected_bundles(
@@ -695,33 +730,11 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         Ok(configs)
     }
 
-    async fn put_publication_scoped(
+    async fn put_publication_if_source_current_scoped(
         &self,
         scope: &ScopeId,
         publication: &StoredPublication,
-    ) -> Result<(), ConfigStoreError> {
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_publication (fingerprint, agent_id, state, record, scope_id) \
-             VALUES ($1, $2, $3, $4, $5) \
-             ON CONFLICT (scope_id, fingerprint) DO NOTHING"
-        ))
-        .bind(&publication.fingerprint)
-        .bind(&publication.agent_id)
-        .bind(publication.state.as_str())
-        .bind(Json(publication))
-        .bind(&scope.0)
-        .execute(&self.pool)
-        .await
-        .map_err(reject)?;
-        Ok(())
-    }
-
-    async fn put_publication_if_config_revision_scoped(
-        &self,
-        scope: &ScopeId,
-        publication: &StoredPublication,
-        expected_generation: u64,
-    ) -> Result<ConfigWrite, ConfigStoreError> {
+    ) -> Result<PublicationWrite, ConfigStoreError> {
         let mut tx = self.pool.begin().await.map_err(reject)?;
         let current_revision = sqlx::query_scalar::<_, i64>(&format!(
             "SELECT generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2 FOR UPDATE"
@@ -734,10 +747,10 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         .map(domain_generation)
         .transpose()?;
         if let crate::PublicationSourceAdmission::Conflict { current_revision } =
-            crate::PublicationSourceAdmission::new(current_revision, expected_generation)
+            crate::PublicationSourceAdmission::new(current_revision, publication.source_revision)
         {
             tx.rollback().await.map_err(reject)?;
-            return Ok(ConfigWrite::Conflict { current_revision });
+            return Ok(PublicationWrite::Conflict { current_revision });
         }
         let existing = sqlx::query(&format!(
             "SELECT record FROM {NS}_publication WHERE scope_id = $1 AND agent_id = $2 FOR UPDATE"
@@ -768,24 +781,12 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         );
         if decision == PublicationRevisionDecision::Conflict {
             tx.rollback().await.map_err(reject)?;
-            return Ok(ConfigWrite::Conflict { current_revision });
+            return Ok(PublicationWrite::Conflict { current_revision });
         }
-        sqlx::query(&format!(
-            "INSERT INTO {NS}_publication (fingerprint, agent_id, state, record, scope_id) \
-             VALUES ($1, $2, $3, $4, $5) \
-             ON CONFLICT (scope_id, fingerprint) DO NOTHING"
-        ))
-        .bind(&publication.fingerprint)
-        .bind(&publication.agent_id)
-        .bind(publication.state.as_str())
-        .bind(Json(publication))
-        .bind(&scope.0)
-        .execute(&mut *tx)
-        .await
-        .map_err(reject)?;
+        insert_publication(&mut *tx, scope, publication).await?;
         tx.commit().await.map_err(reject)?;
-        Ok(ConfigWrite::Applied {
-            revision: expected_generation,
+        Ok(PublicationWrite::Committed {
+            source_revision: publication.source_revision,
         })
     }
 
@@ -881,25 +882,12 @@ impl ConfigRegistry for PostgresConfigStore {
             .await
     }
 
-    async fn put_publication(
+    async fn put_publication_if_source_current(
         &self,
         publication: &StoredPublication,
-    ) -> Result<(), ConfigStoreError> {
-        self.put_publication_scoped(&ScopeId::from(DEFAULT_SCOPE), publication)
+    ) -> Result<PublicationWrite, ConfigStoreError> {
+        self.put_publication_if_source_current_scoped(&ScopeId::from(DEFAULT_SCOPE), publication)
             .await
-    }
-
-    async fn put_publication_if_config_revision(
-        &self,
-        publication: &StoredPublication,
-        expected_generation: u64,
-    ) -> Result<ConfigWrite, ConfigStoreError> {
-        self.put_publication_if_config_revision_scoped(
-            &ScopeId::from(DEFAULT_SCOPE),
-            publication,
-            expected_generation,
-        )
-        .await
     }
 
     async fn get_publication(

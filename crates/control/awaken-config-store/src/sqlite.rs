@@ -12,7 +12,7 @@ use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigStoreError,
     ConfigWrite, DEFAULT_SCOPE, ManagementAuditAdmission, ManagementAuditEntry,
     ManagementAuditRecord, ManagementEffect, ManagementEffectReceipt, PublicationRevisionDecision,
-    ScopedConfigRegistry, StoredPublication, publication_revision_decision,
+    PublicationWrite, ScopedConfigRegistry, StoredPublication, publication_revision_decision,
 };
 
 /// The config component's table namespace (ADR-0029/ADR-0031). Built in.
@@ -95,10 +95,50 @@ impl SqliteConfigStore {
             .await
             .map_err(|err| ConfigStoreError(err.to_string()))?
     }
+
+    /// Inject immutable history for codec, recovery, and quarantine tests.
+    /// Production publication has only the source-fenced trait method.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn seed_publication_history_for_test(
+        &self,
+        scope: &ScopeId,
+        publication: &StoredPublication,
+    ) -> Result<(), ConfigStoreError> {
+        let fingerprint = publication.fingerprint.clone();
+        let agent_id = publication.agent_id.clone();
+        let state = publication.state.as_str().to_string();
+        let record = serde_json::to_string(publication).map_err(reject)?;
+        let scope = scope.0.clone();
+        self.with_conn(move |conn, p| {
+            insert_publication(conn, p, &fingerprint, &agent_id, &state, &record, &scope)
+        })
+        .await
+    }
 }
 
 fn reject(err: impl std::fmt::Display) -> ConfigStoreError {
     ConfigStoreError(err.to_string())
+}
+
+fn insert_publication(
+    conn: &Connection,
+    p: &str,
+    fingerprint: &str,
+    agent_id: &str,
+    state: &str,
+    record: &str,
+    scope: &str,
+) -> Result<(), ConfigStoreError> {
+    conn.execute(
+        &format!(
+            "INSERT INTO {p}_publication (fingerprint, agent_id, state, record, scope_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5) \
+             ON CONFLICT(scope_id, fingerprint) DO NOTHING"
+        ),
+        params![fingerprint, agent_id, state, record, scope],
+    )
+    .map_err(reject)?;
+    Ok(())
 }
 
 /// The single CAS write seam for plain and audited writes. The caller owns
@@ -695,37 +735,11 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         .await
     }
 
-    async fn put_publication_scoped(
+    async fn put_publication_if_source_current_scoped(
         &self,
         scope: &ScopeId,
         publication: &StoredPublication,
-    ) -> Result<(), ConfigStoreError> {
-        let fingerprint = publication.fingerprint.clone();
-        let agent_id = publication.agent_id.clone();
-        let state = publication.state.as_str().to_string();
-        let record = serde_json::to_string(publication).map_err(reject)?;
-        let scope = scope.0.clone();
-        self.with_conn(move |conn, p| {
-            conn.execute(
-                &format!(
-                    "INSERT INTO {p}_publication (fingerprint, agent_id, state, record, scope_id) \
-                     VALUES (?1, ?2, ?3, ?4, ?5) \
-                     ON CONFLICT(scope_id, fingerprint) DO NOTHING"
-                ),
-                params![fingerprint, agent_id, state, record, scope],
-            )
-            .map_err(reject)?;
-            Ok(())
-        })
-        .await
-    }
-
-    async fn put_publication_if_config_revision_scoped(
-        &self,
-        scope: &ScopeId,
-        publication: &StoredPublication,
-        expected_generation: u64,
-    ) -> Result<ConfigWrite, ConfigStoreError> {
+    ) -> Result<PublicationWrite, ConfigStoreError> {
         let fingerprint = publication.fingerprint.clone();
         let agent_id = publication.agent_id.clone();
         let state = publication.state.as_str().to_string();
@@ -744,9 +758,9 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 .optional()
                 .map_err(reject)?;
             if let crate::PublicationSourceAdmission::Conflict { current_revision } =
-                crate::PublicationSourceAdmission::new(current_revision, expected_generation)
+                crate::PublicationSourceAdmission::new(current_revision, source_revision)
             {
-                return Ok(ConfigWrite::Conflict { current_revision });
+                return Ok(PublicationWrite::Conflict { current_revision });
             }
             let existing = {
                 let mut statement = tx
@@ -780,21 +794,11 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 }),
             );
             if decision == PublicationRevisionDecision::Conflict {
-                return Ok(ConfigWrite::Conflict { current_revision });
+                return Ok(PublicationWrite::Conflict { current_revision });
             }
-            tx.execute(
-                &format!(
-                    "INSERT INTO {p}_publication (fingerprint, agent_id, state, record, scope_id) \
-                     VALUES (?1, ?2, ?3, ?4, ?5) \
-                     ON CONFLICT(scope_id, fingerprint) DO NOTHING"
-                ),
-                params![fingerprint, agent_id, state, record, scope],
-            )
-            .map_err(reject)?;
+            insert_publication(&tx, p, &fingerprint, &agent_id, &state, &record, &scope)?;
             tx.commit().map_err(reject)?;
-            Ok(ConfigWrite::Applied {
-                revision: expected_generation,
-            })
+            Ok(PublicationWrite::Committed { source_revision })
         })
         .await
     }
@@ -895,25 +899,12 @@ impl ConfigRegistry for SqliteConfigStore {
             .await
     }
 
-    async fn put_publication(
+    async fn put_publication_if_source_current(
         &self,
         publication: &StoredPublication,
-    ) -> Result<(), ConfigStoreError> {
-        self.put_publication_scoped(&ScopeId::from(DEFAULT_SCOPE), publication)
+    ) -> Result<PublicationWrite, ConfigStoreError> {
+        self.put_publication_if_source_current_scoped(&ScopeId::from(DEFAULT_SCOPE), publication)
             .await
-    }
-
-    async fn put_publication_if_config_revision(
-        &self,
-        publication: &StoredPublication,
-        expected_generation: u64,
-    ) -> Result<ConfigWrite, ConfigStoreError> {
-        self.put_publication_if_config_revision_scoped(
-            &ScopeId::from(DEFAULT_SCOPE),
-            publication,
-            expected_generation,
-        )
-        .await
     }
 
     async fn get_publication(

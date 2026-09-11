@@ -46,6 +46,12 @@ and durable `StoredPublication` history. After persistence, Control invokes one
 `ExecutableAgentSnapshot` and its Workspace, Agent, source-revision, and
 fingerprint identity.
 
+The sole production publication write accepts that `StoredPublication` and
+derives its transactional source fence from the artifact's own source revision.
+Its exact durable receipt is rechecked before the registrar call; an absent,
+stale, future, conflicting, or mismatched result cannot reach Coordinator. No
+unfenced publication-write port or independent expected-revision input remains.
+
 The Coordinator stores a rebuildable `ExecutableAgentCatalog` projection. A
 registration is idempotent by `(workspace_id, agent_id, source_revision)`;
 repeating the same fingerprint returns the existing result, while a different
