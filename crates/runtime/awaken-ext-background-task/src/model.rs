@@ -945,6 +945,64 @@ fn background_execution_admission_is_exact_fenced_live_and_phase_monotone() {
 
 #[cfg(kani)]
 #[kani::proof]
+fn stale_fenced_heartbeat_and_finish_have_no_mutation_plan() {
+    // Cause/effect decision table over the sole production mutation plan:
+    // C1 all five lifecycle phases; C2 owner mismatch or epoch mismatch; C3
+    // heartbeat or finish; C4 all u64 epochs, revisions, clock values and lease
+    // values plus both finish outcomes. R1 either mismatch returns StaleFence;
+    // R2 rejection precedes every command-specific validation, so no successor
+    // plan exists for either production caller to apply. Fixed distinct worker
+    // strings exercise Rust's actual String equality; heap allocation and the
+    // later durable Thread commit are outside this scalar safety proof.
+    let phase_raw: u8 = kani::any();
+    kani::assume(phase_raw < 5);
+    let phase = match phase_raw {
+        0 => TaskPhase::Requested,
+        1 => TaskPhase::Running,
+        2 => TaskPhase::Waiting,
+        3 => TaskPhase::Cancelling,
+        _ => TaskPhase::Ended,
+    };
+    let epoch: u64 = kani::any();
+    let attempt = TaskAttempt {
+        worker_id: "current-worker".into(),
+        epoch,
+        lease_expires_at_ms: kani::any(),
+        policy: TaskExecutionPolicy {
+            recovery: ToolRecoveryPolicy::replay_safe(),
+            concurrency: ToolConcurrency::Parallel,
+        },
+    };
+    let request = if kani::any() {
+        FencedMutationRequest::Heartbeat {
+            now_ms: kani::any(),
+            lease_ms: kani::any(),
+        }
+    } else {
+        FencedMutationRequest::Finish {
+            indeterminate: kani::any(),
+        }
+    };
+    let revision: u64 = kani::any();
+    let owner_mismatch = TaskFence {
+        worker_id: "stale-worker".into(),
+        epoch,
+    };
+    let epoch_mismatch = TaskFence {
+        worker_id: "current-worker".into(),
+        epoch: epoch ^ 1,
+    };
+
+    for stale in [&owner_mismatch, &epoch_mismatch] {
+        assert_eq!(
+            fenced_mutation_plan(phase, Some(&attempt), stale, revision, request),
+            Err(BackgroundTaskError::StaleFence)
+        );
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
 fn cancellation_is_monotone_and_terminal_states_are_absorbing() {
     // C1 every phase; C2 known/unknown completion. Cancel is a stutter for
     // Cancelling/Ended, marks live tasks, ends Requested. Only known matching
