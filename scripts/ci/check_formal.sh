@@ -833,6 +833,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-ext-background-task \
     --harness background_execution_admission_is_exact_fenced_live_and_phase_monotone \
     --harness stale_fenced_heartbeat_and_finish_have_no_mutation_plan \
+    --harness process_completion_fold_retries_exact_candidate_and_stale_is_inert \
     --harness cancellation_is_monotone_and_terminal_states_are_absorbing \
     --harness never_replay_recovery_requires_a_durable_remote_continuation \
     --harness expired_reclaim_plan_advances_epoch_or_terminates
