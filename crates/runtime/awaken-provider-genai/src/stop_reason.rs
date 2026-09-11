@@ -1,5 +1,5 @@
 use awaken_runtime_contract::llm::{Error, Result, StopReason};
-use awaken_runtime_contract::model_operation::ModelExecutionEvidence;
+use awaken_runtime_contract::model_operation::{ModelExecutionEvidence, TerminalReceipt};
 
 // Provider-specific wire values are classified before entering this finite
 // kernel. Keep its neutral projection free of payload ownership and allocation.
@@ -40,10 +40,20 @@ pub(crate) const fn project_stop_class(class: ProviderStopClass) -> Option<StopR
 /// Interpret the terminal status fields of the OpenAI Responses dialect before
 /// any returned output may enter Runtime. The adapter's raw string vocabulary
 /// feeds the same finite stop-class projection as the SDK-backed dialect.
+///
+/// The status token is handed to [`TerminalReceipt::from_wire_status`] FIRST,
+/// so an absent or unlisted status cannot reach a terminal class at all: it
+/// leaves with an unannotated error whose evidence stays `Unknown`, and the
+/// minted receipt is the only thing the rest of this dialect may attach.
 pub(crate) fn map_responses_terminal_stop_reason(
     status: Option<&str>,
     incomplete_reason: Option<&str>,
-) -> Result<StopReason> {
+) -> Result<(StopReason, TerminalReceipt)> {
+    let receipt = TerminalReceipt::from_wire_status(status).map_err(|unproven| {
+        Error::Provider(format!(
+            "Responses operation has no confirmed terminal status: {unproven}"
+        ))
+    })?;
     let class = match status {
         Some("completed") => ProviderStopClass::Completed,
         Some("incomplete") => match incomplete_reason {
@@ -55,21 +65,27 @@ pub(crate) fn map_responses_terminal_stop_reason(
             return Err(Error::Provider(format!(
                 "Responses operation ended with status {status:?}"
             ))
-            .with_execution_evidence(ModelExecutionEvidence::Terminated));
+            .with_execution_evidence(ModelExecutionEvidence::Terminated(receipt)));
         }
+        // Unreachable today: minting already admitted exactly the tokens this
+        // match classifies. It stays an explicit closed refusal so that adding
+        // a token to the contract's table can only ever fail closed here,
+        // never fall through into someone else's terminal class.
         _ => {
             return Err(Error::Provider(
                 "Responses operation has no confirmed terminal status".into(),
             ));
         }
     };
-    project_stop_class(class).ok_or_else(|| {
-        // A complete terminal response proves the operation ended, but an
-        // unclassified reason cannot be guessed into Runtime's compatibility
-        // convention that `None` means a natural end.
-        Error::Provider("Responses operation returned an unclassified incomplete reason".into())
-            .with_execution_evidence(ModelExecutionEvidence::Terminated)
-    })
+    project_stop_class(class)
+        .map(|stop| (stop, receipt))
+        .ok_or_else(|| {
+            // The receipt proves the operation ended, but an unclassified
+            // reason cannot be guessed into Runtime's compatibility convention
+            // that `None` means a natural end.
+            Error::Provider("Responses operation returned an unclassified incomplete reason".into())
+                .with_execution_evidence(ModelExecutionEvidence::Terminated(receipt))
+        })
 }
 
 /// Map the SDK's stop reason onto the neutral one. A provider-specific reason

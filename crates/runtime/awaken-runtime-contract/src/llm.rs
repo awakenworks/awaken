@@ -108,6 +108,23 @@ pub struct ChatResponse {
     pub stop_reason: Option<StopReason>,
 }
 
+impl ChatResponse {
+    /// The terminal receipt a returned response carries.
+    ///
+    /// [`LlmExecutor`] admits `Ok` only once an adapter has decoded the
+    /// provider's complete response for that invocation; an interrupted
+    /// exchange, a local timeout, an abandoned future or a transport error
+    /// must be an `Err` with no evidence. Runtime reads the receipt here
+    /// instead of each call site deciding for itself what a successful return
+    /// proves, so the port's rule is stated exactly once.
+    #[must_use]
+    pub const fn terminal_receipt(&self) -> crate::model_operation::TerminalReceipt {
+        crate::model_operation::TerminalReceipt::from_response_envelope(
+            crate::model_operation::ResponseEnvelope::CompleteBody,
+        )
+    }
+}
+
 /// Provider-neutral reason a response stopped. `MaxTokens` is the one the loop
 /// acts on: it marks a truncated response that may need continuation recovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -828,7 +845,14 @@ mod error_classification_tests {
         );
         assert!(
             !invalid
-                .with_execution_evidence(crate::model_operation::ModelExecutionEvidence::Terminated)
+                .with_execution_evidence(
+                    crate::model_operation::ModelExecutionEvidence::Terminated(
+                        crate::model_operation::TerminalReceipt::from_wire_status(Some(
+                            "completed"
+                        ))
+                        .unwrap()
+                    )
+                )
                 .retry_preserves_attempt_output(),
             "O3/E3"
         );

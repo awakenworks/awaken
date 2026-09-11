@@ -1048,7 +1048,7 @@ impl LlmExecutor for FlakyStreamLlm {
             return Err(
                 LlmError::Timeout("provider-confirmed terminal deadline".to_string())
                     .with_execution_evidence(
-                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated,
+                    awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated(awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some("completed")).unwrap()),
                 ),
             );
         }
@@ -1091,7 +1091,12 @@ impl LlmExecutor for InvalidResponseThenToolLlm {
                 "model serialized a tool call as assistant text".into(),
             )
             .with_execution_evidence(
-                awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated,
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated(
+                    awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(
+                        Some("completed"),
+                    )
+                    .unwrap(),
+                ),
             ));
         }
         Ok(ChatResponse {

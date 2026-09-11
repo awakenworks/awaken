@@ -187,7 +187,12 @@ async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
     for evidence in [
         None,
         Some(ModelExecutionEvidence::Unknown),
-        Some(ModelExecutionEvidence::Terminated),
+        Some(ModelExecutionEvidence::Terminated(
+            awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
+                "completed",
+            ))
+            .unwrap(),
+        )),
     ] {
         let (runtime, calls) = harness::counting_text_runtime();
         let store = Arc::new(MemoryDispatchStore::new());
@@ -237,7 +242,14 @@ async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
             .iter()
             .filter(|m| m.role == awaken_agent_contract::agent::message::Role::Assistant)
             .collect();
-        if evidence == Some(ModelExecutionEvidence::Terminated) {
+        if evidence
+            == Some(ModelExecutionEvidence::Terminated(
+                awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
+                    "completed",
+                ))
+                .unwrap(),
+            ))
+        {
             assert_eq!(
                 processed,
                 Some((

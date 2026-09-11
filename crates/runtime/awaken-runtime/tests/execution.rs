@@ -60,7 +60,12 @@ async fn interrupted_model_checkpoint() -> (
 async fn commit_terminated_model(durable: &MemoryCommitCoordinator) {
     commit_model_evidence(
         durable,
-        awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated,
+        awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated(
+            awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
+                "completed",
+            ))
+            .unwrap(),
+        ),
     )
     .await;
 }
@@ -366,13 +371,28 @@ async fn restored_model_history_cannot_hide_an_older_unknown_invocation() {
         let durable = Arc::new(MemoryCommitCoordinator::new());
         let mut older = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
         if older_stopped {
-            older.execution = ModelExecutionEvidence::Terminated;
+            older.execution = ModelExecutionEvidence::Terminated(
+                awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
+                    "completed",
+                ))
+                .unwrap(),
+            );
         }
         let mut newer = ModelOperation::next(Some(&older), older.binding.clone()).unwrap();
-        newer.execution = ModelExecutionEvidence::Terminated;
+        newer.execution = ModelExecutionEvidence::Terminated(
+            awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
+                "completed",
+            ))
+            .unwrap(),
+        );
         let mut operations = vec![older.clone(), newer];
         if late_receipt {
-            older.execution = ModelExecutionEvidence::Terminated;
+            older.execution = ModelExecutionEvidence::Terminated(
+                awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
+                    "completed",
+                ))
+                .unwrap(),
+            );
             operations.push(older);
         }
         commit_model_operations(&durable, operations).await;
@@ -415,7 +435,12 @@ async fn restored_model_history_rejects_damage_hidden_by_a_valid_latest_value() 
         for damage in 0..5 {
             let durable = Arc::new(MemoryCommitCoordinator::new());
             let mut first = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
-            first.execution = ModelExecutionEvidence::Terminated;
+            first.execution = ModelExecutionEvidence::Terminated(
+                awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
+                    "completed",
+                ))
+                .unwrap(),
+            );
             let mut broken = ActiveModelOperation::write(&Some(first.clone()));
             match damage {
                 0 => broken.action = Action::Set(serde_json::json!("malformed")),
@@ -673,7 +698,7 @@ async fn provider_operation_context_follows_committed_invocations_across_retry_a
             if first {
                 Err(
                     awaken_runtime_contract::llm::Error::Provider("before send".into())
-                        .with_execution_evidence(ModelExecutionEvidence::NotDispatched),
+                        .with_execution_evidence(ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection))),
                 )
             } else {
                 TextLlm("done").infer(request).await
@@ -1072,7 +1097,7 @@ impl LlmExecutor for PrimaryFailureThenTextLlm {
                 "primary rejected before dispatch".into(),
             )
             .with_execution_evidence(
-                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched,
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::NotDispatched(awaken_runtime_contract::model_operation::NoDispatchProof::before_dispatch(awaken_runtime_contract::model_operation::PreDispatchStage::RequestProjection)),
             ));
         }
         Ok(ChatResponse {
@@ -1096,7 +1121,12 @@ impl LlmExecutor for RetryOnceLlm {
                 "provider-confirmed terminal deadline".into(),
             )
             .with_execution_evidence(
-                awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated,
+                awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated(
+                    awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(
+                        Some("completed"),
+                    )
+                    .unwrap(),
+                ),
             ));
         }
         Ok(ChatResponse {

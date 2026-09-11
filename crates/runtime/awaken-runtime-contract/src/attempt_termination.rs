@@ -184,7 +184,10 @@ fn native_attempt_termination_requires_every_closed_surface_fact() {
 mod tests {
     use super::*;
     use crate::llm::ToolCall;
-    use crate::model_operation::{ModelExecutionEvidence, ModelOperation, ModelOperationPhase};
+    use crate::model_operation::{
+        ModelExecutionEvidence, ModelOperation, ModelOperationPhase, NoDispatchProof,
+        PreDispatchStage, TerminalReceipt,
+    };
     use crate::resolved::ModelBinding;
     use crate::tool::ToolRecoveryPolicy;
     use crate::tool_batch::ToolBatch;
@@ -253,7 +256,9 @@ mod tests {
         assert_eq!(
             classify_native_attempt_termination(&snapshot(vec![
                 coverage.clone(),
-                model(ModelExecutionEvidence::Terminated),
+                model(ModelExecutionEvidence::Terminated(
+                    TerminalReceipt::from_wire_status(Some("completed")).unwrap()
+                )),
             ]))
             .unwrap(),
             NativeAttemptTermination::AllExecutionStopped,
@@ -261,7 +266,9 @@ mod tests {
         );
         assert_eq!(
             classify_native_attempt_termination(&snapshot(vec![model(
-                ModelExecutionEvidence::Terminated,
+                ModelExecutionEvidence::Terminated(
+                    TerminalReceipt::from_wire_status(Some("completed")).unwrap()
+                ),
             )]))
             .unwrap(),
             NativeAttemptTermination::Unknown,
@@ -278,7 +285,9 @@ mod tests {
         );
         assert_eq!(
             classify_native_attempt_termination(&snapshot(vec![
-                model(ModelExecutionEvidence::Terminated),
+                model(ModelExecutionEvidence::Terminated(
+                    TerminalReceipt::from_wire_status(Some("completed")).unwrap()
+                )),
                 coverage.clone(),
             ]))
             .unwrap(),
@@ -310,7 +319,9 @@ mod tests {
         assert_eq!(
             classify_native_attempt_termination(&snapshot(vec![
                 coverage.clone(),
-                model(ModelExecutionEvidence::NotDispatched),
+                model(ModelExecutionEvidence::NotDispatched(
+                    NoDispatchProof::before_dispatch(PreDispatchStage::RequestProjection)
+                )),
             ]))
             .unwrap(),
             NativeAttemptTermination::AllExecutionStopped,

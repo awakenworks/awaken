@@ -388,7 +388,7 @@ async fn independent_stop_consumes_only_original_closed_binding_and_preserves_di
                             ordinal: NonZeroU64::MIN,
                             binding: ModelBinding::new("test", "model", "native"),
                             phase: ModelOperationPhase::Returned,
-                            execution: ModelExecutionEvidence::Terminated,
+                            execution: ModelExecutionEvidence::Terminated(awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some("completed")).unwrap()),
                         })),
                     ],
                     Vec::new(),

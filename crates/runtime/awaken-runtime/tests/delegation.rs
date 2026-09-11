@@ -1490,7 +1490,12 @@ async fn unknown_parent_model_evidence_blocks_child_resume_before_external_effec
         let prior = ModelOperation::next(None, ModelBinding::new("p", "m", "b")).unwrap();
         let mut later = ModelOperation::next(Some(&prior), prior.binding.clone()).unwrap();
         later.execution =
-            awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated;
+            awaken_runtime_contract::model_operation::ModelExecutionEvidence::Terminated(
+                awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
+                    "completed",
+                ))
+                .unwrap(),
+            );
         let mut commands = vec![ActiveModelOperation::write(&Some(prior))];
         if shadowed {
             commands.push(ActiveModelOperation::write(&Some(later)));

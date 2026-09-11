@@ -8,7 +8,9 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_provider_genai::{AdapterKind, GenaiExecutor};
 use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, DeltaSink, LlmExecutor, StopReason};
-use awaken_runtime_contract::model_operation::ModelExecutionEvidence;
+use awaken_runtime_contract::model_operation::{
+    ModelExecutionEvidence, ResponseEnvelope, TerminalReceipt,
+};
 use awaken_runtime_contract::resolved::ModelBinding;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -556,9 +558,14 @@ async fn openai_empty_terminal_response_fails_closed() {
         .expect_err("O3/E1 a terminal empty turn fails closed");
     assert_eq!(error.code(), "provider_error", "O3/E2");
     assert!(error.is_retryable(), "O3/E2");
-    // O3 also proves physical completion independently of response quality.
+    // O3 also proves physical completion independently of response quality,
+    // and the recorded wire fact names WHY: the streaming protocol's own end
+    // frame arrived. The stall/timeout rows above stay Unknown precisely
+    // because no such frame ever reached this adapter.
     assert_eq!(
         error.execution_evidence(),
-        ModelExecutionEvidence::Terminated
+        ModelExecutionEvidence::Terminated(TerminalReceipt::from_response_envelope(
+            ResponseEnvelope::StreamEndFrame
+        ))
     );
 }

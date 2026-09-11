@@ -8,7 +8,9 @@ use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Error, LlmExecutor, TokenUsage,
 };
-use awaken_runtime_contract::model_operation::ModelExecutionEvidence;
+use awaken_runtime_contract::model_operation::{
+    ModelExecutionEvidence, NoDispatchProof, PreDispatchStage,
+};
 use awaken_runtime_contract::resolved::ProviderServerTool;
 #[cfg(test)]
 use awaken_runtime_contract::resolved::{
@@ -57,7 +59,10 @@ impl OpenAiResponsesExecutor {
 
     async fn execute(&self, request: &ChatRequest) -> Result<ResponsesResponse, Error> {
         let body = request_body_for_provider(request, &self.provider_kind).map_err(|error| {
-            error.with_execution_evidence(ModelExecutionEvidence::NotDispatched)
+            // Nothing was encoded, so nothing reached the transport.
+            error.with_execution_evidence(ModelExecutionEvidence::NotDispatched(
+                NoDispatchProof::before_dispatch(PreDispatchStage::RequestProjection),
+            ))
         })?;
         let response = self
             .client
@@ -547,7 +552,10 @@ fn response_from_value(value: Value) -> Result<ChatResponse, Error> {
 }
 
 fn response_from_wire(wire: ResponsesResponse) -> Result<ChatResponse, Error> {
-    let terminal_stop_reason = map_responses_terminal_stop_reason(
+    // One receipt per decoded body, minted from the wire status before any of
+    // this body's output is read. Every terminal diagnosis below reuses it
+    // instead of re-asserting termination from a local parse failure.
+    let (terminal_stop_reason, receipt) = map_responses_terminal_stop_reason(
         wire.status.as_deref(),
         wire.incomplete_details
             .as_ref()
@@ -584,7 +592,7 @@ fn response_from_wire(wire: ResponsesResponse) -> Result<ChatResponse, Error> {
             } => {
                 let arguments = serde_json::from_str(&arguments).map_err(|error| {
                     Error::Provider(format!("function_call arguments are invalid JSON: {error}"))
-                        .with_execution_evidence(ModelExecutionEvidence::Terminated)
+                        .with_execution_evidence(ModelExecutionEvidence::Terminated(receipt))
                 })?;
                 blocks.push(ContentBlock::tool_use(call_id, name, arguments));
             }
@@ -621,6 +629,18 @@ mod tests {
     use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Every terminal diagnosis in this dialect rests on the status token the
+    /// provider put on the wire, so the expected evidence is one minted
+    /// receipt whose recorded wire fact is `Status`.
+    fn terminated_by_status() -> ModelExecutionEvidence {
+        ModelExecutionEvidence::Terminated(
+            awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some(
+                "failed",
+            ))
+            .unwrap(),
+        )
+    }
 
     fn request(messages: Vec<ChatMessage>) -> ChatRequest {
         ChatRequest {
@@ -997,7 +1017,7 @@ mod tests {
                 assert_eq!(error.code(), "provider_error", "R1-R6/E1");
                 assert_eq!(
                     error.execution_evidence(),
-                    ModelExecutionEvidence::Terminated,
+                    terminated_by_status(),
                     "R1-R6/E1"
                 );
             }
@@ -1026,7 +1046,7 @@ mod tests {
         assert_eq!(malformed_arguments.code(), "provider_error");
         assert_eq!(
             malformed_arguments.execution_evidence(),
-            ModelExecutionEvidence::Terminated
+            terminated_by_status()
         );
     }
 
@@ -1053,7 +1073,7 @@ mod tests {
                 assert_eq!(
                     error.execution_evidence(),
                     if matches!(status, Some("failed" | "cancelled")) {
-                        ModelExecutionEvidence::Terminated
+                        terminated_by_status()
                     } else {
                         ModelExecutionEvidence::Unknown
                     }
