@@ -6,6 +6,8 @@
 //! HTTP response reaches the Worker; Control B must return the durable duplicate
 //! receipt, serve authoritative recovery, and settle the same claim.
 
+mod postgres_support;
+
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -147,41 +149,39 @@ fn configured_worker() -> (WorkerIdentity, Arc<dyn WorkerDirectory>) {
     (identity, Arc::new(ConfiguredWorkerDirectory(worker)))
 }
 
-fn database_url() -> String {
-    std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-    })
-}
-
 fn database_url_in_schema(base: &str, schema: &str) -> String {
     let separator = if base.contains('?') { '&' } else { '?' };
     format!("{base}{separator}options=-c%20search_path%3D{schema}")
 }
 
-async fn schema_pool(schema: &str) -> Option<PgPool> {
-    let admin = PgPool::connect(&database_url()).await.ok()?;
-    let _ = admin
+async fn schema_pool(schema: &str) -> Option<(PgPool, String)> {
+    let url = postgres_support::database_url()?;
+    let admin = postgres_support::connect(PgPool::connect(&url)).await;
+    admin
         .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
-        .await;
+        .await
+        .expect("drop owned active-active schema");
     admin
         .execute(format!("CREATE SCHEMA {schema}").as_str())
         .await
         .expect("create active-active schema");
     admin.close().await;
     let schema = schema.to_string();
-    PgPoolOptions::new()
-        .after_connect(move |connection, _metadata| {
-            let schema = schema.clone();
-            Box::pin(async move {
-                connection
-                    .execute(format!("SET search_path = {schema}").as_str())
-                    .await?;
-                Ok(())
+    let pool = postgres_support::connect(
+        PgPoolOptions::new()
+            .after_connect(move |connection, _metadata| {
+                let schema = schema.clone();
+                Box::pin(async move {
+                    connection
+                        .execute(format!("SET search_path = {schema}").as_str())
+                        .await?;
+                    Ok(())
+                })
             })
-        })
-        .connect(&database_url())
-        .await
-        .ok()
+            .connect(&url),
+    )
+    .await;
+    Some((pool, url))
 }
 
 async fn exit_after_committed_response(
@@ -362,11 +362,10 @@ fn activation(run_id: &RunId, thread_id: &ThreadId) -> RunActivation {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_control_processes_retry_recover_and_settle_without_sticky_routing() {
     let schema = format!("t_worker_active_active_{}", std::process::id());
-    let Some(pool) = schema_pool(&schema).await else {
-        eprintln!("skip: no PostgreSQL reachable");
+    let Some((pool, url)) = schema_pool(&schema).await else {
         return;
     };
-    let scoped_url = database_url_in_schema(&database_url(), &schema);
+    let scoped_url = database_url_in_schema(&url, &schema);
     let port_a = reserve_port().await;
     let port_b = reserve_port().await;
     let mut control_a = ChildGuard::spawn(port_a, &scoped_url, true);
@@ -483,4 +482,11 @@ async fn two_control_processes_retry_recover_and_settle_without_sticky_routing()
         .await
         .expect("count completions");
     assert_eq!((receipts, messages, completions), (1, 1, 1));
+}
+
+#[test]
+fn postgres_configuration_contract() {
+    postgres_support::assert_configuration_contract(&[
+        "two_control_processes_retry_recover_and_settle_without_sticky_routing",
+    ]);
 }

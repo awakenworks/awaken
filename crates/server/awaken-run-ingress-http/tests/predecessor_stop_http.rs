@@ -1,5 +1,7 @@
 //! Real HTTP + canonical Registry/Dispatch. Provider outcomes are deterministic
 //! fixtures here; this suite does not claim Kubernetes or remote termination.
+mod postgres_support;
+
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::run::{Record as RunRecord, RunState};
@@ -432,9 +434,9 @@ async fn blocked_http_closes_exact_expired_worker_but_local_exit_never_clears_re
         Arc::new(MemoryWorkerDirectory::new()) as Arc<dyn WorkerDirectory>,
         Arc::new(SqliteWorkerDirectory::open_in_memory().unwrap()),
     ];
-    if let Ok(url) = std::env::var("AWAKEN_TEST_POSTGRES_URL") {
+    if let Some(url) = postgres_support::database_url() {
         directories.push(Arc::new(
-            PostgresWorkerDirectory::connect(&url, 5).await.unwrap(),
+            postgres_support::connect(PostgresWorkerDirectory::connect(&url, 5)).await,
         ));
         eprintln!("predecessor stop matrix: real PostgreSQL Registry enabled");
     }
@@ -673,9 +675,9 @@ async fn dispatch_stores() -> Vec<Arc<dyn DispatchQueue>> {
         Arc::new(MemoryDispatchStore::new()),
         Arc::new(SqliteDispatchStore::open_in_memory().unwrap()),
     ];
-    if let Ok(url) = std::env::var("AWAKEN_TEST_POSTGRES_URL") {
+    if let Some(url) = postgres_support::database_url() {
         stores.push(Arc::new(
-            PostgresDispatchStore::connect(&url, 5).await.unwrap(),
+            postgres_support::connect(PostgresDispatchStore::connect(&url, 5)).await,
         ));
         eprintln!("complete stop matrix: real PostgreSQL Dispatch enabled");
     }
@@ -983,4 +985,12 @@ async fn worker_json_cannot_supply_independent_termination_evidence() {
     assert!(probe.calls.lock().unwrap().is_empty());
     assert!(f.stop.calls.lock().unwrap().is_empty());
     f.assert_occupied().await;
+}
+
+#[test]
+fn postgres_configuration_contract() {
+    postgres_support::assert_configuration_contract(&[
+        "blocked_http_closes_exact_expired_worker_but_local_exit_never_clears_remote_obligations",
+        "complete_stop_uses_exact_retirement_and_requires_fresh_successor_admission",
+    ]);
 }
