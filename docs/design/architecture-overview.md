@@ -438,10 +438,13 @@ read MAX(command_sequence)
 
 Database identity gaps are valid; failing to reach the observed high-water is
 not. `awaken-durable-projection` owns this cursor and validation decision once.
-For a lower complete-replay target it lowers the private cursor before the swap
-and restores the previous cursor on an ordinary install error; forward refresh
-keeps the existing swap-then-advance order. Thus neither direction exposes a
-cursor ahead of the installed projection.
+Its loader turns the observed high-water into the only constructible
+`ProjectionTarget`; both domain installers consume that target instead of a
+caller-supplied scalar. For a lower complete-replay target it lowers the private
+cursor before the swap and restores the previous cursor on an ordinary install
+error; forward refresh keeps the existing swap-then-advance order. Thus neither
+direction exposes a cursor ahead of the installed projection, and monotonic
+authority cannot be led by an installed target.
 Agent and Environment adapters retain separate command codecs and canonical
 catalog state machines. Managed create/cold recovery, Session profile
 creation/recovery/realization, Deployment commands/scheduling, and the existing

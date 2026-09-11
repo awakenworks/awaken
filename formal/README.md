@@ -476,13 +476,14 @@ downstream idempotency; they are not claimed exactly once by these proofs.
   mutation or dispatch, and Deployment scheduling performs no candidate mutation
   or launch. These tests qualify representative entrypoint wiring; they do not
   establish universal Rust refinement for every async call site.
-  The production `ProjectionCursor::install_then_reconcile` kernel also covers
-  the adapter-only authority-rollback case that the monotonic TLA+ authority does
-  not model: it lowers the private cursor before installing an older complete
-  replay and restores the previous cursor on an ordinary install error. Kani
-  exhausts all prior/target `u64` pairs and both installer outcomes; the native
-  decision table cross-checks lower, equal, and higher targets.
-  Separate Agent and Environment registrar tests capture a stable high-water,
+  The shared loader issues an opaque `ProjectionTarget` only after validating a
+  batch through the durable high-water. Both production registrars pass it to
+  `ProjectionCursor::install_then_reconcile`, so a free scalar cannot replace
+  the captured authority coordinate. The same kernel covers monotonic
+  installed-at-most-authority and adapter-only authority rollback: it lowers the
+  private cursor before an older complete replay and restores the prior cursor
+  on install error. Kani exhausts all prior/target `u64` pairs and both installer
+  outcomes; the native table cross-checks lower, equal, and higher targets. Separate Agent and Environment registrar tests capture a stable high-water,
   commit a higher command before the bounded range load, and require the first
   refresh to install only the captured prefix while the second refresh installs
   the later command. This binds the model's installed-at-most-authority invariant
@@ -1095,15 +1096,14 @@ failure that cannot advance the published fence.
 
 `ExecutableProjectionRefresh` proves per-domain serialization, clone-install and
 cursor ordering for a monotonic authority, fail-closed middleware admission, and
-Agent-before-Environment refresh for concurrent requests. The production cursor
-kernel separately proves ordering for a lower complete-replay target, assuming
-the installer returns success only after publishing the exact target and an
-ordinary error before any publication. It assumes the append-only command stores
-return a stable bounded range through the captured high-water and that the
-database engine honors the query and transaction contracts. The two domain
-high-water marks are captured independently, so the proof intentionally does
-not claim a transactionally atomic cross-domain snapshot or eventual command
-delivery.
+Agent-before-Environment refresh for concurrent requests. The allocation-free
+cursor kernel directly proves that a monotonic installed projection does not
+lead its opaque captured authority target, plus cursor ordering for a lower
+complete-replay target. It assumes success follows exact-target publication,
+ordinary error precedes publication, command stores return a stable bounded
+range through the captured high-water, and the database honors query and
+transaction contracts. Independently captured domain high-water marks do not
+establish an atomic cross-domain snapshot or eventual command delivery.
 
 The `host-executor/v1` capability pins the declared model identity and fails
 closed on a replacement that does not install that identity. Proving that two

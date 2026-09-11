@@ -208,7 +208,7 @@ impl DurableRegistrar {
         catalog: Arc<ExecutableEnvironmentCatalog>,
         log: Arc<dyn CatalogCommandLog>,
     ) -> Result<Self, ExecutableEnvironmentRegistrationError> {
-        let (high_water, commands) = load_full(log.as_ref()).await.map_err(projection_load)?;
+        let (target, commands) = load_full(log.as_ref()).await.map_err(projection_load)?;
         let local = LocalExecutableEnvironmentRegistrar::new(catalog.clone());
         replay_commands(&local, commands).await?;
         Ok(Self {
@@ -216,7 +216,7 @@ impl DurableRegistrar {
             local,
             log,
             mutation: Mutex::new(()),
-            cursor: ProjectionCursor::at(high_water),
+            cursor: ProjectionCursor::at(target.through()),
         })
     }
 
@@ -247,7 +247,7 @@ impl DurableRegistrar {
             .map_err(projection_load)?
         {
             ProjectionBatch::Current => Ok(()),
-            ProjectionBatch::Incremental { through, commands } => {
+            ProjectionBatch::Incremental { target, commands } => {
                 let refreshed = clone_catalog(&self.catalog)?;
                 replay_commands(
                     &LocalExecutableEnvironmentRegistrar::new(refreshed.clone()),
@@ -255,9 +255,9 @@ impl DurableRegistrar {
                 )
                 .await?;
                 self.cursor
-                    .install_then_reconcile(through, || install_catalog(&self.catalog, &refreshed))
+                    .install_then_reconcile(target, || install_catalog(&self.catalog, &refreshed))
             }
-            ProjectionBatch::FullReplay { through, commands } => {
+            ProjectionBatch::FullReplay { target, commands } => {
                 let refreshed = Arc::new(ExecutableEnvironmentCatalog::new());
                 replay_commands(
                     &LocalExecutableEnvironmentRegistrar::new(refreshed.clone()),
@@ -265,7 +265,7 @@ impl DurableRegistrar {
                 )
                 .await?;
                 self.cursor
-                    .install_then_reconcile(through, || install_catalog(&self.catalog, &refreshed))
+                    .install_then_reconcile(target, || install_catalog(&self.catalog, &refreshed))
             }
         }
     }
