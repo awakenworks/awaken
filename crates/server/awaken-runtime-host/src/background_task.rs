@@ -28,6 +28,8 @@ use awaken_runtime_contract::tool::{ToolOutput, ToolTaskHandle, ToolTaskPoll, To
 use awaken_session_contract::{RunErrorKind, SessionRunBackgroundApplication, stable_fingerprint};
 
 use crate::background::{BackgroundRuns, BackgroundWorkClass};
+use crate::store::CommittedAuthority;
+#[cfg(test)]
 use crate::store::HostCommit;
 
 mod ownership;
@@ -172,7 +174,7 @@ pub(crate) struct BackgroundTaskTerminalObserver {
     runtime: Arc<Runtime>,
     snapshot: ExecutableAgentSnapshot,
     context: RuntimeRunContext,
-    commit: Arc<HostCommit>,
+    commit: CommittedAuthority<Arc<dyn crate::LocalCommit>>,
     background: Arc<BackgroundRuns>,
     supervisor: Arc<BackgroundTaskSupervisor>,
     session_id: String,
@@ -186,7 +188,7 @@ impl BackgroundTaskTerminalObserver {
         runtime: Arc<Runtime>,
         snapshot: ExecutableAgentSnapshot,
         context: RuntimeRunContext,
-        commit: Arc<HostCommit>,
+        commit: CommittedAuthority<Arc<dyn crate::LocalCommit>>,
         background: Arc<BackgroundRuns>,
         supervisor: Arc<BackgroundTaskSupervisor>,
         session_id: String,
@@ -316,7 +318,7 @@ impl BackgroundTaskTerminalObserver {
             return;
         }
         let tool_kind = resolved.kind;
-        let state = match self.commit.authoritative_committed_state(&thread_id).await {
+        let state = match self.commit.committed_state(&thread_id).await {
             Ok(state) => Store::rebuild(&state),
             Err(error) => {
                 self.supervisor.complete(
@@ -546,7 +548,7 @@ impl BackgroundTaskTerminalObserver {
             .await;
             return;
         }
-        let state = match self.commit.authoritative_committed_state(&thread_id).await {
+        let state = match self.commit.committed_state(&thread_id).await {
             Ok(state) => Store::rebuild(&state),
             Err(error) => {
                 self.supervisor.complete(
@@ -782,12 +784,7 @@ impl BackgroundTaskTerminalObserver {
     }
 
     async fn reconcile(&self, terminal: &CommittedTerminalRun) -> Result<(), String> {
-        let state = Store::rebuild(
-            &self
-                .commit
-                .authoritative_committed_state(&terminal.thread_id)
-                .await?,
-        );
+        let state = Store::rebuild(&self.commit.committed_state(&terminal.thread_id).await?);
         for task in tasks_from_state(&state).map_err(|error| error.to_string())? {
             match &task.lifecycle {
                 BackgroundTaskLifecycle::Running { attempt }
@@ -1392,7 +1389,9 @@ mod tests {
             runtime,
             snapshot,
             RuntimeRunContext::new().with_tool_output_spiller(Arc::new(SpillProbe(spills.clone()))),
-            commit.clone(),
+            commit
+                .committed_authority()
+                .expect("local test commit is authoritative"),
             background.clone(),
             supervisor.clone(),
             "session".into(),
@@ -1620,7 +1619,9 @@ mod tests {
             runtime,
             remote_snapshot(),
             RuntimeRunContext::new(),
-            commit.clone(),
+            commit
+                .committed_authority()
+                .expect("local test commit is authoritative"),
             background.clone(),
             supervisor.clone(),
             "session".into(),
