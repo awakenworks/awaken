@@ -2,7 +2,8 @@
 
 use agent_client_protocol::{
     AGENT_METHOD_NAMES, AuthenticateRequest, AuthenticateResponse, ClientCapabilities,
-    InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse, ProtocolVersion,
+    ContentBlock, InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse,
+    PromptRequest, ProtocolVersion, SessionId,
 };
 use awaken_acp_contract::{AcpCapabilityProbeConfig, NegotiatedAcpCapabilities};
 use awaken_agent_channel::AgentChannel;
@@ -11,6 +12,141 @@ use super::{
     AcpError, ID_AUTHENTICATE, ID_INITIALIZE, ID_NEW_SESSION, PermissionResolver, RejectPermission,
     RunFactAppender, Wire, parse, pump_to_response, to_acp_mcp_servers,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandshakePhase {
+    Started,
+    Initialized,
+    SessionOpened,
+    Configured,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandshakeStep {
+    Initialize,
+    OpenSession,
+    Configure,
+}
+
+const fn advance_handshake(phase: HandshakePhase, step: HandshakeStep) -> Option<HandshakePhase> {
+    match (phase, step) {
+        (HandshakePhase::Started, HandshakeStep::Initialize) => Some(HandshakePhase::Initialized),
+        (HandshakePhase::Initialized, HandshakeStep::OpenSession) => {
+            Some(HandshakePhase::SessionOpened)
+        }
+        (HandshakePhase::SessionOpened, HandshakeStep::Configure) => {
+            Some(HandshakePhase::Configured)
+        }
+        _ => None,
+    }
+}
+
+const fn prompt_is_admitted(phase: HandshakePhase) -> bool {
+    matches!(phase, HandshakePhase::Configured)
+}
+
+/// The single turn driver's prompt-free setup state. A phase advances only
+/// after the corresponding bounded operation has returned successfully.
+#[derive(Debug)]
+pub(super) struct HandshakeProgress {
+    phase: HandshakePhase,
+    supports_session_model: bool,
+}
+
+impl HandshakeProgress {
+    pub(super) const fn started() -> Self {
+        Self {
+            phase: HandshakePhase::Started,
+            supports_session_model: false,
+        }
+    }
+
+    pub(super) fn initialized(self) -> Result<Self, AcpError> {
+        self.advance(HandshakeStep::Initialize)
+    }
+
+    pub(super) fn session_opened(self, supports_session_model: bool) -> Result<Self, AcpError> {
+        let mut progress = self.advance(HandshakeStep::OpenSession)?;
+        progress.supports_session_model = supports_session_model;
+        Ok(progress)
+    }
+
+    fn configured(self) -> Result<Self, AcpError> {
+        self.advance(HandshakeStep::Configure)
+    }
+
+    fn advance(self, step: HandshakeStep) -> Result<Self, AcpError> {
+        advance_handshake(self.phase, step)
+            .map(|phase| Self {
+                phase,
+                supports_session_model: self.supports_session_model,
+            })
+            .ok_or_else(|| AcpError::Frame("ACP handshake phase transition rejected".into()))
+    }
+
+    fn into_prompt_ready(self) -> Result<PromptReady, AcpError> {
+        if prompt_is_admitted(self.phase) {
+            Ok(PromptReady { _private: () })
+        } else {
+            Err(AcpError::Frame(
+                "ACP prompt rejected before handshake completion".into(),
+            ))
+        }
+    }
+}
+
+/// An unforgeable-in-production witness that every prompt-free setup phase
+/// completed. It is consumed to construct the only production prompt request.
+pub(super) struct PromptReady {
+    _private: (),
+}
+
+impl PromptReady {
+    pub(super) fn request(self, session_id: SessionId, prompt: &str) -> PromptRequest {
+        PromptRequest::new(session_id, vec![ContentBlock::from(prompt)])
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn acp_prompt_admission_requires_exact_completed_handshake() {
+    // Cause/effect decision table over the production transition kernel:
+    // | phase          | completed step | effect                         |
+    // | started        | initialize     | initialized                    |
+    // | initialized    | open session   | session opened                 |
+    // | session opened | configure      | configured                     |
+    // | every other pair               | reject without phase advance   |
+    // | configured     | prompt admit   | admission predicate is true    |
+    // | earlier phase  | prompt admit   | admission predicate is false   |
+    // A failed or timed-out async step never calls this completion edge, so
+    // it cannot authorize the later production prompt request.
+    let phase = match (kani::any::<bool>(), kani::any::<bool>()) {
+        (false, false) => HandshakePhase::Started,
+        (false, true) => HandshakePhase::Initialized,
+        (true, false) => HandshakePhase::SessionOpened,
+        (true, true) => HandshakePhase::Configured,
+    };
+    let step = match (kani::any::<bool>(), kani::any::<bool>()) {
+        (false, false) => HandshakeStep::Initialize,
+        (false, true) => HandshakeStep::OpenSession,
+        (true, false) | (true, true) => HandshakeStep::Configure,
+    };
+    let expected = match (phase, step) {
+        (HandshakePhase::Started, HandshakeStep::Initialize) => Some(HandshakePhase::Initialized),
+        (HandshakePhase::Initialized, HandshakeStep::OpenSession) => {
+            Some(HandshakePhase::SessionOpened)
+        }
+        (HandshakePhase::SessionOpened, HandshakeStep::Configure) => {
+            Some(HandshakePhase::Configured)
+        }
+        _ => None,
+    };
+    assert_eq!(advance_handshake(phase, step), expected);
+    assert_eq!(
+        prompt_is_admitted(phase),
+        phase == HandshakePhase::Configured
+    );
+}
 
 pub(super) async fn initialize_agent(
     wire: &mut Wire<'_>,
@@ -163,8 +299,8 @@ pub(super) async fn configure_session(
     config: &mut crate::TurnConfig<'_>,
     session_id: &agent_client_protocol::SessionId,
     negotiated: &NegotiatedAcpCapabilities,
-    supports_session_model: bool,
-) -> Result<(), AcpError> {
+    progress: HandshakeProgress,
+) -> Result<PromptReady, AcpError> {
     use super::{ID_SET_CONFIG_OPTION, ID_SET_MODE, ID_SET_MODEL};
     use agent_client_protocol::{
         SessionModeId, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse,
@@ -221,7 +357,7 @@ pub(super) async fn configure_session(
     // selection at the protocol layer rather than reading an environment key.
     // Fail closed unless this exact Session advertised the model interface.
     if let Some(model) = config.session_model.clone() {
-        if !supports_session_model {
+        if !progress.supports_session_model {
             return Err(AcpError::Frame(
                 "configured ACP session model selection was not advertised".into(),
             ));
@@ -281,5 +417,5 @@ pub(super) async fn configure_session(
         .await?;
     }
 
-    Ok(())
+    progress.configured()?.into_prompt_ready()
 }

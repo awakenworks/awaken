@@ -18,10 +18,9 @@
 //! `method_not_found` — tool execution is the hand's job, never proxied over ACP.
 
 use agent_client_protocol::{
-    AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, ContentBlock, LoadSessionRequest, LoadSessionResponse,
-    PermissionOptionKind, PromptRequest, PromptResponse, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
-    SessionNotification,
+    AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES, LoadSessionRequest, LoadSessionResponse,
+    PermissionOptionKind, PromptResponse, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionId, SessionNotification,
 };
 use awaken_acp_contract::NegotiatedAcpCapabilities;
 use awaken_agent_channel::AgentChannel;
@@ -33,7 +32,7 @@ mod permission;
 mod response;
 mod wire;
 pub use handshake::negotiate_capabilities;
-use handshake::{handshake_step, initialize_agent, open_new_session};
+use handshake::{HandshakeProgress, handshake_step, initialize_agent, open_new_session};
 use wire::{JSONRPC, Wire};
 
 use mcp::to_acp_mcp_servers;
@@ -122,6 +121,7 @@ pub async fn run_turn_with_config(
         .unwrap_or_else(|| "/".to_string());
     let mut wire = Wire::new(channel);
     let mut seq = 0u64;
+    let progress = HandshakeProgress::started();
 
     // The process is up; the ACP handshake (initialize + session/new|load) begins.
     notify_launch(
@@ -145,6 +145,7 @@ pub async fn run_turn_with_config(
         ),
     )
     .await?;
+    let progress = progress.initialized()?;
     let can_load = init.agent_capabilities.load_session;
 
     // 2. session/load (resume the CLI's own session across the relaunch) when we
@@ -264,14 +265,15 @@ pub async fn run_turn_with_config(
             (session_id, negotiated, supports_session_model)
         }
     };
-    handshake::configure_session(
+    let progress = progress.session_opened(supports_session_model)?;
+    let prompt_ready = handshake::configure_session(
         &mut wire,
         sink,
         &mut seq,
         config,
         &session_id,
         &negotiated,
-        supports_session_model,
+        progress,
     )
     .await?;
 
@@ -285,7 +287,7 @@ pub async fn run_turn_with_config(
     wire.send_request(
         ID_PROMPT,
         AGENT_METHOD_NAMES.session_prompt,
-        PromptRequest::new(session_id.clone(), vec![ContentBlock::from(prompt)]),
+        prompt_ready.request(session_id.clone(), prompt),
     )
     .await?;
     let prompt_result = response::pump_prompt(
