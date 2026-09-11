@@ -375,7 +375,7 @@ impl Serialize for ModelSelection {
 impl<'de> Deserialize<'de> for ModelSelection {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         match ModelSelectionWire::deserialize(deserializer)? {
-            ModelSelectionWire::Auto => Ok(Self::Auto),
+            ModelSelectionWire::Auto {} => Ok(Self::Auto),
             ModelSelectionWire::Profile { profile_id } if !profile_id.trim().is_empty() => {
                 Ok(Self::Profile { profile_id })
             }
@@ -426,7 +426,13 @@ impl<'de> Deserialize<'de> for ModelSelection {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 enum ModelSelectionWire {
-    Auto,
+    // Spelled as an empty struct variant, not a unit variant, deliberately:
+    // serde's `deny_unknown_fields` does not reach the unit variants of an
+    // internally tagged enum, so `{"mode":"auto","backend_ref":"acp:codex"}`
+    // would deserialize as plain `Auto` with the authored backend silently
+    // discarded. An empty struct variant is denied the same way every other
+    // mode is, so no authored field can be dropped without being reported.
+    Auto {},
     Profile {
         profile_id: String,
     },
