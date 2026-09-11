@@ -34,7 +34,7 @@ pub(crate) fn disposal_authorization(
         .expect("test authorization is aggregate-authorized")
 }
 
-fn spec(scope: &str) -> pc::SandboxSpec {
+pub(crate) fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
         process_tree_supervision: false,
         scope: scope.into(),
