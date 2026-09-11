@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
@@ -16,6 +17,15 @@ from unittest.mock import patch
 
 GIB = 1024 ** 3
 MIB = 1024 ** 2
+_BINARY_QUANTITY = re.compile(r"^([1-9][0-9]*)(Ki|Mi|Gi|Ti)$")
+_BINARY_UNITS = {"Ki": 1024, "Mi": MIB, "Gi": GIB, "Ti": 1024 ** 4}
+
+
+def parse_binary_quantity(value: str) -> int:
+    match = _BINARY_QUANTITY.fullmatch(value)
+    if match is None:
+        raise ValueError(f"invalid absolute capacity quantity: {value}")
+    return int(match.group(1)) * _BINARY_UNITS[match.group(2)]
 
 
 def filesystem(path: str) -> tuple:
@@ -24,19 +34,30 @@ def filesystem(path: str) -> tuple:
 
 
 def capacity_plan(nodes: int, image_sizes: list[int], docker_root: str,
-                  temporary_root: str, observe=filesystem) -> list[dict]:
+                  temporary_root: str, observe=filesystem,
+                  eviction_threshold_bytes: int | None = None) -> list[dict]:
     if type(nodes) is not int or nodes < 1:
         raise ValueError("node count must be a positive integer")
     if any(type(size) is not int or size < 0 for size in image_sizes):
         raise ValueError("image sizes must be nonnegative integer bytes")
+    if (eviction_threshold_bytes is not None
+            and (type(eviction_threshold_bytes) is not int or eviction_threshold_bytes <= 0)):
+        raise ValueError("eviction threshold must be positive integer bytes")
     total = sum(image_sizes)
     # All nodes import images. Count both content and unpacked snapshots per
     # node, a transport archive copy, 2 GiB/node for bootstrap/WAL, and an 8 GiB
-    # host reserve. Tar framing uses 25% plus 64 MiB per image. Image-inode
-    # budgets are a fixture floor; exhaustion during import remains fatal.
+    # host reserve. An explicit kubelet threshold must retain both its hard
+    # trigger and minimum-reclaim margin after import; otherwise admission can
+    # leave a Ready node tainted with DiskPressure. Tar framing uses 25% plus
+    # 64 MiB per image. Image-inode budgets are a fixture floor; exhaustion
+    # during import remains fatal.
     archive = (total * 5 + 3) // 4 + len(image_sizes) * 64 * MIB
+    post_import_reserve = max(
+        8 * GIB,
+        2 * eviction_threshold_bytes if eviction_threshold_bytes is not None else 0,
+    )
     allocations = (
-        (docker_root, 2 * nodes * total + archive + (2 * nodes + 8) * GIB,
+        (docker_root, 2 * nodes * total + archive + 2 * nodes * GIB + post_import_reserve,
          (nodes + 1) * 100_000),
         (temporary_root, archive, len(image_sizes) + 32),
     )
@@ -68,7 +89,8 @@ def docker_output(*args: str) -> str:
     return subprocess.check_output(["docker", *args], text=True).strip()
 
 
-def inspect_local_capacity(nodes: int, images: list[str]) -> list[dict]:
+def inspect_local_capacity(nodes: int, images: list[str],
+                           eviction_threshold_bytes: int | None = None) -> list[dict]:
     # A remote daemon's /data/docker is not the client's filesystem. Reject
     # remote contexts until a daemon-side capacity observer is provided.
     endpoint = (os.environ.get("DOCKER_HOST") if not os.environ.get("DOCKER_CONTEXT") else None)
@@ -82,7 +104,13 @@ def inspect_local_capacity(nodes: int, images: list[str]) -> list[dict]:
     # Tags may alias the same immutable image. Shared layers across different
     # images are deliberately overcounted instead of assuming node cache hits.
     sizes = {record["Id"]: record["Size"] for record in records}
-    return capacity_plan(nodes, list(sizes.values()), root, tempfile.gettempdir())
+    return capacity_plan(
+        nodes,
+        list(sizes.values()),
+        root,
+        tempfile.gettempdir(),
+        eviction_threshold_bytes=eviction_threshold_bytes,
+    )
 
 
 class CapacityTests(unittest.TestCase):
@@ -113,12 +141,43 @@ class CapacityTests(unittest.TestCase):
                     else:
                         require_capacity([row])
 
+    def test_eviction_threshold_retains_the_complete_recovery_target(self):
+        # C1 default fixture policy keeps the existing 8 GiB reserve; C2 an
+        # 8 GiB hard threshold with an equal minimum reclaim keeps 16 GiB after
+        # import; C3 a smaller threshold cannot weaken the baseline reserve.
+        observe = lambda path: (path, 100 * GIB, 1_000_000)
+        default = capacity_plan(1, [], "/docker", "/tmp", observe)
+        large = capacity_plan(
+            1, [], "/docker", "/tmp", observe,
+            eviction_threshold_bytes=8 * GIB,
+        )
+        small = capacity_plan(
+            1, [], "/docker", "/tmp", observe,
+            eviction_threshold_bytes=2 * GIB,
+        )
+        self.assertEqual(default[0]["required_bytes"], 10 * GIB)
+        self.assertEqual(large[0]["required_bytes"], 18 * GIB)
+        self.assertEqual(small[0]["required_bytes"], 10 * GIB)
+
+    def test_binary_quantity_parser_rejects_ambiguous_capacity(self):
+        self.assertEqual(parse_binary_quantity("8Gi"), 8 * GIB)
+        self.assertEqual(parse_binary_quantity("128Mi"), 128 * MIB)
+        for invalid in ("", "0Gi", "8G", "8%", "-1Gi", " 8Gi"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                parse_binary_quantity(invalid)
+
     def test_invalid_unknown_and_large_inputs(self):
         # Missing observations fail closed; arbitrary-size arithmetic cannot
         # wrap to a small successful budget. No node/image effects occur here.
         for nodes, sizes in ((0, []), (-1, []), (True, []), (1, [-1]), (1, [True])):
             with self.subTest(nodes=nodes, sizes=sizes), self.assertRaises(ValueError):
                 capacity_plan(nodes, sizes, "/d", "/t")
+        for threshold in (0, -1, True):
+            with self.subTest(threshold=threshold), self.assertRaises(ValueError):
+                capacity_plan(
+                    1, [], "/d", "/t",
+                    eviction_threshold_bytes=threshold,
+                )
         with self.assertRaises(ValueError):
             capacity_plan(1, [], "/d", "/t", lambda _: (1, -1, 100))
         plan = capacity_plan(2 ** 64, [2 ** 64], "/d", "/t", lambda p: (p, 2 ** 64, 1_000_000))
@@ -158,13 +217,18 @@ class CapacityTests(unittest.TestCase):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nodes", type=int)
+    parser.add_argument("--eviction-threshold")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("images", nargs="*")
     args = parser.parse_args()
     if args.self_test:
         result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(CapacityTests))
         raise SystemExit(0 if result.wasSuccessful() else 1)
-    plan = inspect_local_capacity(args.nodes, args.images)
+    eviction_threshold_bytes = (
+        parse_binary_quantity(args.eviction_threshold)
+        if args.eviction_threshold is not None else None
+    )
+    plan = inspect_local_capacity(args.nodes, args.images, eviction_threshold_bytes)
     require_capacity(plan)
     print("k3d capacity admitted: " + json.dumps(plan, sort_keys=True))
 
