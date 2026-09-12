@@ -151,11 +151,11 @@ async fn full_chain_live_model_call() {
     use awaken_runtime_contract::resolved::ModelBinding;
 
     let request = ChatRequest {
-        model_binding: ModelBinding {
-            provider_identity_ref: resolved.triple.provider_id.clone(),
-            model_ref: resolved.triple.model_id.clone(),
-            backend_ref: "genai".to_string(),
-        },
+        model_binding: ModelBinding::new(
+            resolved.triple.provider_id.clone(),
+            resolved.triple.model_id.clone(),
+            "genai".to_string(),
+        ),
         inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::User,

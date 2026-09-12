@@ -950,11 +950,7 @@ mod tests {
                 max_steps: 8,
                 delegation_limits: Default::default(),
                 model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                    ModelBinding {
-                        provider_identity_ref: "anthropic".into(),
-                        model_ref: "claude-opus-4-8".into(),
-                        backend_ref: "genai".into(),
-                    },
+                    ModelBinding::new("anthropic", "claude-opus-4-8", "genai"),
                 ),
                 tool_descriptors: Vec::new(),
                 plugin_ids: Vec::new(),

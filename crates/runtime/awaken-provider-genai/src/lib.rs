@@ -626,11 +626,7 @@ pub async fn probe_credential(
     };
     let executor = executor.with_timeout(Duration::from_secs(30));
     let request = ChatRequest {
-        model_binding: ModelBinding {
-            provider_identity_ref: "probe".into(),
-            model_ref: model.to_string(),
-            backend_ref: "genai".into(),
-        },
+        model_binding: ModelBinding::new("probe", model.to_string(), "genai"),
         inference: Default::default(),
         messages: vec![awaken_runtime_contract::llm::ChatMessage {
             role: Role::User,
@@ -1840,11 +1836,11 @@ mod hermetic_tests {
                 .with_idle_timeout(Duration::from_secs(5));
 
         let request = ChatRequest {
-            model_binding: ModelBinding {
-                provider_identity_ref: "p".to_string(),
-                model_ref: "claude-test".to_string(),
-                backend_ref: "b".to_string(),
-            },
+            model_binding: ModelBinding::new(
+                "p".to_string(),
+                "claude-test".to_string(),
+                "b".to_string(),
+            ),
             inference: Default::default(),
             messages: vec![ChatMessage {
                 role: Role::User,

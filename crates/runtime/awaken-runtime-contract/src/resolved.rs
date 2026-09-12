@@ -577,17 +577,9 @@ pub enum ContextPolicy {
     KeepLast { keep_last: usize },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct ModelBinding {
-    /// The *provider identity* — the principal whose key and quota this attempt
-    /// runs under. It is the cooldown / account-spread key: two candidates on the
-    /// same model but different identities differ here, so each tracks its own
-    /// circuit and quota. (Formerly `provider_instance_ref`; renamed to name the
-    /// principal, aligning with awaken-next's `ProviderIdentity`.)
-    pub provider_identity_ref: String,
-    pub model_ref: String,
-    pub backend_ref: String,
-}
+mod model_binding;
+
+pub use model_binding::{ExactModelRef, InvalidModelBinding, ModelBinding, ProviderIdentityRef};
 
 /// Whether an external backend keeps its own default model or receives the exact
 /// model id frozen in the publication. This remains explicit in the immutable
@@ -597,40 +589,6 @@ pub struct ModelBinding {
 pub enum BackendModelSelection {
     Default,
     Exact,
-}
-
-/// A model coordinate proven non-empty and free of accidental surrounding
-/// whitespace. The private payload prevents an `Exact` policy from carrying no
-/// exact model at all.
-///
-/// ```compile_fail
-/// use awaken_runtime_contract::resolved::ExactModelRef;
-/// let _ = ExactModelRef(String::new());
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ExactModelRef(String);
-
-impl ExactModelRef {
-    pub fn parse(model_ref: impl Into<String>) -> Result<Self, &'static str> {
-        let model_ref = model_ref.into();
-        if model_ref.is_empty() || model_ref.trim() != model_ref {
-            return Err(
-                "exact model reference must be non-empty and contain no surrounding whitespace",
-            );
-        }
-        Ok(Self(model_ref))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for ExactModelRef {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
 }
 
 /// How one exact published Provider candidate obtains access. This is a
@@ -984,21 +942,6 @@ impl std::ops::Deref for ResolvedModelCandidate {
 impl AsRef<ModelBinding> for ResolvedModelCandidate {
     fn as_ref(&self) -> &ModelBinding {
         &self.binding
-    }
-}
-
-impl ModelBinding {
-    /// The provider instance, model, and backend a run binds to.
-    pub fn new(
-        provider_identity_ref: impl Into<String>,
-        model_ref: impl Into<String>,
-        backend_ref: impl Into<String>,
-    ) -> Self {
-        Self {
-            provider_identity_ref: provider_identity_ref.into(),
-            model_ref: model_ref.into(),
-            backend_ref: backend_ref.into(),
-        }
     }
 }
 

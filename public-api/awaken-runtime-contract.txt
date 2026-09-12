@@ -1138,6 +1138,14 @@ pub const fn awaken_runtime_contract::resolved::InferencePlacementMechanism::as_
 impl core::str::traits::FromStr for awaken_runtime_contract::resolved::InferencePlacementMechanism
 pub type awaken_runtime_contract::resolved::InferencePlacementMechanism::Err = alloc::string::String
 pub fn awaken_runtime_contract::resolved::InferencePlacementMechanism::from_str(&str) -> core::result::Result<Self, Self::Err>
+pub enum awaken_runtime_contract::resolved::InvalidModelBinding
+pub awaken_runtime_contract::resolved::InvalidModelBinding::Backend(alloc::string::String)
+pub awaken_runtime_contract::resolved::InvalidModelBinding::IncompleteNative
+pub awaken_runtime_contract::resolved::InvalidModelBinding::IncompleteNative::model_ref: alloc::string::String
+pub awaken_runtime_contract::resolved::InvalidModelBinding::IncompleteNative::provider_identity_ref: alloc::string::String
+pub awaken_runtime_contract::resolved::InvalidModelBinding::Whitespace
+pub awaken_runtime_contract::resolved::InvalidModelBinding::Whitespace::coordinate: &'static str
+pub awaken_runtime_contract::resolved::InvalidModelBinding::Whitespace::value: alloc::string::String
 pub enum awaken_runtime_contract::resolved::ModelProvisioning
 pub awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned
 pub awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned::acp: awaken_runtime_contract::resolved::AcpExecutionProfile
@@ -1285,9 +1293,25 @@ pub awaken_runtime_contract::resolved::ModelBinding::backend_ref: alloc::string:
 pub awaken_runtime_contract::resolved::ModelBinding::model_ref: alloc::string::String
 pub awaken_runtime_contract::resolved::ModelBinding::provider_identity_ref: alloc::string::String
 impl awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::backend(&self) -> awaken_runtime_contract::resolved::Backend
+pub fn awaken_runtime_contract::resolved::ModelBinding::identity(&self) -> (&str, &str, &str)
+pub fn awaken_runtime_contract::resolved::ModelBinding::model(&self) -> core::option::Option<awaken_runtime_contract::resolved::ExactModelRef>
 pub fn awaken_runtime_contract::resolved::ModelBinding::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::resolved::ModelBinding::parse(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidModelBinding>
+pub fn awaken_runtime_contract::resolved::ModelBinding::provider_identity(&self) -> core::option::Option<awaken_runtime_contract::resolved::ProviderIdentityRef>
+impl core::cmp::Eq for awaken_runtime_contract::resolved::ModelBinding
+impl core::cmp::Ord for awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
 impl core::convert::AsRef<awaken_runtime_contract::resolved::ModelBinding> for awaken_runtime_contract::resolved::ResolvedModelCandidate
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::as_ref(&self) -> &awaken_runtime_contract::resolved::ModelBinding
+impl core::fmt::Debug for awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::hash<H: core::hash::Hasher>(&self, &mut H)
 pub struct awaken_runtime_contract::resolved::OpenRouterWebFetchParameters
 pub awaken_runtime_contract::resolved::OpenRouterWebFetchParameters::engine: core::option::Option<awaken_runtime_contract::resolved::OpenRouterFetchEngine>
 pub awaken_runtime_contract::resolved::OpenRouterWebFetchParameters::max_content_tokens: core::option::Option<core::num::nonzero::NonZeroU32>
@@ -1307,6 +1331,12 @@ pub awaken_runtime_contract::resolved::PresentedToolCatalog::visible: alloc::vec
 pub struct awaken_runtime_contract::resolved::ProviderExecutionProfile
 pub awaken_runtime_contract::resolved::ProviderExecutionProfile::acp: core::option::Option<awaken_runtime_contract::resolved::AcpExecutionProfile>
 pub awaken_runtime_contract::resolved::ProviderExecutionProfile::unspecified_reasoning: awaken_runtime_contract::resolved::UnspecifiedReasoning
+pub struct awaken_runtime_contract::resolved::ProviderIdentityRef(_)
+impl awaken_runtime_contract::resolved::ProviderIdentityRef
+pub fn awaken_runtime_contract::resolved::ProviderIdentityRef::as_str(&self) -> &str
+pub fn awaken_runtime_contract::resolved::ProviderIdentityRef::parse(impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, &'static str>
+impl core::fmt::Display for awaken_runtime_contract::resolved::ProviderIdentityRef
+pub fn awaken_runtime_contract::resolved::ProviderIdentityRef::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_runtime_contract::resolved::ResolvedModelCandidate
 impl awaken_runtime_contract::resolved::ResolvedModelCandidate
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::binding(&self) -> &awaken_runtime_contract::resolved::ModelBinding
@@ -2389,9 +2419,25 @@ pub awaken_runtime_contract::ModelBinding::backend_ref: alloc::string::String
 pub awaken_runtime_contract::ModelBinding::model_ref: alloc::string::String
 pub awaken_runtime_contract::ModelBinding::provider_identity_ref: alloc::string::String
 impl awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::backend(&self) -> awaken_runtime_contract::resolved::Backend
+pub fn awaken_runtime_contract::resolved::ModelBinding::identity(&self) -> (&str, &str, &str)
+pub fn awaken_runtime_contract::resolved::ModelBinding::model(&self) -> core::option::Option<awaken_runtime_contract::resolved::ExactModelRef>
 pub fn awaken_runtime_contract::resolved::ModelBinding::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::resolved::ModelBinding::parse(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidModelBinding>
+pub fn awaken_runtime_contract::resolved::ModelBinding::provider_identity(&self) -> core::option::Option<awaken_runtime_contract::resolved::ProviderIdentityRef>
+impl core::cmp::Eq for awaken_runtime_contract::resolved::ModelBinding
+impl core::cmp::Ord for awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
 impl core::convert::AsRef<awaken_runtime_contract::resolved::ModelBinding> for awaken_runtime_contract::resolved::ResolvedModelCandidate
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::as_ref(&self) -> &awaken_runtime_contract::resolved::ModelBinding
+impl core::fmt::Debug for awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ModelBinding::hash<H: core::hash::Hasher>(&self, &mut H)
 pub struct awaken_runtime_contract::ModelInputProjectionTrace
 pub awaken_runtime_contract::ModelInputProjectionTrace::durable_input_supplied: usize
 pub awaken_runtime_contract::ModelInputProjectionTrace::durable_input_visible: usize

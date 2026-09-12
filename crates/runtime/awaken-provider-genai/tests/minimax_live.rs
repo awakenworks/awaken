@@ -51,11 +51,7 @@ fn executor() -> GenaiExecutor {
 }
 
 fn binding() -> ModelBinding {
-    ModelBinding {
-        provider_identity_ref: "minimax".to_string(),
-        model_ref: model(),
-        backend_ref: "genai".to_string(),
-    }
+    ModelBinding::new("minimax", model(), "genai")
 }
 
 fn user(blocks: Vec<ContentBlock>) -> ChatRequest {

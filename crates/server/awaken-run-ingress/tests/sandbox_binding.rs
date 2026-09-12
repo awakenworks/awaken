@@ -48,11 +48,7 @@ fn activation(run: &str, thread: &str) -> RunActivation {
                 max_steps: 8,
                 delegation_limits: Default::default(),
                 model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                    ModelBinding {
-                        provider_identity_ref: "p".into(),
-                        model_ref: "m".into(),
-                        backend_ref: "b".into(),
-                    },
+                    ModelBinding::new("p", "m", "b"),
                 ),
                 tool_descriptors: vec![],
                 plugin_ids: vec![],

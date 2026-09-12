@@ -11,11 +11,11 @@ use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 
 fn sample_request() -> ChatRequest {
     ChatRequest {
-        model_binding: ModelBinding {
-            provider_identity_ref: "provider-1".to_string(),
-            model_ref: "gpt-4o-mini".to_string(),
-            backend_ref: "backend-1".to_string(),
-        },
+        model_binding: ModelBinding::new(
+            "provider-1".to_string(),
+            "gpt-4o-mini".to_string(),
+            "backend-1".to_string(),
+        ),
         inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::User,

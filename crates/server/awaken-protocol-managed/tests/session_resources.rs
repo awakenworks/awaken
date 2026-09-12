@@ -1008,18 +1008,18 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
 
     let requested = "claude-sonnet-4-5;provider=anthropic;api=anthropic;endpoint=gateway";
     let primary = awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-        awaken_runtime_contract::ModelBinding {
-            provider_identity_ref: "anthropic-account".into(),
-            model_ref: "claude-sonnet-4-5-20250929".into(),
-            backend_ref: "acp:claude".into(),
-        },
+        awaken_runtime_contract::ModelBinding::new(
+            "anthropic-account",
+            "claude-sonnet-4-5-20250929",
+            "acp:claude",
+        ),
     );
     let fallback = awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-        awaken_runtime_contract::ModelBinding {
-            provider_identity_ref: "anthropic-fallback".into(),
-            model_ref: "claude-sonnet-4-5-20250929".into(),
-            backend_ref: "genai".into(),
-        },
+        awaken_runtime_contract::ModelBinding::new(
+            "anthropic-fallback",
+            "claude-sonnet-4-5-20250929",
+            "genai",
+        ),
     );
     let calls: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>> = Default::default();
     let resolved_runtime = AcceptingFake::default();

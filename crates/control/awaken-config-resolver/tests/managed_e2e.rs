@@ -77,11 +77,7 @@ fn snapshot_for(model_id: &str) -> ExecutableAgentSnapshot {
             max_steps: 8,
             delegation_limits: Default::default(),
             model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                ModelBinding {
-                    provider_identity_ref: "anthropic".into(),
-                    model_ref: model_id.into(),
-                    backend_ref: "genai".into(),
-                },
+                ModelBinding::new("anthropic", model_id, "genai"),
             ),
             tool_descriptors: Vec::new(),
             plugin_ids: Vec::new(),
@@ -195,11 +191,11 @@ async fn managed_full_chain_calls_real_model() {
     )
     .expect("resolved provider client construction");
     let request = ChatRequest {
-        model_binding: ModelBinding {
-            provider_identity_ref: inference.triple.provider_id.clone(),
-            model_ref: inference.triple.model_id.clone(),
-            backend_ref: "genai".into(),
-        },
+        model_binding: ModelBinding::new(
+            inference.triple.provider_id.clone(),
+            inference.triple.model_id.clone(),
+            "genai",
+        ),
         inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::User,

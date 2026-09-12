@@ -61,11 +61,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("agent.snapshot.json");
         let snapshot = ExecutableAgentSnapshot::builder("agent-a")
-            .model(ModelBinding {
-                provider_identity_ref: "local".into(),
-                model_ref: "model-a".into(),
-                backend_ref: "genai".into(),
-            })
+            .model(ModelBinding::new("local", "model-a", "genai"))
             .build();
         Runtime::save_snapshot_file(&snapshot, &path).unwrap();
 
@@ -99,11 +95,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("agent.snapshot.json");
         let original = ExecutableAgentSnapshot::builder("agent-a")
-            .model(ModelBinding {
-                provider_identity_ref: "local".into(),
-                model_ref: "model-a".into(),
-                backend_ref: "genai".into(),
-            })
+            .model(ModelBinding::new("local", "model-a", "genai"))
             .build();
         Runtime::save_snapshot_file(&original, &path).unwrap();
         let original_bytes = std::fs::read(&path).unwrap();

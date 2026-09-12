@@ -820,3 +820,144 @@ fn openrouter_server_tool_parameters_reject_illegal_states_at_decode() {
         .is_err()
     );
 }
+
+#[test]
+fn model_binding_parse_admits_only_a_complete_identity() {
+    // The three coordinates are the whole comparison identity, so a blank one
+    // is a wildcard that makes two candidates on different provider accounts
+    // compare equal. Emptiness is licensed by the backend kind and nothing
+    // else; whitespace is never a coordinate.
+    //
+    // | Rule | provider   | model     | backend                  | Effect   |
+    // | B1   | stated     | stated    | native                   | admitted |
+    // | B2   | blank      | stated    | native                   | rejected |
+    // | B3   | stated     | blank     | native                   | rejected |
+    // | B4   | blank      | blank     | acp:codex                | admitted |
+    // | B5   | stated     | blank     | acp:codex                | admitted |
+    // | B6   | blank      | blank     | a2a:https://agent.test   | admitted |
+    // | B7   | stated     | stated    | "" (no backend)          | rejected |
+    // | B8   | stated     | stated    | "acp" (incomplete route) | rejected |
+    // | B9   | " padded " | stated    | native                   | rejected |
+    let table = [
+        ("B1", "openai", "m-first", "genai", true),
+        ("B2", "", "m-first", "genai", false),
+        ("B3", "openai", "", "genai", false),
+        ("B4", "", "", "acp:codex", true),
+        ("B5", "cred:local", "", "acp:codex", true),
+        ("B6", "", "", "a2a:https://agent.test", true),
+        ("B7", "openai", "m-first", "", false),
+        ("B8", "openai", "m-first", "acp", false),
+        ("B9", " openai ", "m-first", "genai", false),
+    ];
+    for (rule, provider, model, backend, admitted) in table {
+        let parsed = ModelBinding::parse(provider, model, backend);
+        assert_eq!(parsed.is_ok(), admitted, "{rule}");
+        if let Ok(binding) = parsed {
+            assert_eq!(binding.identity(), (provider, model, backend), "{rule}");
+        }
+    }
+
+    // The rejected producer is exactly the shape that once let a pinned model
+    // resolve onto a second provider account: two native candidates that state
+    // no provider identity are indistinguishable to the publication fence.
+    let first = ModelBinding::new("", "m-first", "genai");
+    let second = ModelBinding::new("", "m-first", "genai");
+    assert_eq!(
+        first, second,
+        "a blank account coordinate collapses identity"
+    );
+    assert!(
+        ModelBinding::parse("", "m-first", "genai").is_err(),
+        "parse refuses the collapsing producer"
+    );
+}
+
+#[test]
+fn model_binding_deserialization_fails_closed_on_an_incomplete_identity() {
+    // A durable snapshot is a producer too. Deserialization goes through the
+    // same admission as every other producer, so a binding written before the
+    // rule cannot be restored straight into a comparison fence.
+    //
+    // | Rule | wire value                                   | Effect   |
+    // | D1   | complete native binding                      | admitted |
+    // | D2   | native binding with no provider identity     | rejected |
+    // | D3   | native binding with no model                 | rejected |
+    // | D4   | backend-owned ACP binding with both blank    | admitted |
+    // | D5   | binding whose backend is not a route         | rejected |
+    let table = [
+        (
+            "D1",
+            r#"{"provider_identity_ref":"openai","model_ref":"m","backend_ref":"genai"}"#,
+            true,
+        ),
+        (
+            "D2",
+            r#"{"provider_identity_ref":"","model_ref":"m","backend_ref":"genai"}"#,
+            false,
+        ),
+        (
+            "D3",
+            r#"{"provider_identity_ref":"openai","model_ref":"","backend_ref":"genai"}"#,
+            false,
+        ),
+        (
+            "D4",
+            r#"{"provider_identity_ref":"","model_ref":"","backend_ref":"acp:codex"}"#,
+            true,
+        ),
+        (
+            "D5",
+            r#"{"provider_identity_ref":"openai","model_ref":"m","backend_ref":""}"#,
+            false,
+        ),
+    ];
+    for (rule, wire, admitted) in table {
+        let decoded = serde_json::from_str::<ModelBinding>(wire);
+        assert_eq!(decoded.is_ok(), admitted, "{rule}: {wire}");
+    }
+
+    // The admitted wire shape is still the three coordinates, unchanged: the
+    // coherence proof is an invariant, never a fourth durable field.
+    let binding = ModelBinding::parse("openai", "m", "genai").expect("D1");
+    assert_eq!(
+        serde_json::to_value(&binding).expect("serializes"),
+        serde_json::json!({
+            "provider_identity_ref": "openai",
+            "model_ref": "m",
+            "backend_ref": "genai"
+        })
+    );
+}
+
+#[test]
+fn model_binding_equality_is_the_stated_identity_tuple() {
+    // Equality is a decision (publication dedup, brokered-grant admission), so
+    // it must answer one stated question. Every coordinate is significant and
+    // each one alone distinguishes two bindings.
+    //
+    // | Rule | differing coordinate | Effect    |
+    // | E1   | none                 | equal     |
+    // | E2   | provider identity    | not equal |
+    // | E3   | model                | not equal |
+    // | E4   | backend              | not equal |
+    let base = ModelBinding::parse("openai", "m-first", "genai").expect("E1");
+    assert_eq!(base.identity(), ("openai", "m-first", "genai"));
+    let variants = [
+        ("E2", ModelBinding::parse("azure", "m-first", "genai")),
+        ("E3", ModelBinding::parse("openai", "m-second", "genai")),
+        ("E4", ModelBinding::parse("openai", "m-first", "acp:codex")),
+    ];
+    let mut fence = std::collections::BTreeSet::new();
+    assert!(fence.insert(base.clone()), "E1 first insert");
+    assert!(
+        !fence.insert(base.clone()),
+        "E1 exact replay is a duplicate"
+    );
+    for (rule, variant) in variants {
+        let variant = variant.expect(rule);
+        assert_ne!(base, variant, "{rule}");
+        assert_ne!(base.identity(), variant.identity(), "{rule}");
+        assert!(fence.insert(variant), "{rule} is a distinct fence entry");
+    }
+    assert_eq!(fence.len(), 4);
+}
