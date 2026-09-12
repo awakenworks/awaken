@@ -27,6 +27,8 @@ pub const EXECUTABLE_ENVIRONMENT_WITHDRAW_PATH: &str =
     "/internal/v1/executable-environments/withdraw";
 pub const EXECUTABLE_ENVIRONMENT_PUBLISH_PERMISSION: &str = "environment:publish";
 pub const EXECUTABLE_ENVIRONMENT_WITHDRAW_PERMISSION: &str = "environment:withdraw";
+/// Total per-attempt deadline for one private control-plane call.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const IDEMPOTENT_ATTEMPTS: usize = 3;
 const RETRY_DELAY: Duration = Duration::from_millis(25);
 
@@ -147,7 +149,7 @@ fn error_response(error: ExecutableEnvironmentRegistrationError) -> axum::respon
 pub struct HttpExecutableEnvironmentRegistrar {
     base_url: String,
     token_source: Arc<dyn ServiceBearerTokenSource>,
-    client: reqwest::Client,
+    client: awaken_outbound_http::InternalHttpClient,
 }
 
 impl HttpExecutableEnvironmentRegistrar {
@@ -172,31 +174,27 @@ impl HttpExecutableEnvironmentRegistrar {
         }
         awaken_service_auth_contract::resolve_service_bearer_token(token_source.as_ref())
             .map_err(ExecutableEnvironmentRegistrationError::Invalid)?;
-        let parsed = reqwest::Url::parse(&base_url).map_err(|error| {
-            ExecutableEnvironmentRegistrationError::Invalid(format!(
-                "invalid Coordinator registration URL: {error}"
-            ))
-        })?;
-        if !matches!(parsed.scheme(), "http" | "https")
-            || parsed.query().is_some()
-            || parsed.fragment().is_some()
-        {
-            return Err(ExecutableEnvironmentRegistrationError::Invalid(
-                "Coordinator registration URL must be an http(s) base URL without query or fragment"
-                    .into(),
-            ));
-        }
+        let base_url =
+            awaken_outbound_http::normalize_http_base_url(&base_url).map_err(|rejected| {
+                match rejected {
+                awaken_outbound_http::BaseUrlRejected::Malformed => {
+                    ExecutableEnvironmentRegistrationError::Invalid(format!(
+                        "invalid Coordinator registration URL: {rejected}"
+                    ))
+                }
+                _ => ExecutableEnvironmentRegistrationError::Invalid(
+                    "Coordinator registration URL must be an http(s) base URL without query or \
+                     fragment"
+                        .into(),
+                ),
+            }
+            })?;
         Ok(Self {
             base_url,
             token_source,
-            client: reqwest::Client::builder()
-                .no_proxy()
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .map_err(|error| {
-                    ExecutableEnvironmentRegistrationError::Unavailable(error.to_string())
-                })?,
+            client: awaken_outbound_http::InternalHttpClient::new(REQUEST_TIMEOUT).map_err(
+                |error| ExecutableEnvironmentRegistrationError::Unavailable(error.to_string()),
+            )?,
         })
     }
 
@@ -211,12 +209,18 @@ impl HttpExecutableEnvironmentRegistrar {
                 self.token_source.as_ref(),
             )
             .map_err(ExecutableEnvironmentRegistrationError::Unavailable)?;
+            let body = serde_json::to_string(command).map_err(|error| {
+                ExecutableEnvironmentRegistrationError::Invalid(format!(
+                    "encode Coordinator registration command: {error}"
+                ))
+            })?;
             let response = self
                 .client
-                .post(format!("{}{}", self.base_url, path))
-                .bearer_auth(bearer_token.as_ref())
-                .json(command)
-                .send()
+                .send(
+                    &awaken_outbound_http::JsonRequest::post(format!("{}{}", self.base_url, path))
+                        .bearer(bearer_token.as_ref())
+                        .json_body(body),
+                )
                 .await;
             let response = match response {
                 Ok(response) => response,
@@ -229,7 +233,7 @@ impl HttpExecutableEnvironmentRegistrar {
                     break;
                 }
             };
-            if response.status() == StatusCode::UNAUTHORIZED {
+            if response.is_unauthorized() {
                 let rotated = awaken_service_auth_contract::service_bearer_token_rotated(
                     self.token_source.as_ref(),
                     bearer_token.as_ref(),
@@ -243,10 +247,10 @@ impl HttpExecutableEnvironmentRegistrar {
                 ));
             }
             let status = response.status();
-            let decoded = response
-                .json::<Option<Result<O, ExecutableEnvironmentRegistrationError>>>()
-                .await;
-            if status.is_success() {
+            let decoded = serde_json::from_str::<
+                Option<Result<O, ExecutableEnvironmentRegistrationError>>,
+            >(response.body());
+            if response.is_success() {
                 return decoded
                     .map_err(|error| {
                         ExecutableEnvironmentRegistrationError::Unavailable(format!(
@@ -272,7 +276,7 @@ impl HttpExecutableEnvironmentRegistrar {
                 }
                 return Err(error);
             }
-            if status.is_server_error() && attempt < IDEMPOTENT_ATTEMPTS {
+            if response.is_server_error() && attempt < IDEMPOTENT_ATTEMPTS {
                 last_unavailable = Some(format!("Coordinator returned {status}"));
                 tokio::time::sleep(RETRY_DELAY).await;
                 continue;

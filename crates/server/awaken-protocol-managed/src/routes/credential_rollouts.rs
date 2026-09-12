@@ -92,7 +92,7 @@ async fn apply_rollout(
 pub struct HttpManagedCredentialRolloutTarget {
     endpoint: String,
     token_source: Arc<dyn ServiceBearerTokenSource>,
-    client: reqwest::Client,
+    client: awaken_outbound_http::InternalHttpClient,
 }
 
 impl HttpManagedCredentialRolloutTarget {
@@ -100,28 +100,24 @@ impl HttpManagedCredentialRolloutTarget {
         base_url: impl Into<String>,
         token_source: Arc<dyn ServiceBearerTokenSource>,
     ) -> Result<Self, String> {
-        let base_url = base_url.into().trim_end_matches('/').to_owned();
-        let parsed = reqwest::Url::parse(&base_url)
-            .map_err(|error| format!("invalid Coordinator rollout URL: {error}"))?;
-        if !matches!(parsed.scheme(), "http" | "https")
-            || parsed.query().is_some()
-            || parsed.fragment().is_some()
-        {
-            return Err(
-                "Coordinator rollout URL must be an http(s) base URL without query or fragment"
-                    .into(),
-            );
-        }
+        let base_url = awaken_outbound_http::normalize_http_base_url(&base_url.into()).map_err(
+            |rejected| match rejected {
+                awaken_outbound_http::BaseUrlRejected::Malformed => {
+                    format!("invalid Coordinator rollout URL: {rejected}")
+                }
+                _ => "Coordinator rollout URL must be an http(s) base URL without query or \
+                      fragment"
+                    .to_owned(),
+            },
+        )?;
         awaken_service_auth_contract::resolve_service_bearer_token(token_source.as_ref())?;
         Ok(Self {
             endpoint: format!("{base_url}{PATH}"),
             token_source,
-            client: reqwest::Client::builder()
-                .no_proxy()
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .map_err(|error| error.to_string())?,
+            client: awaken_outbound_http::InternalHttpClient::new(std::time::Duration::from_secs(
+                30,
+            ))
+            .map_err(|error| error.to_string())?,
         })
     }
 }
@@ -135,21 +131,27 @@ impl ManagedCredentialRolloutTarget for HttpManagedCredentialRolloutTarget {
         let token =
             awaken_service_auth_contract::resolve_service_bearer_token(self.token_source.as_ref())
                 .map_err(ManagedCredentialAdoptionError::Unavailable)?;
+        let body = serde_json::to_string(event).map_err(|error| {
+            ManagedCredentialAdoptionError::Unavailable(format!(
+                "encode Managed credential rollout: {error}"
+            ))
+        })?;
         let response = self
             .client
-            .post(&self.endpoint)
-            .bearer_auth(token.as_ref())
-            .json(event)
-            .send()
+            .send(
+                &awaken_outbound_http::JsonRequest::post(&self.endpoint)
+                    .bearer(token.as_ref())
+                    .json_body(body),
+            )
             .await
             .map_err(|error| {
                 ManagedCredentialAdoptionError::Unavailable(format!(
                     "deliver Managed credential rollout: {error}"
                 ))
             })?;
-        if response.status() == StatusCode::NO_CONTENT {
+        if response.status() == StatusCode::NO_CONTENT.as_u16() {
             Ok(ManagedCredentialAdoptionProgress::Converged)
-        } else if response.status() == StatusCode::ACCEPTED {
+        } else if response.status() == StatusCode::ACCEPTED.as_u16() {
             Ok(ManagedCredentialAdoptionProgress::Pending)
         } else {
             Err(ManagedCredentialAdoptionError::Unavailable(format!(

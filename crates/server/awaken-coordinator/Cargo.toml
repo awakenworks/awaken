@@ -39,6 +39,7 @@ awaken-tenancy = { workspace = true }
 # Cross-cutting telemetry: the tracing subscriber + OTLP/AWAKEN_TRACE_FILE span
 # export + W3C traceparent propagator + ingress span middleware (not an ext).
 awaken-observability = { workspace = true }
+awaken-outbound-http = { workspace = true }
 # Open enforcement (S1): the session-axis guard + RequestTenancy the project
 # ingress stamps. The standalone wraps the session router with it.
 awaken-authz-enforce = { workspace = true }
@@ -112,7 +113,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 base64 = "0.22"
 uuid = { version = "1", features = ["v7"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
 axum = { version = "0.8", features = ["multipart"] }

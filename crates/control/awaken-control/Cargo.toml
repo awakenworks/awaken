@@ -71,7 +71,7 @@ base64 = "0.22"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 tracing = "0.1"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+url.workspace = true
 axum = { version = "0.8", features = ["multipart"] }
 
 [dev-dependencies]

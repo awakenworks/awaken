@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 
 pub const ERASE_COORDINATOR_CONTENT_PATH: &str = "/internal/v1/data-subjects/erase";
 pub const DATA_SUBJECT_ERASE_PERMISSION: &str = "data:erase";
+/// Total per-attempt deadline for one private control-plane call.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const ATTEMPTS: usize = 3;
 const RETRY_DELAY: Duration = Duration::from_millis(25);
 
@@ -125,7 +127,7 @@ async fn handle_erase(
 pub struct HttpCoordinatorContentEraser {
     endpoint: String,
     token_source: Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>,
-    client: reqwest::Client,
+    client: awaken_outbound_http::InternalHttpClient,
 }
 
 impl HttpCoordinatorContentEraser {
@@ -143,26 +145,20 @@ impl HttpCoordinatorContentEraser {
         base_url: impl Into<String>,
         token_source: Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>,
     ) -> Result<Self, String> {
-        let base_url = base_url.into().trim_end_matches('/').to_owned();
-        let parsed = reqwest::Url::parse(&base_url)
-            .map_err(|error| format!("invalid Coordinator erasure URL: {error}"))?;
-        if !matches!(parsed.scheme(), "http" | "https")
-            || parsed.query().is_some()
-            || parsed.fragment().is_some()
-        {
-            return Err(
-                "Coordinator erasure requires an http(s) base URL without query or fragment".into(),
-            );
-        }
+        let base_url = awaken_outbound_http::normalize_http_base_url(&base_url.into()).map_err(
+            |rejected| match rejected {
+                awaken_outbound_http::BaseUrlRejected::Malformed => {
+                    format!("invalid Coordinator erasure URL: {rejected}")
+                }
+                _ => "Coordinator erasure requires an http(s) base URL without query or fragment"
+                    .to_owned(),
+            },
+        )?;
         awaken_service_auth_contract::resolve_service_bearer_token(token_source.as_ref())?;
         Ok(Self {
             endpoint: format!("{base_url}{ERASE_COORDINATOR_CONTENT_PATH}"),
             token_source,
-            client: reqwest::Client::builder()
-                .no_proxy()
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
+            client: awaken_outbound_http::InternalHttpClient::new(REQUEST_TIMEOUT)
                 .map_err(|error| error.to_string())?,
         })
     }
@@ -177,22 +173,23 @@ impl HttpCoordinatorContentEraser {
                 self.token_source.as_ref(),
             )
             .map_err(ErasureError)?;
+            let body = serde_json::to_string(&command)
+                .map_err(|error| ErasureError(format!("encode erasure command: {error}")))?;
             match self
                 .client
-                .post(&self.endpoint)
-                .bearer_auth(bearer_token.as_ref())
-                .json(&command)
-                .send()
+                .send(
+                    &awaken_outbound_http::JsonRequest::post(&self.endpoint)
+                        .bearer(bearer_token.as_ref())
+                        .json_body(body),
+                )
                 .await
             {
-                Ok(response) if response.status().is_success() => {
-                    return response
-                        .json::<Result<usize, String>>()
-                        .await
+                Ok(response) if response.is_success() => {
+                    return serde_json::from_str::<Result<usize, String>>(response.body())
                         .map_err(|error| ErasureError(format!("decode erasure response: {error}")))?
                         .map_err(ErasureError);
                 }
-                Ok(response) if response.status() == StatusCode::UNAUTHORIZED => {
+                Ok(response) if response.is_unauthorized() => {
                     let rotated = awaken_service_auth_contract::service_bearer_token_rotated(
                         self.token_source.as_ref(),
                         bearer_token.as_ref(),
@@ -205,7 +202,7 @@ impl HttpCoordinatorContentEraser {
                         "Coordinator erasure credentials were rejected".into(),
                     ));
                 }
-                Ok(response) if response.status().is_client_error() => {
+                Ok(response) if response.is_client_error() => {
                     return Err(ErasureError(format!(
                         "Coordinator erasure command rejected: {}",
                         response.status()

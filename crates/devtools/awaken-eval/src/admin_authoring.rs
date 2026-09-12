@@ -412,9 +412,7 @@ pub async fn run_live(
     repetitions: usize,
     selected: Option<&std::collections::BTreeSet<String>>,
 ) -> Vec<AdminAuthoringObservation> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(90))
-        .build()
+    let client = awaken_outbound_http::InternalHttpClient::new(Duration::from_secs(90))
         .expect("static HTTP client configuration is valid");
     let base_url = base_url.trim_end_matches('/');
     let mut observations = Vec::new();
@@ -441,20 +439,20 @@ pub async fn run_live(
 }
 
 async fn draft(
-    client: &reqwest::Client,
+    client: &awaken_outbound_http::InternalHttpClient,
     base_url: &str,
     case: &AdminAuthoringCase,
 ) -> Result<Option<Value>, String> {
     let _ = request_json(
         client,
-        reqwest::Method::DELETE,
+        awaken_outbound_http::HttpMethod::Delete,
         &format!("{base_url}/v1/config/agents/{}", case.id),
         None,
     )
     .await;
     let session = request_json(
         client,
-        reqwest::Method::POST,
+        awaken_outbound_http::HttpMethod::Post,
         &format!("{base_url}/v1/sessions"),
         Some(json!({"agent": "__admin_assistant", "title": "eval"})),
     )
@@ -465,7 +463,7 @@ async fn draft(
         .ok_or_else(|| "session create response has no id".to_string())?;
     request_json(
         client,
-        reqwest::Method::POST,
+        awaken_outbound_http::HttpMethod::Post,
         &format!("{base_url}/v1/sessions/{session_id}/events"),
         Some(json!({"events": [{"type": "user.message", "content": [{"type": "text", "text": case.prompt}]}]})),
     )
@@ -475,7 +473,7 @@ async fn draft(
         tokio::time::sleep(Duration::from_secs(2)).await;
         let events = request_json(
             client,
-            reqwest::Method::GET,
+            awaken_outbound_http::HttpMethod::Get,
             &format!("{base_url}/v1/sessions/{session_id}/events"),
             None,
         )
@@ -493,7 +491,7 @@ async fn draft(
         if types.last() == Some(&"session.status_idle") {
             let config = request_json(
                 client,
-                reqwest::Method::GET,
+                awaken_outbound_http::HttpMethod::Get,
                 &format!("{base_url}/v1/config/agents/{}", case.id),
                 None,
             )
@@ -508,27 +506,26 @@ async fn draft(
 }
 
 async fn request_json(
-    client: &reqwest::Client,
-    method: reqwest::Method,
+    client: &awaken_outbound_http::InternalHttpClient,
+    method: awaken_outbound_http::HttpMethod,
     url: &str,
     body: Option<Value>,
 ) -> Result<Value, String> {
     let mut last_error = String::new();
     for attempt in 0..4 {
-        let mut request = client.request(method.clone(), url);
+        let mut request = awaken_outbound_http::JsonRequest::new(method, url);
         if let Some(body) = &body {
-            request = request.json(body);
+            request = request.json_body(
+                serde_json::to_string(body).map_err(|error| format!("encode {url}: {error}"))?,
+            );
         }
-        match request.send().await {
-            Ok(response) if response.status().is_success() => {
-                let bytes = response
-                    .bytes()
-                    .await
-                    .map_err(|error| format!("read {url}: {error}"))?;
-                return if bytes.is_empty() {
+        match client.send(&request).await {
+            Ok(response) if response.is_success() => {
+                return if response.body().is_empty() {
                     Ok(Value::Null)
                 } else {
-                    serde_json::from_slice(&bytes).map_err(|error| format!("parse {url}: {error}"))
+                    serde_json::from_str(response.body())
+                        .map_err(|error| format!("parse {url}: {error}"))
                 };
             }
             Ok(response) => {

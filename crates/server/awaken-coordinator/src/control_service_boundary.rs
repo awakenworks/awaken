@@ -21,6 +21,8 @@ use axum::{Json, Router, response::IntoResponse};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+/// Total per-attempt deadline for one private control-plane call.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const AUDIT_RECORD_PATH: &str = "/internal/v1/control/audit/record";
 const AUDIT_GET_PATH: &str = "/internal/v1/control/audit/get";
 const AUDIT_COMMIT_PATH: &str = "/internal/v1/control/audit/commit";
@@ -405,7 +407,7 @@ async fn export_organization(
 pub struct HttpControlServiceClient {
     base_url: String,
     token_source: Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>,
-    client: reqwest::Client,
+    client: awaken_outbound_http::InternalHttpClient,
 }
 
 impl HttpControlServiceClient {
@@ -423,26 +425,20 @@ impl HttpControlServiceClient {
         base_url: impl Into<String>,
         token_source: Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>,
     ) -> Result<Self, String> {
-        let base_url = base_url.into().trim_end_matches('/').to_owned();
-        let parsed = reqwest::Url::parse(&base_url)
-            .map_err(|error| format!("invalid Control service URL: {error}"))?;
-        if !matches!(parsed.scheme(), "http" | "https")
-            || parsed.query().is_some()
-            || parsed.fragment().is_some()
-        {
-            return Err(
-                "Control service requires an http(s) base URL and non-empty bearer token".into(),
-            );
-        }
+        let base_url = awaken_outbound_http::normalize_http_base_url(&base_url.into()).map_err(
+            |rejected| match rejected {
+                awaken_outbound_http::BaseUrlRejected::Malformed => {
+                    format!("invalid Control service URL: {rejected}")
+                }
+                _ => "Control service requires an http(s) base URL and non-empty bearer token"
+                    .to_owned(),
+            },
+        )?;
         awaken_service_auth_contract::resolve_service_bearer_token(token_source.as_ref())?;
         Ok(Self {
             base_url,
             token_source,
-            client: reqwest::Client::builder()
-                .no_proxy()
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
+            client: awaken_outbound_http::InternalHttpClient::new(REQUEST_TIMEOUT)
                 .map_err(|error| error.to_string())?,
         })
     }
@@ -457,12 +453,15 @@ impl HttpControlServiceClient {
             let bearer_token = awaken_service_auth_contract::resolve_service_bearer_token(
                 self.token_source.as_ref(),
             )?;
+            let body = serde_json::to_string(command)
+                .map_err(|error| format!("encode Control command: {error}"))?;
             let response = self
                 .client
-                .post(format!("{}{}", self.base_url, path))
-                .bearer_auth(bearer_token.as_ref())
-                .json(command)
-                .send()
+                .send(
+                    &awaken_outbound_http::JsonRequest::post(format!("{}{}", self.base_url, path))
+                        .bearer(bearer_token.as_ref())
+                        .json_body(body),
+                )
                 .await;
             let response = match response {
                 Ok(response) => response,
@@ -475,7 +474,7 @@ impl HttpControlServiceClient {
                     break;
                 }
             };
-            if response.status() == StatusCode::UNAUTHORIZED {
+            if response.is_unauthorized() {
                 let rotated = awaken_service_auth_contract::service_bearer_token_rotated(
                     self.token_source.as_ref(),
                     bearer_token.as_ref(),
@@ -486,13 +485,13 @@ impl HttpControlServiceClient {
                 return Err("Control service rejected bearer credentials".into());
             }
             let status = response.status();
-            match response.json::<Result<O, String>>().await {
-                Ok(Ok(value)) if status.is_success() => return Ok(value),
+            match serde_json::from_str::<Result<O, String>>(response.body()) {
+                Ok(Ok(value)) if response.is_success() => return Ok(value),
                 Ok(Err(error)) => last_error = Some(error),
                 Ok(Ok(_)) => last_error = Some(format!("Control service returned {status}")),
                 Err(error) => last_error = Some(format!("decode Control response: {error}")),
             }
-            if attempt < IDEMPOTENT_ATTEMPTS && status.is_server_error() {
+            if attempt < IDEMPOTENT_ATTEMPTS && response.is_server_error() {
                 tokio::time::sleep(RETRY_DELAY).await;
                 continue;
             }
