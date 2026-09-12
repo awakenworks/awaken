@@ -15,6 +15,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tokio = { workspace = true, features = ["net"] }
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["net", "io-util", "time"] }
+
 [features]
 default = []
 # A bounded permissive sender exists only for loopback integration tests.
