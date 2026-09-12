@@ -1048,6 +1048,111 @@ mod publication_projection_tests {
         );
     }
 
+    /// The full-replace PUT over the real route: an unaddressable key must be
+    /// refused, not applied as "that section was absent".
+    ///
+    /// | Rule | authored key                    | status | stored system prompt |
+    /// | U1   | `system` (the wire name)         | 200    | replaced as authored |
+    /// | U2   | `instructions` (the domain name) | 400    | unchanged            |
+    /// | U3   | `id`/`type`/`published`/lifecycle | 200    | replaced as authored |
+    ///
+    /// U2 is the live defect. `put_config` builds a **fresh** `AgentConfig` with
+    /// no merge, so a key the reader does not model does not leave its section
+    /// alone — the section is rebuilt from its default. Authoring `instructions`
+    /// returned 200 and stored an empty system prompt, destroying it.
+    ///
+    /// U3 pins the other half: the keys the GET projection itself emits stay
+    /// accepted, so the console's ordinary GET -> edit -> PUT is not broken by
+    /// the guard.
+    #[tokio::test]
+    async fn a_put_refuses_an_unaddressable_key_instead_of_blanking_its_section() {
+        let plane = ConfigPlane::new(
+            Arc::new(test_service()),
+            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+        );
+        let scope = ScopeId::from("workspace-unknown-key");
+        let mut seeded = agent_config("prompted-agent");
+        seeded.instructions = "the authored system prompt".into();
+        plane.put(&scope, &seeded).await.unwrap();
+
+        let wire_now = |plane: ConfigPlane, scope: ScopeId, id: String| async move {
+            let (status, Json(wire)) = get_config(
+                State(plane),
+                Path(id),
+                Some(Extension(WorkspaceScope(scope.as_str().into()))),
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            wire
+        };
+        let base = wire_now(plane.clone(), scope.clone(), seeded.id.clone()).await;
+        assert_eq!(base["system"], "the authored system prompt", "setup");
+
+        // U2: the same edit, addressed by the domain field name.
+        let mut renamed = base.clone();
+        renamed.as_object_mut().unwrap().remove("system");
+        renamed["instructions"] = json!("an edit the author expects to land");
+        let (status, Json(error)) = put_config(
+            State(plane.clone()),
+            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            Path(seeded.id.clone()),
+            Json(renamed),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "U2: {error}");
+        assert!(
+            error["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("instructions"),
+            "U2 names the offending key: {error}"
+        );
+        let stored = plane
+            .get_versioned(&scope, &seeded.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored.config.instructions, "the authored system prompt",
+            "U2: the authored prompt survives a refused write"
+        );
+        assert_eq!(stored.revision, 1, "U2: no revision is written");
+
+        // U1 + U3: the projected round trip, edited through the wire name, lands.
+        let mut edited = base;
+        edited["system"] = json!("an edit the author expects to land");
+        for (key, value) in [
+            ("id", json!(seeded.id.clone())),
+            ("type", json!("agent")),
+            ("published", json!(false)),
+            ("disabled_at", Value::Null),
+            ("archived_at", Value::Null),
+        ] {
+            edited[key] = value;
+        }
+        let (status, Json(saved)) = put_config(
+            State(plane.clone()),
+            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            Path(seeded.id.clone()),
+            Json(edited),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "U1/U3: {saved}");
+        assert_eq!(
+            plane
+                .get_versioned(&scope, &seeded.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .config
+                .instructions,
+            "an edit the author expects to land",
+            "U1/U3"
+        );
+    }
+
     // Causal decision table: present in trusted scope => exact value;
     // absent/cross-scope => 404; repository failure => 500.
     #[tokio::test]

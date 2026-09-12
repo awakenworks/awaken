@@ -64,8 +64,100 @@ fn managed_toolset(value: &Value) -> Result<Option<awaken_session_contract::Agen
     }
 }
 
+/// Every top-level key this reader consumes: each one is read below and lands in
+/// the returned [`AgentConfig`]. A key here is authored intent with an effect.
+const MODELLED_KEYS: [&str; 22] = [
+    "compaction",
+    "context_policy",
+    "delegation_limits",
+    "description",
+    "inference",
+    "max_steps",
+    "mcp_servers",
+    "metadata",
+    "model",
+    "model_candidates",
+    "multiagent",
+    "name",
+    "plugin_config",
+    "plugins",
+    "recovery_policies",
+    "skills",
+    "system",
+    "tool_discovery",
+    "tool_exposure",
+    "tool_overrides",
+    "tool_patterns",
+    "tools",
+];
+
+/// Keys the surrounding config routes own, not this projection: `generation` is
+/// the optimistic-concurrency fence read after the parse, and
+/// `permission_preset` is an authoring macro the route removes and applies to
+/// the compiled config. Accepted here so the one reader can be shared by the
+/// preview, validate and PUT routes without each stripping the other's keys.
+const ROUTE_OWNED_KEYS: [&str; 2] = ["generation", "permission_preset"];
+
+/// Server-owned keys echoed by [`managed_from_agent_config`] and therefore
+/// present in any `GET` → edit → `PUT` round trip. They are accepted and
+/// ignored, never authored: `id` comes from the request path, lifecycle
+/// (`disabled_at` / `archived_at`) belongs to `ManagedAgentRepository`, and
+/// `type` / `published` are projection metadata. Silently ignoring these is
+/// correct precisely because a client cannot set them by sending them —
+/// unlike an unknown key, whose only possible meaning is authored intent.
+const SERVER_OWNED_KEYS: [&str; 5] = ["archived_at", "disabled_at", "id", "published", "type"];
+
+/// Refuse a body carrying a key this projection does not model.
+///
+/// The PUT this feeds is a **full replace**: it builds a fresh `AgentConfig`
+/// with no merge against the stored one. So a key the reader has never heard of
+/// is not an ignorable extra — the section it was meant to address is rebuilt
+/// from its default and the authored content is destroyed, with a 200 and no
+/// diagnostic. Writing the domain field name `instructions` instead of the wire
+/// name `system` blanked the entire system prompt exactly that way.
+///
+/// This closes the asymmetry where a *malformed* section was reported while an
+/// *unaddressable* one was not. Unknown means unknown: only keys that are read
+/// here, owned by the surrounding route, or echoed back by this module's own
+/// projection are accepted.
+fn reject_unmodelled_keys(body: &Value) -> Result<(), String> {
+    // A non-object body reads as "every key absent", which would build an
+    // entirely default config and replace the stored one with it.
+    let Some(object) = body.as_object() else {
+        return Err("agent configuration must be a JSON object".to_string());
+    };
+    let mut unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| {
+            !MODELLED_KEYS.contains(key)
+                && !ROUTE_OWNED_KEYS.contains(key)
+                && !SERVER_OWNED_KEYS.contains(key)
+        })
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    unknown.sort_unstable();
+    let mut accepted: Vec<&str> = MODELLED_KEYS
+        .iter()
+        .chain(ROUTE_OWNED_KEYS.iter())
+        .chain(SERVER_OWNED_KEYS.iter())
+        .copied()
+        .collect();
+    accepted.sort_unstable();
+    Err(format!(
+        "unknown agent configuration field(s): {}. This request replaces the \
+         whole configuration, so an unrecognised field would silently blank the \
+         section it was meant to set. Accepted fields: {}",
+        unknown.join(", "),
+        accepted.join(", "),
+    ))
+}
+
 /// Parse a managed-shaped Agent object into the domain compile input.
 pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig, String> {
+    reject_unmodelled_keys(body)?;
     let string = |key: &str| body.get(key).and_then(Value::as_str).map(str::to_string);
     let model_binding = managed_model_selection(body.get("model"))?;
     let array = |key: &str| {
@@ -1051,5 +1143,96 @@ mod tests {
             agent_config_from_managed("manual".into(), &json!({ "multiagent": null }))
                 .expect("explicit opt-out");
         assert!(explicitly_disabled.multiagent.is_none());
+    }
+
+    /// Unknown-key admission for the full-replace authoring body.
+    ///
+    /// | Rule | body key                                 | effect |
+    /// | A1   | every key is modelled                    | accepted, sections bound |
+    /// | A2   | the domain name `instructions` (wire: `system`) | rejected, naming it |
+    /// | A3   | server-owned `disabled_at` / `archived_at` / `id` / `type` / `published` | accepted and ignored |
+    /// | A4   | route-owned `generation` / `permission_preset` | accepted |
+    /// | A5   | body is not a JSON object                | rejected |
+    ///
+    /// A2 is the live one. The PUT builds a fresh config with no merge, so an
+    /// unaddressable key does not leave the section alone — it rebuilds it from
+    /// the default. Authoring `instructions` used to return 200 with the system
+    /// prompt replaced by `""`.
+    ///
+    /// A3 must stay *accepted*: those keys are echoed by this module's own
+    /// projection, so rejecting them would break every `GET` → edit → `PUT`.
+    /// Ignoring them is safe because authority for each lives elsewhere; that is
+    /// exactly what an unknown key cannot claim.
+    #[test]
+    fn an_unmodelled_authoring_key_is_rejected_rather_than_blanking_a_section() {
+        let accepted = agent_config_from_managed(
+            "a".into(),
+            &json!({ "system": "be helpful", "max_steps": 7 }),
+        )
+        .expect("A1");
+        assert_eq!(accepted.instructions, "be helpful", "A1");
+
+        let error = agent_config_from_managed(
+            "a".into(),
+            &json!({ "instructions": "be helpful", "max_steps": 7 }),
+        )
+        .expect_err("A2: the domain field name is not the wire name");
+        assert!(error.contains("instructions"), "A2 names the key: {error}");
+        assert!(
+            error.contains("system"),
+            "A2 lists the accepted fields so the author can find `system`: {error}"
+        );
+
+        let tolerated = agent_config_from_managed(
+            "a".into(),
+            &json!({
+                "system": "be helpful",
+                "id": "a",
+                "type": "agent",
+                "published": true,
+                "disabled_at": "2026-01-01T00:00:00Z",
+                "archived_at": null,
+                "generation": 3,
+                "permission_preset": "controlled_modifications",
+            }),
+        )
+        .expect("A3/A4");
+        assert_eq!(tolerated.instructions, "be helpful", "A3/A4");
+        assert!(
+            tolerated.disabled_at.is_none() && tolerated.archived_at.is_none(),
+            "A3: lifecycle stays owned by the repository, never authored here"
+        );
+
+        for body in [json!("be helpful"), json!([]), json!(null)] {
+            assert!(
+                agent_config_from_managed("a".into(), &body).is_err(),
+                "A5: a non-object body must not build an all-default config: {body}"
+            );
+        }
+    }
+
+    /// Round-trip closure: every key this module's own projection emits must be
+    /// a key its reader accepts. Without this, adding a field to the projection
+    /// (or renaming one) turns the next `GET` → edit → `PUT` from the console
+    /// into a 400 — the allow-list would have to be remembered by hand.
+    #[test]
+    fn every_projected_key_survives_a_round_trip() {
+        let config = agent_config_from_managed(
+            "round-trip".into(),
+            &json!({ "system": "be helpful", "name": "Helper" }),
+        )
+        .expect("seed config");
+        let mut projected = managed_from_agent_config(&config, true);
+        // `get_config` adds the concurrency fence to exactly this projection.
+        projected
+            .as_object_mut()
+            .expect("projection is an object")
+            .insert("generation".to_string(), json!(1));
+
+        reject_unmodelled_keys(&projected).expect("a projected body must be re-authorable");
+        let back = agent_config_from_managed("round-trip".into(), &projected)
+            .expect("a projected body must parse back");
+        assert_eq!(back.instructions, config.instructions);
+        assert_eq!(back.name, config.name);
     }
 }
