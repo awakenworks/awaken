@@ -1825,12 +1825,18 @@ async fn stamp_workspace_scope_maps_resolved_tenancy_to_the_scope() {
 }
 
 #[tokio::test]
-async fn an_unscoped_request_falls_back_to_the_default_scope() {
-    // A flat / single-tenant deployment stamps no WorkspaceScope: create and read
-    // both resolve to the seeded `default` scope, so the row is self-consistent.
+async fn an_unscoped_request_is_refused_before_any_row_is_written() {
+    // A subscription is an owned, tenant-fenced resource, so there is no absent
+    // Workspace to default: the trusted ingress edge stamps one, and a request
+    // that reaches the router without it is refused with the same
+    // non-disclosing 404 a foreign Workspace gets, before the handler body runs.
+    // (This test used to assert the opposite -- that an unscoped request fell
+    // back to a seeded `default` scope -- which is the behaviour
+    // `fix(tenancy): refuse an unstamped Workspace instead of defaulting it`
+    // removed.)
     let store = Arc::new(MemStore::default());
     let secrets = Arc::new(MemSecrets::ok());
-    let (status, body) = call(
+    let (status, _) = call(
         store.clone(),
         secrets.clone(),
         "PUT",
@@ -1839,12 +1845,14 @@ async fn an_unscoped_request_falls_back_to_the_default_scope() {
         Some(json!({ "url": "https://x.example/y" })),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED);
-    assert_eq!(body["workspace_id"], "default", "unscoped → default scope");
-    assert_eq!(store.get("wh1").unwrap().workspace_id, "default");
+    assert_eq!(status, StatusCode::NOT_FOUND, "unscoped create is refused");
+    assert!(
+        store.get("wh1").is_none(),
+        "a refused create writes no subscription"
+    );
 
-    // An equally-unscoped GET reads it back under the same default scope.
-    let (gstatus, gbody) = call(
+    // The same refusal on the read side, and still nothing to read.
+    let (gstatus, _) = call(
         store,
         secrets,
         "GET",
@@ -1853,8 +1861,7 @@ async fn an_unscoped_request_falls_back_to_the_default_scope() {
         None,
     )
     .await;
-    assert_eq!(gstatus, StatusCode::OK);
-    assert_eq!(gbody["url"], "https://x.example/y");
+    assert_eq!(gstatus, StatusCode::NOT_FOUND, "unscoped read is refused");
 }
 
 #[tokio::test]

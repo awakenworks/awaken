@@ -257,7 +257,15 @@ impl ModelBinding {
         }
         match Backend::from_ref(&backend_ref) {
             Backend::Invalid(_) => return Err(InvalidModelBinding::Backend(backend_ref)),
-            Backend::Native if provider_identity_ref.is_empty() || model_ref.is_empty() => {
+            // Half a native binding is the incoherence worth refusing: a
+            // provider with no model, or a model with no provider, names
+            // nothing executable. Both empty is a different shape entirely --
+            // a host-installed executor (`ResolvedModelCandidate::host`) names
+            // itself in `backend_ref` and has no provider or model to state --
+            // and refusing it made every such binding constructible but not
+            // decodable, which stalled runs at the wire instead of failing
+            // where the coordinates were written.
+            Backend::Native if provider_identity_ref.is_empty() != model_ref.is_empty() => {
                 return Err(InvalidModelBinding::IncompleteNative {
                     provider_identity_ref,
                     model_ref,
@@ -327,5 +335,52 @@ impl ModelBinding {
     #[must_use]
     pub fn backend(&self) -> Backend {
         Backend::from_ref(&self.backend_ref)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Construction and decoding must accept the same bindings.
+    ///
+    /// `new` is infallible and `Deserialize` routes through `parse`, so any
+    /// shape the two disagree on is constructible in memory and undecodable on
+    /// the wire. That is not a loud failure: the record simply stops decoding,
+    /// and the run that carried it stalls with no terminal event. A
+    /// host-installed executor binding -- no provider, no model, the executor
+    /// named in `backend_ref` -- is exactly the shape that disagreed.
+    #[test]
+    fn every_constructible_binding_round_trips_through_the_wire() {
+        for (provider, model, backend) in [
+            ("", "", "scripted"),
+            ("", "", "native"),
+            ("anthropic", "claude-opus-4", "native"),
+            ("scenario", "model", "acp:claude"),
+            ("scenario", "model", "a2a:https://agent.example"),
+        ] {
+            let built = ModelBinding::new(provider, model, backend);
+            let encoded = serde_json::to_string(&built).expect("binding encodes");
+            let decoded: ModelBinding = serde_json::from_str(&encoded).unwrap_or_else(|error| {
+                panic!(
+                    "({provider}, {model}, {backend}) is constructible but not decodable: {error}"
+                )
+            });
+            assert_eq!(decoded, built, "({provider}, {model}, {backend})");
+        }
+    }
+
+    /// The incoherence the completeness rule exists for: half a native binding.
+    #[test]
+    fn half_a_native_binding_is_refused() {
+        assert!(matches!(
+            ModelBinding::parse("anthropic", "", "native"),
+            Err(InvalidModelBinding::IncompleteNative { .. })
+        ));
+        assert!(matches!(
+            ModelBinding::parse("", "claude-opus-4", "native"),
+            Err(InvalidModelBinding::IncompleteNative { .. })
+        ));
+        assert!(ModelBinding::parse("", "", "scripted").is_ok());
     }
 }

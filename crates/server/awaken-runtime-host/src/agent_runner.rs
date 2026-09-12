@@ -765,10 +765,18 @@ mod tests {
             auxiliary.clone(),
         ])
         .expect("P1 complete attempt source");
+        // Delegated publications are frozen FROM a Workspace, so a parent that
+        // delegates must carry one; the manifest is where the Session states
+        // it. Passing None here made the admission refuse rather than guess.
+        let owner = awaken_session_contract::SessionResourceManifest::new(
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+            awaken_session_contract::ResolvedSessionResources::try_new(Vec::new(), Vec::new())
+                .expect("P1 empty owned resources"),
+        );
         let request = child_dispatch_request(
             activation.clone(),
             ThreadId("parent-thread".into()),
-            None,
+            Some(owner.clone()),
             Some(&complete),
         )
         .expect("P1 child admission");
@@ -793,7 +801,10 @@ mod tests {
             child_dispatch_request(
                 activation,
                 ThreadId("parent-thread".into()),
-                None,
+                // Same owner as P1: without it the refusal would be about the
+                // missing Workspace, and P2 would pass without ever exercising
+                // an incomplete publication source.
+                Some(owner),
                 Some(&incomplete),
             )
             .is_err(),
