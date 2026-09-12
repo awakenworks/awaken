@@ -121,7 +121,12 @@ impl awaken_session_contract::McpAttachmentRealizer for CapturingFake {
     }
 }
 
-async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn call(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> support::Call<serde_json::Value> {
     let mut b = Request::builder().method(method).uri(uri);
     let body = match body {
         Some(v) => {
@@ -134,7 +139,7 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, value)
+    support::Call::new(status, value)
 }
 
 #[tokio::test]
@@ -157,57 +162,66 @@ async fn session_carries_the_exact_frozen_environment_network() {
     );
 
     // A limited-networking environment.
-    let (status, limited) = call(
+    let limited = call(
         &app,
         "POST",
         "/v1/environments",
         Some(json!({ "name": "l", "config": { "type": "cloud", "networking": { "type": "limited" } } })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await.expect(StatusCode::OK);
     let limited_id = limited["id"].as_str().unwrap().to_string();
 
     // A session on it stages the exact closed policy.
-    let (s, _) = call(
+    let _ = call(
         &app,
         "POST",
         "/v1/sessions",
         Some(json!({ "agent": "a", "environment_id": limited_id })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(
         egress.lock().unwrap().last(),
         Some(&awaken_session_contract::SessionNetworkPolicy::None)
     );
 
     // An unrestricted environment keeps the exact open policy.
-    let (status, open) = call(
+    let open = call(
         &app,
         "POST",
         "/v1/environments",
         Some(json!({ "name": "o", "config": { "type": "cloud", "networking": { "type": "unrestricted" } } })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await.expect(StatusCode::OK);
     let open_id = open["id"].as_str().unwrap().to_string();
-    call(
+    let _ = call(
         &app,
         "POST",
         "/v1/sessions",
         Some(json!({ "agent": "a", "environment_id": open_id })),
     )
-    .await;
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(
         egress.lock().unwrap().last(),
         Some(&awaken_session_contract::SessionNetworkPolicy::Unrestricted)
     );
 
-    // An omitted/unknown environment defaults to host network.
-    call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
+    // An omitted Environment is refused before any policy is frozen.
+    //
+    // This block used to claim an omitted Environment "defaults to host
+    // network" and assert Unrestricted. It never tested that: `environment_id`
+    // is a required field, the create answered 400, and the assertion was
+    // reading the policy the *previous* session had frozen. Naming the status
+    // is what surfaced it.
+    let frozen_before = egress.lock().unwrap().len();
+    let _ = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" })))
+        .await
+        .expect(StatusCode::BAD_REQUEST);
     assert_eq!(
-        egress.lock().unwrap().last(),
-        Some(&awaken_session_contract::SessionNetworkPolicy::Unrestricted)
+        egress.lock().unwrap().len(),
+        frozen_before,
+        "a refused create freezes no network policy"
     );
 }
 
@@ -243,7 +257,7 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
     );
 
     async fn environment(app: &Router, networking: Value) -> String {
-        let (status, value) = call(
+        let value = call(
             app,
             "POST",
             "/v1/environments",
@@ -252,8 +266,8 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
                 "config": { "type": "cloud", "networking": networking }
             })),
         )
-        .await;
-        assert_eq!(status, StatusCode::OK);
+        .await
+        .expect(StatusCode::OK);
         value["id"].as_str().unwrap().to_string()
     }
     async fn create_session(app: &Router, environment_id: &str, with_mcp: bool) {
@@ -270,8 +284,9 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
                 "tools": [{"type": "mcp_toolset", "mcp_server_name": "docs"}]
             });
         }
-        let (status, response) = call(app, "POST", "/v1/sessions", Some(body)).await;
-        assert_eq!(status, StatusCode::OK, "{response}");
+        let _response = call(app, "POST", "/v1/sessions", Some(body))
+            .await
+            .expect_for(StatusCode::OK, "expected status");
     }
 
     let disabled = environment(
