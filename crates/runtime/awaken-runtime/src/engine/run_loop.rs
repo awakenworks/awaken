@@ -643,10 +643,9 @@ pub(super) async fn drive(
             run_id,
             step,
             PhaseHookPoint::StepStart,
-            &ledger.transcript,
             &run_input,
             &mut store,
-            &mut ledger.staged_state,
+            &mut ledger,
         )
         .await;
         run_phase_hooks(
@@ -655,10 +654,9 @@ pub(super) async fn drive(
             run_id,
             step,
             PhaseHookPoint::BeforeInference,
-            &ledger.transcript,
             &run_input,
             &mut store,
-            &mut ledger.staged_state,
+            &mut ledger,
         )
         .await;
         // Request-only context the `BeforeInference` hooks wrote to state: the
@@ -788,10 +786,9 @@ pub(super) async fn drive(
             run_id,
             step,
             PhaseHookPoint::AfterInference,
-            &ledger.transcript,
             &run_input,
             &mut store,
-            &mut ledger.staged_state,
+            &mut ledger,
         )
         .await;
 
@@ -1003,10 +1000,9 @@ pub(super) async fn drive(
             run_id,
             step,
             PhaseHookPoint::StepEnd,
-            &ledger.transcript,
             &run_input,
             &mut store,
-            &mut ledger.staged_state,
+            &mut ledger,
         )
         .await;
     }
@@ -1017,12 +1013,9 @@ pub(super) async fn drive(
     Ok(ledger.into_step_result(disposition))
 }
 
-/// Run every hook registered for one phase point, in dependency order, staging
-/// their state commands. Hooks return data; they never write a store (G9/G30).
-/// Run every phase hook registered for `point`, staging their state commands and
-/// collecting their request-only context messages. The context is meaningful only
-/// at `BeforeInference` (where the caller prepends it to the request); other points
-/// discard it.
+/// Apply each phase reaction to the one Step ledger. Both state and durable
+/// messages reach subsequent hooks and the next inference, then commit together.
+/// Request-only context still uses ContextMessages and is never a ledger message.
 #[allow(clippy::too_many_arguments)]
 async fn run_phase_hooks(
     env: &ResolvedExecutionEnv,
@@ -1030,10 +1023,9 @@ async fn run_phase_hooks(
     run_id: &RunId,
     step: usize,
     point: PhaseHookPoint,
-    conversation: &[Message],
     run_input: &std::sync::Arc<[Message]>,
     store: &mut Store,
-    staged_state: &mut Vec<StateCommand>,
+    ledger: &mut StepLedger,
 ) {
     // The tool-result phase carries per-call data and runs via
     // `collect_tool_reactions`, never here.
@@ -1058,7 +1050,7 @@ async fn run_phase_hooks(
         // Normal return cannot erase a nested veto; drop/unwind cannot ACK it.
         let reaction = context
             .physical_quiescence
-            .observe_return(hook.on_phase(&ctx, conversation, store))
+            .observe_return(hook.on_phase(&ctx, &ledger.transcript, store))
             .await;
         // Apply the reaction's state to the live store before the next hook, so a
         // once-per-run hook that gates on its own run-scoped key sees its own
@@ -1069,7 +1061,10 @@ async fn run_phase_hooks(
         for command in &reaction.state {
             store.apply(command);
         }
-        staged_state.extend(reaction.state);
+        ledger.staged_state.extend(reaction.state);
+        for message in reaction.messages {
+            ledger.push_message(message);
+        }
     }
 }
 
