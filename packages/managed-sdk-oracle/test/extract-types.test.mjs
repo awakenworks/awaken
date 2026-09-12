@@ -75,7 +75,10 @@ test('current wire contract extracts recursive Session shape and event vocabular
   assert.deepEqual(wire.resource_params.memory_store.required, ['memory_store_id', 'type']);
   assert.deepEqual(wire.resource_params.memory_store.optional, ['access', 'instructions']);
   assert.ok(wire.resource_params.file.optional.includes('mount_path'));
-  assert.ok(wire.resource_params.github_repository.required.includes('authorization_token'));
+  // 0.125: the GitHub token is required only for private repositories, so the
+  // declaration moved it to optional; a public repository mounts without one.
+  assert.ok(wire.resource_params.github_repository.optional.includes('authorization_token'));
+  assert.equal(wire.resource_params.github_repository.required.includes('authorization_token'), false);
   for (const shape of [wire.session, wire.session.nested.agent]) {
     assert.equal(
       new Set([...shape.required, ...shape.optional]).size,

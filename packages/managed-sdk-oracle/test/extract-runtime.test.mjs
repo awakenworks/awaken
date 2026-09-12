@@ -98,3 +98,18 @@ test('runtime fingerprint changes exactly when the Managed dependency closure ch
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('a relative package root fingerprints exactly like its absolute root', () => {
+  // Cause/effect graph: C1 the root is absolute; C2 the root is relative to
+  // the working directory. Effects: E1 identical file inventory with no
+  // duplicate paths; E2 identical fingerprint. Rule R1 = C1 == C2 => E1 + E2.
+  // Before normalization a relative root visited entry modules twice (once by
+  // the relative seed, once through an absolute import) and hashed them twice.
+  const current = resolveSdkPackage('@anthropic-ai/sdk-current');
+  const absolute = managedRuntimeFingerprintFromPackageRoot(current.root, scope);
+  const relative = managedRuntimeFingerprintFromPackageRoot(path.relative(process.cwd(), current.root), scope);
+  const paths = absolute.files.map(({ path: file }) => file);
+  assert.equal(new Set(paths).size, paths.length, 'E1 no duplicate paths');
+  assert.deepEqual(relative.files, absolute.files, 'E1 identical inventory');
+  assert.equal(relative.fingerprint, absolute.fingerprint, 'E2 identical fingerprint');
+});
