@@ -715,8 +715,13 @@ export async function provisionProviderTestModel(base, workspace, item, profileI
   // Writing a Native profile and relabelling its run
   // would not exercise ACP. Control still owns dialect/capability admission and
   // credential selection, and freezes the selected source in the publication.
-  let model = `${encodeURIComponent(offering.model_id)};provider=${encodeURIComponent(offering.provider_id)};api=${item.dialect};executor=${backendRef}`;
-  if (backendRef === 'genai') {
+  let model = backendRef === 'genai'
+    ? offering.model_id
+    : `${encodeURIComponent(offering.model_id)};provider=${encodeURIComponent(offering.provider_id)};api=${item.dialect};executor=${backendRef}`;
+  // An explicit profile id requests the Config-plane profile variant. Public
+  // Managed Agent tests omit it and use the already-supported exact model-id
+  // wire selection; do not manufacture an unused parallel profile for them.
+  if (backendRef === 'genai' && profileId) {
     await request('PUT', `/v1/config/inference-profiles/${profileId}`, {
       workspace_id: workspace,
       primary: { target, credential_binding: { type: 'exact', credential_source_id: connection.credential.id } },

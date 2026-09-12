@@ -157,6 +157,12 @@ impl SharedHost {
                 )
             });
         let mut request = RunDispatch::new(activation)
+            .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+                awaken_tenancy::ScopeId::from(resources.as_ref().map_or_else(
+                    || workspace.clone(),
+                    |manifest| manifest.workspace_id.clone(),
+                )),
+            ))
             .with_traceparent(traceparent)
             .with_agent_publications(agent_publications);
         // Thread ownership survives an environment-free auxiliary Run. A
@@ -183,11 +189,7 @@ impl SharedHost {
                 .map_err(|error| {
                 HostError::internal(format!("serialize Session resource manifest: {error}"))
             })?;
-            request = request
-                .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
-                    awaken_tenancy::ScopeId::from(resources.workspace_id.clone()),
-                ))
-                .with_session_resources(envelope);
+            request = request.with_session_resources(envelope);
         }
         if let Some((environment, tools, mcp_stages)) = runtime_projection {
             // Remote warm capacity is container-backed and therefore preserves
