@@ -157,13 +157,14 @@ async fn session_carries_the_exact_frozen_environment_network() {
     );
 
     // A limited-networking environment.
-    let (_, limited) = call(
+    let (status, limited) = call(
         &app,
         "POST",
         "/v1/environments",
         Some(json!({ "name": "l", "config": { "type": "cloud", "networking": { "type": "limited" } } })),
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     let limited_id = limited["id"].as_str().unwrap().to_string();
 
     // A session on it stages the exact closed policy.
@@ -181,13 +182,14 @@ async fn session_carries_the_exact_frozen_environment_network() {
     );
 
     // An unrestricted environment keeps the exact open policy.
-    let (_, open) = call(
+    let (status, open) = call(
         &app,
         "POST",
         "/v1/environments",
         Some(json!({ "name": "o", "config": { "type": "cloud", "networking": { "type": "unrestricted" } } })),
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     let open_id = open["id"].as_str().unwrap().to_string();
     call(
         &app,

@@ -233,19 +233,22 @@ async fn deployment_lifecycle_and_runs() {
 
     // Pause suppresses future schedule occurrences, but not an explicit manual
     // run. The Deployment remains paused after the manual run.
-    let (_, paused) = call(&app, "POST", &format!("/v1/deployments/{id}/pause"), None).await;
+    let (status, paused) = call(&app, "POST", &format!("/v1/deployments/{id}/pause"), None).await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(paused["status"], "paused");
     assert_eq!(paused["paused_reason"]["type"], "manual");
     let (s, paused_run) = call(&app, "POST", &format!("/v1/deployments/{id}/run"), None).await;
     assert_eq!(s, StatusCode::OK, "L2/E2");
     assert_eq!(paused_run["trigger_context"]["type"], "manual", "L2/E2");
     assert!(paused_run["session_id"].is_string(), "L2/E2");
-    let (_, still_paused) = call(&app, "GET", &format!("/v1/deployments/{id}"), None).await;
+    let (status, still_paused) = call(&app, "GET", &format!("/v1/deployments/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(still_paused["status"], "paused", "L2/E2");
     assert_eq!(still_paused["paused_reason"]["type"], "manual", "L2/E2");
 
     // Unpause → active + null.
-    let (_, unp) = call(&app, "POST", &format!("/v1/deployments/{id}/unpause"), None).await;
+    let (status, unp) = call(&app, "POST", &format!("/v1/deployments/{id}/unpause"), None).await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(unp["status"], "active");
     assert!(unp["paused_reason"].is_null());
 
@@ -264,32 +267,37 @@ async fn deployment_lifecycle_and_runs() {
     let (s, got_run) = call(&app, "GET", &format!("/v1/deployment_runs/{run_id}"), None).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(got_run["id"], run_id);
-    let (_, runs) = call(
+    let (status, runs) = call(
         &app,
         "GET",
         &format!("/v1/deployment_runs?deployment_id={id}"),
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(runs["data"].as_array().unwrap().len(), 2);
     // A filter that matches nothing yields an empty page.
-    let (_, none) = call(
+    let (status, none) = call(
         &app,
         "GET",
         "/v1/deployment_runs?deployment_id=deploy_other",
         None,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(none["data"].as_array().unwrap().len(), 0);
 
     // Archive.
-    let (_, arch) = call(&app, "POST", &format!("/v1/deployments/{id}/archive"), None).await;
+    let (status, arch) = call(&app, "POST", &format!("/v1/deployments/{id}/archive"), None).await;
+    assert_eq!(status, StatusCode::OK);
     assert!(arch["archived_at"].is_string());
 
     // Archived rows are hidden by default and opt-in through the SDK filter.
-    let (_, page) = call(&app, "GET", "/v1/deployments", None).await;
+    let (status, page) = call(&app, "GET", "/v1/deployments", None).await;
+    assert_eq!(status, StatusCode::OK);
     assert!(page["data"].as_array().unwrap().is_empty());
-    let (_, page) = call(&app, "GET", "/v1/deployments?include_archived=true", None).await;
+    let (status, page) = call(&app, "GET", "/v1/deployments?include_archived=true", None).await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(page["data"].as_array().unwrap()[0]["id"], id);
 }
 
@@ -398,7 +406,8 @@ async fn schedule_cron_is_validated_and_echoed_at_the_wire() {
     )
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
-    let (_, still) = call(&app, "GET", &format!("/v1/deployments/{id}"), None).await;
+    let (status, still) = call(&app, "GET", &format!("/v1/deployments/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(
         still["schedule"]["expression"], "0 9 * * 1-5",
         "the rejected update did not corrupt the stored schedule"
@@ -461,7 +470,8 @@ async fn deployment_repository_credentials_fail_closed_before_persistence() {
             .is_some_and(|message| message.contains("cannot be stored durably")),
         "R2 explicit remediation"
     );
-    let (_, page) = call(&app, "GET", "/v1/deployments", None).await;
+    let (status, page) = call(&app, "GET", "/v1/deployments", None).await;
+    assert_eq!(status, StatusCode::OK);
     assert!(page["data"].as_array().unwrap().is_empty(), "R2 no state");
 }
 
@@ -490,7 +500,8 @@ async fn deployment_repository_paths_fail_closed_before_persistence() {
 
     let (status, _) = call(&app, "POST", "/v1/deployments", Some(request("/repo"))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "D2");
-    let (_, page) = call(&app, "GET", "/v1/deployments", None).await;
+    let (status, page) = call(&app, "GET", "/v1/deployments", None).await;
+    assert_eq!(status, StatusCode::OK);
     assert!(page["data"].as_array().unwrap().is_empty(), "D2 no state");
 
     let (status, created) = call(

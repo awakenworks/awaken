@@ -4008,7 +4008,8 @@ async fn github_repository_live_attach_is_rejected_without_runtime_effect() {
     let app = router(std::sync::Arc::new(
         ManagedState::new(runtime).with_resource_registry(resource_registry()),
     ));
-    let (_, session) = call(&app, "POST", "/v1/sessions", Some(json!({"agent": "a"}))).await;
+    let (status, session) = call(&app, "POST", "/v1/sessions", Some(json!({"agent": "a"}))).await;
+    assert_eq!(status, StatusCode::OK);
     let id = session["id"].as_str().unwrap();
     let before = applied.lock().unwrap().len();
 
@@ -4083,7 +4084,7 @@ async fn repository_item_delete_uses_durable_manifest_retirement() {
             .with_session_repo(sessions.clone())
             .with_resource_registry(catalog.clone()),
     ));
-    let (_, session) = call(
+    let (status, session) = call(
         &app,
         "POST",
         "/v1/sessions",
@@ -4096,6 +4097,7 @@ async fn repository_item_delete_uses_durable_manifest_retirement() {
         })),
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     let session_id = session["id"].as_str().unwrap();
     let resource_id = session["resources"][0]["id"].as_str().unwrap();
     let repository_id = match &sessions
@@ -4157,7 +4159,7 @@ async fn whole_manifest_omission_uses_durable_repository_retirement() {
             .with_session_repo(sessions.clone())
             .with_resource_registry(catalog.clone()),
     ));
-    let (_, session) = call(
+    let (status, session) = call(
         &app,
         "POST",
         "/v1/sessions",
@@ -4170,6 +4172,7 @@ async fn whole_manifest_omission_uses_durable_repository_retirement() {
         })),
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     let session_id = session["id"].as_str().unwrap();
     let repository_id = match &sessions
         .get(session_id)
@@ -4239,7 +4242,8 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
     let app = router(std::sync::Arc::new(
         ManagedState::new(runtime).with_resource_registry(resource_registry()),
     ));
-    let (_, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
+    let (status, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
+    assert_eq!(status, StatusCode::OK);
     let id = session["id"].as_str().unwrap();
     let uri = format!("/v1/awaken/sessions/{id}/resources");
     let compatibility_uri = format!("/v1/sessions/{id}/resources");
@@ -4520,7 +4524,8 @@ async fn failed_manifest_realization_keeps_active_and_exposes_durable_desired() 
             .with_session_repo(repo.clone())
             .with_resource_registry(resource_registry()),
     ));
-    let (_, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
+    let (status, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
+    assert_eq!(status, StatusCode::OK);
     let id = session["id"].as_str().unwrap();
     let uri = format!("/v1/awaken/sessions/{id}/resources");
     let (status, error) = call(
@@ -4568,7 +4573,7 @@ async fn retained_repository_manifest_inherits_binding_without_resubmitting_secr
             .with_vaults(vaults)
             .with_resource_registry(resource_registry()),
     ));
-    let (_, session) = call(
+    let (status, session) = call(
         &app,
         "POST",
         "/v1/sessions",
@@ -4584,6 +4589,7 @@ async fn retained_repository_manifest_inherits_binding_without_resubmitting_secr
         })),
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     let id = session["id"].as_str().unwrap();
     let before = repo.get(id).await.unwrap();
     let old = before.resources.desired().inputs()[0].clone();
@@ -4673,7 +4679,7 @@ async fn repository_authorization_fails_closed_without_vault_or_existing_binding
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(prepared.lock().unwrap().is_empty());
 
-    let (_, session) = call(
+    let (status, session) = call(
         &app,
         "POST",
         "/v1/sessions",
@@ -4686,6 +4692,7 @@ async fn repository_authorization_fails_closed_without_vault_or_existing_binding
         })),
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     let session_id = session["id"].as_str().unwrap();
     let resource_id = session["resources"][0]["id"].as_str().unwrap();
     let applied_before = applied.lock().unwrap().len();
