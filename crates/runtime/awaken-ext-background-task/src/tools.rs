@@ -41,13 +41,7 @@ impl CancelBackgroundTask {
 
 #[must_use]
 pub fn is_management_tool(id: &str) -> bool {
-    [
-        RunInBackground::ID,
-        ListBackgroundTasks::ID,
-        GetBackgroundTask::ID,
-        CancelBackgroundTask::ID,
-    ]
-    .contains(&id)
+    crate::management_tool_ids().contains(&id)
 }
 
 pub fn tools(
@@ -144,6 +138,10 @@ struct TaskView<'a> {
     tool_id: &'a str,
     lifecycle: TaskLifecycleView<'a>,
     revision: u64,
+}
+
+pub(crate) fn task_view_value(task: &BackgroundTask) -> serde_json::Value {
+    serde_json::to_value(TaskView::from(task)).expect("public task view serializes")
 }
 
 #[derive(Serialize)]

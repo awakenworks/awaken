@@ -160,7 +160,7 @@ impl ContextWindowPlan {
 }
 
 /// What a hook stages back into the loop: durable state commands plus committed
-/// messages. `messages` are **committed** reminder messages an `AfterTool` hook
+/// messages. `messages` are **committed** messages a phase hook
 /// appends to the transcript (so they reach the next inference and replay
 /// deterministically). Request-only context is *not* a message here — a
 /// `BeforeInference` hook writes it to the [`ContextMessages`] state key, which the

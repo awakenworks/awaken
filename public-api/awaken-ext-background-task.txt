@@ -43,6 +43,15 @@ pub enum awaken_ext_background_task::TaskClaim
 pub awaken_ext_background_task::TaskClaim::Acquired(awaken_ext_background_task::TaskFence)
 pub awaken_ext_background_task::TaskClaim::EndedAttemptsExhausted
 pub awaken_ext_background_task::TaskClaim::EndedIndeterminate
+pub enum awaken_ext_background_task::TaskNotificationEvent
+pub awaken_ext_background_task::TaskNotificationEvent::Cancelled
+pub awaken_ext_background_task::TaskNotificationEvent::Completed
+pub awaken_ext_background_task::TaskNotificationEvent::Failed
+pub awaken_ext_background_task::TaskNotificationEvent::Indeterminate
+pub enum awaken_ext_background_task::TaskNotificationFormat
+pub awaken_ext_background_task::TaskNotificationFormat::Json
+pub awaken_ext_background_task::TaskNotificationFormat::Tagged
+pub awaken_ext_background_task::TaskNotificationFormat::Text
 pub struct awaken_ext_background_task::BackgroundInvocation
 pub awaken_ext_background_task::BackgroundInvocation::call: awaken_runtime_contract::llm::ToolCall
 pub struct awaken_ext_background_task::BackgroundTask
@@ -66,6 +75,7 @@ pub struct awaken_ext_background_task::BackgroundTaskCompletion
 pub awaken_ext_background_task::BackgroundTaskCompletion::end: awaken_ext_background_task::BackgroundTaskEnd
 pub awaken_ext_background_task::BackgroundTaskCompletion::fence: awaken_ext_background_task::TaskFence
 pub struct awaken_ext_background_task::BackgroundTaskConfig
+pub awaken_ext_background_task::BackgroundTaskConfig::notifications: awaken_ext_background_task::TaskNotifications
 pub awaken_ext_background_task::BackgroundTaskConfig::tools: alloc::collections::btree::set::BTreeSet<alloc::string::String>
 pub struct awaken_ext_background_task::BackgroundTaskId(_)
 impl awaken_ext_background_task::BackgroundTaskId
@@ -123,9 +133,24 @@ pub awaken_ext_background_task::TaskExecutionPolicy::recovery: awaken_runtime_co
 pub struct awaken_ext_background_task::TaskFence
 pub awaken_ext_background_task::TaskFence::epoch: u64
 pub awaken_ext_background_task::TaskFence::worker_id: alloc::string::String
+pub struct awaken_ext_background_task::TaskNotificationRule
+pub awaken_ext_background_task::TaskNotificationRule::enabled: bool
+pub awaken_ext_background_task::TaskNotificationRule::fields: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_ext_background_task::TaskNotificationRule::format: awaken_ext_background_task::TaskNotificationFormat
+pub awaken_ext_background_task::TaskNotificationRule::heading: alloc::string::String
+pub awaken_ext_background_task::TaskNotificationRule::max_body_chars: usize
+pub awaken_ext_background_task::TaskNotificationRule::tag: alloc::string::String
+pub awaken_ext_background_task::TaskNotificationRule::when: alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>
+impl core::default::Default for awaken_ext_background_task::TaskNotificationRule
+pub fn awaken_ext_background_task::TaskNotificationRule::default() -> Self
+pub struct awaken_ext_background_task::TaskNotifications
+pub awaken_ext_background_task::TaskNotifications::default: awaken_ext_background_task::TaskNotificationRule
+pub awaken_ext_background_task::TaskNotifications::events: alloc::collections::btree::map::BTreeMap<awaken_ext_background_task::TaskNotificationEvent, awaken_ext_background_task::TaskNotificationRule>
+pub awaken_ext_background_task::TaskNotifications::tools: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::collections::btree::map::BTreeMap<awaken_ext_background_task::TaskNotificationEvent, awaken_ext_background_task::TaskNotificationRule>>
 pub const awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID: &str
 pub const awaken_ext_background_task::BACKGROUND_TASK_STATE_PREFIX: &str
 pub fn awaken_ext_background_task::config_schema() -> serde_json::value::Value
+pub fn awaken_ext_background_task::management_tool_ids() -> [&'static str; 4]
 pub fn awaken_ext_background_task::process_supervisor() -> alloc::sync::Arc<awaken_ext_background_task::BackgroundTaskSupervisor>
 pub fn awaken_ext_background_task::task_state_cell(&awaken_ext_background_task::BackgroundTaskId) -> awaken_agent_contract::agent::state::StateCell<awaken_ext_background_task::BackgroundTask>
 pub fn awaken_ext_background_task::tasks_from_state(&awaken_agent_contract::agent::state::Store) -> core::result::Result<alloc::vec::Vec<awaken_ext_background_task::BackgroundTask>, awaken_runtime_contract::tool::ToolError>

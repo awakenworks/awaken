@@ -5,6 +5,7 @@
 //! immutable State snapshot and return commands for Runtime to commit.
 
 mod model;
+mod notification;
 mod plugin;
 mod supervisor;
 mod tools;
@@ -13,6 +14,9 @@ pub use model::{
     BackgroundInvocation, BackgroundTask, BackgroundTaskEnd, BackgroundTaskError, BackgroundTaskId,
     BackgroundTaskLifecycle, BackgroundTaskOrigin, BackgroundWait, TaskAttempt, TaskClaim,
     TaskExecutionPolicy, TaskFence,
+};
+pub use notification::{
+    TaskNotificationEvent, TaskNotificationFormat, TaskNotificationRule, TaskNotifications,
 };
 pub use plugin::{
     BACKGROUND_TASK_PLUGIN_ID, BackgroundTaskConfig, BackgroundTaskPlugin, config_schema,
@@ -23,6 +27,19 @@ pub use supervisor::{
 };
 
 pub const BACKGROUND_TASK_STATE_PREFIX: &str = "background_task/";
+
+/// The extension-owned management surface. These operations act only on the
+/// current Thread; starting the selected ordinary tool still requires Runtime
+/// authorization at its prepared execution boundary.
+#[must_use]
+pub fn management_tool_ids() -> [&'static str; 4] {
+    [
+        tools::RunInBackground::ID,
+        tools::ListBackgroundTasks::ID,
+        tools::GetBackgroundTask::ID,
+        tools::CancelBackgroundTask::ID,
+    ]
+}
 
 #[must_use]
 pub fn task_state_cell(

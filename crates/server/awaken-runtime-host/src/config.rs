@@ -87,6 +87,14 @@ fn base_allow_rules(extra_allowed: &[String], deferred: &[String]) -> Vec<Permis
     // allowed explicitly while mutations retain the unmatched default.
     rules.push(allow("list_memories"));
     rules.push(allow("read_memory"));
+    // Thread-local management is safe to admit. The selected ordinary tool
+    // crosses PreparedToolExecutor::start_task's own authorization boundary;
+    // this allowance neither grants it nor suppresses its deny/ask decision.
+    rules.extend(
+        awaken_ext_background_task::management_tool_ids()
+            .into_iter()
+            .map(allow),
+    );
     rules.extend(extra_allowed.iter().map(|id| allow(id)));
     rules
 }
@@ -1603,6 +1611,55 @@ mod tests {
                 "{rule}/E1-E3 ACP {tool_id}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn background_management_allowance_does_not_grant_the_wrapped_tool() {
+        // B1 extension management is Thread-local -> baseline allows it;
+        // B2 unknown effectful MCP target -> still asks; B3 explicit management
+        // denial -> denies. PreparedToolExecutor tests and the sales MCP E2E
+        // exercise the separate target gate before physical execution.
+        use awaken_runtime_contract::permission::{ToolPermissionPolicy, ToolPermissionVerdict};
+        let call = |tool: &str| awaken_runtime_contract::permission::ToolCall {
+            tool_id: tool.into(),
+            call_id: "background-policy".into(),
+            arguments: serde_json::json!({}),
+        };
+        let baseline = server_policy(&[]);
+        for id in awaken_ext_background_task::management_tool_ids() {
+            assert!(
+                matches!(
+                    baseline.evaluate(&call(id)).await,
+                    ToolPermissionVerdict::Allow
+                ),
+                "B1 {id}"
+            );
+        }
+        assert!(
+            matches!(
+                baseline.evaluate(&call("mcp__phone__StartCall")).await,
+                ToolPermissionVerdict::RequireConfirmation { .. }
+            ),
+            "B2"
+        );
+        let denied = effective_ruleset(
+            Some(PermissionRuleset {
+                rules: vec![PermissionRule::new(
+                    ToolCallPattern::parse("run_in_background").unwrap(),
+                    ToolPermissionBehavior::Deny,
+                )],
+                ..Default::default()
+            }),
+            &[],
+        );
+        let policy = RuleBasedToolPermissionPolicy::new(denied);
+        assert!(
+            matches!(
+                policy.evaluate(&call("run_in_background")).await,
+                ToolPermissionVerdict::Deny { .. }
+            ),
+            "B3"
+        );
     }
 
     #[tokio::test]

@@ -72,6 +72,119 @@ struct SubmitThenEnd {
     calls: AtomicUsize,
 }
 
+struct ReadDirectNotification;
+
+#[async_trait]
+impl LlmExecutor for ReadDirectNotification {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let notifications = request.messages.iter().filter(|message| {
+            message.content.iter().any(|block| matches!(block, ContentBlock::Text { text } if text.contains("connected-phone-fixture")))
+        }).collect::<Vec<_>>();
+        assert_eq!(
+            notifications.len(),
+            1,
+            "N1 result must reach actual inference once"
+        );
+        assert_eq!(
+            notifications[0].role,
+            Role::User,
+            "N1 result is source data"
+        );
+        Ok(ChatResponse {
+            output: AssistantOutput::text("您好，我是知客。请问您想了解什么？"),
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn terminal_notification_reaches_inference_and_commits_without_result_lookup() {
+    // N1 ordinary submission commit + exact-fence completion -> StepStart
+    // folds state and supplies actual result before inference, with zero get
+    // tool calls. N2 subsequent Run + durable delivery receipt -> only the
+    // original transcript message is visible, no duplicate. This exercises
+    // run_phase_hooks and StepLedger rather than merely inspecting HookReaction.
+    let supervisor = Arc::new(awaken_ext_background_task::BackgroundTaskSupervisor::new(
+        "notification-worker",
+    ));
+    let plugin = Arc::new(BackgroundTaskPlugin::with_supervisor(
+        BackgroundTaskConfig {
+            tools: BTreeSet::from(["bash".into()]),
+            ..Default::default()
+        },
+        supervisor.clone(),
+    ));
+    let commits = Arc::new(MemoryCommitCoordinator::new());
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(SubmitThenEnd {
+            calls: AtomicUsize::new(0),
+        }))
+        .with_plugin(plugin.clone())
+        .with_tool(Arc::new(Bash));
+    runtime
+        .execute(
+            activation(vec![BACKGROUND_TASK_PLUGIN_ID.into()]),
+            RuntimeRunContext::new().with_commit(commits.clone()),
+        )
+        .await
+        .unwrap();
+    let tasks =
+        awaken_ext_background_task::tasks_from_state(&Store::rebuild(&commits.committed().state))
+            .unwrap();
+    let task = &tasks[0];
+    let fence = task.attempt().unwrap().fence();
+    assert!(supervisor.register(&task.id, &fence).is_some());
+    supervisor.complete(
+        task.id.clone(),
+        awaken_ext_background_task::BackgroundTaskCompletion {
+            fence,
+            end: BackgroundTaskEnd::Completed {
+                content: vec![ContentBlock::text("connected-phone-fixture")],
+                is_error: false,
+            },
+        },
+    );
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(ReadDirectNotification))
+        .with_plugin(plugin)
+        .with_tool(Arc::new(Bash));
+    for id in ["notification-run", "after-notification-run"] {
+        let mut next = activation(vec![BACKGROUND_TASK_PLUGIN_ID.into()]);
+        next.run_id = RunId(id.into());
+        next.input = vec![Message::text(
+            MessageId(format!("input-{id}")),
+            Role::System,
+            "Continue from received events.",
+        )];
+        assert_eq!(
+            runtime
+                .execute(
+                    next,
+                    RuntimeRunContext::new()
+                        .with_commit(commits.clone())
+                        .with_reader(commits.clone())
+                )
+                .await
+                .unwrap(),
+            RunState::Ended(EndCause::NaturalEnd)
+        );
+    }
+    let committed = commits.committed();
+    assert_eq!(
+        committed
+            .messages
+            .iter()
+            .filter(|message| message.id.0.starts_with("background-result:"))
+            .count(),
+        1,
+        "N2 committed exactly once"
+    );
+}
+
 #[async_trait]
 impl LlmExecutor for SubmitThenEnd {
     async fn infer(
@@ -163,6 +276,7 @@ async fn runtime_commits_submission_through_the_ordinary_thread_state_boundary()
     // repository mock, database handle, or Runtime special operation in the graph.
     let plugin = Arc::new(BackgroundTaskPlugin::new(BackgroundTaskConfig {
         tools: BTreeSet::from(["bash".into()]),
+        ..Default::default()
     }));
     let runtime = Runtime::new()
         .with_llm(Arc::new(SubmitThenEnd {
