@@ -23,8 +23,21 @@ pub(super) fn assert_record_frame_eq(actual: &SessionRecord, expected: &SessionR
         event_thread_owners,
         child_threads,
         primary_thread_usage,
+        permission_decisions,
     } = actual;
     assert_eq!(*cache_revision, expected.cache_revision, "frame: cache CAS");
+    // The recorded gate decisions change what the wire reports for a tool call,
+    // so they are projected content and belong in the frame oracle.
+    assert!(
+        permission_decisions
+            .iter()
+            .map(|(call, decision)| (call, serde_json::to_value(decision).ok()))
+            .eq(expected
+                .permission_decisions
+                .iter()
+                .map(|(call, decision)| (call, serde_json::to_value(decision).ok()))),
+        "frame: recorded permission decisions"
+    );
     assert_eq!(
         *committed_projection_ready, expected.committed_projection_ready,
         "frame: complete committed-prefix availability"
