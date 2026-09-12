@@ -51,6 +51,30 @@ EXTENSION_CRATES = {
     "awaken-ext-permission",
 }
 FORBIDDEN_NEUTRAL_TERMS = {"managed"}
+
+# A leaf backend (an ACP CLI today) reports its own session modes and config
+# options. The core relays those as opaque identifiers: it never reads their
+# meaning, so a new CLI needs no mapping table here and an unknown value can
+# never silently change an authorization decision. These are the values whose
+# meaning belongs to the backend alone; naming one inside the neutral core or a
+# permission/extension crate would be the core starting to interpret them.
+OPAQUE_BACKEND_CONFIG_VALUES = {
+    "acceptEdits",
+    "bypassPermissions",
+}
+# Crates that decide authorization must not even be able to see the ACP
+# vocabulary: the dependency is rejected before any code can name it.
+OPAQUE_BACKEND_CONFIG_CRATES = {
+    "awaken-agent-contract",
+    "awaken-runtime-contract",
+    "awaken-runtime",
+    "awaken-ext-permission",
+}
+FORBIDDEN_BACKEND_CONFIG_DEPS = {
+    "awaken-acp-contract",
+    "awaken-protocol-acp",
+    "awaken-run-executor-acp",
+}
 ACTIVE_BUILTIN_TOOL_IDS = {
     "bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search",
     "agent_run", "list_agents", "send_message",
@@ -1217,6 +1241,75 @@ def selftest_cloud_placement_boundary() -> None:
         assert not check_cloud_placement_boundary(root, crates)  # R4
 
 
+def _opaque_backend_config_errors(rel: Path, content: str) -> list[str]:
+    """Reject any authorization-deciding crate that names a backend config value.
+
+    Cause/effect graph: C1=a retired/leaf permission-mode identifier appears in
+    production Rust of a crate that decides authorization. E1=reject, because
+    reading that value is the core interpreting backend configuration instead of
+    relaying it. Comments and string-free prose are stripped before the scan by
+    the shared production-Rust filter, so documentation that merely mentions a
+    mode stays legal.
+    """
+    errors: list[str] = []
+    for value in sorted(OPAQUE_BACKEND_CONFIG_VALUES):
+        if re.search(rf'\b{re.escape(value)}\b', content):
+            errors.append(
+                f"{rel}: authorization crate names backend config value {value!r}; "
+                "relay backend session modes and config options opaquely"
+            )
+    return errors
+
+
+def check_backend_configuration_is_opaque() -> list[str]:
+    """Keep leaf backend configuration out of the authorization vocabulary.
+
+    Two independent gates: a dependency gate (an authorization crate cannot
+    depend on an ACP crate, so the types are unreachable) and a source gate (it
+    cannot spell a backend mode identifier, so a literal cannot leak in through
+    a plain string either).
+    """
+    errors: list[str] = []
+    specs = {spec.name: spec for spec in dependency_fitness_specs()}
+    for crate_name in sorted(OPAQUE_BACKEND_CONFIG_CRATES):
+        spec = specs.get(crate_name)
+        if spec is None:
+            errors.append(f"missing required authorization crate {crate_name!r}")
+            continue
+        for dependency in sorted(spec.normal_deps & FORBIDDEN_BACKEND_CONFIG_DEPS):
+            errors.append(
+                f"{crate_name}: depends on {dependency!r}; authorization must not "
+                "reach backend protocol configuration"
+            )
+        for path in text_files(crate_name):
+            rel = path.relative_to(REPO_ROOT)
+            if _session_state_ownership_fitness._is_test_module(str(rel)):
+                continue
+            content = _crate_boundary_workspace.production_rust(
+                path.read_text(encoding="utf-8")
+            )
+            errors.extend(_opaque_backend_config_errors(rel, content))
+    return errors
+
+
+def selftest_backend_configuration_is_opaque() -> None:
+    # Decision table over the source gate. C1=a backend mode identifier appears
+    # in executable Rust => E1 reject. C2=it appears only in a comment (stripped
+    # by the shared production filter) => E2 accept. C3=no identifier => E2.
+    rel = Path("crates/runtime/awaken-ext-permission/src/lib.rs")
+    for value in OPAQUE_BACKEND_CONFIG_VALUES:
+        assert _opaque_backend_config_errors(
+            rel, f'let mode = "{value}";'
+        ), f"S1/E1 {value}"
+    assert not _opaque_backend_config_errors(
+        rel,
+        _crate_boundary_workspace.production_rust(
+            "// acceptEdits and bypassPermissions are retired modes.\nlet x = 1;\n"
+        ),
+    ), "S1/E2 comments"
+    assert not _opaque_backend_config_errors(rel, "let x = 1;"), "S1/E2 clean"
+
+
 def main() -> int:
     selftest_cloud_placement_boundary()
     selftest_generation_witnesses()
@@ -1237,6 +1330,7 @@ def main() -> int:
     selftest_no_direct_transport_dependency()
     selftest_tenancy_is_required()
     selftest_no_ambient_tenant_default()
+    selftest_backend_configuration_is_opaque()
     errors = (
         check_no_direct_transport_dependency()
         +
@@ -1244,6 +1338,7 @@ def main() -> int:
         + check_neutral_code_boundaries()
         + check_builtin_tool_ownership()
         + check_background_task_is_state_only()
+        + check_backend_configuration_is_opaque()
         + check_tests_are_not_arch_owners()
         + check_cloud_placement_boundary()
         + check_generation_witnesses_are_complete()
