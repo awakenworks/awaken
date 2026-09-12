@@ -213,6 +213,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0076-session-owned-background-tool-execution.md` | Implemented Native BackgroundTask decision | Not required | n/a |
 | `adr/0077-iam-directory-product-space-placement.md` | Implemented product-space placement decision | Not required | n/a |
 | `adr/0078-terminal-recovery-retains-the-existing-session-authority.md` | Implemented terminal Resource projection, terminal-only release, and bounded same-process Kubernetes physical join | Not required | n/a |
+| `adr/0079-one-tool-authorization-vocabulary-and-opaque-backend-configuration.md` | Implemented single authorization vocabulary, retired mode axis, fail-closed baseline, and opaque backend session configuration | Not required | n/a |
 
 ## Implementation Context
 
