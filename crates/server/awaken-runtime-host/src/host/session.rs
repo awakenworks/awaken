@@ -263,13 +263,26 @@ impl SharedHost {
         published_snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
         attempt: ClaimedRuntimeInput,
     ) -> Result<Arc<SessionCtx>, HostError> {
+        let inference_only = crate::provisioning::environment_free_inference(&published_snapshot)
+            && self
+                .session_slots
+                .read(thread, |slot| {
+                    !slot.session_dispatch
+                        && slot.environment_snapshot.is_none()
+                        && slot.dispatch_resource_manifest().is_none()
+                })
+                .unwrap_or(true);
         self.ctx_for_snapshot_with_attempt(
             thread,
             agent,
             SessionOpenRequest {
                 published_snapshot: Some(published_snapshot),
                 claimed_attempt: Some(attempt),
-                force_defer_environment: false,
+                // An ordinary inference-only claim (e.g. a Grader) carries no
+                // physical input transition. Reuse the existing environment-
+                // free context, while explicit Session/Resource projections
+                // retain their ordinary adoption and capability checks.
+                force_defer_environment: inference_only,
                 // Claimed projection synchronization owns typed legacy
                 // reconstruction before context construction. Re-entering it
                 // here would create a second physical-effect path.

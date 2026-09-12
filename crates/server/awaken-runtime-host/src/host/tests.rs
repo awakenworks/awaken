@@ -3503,7 +3503,10 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
     // only the immutable dispatch envelope and creates/adopts no Environment;
     // E2 execution remains fail-closed until the claiming Worker adopts the
     // exact binding. Rules: R1=C1+C2+reservation=>E1;
-    // R2=C1+C2+execution=>E2. The same context constructor owns both rules, so
+    // R2=C1+C2+execution=>E2; R3=C1+C2+Outcome prepare/read=>E1. Outcome
+    // orchestration is a Coordinator operation even after a Worker has used
+    // its durable Environment; preparing/querying it cannot require adoption.
+    // The same context constructor owns these rules, so
     // this test does not introduce a second topology or recovery mechanism.
     let thread = "worker-owned-reservation";
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
@@ -3547,6 +3550,17 @@ async fn coordinator_reservation_does_not_adopt_a_worker_owned_environment() {
         .expect("R1 reservation does not require local adoption");
     assert!(reserved.env.is_none(), "R1/E1 no physical Environment");
     assert!(host.session_environment(thread).await.is_none(), "R1/E1");
+
+    host.prepare_outcome(thread, "worker-owned-outcome", "deliver", "rubric", 2)
+        .await
+        .expect("R3 Outcome preparation uses the coordination envelope");
+    assert!(
+        host.committed_outcome_projection(thread, "worker-owned-outcome")
+            .await
+            .expect("R3 nonterminal Outcome read needs no physical Environment")
+            .is_none()
+    );
+    assert!(host.session_environment(thread).await.is_none(), "R3/E1");
 
     host.evict_session_for_rebuild(thread).await;
     let error = match host
@@ -3613,6 +3627,61 @@ async fn rebuilt_coordination_context_never_borrows_a_retained_environment() {
             rebuilt.env.as_ref().expect("R2/E2 Environment reused"),
         ),
         "R2/E2 exact retained owner"
+    );
+}
+
+#[tokio::test]
+async fn claimed_inference_only_context_keeps_scope_without_a_resource_transition() {
+    // Cause/effect table: C1 a complete tool-free Native snapshot; C2 no
+    // Session/Environment/Resource projection; C3 a registered claim's exact
+    // publication identity. R1 C1+C2+C3 -> context without a physical Sandbox
+    // or fabricated Resource transition; R2 dispatch still carries Workspace
+    // scope even without resource bytes. The live template Outcome E2E verifies
+    // the same path through the remote Worker and official Managed API.
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "model"));
+    install_test_session_application(&host);
+    let _managed = install_test_dispatch_runtime(&host);
+    let thread = "inference-only-claimed";
+    host.register_thread_workspace(thread, "workspace-inference");
+    let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("judge")
+        .model(test_model_binding())
+        .build();
+    let publication =
+        crate::agent_catalog::exact_run_publication_source(&snapshot, &[], "workspace-inference")
+            .unwrap();
+    let attempt = super::session_ctx::ClaimedRuntimeInput {
+        identity: super::session_ctx::RuntimePublicationIdentity::from_publications(
+            &snapshot,
+            &[],
+            "model",
+        ),
+        publications: publication,
+        effective_model_ref: "model".into(),
+    };
+    let ctx = host
+        .ctx_for_claimed_snapshot(thread, Some("judge"), snapshot.clone(), attempt)
+        .await
+        .expect("R1 no Resource transition is needed for inference");
+    assert!(ctx.env.is_none(), "R1 no physical environment");
+    assert!(host.session_environment(thread).await.is_none());
+    let dispatch = host
+        .resolved_dispatch(awaken_runtime_contract::RunActivation::new(
+            RunId("inference-only-run".into()),
+            ThreadId(thread.into()),
+            snapshot,
+            Vec::new(),
+        ))
+        .unwrap();
+    assert!(
+        dispatch.session_resources.is_none(),
+        "R2 no fabricated resources"
+    );
+    assert_eq!(
+        dispatch.execution_scope,
+        Some(awaken_tenancy::ExecutionScopeRef(
+            awaken_tenancy::ScopeId::from("workspace-inference"),
+        )),
+        "R2 exact non-default Workspace survives dispatch"
     );
 }
 

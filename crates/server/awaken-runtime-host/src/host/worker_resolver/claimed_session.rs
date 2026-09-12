@@ -96,6 +96,10 @@ pub(super) async fn install_claimed_session_projection(
             host.install_dispatched_resources(&thread_id.0, manifest, Some(&claim))
                 .await
                 .map_err(|error| HostWorkerResolver::execution_error(error.to_string()))?;
+        } else if let Some(scope) = claimed.request.execution_scope.as_ref() {
+            // Model-only ordinary Runs still belong to the frozen execution
+            // Workspace; they need no fabricated Resource manifest to carry it.
+            host.register_thread_workspace(&thread_id.0, &scope.0.0);
         }
         return Ok(());
     }
