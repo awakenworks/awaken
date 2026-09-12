@@ -68,9 +68,18 @@ pre-commit:
       glob: "{package.json,pnpm-lock.yaml,package-lock.json,yarn.lock,bun.lockb,apps/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},packages/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},web/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml}}"
       run: scripts/ci/check-frontend.sh --quick
 
+    # The oracle's check reads the E2E manifest and the workspace lockfile as
+    # well as its own package: the trigger names every input so a version bump
+    # in one place cannot pass by never running the check.
     managed-sdk-oracle:
-      glob: "{packages/managed-sdk-oracle/**/*,contracts/anthropic-managed/*,crates/server/awaken-protocol-managed/contracts/*}"
+      glob: "{packages/managed-sdk-oracle/**/*,contracts/anthropic-managed/*,crates/server/awaken-protocol-managed/contracts/*,e2e/package.json,pnpm-lock.yaml}"
       run: pnpm --filter @awaken/managed-sdk-oracle test && pnpm --filter @awaken/managed-sdk-oracle check
+
+    # Generated wire artifacts are derived from the admin-config and Managed
+    # DTOs; a DTO edit without regeneration is refused here, not at release.
+    generated-contracts:
+      glob: "{contracts/**/*,scripts/contract/**/*,crates/control/awaken-admin-config-api/**/*.rs,crates/server/awaken-protocol-managed/src/**/*.rs}"
+      run: scripts/contract/generate-contracts.sh --check
 
     # 6. Every relative Markdown link resolves to a real file and anchor.
     check-doc-links:

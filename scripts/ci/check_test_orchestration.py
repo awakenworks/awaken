@@ -69,6 +69,8 @@ REQUIRED_RELEASE_COMMANDS = (
     "provider_environment.sh --self-test",
     "npm --prefix e2e run test:runner",
     "check_public_api.sh --require-tools",
+    "scripts/contract/generate-contracts.sh --check",
+    "pnpm --filter @awaken/managed-sdk-oracle check",
     "cargo deny --log-level error check advisories bans",
     "check_formal.sh --require-tools",
     "check-reliability.sh --require-tools",
@@ -87,6 +89,7 @@ REQUIRED_RELEASE_GROUPS = (
     "docs",
     "rust",
     "api",
+    "contracts",
     "formal",
     "reliability",
     "postgres",
@@ -374,6 +377,72 @@ def release_gate_errors(check_all: str, public_api: str, check_rust: str) -> lis
         )
     if authority_arithmetic not in check_rust:
         errors.append("check-rust does not own the authority-arithmetic check")
+    return errors
+
+
+# A hook that runs only when certain files are staged is a gate whose trigger
+# set must contain its input set: a check that reads `e2e/package.json` but
+# fires only on `packages/managed-sdk-oracle/**` passes by never running when
+# that manifest changes. Each entry names a pre-commit command and the files
+# it reads that are not already implied by its own glob.
+HOOK_INPUTS: dict[str, tuple[str, ...]] = {
+    "managed-sdk-oracle": (
+        "e2e/package.json",
+        "pnpm-lock.yaml",
+        "packages/managed-sdk-oracle/package.json",
+        "contracts/anthropic-managed/upstream-oracle.generated.json",
+    ),
+    "generated-contracts": (
+        "contracts/model-schemas.generated.json",
+        "contracts/openapi.generated.json",
+        "contracts/model-config.d.ts",
+        "contracts/model-selection.generated.d.ts",
+        "contracts/anthropic-managed/canonical-wire.schemas.generated.json",
+        "crates/control/awaken-admin-config-api/src/schema.rs",
+        "crates/server/awaken-protocol-managed/src/types/session.rs",
+        "scripts/contract/generate-contracts.sh",
+    ),
+}
+
+
+def _expand_braces(pattern: str) -> list[str]:
+    """Expand one level of `{a,b}` alternation (nested braces expand recursively)."""
+    match = re.search(r"\{([^{}]*)\}", pattern)
+    if match is None:
+        return [pattern]
+    expanded = []
+    for alternative in match.group(1).split(","):
+        expanded.extend(_expand_braces(pattern[: match.start()] + alternative + pattern[match.end():]))
+    return expanded
+
+
+def _glob_matches(pattern: str, path: str) -> bool:
+    for alternative in _expand_braces(pattern):
+        regex = re.escape(alternative).replace(r"\*\*/", "(?:.*/)?").replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
+        if re.fullmatch(regex, path):
+            return True
+    return False
+
+
+def hook_glob(hooks: str, command: str) -> str | None:
+    match = re.search(rf"^\s+{re.escape(command)}:\n\s+glob: \"([^\"]+)\"", hooks, re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def hook_input_coverage_errors(hooks: str, inputs: dict[str, tuple[str, ...]] = HOOK_INPUTS) -> list[str]:
+    """Cause/effect: G1 a registered hook exists with a glob that matches every
+    input -> accept; G2 the hook is absent -> reject (the check does not run at
+    all); G3 the glob misses an input -> reject (the check does not run when
+    that input changes)."""
+    errors: list[str] = []
+    for command, files in inputs.items():
+        glob = hook_glob(hooks, command)
+        if glob is None:
+            errors.append(f"lefthook has no `{command}` command with a trigger glob")
+            continue
+        for path in files:
+            if not _glob_matches(glob, path):
+                errors.append(f"lefthook `{command}` reads {path} but its glob does not trigger on it")
     return errors
 
 
@@ -812,6 +881,7 @@ def validate(root: Path) -> list[str]:
         (root / "lefthook.yml").read_text(encoding="utf-8"),
         (root / "scripts/ci/check-rust.sh").read_text(encoding="utf-8"),
     ))
+    errors.extend(hook_input_coverage_errors((root / "lefthook.yml").read_text(encoding="utf-8")))
     errors.extend(
         test_deadline_errors(
             (root / NEXTEST_CONFIG).read_text(encoding="utf-8"),
@@ -926,6 +996,20 @@ def self_test() -> None:
     hooks = (ROOT / "lefthook.yml").read_text(encoding="utf-8")
     gate = (ROOT / "scripts/ci/check-rust.sh").read_text(encoding="utf-8")
     assert not rust_hook_errors(hooks, gate), "H1 single owner"
+    # Hook input coverage table: G1 glob covers every input -> accept; G2 the
+    # command is missing -> reject; G3 the glob drops one input -> reject.
+    covering = (
+        "pre-commit:\n  commands:\n    managed-sdk-oracle:\n"
+        '      glob: "{packages/managed-sdk-oracle/**/*,e2e/package.json,pnpm-lock.yaml,'
+        'contracts/anthropic-managed/*}"\n      run: pnpm check\n'
+    )
+    table = {"managed-sdk-oracle": ("e2e/package.json", "pnpm-lock.yaml",
+                                    "packages/managed-sdk-oracle/package.json",
+                                    "contracts/anthropic-managed/upstream-oracle.generated.json")}
+    assert not hook_input_coverage_errors(covering, table), "G1"
+    assert hook_input_coverage_errors(covering.replace("managed-sdk-oracle:", "other:"), table), "G2"
+    assert hook_input_coverage_errors(covering.replace("e2e/package.json,", ""), table), "G3"
+    assert not hook_input_coverage_errors(hooks), "G1 live: the repository hooks cover their inputs"
     for checker in ("check_dependency_sources.py", "check_crate_boundaries.py"):
         command = f"python3 scripts/ci/{checker}"
         duplicate = hooks.replace("pre-commit:", f"pre-commit:\n    duplicate:\n      run: {command}", 1)
