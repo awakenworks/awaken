@@ -28,6 +28,11 @@ k3d_validate_image_digest() {
 # absolute kubelet eviction policy so neither the trigger nor the recovery
 # target scales with a large host filesystem. Callers still own capacity
 # admission. Each output line is one kubelet setting for a k3d --k3s-arg.
+# Offline fixtures import a bounded image set and use Never pull policy. Keep
+# those images until cluster teardown: the default percentage image GC would
+# evict them on a large, 85%-used host despite ample admitted free bytes.
+# Kubelet documents 100 as disabling this GC trigger; absolute disk-pressure
+# eviction and the pre-create/import byte+inode budgets remain independent.
 k3d_eviction_policy() {
   local eviction="${1:-}"
   [[ "$eviction" =~ ^[1-9][0-9]*(Ki|Mi|Gi|Ti)$ ]] || {
@@ -36,7 +41,8 @@ k3d_eviction_policy() {
   }
   printf '%s\n' \
     "eviction-hard=imagefs.available<$eviction,nodefs.available<$eviction" \
-    "eviction-minimum-reclaim=imagefs.available=$eviction,nodefs.available=$eviction"
+    "eviction-minimum-reclaim=imagefs.available=$eviction,nodefs.available=$eviction" \
+    "image-gc-high-threshold=100"
 }
 
 # Resolve the manifest identity of the image just built by the canonical image
@@ -826,6 +832,14 @@ print(json.dumps(value))
   [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-minimum-reclaim=imagefs.available=128Mi,nodefs.available=128Mi@server:*"* ]]
   [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-hard=imagefs.available<128Mi,nodefs.available<128Mi@agent:*"* ]]
   [[ "${k3d_calls[1]}" = *"--kubelet-arg=eviction-minimum-reclaim=imagefs.available=128Mi,nodefs.available=128Mi@agent:*"* ]]
+  # IG1 admitted offline fixture + large host above kubelet's default 85%
+  # image-GC threshold => retain imported images on BOTH node roles. The live
+  # failure had 531GiB free at 86% usage: GC removed nginx/busybox and Never-pull
+  # Pods could not restart/provision. IG2 server-only topology gets no agent
+  # override (checked below); IG3 absolute eviction and capacity rejection stay
+  # enforced by T1-T4/K2. This is not a production-cluster GC policy.
+  [[ "${k3d_calls[1]}" = *"--kubelet-arg=image-gc-high-threshold=100@server:*"* ]]
+  [[ "${k3d_calls[1]}" = *"--kubelet-arg=image-gc-high-threshold=100@agent:*"* ]]
   # Cluster-fixture dependency rule. C1 repository scenarios import their
   # exact images; C2 bundled ingress/metrics are not scenario dependencies.
   # C1+C2 => E1 the canonical builder disables both controllers, preventing
@@ -837,6 +851,7 @@ print(json.dumps(value))
   k3d_calls=()
   k3d_create_cluster "awaken-test-1" 0
   [[ "${k3d_calls[1]}" != *"@agent:*"* ]]
+  [[ "${k3d_calls[1]}" = *"--kubelet-arg=image-gc-high-threshold=100@server:*"* ]]
 
   # Shared-storage decision table: V1 absent option => no mount; V2 generated
   # ID + existing owned volume => one all-node mount, images alone reach capacity
@@ -871,7 +886,7 @@ print(json.dumps(value))
   # DiskPressure merely because kubelet's percentage minimum reclaim is huge.
   mapfile -t observed_eviction_policy < <(k3d_eviction_policy 2Gi)
   [[ "${observed_eviction_policy[*]}" = \
-    "eviction-hard=imagefs.available<2Gi,nodefs.available<2Gi eviction-minimum-reclaim=imagefs.available=2Gi,nodefs.available=2Gi" ]]
+    "eviction-hard=imagefs.available<2Gi,nodefs.available<2Gi eviction-minimum-reclaim=imagefs.available=2Gi,nodefs.available=2Gi image-gc-high-threshold=100" ]]
   local invalid_eviction
   for invalid_eviction in "" 0Gi 2% low -1Gi; do
     ! k3d_eviction_policy "$invalid_eviction" >/dev/null 2>&1
