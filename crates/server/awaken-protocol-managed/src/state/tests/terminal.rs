@@ -65,7 +65,7 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
                 "agent": "assistant", "environment_id": "env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .expect("R1/E1 durable demand is accepted");
@@ -133,7 +133,10 @@ async fn child_thread_archive_uses_durable_disposition_and_survives_cache_loss()
         "agent": "coder", "environment_id": "env_local"
     }))
     .unwrap();
-    let session = state.create_session(request, None).await.unwrap();
+    let session = state
+        .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
+        .await
+        .unwrap();
     <crate::test_support::CoordinatedRuntimeFake as SessionRuntime>::run(
         &runtime,
         "coder",
@@ -266,7 +269,7 @@ async fn child_thread_archive_failure_commits_no_terminal_projection() {
                 "agent": "coder", "environment_id": "env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -352,7 +355,10 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
         "agent": "coder", "environment_id": "env_local"
     }))
     .unwrap();
-    let session = state.create_session(request, None).await.unwrap();
+    let session = state
+        .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
+        .await
+        .unwrap();
     <crate::test_support::CoordinatedRuntimeFake as SessionRuntime>::run(
         &runtime,
         "coder",
@@ -620,7 +626,7 @@ async fn delete_session_disposes_the_host_sandbox() {
     let repo = Arc::new(ephemeral_session_repo());
     let state = ManagedState::new(rt).with_session_repo(repo.clone());
     let id = state
-        .create_session(bare_create_params(), None)
+        .create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
         .expect("create")
         .id;
@@ -657,7 +663,7 @@ async fn archive_session_disposes_on_the_terminal_transition_only() {
     let ended = rt.ended.clone();
     let state = ManagedState::new(rt);
     let id = state
-        .create_session(bare_create_params(), None)
+        .create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
         .expect("create")
         .id;
@@ -753,7 +759,7 @@ async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
                     "agent":"coder", "environment_id":"env_local"
                 }))
                 .unwrap(),
-                None,
+                awaken_tenancy::DEFAULT_WORKSPACE_ID,
             )
             .await
             .expect(rule);
@@ -1070,7 +1076,7 @@ async fn archived_session_can_be_deleted_after_projection_cache_loss() {
     let repo = Arc::new(ephemeral_session_repo());
     let state = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
     let id = state
-        .create_session(bare_create_params(), None)
+        .create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
         .expect("create")
         .id;
@@ -1144,7 +1150,7 @@ async fn archive_terminal_cleanup_tears_down_each_unique_runtime_once() {
     let delegated = runtime.delegated.clone();
     let state = ManagedState::new(runtime);
     let id = state
-        .create_session(bare_create_params(), None)
+        .create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
         .expect("create")
         .id;
@@ -1214,7 +1220,7 @@ async fn archive_session_rehydrates_after_process_restart() {
     let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
     let original = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
     let id = original
-        .create_session(bare_create_params(), None)
+        .create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
         .expect("create")
         .id;
@@ -1327,7 +1333,11 @@ async fn archive_persists_release_before_and_after_sandbox_teardown() {
         }]
     }))
     .unwrap();
-    let id = state.create_session(request, None).await.unwrap().id;
+    let id = state
+        .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
+        .await
+        .unwrap()
+        .id;
     assert_eq!(
         repo.get(&id).await.unwrap().resources.activations[0].state,
         awaken_session_contract::ActivationState::Active
@@ -1372,8 +1382,16 @@ async fn session_create_enforces_the_500_file_boundary() {
         .unwrap()
     };
     let state = ManagedState::new(EndSessionRecorder::default());
-    assert!(state.create_session(request(500), None).await.is_ok());
-    let error = state.create_session(request(501), None).await.unwrap_err();
+    assert!(
+        state
+            .create_session(request(500), awaken_tenancy::DEFAULT_WORKSPACE_ID)
+            .await
+            .is_ok()
+    );
+    let error = state
+        .create_session(request(501), awaken_tenancy::DEFAULT_WORKSPACE_ID)
+        .await
+        .unwrap_err();
     assert!(error.to_string().contains("at most 500 files"), "{error}");
 }
 
@@ -1505,7 +1523,7 @@ async fn delete_is_best_effort_when_sandbox_teardown_fails() {
     }))
     .unwrap();
     let id = state
-        .create_session(request, None)
+        .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
         .expect("create")
         .id;
@@ -1563,7 +1581,7 @@ async fn archive_commits_while_sandbox_teardown_remains_recoverable() {
     }))
     .unwrap();
     let id = state
-        .create_session(request, None)
+        .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
         .expect("create")
         .id;

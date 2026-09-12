@@ -108,8 +108,50 @@ async fn provider_descriptors_are_read_only_capabilities_not_catalog_rows() {
     assert_eq!(catalog["offerings"], json!([]));
 }
 
+/// The Workspace an authenticated key or `/v1/workspaces/{ws}/…` path would have
+/// resolved. The caller's own `workspace_id` names the Workspace the fixture
+/// intends to address; `ws` is the default single-tenant fixture Workspace.
+fn edge_workspace(uri: &str, body: Option<&Value>) -> String {
+    if let Some(claimed) = body
+        .and_then(|body| body.get("workspace_id"))
+        .and_then(Value::as_str)
+    {
+        return claimed.to_string();
+    }
+    if let Some(workspace) = uri
+        .split_once("workspace_id=")
+        .map(|(_, rest)| rest.split('&').next().unwrap_or_default())
+        .filter(|workspace| !workspace.is_empty())
+    {
+        return workspace.to_string();
+    }
+    "ws".to_string()
+}
+
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+    call_scoped(app, None, method, uri, body).await
+}
+
+/// Drive a call as the trusted edge having resolved exactly `workspace`.
+async fn call_in(
+    app: &Router,
+    workspace: &str,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    call_scoped(app, Some(workspace), method, uri, body).await
+}
+
+async fn call_scoped(
+    app: &Router,
+    workspace: Option<&str>,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let mut builder = Request::builder().method(method).uri(uri);
+    let body_claim = body.clone();
     let body = match body {
         Some(v) => {
             builder = builder.header("content-type", "application/json");
@@ -118,11 +160,20 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
         None => Body::empty(),
     };
     let mut request = builder.body(body).unwrap();
-    if uri.starts_with("/v1/config/agents/") && uri.ends_with("/resources") {
-        request
-            .extensions_mut()
-            .insert(awaken_tenancy::WorkspaceScope("workspace-test".into()));
-    }
+    // The trusted ingress edge resolves the Workspace for every admin route;
+    // handlers read that stamp and refuse an unstamped request, while a
+    // caller-supplied `workspace_id` survives only as a claim fenced against
+    // it. Stamp exactly the Workspace this call addresses.
+    let workspace = match workspace {
+        Some(workspace) => workspace.to_string(),
+        None if uri.starts_with("/v1/config/agents/") && uri.ends_with("/resources") => {
+            "workspace-test".to_string()
+        }
+        None => edge_workspace(uri, body_claim.as_ref()),
+    };
+    request
+        .extensions_mut()
+        .insert(awaken_tenancy::WorkspaceScope(workspace));
     let resp = app.clone().oneshot(request).await.unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
@@ -950,8 +1001,11 @@ async fn hosted_described_replacement_reuses_post_and_preserves_predecessor() {
     assert!(!replacement.to_string().contains("new-token"), "HR1/E1");
 
     let old_id = old["id"].as_str().expect("HR1 old id");
-    let (status, old_after) = call(
+    // The read addresses the predecessor in its own Workspace; the edge — not
+    // the handler — resolves which Workspace that is.
+    let (status, old_after) = call_in(
         &h.app,
+        "workspace-a",
         "GET",
         &format!("/v1/config/credentials/{old_id}"),
         None,

@@ -1,8 +1,8 @@
 //! Awaken-only read projection for exact Session execution evidence.
 
+use crate::common::scope::RequiredWorkspaceScope;
 use std::sync::Arc;
 
-use awaken_tenancy::WorkspaceScope;
 use axum::Json;
 use axum::extract::{Path, State};
 
@@ -63,11 +63,8 @@ fn project_execution_evidence(
 pub async fn get_session_execution_evidence(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-    workspace: Option<axum::Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
 ) -> Result<Json<awaken_protocol_awaken::SessionExecutionEvidence>, WireErr> {
-    let owner_scope = workspace
-        .map(|scope| scope.0.0)
-        .unwrap_or_else(|| crate::state::DEFAULT_SCOPE.to_string());
     let observation = state
         .session_application()
         .session_execution_observation(&owner_scope, &id)

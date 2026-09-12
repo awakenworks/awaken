@@ -588,7 +588,7 @@ const fn default_connection_timeout() -> u64 {
 async fn test_and_save_provider_connection(
     State(state): State<AdminState>,
     State(capabilities): State<ConfigCapabilitiesView>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     headers: HeaderMap,
     Json(body): Json<SaveProviderConnectionRequest>,
 ) -> Result<(StatusCode, Json<ProviderConnectionView>), Problem> {
@@ -596,7 +596,6 @@ async fn test_and_save_provider_connection(
     if !capabilities.models.byok_enabled {
         return Err(model_supply_managed(&rid));
     }
-    let workspace_id = scope.map_or(body.workspace_id.clone(), |Extension(scope)| scope.0);
     let supplied_auth = usize::from(body.secret.is_some())
         + usize::from(body.oauth_helper.is_some())
         + usize::from(body.credential_source_id.is_some());
@@ -712,7 +711,7 @@ pub struct PutModelAttributesRequest {
 async fn get_catalog(
     State(state): State<AdminState>,
     State(capabilities): State<ConfigCapabilitiesView>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     headers: HeaderMap,
 ) -> Result<Json<awaken_model_catalog::ProviderCatalog>, Problem> {
     let mut catalog = state
@@ -720,9 +719,7 @@ async fn get_catalog(
         .snapshot()
         .await
         .map_err(|e| repo_problem(&e, &req_id(&headers)))?;
-    if let Some(Extension(scope)) = scope {
-        catalog = catalog.for_workspace(&scope.0);
-    }
+    catalog = catalog.for_workspace(&workspace_id);
     if !capabilities.models.cloud_models_enabled {
         for offering in &mut catalog.offerings {
             if offering.source == OfferingSource::Brokered {
@@ -735,27 +732,25 @@ async fn get_catalog(
 
 async fn put_pool(
     State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(mut pool): Json<CredentialPool>,
 ) -> Result<Json<CredentialPool>, Problem> {
     // The path id is authoritative.
     pool.id = CredentialPoolId(id);
-    if let Some(Extension(scope)) = scope {
-        if state
-            .credentials
-            .get_pool(&pool.id)
-            .await
-            .is_ok_and(|current| current.workspace_id != scope.0)
-        {
-            return Err(cred_problem(
-                &CredentialError::PoolNotFound(pool.id.0.clone()),
-                &req_id(&headers),
-            ));
-        }
-        pool.workspace_id = scope.0;
+    if state
+        .credentials
+        .get_pool(&pool.id)
+        .await
+        .is_ok_and(|current| current.workspace_id != workspace_id)
+    {
+        return Err(cred_problem(
+            &CredentialError::PoolNotFound(pool.id.0.clone()),
+            &req_id(&headers),
+        ));
     }
+    pool.workspace_id = workspace_id;
     state
         .credentials
         .put_pool(pool.clone())
@@ -766,7 +761,7 @@ async fn put_pool(
 
 async fn get_pool(
     State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<CredentialPool>, Problem> {
@@ -775,7 +770,7 @@ async fn get_pool(
         .get_pool(&CredentialPoolId(id))
         .await
         .map_err(|e| cred_problem(&e, &req_id(&headers)))?;
-    if scope.is_some_and(|Extension(scope)| pool.workspace_id != scope.0) {
+    if pool.workspace_id != workspace_id {
         return Err(cred_problem(
             &CredentialError::PoolNotFound(pool.id.0.clone()),
             &req_id(&headers),
@@ -855,7 +850,7 @@ pub struct ResolvedInferenceView {
 /// credential wiring before creating an agent.
 async fn resolve_route(
     State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     headers: HeaderMap,
     Json(request): Json<ResolveRequest>,
 ) -> Result<Json<ResolvedInferenceView>, Problem> {
@@ -865,7 +860,10 @@ async fn resolve_route(
         .snapshot()
         .await
         .map_err(|e| repo_problem(&e, &rid))?;
-    let workspace = scope.map_or_else(|| request.workspace_id.clone(), |Extension(scope)| scope.0);
+    let workspace = workspace_id;
+    if claims_another_workspace(&request.workspace_id, &workspace) {
+        return Err(resource_workspace_problem(&rid));
+    }
     let catalog = catalog.for_workspace(&workspace);
     let lookup = workspace_lookup(&state, &workspace, &rid).await?;
     let resolved = resolve_inference_target(
@@ -906,22 +904,20 @@ pub struct ResolvedCandidatesView {
 /// use. An unresolvable model is skipped; all-unresolvable is fail-closed.
 async fn resolve_profile_candidates_route(
     State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(request): Json<ResolveProfileRequest>,
 ) -> Result<Json<ResolvedCandidatesView>, Problem> {
     let rid = req_id(&headers);
-    let scoped_workspace = scope.map(|Extension(scope)| scope.0);
-    let workspace = scoped_workspace.clone().unwrap_or(request.workspace_id);
-    let profile = if scoped_workspace.is_some() {
-        get_workspace_profile(state.profiles.as_ref(), &workspace, &id)
-    } else {
-        state.profiles.get(&id)
+    let workspace = workspace_id;
+    if claims_another_workspace(&request.workspace_id, &workspace) {
+        return Err(resource_workspace_problem(&rid));
     }
-    .map_err(|error| config_repository_problem(&error, &rid))?
-    .ok_or_else(|| profile_missing(&id, &rid))?;
-    if scoped_workspace.is_some() && profile.workspace_id != workspace {
+    let profile = get_workspace_profile(state.profiles.as_ref(), &workspace, &id)
+        .map_err(|error| config_repository_problem(&error, &rid))?
+        .ok_or_else(|| profile_missing(&id, &rid))?;
+    if profile.workspace_id != workspace {
         return Err(profile_missing(&id, &rid));
     }
     let catalog = state
@@ -952,7 +948,7 @@ fn now_ms() -> u64 {
 async fn credential_in_scope(
     state: &AdminState,
     id: &CredentialSourceId,
-    scope: Option<&Extension<ResourceWorkspace>>,
+    workspace_id: &str,
     rid: &str,
 ) -> Result<CredentialSource, Problem> {
     let source = state
@@ -960,7 +956,7 @@ async fn credential_in_scope(
         .get(id)
         .await
         .map_err(|error| cred_problem(&error, rid))?;
-    if scope.is_some_and(|Extension(scope)| source.workspace_id != scope.0) {
+    if source.workspace_id != workspace_id {
         return Err(cred_problem(
             &CredentialError::SourceNotFound(id.0.clone()),
             rid,
@@ -985,15 +981,13 @@ pub struct CooldownRequest {
 
 async fn cooldown_credential(
     State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(request): Json<CooldownRequest>,
 ) -> Result<Json<AvailabilityState>, Problem> {
     let source = CredentialSourceId(id);
-    if scope.is_some() {
-        credential_in_scope(&state, &source, scope.as_ref(), &req_id(&headers)).await?;
-    }
+    fence_known_credential(&state, &source, &workspace_id, &req_id(&headers)).await?;
     let now = now_ms();
     match request.kind.as_str() {
         "quota" => {
@@ -1022,14 +1016,12 @@ async fn cooldown_credential(
 /// The current availability of a credential source (cooldown auto-resumes by time).
 async fn get_availability(
     State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<AvailabilityState>, Problem> {
     let source = CredentialSourceId(id);
-    if scope.is_some() {
-        credential_in_scope(&state, &source, scope.as_ref(), &req_id(&headers)).await?;
-    }
+    fence_known_credential(&state, &source, &workspace_id, &req_id(&headers)).await?;
     Ok(Json(state.availability.state(&source, now_ms())))
 }
 
@@ -1044,7 +1036,7 @@ pub struct PoolEligibleView {
 
 async fn get_pool_eligible(
     State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<PoolEligibleView>, Problem> {
@@ -1054,7 +1046,7 @@ async fn get_pool_eligible(
         .get_pool(&CredentialPoolId(id))
         .await
         .map_err(|e| cred_problem(&e, &rid))?;
-    if scope.is_some_and(|Extension(scope)| pool.workspace_id != scope.0) {
+    if pool.workspace_id != workspace_id {
         return Err(cred_problem(
             &CredentialError::PoolNotFound(pool.id.0.clone()),
             &rid,
@@ -1109,7 +1101,7 @@ async fn workspace_lookup(
 async fn put_profile(
     State(state): State<AdminState>,
     State(capabilities): State<ConfigCapabilitiesView>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(mut profile): Json<InferenceProfile>,
@@ -1118,7 +1110,7 @@ async fn put_profile(
     if !capabilities.models.profile_authoring_enabled {
         return Err(model_supply_managed(&rid));
     }
-    let scoped_workspace = scope.map(|Extension(scope)| scope.0);
+    let scoped_workspace = Some(workspace_id);
     if let Some(workspace) = &scoped_workspace {
         profile.workspace_id.clone_from(workspace);
     }
@@ -1178,11 +1170,11 @@ fn validate_profile(profile: &InferenceProfile) -> Result<(), String> {
 
 async fn get_profile(
     State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<InferenceProfile>, Problem> {
-    let workspace = scope.map(|Extension(scope)| scope.0);
+    let workspace = Some(workspace_id);
     let profile = if let Some(workspace) = &workspace {
         get_workspace_profile(state.profiles.as_ref(), workspace, &id)
     } else {
@@ -1204,22 +1196,20 @@ pub struct ResolveProfileRequest {
 /// model + binding + disabled endpoints come from the stored [`InferenceProfile`].
 async fn resolve_profile_route(
     State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(request): Json<ResolveProfileRequest>,
 ) -> Result<Json<ResolvedInferenceView>, Problem> {
     let rid = req_id(&headers);
-    let scoped_workspace = scope.map(|Extension(scope)| scope.0);
-    let workspace = scoped_workspace.clone().unwrap_or(request.workspace_id);
-    let profile = if scoped_workspace.is_some() {
-        get_workspace_profile(state.profiles.as_ref(), &workspace, &id)
-    } else {
-        state.profiles.get(&id)
+    let workspace = workspace_id;
+    if claims_another_workspace(&request.workspace_id, &workspace) {
+        return Err(resource_workspace_problem(&rid));
     }
-    .map_err(|error| config_repository_problem(&error, &rid))?
-    .ok_or_else(|| profile_missing(&id, &rid))?;
-    if scoped_workspace.is_some() && profile.workspace_id != workspace {
+    let profile = get_workspace_profile(state.profiles.as_ref(), &workspace, &id)
+        .map_err(|error| config_repository_problem(&error, &rid))?
+        .ok_or_else(|| profile_missing(&id, &rid))?;
+    if profile.workspace_id != workspace {
         return Err(profile_missing(&id, &rid));
     }
     let catalog = state
@@ -1249,7 +1239,7 @@ fn profile_missing(id: &str, rid: &str) -> Problem {
 /// authoritative; the binding set is stored whole (upsert by agent id).
 async fn put_agent_inputs(
     State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     Path(agent_id): Path<String>,
     headers: HeaderMap,
     Json(mut config): Json<AgentInputConfig>,
@@ -1258,7 +1248,7 @@ async fn put_agent_inputs(
     let rid = req_id(&headers);
     validate_agent_input_mount_paths(&config)
         .map_err(|error| agent_input_mount_problem(&error, &rid))?;
-    let workspace = resource_workspace(scope).map_err(|_| resource_workspace_problem(&rid))?;
+    let workspace = workspace_id;
     state
         .resources
         .put_agent_inputs(&workspace, config.clone())
@@ -1298,12 +1288,12 @@ fn agent_input_mount_problem(
 
 async fn get_agent_inputs(
     State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     Path(agent_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<AgentInputConfig>, Problem> {
     let rid = req_id(&headers);
-    let workspace = resource_workspace(scope).map_err(|_| resource_workspace_problem(&rid))?;
+    let workspace = workspace_id;
     state
         .resources
         .get_agent_inputs(&workspace, &agent_id)
@@ -1312,17 +1302,65 @@ async fn get_agent_inputs(
         .ok_or_else(|| agent_inputs_missing(&agent_id, &rid))
 }
 
-#[derive(Debug, Clone, Copy)]
-struct MissingResourceWorkspace;
+/// The Workspace the trusted ingress edge already resolved for this request.
+///
+/// Every admin resource below is tenant-owned, so absence is refused here, in
+/// the extractor, and no handler is left holding a `None` arm to give a default
+/// (or a body/query-supplied, caller-controlled) meaning to. The anonymous
+/// single-machine deployment receives its Workspace from the one
+/// composition-root stamp, never from a handler.
+struct RequiredResourceWorkspace(String);
 
-fn resource_workspace(
-    scope: Option<Extension<ResourceWorkspace>>,
-) -> Result<String, MissingResourceWorkspace> {
-    scope
-        .as_ref()
-        .and_then(|Extension(scope)| scope.non_empty())
-        .map(str::to_owned)
-        .ok_or(MissingResourceWorkspace)
+impl<S> axum::extract::FromRequestParts<S> for RequiredResourceWorkspace
+where
+    S: Send + Sync,
+{
+    type Rejection = Problem;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        match parts
+            .extensions
+            .get::<ResourceWorkspace>()
+            .and_then(ResourceWorkspace::non_empty)
+        {
+            Some(workspace) => Ok(Self(workspace.to_owned())),
+            None => Err(resource_workspace_problem(&req_id(&parts.headers))),
+        }
+    }
+}
+
+/// A caller-supplied `workspace_id` is a *claim*, never authority: the edge
+/// already resolved the real Workspace. An empty claim selects nothing and an
+/// equal claim is redundant; anything else is refused with the same 404 as an
+/// absent resource, so cross-tenant addressing is not disclosed.
+/// Fence the availability ledger by ownership WITHOUT making the vault the
+/// existence authority for it.
+///
+/// The ledger is keyed by credential id and legitimately carries coordinates
+/// the vault has never stored (a pool member authored ahead of its source). A
+/// known credential owned by another Workspace is still refused with the same
+/// 404 — what is removed is the old `if scope.is_some()` guard, which enforced
+/// ownership only when the request happened to be tenant-stamped.
+async fn fence_known_credential(
+    state: &AdminState,
+    id: &CredentialSourceId,
+    workspace_id: &str,
+    rid: &str,
+) -> Result<(), Problem> {
+    match state.credentials.get(id).await {
+        Ok(source) if source.workspace_id != workspace_id => Err(cred_problem(
+            &CredentialError::SourceNotFound(id.0.clone()),
+            rid,
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn claims_another_workspace(claimed: &str, resolved: &str) -> bool {
+    !claimed.trim().is_empty() && claimed != resolved
 }
 
 fn resource_workspace_problem(rid: &str) -> Problem {
@@ -1366,7 +1404,7 @@ fn agent_input_write_problem(
 /// materialization, so a leaked/rotated key can be pulled without deleting the row.
 async fn archive_credential(
     State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(body): Json<ArchiveCredentialRequest>,
@@ -1378,7 +1416,7 @@ async fn archive_credential(
             &rid,
         ));
     }
-    let source = credential_in_scope(&state, &CredentialSourceId(id), scope.as_ref(), &rid).await?;
+    let source = credential_in_scope(&state, &CredentialSourceId(id), &workspace_id, &rid).await?;
     let source = awaken_credential_vault::repo::revoke_credential_exact(
         &source.id,
         body.expected_version,
@@ -1421,16 +1459,16 @@ pub struct CredentialValidation {
 /// `unknown` when no probe is wired or the adapter is one the probe can't reach.
 async fn validate_credential(
     State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(request): Json<ValidateCredentialRequest>,
 ) -> Result<Json<CredentialValidation>, Problem> {
     let rid = req_id(&headers);
-    let workspace = scope.as_ref().map_or_else(
-        || request.workspace_id.clone(),
-        |Extension(scope)| scope.0.clone(),
-    );
+    let workspace = workspace_id;
+    if claims_another_workspace(&request.workspace_id, &workspace) {
+        return Err(resource_workspace_problem(&rid));
+    }
     if let (None, Some(provider_ref)) = (request.model_id.as_ref(), request.provider_ref.as_deref())
     {
         if workspace.trim().is_empty() || provider_ref.trim().is_empty() {
@@ -1442,7 +1480,7 @@ async fn validate_credential(
             ));
         }
         let source_id = CredentialSourceId(id.clone());
-        let source = credential_in_scope(&state, &source_id, scope.as_ref(), &rid).await?;
+        let source = credential_in_scope(&state, &source_id, &workspace, &rid).await?;
         if !is_hosted_credential(&source)
             || !hosted_credential_matches(&source, &workspace, provider_ref)
             || source.version < 1
@@ -1507,7 +1545,7 @@ async fn validate_credential(
 async fn post_credential(
     State(state): State<AdminState>,
     State(capabilities): State<ConfigCapabilitiesView>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     headers: HeaderMap,
     Json(body): Json<EnterCredentialRequest>,
 ) -> Result<(StatusCode, Json<CredentialSourceView>), Problem> {
@@ -1537,7 +1575,6 @@ async fn post_credential(
         }
         (_, None) => None,
     };
-    let workspace_id = scope.map_or(body.workspace_id, |Extension(scope)| scope.0);
     let canonical_provider = body
         .descriptor
         .as_ref()
@@ -1624,7 +1661,7 @@ async fn post_credential(
 
 async fn rotate_credential(
     State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     Path(id): Path<String>,
     headers: HeaderMap,
     Json(body): Json<RotateCredentialRequest>,
@@ -1645,7 +1682,7 @@ async fn rotate_credential(
         ));
     }
     let id = CredentialSourceId(id);
-    credential_in_scope(&state, &id, scope.as_ref(), &rid).await?;
+    credential_in_scope(&state, &id, &workspace_id, &rid).await?;
     let source = rotate_credential_materials_exact(
         &id,
         body.expected_version,
@@ -1664,14 +1701,14 @@ async fn rotate_credential(
 
 async fn get_credential(
     State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<CredentialSourceView>, Problem> {
     credential_in_scope(
         &state,
         &CredentialSourceId(id),
-        scope.as_ref(),
+        &workspace_id,
         &req_id(&headers),
     )
     .await
@@ -1691,11 +1728,14 @@ struct ListCredentialsQuery {
 
 async fn list_credentials(
     State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     Query(query): Query<ListCredentialsQuery>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<CredentialSourceView>>, Problem> {
-    let workspace = scope.map_or(query.workspace_id, |Extension(scope)| scope.0);
+    let workspace = workspace_id;
+    if claims_another_workspace(&query.workspace_id, &workspace) {
+        return Err(resource_workspace_problem(&req_id(&headers)));
+    }
     if query.provider_ref.is_some() != query.idempotency_key.is_some() {
         return Err(cred_problem(
             &CredentialError::InvalidSource(

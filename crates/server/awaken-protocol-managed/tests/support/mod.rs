@@ -429,3 +429,29 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
         self.inner.owner(session_id).await
     }
 }
+
+/// Mount a Managed router the way a real composition root does: the trusted
+/// startup edge stamps the installation's Workspace on any request that did not
+/// already carry one (`awaken_coordinator::workspace_path::with_platform_workspace`
+/// in the CLI; the IAM edge otherwise). Handlers are fail-closed on an absent
+/// scope, so a test that drives the bare router without this layer is
+/// deliberately exercising the unstamped-ingress refusal.
+#[allow(dead_code)]
+pub fn edge_stamped(inner: axum::Router) -> axum::Router {
+    inner.layer(axum::middleware::from_fn(
+        |mut request: axum::extract::Request, next: axum::middleware::Next| async move {
+            if request
+                .extensions()
+                .get::<awaken_tenancy::WorkspaceScope>()
+                .is_none()
+            {
+                request
+                    .extensions_mut()
+                    .insert(awaken_tenancy::WorkspaceScope(
+                        awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string(),
+                    ));
+            }
+            next.run(request).await
+        },
+    ))
+}

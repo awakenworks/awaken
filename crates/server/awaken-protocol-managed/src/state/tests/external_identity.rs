@@ -28,7 +28,7 @@ async fn delete_broadcasts_session_deleted_then_removes_the_record() {
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let state = Arc::new(ManagedState::new(runtime.clone()));
     let id = state
-        .create_session(bare_create_params(), None)
+        .create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
         .expect("create")
         .id;

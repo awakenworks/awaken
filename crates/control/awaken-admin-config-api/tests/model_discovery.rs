@@ -419,19 +419,33 @@ async fn hosted_supply_rejects_every_model_authoring_entry_before_side_effects()
     assert_eq!(capabilities["models"]["byok_enabled"], false);
 }
 
+/// The Workspace the trusted ingress edge would have resolved for this call.
+///
+/// Admin handlers read the edge stamp, never the caller's `workspace_id`; the
+/// body/query field survives only as a claim the handler fences against the
+/// stamp. These fixtures therefore stamp exactly the Workspace they address,
+/// which is what an authenticated key or a `/v1/workspaces/{ws}/…` path does.
+fn edge_workspace(uri: &str, body: &Value) -> String {
+    if let Some(claimed) = body.get("workspace_id").and_then(Value::as_str) {
+        return claimed.to_string();
+    }
+    uri.split_once("workspace_id=")
+        .map(|(_, rest)| rest.split('&').next().unwrap_or_default().to_string())
+        .filter(|workspace| !workspace.is_empty())
+        .unwrap_or_else(|| "workspace-a".to_string())
+}
+
 async fn call(app: &Router, method: &str, uri: &str, body: Value) -> (StatusCode, Value) {
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(method)
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&body).unwrap()))
-                .unwrap(),
-        )
-        .await
+    let mut request = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
         .unwrap();
+    request
+        .extensions_mut()
+        .insert(awaken_tenancy::WorkspaceScope(edge_workspace(uri, &body)));
+    let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     (

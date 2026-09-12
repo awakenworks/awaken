@@ -49,7 +49,7 @@ impl ManagedState {
         let initial_events = std::mem::take(&mut req.initial_events);
         self.create_session_with_identity_from(
             req,
-            Some(workspace_id),
+            &workspace_id,
             Some(session_id),
             Some(idempotency),
             Some(initial_events),

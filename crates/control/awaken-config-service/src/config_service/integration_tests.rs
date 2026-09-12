@@ -73,23 +73,37 @@ async fn put_config_handler_returns_500_on_version_authority_error() {
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
 
-#[test]
-fn request_scope_uses_the_workspace_scope_when_present() {
+#[tokio::test]
+async fn required_scope_extractor_admits_only_a_non_empty_edge_stamp() {
     // Cause/effect decision table: C1 edge stamp exists, C2 stamp is
     // non-empty. R1 C1+C2 => exact scope; R2 !C1 => reject; R3 C1+!C2 =>
-    // reject. No handler may synthesize an ownership coordinate.
-    let scope = super::request_scope(Some(Extension(WorkspaceScope("wrkspc_acme".into()))))
-        .expect("R1 accepts the exact edge scope");
-    assert_eq!(scope.as_str(), "wrkspc_acme");
-}
+    // reject. No handler may synthesize an ownership coordinate, and after
+    // the extractor conversion there is no `None` arm in which to try.
+    use axum::extract::FromRequestParts;
 
-#[test]
-fn request_scope_rejects_missing_and_empty_edge_scope() {
-    // Same decision table as `request_scope_uses...`: R2 and R3 are
-    // indistinguishable fail-closed outcomes at this adapter seam.
-    assert!(super::request_scope(None).is_err(), "R2");
-    assert!(
-        super::request_scope(Some(Extension(WorkspaceScope(" ".into())))).is_err(),
+    async fn extract(stamp: Option<&str>) -> Result<ScopeId, axum::http::StatusCode> {
+        let mut parts = axum::http::Request::new(()).into_parts().0;
+        if let Some(stamp) = stamp {
+            parts.extensions.insert(WorkspaceScope(stamp.to_string()));
+        }
+        super::super::config_routes::RequiredScope::from_request_parts(&mut parts, &())
+            .await
+            .map(|super::super::config_routes::RequiredScope(scope)| scope)
+            .map_err(|rejection| rejection.status())
+    }
+
+    assert_eq!(
+        extract(Some("wrkspc_acme")).await.expect("R1").as_str(),
+        "wrkspc_acme"
+    );
+    assert_eq!(
+        extract(None).await.unwrap_err(),
+        StatusCode::NOT_FOUND,
+        "R2"
+    );
+    assert_eq!(
+        extract(Some(" ")).await.unwrap_err(),
+        StatusCode::NOT_FOUND,
         "R3"
     );
 }
@@ -99,19 +113,22 @@ async fn handler_rejects_missing_scope_before_parsing_untrusted_config() {
     // Extend the scope cause/effect table with C3=malformed request body.
     // R4 !C1+C3 => 404 Workspace, with no config parsing or persistence;
     // R5 C1+C2+C3 => 400 validation error (covered by handler tests below).
-    let (status, _) = super::validate(
-        State(static_plane(None)),
-        None,
-        None,
-        Path("mgmt".into()),
-        Json(json!({})),
+    // Driven through the mounted router, because the handler signature no
+    // longer admits an absent scope at all: the extractor answers first.
+    let response = tower::ServiceExt::oneshot(
+        crate::config_routes::config_router(static_plane(None)),
+        axum::http::Request::post("/v1/config/agents/mgmt/validate")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("{}"))
+            .expect("validate request"),
     )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "R4");
+    .await
+    .expect("router response");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND, "R4");
 }
 
-fn default_workspace() -> Option<Extension<WorkspaceScope>> {
-    Some(Extension(WorkspaceScope(DEFAULT_SCOPE.into())))
+fn default_workspace() -> crate::config_routes::RequiredScope {
+    crate::config_routes::RequiredScope(ScopeId::from(DEFAULT_SCOPE))
 }
 
 // ---- get_config handler (F19) ----

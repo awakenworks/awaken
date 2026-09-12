@@ -100,6 +100,23 @@ fn harness() -> Harness {
     harness_with(None)
 }
 
+/// The Workspace an authenticated key or `/v1/workspaces/{ws}/…` path would have
+/// resolved for this request. The caller's own `workspace_id` claim, when
+/// present, is what the fixture intends to address.
+fn edge_workspace(request: &Request<Body>) -> String {
+    request
+        .uri()
+        .query()
+        .and_then(|query| {
+            query
+                .split('&')
+                .find_map(|pair| pair.strip_prefix("workspace_id="))
+        })
+        .filter(|workspace| !workspace.is_empty())
+        .unwrap_or("ws")
+        .to_string()
+}
+
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
     let mut builder = Request::builder().method(method).uri(uri);
     let body = match body {
@@ -109,11 +126,15 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
         }
         None => Body::empty(),
     };
-    let resp = app
-        .clone()
-        .oneshot(builder.body(body).unwrap())
-        .await
-        .unwrap();
+    let mut request = builder.body(body).unwrap();
+    let workspace = edge_workspace(&request);
+    // The trusted ingress edge resolves the Workspace; admin handlers read that
+    // stamp and refuse an unstamped request, so the fixture supplies exactly
+    // the Workspace it addresses.
+    request
+        .extensions_mut()
+        .insert(awaken_tenancy::WorkspaceScope(workspace));
+    let resp = app.clone().oneshot(request).await.unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let value = if bytes.is_empty() {

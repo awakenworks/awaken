@@ -45,7 +45,7 @@ async fn cancelled_model_evidence_projects_without_rewriting_logical_outcome() {
                         "agent":"coder", "environment_id":"env_local"
                     }))
                     .unwrap(),
-                    None,
+                    awaken_tenancy::DEFAULT_WORKSPACE_ID,
                 )
                 .await
                 .unwrap();
@@ -195,7 +195,7 @@ async fn cancelled_child_uses_the_same_committed_execution_classifier() {
                     "agent":"coder", "environment_id":"env_local"
                 }))
                 .unwrap(),
-                None,
+                awaken_tenancy::DEFAULT_WORKSPACE_ID,
             )
             .await
             .unwrap();
