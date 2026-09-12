@@ -99,6 +99,7 @@ pub use awaken_run_ingress::WorkerIdentity
 pub use awaken_run_ingress::WorkerIdentityRequest
 pub use awaken_run_ingress::WorkerManifest
 pub use awaken_run_ingress::WorkerObservationSource
+pub use awaken_run_ingress::WorkerProcessExit
 pub use awaken_run_ingress::WorkerRecoveryMode
 pub use awaken_run_ingress::WorkerRegistration
 pub use awaken_run_ingress::WorkerSnapshot
@@ -560,6 +561,7 @@ pub trait awaken_run_ingress::WorkerExecutionBindingSource: core::marker::Send +
 pub fn awaken_run_ingress::WorkerExecutionBindingSource::binding_for<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_worker_contract::registry::WorkerIdentity) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_ingress_contract::dispatch::attempt_binding::AttemptExecutionBinding, awaken_run_ingress::ApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_run_ingress::WorkerExecutionStopSource: core::marker::Send + core::marker::Sync
 pub fn awaken_run_ingress::WorkerExecutionStopSource::observe_attempt_termination<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_run_ingress::ClosedAttemptExecution, &'life2 awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_ingress::AttemptStopStatus, awaken_run_ingress::ApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_run_ingress::WorkerExecutionStopSource::release_closed_worker_evidence<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_run_ingress::ClosedWorkerExecution) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_run_ingress::ApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_run_ingress::WorkerExecutionStopSource::stop_closed_worker<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_run_ingress::ClosedWorkerExecution) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_ingress::WorkerProcessStopStatus, awaken_run_ingress::ApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_run_ingress::WorkerResolver<S>: core::marker::Send + core::marker::Sync
 pub fn awaken_run_ingress::WorkerResolver::credential_realization_capabilities(&self) -> awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities

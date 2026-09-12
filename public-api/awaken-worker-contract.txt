@@ -47,6 +47,7 @@ pub awaken_worker_contract::RegistryError::HistoricalIncarnation::worker_id: all
 pub awaken_worker_contract::RegistryError::IncompleteIncarnationHistory
 pub awaken_worker_contract::RegistryError::IncompleteIncarnationHistory::worker_id: alloc::string::String
 pub awaken_worker_contract::RegistryError::InvalidIdentity
+pub awaken_worker_contract::RegistryError::InvalidProcessExit
 pub awaken_worker_contract::RegistryError::ManifestChanged
 pub awaken_worker_contract::RegistryError::Persistence(alloc::string::String)
 pub awaken_worker_contract::RegistryError::SlotOccupied
@@ -132,6 +133,7 @@ pub awaken_worker_contract::RegisteredWorker::drain_deadline_ms: core::option::O
 pub awaken_worker_contract::RegisteredWorker::heartbeat_at_ms: u64
 pub awaken_worker_contract::RegisteredWorker::heartbeat_sequence: u64
 pub awaken_worker_contract::RegisteredWorker::observation_sequence: u64
+pub awaken_worker_contract::RegisteredWorker::process_exit: core::option::Option<awaken_worker_contract::WorkerProcessExit>
 pub awaken_worker_contract::RegisteredWorker::registered_at_ms: u64
 pub awaken_worker_contract::RegisteredWorker::snapshot: awaken_worker_contract::WorkerSnapshot
 pub struct awaken_worker_contract::VerifiedAcpCapabilityEvidence
@@ -215,6 +217,13 @@ impl<Fingerprint> awaken_worker_contract::WorkerObservationPublicationFence<Fing
 pub fn awaken_worker_contract::WorkerObservationPublicationFence<Fingerprint>::complete(&mut self, Fingerprint, bool) -> awaken_worker_contract::WorkerObservationPublicationCompletion
 impl<Fingerprint> core::default::Default for awaken_worker_contract::WorkerObservationPublicationFence<Fingerprint>
 pub fn awaken_worker_contract::WorkerObservationPublicationFence<Fingerprint>::default() -> Self
+pub struct awaken_worker_contract::WorkerProcessExit
+impl awaken_worker_contract::WorkerProcessExit
+pub fn awaken_worker_contract::WorkerProcessExit::evidence_ref(&self) -> &str
+pub fn awaken_worker_contract::WorkerProcessExit::execution_ref(&self) -> &str
+pub fn awaken_worker_contract::WorkerProcessExit::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_worker_contract::RegistryError>
+pub fn awaken_worker_contract::WorkerProcessExit::provider_id(&self) -> &str
+pub fn awaken_worker_contract::WorkerProcessExit::validate(&self) -> core::result::Result<(), awaken_worker_contract::RegistryError>
 pub struct awaken_worker_contract::WorkerRegistration
 pub awaken_worker_contract::WorkerRegistration::incarnation_id: alloc::string::String
 pub awaken_worker_contract::WorkerRegistration::manifest: awaken_worker_contract::WorkerManifest
@@ -255,7 +264,9 @@ pub fn awaken_worker_contract::WorkerDirectory::current<'life0, 'life1, 'async_t
 pub fn awaken_worker_contract::WorkerDirectory::deregister<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_worker_contract::WorkerIdentity) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_worker_contract::RegistryMutation, awaken_worker_contract::RegistryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_worker_contract::WorkerDirectory::expire_incarnation<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_worker_contract::WorkerIdentity, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_worker_contract::RegistryMutation, awaken_worker_contract::RegistryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_worker_contract::WorkerDirectory::heartbeat<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_worker_contract::WorkerIdentity, awaken_worker_contract::WorkerHeartbeat, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_worker_contract::RegistryMutation, awaken_worker_contract::RegistryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_worker_contract::WorkerDirectory::incarnation<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_worker_contract::WorkerIdentity) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_worker_contract::RegisteredWorker>, awaken_worker_contract::RegistryError>> + core::marker::Send + 'async_trait)>> where Self: core::marker::Sync + 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_worker_contract::WorkerDirectory::mark_quiesced<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_worker_contract::WorkerIdentity) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_worker_contract::RegistryMutation, awaken_worker_contract::RegistryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_worker_contract::WorkerDirectory::record_process_exit<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_worker_contract::WorkerIdentity, awaken_worker_contract::WorkerProcessExit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_worker_contract::RegistryMutation, awaken_worker_contract::RegistryError>> + core::marker::Send + 'async_trait)>> where Self: core::marker::Sync + 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_worker_contract::WorkerDirectory::register<'life0, 'async_trait>(&'life0 self, awaken_worker_contract::WorkerRegistration, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_worker_contract::RegisteredWorker, awaken_worker_contract::RegistryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_worker_contract::WorkerObservationSource: core::marker::Send + core::marker::Sync
 pub fn awaken_worker_contract::WorkerObservationSource::list<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_worker_contract::RegisteredWorker>, awaken_worker_contract::RegistryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -273,5 +284,6 @@ pub fn awaken_worker_contract::select_verified_acp_capability<'a>(impl core::ite
 pub const fn awaken_worker_contract::worker_expiry_admission(bool, bool, awaken_worker_contract::WorkerState, u64, u64) -> awaken_worker_contract::RegistryMutation
 pub const fn awaken_worker_contract::worker_heartbeat_admission(bool, bool, bool, bool, awaken_worker_contract::WorkerState) -> awaken_worker_contract::RegistryMutation
 pub const fn awaken_worker_contract::worker_observation_sequence_after_heartbeat(u64, u64, bool) -> core::option::Option<u64>
+pub const fn awaken_worker_contract::worker_process_exit_admission(bool, bool, bool, bool, bool) -> awaken_worker_contract::RegistryMutation
 pub const fn awaken_worker_contract::worker_registration_history_admission(bool, bool) -> awaken_worker_contract::WorkerRegistrationHistoryAdmission
 pub const fn awaken_worker_contract::worker_slot_is_replaceable(awaken_worker_contract::WorkerState, u64, u64) -> bool

@@ -38,6 +38,7 @@ pub use awaken_run_ingress_contract::WorkerHeartbeat
 pub use awaken_run_ingress_contract::WorkerIdentity
 pub use awaken_run_ingress_contract::WorkerManifest
 pub use awaken_run_ingress_contract::WorkerObservationSource
+pub use awaken_run_ingress_contract::WorkerProcessExit
 pub use awaken_run_ingress_contract::WorkerRecoveryMode
 pub use awaken_run_ingress_contract::WorkerRegistration
 pub use awaken_run_ingress_contract::WorkerSnapshot

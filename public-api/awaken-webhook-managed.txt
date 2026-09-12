@@ -11,6 +11,10 @@ impl awaken_webhook::dispatch::SubscriptionSource for awaken_webhook_managed::Co
 pub fn awaken_webhook_managed::ConfigPlaneSubscriptionSource::matching<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_webhook::dispatch::ResolvedSubscription>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_webhook_managed::ConfigPlaneSubscriptionSource::record_failure<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u32) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_webhook::dispatch::SubscriptionFailureState, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_webhook_managed::ConfigPlaneSubscriptionSource::record_success<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub struct awaken_webhook_managed::RequiredWorkspaceScope(pub alloc::string::String)
+impl<S> axum_core::extract::FromRequestParts<S> for awaken_webhook_managed::RequiredWorkspaceScope where S: core::marker::Send + core::marker::Sync
+pub type awaken_webhook_managed::RequiredWorkspaceScope::Rejection = http::response::Response<axum_core::body::Body>
+pub async fn awaken_webhook_managed::RequiredWorkspaceScope::from_request_parts(&mut http::request::Parts, &S) -> core::result::Result<Self, Self::Rejection>
 pub struct awaken_webhook_managed::WebhookInventoryReport
 pub awaken_webhook_managed::WebhookInventoryReport::missing_material: alloc::vec::Vec<awaken_credential_vault::SecretRef>
 pub awaken_webhook_managed::WebhookInventoryReport::orphaned_deleted: alloc::vec::Vec<awaken_credential_vault::SecretRef>

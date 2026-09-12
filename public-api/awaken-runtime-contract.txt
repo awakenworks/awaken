@@ -644,7 +644,7 @@ pub awaken_runtime_contract::llm::ChatMessage::role: awaken_agent_contract::agen
 pub struct awaken_runtime_contract::llm::ChatRequest
 pub awaken_runtime_contract::llm::ChatRequest::inference: awaken_runtime_contract::agent_bindings::InferenceOptions
 pub awaken_runtime_contract::llm::ChatRequest::messages: alloc::vec::Vec<awaken_runtime_contract::llm::ChatMessage>
-pub awaken_runtime_contract::llm::ChatRequest::model_binding: awaken_runtime_contract::resolved::ModelBinding
+pub awaken_runtime_contract::llm::ChatRequest::model_binding: awaken_runtime_contract::ModelBinding
 pub awaken_runtime_contract::llm::ChatRequest::tools: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub struct awaken_runtime_contract::llm::ChatResponse
 pub awaken_runtime_contract::llm::ChatResponse::output: awaken_runtime_contract::llm::AssistantOutput
@@ -772,16 +772,16 @@ pub const awaken_runtime_contract::model_operation::ActiveModelOperation::KEY: &
 pub const awaken_runtime_contract::model_operation::ActiveModelOperation::MERGE: awaken_agent_contract::agent::state::MergePolicy
 pub const awaken_runtime_contract::model_operation::ActiveModelOperation::SCOPE: awaken_agent_contract::agent::state::Scope
 pub struct awaken_runtime_contract::model_operation::ModelOperation
-pub awaken_runtime_contract::model_operation::ModelOperation::binding: awaken_runtime_contract::resolved::ModelBinding
+pub awaken_runtime_contract::model_operation::ModelOperation::binding: awaken_runtime_contract::ModelBinding
 pub awaken_runtime_contract::model_operation::ModelOperation::execution: awaken_runtime_contract::model_operation::ModelExecutionEvidence
 pub awaken_runtime_contract::model_operation::ModelOperation::ordinal: core::num::nonzero::NonZeroU64
 pub awaken_runtime_contract::model_operation::ModelOperation::phase: awaken_runtime_contract::model_operation::ModelOperationPhase
 impl awaken_runtime_contract::model_operation::ModelOperation
-pub fn awaken_runtime_contract::model_operation::ModelOperation::next(core::option::Option<&Self>, awaken_runtime_contract::resolved::ModelBinding) -> core::option::Option<Self>
+pub fn awaken_runtime_contract::model_operation::ModelOperation::next(core::option::Option<&Self>, awaken_runtime_contract::ModelBinding) -> core::option::Option<Self>
 pub fn awaken_runtime_contract::model_operation::ModelOperation::permits_reentry(core::option::Option<&Self>, bool) -> bool
 pub struct awaken_runtime_contract::model_operation::ModelOperationContext
 impl awaken_runtime_contract::model_operation::ModelOperationContext
-pub fn awaken_runtime_contract::model_operation::ModelOperationContext::binding(&self) -> &awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::model_operation::ModelOperationContext::binding(&self) -> &awaken_runtime_contract::ModelBinding
 pub fn awaken_runtime_contract::model_operation::ModelOperationContext::from_operation(&awaken_agent_contract::agent::thread::Id, &awaken_agent_contract::agent::run::Id, &awaken_runtime_contract::model_operation::ModelOperation) -> Self
 pub fn awaken_runtime_contract::model_operation::ModelOperationContext::operation_id(&self) -> alloc::string::String
 pub fn awaken_runtime_contract::model_operation::ModelOperationContext::run_id(&self) -> &awaken_agent_contract::agent::run::Id
@@ -1292,26 +1292,26 @@ pub struct awaken_runtime_contract::resolved::ModelBinding
 pub awaken_runtime_contract::resolved::ModelBinding::backend_ref: alloc::string::String
 pub awaken_runtime_contract::resolved::ModelBinding::model_ref: alloc::string::String
 pub awaken_runtime_contract::resolved::ModelBinding::provider_identity_ref: alloc::string::String
-impl awaken_runtime_contract::resolved::ModelBinding
-pub fn awaken_runtime_contract::resolved::ModelBinding::backend(&self) -> awaken_runtime_contract::resolved::Backend
-pub fn awaken_runtime_contract::resolved::ModelBinding::identity(&self) -> (&str, &str, &str)
-pub fn awaken_runtime_contract::resolved::ModelBinding::model(&self) -> core::option::Option<awaken_runtime_contract::resolved::ExactModelRef>
-pub fn awaken_runtime_contract::resolved::ModelBinding::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
-pub fn awaken_runtime_contract::resolved::ModelBinding::parse(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidModelBinding>
-pub fn awaken_runtime_contract::resolved::ModelBinding::provider_identity(&self) -> core::option::Option<awaken_runtime_contract::resolved::ProviderIdentityRef>
-impl core::cmp::Eq for awaken_runtime_contract::resolved::ModelBinding
-impl core::cmp::Ord for awaken_runtime_contract::resolved::ModelBinding
-pub fn awaken_runtime_contract::resolved::ModelBinding::cmp(&self, &Self) -> core::cmp::Ordering
-impl core::cmp::PartialEq for awaken_runtime_contract::resolved::ModelBinding
-pub fn awaken_runtime_contract::resolved::ModelBinding::eq(&self, &Self) -> bool
-impl core::cmp::PartialOrd for awaken_runtime_contract::resolved::ModelBinding
-pub fn awaken_runtime_contract::resolved::ModelBinding::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
-impl core::convert::AsRef<awaken_runtime_contract::resolved::ModelBinding> for awaken_runtime_contract::resolved::ResolvedModelCandidate
-pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::as_ref(&self) -> &awaken_runtime_contract::resolved::ModelBinding
-impl core::fmt::Debug for awaken_runtime_contract::resolved::ModelBinding
-pub fn awaken_runtime_contract::resolved::ModelBinding::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::hash::Hash for awaken_runtime_contract::resolved::ModelBinding
-pub fn awaken_runtime_contract::resolved::ModelBinding::hash<H: core::hash::Hasher>(&self, &mut H)
+impl awaken_runtime_contract::ModelBinding
+pub fn awaken_runtime_contract::ModelBinding::backend(&self) -> awaken_runtime_contract::resolved::Backend
+pub fn awaken_runtime_contract::ModelBinding::identity(&self) -> (&str, &str, &str)
+pub fn awaken_runtime_contract::ModelBinding::model(&self) -> core::option::Option<awaken_runtime_contract::resolved::ExactModelRef>
+pub fn awaken_runtime_contract::ModelBinding::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::ModelBinding::parse(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidModelBinding>
+pub fn awaken_runtime_contract::ModelBinding::provider_identity(&self) -> core::option::Option<awaken_runtime_contract::resolved::ProviderIdentityRef>
+impl core::cmp::Eq for awaken_runtime_contract::ModelBinding
+impl core::cmp::Ord for awaken_runtime_contract::ModelBinding
+pub fn awaken_runtime_contract::ModelBinding::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for awaken_runtime_contract::ModelBinding
+pub fn awaken_runtime_contract::ModelBinding::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for awaken_runtime_contract::ModelBinding
+pub fn awaken_runtime_contract::ModelBinding::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::AsRef<awaken_runtime_contract::ModelBinding> for awaken_runtime_contract::resolved::ResolvedModelCandidate
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::as_ref(&self) -> &awaken_runtime_contract::ModelBinding
+impl core::fmt::Debug for awaken_runtime_contract::ModelBinding
+pub fn awaken_runtime_contract::ModelBinding::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_runtime_contract::ModelBinding
+pub fn awaken_runtime_contract::ModelBinding::hash<H: core::hash::Hasher>(&self, &mut H)
 pub struct awaken_runtime_contract::resolved::OpenRouterWebFetchParameters
 pub awaken_runtime_contract::resolved::OpenRouterWebFetchParameters::engine: core::option::Option<awaken_runtime_contract::resolved::OpenRouterFetchEngine>
 pub awaken_runtime_contract::resolved::OpenRouterWebFetchParameters::max_content_tokens: core::option::Option<core::num::nonzero::NonZeroU32>
@@ -1339,26 +1339,26 @@ impl core::fmt::Display for awaken_runtime_contract::resolved::ProviderIdentityR
 pub fn awaken_runtime_contract::resolved::ProviderIdentityRef::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_runtime_contract::resolved::ResolvedModelCandidate
 impl awaken_runtime_contract::resolved::ResolvedModelCandidate
-pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::binding(&self) -> &awaken_runtime_contract::resolved::ModelBinding
-pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::host(awaken_runtime_contract::resolved::ModelBinding) -> Self
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::binding(&self) -> &awaken_runtime_contract::ModelBinding
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::host(awaken_runtime_contract::ModelBinding) -> Self
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::provisioning(&self) -> &awaken_runtime_contract::resolved::ModelProvisioning
-pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(awaken_runtime_contract::resolved::ModelBinding, awaken_credential_contract::CredentialRef, awaken_runtime_contract::resolved::BackendModelSelection, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, awaken_agent_contract::acp::AcpSessionConfiguration) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
-pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_from_parts(awaken_runtime_contract::resolved::ModelBinding, awaken_runtime_contract::resolved::ModelProvisioning) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
-pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_remote(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(awaken_runtime_contract::ModelBinding, awaken_credential_contract::CredentialRef, awaken_runtime_contract::resolved::BackendModelSelection, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, awaken_agent_contract::acp::AcpSessionConfiguration) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_from_parts(awaken_runtime_contract::ModelBinding, awaken_runtime_contract::resolved::ModelProvisioning) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_remote(awaken_runtime_contract::ModelBinding, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::with_acp_tool_alias_support(self, bool) -> Self
 impl awaken_runtime_contract::resolved::ResolvedModelCandidate
-pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_brokered_provider(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, awaken_runtime_contract::resolved::InferenceEndpoint) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
-pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_brokered_provider_with_acp(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::AcpExecutionProfile) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
-pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_brokered_provider_with_profile(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::ProviderExecutionProfile) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
-pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_brokered_provider_with_reasoning(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::UnspecifiedReasoning) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
-pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
-pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_acp(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::AcpExecutionProfile) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
-pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_profile(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::ProviderExecutionProfile) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
-pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_reasoning(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::UnspecifiedReasoning) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
-impl core::convert::AsRef<awaken_runtime_contract::resolved::ModelBinding> for awaken_runtime_contract::resolved::ResolvedModelCandidate
-pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::as_ref(&self) -> &awaken_runtime_contract::resolved::ModelBinding
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_brokered_provider(awaken_runtime_contract::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, awaken_runtime_contract::resolved::InferenceEndpoint) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_brokered_provider_with_acp(awaken_runtime_contract::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::AcpExecutionProfile) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_brokered_provider_with_profile(awaken_runtime_contract::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::ProviderExecutionProfile) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_brokered_provider_with_reasoning(awaken_runtime_contract::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::UnspecifiedReasoning) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(awaken_runtime_contract::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_acp(awaken_runtime_contract::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::AcpExecutionProfile) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_profile(awaken_runtime_contract::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::ProviderExecutionProfile) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_reasoning(awaken_runtime_contract::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::UnspecifiedReasoning) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
+impl core::convert::AsRef<awaken_runtime_contract::ModelBinding> for awaken_runtime_contract::resolved::ResolvedModelCandidate
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::as_ref(&self) -> &awaken_runtime_contract::ModelBinding
 impl core::ops::deref::Deref for awaken_runtime_contract::resolved::ResolvedModelCandidate
-pub type awaken_runtime_contract::resolved::ResolvedModelCandidate::Target = awaken_runtime_contract::resolved::ModelBinding
+pub type awaken_runtime_contract::resolved::ResolvedModelCandidate::Target = awaken_runtime_contract::ModelBinding
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::deref(&self) -> &Self::Target
 impl<'de> serde_core::de::Deserialize<'de> for awaken_runtime_contract::resolved::ResolvedModelCandidate
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
@@ -1380,8 +1380,8 @@ pub awaken_runtime_contract::resolved::ResolvedSpec::tool_descriptors: alloc::ve
 pub awaken_runtime_contract::resolved::ResolvedSpec::tool_presentation: awaken_runtime_contract::resolved::ToolPresentation
 impl awaken_runtime_contract::resolved::ResolvedSpec
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::attempt_candidates(&self, core::option::Option<&str>) -> alloc::vec::Vec<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
-pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_bindings(&self) -> alloc::vec::Vec<&awaken_runtime_contract::resolved::ModelBinding>
-pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_for_binding(&self, &awaken_runtime_contract::resolved::ModelBinding) -> core::option::Option<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_bindings(&self) -> alloc::vec::Vec<&awaken_runtime_contract::ModelBinding>
+pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_for_binding(&self, &awaken_runtime_contract::ModelBinding) -> core::option::Option<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_for_model(&self, &str) -> core::option::Option<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::execution_candidates(&self, core::option::Option<&str>) -> alloc::vec::Vec<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::pinned_model_candidate_at(&self, usize) -> core::option::Option<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
@@ -2268,7 +2268,7 @@ pub struct awaken_runtime_contract::CatalogFingerprint(pub alloc::string::String
 pub struct awaken_runtime_contract::ChatRequest
 pub awaken_runtime_contract::ChatRequest::inference: awaken_runtime_contract::agent_bindings::InferenceOptions
 pub awaken_runtime_contract::ChatRequest::messages: alloc::vec::Vec<awaken_runtime_contract::llm::ChatMessage>
-pub awaken_runtime_contract::ChatRequest::model_binding: awaken_runtime_contract::resolved::ModelBinding
+pub awaken_runtime_contract::ChatRequest::model_binding: awaken_runtime_contract::ModelBinding
 pub awaken_runtime_contract::ChatRequest::tools: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub struct awaken_runtime_contract::ChatResponse
 pub awaken_runtime_contract::ChatResponse::output: awaken_runtime_contract::llm::AssistantOutput
@@ -2372,8 +2372,8 @@ pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::infe
 pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::instructions(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::max_steps(self, usize) -> Self
 pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::metadata(self, awaken_runtime_contract::snapshot::AgentSnapshotMetadata) -> Self
-pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::model(self, awaken_runtime_contract::resolved::ModelBinding) -> awaken_runtime_contract::ExecutableAgentSnapshotBuilder<awaken_runtime_contract::snapshot_builder::SelectedModel>
-pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::model_candidates(self, impl core::iter::traits::collect::IntoIterator<Item = awaken_runtime_contract::resolved::ModelBinding>) -> Self
+pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::model(self, awaken_runtime_contract::ModelBinding) -> awaken_runtime_contract::ExecutableAgentSnapshotBuilder<awaken_runtime_contract::snapshot_builder::SelectedModel>
+pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::model_candidates(self, impl core::iter::traits::collect::IntoIterator<Item = awaken_runtime_contract::ModelBinding>) -> Self
 pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::plugin_config(self, impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, serde_json::value::Value)>) -> Self
 pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::plugins(self, impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::ExecutableAgentSnapshotBuilder<ModelState>::resolved_model(self, awaken_runtime_contract::resolved::ResolvedModelCandidate) -> awaken_runtime_contract::ExecutableAgentSnapshotBuilder<awaken_runtime_contract::snapshot_builder::SelectedModel>
@@ -2418,26 +2418,26 @@ pub struct awaken_runtime_contract::ModelBinding
 pub awaken_runtime_contract::ModelBinding::backend_ref: alloc::string::String
 pub awaken_runtime_contract::ModelBinding::model_ref: alloc::string::String
 pub awaken_runtime_contract::ModelBinding::provider_identity_ref: alloc::string::String
-impl awaken_runtime_contract::resolved::ModelBinding
-pub fn awaken_runtime_contract::resolved::ModelBinding::backend(&self) -> awaken_runtime_contract::resolved::Backend
-pub fn awaken_runtime_contract::resolved::ModelBinding::identity(&self) -> (&str, &str, &str)
-pub fn awaken_runtime_contract::resolved::ModelBinding::model(&self) -> core::option::Option<awaken_runtime_contract::resolved::ExactModelRef>
-pub fn awaken_runtime_contract::resolved::ModelBinding::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
-pub fn awaken_runtime_contract::resolved::ModelBinding::parse(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidModelBinding>
-pub fn awaken_runtime_contract::resolved::ModelBinding::provider_identity(&self) -> core::option::Option<awaken_runtime_contract::resolved::ProviderIdentityRef>
-impl core::cmp::Eq for awaken_runtime_contract::resolved::ModelBinding
-impl core::cmp::Ord for awaken_runtime_contract::resolved::ModelBinding
-pub fn awaken_runtime_contract::resolved::ModelBinding::cmp(&self, &Self) -> core::cmp::Ordering
-impl core::cmp::PartialEq for awaken_runtime_contract::resolved::ModelBinding
-pub fn awaken_runtime_contract::resolved::ModelBinding::eq(&self, &Self) -> bool
-impl core::cmp::PartialOrd for awaken_runtime_contract::resolved::ModelBinding
-pub fn awaken_runtime_contract::resolved::ModelBinding::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
-impl core::convert::AsRef<awaken_runtime_contract::resolved::ModelBinding> for awaken_runtime_contract::resolved::ResolvedModelCandidate
-pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::as_ref(&self) -> &awaken_runtime_contract::resolved::ModelBinding
-impl core::fmt::Debug for awaken_runtime_contract::resolved::ModelBinding
-pub fn awaken_runtime_contract::resolved::ModelBinding::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::hash::Hash for awaken_runtime_contract::resolved::ModelBinding
-pub fn awaken_runtime_contract::resolved::ModelBinding::hash<H: core::hash::Hasher>(&self, &mut H)
+impl awaken_runtime_contract::ModelBinding
+pub fn awaken_runtime_contract::ModelBinding::backend(&self) -> awaken_runtime_contract::resolved::Backend
+pub fn awaken_runtime_contract::ModelBinding::identity(&self) -> (&str, &str, &str)
+pub fn awaken_runtime_contract::ModelBinding::model(&self) -> core::option::Option<awaken_runtime_contract::resolved::ExactModelRef>
+pub fn awaken_runtime_contract::ModelBinding::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::ModelBinding::parse(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidModelBinding>
+pub fn awaken_runtime_contract::ModelBinding::provider_identity(&self) -> core::option::Option<awaken_runtime_contract::resolved::ProviderIdentityRef>
+impl core::cmp::Eq for awaken_runtime_contract::ModelBinding
+impl core::cmp::Ord for awaken_runtime_contract::ModelBinding
+pub fn awaken_runtime_contract::ModelBinding::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for awaken_runtime_contract::ModelBinding
+pub fn awaken_runtime_contract::ModelBinding::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for awaken_runtime_contract::ModelBinding
+pub fn awaken_runtime_contract::ModelBinding::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::AsRef<awaken_runtime_contract::ModelBinding> for awaken_runtime_contract::resolved::ResolvedModelCandidate
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::as_ref(&self) -> &awaken_runtime_contract::ModelBinding
+impl core::fmt::Debug for awaken_runtime_contract::ModelBinding
+pub fn awaken_runtime_contract::ModelBinding::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for awaken_runtime_contract::ModelBinding
+pub fn awaken_runtime_contract::ModelBinding::hash<H: core::hash::Hasher>(&self, &mut H)
 pub struct awaken_runtime_contract::ModelInputProjectionTrace
 pub awaken_runtime_contract::ModelInputProjectionTrace::durable_input_supplied: usize
 pub awaken_runtime_contract::ModelInputProjectionTrace::durable_input_visible: usize
@@ -2536,8 +2536,8 @@ pub awaken_runtime_contract::ResolvedSpec::tool_descriptors: alloc::vec::Vec<awa
 pub awaken_runtime_contract::ResolvedSpec::tool_presentation: awaken_runtime_contract::resolved::ToolPresentation
 impl awaken_runtime_contract::resolved::ResolvedSpec
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::attempt_candidates(&self, core::option::Option<&str>) -> alloc::vec::Vec<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
-pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_bindings(&self) -> alloc::vec::Vec<&awaken_runtime_contract::resolved::ModelBinding>
-pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_for_binding(&self, &awaken_runtime_contract::resolved::ModelBinding) -> core::option::Option<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_bindings(&self) -> alloc::vec::Vec<&awaken_runtime_contract::ModelBinding>
+pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_for_binding(&self, &awaken_runtime_contract::ModelBinding) -> core::option::Option<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_for_model(&self, &str) -> core::option::Option<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::execution_candidates(&self, core::option::Option<&str>) -> alloc::vec::Vec<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::pinned_model_candidate_at(&self, usize) -> core::option::Option<&awaken_runtime_contract::resolved::ResolvedModelCandidate>

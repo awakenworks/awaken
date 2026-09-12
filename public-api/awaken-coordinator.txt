@@ -52,7 +52,7 @@ pub awaken_coordinator::application_access::IssuedApplicationToken::protocols: a
 pub awaken_coordinator::application_access::IssuedApplicationToken::token_type: alloc::string::String
 pub const awaken_coordinator::application_access::APPLICATION_ACCESS_MAX_TTL_SECONDS: u64
 pub async fn awaken_coordinator::application_access::issue_application_access(&awaken_coordinator::application_access_store::ApplicationAccessStore, &dyn awaken_session_contract::session_repo::repository_port::ManagedSessionRepository, &str, awaken_coordinator::application_access::CreateApplicationToken) -> core::result::Result<awaken_coordinator::application_access::IssuedApplicationToken, awaken_coordinator::application_access::ApplicationAccessIssuanceError>
-pub fn awaken_coordinator::application_access::router(alloc::sync::Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>, alloc::sync::Arc<dyn awaken_session_contract::session_repo::repository_port::ManagedSessionRepository>, alloc::string::String) -> axum::routing::Router
+pub fn awaken_coordinator::application_access::router(alloc::sync::Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>, alloc::sync::Arc<dyn awaken_session_contract::session_repo::repository_port::ManagedSessionRepository>) -> axum::routing::Router
 pub mod awaken_coordinator::application_access_store
 pub enum awaken_coordinator::application_access_store::ApplicationAccessRepositoryError
 pub awaken_coordinator::application_access_store::ApplicationAccessRepositoryError::Corrupt(alloc::string::String)
