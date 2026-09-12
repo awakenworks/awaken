@@ -156,6 +156,9 @@ enum CommittedEvidence {
     Terminal,
     Compaction,
     Reschedule,
+    /// A terminal run whose committed audit also records that the permission
+    /// gate refused one call, keyed by that call's id.
+    PermissionDenied(&'static str),
 }
 
 impl CommittedEvidence {
@@ -178,6 +181,16 @@ impl CommittedEvidence {
                 awaken_agent_contract::audit::run_event::RunEvent::RunRescheduled {
                     state: RunState::Running,
                     claim_epoch: 2,
+                },
+            ));
+        }
+        if let Self::PermissionDenied(call_id) = self {
+            events.push((
+                2,
+                awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided {
+                    tool_id: "bash".into(),
+                    call_id: call_id.into(),
+                    decision: "deny".into(),
                 },
             ));
         }
@@ -264,8 +277,12 @@ impl CommittedEvidence {
         self.audit_records(&run_id, &terminal_state)
             .into_iter()
             .filter_map(|record| {
-                let state: RunState = serde_json::from_value(record.payload["state"].clone())
-                    .expect("typed RunEvent always carries RunState");
+                // Only the lifecycle events carry a RunState. Other committed
+                // audit kinds (a permission decision, for one) are real records
+                // that simply have no lifecycle meaning, so they are skipped
+                // here rather than treated as malformed.
+                let state: RunState = serde_json::from_value(record.payload.get("state")?.clone())
+                    .expect("a lifecycle RunEvent always carries RunState");
                 let kind = awaken_agent_contract::classify_run_lifecycle_record(
                     &record.kind,
                     &state,
@@ -1496,5 +1513,55 @@ async fn archiving_commits_a_terminal_event_and_fences_writes() {
             .count(),
         1,
         "re-archive commits no second terminal event"
+    );
+}
+
+#[tokio::test]
+async fn a_call_the_gate_refused_is_reported_as_denied_not_allowed() {
+    // Cause/effect graph: C1 the model asked for a tool; C2 the permission gate
+    // refused it, so the run committed a blocked result and an audit record
+    // naming that decision. E1 the wire reports `deny` for that call.
+    //
+    // Without the audit join the projection can only see that a result exists
+    // and reports `allow` — telling a client the call it refused was permitted.
+    // That is the regression this pins.
+    let (state, app, completions) = app_with_runtime(
+        ScriptFake::new(|| {
+            ended(vec![
+                Message::new(
+                    Id("a".into()),
+                    Role::Assistant,
+                    vec![ContentBlock::ToolUse {
+                        id: "blocked-1".into(),
+                        name: "bash".into(),
+                        input: serde_json::json!({ "command": "rm -rf /" }),
+                    }],
+                ),
+                Message::new(
+                    Id("t".into()),
+                    Role::Tool,
+                    vec![ContentBlock::ToolResult {
+                        tool_use_id: "blocked-1".into(),
+                        content: vec![ContentBlock::text("blocked: denied by policy")],
+                        is_error: true,
+                    }],
+                ),
+            ])
+        })
+        .with_committed_evidence(CommittedEvidence::PermissionDenied("blocked-1")),
+    );
+    let id = create(&app).await;
+    send_user(&app, &id, "go").await;
+    support::drive_completed_user_dispatches(&state, &id, &completions).await;
+    let list = list_events(&app, &id).await;
+    let use_ev = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["type"] == "agent.tool_use")
+        .expect("the refused call is still visible on the stream");
+    assert_eq!(
+        use_ev["evaluated_permission"], "deny",
+        "a refused call must never be reported as permitted"
     );
 }

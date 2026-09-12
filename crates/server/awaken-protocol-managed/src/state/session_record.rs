@@ -178,6 +178,15 @@ pub(super) struct SessionRecord {
     pub(super) checkpoint: ManagedProjectionCheckpoint,
     /// The only process-local state allowed to survive a committed rebuild.
     pub(super) overlay: ManagedLiveOverlay,
+    /// What the permission gate decided, per tool call, harvested from the
+    /// committed audit trail.
+    ///
+    /// The transcript shows that a call happened and that a result came back;
+    /// it cannot show whether the gate permitted or refused it. Keeping the
+    /// decision beside the transcript lets the projection report the recorded
+    /// answer instead of inferring one from the shape of the result — an
+    /// inference that read a refusal as a permission.
+    pub(super) permission_decisions: HashMap<String, crate::types::session::EvaluatedPermission>,
     /// The optional root Run owner and reason whose aggregate idle event is
     /// waiting for coordinated Thread settlement. The owner lets a later terminal
     /// of that same Run supersede an earlier Awaiting reason without allowing an
@@ -367,6 +376,7 @@ impl SessionRecord {
             events,
             checkpoint,
             overlay: Default::default(),
+            permission_decisions: HashMap::new(),
             deferred_session_stop_reason: None,
             event_thread_owners: Default::default(),
             child_threads: Vec::new(),
