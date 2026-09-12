@@ -85,6 +85,8 @@ run static "test-orchestration self-test" python3 scripts/ci/check_test_orchestr
 run static "test-orchestration" python3 scripts/ci/check_test_orchestration.py
 run static "dependency-gates self-test" python3 scripts/ci/check_dependency_gates.py --selftest
 run static "dependency-gates" python3 scripts/ci/check_dependency_gates.py
+run static "degrading-defaults self-test" python3 scripts/ci/check_degrading_defaults.py --selftest
+run static "degrading-defaults" python3 scripts/ci/check_degrading_defaults.py
 run static "coverage checker tests" python3 scripts/ci/test_changed_e2e_line_coverage.py
 run static "LCOV export tests" python3 scripts/ci/test_export_homogeneous_lcov.py
 run static "provider-environment self-test" scripts/ci/_provider_environment.sh --self-test
