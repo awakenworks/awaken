@@ -125,16 +125,13 @@ impl RawTool for SandboxEcho {
             deny_tool_egress: false,
         };
         let run = |e: String| ToolError::Execution(e);
+        // One fence/authority pair drives both halves of this sandbox's life.
+        // Creating through the fenced edge gives the sandbox a live realization,
+        // so its reclaim must go back through the same effect — see the disposal
+        // below.
+        let (fence, authority) = pc::test_support::fixture_effect("op-remote-hand");
         let sandbox = provider
-            .create_for_effect(
-                &spec,
-                &pc::SandboxEffectFence::new("op-remote-hand", "owner", "runtime", 1, u64::MAX)
-                    .expect("fixture effect fence"),
-                &pc::test_support::EffectAuthority::new(
-                    &pc::SandboxEffectFence::new("op-remote-hand", "owner", "runtime", 1, u64::MAX)
-                        .expect("fixture effect fence"),
-                ),
-            )
+            .create_for_effect(&spec, &fence, &authority)
             .await
             .map_err(|e| run(format!("create: {e:?}")))?;
 
@@ -168,8 +165,11 @@ impl RawTool for SandboxEcho {
             .read_artifact(&art.id)
             .await
             .map_err(|e| run(format!("read: {e:?}")))?;
-        sandbox
-            .dispose_unattached()
+        // This sandbox was created through the fenced edge, so it has a current
+        // realization and the provider correctly refuses an unattached reclaim
+        // (that path is for capacity nothing owns). Drive the same
+        // prepared/authorized disposal pair production drives.
+        pc::test_support::dispose_owned_fixture(sandbox.as_ref(), &fence, &authority)
             .await
             .map_err(|e| run(format!("dispose: {e:?}")))?;
 
