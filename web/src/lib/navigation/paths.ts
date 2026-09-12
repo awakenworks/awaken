@@ -20,6 +20,9 @@ export interface NavItem {
 export const NAV: NavItem[] = [
   { key: "overview", label: "Overview", labelZh: "概览", group: "workspace", path: "/w/:ws/overview" },
 
+  // Quickstart is the first thing an operator needs and the only step that
+  // was previously reachable solely by passing through a new-Agent draft.
+  { key: "quickstart", label: "Quickstart", labelZh: "快速开始", group: "author", path: "/w/:ws/quickstart" },
   { key: "agents", label: "Agents", labelZh: "Agents", group: "author", path: "/w/:ws/agents", agentBadge: true },
   { key: "skills", label: "Skills", labelZh: "技能", group: "author", path: "/w/:ws/skills", surface: "managed_runtime" },
   {

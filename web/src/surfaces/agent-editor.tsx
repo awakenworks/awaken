@@ -26,12 +26,12 @@ import {
   type BuilderSection,
 } from "../components/agent/agent-editor-navigation";
 import { useAgentDraftReview } from "../components/agent/useAgentDraftReview";
+import { quickRunSessionRequest } from "../lib/quickstart-run";
 import ReadinessPanel from "../components/app/ReadinessPanel";
 import SandboxPane from "../components/session/SandboxPane";
 import Drawer from "../components/ui/Drawer";
 import { useToast } from "../components/ui/Toast";
 import {
-  BUILTIN_LOCAL_ENVIRONMENT_ID,
   api,
   createManagedSession,
   IdempotencyScope,
@@ -43,7 +43,6 @@ import type {
   AgentConfig,
   AgentConfigItem,
   AgentInputConfig,
-  CreateSessionRequest,
   CredentialSource,
   InputBinding,
   PublishResult,
@@ -78,6 +77,9 @@ export default function AgentEditorSurface() {
   const [searchParams] = useSearchParams();
   const parentAgentId = searchParams.get("parent")?.trim() ?? "";
   const attachAuxiliaryId = searchParams.get("attach")?.trim() ?? "";
+  // `template` already selects the Dream system Agent; the Quickstart
+  // landing route hands over its Starter under its own key.
+  const starterId = searchParams.get("starter")?.trim() || undefined;
   const isNew = id === "new";
   const [stage, setStage] = useState<AuthorStage>(() => stageForQuery(searchParams.get("stage")));
   const [builderSection, setBuilderSection] = useState<BuilderSection>(
@@ -435,24 +437,15 @@ export default function AgentEditorSurface() {
           resource_revision: reviewedResourceRevision,
         },
       );
-      const request: CreateSessionRequest = {
-        // Publish is the immutable execution boundary. Pin the Session to the
-        // exact revision acknowledged by that boundary so an active-active
-        // Coordinator can either load that publication or fail creation
-        // closed; it must never run an unversioned fallback configuration.
-        agent: { id: targetId(), type: "agent", version: publication.source_revision },
-        environment_id: intent.environmentId ?? BUILTIN_LOCAL_ENVIRONMENT_ID,
-        // The official create boundary owns initial_events atomically. A
-        // second POST would create a partial Session on transport failure and
-        // duplicate idempotency/retry semantics already owned by creation.
-        initial_events: [{
-          type: "user.message",
-          content: [{ type: "text", text: intent.task }],
-        }],
-        title: app.t("Quickstart first run", "Quickstart 首次运行"),
-      };
       return createManagedSession(
-        request,
+        quickRunSessionRequest({
+          agentId: targetId(),
+          sourceRevision: publication.source_revision,
+          environmentId: intent.environmentId,
+          task: intent.task,
+          outcome: intent.outcome,
+          title: app.t("Quickstart first run", "Quickstart 首次运行"),
+        }),
         quickRunCreateIdentity.current,
       );
     },
@@ -537,7 +530,8 @@ export default function AgentEditorSurface() {
           onManageModels={() => setManageModels(true)}
           onRefreshRuntimes={() => void caps.refetch()}
           runtimeUpdatedAt={caps.dataUpdatedAt}
-          onReviewRun={(environmentId, task) => { quickRun.reset(); setQuickRunIntent({ environmentId, task }); }}
+          initialTemplateId={starterId}
+          onReviewRun={(intent) => { quickRun.reset(); setQuickRunIntent(intent); }}
           onBuilderSectionChange={setBuilderSection} onAdvancedSectionChange={setAdvancedSection}
           onResourcesChange={(inputs) => {
             const memoryPatch = reconcileMemoryBinding(resourceInputs, inputs, cfg);

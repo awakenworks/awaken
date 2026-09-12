@@ -464,13 +464,25 @@ export function AssistantPanel({
   );
 }
 
+/** Quickstart hands a plain-English description over by route rather than by
+ * shared state, so a reload re-sends the same opening message exactly once —
+ * `autoMessage` is already keyed and de-duplicated by the panel. */
+export function assistantSeedMessage(search: string): { id: string; text: string } | undefined {
+  const seed = new URLSearchParams(search).get("seed")?.trim();
+  return seed ? { id: `seed:${seed}`, text: seed } : undefined;
+}
+
 export default function AssistantSurface() {
   const { ws: wsId = "default" } = useParams();
   const location = useLocation();
   const surfaceContext = assistantContextForLocation(location.pathname, location.search);
   return (
     <Card className="assistant-page-card">
-      <AssistantPanel wsId={wsId} surfaceContext={surfaceContext} />
+      <AssistantPanel
+        wsId={wsId}
+        surfaceContext={surfaceContext}
+        autoMessage={assistantSeedMessage(location.search)}
+      />
     </Card>
   );
 }
