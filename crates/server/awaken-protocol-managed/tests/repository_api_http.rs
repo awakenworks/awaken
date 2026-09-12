@@ -127,7 +127,8 @@ async fn committed_response_loss_replays_one_repository_and_workspace_isolation_
     .await;
     assert_eq!(second_workspace.0, StatusCode::CREATED);
     assert_ne!(second_workspace.1["id"], first.1["id"]);
-    let (_, list) = call(&router, "GET", PATH, Some("test"), None, Value::Null).await;
+    let (status, list) = call(&router, "GET", PATH, Some("test"), None, Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(list["data"].as_array().unwrap().len(), 1);
     let mut changed = body();
     changed["initial_branch"] = json!("release");
@@ -184,7 +185,8 @@ async fn authoring_requires_trusted_workspace_key_and_secret_free_body() {
         assert_eq!(response.0, StatusCode::BAD_REQUEST, "{field}: {response:?}");
         assert!(!response.1.to_string().contains("do-not-echo-secret"));
     }
-    let (_, list) = call(&router, "GET", PATH, Some("test"), None, Value::Null).await;
+    let (status, list) = call(&router, "GET", PATH, Some("test"), None, Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
     assert!(list["data"].as_array().unwrap().is_empty());
 }
 
@@ -234,7 +236,7 @@ async fn pagination_is_complete_and_retired_repository_cannot_be_recreated() {
         assert_eq!(result.0, StatusCode::CREATED);
         ids.push(result.1["id"].as_str().unwrap().to_owned());
     }
-    let (_, page) = call(
+    let (status, page) = call(
         &router,
         "GET",
         &format!("{PATH}?limit=2"),
@@ -243,9 +245,10 @@ async fn pagination_is_complete_and_retired_repository_cannot_be_recreated() {
         Value::Null,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(page["data"].as_array().unwrap().len(), 2);
     let next = page["next_page"].as_str().unwrap();
-    let (_, last) = call(
+    let (status, last) = call(
         &router,
         "GET",
         &format!("{PATH}?limit=2&page={next}"),
@@ -254,6 +257,7 @@ async fn pagination_is_complete_and_retired_repository_cannot_be_recreated() {
         Value::Null,
     )
     .await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(last["data"].as_array().unwrap().len(), 1);
     assert!(last["next_page"].is_null());
     resources
