@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 /// intentionally not `Deserialize`, so the raw secret crosses the wire once.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct EnterCredentialRequest {
     pub(super) workspace_id: String,
     /// Stable hosted-governance operation identity. When present, the canonical
@@ -55,6 +56,7 @@ pub struct EnterCredentialRequest {
 /// Scalar or typed material is write-only and the response remains secret-free.
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct RotateCredentialRequest {
     pub(super) expected_version: i64,
     #[serde(default)]
@@ -70,12 +72,14 @@ pub struct RotateCredentialRequest {
 /// an operator cannot erase material that was rotated after its read.
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct ArchiveCredentialRequest {
     pub(super) expected_version: i64,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub(super) struct CredentialMaterialInput {
     /// Namespaced, versioned type owned by the installed consumer extension.
     pub(super) type_id: String,
@@ -210,5 +214,132 @@ impl From<CredentialSource> for CredentialSourceView {
             status: source.status,
             version: source.version,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every key a real producer sends today, so the closure below is provably
+    /// not a break. Sources: `web/src/surfaces/credentials.tsx` (create sends
+    /// `workspace_id?`, `kind`, `provider_id`, `env_key`, `secret`; archive
+    /// sends `expected_version`), `e2e/management_*_e2e.mjs`,
+    /// `e2e/managed_web_tools_e2e.mjs` (`idempotency_key`), and
+    /// `crates/bin/awaken-cli/tests/management_*.rs`. No producer sends a key
+    /// this type does not model, which is why the attribute can go on now.
+    const PRODUCER_KEYS: &[&str] = &[
+        "workspace_id",
+        "kind",
+        "provider_id",
+        "env_key",
+        "secret",
+        "idempotency_key",
+        "replacement_of",
+        "descriptor",
+        "material",
+        "oauth_helper",
+    ];
+
+    #[test]
+    fn credential_authoring_accepts_every_key_a_client_sends_and_no_other() {
+        // The credential-entry body carries two pairs of mutually exclusive
+        // fields — `descriptor` against the legacy `provider_id`, and
+        // `material` against the legacy `secret`. Without the attribute a
+        // near-miss spelling of either (`credential_material`, the domain name
+        // `material_input`, a field renamed by a later revision) decoded to
+        // `None` and the request silently took the *other* branch: a structured
+        // material became no material at all, and a described write became a
+        // legacy one. The response is a 200 either way, so nothing observes it.
+        //
+        // Causes: C1 the body carries only keys the type models; C2 it carries
+        // a key no field models; C3 it omits a required key.
+        // Effects: E1 decode, E2 refuse.
+        // | Rule | body                                   | Effect |
+        // | K1   | every key a producer sends (C1)        | E1     |
+        // | K2   | a near-miss beside the real field (C2) | E2     |
+        // | K3   | rotate/archive with an extra key (C2)  | E2     |
+        // | K4   | archive without expected_version (C3)  | E2     |
+        let mut authored = serde_json::json!({
+            "workspace_id": "wrkspc_1",
+            "kind": "vault",
+            "provider_id": "anthropic",
+            "env_key": "ANTHROPIC_API_KEY",
+            "secret": "sk-entry", // awaken-allow: secret
+            "idempotency_key": "cmd-1",
+            "material": {"type_id": "anthropic.api_key.v1", "fields": {"api_key": "sk-x"}},
+        });
+        assert!(
+            serde_json::from_value::<EnterCredentialRequest>(authored.clone()).is_ok(),
+            "K1"
+        );
+        // Round-trip closure: every key a real producer sends must be a key
+        // this reader models, or the attribute would 400 a request that works
+        // today. `authored` above carries them all except the two the entry
+        // route accepts only with a described write, which are added here.
+        let mut every_producer_key = authored.clone();
+        every_producer_key["replacement_of"] = serde_json::Value::Null;
+        every_producer_key["oauth_helper"] = serde_json::Value::Null;
+        every_producer_key["descriptor"] = serde_json::Value::Null;
+        let object = every_producer_key.as_object().expect("object body");
+        for key in PRODUCER_KEYS {
+            assert!(
+                object.contains_key(*key),
+                "{key} is sent by a real client but is missing from this round-trip body"
+            );
+        }
+        assert!(
+            serde_json::from_value::<EnterCredentialRequest>(every_producer_key).is_ok(),
+            "K1: every key a documented producer sends still decodes after the closure"
+        );
+
+        authored["credential_material"] = serde_json::json!({"type_id": "x", "fields": {}});
+        assert!(
+            serde_json::from_value::<EnterCredentialRequest>(authored).is_err(),
+            "K2: a near-miss beside `material` must fail, not decode as no material"
+        );
+
+        assert!(
+            serde_json::from_value::<RotateCredentialRequest>(serde_json::json!({
+                "expected_version": 3,
+                "secret": "sk-rotated", // awaken-allow: secret
+            }))
+            .is_ok(),
+            "K1 rotate"
+        );
+        assert!(
+            serde_json::from_value::<RotateCredentialRequest>(serde_json::json!({
+                "expected_version": 3, "credential_material": {"type_id": "x", "fields": {}},
+            }))
+            .is_err(),
+            "K3 rotate"
+        );
+        assert!(
+            serde_json::from_value::<ArchiveCredentialRequest>(
+                serde_json::json!({"expected_version": 3})
+            )
+            .is_ok(),
+            "K1 archive"
+        );
+        assert!(
+            serde_json::from_value::<ArchiveCredentialRequest>(
+                serde_json::json!({"expected_version": 3, "force": true})
+            )
+            .is_err(),
+            "K3 archive"
+        );
+        assert!(
+            serde_json::from_value::<ArchiveCredentialRequest>(serde_json::json!({})).is_err(),
+            "K4"
+        );
+        assert!(
+            serde_json::from_value::<CredentialMaterialInput>(serde_json::json!({
+                "type_id": "anthropic.api_key.v1",
+                "fields": {"api_key": "sk-x"},
+                "field": {"api_key": "sk-x"},
+            }))
+            .is_err(),
+            "K2 material: the singular near-miss must fail rather than seal an empty document"
+        );
     }
 }
