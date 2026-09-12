@@ -81,6 +81,11 @@ class EvidenceTests(unittest.TestCase):
         target = Path(self.temporary.name) / "cargo-target"
         script = (
             "set -euo pipefail\n"
+            # The driver's build-directory rule moved to the cargo-target
+            # authority so the batch runner and a person share one expression.
+            # What this test asserts is unchanged: the fact still has to reach
+            # cargo.
+            f"source {shlex.quote(str(self.root / 'scripts/ci/_cargo_target.sh'))}\n"
             f"CARGO_TARGET_DIR={shlex.quote(str(target))}\n"
             "kani_jobs=1\n"
             "kani_batch_timeout_seconds=37\n"

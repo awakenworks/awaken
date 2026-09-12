@@ -116,11 +116,7 @@ fn behavior_for(
     match policy.permission {
         ToolPermissionRequirement::AlwaysAllow => ToolPermissionBehavior::Allow,
         ToolPermissionRequirement::AlwaysAsk => ToolPermissionBehavior::RequireConfirmation,
-        ToolPermissionRequirement::Auto => match evaluator.evaluate(call) {
-            AutoDecision::Allow => ToolPermissionBehavior::Allow,
-            AutoDecision::Deny => ToolPermissionBehavior::Deny,
-            AutoDecision::Indeterminate => ToolPermissionBehavior::RequireConfirmation,
-        },
+        ToolPermissionRequirement::Auto => evaluator.evaluate(call).into_behavior(),
     }
 }
 
@@ -135,10 +131,24 @@ pub enum AutoDecision {
     Indeterminate,
 }
 
+impl AutoDecision {
+    /// The behavior this verdict resolves to. Stated once: `Indeterminate` is
+    /// the ask an `always_ask` policy would have produced, so a call the
+    /// evaluator cannot judge reaches a person through the same ticket path.
+    #[must_use]
+    pub const fn into_behavior(self) -> ToolPermissionBehavior {
+        match self {
+            Self::Allow => ToolPermissionBehavior::Allow,
+            Self::Deny => ToolPermissionBehavior::Deny,
+            Self::Indeterminate => ToolPermissionBehavior::RequireConfirmation,
+        }
+    }
+}
+
 /// Decides one call under the `auto` policy.
 ///
 /// Implementations are supplied at construction, which is what keeps this crate
-/// linkable on its own: an embedded runtime gets [`ReversibilityEvaluator`]
+/// linkable on its own: an embedded runtime gets [`ObservingToolEvaluator`]
 /// without depending on anything that knows about sessions or servers, while a
 /// richer deployment injects its own. It is synchronous on purpose — an
 /// evaluator that needs to await external judgement belongs behind the policy
@@ -149,7 +159,8 @@ pub trait AutoPermissionEvaluator: Send + Sync + std::fmt::Debug {
 }
 
 /// The evaluator an embedded runtime gets by default: a call is allowed when
-/// the tool it names only observes, and falls to a person otherwise.
+/// the tool it names only observes, and falls to a person otherwise. It is
+/// named for the one property it can actually judge from a tool id.
 ///
 /// It never denies. Denial under `auto` claims "this is too risky for anyone to
 /// approve", and a name-based classifier cannot support that claim; leaving the
@@ -160,11 +171,11 @@ pub trait AutoPermissionEvaluator: Send + Sync + std::fmt::Debug {
 /// host that owns the tool catalogue states it once and this crate keeps no
 /// second copy of anyone's tool names.
 #[derive(Debug, Default)]
-pub struct ReversibilityEvaluator {
+pub struct ObservingToolEvaluator {
     observing: std::collections::BTreeSet<String>,
 }
 
-impl ReversibilityEvaluator {
+impl ObservingToolEvaluator {
     /// Build from the tool ids whose calls only observe.
     #[must_use]
     pub fn new(observing: impl IntoIterator<Item = String>) -> Self {
@@ -174,7 +185,7 @@ impl ReversibilityEvaluator {
     }
 }
 
-impl AutoPermissionEvaluator for ReversibilityEvaluator {
+impl AutoPermissionEvaluator for ObservingToolEvaluator {
     fn evaluate(&self, call: &ToolCall) -> AutoDecision {
         if self.observing.contains(&call.tool_id) {
             AutoDecision::Allow
@@ -251,6 +262,35 @@ fn select_matched_rule(
     }
 }
 
+/// Fold the rules that matched one call into its decision.
+///
+/// This is the complete precedence rule — deny is absolute, otherwise the most
+/// specific match wins, and `None` means no rule spoke for the call — expressed
+/// over nothing but `(Specificity, ToolPermissionBehavior)` pairs. It never sees
+/// a pattern, a tool id, or an argument.
+///
+/// That separation is what makes the rule provable. Stating the same precedence
+/// inside the matching loop entangled it with heap-allocated patterns and
+/// symbolic `serde_json::Value` traversal, so a solver spent its whole budget on
+/// string equality instead of on the three-valued fold. Whether a pattern
+/// matches belongs to `awaken-tool-pattern`, which proves it; whether a set of
+/// matches yields allow, ask or deny belongs here.
+///
+/// Returning `Option` is load-bearing too: `None` is the seam the `auto` policy
+/// occupies, between every decision an author stated and the ambient default.
+fn fold_matches(
+    matches: impl Iterator<Item = (Specificity, ToolPermissionBehavior)>,
+) -> Option<ToolPermissionBehavior> {
+    let mut best: Option<(Specificity, ToolPermissionBehavior)> = None;
+    for (specificity, behavior) in matches {
+        match select_matched_rule(best, specificity, behavior) {
+            MatchedRuleSelection::Deny => return Some(ToolPermissionBehavior::Deny),
+            MatchedRuleSelection::Continue(selected) => best = selected,
+        }
+    }
+    best.map(|(_, behavior)| behavior)
+}
+
 /// One rule: a pattern and the behavior it grants.
 #[derive(Debug, Clone)]
 pub struct PermissionRule {
@@ -303,17 +343,16 @@ impl PermissionRuleset {
         args: &Value,
         exact: Option<&PermissionRule>,
     ) -> Option<ToolPermissionBehavior> {
-        let mut best: Option<(Specificity, ToolPermissionBehavior)> = None;
-        for rule in exact.into_iter().chain(&self.rules) {
-            let Some(spec) = rule.pattern.matches(tool_id, args) else {
-                continue;
-            };
-            match select_matched_rule(best, spec, rule.behavior) {
-                MatchedRuleSelection::Deny => return Some(ToolPermissionBehavior::Deny),
-                MatchedRuleSelection::Continue(selected) => best = selected,
-            }
-        }
-        best.map(|(_, behavior)| behavior)
+        // Matching and precedence are separated on purpose. This expression owns
+        // only "which rules matched, and how specifically"; `fold_matches` owns
+        // the entire precedence rule. Keeping them apart is what lets the
+        // precedence rule be proved over scalars, with pattern matching left to
+        // the crate that owns it (and proves it).
+        fold_matches(exact.into_iter().chain(&self.rules).filter_map(|rule| {
+            rule.pattern
+                .matches(tool_id, args)
+                .map(|specificity| (specificity, rule.behavior))
+        }))
     }
 
     fn decide_with_rule(
@@ -330,7 +369,8 @@ impl PermissionRuleset {
 #[cfg(kani)]
 mod kani_proofs {
     use super::{
-        LegacyMode, MatchedRuleSelection, Specificity, ToolPermissionBehavior, select_matched_rule,
+        LegacyMode, MatchedRuleSelection, Specificity, ToolPermissionBehavior, fold_matches,
+        select_matched_rule,
     };
 
     fn arbitrary_behavior() -> ToolPermissionBehavior {
@@ -381,24 +421,81 @@ mod kani_proofs {
         }
     }
 
-    #[kani::proof]
-    fn a_compiled_ruleset_can_never_short_circuit_a_deny_rule() {
-        // The retired bypass mode returned Allow *before* scanning the rules, so
-        // a matching deny never fired. After compiling it into an unmatched
-        // default, the scan always runs: whenever a deny rule matches, the
-        // decision is Deny regardless of what the default says. This is the
-        // narrowing that removing the axis buys.
-        let default_behavior = arbitrary_behavior();
-        let deny_matched: bool = kani::any();
-        let decided = if deny_matched {
-            ToolPermissionBehavior::Deny
-        } else {
-            default_behavior
+    /// A bounded symbolic match set: up to three rules matched this call, each
+    /// with its own specificity and behavior. Absence models a rule that did
+    /// not match, so the empty set — "nobody spoke for this call" — is inside
+    /// the explored space rather than a separate case.
+    fn symbolic_matches() -> [Option<(Specificity, ToolPermissionBehavior)>; 3] {
+        let entry = || {
+            if kani::any() {
+                Some((arbitrary_specificity(), arbitrary_behavior()))
+            } else {
+                None
+            }
         };
-        if deny_matched {
-            assert_eq!(decided, ToolPermissionBehavior::Deny);
+        [entry(), entry(), entry()]
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn a_matching_deny_decides_the_whole_fold_whatever_else_matched() {
+        // This replaces a proof that restated the fold instead of running it.
+        // `fold_matches` is the production precedence rule, and it is executed
+        // here over a symbolic match set.
+        //
+        // Cause/effect graph: C1 some matched rule denies; C2 some matched rule
+        // allows, possibly more specifically; C3 nothing matched. E1 deny wins
+        // outright and in particular never yields allow — the guarantee the
+        // retired bypass posture broke by returning before the scan; E2 an empty
+        // set yields `None`, never a decision.
+        //
+        // | Rule | C1 | C2 | C3 | Effect |
+        // |---|---|---|---|---|
+        // | D1 | T | * | F | E1 Some(Deny) |
+        // | D2 | F | T | F | Some(allow/ask), never Deny |
+        // | D3 | F | F | T | E2 None |
+        let matches = symbolic_matches();
+        let decided = fold_matches(matches.iter().copied().flatten());
+
+        let any_deny = matches
+            .iter()
+            .flatten()
+            .any(|(_, behavior)| *behavior == ToolPermissionBehavior::Deny);
+        let nothing_matched = matches.iter().all(Option::is_none);
+
+        if any_deny {
+            assert_eq!(decided, Some(ToolPermissionBehavior::Deny), "D1");
         }
-        assert!(!(deny_matched && decided == ToolPermissionBehavior::Allow));
+        assert!(
+            !(any_deny && decided == Some(ToolPermissionBehavior::Allow)),
+            "D1: a deny can never surface as allow"
+        );
+        if nothing_matched {
+            assert_eq!(decided, None, "D3");
+        }
+        // A decision appears exactly when some rule matched: the fold invents
+        // nothing, which is what leaves the seam open for `auto`.
+        assert_eq!(decided.is_some(), !nothing_matched, "D2/D3");
+    }
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn the_fold_returns_a_behavior_some_matching_rule_actually_carried() {
+        // Non-invention, stated directly: whatever the fold returns must be a
+        // behavior one of the matched rules carried. Without this a "most
+        // specific wins" implementation could satisfy the deny law above while
+        // still fabricating a verdict nobody authored.
+        let matches = symbolic_matches();
+        let decided = fold_matches(matches.iter().copied().flatten());
+        if let Some(behavior) = decided {
+            assert!(
+                matches
+                    .iter()
+                    .flatten()
+                    .any(|(_, candidate)| *candidate == behavior),
+                "the decision is one an authored rule carried"
+            );
+        }
     }
 
     #[kani::proof]
@@ -431,7 +528,7 @@ pub struct RuleBasedToolPermissionPolicy {
     ruleset: PermissionRuleset,
     mcp_bindings: AgentBindings,
     auto: std::sync::Arc<dyn AutoPermissionEvaluator>,
-    auto_tools: std::collections::BTreeSet<String>,
+    deferred_members: std::collections::BTreeSet<String>,
 }
 
 impl RuleBasedToolPermissionPolicy {
@@ -442,29 +539,43 @@ impl RuleBasedToolPermissionPolicy {
             // No observing tools are known until a caller names them, so an
             // unconfigured `auto` sends every call to a person rather than
             // guessing which ids are safe.
-            auto: std::sync::Arc::new(ReversibilityEvaluator::default()),
-            auto_tools: std::collections::BTreeSet::new(),
+            auto: std::sync::Arc::new(ObservingToolEvaluator::default()),
+            deferred_members: std::collections::BTreeSet::new(),
         }
     }
 
     /// Whether this call's authored policy delegates the decision to the
-    /// evaluator, either through its own resolved toolset entry or through the
-    /// ids the host named as `auto`.
+    /// evaluator.
+    ///
+    /// Two paths, because membership works differently on either side: an open
+    /// toolset resolves per call (the id names its server), while a closed
+    /// toolset was expanded by a roster-aware caller and its deferred members
+    /// were named up front. Neither is a fallback for the other.
     fn is_auto(&self, resolved: &Option<ToolExecutionPolicy>, tool_id: &str) -> bool {
         resolved.is_some_and(|policy| {
             policy.enabled && policy.permission == ToolPermissionRequirement::Auto
-        }) || self.auto_tools.contains(tool_id)
+        }) || self.deferred_members.contains(tool_id)
     }
 
-    /// Name the tools whose authored policy is `auto`.
+    /// Name the members of a CLOSED toolset whose authored policy is `auto`.
     ///
-    /// The host compiles fixed requirements into rules and passes the rest
-    /// here, because a deferral cannot be a rule behavior: a rule states a
-    /// decision, and `auto` is precisely the absence of one until the call is
-    /// known.
+    /// A closed toolset's default is a shorthand: its membership is fixed and
+    /// versioned, so a roster-aware caller expands it per member. That expansion
+    /// yields two kinds of member, and only one of them can become a rule — a
+    /// rule states a decision, and `auto` is precisely the absence of one until
+    /// the call is known. The fixed members arrive as rules; the deferred ones
+    /// arrive here.
+    ///
+    /// An OPEN toolset (MCP today) is not expanded at all: its membership is
+    /// whatever the server reports, which is unknown when the policy is
+    /// authored and can grow afterwards. Its default has to stay a live
+    /// fallback, so [`Self::with_mcp_toolsets`] keeps it typed and this policy
+    /// resolves it per call. Treating that default as a shorthand would snapshot
+    /// the tools known at authoring time and let a newly added server tool
+    /// escape the very default that exists to catch it.
     #[must_use]
-    pub fn with_auto_tools(mut self, tools: impl IntoIterator<Item = String>) -> Self {
-        self.auto_tools = tools.into_iter().collect();
+    pub fn with_deferred_members(mut self, tools: impl IntoIterator<Item = String>) -> Self {
+        self.deferred_members = tools.into_iter().collect();
         self
     }
 
@@ -525,11 +636,9 @@ impl ToolPermissionPolicy for RuleBasedToolPermissionPolicy {
             .matched_behavior(&call.tool_id, &call.arguments, exact.as_ref());
         let behavior = match decided {
             Some(behavior) => behavior,
-            None if self.is_auto(&resolved, &call.tool_id) => match self.auto.evaluate(call) {
-                AutoDecision::Allow => ToolPermissionBehavior::Allow,
-                AutoDecision::Deny => ToolPermissionBehavior::Deny,
-                AutoDecision::Indeterminate => ToolPermissionBehavior::RequireConfirmation,
-            },
+            None if self.is_auto(&resolved, &call.tool_id) => {
+                self.auto.evaluate(call).into_behavior()
+            }
             None => self.ruleset.default_behavior,
         };
         match behavior {
@@ -804,7 +913,7 @@ mod tests {
                     let expected = if legacy == ToolPermissionBehavior::Deny {
                         ToolPermissionBehavior::Deny
                     } else {
-                        behavior_for(typed, &call, &ReversibilityEvaluator::default())
+                        behavior_for(typed, &call, &ObservingToolEvaluator::default())
                     };
                     let actual = policy.evaluate(&call).await;
                     match (expected, actual) {

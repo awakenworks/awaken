@@ -1104,6 +1104,9 @@ pub enum awaken_agent_contract::toolset::GrantedAutonomy
 pub awaken_agent_contract::toolset::GrantedAutonomy::Evaluated
 pub awaken_agent_contract::toolset::GrantedAutonomy::Full
 pub awaken_agent_contract::toolset::GrantedAutonomy::None
+impl awaken_agent_contract::toolset::GrantedAutonomy
+pub const fn awaken_agent_contract::toolset::GrantedAutonomy::rank(self) -> u8
+pub const fn awaken_agent_contract::toolset::GrantedAutonomy::within(self, Self) -> bool
 pub enum awaken_agent_contract::toolset::ToolPermissionRequirement
 pub awaken_agent_contract::toolset::ToolPermissionRequirement::AlwaysAllow
 pub awaken_agent_contract::toolset::ToolPermissionRequirement::AlwaysAsk

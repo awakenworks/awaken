@@ -55,7 +55,12 @@ fn write_confirmation_gate() -> Arc<awaken_runtime::PermissionGate> {
         "write",
         awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk,
     )];
-    let policy = crate::config::effective_policy_with_toolsets(None, &[], &toolsets);
+    let policy = crate::config::effective_policy_with_toolsets(
+        None,
+        &[],
+        &toolsets,
+        crate::config::platform_auto_evaluator(),
+    );
     Arc::new(awaken_runtime::PermissionGate::new(Arc::new(policy)))
 }
 

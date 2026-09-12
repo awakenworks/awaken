@@ -280,6 +280,22 @@ impl AgentBindings {
     /// Resolve a concrete runtime tool id against the exact matching toolset.
     /// `None` means the tool is outside all authored toolsets and retains its
     /// ordinary exact-id capability behavior.
+    ///
+    /// The two sources are deliberately asymmetric, and the asymmetry is a
+    /// safety property rather than an oversight.
+    ///
+    /// An MCP tool id *self-identifies*: `mcp__server__tool` names the server it
+    /// belongs to, so membership is decidable from the id alone and the toolset
+    /// default can be applied here. An Agent-toolset id is a bare name that
+    /// carries no membership, and the closed roster that would decide it lives
+    /// at the Session-contract altitude — above this crate, which must stay
+    /// linkable as an embeddable SDK with no serving dependency.
+    ///
+    /// So only an *explicit* Agent override resolves here. Applying the Agent
+    /// default without the roster would hand it to every non-MCP id — including
+    /// tools that are not toolset members at all, such as skill discovery or
+    /// semantic-memory reads — which is a fail-open. The roster-aware caller (the
+    /// host) projects the Agent default per member instead.
     #[must_use]
     pub fn tool_policy(&self, tool_id: &str) -> Option<ToolExecutionPolicy> {
         if let Some(policy) = self
@@ -378,6 +394,66 @@ impl DerefMut for ResolvedConfiguration {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_agent_toolset_default_never_reaches_a_tool_it_does_not_list() {
+        // Cause/effect graph. C1 an Agent toolset is authored with a permissive
+        // default; C2 the looked-up id is an explicit override of that toolset;
+        // C3 the id is a bare name the toolset never lists (skill discovery, a
+        // semantic-memory read, any runtime-owned tool); C4 the id names an MCP
+        // server this bindings set configures.
+        //
+        // E1 return the override verbatim. E2 return `None`, so the caller keeps
+        // the tool's ordinary capability behavior instead of inheriting an
+        // authority nobody granted it. E3 return the MCP toolset's own default,
+        // because an `mcp__server__tool` id decides its own membership.
+        //
+        // | Rule | C2 | C3 | C4 | Effect |
+        // |---|---|---|---|---|
+        // | T1 | T | F | F | E1 the override |
+        // | T2 | F | T | F | E2 None — this is the fail-open being guarded |
+        // | T3 | F | F | T | E3 the MCP default |
+        //
+        // T2 is the load-bearing row. Adding an Agent default fallback here
+        // would look like a completeness fix and would in fact grant that
+        // default to every non-MCP id, because a bare name carries no
+        // membership and the closed roster is not knowable at this altitude.
+        let allow = ToolExecutionPolicy {
+            enabled: true,
+            permission: ToolPermissionRequirement::AlwaysAllow,
+        };
+        let ask = ToolExecutionPolicy {
+            enabled: true,
+            permission: ToolPermissionRequirement::AlwaysAsk,
+        };
+        let bindings = AgentBindings {
+            toolsets: vec![
+                ToolsetPolicy {
+                    source: ToolsetSource::Agent,
+                    default: allow,
+                    overrides: vec![ToolPolicyOverride::new("bash", ask)],
+                },
+                ToolsetPolicy {
+                    source: ToolsetSource::Mcp {
+                        server_name: "github".into(),
+                    },
+                    default: ask,
+                    overrides: Vec::new(),
+                },
+            ],
+            ..AgentBindings::default()
+        };
+
+        assert_eq!(bindings.tool_policy("bash"), Some(ask), "T1");
+        for unlisted in ["list_skills", "Skill", "read_memory", "read"] {
+            assert_eq!(
+                bindings.tool_policy(unlisted),
+                None,
+                "T2 `{unlisted}` must not inherit the Agent toolset default"
+            );
+        }
+        assert_eq!(bindings.tool_policy("mcp__github__search"), Some(ask), "T3");
+    }
+
     use super::{
         AgentBindings, AgentMcpServerBinding, AgentMcpTransportBinding, ToolExecutionPolicy,
         ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,

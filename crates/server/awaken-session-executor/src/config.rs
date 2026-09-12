@@ -52,18 +52,23 @@ pub(crate) fn latest_assistant_text(messages: &[Message]) -> String {
 /// descriptor registry proves availability, so execution and advertisement
 /// cannot drift behind a second literal list. MCP keeps its separate default-ask
 /// policy.
-fn base_allow_rules(extra_allowed: &[String]) -> Vec<PermissionRule> {
+fn base_allow_rules(extra_allowed: &[String], deferred: &[String]) -> Vec<PermissionRule> {
     let allow = |name: &str| {
         PermissionRule::new(
             ToolCallPattern::parse(name).expect("static pattern"),
             ToolPermissionBehavior::Allow,
         )
     };
+    // The perception allowance is the host's default for tools no author spoke
+    // for. A member the author deferred to `auto` is spoken for: emitting the
+    // baseline allow for it would let the host's default pre-empt the
+    // evaluator, and `auto` would then be decorative for every observing tool.
     let mut rules: Vec<PermissionRule> = hand_tool_descriptors()
         .into_iter()
         .filter(|descriptor| {
             awaken_session_contract::is_agent_toolset_member(&descriptor.id)
                 && !awaken_session_contract::is_controlled_modification_member(&descriptor.id)
+                && !deferred.iter().any(|name| name == &descriptor.id)
         })
         .map(|descriptor| allow(&descriptor.id))
         .collect();
@@ -99,7 +104,7 @@ fn observing_tool_ids() -> Vec<String> {
 fn server_policy(extra_allowed: &[String]) -> RuleBasedToolPermissionPolicy {
     RuleBasedToolPermissionPolicy::new(PermissionRuleset {
         default_behavior: ToolPermissionBehavior::RequireConfirmation,
-        rules: base_allow_rules(extra_allowed),
+        rules: base_allow_rules(extra_allowed, &[]),
     })
 }
 
@@ -126,7 +131,17 @@ pub(crate) fn effective_ruleset(
     authored: Option<PermissionRuleset>,
     extra_allowed: &[String],
 ) -> PermissionRuleset {
-    let mut rules = base_allow_rules(extra_allowed);
+    effective_ruleset_deferring(authored, extra_allowed, &[])
+}
+
+/// [`effective_ruleset`] for a Session whose toolsets deferred some members to
+/// `auto`; those members get no baseline rule so the evaluator can be heard.
+fn effective_ruleset_deferring(
+    authored: Option<PermissionRuleset>,
+    extra_allowed: &[String],
+    deferred: &[String],
+) -> PermissionRuleset {
+    let mut rules = base_allow_rules(extra_allowed, deferred);
     let default_behavior = authored
         .as_ref()
         .map_or(ToolPermissionBehavior::RequireConfirmation, |rs| {
@@ -141,22 +156,23 @@ pub(crate) fn effective_ruleset(
     }
 }
 
-/// The Agent toolset split into what the rule scan can decide up front and what
-/// must wait for a call.
+/// The closed Agent toolset, desugared.
 ///
-/// A rule states a decision, so only the fixed requirements become rules.
-/// `auto` is a deferral: its tools are named instead, and the policy consults
-/// the evaluator for them after every authored rule has had its say.
+/// Its membership is fixed and versioned, so the default is a shorthand for
+/// "this policy, for every member" and is expanded here. The expansion splits:
+/// a rule states a decision, so only the fixed requirements become rules, while
+/// `auto` is a deferral and its members are named instead for the policy to
+/// consult the evaluator about — after every authored rule has had its say.
 struct AgentToolsetProjection {
     rules: Vec<PermissionRule>,
-    auto_tools: Vec<String>,
+    deferred_members: Vec<String>,
 }
 
 fn agent_toolset_permission_rules(
     toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
 ) -> AgentToolsetProjection {
     use awaken_runtime_contract::agent_bindings::{ToolPermissionRequirement, ToolsetSource};
-    let mut auto_tools = Vec::new();
+    let mut deferred_members = Vec::new();
     let fixed_behavior = |policy: awaken_runtime_contract::agent_bindings::ToolExecutionPolicy| {
         if !policy.enabled {
             return Some(ToolPermissionBehavior::Deny);
@@ -185,14 +201,19 @@ fn agent_toolset_permission_rules(
                 // retain explicit Runtime-only Agent overrides separately.
                 for name in awaken_session_contract::agent_toolset_members() {
                     let mut policy = toolset.policy_for(name);
+                    // Ask-by-default for a controlled modification the author never
+                    // named. `auto` is the author naming it — a deferral is a
+                    // decision — so it passes through to the evaluator like any
+                    // other authored requirement.
                     if awaken_session_contract::is_controlled_modification_member(name)
                         && !toolset.overrides.iter().any(|entry| entry.name == name)
+                        && policy.permission != ToolPermissionRequirement::Auto
                     {
                         policy.permission = ToolPermissionRequirement::AlwaysAsk;
                     }
                     match fixed_behavior(policy) {
                         Some(behavior) => rules.push(rule(name.to_string(), behavior)),
-                        None => auto_tools.push(name.to_string()),
+                        None => deferred_members.push(name.to_string()),
                     }
                 }
                 for entry in toolset
@@ -202,7 +223,7 @@ fn agent_toolset_permission_rules(
                 {
                     match fixed_behavior(entry.policy) {
                         Some(behavior) => rules.push(rule(entry.name.clone(), behavior)),
-                        None => auto_tools.push(entry.name.clone()),
+                        None => deferred_members.push(entry.name.clone()),
                     }
                 }
             }
@@ -211,31 +232,41 @@ fn agent_toolset_permission_rules(
             ToolsetSource::Mcp { .. } => {}
         }
     }
-    AgentToolsetProjection { rules, auto_tools }
+    AgentToolsetProjection {
+        rules,
+        deferred_members,
+    }
 }
 
 pub(crate) fn effective_policy_with_toolsets(
     authored: Option<PermissionRuleset>,
     extra_allowed: &[String],
     toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
+    evaluator: Arc<dyn awaken_ext_permission::AutoPermissionEvaluator>,
 ) -> RuleBasedToolPermissionPolicy {
-    let mut resolved = effective_ruleset(authored, extra_allowed);
+    let projection = agent_toolset_permission_rules(toolsets);
+    let mut resolved =
+        effective_ruleset_deferring(authored, extra_allowed, &projection.deferred_members);
     // Put exact toolset rules first so they are authoritative over the built-in
     // baseline on equal specificity. Compile rejects a second authored permission
     // section when toolsets exist.
-    let projection = agent_toolset_permission_rules(toolsets);
     let mut rules = projection.rules;
     rules.extend(resolved.rules);
     resolved.rules = rules;
     RuleBasedToolPermissionPolicy::new(resolved)
         .with_mcp_toolsets(toolsets)
-        .with_auto_tools(projection.auto_tools)
-        // The tools an `auto` call may run unattended: this host owns the tool
-        // catalogue, so it states the observing set once instead of the policy
-        // crate keeping a second copy of anyone's tool names.
-        .with_auto_evaluator(std::sync::Arc::new(
-            awaken_ext_permission::ReversibilityEvaluator::new(observing_tool_ids()),
-        ))
+        .with_deferred_members(projection.deferred_members)
+        .with_auto_evaluator(evaluator)
+}
+
+/// The evaluator this host wires for the `auto` policy: the observing members
+/// of the closed Agent toolset run unattended, everything else reaches a person.
+/// This host owns the tool catalogue, so it states the observing set once
+/// instead of the policy crate keeping a second copy of anyone's tool names.
+pub(crate) fn platform_auto_evaluator() -> Arc<dyn awaken_ext_permission::AutoPermissionEvaluator> {
+    Arc::new(awaken_ext_permission::ObservingToolEvaluator::new(
+        observing_tool_ids(),
+    ))
 }
 
 #[cfg(test)]
@@ -280,6 +311,7 @@ pub(crate) fn effective_tool_authorization(
         authored,
         extra_allowed,
         toolsets,
+        platform_auto_evaluator(),
     ));
     EffectiveToolAuthorization {
         gate: Arc::new(PermissionGate::new(policy.clone())),
@@ -838,9 +870,11 @@ mod tests {
         // Cause/effect graph: C1 the Agent toolset default is `auto`; C2 the tool
         // only observes; C3 the tool is a controlled modification; C4 the author
         // wrote an explicit per-tool override. E1 an observing call runs without a
-        // person, E2 a modifying call goes to a person (the shipped evaluator
-        // reaches no conclusion and never denies), E3 an explicit override decides
-        // instead of the evaluator.
+        // person, E2 a modifying call goes to a person because the shipped
+        // evaluator reaches no conclusion for it (not because a host default
+        // forced ask — `an_auto_default_is_heard_for_every_member` proves the
+        // evaluator is what decides), E3 an explicit override decides instead of
+        // the evaluator.
         //
         // | Rule | C2 | C3 | C4 | Effect |
         // |---|---|---|---|---|
@@ -867,7 +901,12 @@ mod tests {
             overrides,
         };
 
-        let plain = effective_policy_with_toolsets(None, &[], &[toolset(Vec::new())]);
+        let plain = effective_policy_with_toolsets(
+            None,
+            &[],
+            &[toolset(Vec::new())],
+            platform_auto_evaluator(),
+        );
         assert!(
             matches!(
                 plain.evaluate(&call("read")).await,
@@ -893,6 +932,7 @@ mod tests {
                     permission: ToolPermissionRequirement::AlwaysAllow,
                 },
             )])],
+            platform_auto_evaluator(),
         );
         assert!(
             matches!(
@@ -901,6 +941,85 @@ mod tests {
             ),
             "T3 an explicit authored policy outranks the evaluator"
         );
+    }
+
+    #[tokio::test]
+    async fn an_auto_default_is_heard_for_every_member() {
+        // Cause/effect graph: C1 the Agent toolset default is `auto` with no
+        // per-tool override; C2 the injected evaluator answers `Indeterminate`
+        // for everything; C3 it answers `Deny` for everything. E1 every member —
+        // an observing one and a controlled modification alike — reaches the
+        // evaluator: under C2 it asks, under C3 it is refused. Two host defaults
+        // used to pre-empt this: the perception baseline emitted `allow` for
+        // observing members, and ask-by-default rewrote controlled members to a
+        // fixed ask. Either one makes `auto` decorative for that member.
+        //
+        // | Rule | member | evaluator | Effect |
+        // |---|---|---|---|
+        // | H1 | read (observes) | indeterminate | ask — baseline must not answer for it |
+        // | H2 | bash (controlled) | indeterminate | ask — via the evaluator, not a forced rule |
+        // | H3 | read (observes) | deny | deny — proves the evaluator, not a rule, decided |
+        // | H4 | bash (controlled) | deny | deny |
+        use awaken_ext_permission::{AutoDecision, AutoPermissionEvaluator};
+        use awaken_runtime_contract::agent_bindings::{
+            ToolExecutionPolicy, ToolPermissionRequirement, ToolsetPolicy, ToolsetSource,
+        };
+        use awaken_runtime_contract::permission::{
+            ToolCall, ToolPermissionPolicy, ToolPermissionVerdict,
+        };
+
+        #[derive(Debug)]
+        struct Fixed(AutoDecision);
+        impl AutoPermissionEvaluator for Fixed {
+            fn evaluate(&self, _call: &ToolCall) -> AutoDecision {
+                self.0
+            }
+        }
+        let auto_toolset = ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy {
+                enabled: true,
+                permission: ToolPermissionRequirement::Auto,
+            },
+            overrides: Vec::new(),
+        };
+        let call = |tool: &str| ToolCall {
+            tool_id: tool.into(),
+            call_id: "auto-heard".into(),
+            arguments: serde_json::json!({}),
+        };
+
+        let asks = effective_policy_with_toolsets(
+            None,
+            &[],
+            std::slice::from_ref(&auto_toolset),
+            Arc::new(Fixed(AutoDecision::Indeterminate)),
+        );
+        for (rule, tool) in [("H1", "read"), ("H2", "bash")] {
+            assert!(
+                matches!(
+                    asks.evaluate(&call(tool)).await,
+                    ToolPermissionVerdict::RequireConfirmation { .. }
+                ),
+                "{rule} `{tool}` must reach the evaluator and ask"
+            );
+        }
+
+        let denies = effective_policy_with_toolsets(
+            None,
+            &[],
+            std::slice::from_ref(&auto_toolset),
+            Arc::new(Fixed(AutoDecision::Deny)),
+        );
+        for (rule, tool) in [("H3", "read"), ("H4", "bash")] {
+            assert!(
+                matches!(
+                    denies.evaluate(&call(tool)).await,
+                    ToolPermissionVerdict::Deny { .. }
+                ),
+                "{rule} `{tool}` must be decided by the evaluator"
+            );
+        }
     }
 
     #[test]
@@ -1064,7 +1183,8 @@ mod tests {
                 )],
             },
         ];
-        let policy = effective_policy_with_toolsets(None, &[], &toolsets);
+        let policy =
+            effective_policy_with_toolsets(None, &[], &toolsets, platform_auto_evaluator());
         for (tool_id, expected) in [
             (
                 "read",
