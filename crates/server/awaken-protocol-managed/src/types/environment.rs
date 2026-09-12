@@ -98,7 +98,11 @@ impl Default for EnvironmentConfigParams {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CloudNetworkingParams {
-    Unrestricted,
+    /// `{}` and not a bare unit: a unit variant of an internally tagged enum
+    /// escapes the container's `deny_unknown_fields`, so an authored
+    /// `allowed_hosts` beside `"type": "unrestricted"` would decode to
+    /// unrestricted egress with a 200.
+    Unrestricted {},
     Limited {
         #[serde(default)]
         allowed_hosts: Option<Vec<AllowedHost>>,
@@ -185,7 +189,9 @@ pub enum EnvironmentConfigUpdateParams {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CloudNetworkingUpdateParams {
-    Unrestricted,
+    /// See [`CloudNetworkingParams::Unrestricted`]: the empty brace form is what
+    /// subjects this variant to the container's `deny_unknown_fields`.
+    Unrestricted {},
     Limited {
         #[serde(default, deserialize_with = "super::presence::double_option")]
         allowed_hosts: Option<Option<Vec<AllowedHost>>>,
@@ -492,5 +498,73 @@ mod tests {
         assert!(encoded["config"].get("requests").is_none(), "R4");
         assert!(encoded["config"].get("limits").is_none(), "R4");
         assert!(encoded.get("sandbox_policy").is_none(), "R4");
+    }
+
+    #[test]
+    fn unrestricted_networking_refuses_the_limited_siblings_it_does_not_model() {
+        // `deny_unknown_fields` is a per-container opt-in that a *unit* variant
+        // of an internally tagged enum escapes: serde reads the tag and ignores
+        // the rest of the object, so the container attribute present on
+        // `CloudNetworkingParams` governs `Limited` and nothing else. The same
+        // file already spells the closed form (`SelfHosted {}`), which is why
+        // this stayed invisible — the attribute is there and looks sufficient.
+        //
+        // The dropped value is an egress allowlist. An author who posts
+        // `{"type":"unrestricted","allowed_hosts":[...]}` means to restrict
+        // egress; accepting it yields an environment with *unrestricted* egress
+        // and a 200, so the mistake is unobservable from the response.
+        //
+        // Decision table over one networking object. C1 tag only; C2 tag plus a
+        // key `Limited` models; C3 tag plus a key no variant models.
+        // Effects: E1 accept, E2 reject.
+        // | Rule | variant      | body | Effect |
+        // | N1   | unrestricted | C1   | E1     |
+        // | N2   | unrestricted | C2   | E2     |
+        // | N3   | unrestricted | C3   | E2     |
+        // | N4   | limited      | C2   | E1     |
+        // | N5   | limited      | C3   | E2     |
+        let create = |networking: serde_json::Value| {
+            serde_json::from_value::<EnvironmentCreateParams>(serde_json::json!({
+                "name": "browser",
+                "config": {"type": "cloud", "networking": networking},
+            }))
+            .is_ok()
+        };
+        let update = |networking: serde_json::Value| {
+            serde_json::from_value::<EnvironmentUpdateParams>(serde_json::json!({
+                "config": {"type": "cloud", "networking": networking},
+            }))
+            .is_ok()
+        };
+
+        for (label, decode) in [
+            ("create", &create as &dyn Fn(serde_json::Value) -> bool),
+            ("update", &update),
+        ] {
+            assert!(
+                decode(serde_json::json!({"type": "unrestricted"})),
+                "N1 {label}"
+            );
+            assert!(
+                !decode(
+                    serde_json::json!({"type": "unrestricted", "allowed_hosts": ["api.example.com"]})
+                ),
+                "N2 {label}: an authored egress allowlist must not be silently dropped"
+            );
+            assert!(
+                !decode(serde_json::json!({"type": "unrestricted", "future": true})),
+                "N3 {label}"
+            );
+            assert!(
+                decode(
+                    serde_json::json!({"type": "limited", "allowed_hosts": ["api.example.com"]})
+                ),
+                "N4 {label}"
+            );
+            assert!(
+                !decode(serde_json::json!({"type": "limited", "future": true})),
+                "N5 {label}"
+            );
+        }
     }
 }

@@ -329,7 +329,7 @@ fn environment_config_mutation(config: EnvironmentConfigUpdateParams) -> Environ
         } => EnvironmentConfigMutation::PatchCloud {
             networking: networking.map(|value| match value {
                 None => EnvironmentNetworkingMutation::Reset,
-                Some(CloudNetworkingUpdateParams::Unrestricted) => {
+                Some(CloudNetworkingUpdateParams::Unrestricted {}) => {
                     EnvironmentNetworkingMutation::Unrestricted
                 }
                 Some(CloudNetworkingUpdateParams::Limited {
@@ -414,8 +414,8 @@ fn canonical_environment_config(
             networking,
             packages,
         } => {
-            let networking = match networking.unwrap_or(CloudNetworkingParams::Unrestricted) {
-                CloudNetworkingParams::Unrestricted => EnvironmentNetworking::Unrestricted,
+            let networking = match networking.unwrap_or(CloudNetworkingParams::Unrestricted {}) {
+                CloudNetworkingParams::Unrestricted {} => EnvironmentNetworking::Unrestricted {},
                 CloudNetworkingParams::Limited {
                     allowed_hosts,
                     allow_mcp_servers,
