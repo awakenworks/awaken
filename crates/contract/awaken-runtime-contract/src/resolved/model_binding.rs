@@ -217,6 +217,52 @@ impl std::fmt::Display for ProviderIdentityRef {
     }
 }
 
+/// The backend class the admission rule distinguishes; the exact reference is
+/// a payload of the refusal, not an input to the decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackendClass {
+    /// The host's own executor: both account coordinates are required together.
+    Native,
+    /// An ACP or A2A executor that owns its account and may leave either blank.
+    External,
+    /// Not an executable backend reference at all.
+    Invalid,
+}
+
+/// Everything the admission decision reads, and nothing it does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AdmissionFacts {
+    /// Some coordinate carries surrounding whitespace.
+    padded: bool,
+    provider_empty: bool,
+    model_empty: bool,
+    class: BackendClass,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Refusal {
+    Whitespace,
+    Backend,
+    IncompleteNative,
+}
+
+/// The one admission rule both doors apply. Whitespace is judged first so a
+/// padded reference is reported as padding rather than as an unknown backend;
+/// then the backend must be executable; then a native route must state both
+/// account coordinates or neither (a host-installed executor names itself).
+const fn admission(facts: AdmissionFacts) -> Result<(), Refusal> {
+    if facts.padded {
+        return Err(Refusal::Whitespace);
+    }
+    match facts.class {
+        BackendClass::Invalid => Err(Refusal::Backend),
+        BackendClass::Native if facts.provider_empty != facts.model_empty => {
+            Err(Refusal::IncompleteNative)
+        }
+        BackendClass::Native | BackendClass::External => Ok(()),
+    }
+}
+
 impl ModelBinding {
     /// Admit one complete set of coordinates as an executable model binding.
     ///
@@ -243,35 +289,39 @@ impl ModelBinding {
             model_ref.into(),
             backend_ref.into(),
         );
-        for (coordinate, value) in [
+        let padded = [
             ("provider identity", &provider_identity_ref),
             ("model", &model_ref),
             ("backend", &backend_ref),
-        ] {
-            if value.trim() != value {
+        ]
+        .into_iter()
+        .find(|(_, value)| value.trim() != value.as_str());
+        let class = match Backend::from_ref(&backend_ref) {
+            Backend::Invalid(_) => BackendClass::Invalid,
+            Backend::Native => BackendClass::Native,
+            Backend::Acp(_) | Backend::Remote(_) => BackendClass::External,
+        };
+        match admission(AdmissionFacts {
+            padded: padded.is_some(),
+            provider_empty: provider_identity_ref.is_empty(),
+            model_empty: model_ref.is_empty(),
+            class,
+        }) {
+            Ok(()) => {}
+            Err(Refusal::Whitespace) => {
+                let (coordinate, value) = padded.expect("a padded coordinate was found");
                 return Err(InvalidModelBinding::Whitespace {
                     coordinate,
                     value: value.clone(),
                 });
             }
-        }
-        match Backend::from_ref(&backend_ref) {
-            Backend::Invalid(_) => return Err(InvalidModelBinding::Backend(backend_ref)),
-            // Half a native binding is the incoherence worth refusing: a
-            // provider with no model, or a model with no provider, names
-            // nothing executable. Both empty is a different shape entirely --
-            // a host-installed executor (`ResolvedModelCandidate::host`) names
-            // itself in `backend_ref` and has no provider or model to state --
-            // and refusing it made every such binding constructible but not
-            // decodable, which stalled runs at the wire instead of failing
-            // where the coordinates were written.
-            Backend::Native if provider_identity_ref.is_empty() != model_ref.is_empty() => {
+            Err(Refusal::Backend) => return Err(InvalidModelBinding::Backend(backend_ref)),
+            Err(Refusal::IncompleteNative) => {
                 return Err(InvalidModelBinding::IncompleteNative {
                     provider_identity_ref,
                     model_ref,
                 });
             }
-            Backend::Native | Backend::Acp(_) | Backend::Remote(_) => {}
         }
         Ok(Self {
             provider_identity_ref,
@@ -445,54 +495,47 @@ mod tests {
     }
 }
 
-/// Kani exhausts the admission rule over every coordinate *shape*: the rule
-/// depends only on whether each coordinate is empty, padded, or plain, and on
-/// the backend class, so a representative string per shape is a complete
-/// enumeration of the decision. The two effects are E1 admit and E2 refuse.
+/// Kani exhausts the admission kernel over every fact combination: 2 (padded)
+/// x 2 (provider empty) x 2 (model empty) x 3 (backend class) = 24 rows. The
+/// two effects are E1 admit and E2 refuse with exactly one named reason.
 ///
-/// | Rule | provider | model   | backend        | Effect |
-/// | A1   | plain    | plain   | native         | E1     |
-/// | A2   | empty    | empty   | native         | E1 (host-installed executor) |
-/// | A3   | any      | any     | acp:/a2a: ok   | E1 unless padded |
-/// | A4   | empty    | plain   | native         | E2 IncompleteNative |
-/// | A5   | plain    | empty   | native         | E2 IncompleteNative |
-/// | A6   | any      | any     | invalid        | E2 Backend |
-/// | A7   | padded   | any     | any            | E2 Whitespace |
+/// | Rule | padded | provider | model | class    | Effect                |
+/// | A1   | F      | set      | set   | native   | E1                    |
+/// | A2   | F      | empty    | empty | native   | E1 (host-installed)   |
+/// | A3   | F      | any      | any   | external | E1                    |
+/// | A4   | F      | empty    | set   | native   | E2 IncompleteNative   |
+/// | A5   | F      | set      | empty | native   | E2 IncompleteNative   |
+/// | A6   | F      | any      | any   | invalid  | E2 Backend            |
+/// | A7   | T      | any      | any   | any      | E2 Whitespace         |
+///
+/// `parse` derives the facts from the coordinate strings and attaches the
+/// refusal payloads; that derivation is covered by the executable table and
+/// property tests in this module, which run the real string code.
 #[cfg(kani)]
 #[kani::proof]
 fn model_binding_admission_is_exactly_the_documented_rule_table() {
-    // Every coordinate shape crossed with every backend class, as concrete
-    // strings: the rule depends only on shape and class, and concrete strings
-    // keep the byte loops inside `trim`/`strip_prefix` bounded so CBMC
-    // exhausts all 54 rows instead of unwinding a symbolic pointer.
-    const COORDINATES: [&str; 3] = ["", "plain", " padded"];
-    const BACKENDS: [(&str, bool, bool); 6] = [
-        // (reference, is native, is an inexecutable reference)
-        ("native", true, false),
-        ("acp:claude", false, false),
-        ("a2a:https://agent.example", false, false),
-        ("", false, true),
-        ("acp", false, true),
-        (" native", false, true),
-    ];
-    for provider in COORDINATES {
-        for model in COORDINATES {
-            for (backend, native, backend_invalid) in BACKENDS {
-                let padded =
-                    provider.starts_with(' ') || model.starts_with(' ') || backend.starts_with(' ');
-                let half_native = native && (provider.is_empty() != model.is_empty());
-                let expected_admit = !padded && !backend_invalid && !half_native;
-                let parsed = ModelBinding::parse(provider, model, backend);
-                assert_eq!(parsed.is_ok(), expected_admit);
-                match parsed {
-                    Ok(binding) => assert_eq!(binding.identity(), (provider, model, backend)),
-                    Err(InvalidModelBinding::Whitespace { .. }) => assert!(padded),
-                    Err(InvalidModelBinding::Backend(_)) => assert!(backend_invalid && !padded),
-                    Err(InvalidModelBinding::IncompleteNative { .. }) => {
-                        assert!(half_native && !padded && !backend_invalid)
-                    }
-                }
-            }
-        }
-    }
+    let padded: bool = kani::any();
+    let provider_empty: bool = kani::any();
+    let model_empty: bool = kani::any();
+    let class = match kani::any::<u8>() % 3 {
+        0 => BackendClass::Native,
+        1 => BackendClass::External,
+        _ => BackendClass::Invalid,
+    };
+    let facts = AdmissionFacts {
+        padded,
+        provider_empty,
+        model_empty,
+        class,
+    };
+    let expected = if padded {
+        Err(Refusal::Whitespace)
+    } else if class == BackendClass::Invalid {
+        Err(Refusal::Backend)
+    } else if class == BackendClass::Native && provider_empty != model_empty {
+        Err(Refusal::IncompleteNative)
+    } else {
+        Ok(())
+    };
+    assert_eq!(admission(facts), expected);
 }
