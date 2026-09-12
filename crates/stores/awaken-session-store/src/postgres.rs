@@ -165,12 +165,15 @@ impl PostgresManagedSessionRepository {
             )
             .map_err(corrupt)?;
             if let Some(canonical) = canonical {
-                sqlx::query("UPDATE managed_session SET aggregate_json=$2 WHERE session_id=$1")
-                    .bind(stored_session_id)
-                    .bind(canonical)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(storage)?;
+                sqlx::query(
+                    "UPDATE managed_session SET aggregate_json=$2, revision=$3 WHERE session_id=$1",
+                )
+                .bind(stored_session_id)
+                .bind(canonical)
+                .bind(i64::try_from(session.revision.0).map_err(corrupt)?)
+                .execute(&mut *tx)
+                .await
+                .map_err(storage)?;
             }
             if sync_indexes {
                 Self::sync_session_indexes(&mut tx, &session).await?;
