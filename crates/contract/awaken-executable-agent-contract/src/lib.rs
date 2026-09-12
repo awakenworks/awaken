@@ -270,9 +270,21 @@ mod tests {
                         "provider", primary, "native",
                     ))
                     .model_candidates(fallbacks.iter().map(|model| {
-                        awaken_runtime_contract::resolved::ModelBinding::new(
-                            "provider", *model, "native",
-                        )
+                        // C4: a blank model reference is representable only
+                        // on an external executor that keeps its default
+                        // model; the binding admission refuses a native
+                        // binding without one.
+                        if model.is_empty() {
+                            awaken_runtime_contract::resolved::ModelBinding::new(
+                                "provider",
+                                "",
+                                "acp:codex",
+                            )
+                        } else {
+                            awaken_runtime_contract::resolved::ModelBinding::new(
+                                "provider", *model, "native",
+                            )
+                        }
                     }))
                     .build(),
                 session_profile: ExecutableAgentSessionProfile::default(),

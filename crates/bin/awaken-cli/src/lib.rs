@@ -1371,25 +1371,30 @@ mod runtime_session_store_tests {
     }
 
     #[tokio::test]
-    async fn scenario_host_resolves_model_only_authoring_to_its_exact_binding() {
+    async fn scenario_host_resolves_a_pinned_binding_only_when_it_names_the_host_route() {
+        // C1 exact pin == host binding -> E1 published; a model-only pin is refused by the binding.
         let binding =
             awaken_runtime_contract::resolved::ModelBinding::new("default", "scenario", "default");
         let resolver = ExactHostModelPublicationResolver {
             binding: binding.clone(),
         };
-
         let resolved = resolver
             .resolve_models(
                 &awaken_tenancy::ScopeId::from("workspace-a"),
-                &awaken_agent_config::ModelSelection::Pinned(
-                    awaken_runtime_contract::resolved::ModelBinding::new("", "scenario", ""),
-                ),
+                &awaken_agent_config::ModelSelection::Pinned(binding.clone()),
                 &[],
             )
             .await
-            .expect("model-only SDK/UI selection resolves through the host adapter");
-
+            .expect("C1: an exact pin resolves through the host adapter");
         assert_eq!(resolved.primary.binding(), &binding);
+        for backend in ["", "default"] {
+            let pin =
+                awaken_runtime_contract::resolved::ModelBinding::parse("", "scenario", backend);
+            assert!(
+                pin.is_err(),
+                "model-only pin {backend:?} is unrepresentable"
+            );
+        }
     }
 
     #[tokio::test]

@@ -257,7 +257,15 @@ impl ModelBinding {
         }
         match Backend::from_ref(&backend_ref) {
             Backend::Invalid(_) => return Err(InvalidModelBinding::Backend(backend_ref)),
-            Backend::Native if provider_identity_ref.is_empty() || model_ref.is_empty() => {
+            // Half a native binding is the incoherence worth refusing: a
+            // provider with no model, or a model with no provider, names
+            // nothing executable. Both empty is a different shape entirely --
+            // a host-installed executor (`ResolvedModelCandidate::host`) names
+            // itself in `backend_ref` and has no provider or model to state --
+            // and refusing it made every such binding constructible but not
+            // decodable, which stalled runs at the wire instead of failing
+            // where the coordinates were written.
+            Backend::Native if provider_identity_ref.is_empty() != model_ref.is_empty() => {
                 return Err(InvalidModelBinding::IncompleteNative {
                     provider_identity_ref,
                     model_ref,
@@ -273,30 +281,33 @@ impl ModelBinding {
         })
     }
 
-    /// Construct a binding **without** the completeness check.
+    /// Construct a binding from coordinates the caller asserts are complete.
     ///
-    /// This is the pre-existing producer path, kept only so the call sites that
-    /// predate [`ModelBinding::parse`] keep compiling. It is not a second
-    /// contract: `scripts/ci/check_crate_boundaries.py` ratchets the number of
-    /// its call sites, so the count may fall and may not rise. Every new
-    /// producer uses `parse`, and the durable path already does — deserializing
-    /// a binding goes through `parse` and fails closed.
+    /// This applies exactly the admission [`ModelBinding::parse`] applies and
+    /// panics where `parse` would refuse. There is one rule set, so a binding
+    /// that exists in memory is always one the wire decodes: the alternative
+    /// -- a permissive constructor beside a strict decoder -- let a value be
+    /// built here and refused at the durable boundary, which stalled a run
+    /// silently instead of failing loudly where the coordinates were written.
+    ///
+    /// A panic here is a programming error at the call site (the coordinates
+    /// are literals or already-validated values), never an input-validation
+    /// path: code that admits untrusted coordinates uses `parse` and returns
+    /// the [`InvalidModelBinding`]. `scripts/ci/check_crate_boundaries.py`
+    /// ratchets the number of `new` call sites so the migration to `parse`
+    /// only moves forward.
     #[must_use]
+    #[track_caller]
     pub fn new(
         provider_identity_ref: impl Into<String>,
         model_ref: impl Into<String>,
         backend_ref: impl Into<String>,
     ) -> Self {
-        let (provider_identity_ref, model_ref, backend_ref) = model_binding_identity(
-            provider_identity_ref.into(),
-            model_ref.into(),
-            backend_ref.into(),
-        );
-        Self {
-            provider_identity_ref,
-            model_ref,
-            backend_ref,
-            coherence: BindingCoherence,
+        match Self::parse(provider_identity_ref, model_ref, backend_ref) {
+            Ok(binding) => binding,
+            Err(refusal) => {
+                panic!("ModelBinding::new was handed coordinates the wire refuses: {refusal}")
+            }
         }
     }
 
@@ -327,5 +338,161 @@ impl ModelBinding {
     #[must_use]
     pub fn backend(&self) -> Backend {
         Backend::from_ref(&self.backend_ref)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Whether `new` accepts the coordinates, observed without unwinding the
+    /// test: a panic is the refusal.
+    fn constructible(provider: &str, model: &str, backend: &str) -> bool {
+        let provider = provider.to_string();
+        let model = model.to_string();
+        let backend = backend.to_string();
+        std::panic::catch_unwind(move || ModelBinding::new(provider, model, backend)).is_ok()
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: 512,
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        /// Property: the constructor and the wire agree on every input. C1
+        /// `parse` admits the coordinates; C2 `new` builds them. Effects: E1
+        /// both admit and the wire round-trips the built value exactly; E2
+        /// both refuse. Rule R1 = C1 <=> C2. A third outcome -- built but not
+        /// decodable, or decodable but not buildable -- is the silent-stall
+        /// class this property exists to make unrepresentable.
+        #[test]
+        fn every_constructible_binding_round_trips_through_the_wire(
+            provider in proptest::string::string_regex("[a-z ]{0,6}").unwrap(),
+            model in proptest::string::string_regex("[a-z ]{0,6}").unwrap(),
+            backend in proptest::sample::select(vec![
+                "", " ", "genai", "scripted", " genai", "acp", "acp:", "acp:claude",
+                "acp: x", "a2a:https://agent.example", "a2a:not a url", "a2a:",
+            ]),
+        ) {
+            let parsed = ModelBinding::parse(provider.clone(), model.clone(), backend);
+            let built = constructible(&provider, &model, backend);
+            proptest::prop_assert_eq!(parsed.is_ok(), built, "R1: new and parse must agree");
+            if let Ok(binding) = parsed {
+                let wire = serde_json::to_value(&binding).expect("a built binding serializes");
+                let decoded: ModelBinding =
+                    serde_json::from_value(wire).expect("E1: the wire decodes what new built");
+                proptest::prop_assert_eq!(decoded, binding);
+            }
+        }
+    }
+
+    #[test]
+    fn the_documented_shapes_are_admitted_or_refused_exactly() {
+        // The named rows of the rule the property above quantifies over:
+        // T1 host-installed executor (both empty, native ref); T2 complete
+        // native; T3 ACP with a model default; T4 A2A endpoint as identity;
+        // T5/T6 half a native binding; T7 an inexecutable backend ref; T8 a
+        // padded coordinate.
+        for (provider, model, backend) in [
+            ("", "", "scripted"),
+            ("", "", "native"),
+            ("anthropic", "claude-opus-4", "native"),
+            ("scenario", "model", "acp:claude"),
+            ("", "", "a2a:https://agent.example"),
+        ] {
+            let built = ModelBinding::new(provider, model, backend);
+            let wire = serde_json::to_value(&built).expect("serializes");
+            let decoded: ModelBinding = serde_json::from_value(wire).expect("T1-T4 decode");
+            assert_eq!(decoded, built);
+        }
+        assert!(
+            matches!(
+                ModelBinding::parse("anthropic", "", "native"),
+                Err(InvalidModelBinding::IncompleteNative { .. })
+            ),
+            "T5"
+        );
+        assert!(
+            matches!(
+                ModelBinding::parse("", "claude-opus-4", "native"),
+                Err(InvalidModelBinding::IncompleteNative { .. })
+            ),
+            "T6"
+        );
+        assert!(
+            matches!(
+                ModelBinding::parse("p", "m", ""),
+                Err(InvalidModelBinding::Backend(_))
+            ),
+            "T7"
+        );
+        assert!(
+            matches!(
+                ModelBinding::parse(" p", "m", "native"),
+                Err(InvalidModelBinding::Whitespace { .. })
+            ),
+            "T8"
+        );
+        assert!(
+            !constructible("anthropic", "", "native"),
+            "T5 is not constructible either"
+        );
+        assert!(
+            !constructible("p", "m", ""),
+            "T7 is not constructible either"
+        );
+    }
+}
+
+/// Kani exhausts the admission rule over every coordinate *shape*: the rule
+/// depends only on whether each coordinate is empty, padded, or plain, and on
+/// the backend class, so a representative string per shape is a complete
+/// enumeration of the decision. The two effects are E1 admit and E2 refuse.
+///
+/// | Rule | provider | model   | backend        | Effect |
+/// | A1   | plain    | plain   | native         | E1     |
+/// | A2   | empty    | empty   | native         | E1 (host-installed executor) |
+/// | A3   | any      | any     | acp:/a2a: ok   | E1 unless padded |
+/// | A4   | empty    | plain   | native         | E2 IncompleteNative |
+/// | A5   | plain    | empty   | native         | E2 IncompleteNative |
+/// | A6   | any      | any     | invalid        | E2 Backend |
+/// | A7   | padded   | any     | any            | E2 Whitespace |
+#[cfg(kani)]
+#[kani::proof]
+fn model_binding_admission_is_exactly_the_documented_rule_table() {
+    // Every coordinate shape crossed with every backend class, as concrete
+    // strings: the rule depends only on shape and class, and concrete strings
+    // keep the byte loops inside `trim`/`strip_prefix` bounded so CBMC
+    // exhausts all 54 rows instead of unwinding a symbolic pointer.
+    const COORDINATES: [&str; 3] = ["", "plain", " padded"];
+    const BACKENDS: [(&str, bool, bool); 6] = [
+        // (reference, is native, is an inexecutable reference)
+        ("native", true, false),
+        ("acp:claude", false, false),
+        ("a2a:https://agent.example", false, false),
+        ("", false, true),
+        ("acp", false, true),
+        (" native", false, true),
+    ];
+    for provider in COORDINATES {
+        for model in COORDINATES {
+            for (backend, native, backend_invalid) in BACKENDS {
+                let padded =
+                    provider.starts_with(' ') || model.starts_with(' ') || backend.starts_with(' ');
+                let half_native = native && (provider.is_empty() != model.is_empty());
+                let expected_admit = !padded && !backend_invalid && !half_native;
+                let parsed = ModelBinding::parse(provider, model, backend);
+                assert_eq!(parsed.is_ok(), expected_admit);
+                match parsed {
+                    Ok(binding) => assert_eq!(binding.identity(), (provider, model, backend)),
+                    Err(InvalidModelBinding::Whitespace { .. }) => assert!(padded),
+                    Err(InvalidModelBinding::Backend(_)) => assert!(backend_invalid && !padded),
+                    Err(InvalidModelBinding::IncompleteNative { .. }) => {
+                        assert!(half_native && !padded && !backend_invalid)
+                    }
+                }
+            }
+        }
     }
 }

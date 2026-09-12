@@ -859,16 +859,16 @@ fn model_binding_parse_admits_only_a_complete_identity() {
 
     // The rejected producer is exactly the shape that once let a pinned model
     // resolve onto a second provider account: two native candidates that state
-    // no provider identity are indistinguishable to the publication fence.
-    let first = ModelBinding::new("", "m-first", "genai");
-    let second = ModelBinding::new("", "m-first", "genai");
-    assert_eq!(
-        first, second,
-        "a blank account coordinate collapses identity"
-    );
+    // no provider identity would be indistinguishable to the publication fence.
+    // Since `new` applies the same admission as `parse`, that shape can no
+    // longer exist in memory at all: both doors refuse it.
     assert!(
         ModelBinding::parse("", "m-first", "genai").is_err(),
         "parse refuses the collapsing producer"
+    );
+    assert!(
+        std::panic::catch_unwind(|| ModelBinding::new("", "m-first", "genai")).is_err(),
+        "new refuses the collapsing producer instead of building it"
     );
 }
 
