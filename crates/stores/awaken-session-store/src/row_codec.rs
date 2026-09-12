@@ -24,7 +24,7 @@ struct AggregateEnvelope<'a> {
 #[serde(deny_unknown_fields)]
 struct OwnedAggregateEnvelope {
     format: String,
-    aggregate: PersistedSession,
+    aggregate: serde_json::Value,
 }
 
 pub(super) fn encode(session: &PersistedSession) -> Result<String, serde_json::Error> {
@@ -125,7 +125,7 @@ fn decode_aggregate(data: &str) -> Result<PersistedSession, serde_json::Error> {
                 envelope.format
             )));
         }
-        return Ok(envelope.aggregate);
+        return serde_json::from_value(envelope.aggregate);
     }
 
     // Pre-envelope aggregates from before the root event-batch convergence did
@@ -305,24 +305,52 @@ mod tests {
 
     #[test]
     fn a_v1_row_is_refused_by_format_not_by_an_opaque_field_error() {
-        // The complete-witness change made `McpGeneration` an object where v1
-        // stored a bare counter. Causes: C1 a stored row stamped v1; C2 a row
-        // stamped with the current format. Effects: E1 refusal naming the
-        // format; E2 acceptance. Rule R1=C1=>E1 exists so an operator reading
-        // the log learns the row predates the witness, instead of seeing serde
-        // complain about an integer where a struct was expected.
-        let current =
-            super::encode(&crate::tests::sample("format-witness")).expect("encode current");
+        // Causes: C1 format is v1, unknown, or current; C2 MCP generation is
+        // the historical counter or the complete witness. Effects: E1 reject
+        // unsupported formats by name BEFORE interpreting their payload; E2
+        // decode a current complete witness; E3 reject a counter mislabeled
+        // current. Rules R1=v1/unknown+either=>E1; R2=current+witness=>E2;
+        // R3=current+counter=>E3. A real MCP attachment is essential: an empty
+        // attachment set cannot expose payload decoding before version checks.
+        let mut session = crate::tests::sample("format-witness");
+        session.mcp = awaken_session_contract::SessionMcpAttachmentSet::from_initial(
+            vec![awaken_session_contract::McpAttachmentDraft {
+                name: "fixture".into(),
+                target: awaken_session_contract::McpTarget::parse_http("https://fixture.test/mcp")
+                    .unwrap(),
+                prompts_as_skills: false,
+                credential: None,
+                origin: awaken_session_contract::McpAttachmentOrigin::Session,
+            }],
+            None,
+        )
+        .unwrap();
+        let current = super::encode(&session).expect("encode current");
         let mut v1: serde_json::Value = serde_json::from_str(&current).expect("reparse");
-        v1["format"] = serde_json::json!("awaken.session.v1");
-        let refusal = super::decode_aggregate(&v1.to_string()).expect_err("C1/E1");
+        for format in ["awaken.session.v1", "awaken.session.v999"] {
+            v1["format"] = serde_json::json!(format);
+            for generation in [
+                serde_json::to_value(&session.mcp.attachments[0].generation).unwrap(),
+                serde_json::json!(1),
+            ] {
+                v1["aggregate"]["mcp"]["attachments"][0]["generation"] = generation;
+                let refusal = super::decode_aggregate(&v1.to_string()).expect_err("R1/E1");
+                assert!(
+                    refusal.to_string().contains(&format!(
+                        "unsupported managed Session aggregate format `{format}`"
+                    )),
+                    "R1/E1 names the format: {refusal}"
+                );
+            }
+        }
+        assert_eq!(super::decode_aggregate(&current).expect("R2/E2"), session);
+        v1["format"] = serde_json::json!(super::CURRENT_AGGREGATE_FORMAT);
+        let refusal = super::decode_aggregate(&v1.to_string()).expect_err("R3/E3");
         assert!(
             refusal
                 .to_string()
-                .contains("unsupported managed Session aggregate format `awaken.session.v1`"),
-            "C1/E1 names the format: {refusal}"
+                .contains("expected struct McpGeneration")
         );
-        super::decode_aggregate(&current).expect("C2/E2");
     }
 
     fn completed_publication(
