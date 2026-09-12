@@ -1100,9 +1100,16 @@ pub awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef::thre
 pub awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef::version: u64
 pub awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef::view: awaken_agent_contract::thread::read::transcript::TranscriptView
 pub mod awaken_agent_contract::toolset
+pub enum awaken_agent_contract::toolset::GrantedAutonomy
+pub awaken_agent_contract::toolset::GrantedAutonomy::Evaluated
+pub awaken_agent_contract::toolset::GrantedAutonomy::Full
+pub awaken_agent_contract::toolset::GrantedAutonomy::None
 pub enum awaken_agent_contract::toolset::ToolPermissionRequirement
 pub awaken_agent_contract::toolset::ToolPermissionRequirement::AlwaysAllow
 pub awaken_agent_contract::toolset::ToolPermissionRequirement::AlwaysAsk
+pub awaken_agent_contract::toolset::ToolPermissionRequirement::Auto
+impl awaken_agent_contract::toolset::ToolPermissionRequirement
+pub const fn awaken_agent_contract::toolset::ToolPermissionRequirement::granted_autonomy(self) -> awaken_agent_contract::toolset::GrantedAutonomy
 pub enum awaken_agent_contract::toolset::ToolsetSource
 pub awaken_agent_contract::toolset::ToolsetSource::Agent
 pub awaken_agent_contract::toolset::ToolsetSource::Mcp
@@ -1203,6 +1210,9 @@ pub awaken_agent_contract::ThreadDisposition::Archived
 pub enum awaken_agent_contract::ToolPermissionRequirement
 pub awaken_agent_contract::ToolPermissionRequirement::AlwaysAllow
 pub awaken_agent_contract::ToolPermissionRequirement::AlwaysAsk
+pub awaken_agent_contract::ToolPermissionRequirement::Auto
+impl awaken_agent_contract::toolset::ToolPermissionRequirement
+pub const fn awaken_agent_contract::toolset::ToolPermissionRequirement::granted_autonomy(self) -> awaken_agent_contract::toolset::GrantedAutonomy
 pub enum awaken_agent_contract::ToolsetSource
 pub awaken_agent_contract::ToolsetSource::Agent
 pub awaken_agent_contract::ToolsetSource::Mcp

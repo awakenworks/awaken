@@ -6,9 +6,11 @@
 //! `actions::` mutation helpers are intentionally out of scope for this crate.
 
 use awaken_ext_permission::{
-    PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
-    ToolPermissionBehavior, parse_ruleset,
+    AutoDecision, AutoPermissionEvaluator, PermissionRule, PermissionRuleset,
+    ReversibilityEvaluator, RuleBasedToolPermissionPolicy, ToolCallPattern, ToolPermissionBehavior,
+    parse_ruleset,
 };
+use awaken_runtime_contract::agent_bindings::ToolPermissionRequirement;
 use awaken_runtime_contract::permission::{ToolCall, ToolPermissionPolicy, ToolPermissionVerdict};
 use serde_json::json;
 
@@ -646,4 +648,149 @@ async fn a_toolset_never_governs_a_differently_punctuated_neighbour() {
             "the policy authored for \"a-b\" must not reach {neighbour:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The `auto` policy: a fixed authored decision always outranks the evaluator,
+// and the evaluator's own three outcomes each reach the caller intact.
+// ---------------------------------------------------------------------------
+
+/// Answers with one fixed decision, so a test states the evaluator's verdict
+/// directly instead of depending on any classifier's judgement.
+#[derive(Debug)]
+struct FixedAuto(AutoDecision);
+impl AutoPermissionEvaluator for FixedAuto {
+    fn evaluate(&self, _call: &awaken_runtime_contract::permission::ToolCall) -> AutoDecision {
+        self.0
+    }
+}
+
+fn mcp_toolset(
+    default: ToolPermissionRequirement,
+) -> awaken_runtime_contract::agent_bindings::ToolsetPolicy {
+    use awaken_runtime_contract::agent_bindings::{
+        ToolExecutionPolicy, ToolsetPolicy, ToolsetSource,
+    };
+    ToolsetPolicy {
+        source: ToolsetSource::Mcp {
+            server_name: "context".into(),
+        },
+        default: ToolExecutionPolicy {
+            enabled: true,
+            permission: default,
+        },
+        overrides: Vec::new(),
+    }
+}
+
+fn auto_call() -> ToolCall {
+    ToolCall {
+        tool_id: "mcp__context__attest".into(),
+        call_id: "auto-1".into(),
+        arguments: json!({}),
+    }
+}
+
+#[tokio::test]
+async fn each_auto_outcome_reaches_the_caller_unchanged() {
+    // Cause/effect graph: C1 the resolved policy is `auto`; C2 the evaluator
+    // returns allow/deny/indeterminate. E1 allow runs, E2 deny refuses the call
+    // outright, E3 indeterminate falls through to a person — the same ask the
+    // `always_ask` policy produces, correlated to this exact call.
+    //
+    // | Rule | C2 | Effect |
+    // | A1 | allow | E1 Allow |
+    // | A2 | deny | E2 Deny |
+    // | A3 | indeterminate | E3 ask, correlated |
+    for (rule, decision) in [
+        ("A1", AutoDecision::Allow),
+        ("A2", AutoDecision::Deny),
+        ("A3", AutoDecision::Indeterminate),
+    ] {
+        let policy = RuleBasedToolPermissionPolicy::new(PermissionRuleset::default())
+            .with_mcp_toolsets(&[mcp_toolset(ToolPermissionRequirement::Auto)])
+            .with_auto_evaluator(std::sync::Arc::new(FixedAuto(decision)));
+        match (decision, policy.evaluate(&auto_call()).await) {
+            (AutoDecision::Allow, ToolPermissionVerdict::Allow) => {}
+            (AutoDecision::Deny, ToolPermissionVerdict::Deny { .. }) => {}
+            (
+                AutoDecision::Indeterminate,
+                ToolPermissionVerdict::RequireConfirmation { correlation_id },
+            ) => assert_eq!(correlation_id, "perm-auto-1", "{rule}"),
+            (decision, verdict) => panic!("{rule}: {decision:?} produced {verdict:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_fixed_authored_policy_outranks_the_evaluator() {
+    // The authored decision is the author's own instruction; letting an
+    // evaluator overrule it would replace a stated intent with a judgement.
+    // Both fixed policies must hold even against an evaluator that would answer
+    // the opposite way for every call.
+    //
+    // | Rule | authored | evaluator would say | Effect |
+    // | F1 | always_allow | deny | allow (the author decided) |
+    // | F2 | always_ask | allow | ask (the author decided) |
+    let allow_policy = RuleBasedToolPermissionPolicy::new(PermissionRuleset::default())
+        .with_mcp_toolsets(&[mcp_toolset(ToolPermissionRequirement::AlwaysAllow)])
+        .with_auto_evaluator(std::sync::Arc::new(FixedAuto(AutoDecision::Deny)));
+    assert!(
+        matches!(
+            allow_policy.evaluate(&auto_call()).await,
+            ToolPermissionVerdict::Allow
+        ),
+        "F1"
+    );
+
+    let ask_policy = RuleBasedToolPermissionPolicy::new(PermissionRuleset::default())
+        .with_mcp_toolsets(&[mcp_toolset(ToolPermissionRequirement::AlwaysAsk)])
+        .with_auto_evaluator(std::sync::Arc::new(FixedAuto(AutoDecision::Allow)));
+    assert!(
+        matches!(
+            ask_policy.evaluate(&auto_call()).await,
+            ToolPermissionVerdict::RequireConfirmation { .. }
+        ),
+        "F2"
+    );
+}
+
+#[tokio::test]
+async fn an_authored_deny_rule_still_outranks_an_auto_allow() {
+    // `deny` is absolute across the whole rule scan. An evaluator that would
+    // allow the call cannot resurrect it — the same guarantee the retired
+    // bypass posture used to break.
+    let policy = RuleBasedToolPermissionPolicy::new(ruleset(
+        ToolPermissionBehavior::RequireConfirmation,
+        vec![rule("mcp__context__attest", ToolPermissionBehavior::Deny)],
+    ))
+    .with_mcp_toolsets(&[mcp_toolset(ToolPermissionRequirement::Auto)])
+    .with_auto_evaluator(std::sync::Arc::new(FixedAuto(AutoDecision::Allow)));
+    assert!(matches!(
+        policy.evaluate(&auto_call()).await,
+        ToolPermissionVerdict::Deny { .. }
+    ));
+}
+
+#[test]
+fn the_default_evaluator_allows_only_observing_tools_and_never_denies() {
+    // The shipped classifier judges by tool identity alone, so it may conclude
+    // "safe to observe" but never "too risky for anyone to approve": an
+    // unknown tool goes to a person, not to a refusal.
+    let evaluator = ReversibilityEvaluator::new(["read".to_string(), "grep".to_string()]);
+    let call = |tool: &str| ToolCall {
+        tool_id: tool.into(),
+        call_id: "c".into(),
+        arguments: json!({}),
+    };
+    assert_eq!(evaluator.evaluate(&call("read")), AutoDecision::Allow);
+    assert_eq!(
+        evaluator.evaluate(&call("bash")),
+        AutoDecision::Indeterminate
+    );
+    assert_eq!(
+        ReversibilityEvaluator::default().evaluate(&call("read")),
+        AutoDecision::Indeterminate,
+        "an unconfigured evaluator names no safe tool"
+    );
 }

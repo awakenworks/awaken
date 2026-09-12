@@ -63,6 +63,7 @@ pub enum ObjectSchemaKind {
 pub enum AgentToolPermissionPolicy {
     AlwaysAllow,
     AlwaysAsk,
+    Auto,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -148,6 +149,7 @@ fn managed_toolset_default_policy(
             .map(|value| match value {
                 AgentToolPermissionPolicy::AlwaysAllow => ToolPermissionRequirement::AlwaysAllow,
                 AgentToolPermissionPolicy::AlwaysAsk => ToolPermissionRequirement::AlwaysAsk,
+                AgentToolPermissionPolicy::Auto => ToolPermissionRequirement::Auto,
             })
             .unwrap_or(source_permission),
     }
@@ -692,6 +694,7 @@ pub fn toolset_policies(tools: &[AgentTool]) -> Vec<awaken_agent_contract::Tools
                       fallback: ToolPermissionRequirement| match value {
         Some(AgentToolPermissionPolicy::AlwaysAllow) => ToolPermissionRequirement::AlwaysAllow,
         Some(AgentToolPermissionPolicy::AlwaysAsk) => ToolPermissionRequirement::AlwaysAsk,
+        Some(AgentToolPermissionPolicy::Auto) => ToolPermissionRequirement::Auto,
         None => fallback,
     };
     tools
@@ -859,6 +862,7 @@ pub fn resolved_toolsets(policies: &[awaken_agent_contract::ToolsetPolicy]) -> V
     let permission = |value| match value {
         ToolPermissionRequirement::AlwaysAllow => AgentToolPermissionPolicy::AlwaysAllow,
         ToolPermissionRequirement::AlwaysAsk => AgentToolPermissionPolicy::AlwaysAsk,
+        ToolPermissionRequirement::Auto => AgentToolPermissionPolicy::Auto,
     };
     policies
         .iter()
@@ -1310,6 +1314,7 @@ mod tests {
                     None,
                     Some(AgentToolPermissionPolicy::AlwaysAllow),
                     Some(AgentToolPermissionPolicy::AlwaysAsk),
+                    Some(AgentToolPermissionPolicy::Auto),
                 ] {
                     let configured = (enabled.is_some() || permission_policy.is_some()).then_some(
                         AgentToolDefaultConfig {
@@ -1321,6 +1326,12 @@ mod tests {
                     let expected_permission = match permission_policy {
                         Some(AgentToolPermissionPolicy::AlwaysAllow) => AlwaysAllow,
                         Some(AgentToolPermissionPolicy::AlwaysAsk) => AlwaysAsk,
+                        // `auto` is carried, never resolved here: the wire value
+                        // is the author's intent and this projection is the
+                        // round-trip carrier for it.
+                        Some(AgentToolPermissionPolicy::Auto) => {
+                            awaken_agent_contract::ToolPermissionRequirement::Auto
+                        }
                         None => inherited_permission,
                     };
                     assert_eq!(resolved.enabled, enabled.unwrap_or(true), "D1-D18 enabled");

@@ -193,6 +193,7 @@ pub awaken_session_contract::AgentTool::McpToolset::mcp_server_name: alloc::stri
 pub enum awaken_session_contract::AgentToolPermissionPolicy
 pub awaken_session_contract::AgentToolPermissionPolicy::AlwaysAllow
 pub awaken_session_contract::AgentToolPermissionPolicy::AlwaysAsk
+pub awaken_session_contract::AgentToolPermissionPolicy::Auto
 pub enum awaken_session_contract::AgentToolsetMember
 pub awaken_session_contract::AgentToolsetMember::Bash
 pub awaken_session_contract::AgentToolsetMember::Edit
