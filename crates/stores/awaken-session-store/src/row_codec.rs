@@ -303,8 +303,8 @@ mod tests {
 
     use crate::{SqliteManagedSessionRepository, tests::create_fixture, tests::sample};
 
-    #[test]
-    fn a_v1_row_is_refused_by_format_not_by_an_opaque_field_error() {
+    #[tokio::test]
+    async fn a_v1_row_is_refused_by_format_not_by_an_opaque_field_error() {
         // Causes: C1 format is v1, unknown, or current; C2 MCP generation is
         // the historical counter or the complete witness. Effects: E1 reject
         // unsupported formats by name BEFORE interpreting their payload; E2
@@ -312,6 +312,12 @@ mod tests {
         // current. Rules R1=v1/unknown+either=>E1; R2=current+witness=>E2;
         // R3=current+counter=>E3. A real MCP attachment is essential: an empty
         // attachment set cannot expose payload decoding before version checks.
+        // C3 cold SQLite startup normalizes roots before recovery quarantine.
+        // R4=R1+C3 => startup refuses, preserving exact bytes and revision on
+        // repeated opens; quarantine must not silently promote the old witness.
+        // This reproduces the deployed v1/MCP-counter failure through the real
+        // repository, not merely serde. No new protocol is introduced, so this
+        // is storage/codec evidence, not a physical-stop or migration proof.
         let mut session = crate::tests::sample("format-witness");
         session.mcp = awaken_session_contract::SessionMcpAttachmentSet::from_initial(
             vec![awaken_session_contract::McpAttachmentDraft {
@@ -325,6 +331,15 @@ mod tests {
             None,
         )
         .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory
+            .path()
+            .join("session-format.db")
+            .to_string_lossy()
+            .into_owned();
+        let repository = SqliteManagedSessionRepository::open(&path).unwrap();
+        session = create_fixture(&repository, "format-owner", session, Vec::new()).await;
+        drop(repository);
         let current = super::encode(&session).expect("encode current");
         let mut v1: serde_json::Value = serde_json::from_str(&current).expect("reparse");
         for format in ["awaken.session.v1", "awaken.session.v999"] {
@@ -341,9 +356,56 @@ mod tests {
                     )),
                     "R1/E1 names the format: {refusal}"
                 );
+                let bytes = v1.to_string();
+                let connection = rusqlite::Connection::open(&path).unwrap();
+                connection
+                    .execute(
+                        "UPDATE managed_session SET aggregate_json = ?1 WHERE session_id = ?2",
+                        params![bytes, session.session_id],
+                    )
+                    .unwrap();
+                drop(connection);
+                for _ in 0..2 {
+                    let error = match SqliteManagedSessionRepository::open(&path) {
+                        Ok(_) => panic!("R4 unsupported cold root must refuse startup"),
+                        Err(error) => error,
+                    };
+                    assert!(
+                        error.contains(&format!(
+                            "unsupported managed Session aggregate format `{format}`"
+                        )),
+                        "R4 format precedes payload: {error}"
+                    );
+                    let connection = rusqlite::Connection::open(&path).unwrap();
+                    let stored: (String, i64) = connection.query_row(
+                        "SELECT aggregate_json, revision FROM managed_session WHERE session_id = ?1",
+                        params![session.session_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    ).unwrap();
+                    assert_eq!(
+                        stored,
+                        (bytes.clone(), i64::try_from(session.revision.0).unwrap()),
+                        "R4 refusal preserves the original authority on every restart"
+                    );
+                }
             }
         }
         assert_eq!(super::decode_aggregate(&current).expect("R2/E2"), session);
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "UPDATE managed_session SET aggregate_json = ?1 WHERE session_id = ?2",
+                params![current, session.session_id],
+            )
+            .unwrap();
+        drop(connection);
+        let repository =
+            SqliteManagedSessionRepository::open(&path).expect("R2 current cold root opens");
+        assert_eq!(
+            repository.get(&session.session_id).await.unwrap(),
+            session,
+            "R2 current root preserves complete identity through reopen"
+        );
         v1["format"] = serde_json::json!(super::CURRENT_AGGREGATE_FORMAT);
         let refusal = super::decode_aggregate(&v1.to_string()).expect_err("R3/E3");
         assert!(
