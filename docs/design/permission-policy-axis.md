@@ -50,7 +50,8 @@ credential write, config publication, provider selection, or admin action.
 
 The per-evaluation `ToolPermissionPolicy` input is exactly the normalized
 `ToolCall` (`tool_id`, `call_id`, and arguments). The concrete policy object may
-already own its configured rules and mode. It receives no Run, Thread, backend,
+already own its configured rules and its unmatched default. It receives no Run,
+Thread, backend,
 credential, resource, or adapter identity. A final `ToolGateHook` separately
 receives the same `ToolCall` plus the Run's read-only `Store`; that hook may
 further restrict an allowed call but cannot widen the permission verdict.
@@ -69,8 +70,12 @@ matching source and calls `ToolsetPolicy::policy_for`: an exact override replace
 the source default. `RuleBasedToolPermissionPolicy` inserts only that resolved
 exact decision into its ordinary rule fold. A disabled source default must not
 be flattened into a wildcard deny that also matches explicitly enabled tools.
-Explicit authored deny rules still win under ordinary modes. Closed Agent-tool
-membership continues to be projected by the host from its canonical roster.
+An explicit authored deny rule always wins: there is one ambient posture (the
+unmatched `default_behavior`, which a toolset's own default compiles into) and
+no second axis that can short-circuit the rule scan ahead of a deny. Closed
+Agent-tool membership continues to be projected by the host from its canonical
+roster. A leaf backend's own session modes and config options are relayed
+opaquely and never reach this evaluator.
 Native `PermissionGate` and ACP consume the same `EffectiveToolAuthorization`;
 neither backend owns a second evaluator or approval state.
 

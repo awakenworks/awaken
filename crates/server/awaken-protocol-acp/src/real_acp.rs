@@ -282,9 +282,26 @@ mod tests {
             "an available-commands update"
         );
 
-        let mode =
-            SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new(SessionModeId::new("plan")));
-        assert_eq!(project_update(&mode), None, "a current-mode update");
+        // A backend's own session mode is relayed, never interpreted: every mode
+        // id projects to None, so no value can reach runtime truth and no mapping
+        // table exists to fall out of date when a new CLI ships one we have never
+        // seen. The unknown id is the load-bearing case — it must behave exactly
+        // like the familiar one.
+        for mode_id in [
+            "plan",
+            "acceptEdits",
+            "bypassPermissions",
+            "a-mode-we-never-heard-of",
+        ] {
+            let mode = SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new(
+                SessionModeId::new(mode_id),
+            ));
+            assert_eq!(
+                project_update(&mode),
+                None,
+                "current-mode update `{mode_id}` stays opaque"
+            );
+        }
     }
 
     #[test]
