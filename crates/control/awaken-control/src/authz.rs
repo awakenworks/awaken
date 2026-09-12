@@ -452,26 +452,29 @@ impl ManagementAuthz {
     }
 
     /// The mint-time role of `token`, derived from its principal's persisted
-    /// Workspace-profile binding at the token's workspace.
+    /// Workspace-profile binding **at the token's own workspace**.
+    ///
+    /// Scope is part of a binding's identity: one principal may hold different
+    /// Workspace profiles in different workspaces, so a binding in workspace B
+    /// is not evidence about a token minted in workspace A. There is
+    /// deliberately no fallback to "whichever other workspace binding exists" —
+    /// a token whose workspace carries no binding has no derivable role and the
+    /// view reports none, rather than displaying a role borrowed from elsewhere.
     fn role_of(&self, token: &ApiToken) -> Option<String> {
-        let bindings = RoleBindingRepository::list_for_principal(&self.store, &token.principal)
-            .expect("list principal bindings");
-        let workspace_bindings: Vec<_> = bindings
-            .iter()
-            .filter(|binding| {
+        RoleBindingRepository::list_for_principal(&self.store, &token.principal)
+            .expect("list principal bindings")
+            .into_iter()
+            .find(|binding| {
                 binding
                     .role
                     .0
                     .starts_with(AWAKEN_WORKSPACE_POLICY_NAMESPACE)
+                    && matches!(
+                        &binding.scope,
+                        ScopeRef::Workspace { workspace_id } if *workspace_id == token.workspace
+                    )
             })
-            .collect();
-        workspace_bindings
-            .iter()
-            .find(|b| {
-                matches!(&b.scope, ScopeRef::Workspace { workspace_id } if *workspace_id == token.workspace)
-            })
-            .or_else(|| workspace_bindings.first())
-            .map(|b| local_role(&b.role.0).to_owned())
+            .map(|binding| local_role(&binding.role.0).to_owned())
     }
 
     /// The persisted mint-time role of token `id`, when derivable.
