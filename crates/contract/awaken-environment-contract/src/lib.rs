@@ -187,11 +187,17 @@ impl EnvironmentConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EnvironmentNetworking {
-    #[default]
-    Unrestricted,
+    /// `{}` and not a bare unit. `deny_unknown_fields` on an internally tagged
+    /// enum governs its struct variants only: serde reads a unit variant's tag
+    /// and ignores every sibling key, so `{"type":"unrestricted",
+    /// "allowed_hosts":[…]}` would decode to unrestricted egress and the
+    /// authored allowlist would vanish without an error. The empty brace form
+    /// is what subjects the variant to the container attribute. `Default` is
+    /// written by hand because `#[default]` accepts unit variants only.
+    Unrestricted {},
     Limited {
         #[serde(default)]
         allowed_hosts: Vec<String>,
@@ -200,6 +206,12 @@ pub enum EnvironmentNetworking {
         #[serde(default)]
         allow_package_managers: bool,
     },
+}
+
+impl Default for EnvironmentNetworking {
+    fn default() -> Self {
+        Self::Unrestricted {}
+    }
 }
 
 /// Canonical public registries represented by Anthropic's
@@ -546,7 +558,7 @@ impl EnvironmentNetworking {
     fn apply(&mut self, mutation: EnvironmentNetworkingMutation) {
         match mutation {
             EnvironmentNetworkingMutation::Reset | EnvironmentNetworkingMutation::Unrestricted => {
-                *self = Self::Unrestricted
+                *self = Self::Unrestricted {}
             }
             EnvironmentNetworkingMutation::Limited {
                 allowed_hosts,
@@ -554,13 +566,13 @@ impl EnvironmentNetworking {
                 allow_package_managers,
             } => {
                 let (mut current_hosts, mut current_mcp, mut current_packages) =
-                    match std::mem::replace(self, Self::Unrestricted) {
+                    match std::mem::replace(self, Self::Unrestricted {}) {
                         Self::Limited {
                             allowed_hosts,
                             allow_mcp_servers,
                             allow_package_managers,
                         } => (allowed_hosts, allow_mcp_servers, allow_package_managers),
-                        Self::Unrestricted => (Vec::new(), false, false),
+                        Self::Unrestricted {} => (Vec::new(), false, false),
                     };
                 if let Some(value) = allowed_hosts {
                     current_hosts = match value {
@@ -791,6 +803,61 @@ mod tests {
     }
 
     #[test]
+    fn unrestricted_networking_refuses_the_allowlist_it_does_not_model() {
+        // `deny_unknown_fields` sits on this enum, yet it governs `Limited`
+        // only: serde reads a *unit* variant's tag and discards every sibling
+        // key. `EnvItem.config` reaches this type from an externally authored
+        // `ExecutableEnvironmentRegistration` body, so an operator who writes
+        // `{"type":"unrestricted","allowed_hosts":[…]}` registered an
+        // environment with unrestricted egress and no error to read.
+        //
+        // Causes over one networking object: C1 tag only; C2 tag plus a key
+        // `Limited` models; C3 tag plus a key no variant models.
+        // Effects: E1 decode, E2 refuse.
+        // | Rule | variant      | body | Effect |
+        // | U1   | unrestricted | C1   | E1     |
+        // | U2   | unrestricted | C2   | E2     |
+        // | U3   | unrestricted | C3   | E2     |
+        // | U4   | limited      | C2   | E1     |
+        // | U5   | limited      | C3   | E2     |
+        let decode =
+            |value: serde_json::Value| serde_json::from_value::<EnvironmentNetworking>(value);
+        assert_eq!(
+            decode(serde_json::json!({"type": "unrestricted"})).unwrap(),
+            EnvironmentNetworking::Unrestricted {},
+            "U1"
+        );
+        assert!(
+            decode(serde_json::json!({"type": "unrestricted", "allowed_hosts": ["api.test"]}))
+                .is_err(),
+            "U2: an authored egress allowlist must not be dropped into unrestricted egress"
+        );
+        assert!(
+            decode(serde_json::json!({"type": "unrestricted", "future": true})).is_err(),
+            "U3"
+        );
+        assert!(
+            decode(serde_json::json!({"type": "limited", "allowed_hosts": ["api.test"]})).is_ok(),
+            "U4"
+        );
+        assert!(
+            decode(serde_json::json!({"type": "limited", "future": true})).is_err(),
+            "U5"
+        );
+        // The closed form must not change the encoding any peer already reads.
+        assert_eq!(
+            serde_json::to_value(EnvironmentNetworking::Unrestricted {}).unwrap(),
+            serde_json::json!({"type": "unrestricted"}),
+            "round trip: the wire spelling is unchanged"
+        );
+        assert_eq!(
+            EnvironmentNetworking::default(),
+            EnvironmentNetworking::Unrestricted {},
+            "the hand-written Default replaces `#[default]`, which unit variants alone accept"
+        );
+    }
+
+    #[test]
     fn package_network_invariant_exhausts_the_closed_state_space() {
         // Exhaustive model check over the closed discriminants and booleans:
         // self-hosted and unrestricted are always valid; limited is invalid iff
@@ -805,7 +872,7 @@ mod tests {
             assert!(EnvironmentConfig::SelfHosted.validate().is_ok());
             assert!(
                 EnvironmentConfig::Cloud {
-                    networking: EnvironmentNetworking::Unrestricted,
+                    networking: EnvironmentNetworking::Unrestricted {},
                     packages: packages.clone(),
                 }
                 .validate()
