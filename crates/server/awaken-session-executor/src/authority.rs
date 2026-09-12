@@ -387,6 +387,16 @@ impl Default for EphemeralRuntimeAuthority {
 
 #[cfg(any(test, feature = "test-support"))]
 impl EphemeralRuntimeAuthority {
+    /// Seed the existing test authority with a deliberately stale query adapter.
+    #[cfg(test)]
+    pub(crate) fn with_commit(self, thread: &str, commit: Arc<dyn LocalCommit>) -> Self {
+        self.commits
+            .lock()
+            .unwrap()
+            .insert(thread.to_owned(), commit);
+        self
+    }
+
     #[must_use]
     pub fn new() -> Self {
         let dispatch = awaken_dispatch::AnyDispatchStore::from_dispatch(Arc::new(

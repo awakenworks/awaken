@@ -68,6 +68,7 @@ impl ManagedState {
         publication::ProjectionRefreshBuild<publication::ProjectionRefreshCandidate>,
         StateError,
     > {
+        let started = std::time::Instant::now();
         // Private Worker realization mutates the same durable Session application
         // without passing through this protocol adapter. Include that root in the
         // same private candidate as Runtime facts so GET cannot publish a stale
@@ -146,6 +147,7 @@ impl ManagedState {
         // root fence must include every coordinated link committed at or before
         // that fence. An event beyond the fence remains unconsumed until the
         // next refresh, when its matching root/link snapshot can catch up.
+        let outcomes_done = started.elapsed();
         let root_snapshot = self.recovery_snapshot(session_id, session_id).await?;
         let durable_outcome_projections = durable_outcome_projections
             .into_iter()
@@ -161,7 +163,9 @@ impl ManagedState {
         // The disposable cursor is only a live-delivery optimization. Canonical
         // list reconstruction always folds the complete retained lifecycle so a
         // cold replica and a warm replica derive the same interval buckets.
+        let snapshots_done = started.elapsed();
         let lifecycle_events = self.committed_lifecycle_prefix(session_id).await?;
+        let lifecycle_done = started.elapsed();
         let mut transcripts = child_snapshots
             .iter()
             .map(|(thread_id, snapshot)| (thread_id.clone(), snapshot.messages.clone()))
@@ -236,6 +240,7 @@ impl ManagedState {
             child_thread_usage.insert(link.thread_id.0.clone(), usage);
         }
 
+        let usage_done = started.elapsed();
         let known_children = links
             .iter()
             .map(|link| link.thread_id.0.as_str())
@@ -321,6 +326,7 @@ impl ManagedState {
             transcripts.remove(thread_id);
         }
 
+        let selection_done = started.elapsed();
         // Session revision does not change for Runtime commits. Fence the root
         // Thread prefix again after child/link reads, while ignoring the
         // backend-wide diagnostic cursor advanced by unrelated Threads.
@@ -377,6 +383,7 @@ impl ManagedState {
             }
         }
 
+        let validation_done = started.elapsed();
         // Build the complete disposable projection on a private result snapshot. A
         // transcript can be observed between its ToolUse and ToolResult commits,
         // and any later validation/canonicalization error must not retain the
@@ -1109,6 +1116,7 @@ impl ManagedState {
             &historical_pending,
             price_snapshot.as_ref(),
         )?;
+        let reduction_done = started.elapsed();
         Self::canonicalize_committed_events(
             record,
             CanonicalizationEvidence {
@@ -1121,6 +1129,20 @@ impl ManagedState {
                 child_pending: &child_pending,
             },
         )?;
+        let canonicalization_done = started.elapsed();
+        tracing::debug!(
+            session_id,
+            outcomes_ms = outcomes_done.as_millis() as u64,
+            snapshots_ms = (snapshots_done - outcomes_done).as_millis() as u64,
+            lifecycle_ms = (lifecycle_done - snapshots_done).as_millis() as u64,
+            usage_ms = (usage_done - lifecycle_done).as_millis() as u64,
+            selection_ms = (selection_done - usage_done).as_millis() as u64,
+            validation_ms = (validation_done - selection_done).as_millis() as u64,
+            reduction_ms = (reduction_done - validation_done).as_millis() as u64,
+            canonicalization_ms = (canonicalization_done - reduction_done).as_millis() as u64,
+            elapsed_ms = canonicalization_done.as_millis() as u64,
+            "Managed committed projection candidate completed"
+        );
         Ok(publication::ProjectionRefreshBuild::Complete(
             publication::ProjectionRefreshCandidate::new(
                 base_cache_revision,
@@ -1138,7 +1160,14 @@ impl ManagedState {
         session_id: &str,
     ) -> Result<bool, StateError> {
         let build = self.build_committed_projection_candidate(session_id).await;
-        self.finish_projection_refresh(session_id, build)
+        let publication_started = std::time::Instant::now();
+        let result = self.finish_projection_refresh(session_id, build);
+        tracing::debug!(
+            session_id,
+            publication_ms = publication_started.elapsed().as_millis() as u64,
+            "Managed committed projection publication completed"
+        );
+        result
     }
 }
 

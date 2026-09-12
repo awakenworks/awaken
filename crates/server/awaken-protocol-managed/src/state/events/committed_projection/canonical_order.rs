@@ -694,8 +694,8 @@ impl ManagedState {
             let event_roles = record
                 .events
                 .iter()
-                .map(|event| event.kind.type_str())
-                .collect::<std::collections::HashSet<_>>();
+                .map(|event| (event.kind.type_str(), &event.kind))
+                .collect::<std::collections::HashMap<_, _>>();
             for (message_index, (message, source_commit_cursor)) in snapshot
                 .messages
                 .iter()
@@ -710,13 +710,13 @@ impl ManagedState {
                 // and held the shared Session projection lock long enough to
                 // starve unrelated Worker heartbeats.
                 let ordinal_bound = message_projection_ordinal_bound(message);
-                let mut generic_source_ordinals =
+                let mut message_source_ordinals =
                     std::collections::HashMap::with_capacity(
                         ordinal_bound.saturating_mul(event_roles.len()),
                     );
-                for role in &event_roles {
+                for role in event_roles.keys() {
                     for ordinal in 0..ordinal_bound {
-                        generic_source_ordinals.insert(
+                        message_source_ordinals.insert(
                             managed_multiagent_event_id(
                                 &record.session.id,
                                 thread_id,
@@ -726,8 +726,27 @@ impl ManagedState {
                                     ordinal,
                                 },
                             ),
-                            ordinal,
+                            (ordinal, None),
                         );
+                    }
+                }
+                // The identity depends on Message coordinates and the event
+                // type, not on the individual historical Event. Extend the one
+                // message-source index once per distinct type, preserving the
+                // generic-before-assistant precedence on a matching id and the
+                // Assistant id's exact type qualification. Rehashing
+                // inside the Event scan made this work grow with the full history.
+                if let Some((run_id, step, response)) = response_coordinates.get(&message.id.0) {
+                    for (role, kind) in &event_roles {
+                        let ordinal = match kind {
+                            OutboundKind::AgentMessage { .. } => usize::from(
+                                message.content.iter().any(|block| matches!(block, ContentBlock::Thinking { .. })),
+                            ),
+                            _ => 0,
+                        };
+                        message_source_ordinals.entry(managed_assistant_event_id(
+                            &record.session.id, thread_id, run_id, *step, *response, role,
+)).or_insert((ordinal, Some(*role)));
                     }
                 }
                 for event in &record.events {
@@ -742,34 +761,12 @@ impl ManagedState {
                                     || matches!(block, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == identity.call_id)
                             })
                         });
-                    let generic_source_ordinal =
-                        generic_source_ordinals.get(&event.id).copied();
-                    let assistant_source_ordinal = response_coordinates
-                        .get(&message.id.0)
-                        .and_then(|(run_id, step, response)| {
-                            (event.id
-                                == managed_assistant_event_id(
-                                    &record.session.id,
-                                    thread_id,
-                                    run_id,
-                                    *step,
-                                    *response,
-                                    event.kind.type_str(),
-                                ))
-                            .then(|| match &event.kind {
-                                OutboundKind::AgentThinking {} => 0,
-                                OutboundKind::AgentMessage { .. } => usize::from(
-                                    message
-                                        .content
-                                        .iter()
-                                        .any(|block| matches!(block, ContentBlock::Thinking { .. })),
-                                ),
-                                _ => 0,
-                            })
-                        });
+                    let message_source_ordinal =
+                        message_source_ordinals.get(&event.id)
+                            .filter(|(_, role)| role.is_none_or(|role| role == event.kind.type_str()))
+                            .map(|(ordinal, _)| *ordinal);
                     if tool_source_ordinal.is_some()
-                        || generic_source_ordinal.is_some()
-                        || assistant_source_ordinal.is_some()
+                        || message_source_ordinal.is_some()
                     {
                         retain_earliest_order(
                             &mut orders,
@@ -785,8 +782,7 @@ impl ManagedState {
                                     .saturating_mul(event_count.saturating_add(1))
                                     .saturating_add(
                                         tool_source_ordinal
-                                            .or(generic_source_ordinal)
-                                            .or(assistant_source_ordinal)
+                                            .or(message_source_ordinal)
                                             .unwrap_or_default(),
                                     ),
                             },
