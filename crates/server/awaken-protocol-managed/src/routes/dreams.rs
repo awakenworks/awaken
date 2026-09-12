@@ -1,9 +1,9 @@
 //! Anthropic-compatible Dreams routes over the dream application.
 
+use crate::common::scope::RequiredWorkspaceScope;
 use std::sync::Arc;
 
 use awaken_session_contract::{Dream, DreamCreateParams, DreamListParams, DreamPage, DreamStatus};
-use awaken_tenancy::WorkspaceScope;
 use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -22,19 +22,13 @@ pub fn dreams_router(state: Arc<DreamApplication>) -> Router {
         .with_state(state)
 }
 
-fn scope(workspace: Option<axum::Extension<WorkspaceScope>>) -> String {
-    workspace
-        .map(|workspace| workspace.0.0.clone())
-        .unwrap_or_else(|| "default".into())
-}
-
 async fn create(
     State(state): State<Arc<DreamApplication>>,
-    workspace: Option<axum::Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     ManagedJson(params): ManagedJson<DreamCreateParams>,
 ) -> Result<Json<Dream>, (StatusCode, Json<ErrorResponse>)> {
     state
-        .create(&scope(workspace), params)
+        .create(&workspace, params)
         .await
         .map(Json)
         .map_err(error_response)
@@ -42,11 +36,11 @@ async fn create(
 
 async fn retrieve(
     State(state): State<Arc<DreamApplication>>,
-    workspace: Option<axum::Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> Result<Json<Dream>, (StatusCode, Json<ErrorResponse>)> {
     state
-        .retrieve(&scope(workspace), &id)
+        .retrieve(&workspace, &id)
         .await
         .map(Json)
         .map_err(error_response)
@@ -54,12 +48,12 @@ async fn retrieve(
 
 async fn list(
     State(state): State<Arc<DreamApplication>>,
-    workspace: Option<axum::Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     RawQuery(query): RawQuery,
 ) -> Result<Json<DreamPage>, (StatusCode, Json<ErrorResponse>)> {
     let params = parse_list_query(query.as_deref()).map_err(error_response)?;
     state
-        .list(&scope(workspace), params)
+        .list(&workspace, params)
         .await
         .map(Json)
         .map_err(error_response)
@@ -113,11 +107,11 @@ fn parse_list_query(raw: Option<&str>) -> Result<DreamListParams, DreamApiError>
 
 async fn cancel(
     State(state): State<Arc<DreamApplication>>,
-    workspace: Option<axum::Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> Result<Json<Dream>, (StatusCode, Json<ErrorResponse>)> {
     state
-        .cancel(&scope(workspace), &id)
+        .cancel(&workspace, &id)
         .await
         .map(Json)
         .map_err(error_response)
@@ -125,11 +119,11 @@ async fn cancel(
 
 async fn archive(
     State(state): State<Arc<DreamApplication>>,
-    workspace: Option<axum::Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> Result<Json<Dream>, (StatusCode, Json<ErrorResponse>)> {
     state
-        .archive(&scope(workspace), &id)
+        .archive(&workspace, &id)
         .await
         .map(Json)
         .map_err(error_response)

@@ -30,8 +30,9 @@ use awaken_webhook::{
 };
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::routing::{get, put};
-use axum::{Extension, Json, Router};
+use axum::{Json, Router};
 use serde_json::{Value, json};
 
 pub struct ConfigPlaneLifecycleDelivery {
@@ -396,14 +397,42 @@ struct WebhookCrudState {
     validate_url: EndpointUrlPolicy,
 }
 
-/// The seeded scope an unscoped (single-tenant / flat) request resolves to, kept in
-/// step with the managed session + resource-owner default so a bare deployment is
-/// self-consistent.
-const DEFAULT_SCOPE: &str = "default";
+/// The Workspace the trusted ingress edge already selected for this request.
+///
+/// There is no absent case to default: a subscription is an owned, tenant-fenced
+/// resource, so an unstamped request is refused with `404` before any handler
+/// body runs. A single-machine deployment gets its Workspace from the one
+/// composition-root stamp
+/// (`awaken_coordinator::workspace_path::with_platform_workspace`), never from a
+/// compiled-in constant here.
+pub struct RequiredWorkspaceScope(pub String);
 
-fn scope_of(ext: Option<Extension<WorkspaceScope>>) -> String {
-    ext.map(|Extension(WorkspaceScope(ws))| ws)
-        .unwrap_or_else(|| DEFAULT_SCOPE.to_string())
+impl<S> axum::extract::FromRequestParts<S> for RequiredWorkspaceScope
+where
+    S: Send + Sync,
+{
+    type Rejection = axum::response::Response;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        match parts
+            .extensions
+            .get::<WorkspaceScope>()
+            .and_then(WorkspaceScope::non_empty)
+        {
+            Some(workspace) => Ok(Self(workspace.to_owned())),
+            None => Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": {
+                    "type": "not_found_error",
+                    "message": "workspace not found"
+                }})),
+            )
+                .into_response()),
+        }
+    }
 }
 
 /// The standard not-found envelope — used for a genuine miss and for a cross-tenant
@@ -444,7 +473,7 @@ fn view(def: &WebhookEndpointDef) -> Value {
 async fn put_subscription(
     State(state): State<WebhookCrudState>,
     Path(id): Path<String>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
     let Some(url) = body.get("url").and_then(Value::as_str).map(str::to_string) else {
@@ -506,8 +535,6 @@ async fn put_subscription(
     // started delivering to it — the validation just above proves the field is
     // an input, which is precisely what made ignoring it invisible.
     let authored_disabled = body.get("disabled").and_then(Value::as_bool);
-
-    let workspace_id = scope_of(scope);
 
     // The repository owns the atomic read/modify/write. Delivery counters and the
     // secret reference can therefore change concurrently without being overwritten
@@ -605,9 +632,8 @@ async fn put_subscription(
 async fn get_subscription(
     State(state): State<WebhookCrudState>,
     Path(id): Path<String>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
 ) -> Result<Json<Value>, StatusCode> {
-    let workspace_id = scope_of(scope);
     match state.store.get(&id) {
         // Self-fence: another tenant's id is a 404, not a disclosure.
         Ok(Some(def)) if def.workspace_id == workspace_id => Ok(Json(view(&def))),
@@ -618,11 +644,11 @@ async fn get_subscription(
 
 async fn list_subscriptions(
     State(state): State<WebhookCrudState>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
 ) -> Result<Json<Value>, StatusCode> {
     let rows = state
         .store
-        .list(&scope_of(scope))
+        .list(&workspace_id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let data: Vec<Value> = rows.iter().map(view).collect();
     Ok(Json(json!({ "data": data, "has_more": false })))
@@ -631,11 +657,10 @@ async fn list_subscriptions(
 async fn delete_subscription(
     State(state): State<WebhookCrudState>,
     Path(id): Path<String>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
 ) -> StatusCode {
     // Only unsubscribe an endpoint this tenant owns; a cross-tenant or absent id is a
     // silent no-op (idempotent, and no ownership disclosure).
-    let workspace_id = scope_of(scope);
     for _ in 0..3 {
         let definition = match state.store.get(&id) {
             Ok(Some(definition)) if definition.workspace_id == workspace_id => definition,

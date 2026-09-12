@@ -548,9 +548,11 @@ impl ManagedState {
                         record.session.agent.model.inference_geo,
                     )
                 };
-                let owner_scope = self
-                    .owner_scope(session_id)
-                    .unwrap_or_else(|| super::DEFAULT_SCOPE.to_string());
+                // The owner index is written together with the session record
+                // above, so a cached session always has one. Treat a missing
+                // owner as an unknown session rather than admitting the event
+                // against a compiled-in tenant's Agent availability.
+                let owner_scope = self.owner_scope(session_id).ok_or(StateError::NotFound)?;
                 if self.application.agent_unavailable(&owner_scope, &agent_id) {
                     return Err(StateError::Run(RunError::bad_request(format!(
                         "agent_unavailable: agent `{agent_id}` cannot admit a new event"

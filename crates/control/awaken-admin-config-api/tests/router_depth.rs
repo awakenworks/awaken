@@ -74,11 +74,14 @@ async fn call(
         }
         None => Body::empty(),
     };
-    let resp = app
-        .clone()
-        .oneshot(builder.body(body).unwrap())
-        .await
-        .unwrap();
+    let mut request = builder.body(body).unwrap();
+    // The trusted ingress edge resolves the Workspace for every admin route;
+    // handlers read that stamp and refuse an unstamped request. These fixtures
+    // all address the single `ws` Workspace they author into.
+    request
+        .extensions_mut()
+        .insert(awaken_tenancy::WorkspaceScope("ws".into()));
+    let resp = app.clone().oneshot(request).await.unwrap();
     let status = resp.status();
     let content_type = resp
         .headers()

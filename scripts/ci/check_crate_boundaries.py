@@ -890,6 +890,271 @@ def selftest_mcp_tool_identity_ownership() -> None:
         assert check_mcp_tool_identity_is_owned(root, crates)  # P9
 
 
+# ---------------------------------------------------------------------------
+# Tenancy is a required ingress coordinate (ADR-0051).
+#
+# The recurring defect is one shape: the tenant handle arrives as an OPTIONAL
+# request-local value and each handler decides what `None` means. Nine handlers
+# independently decided it meant the seeded Workspace, so an unstamped request
+# silently became a write owned by a phantom tenant. Two gates make that shape
+# unrepresentable rather than merely absent:
+#
+#   * `check_tenancy_is_not_optional` — a handler may not accept
+#     `Option<Extension<WorkspaceScope | ResourceWorkspace | ExecutionWorkspace>>`.
+#     With a required extractor there is no `None` arm to give a meaning to.
+#   * `check_no_ambient_tenant_default` — no code may fall back to the default
+#     tenant. The anonymous single-machine composition gets its Workspace from
+#     exactly one composition-root layer, never from a handler.
+#
+# Both scan the whole repository. A file allow-list would only freeze today's
+# offenders; an exemption registry forces each survivor to state its router, why
+# that router provably carries no tenancy edge, and what absence does instead.
+TENANCY_HANDLE_TYPES = ("WorkspaceScope", "ResourceWorkspace", "ExecutionWorkspace")
+OPTIONAL_TENANCY_EXTRACTOR = re.compile(
+    r"Option<\s*(?:[A-Za-z_]\w*\s*::\s*)*Extension<\s*(?:[A-Za-z_]\w*\s*::\s*)*"
+    r"(" + "|".join(TENANCY_HANDLE_TYPES) + r")\s*>\s*>"
+)
+
+# key: "<path>::<handle type>" -> prose recording (a) the router that mounts the
+# handler, (b) why that router provably cannot carry a tenancy edge, and (c) what
+# the absent-scope behaviour is INSTEAD of a default.
+OPTIONAL_TENANCY_EXEMPTIONS: dict[str, str] = {
+    # Mounted by `awaken_config_service::config_router` — the same router whose
+    # WorkspaceScope IS required. `ExecutionWorkspace` is not the tenant handle:
+    # it is a second coordinate that only the reserved admin authoring scope
+    # needs, so the trusted edge legitimately supplies it for some requests and
+    # not others. Absence is already fail-closed, not defaulted:
+    # `publication_workspace` returns `None` and the handler answers 400
+    # "publication execution workspace is required" without touching the store.
+    "crates/control/awaken-config-service/src/config_routes.rs::ExecutionWorkspace": (
+        "secondary publication coordinate; absence answers 400, never a default"
+    ),
+}
+
+# The one place the anonymous single-machine composition may name a tenant it
+# did not receive from the edge. It stamps the *provisioned, persisted*
+# installation Workspace, not a compiled-in constant, and only when no edge
+# already resolved one.
+TENANCY_COMPOSITION_ROOT = Path("crates/server/awaken-coordinator/src/workspace_path.rs")
+
+AMBIENT_FALLBACK_CALL = re.compile(
+    r"\b(?:unwrap_or|unwrap_or_else|unwrap_or_default|map_or|map_or_else)\b"
+)
+NAMED_TENANT_DEFAULT = re.compile(r"\bDEFAULT_(?:SCOPE|WORKSPACE_ID)\b")
+LITERAL_TENANT_DEFAULT = re.compile(r'"default"')
+TENANCY_VOCABULARY = re.compile(
+    r"\b(?:WorkspaceScope|ResourceWorkspace|ExecutionWorkspace|workspace_id|owner_scope"
+    r"|scope_id)\b"
+)
+AMBIENT_DEFAULT_WINDOW = 240
+
+# key: "<path>::<enclosing fn>" -> prose. Same burden of proof as above.
+AMBIENT_TENANT_DEFAULT_EXEMPTIONS: dict[str, str] = {}
+
+
+def _is_rust_test_file(relative: Path) -> bool:
+    """Whole-file test modules the production projection cannot blank."""
+    name = relative.name
+    return (
+        name in {"tests.rs"}
+        or name.endswith(("_tests.rs", "_test.rs"))
+        or "tests" in relative.parts[:-1]
+        or "test_support" in name
+    )
+
+
+def _enclosing_rust_fn(source: str, offset: int) -> str:
+    """Name of the nearest `fn` declared before `offset`, for a stable key."""
+    last = "<file>"
+    for match in re.finditer(r"\bfn\s+([A-Za-z_]\w*)", source[:offset]):
+        last = match.group(1)
+    return last
+
+
+def check_tenancy_is_not_optional(
+    repo_root: Path = REPO_ROOT, crates: Path = CRATES
+) -> list[str]:
+    """No ingress handler may take the tenant handle as an `Option`."""
+    errors: list[str] = []
+    for path in sorted(crates.glob("*/*/src/**/*.rs")):
+        relative = path.relative_to(repo_root)
+        if _is_rust_test_file(relative):
+            continue
+        production = _crate_boundary_workspace.production_rust(
+            path.read_text(encoding="utf-8", errors="ignore")
+        )
+        for match in OPTIONAL_TENANCY_EXTRACTOR.finditer(production):
+            handle = match.group(1)
+            if f"{relative}::{handle}" in OPTIONAL_TENANCY_EXEMPTIONS:
+                continue
+            line = production[: match.start()].count("\n") + 1
+            errors.append(
+                f"{relative}:{line}: `{match.group(0)}` makes the tenant handle "
+                "optional, so this handler owns a `None` arm that will acquire a "
+                "silent default. Take the required extractor instead (see "
+                "`RequiredWorkspaceScope`), or register the site in "
+                "OPTIONAL_TENANCY_EXEMPTIONS with the router that mounts it, why "
+                "that router cannot carry a tenancy edge, and what absence does"
+            )
+    return errors
+
+
+def check_no_ambient_tenant_default(
+    repo_root: Path = REPO_ROOT, crates: Path = CRATES
+) -> list[str]:
+    """Only the composition root may name a tenant the edge did not resolve."""
+    errors: list[str] = []
+    for path in sorted(crates.glob("*/*/src/**/*.rs")):
+        relative = path.relative_to(repo_root)
+        if relative == TENANCY_COMPOSITION_ROOT or _is_rust_test_file(relative):
+            continue
+        production = _crate_boundary_workspace.production_rust(
+            path.read_text(encoding="utf-8", errors="ignore")
+        )
+        for match in AMBIENT_FALLBACK_CALL.finditer(production):
+            window = production[
+                max(0, match.start() - AMBIENT_DEFAULT_WINDOW) : match.end()
+                + AMBIENT_DEFAULT_WINDOW
+            ]
+            named = NAMED_TENANT_DEFAULT.search(window)
+            literal = LITERAL_TENANT_DEFAULT.search(window) and TENANCY_VOCABULARY.search(
+                window
+            )
+            if not (named or literal):
+                continue
+            owner = _enclosing_rust_fn(production, match.start())
+            if f"{relative}::{owner}" in AMBIENT_TENANT_DEFAULT_EXEMPTIONS:
+                continue
+            line = production[: match.start()].count("\n") + 1
+            errors.append(
+                f"{relative}:{line}: `{match.group(0)}` in `{owner}` falls back to "
+                "the default tenant. Ownership is resolved once, at the edge; a "
+                "handler that invents it misattributes the write. Fail closed, or "
+                "register the site in AMBIENT_TENANT_DEFAULT_EXEMPTIONS with the "
+                "router that mounts it, why that router cannot carry a tenancy "
+                "edge, and what absence does"
+            )
+    return errors
+
+
+def selftest_tenancy_is_required() -> None:
+    """Cause/effect: an optional handle rejects; required or registered admits."""
+    # C1 a handler takes `Option<Extension<WorkspaceScope>>`; C2 the path
+    # qualifier is spelled out (`Option<axum::Extension<awaken_tenancy::..>>`);
+    # C3 the handler takes the bare `Extension<..>`; C4 the site is registered in
+    # OPTIONAL_TENANCY_EXEMPTIONS; C5 the declaration is test-only; C6 the file
+    # is a whole-file test module. Effects: E1 reject; E2 admit.
+    #
+    # | Rule | optional | qualified | registered | test-only | test file | Effect |
+    # | T1   | T        | F         | F          | F         | F         | E1     |
+    # | T2   | T        | T         | F          | F         | F         | E1     |
+    # | T3   | F        | -         | F          | F         | F         | E2     |
+    # | T4   | T        | F         | T          | F         | F         | E2     |
+    # | T5   | T        | F         | F          | T         | F         | E2     |
+    # | T6   | T        | F         | F          | F         | T         | E2     |
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        crates = root / "crates"
+        source = crates / "server/example/src/routes.rs"
+        source.parent.mkdir(parents=True)
+
+        source.write_text(
+            "async fn handler(scope: Option<Extension<WorkspaceScope>>) {}\n",
+            encoding="utf-8",
+        )
+        assert check_tenancy_is_not_optional(root, crates)  # T1
+        source.write_text(
+            "async fn handler(s: Option<axum::Extension<awaken_tenancy::WorkspaceScope>>) {}\n",
+            encoding="utf-8",
+        )
+        assert check_tenancy_is_not_optional(root, crates)  # T2
+        source.write_text(
+            "async fn handler(RequiredWorkspaceScope(s): RequiredWorkspaceScope) {}\n",
+            encoding="utf-8",
+        )
+        assert not check_tenancy_is_not_optional(root, crates)  # T3
+        source.write_text(
+            "async fn handler(scope: Option<Extension<WorkspaceScope>>) {}\n",
+            encoding="utf-8",
+        )
+        key = f"{source.relative_to(root)}::WorkspaceScope"
+        OPTIONAL_TENANCY_EXEMPTIONS[key] = "selftest"
+        try:
+            assert not check_tenancy_is_not_optional(root, crates)  # T4
+        finally:
+            del OPTIONAL_TENANCY_EXEMPTIONS[key]
+        source.write_text(
+            "#[cfg(test)] async fn f(s: Option<Extension<WorkspaceScope>>) {}\n",
+            encoding="utf-8",
+        )
+        assert not check_tenancy_is_not_optional(root, crates)  # T5
+        source.unlink()
+        fixture = crates / "server/example/src/routes_tests.rs"
+        fixture.write_text(
+            "async fn handler(scope: Option<Extension<WorkspaceScope>>) {}\n",
+            encoding="utf-8",
+        )
+        assert not check_tenancy_is_not_optional(root, crates)  # T6
+
+
+def selftest_no_ambient_tenant_default() -> None:
+    """Cause/effect: a defaulted tenant rejects; the composition root admits."""
+    # C1 a fallback names DEFAULT_SCOPE/DEFAULT_WORKSPACE_ID; C2 it uses the bare
+    # literal "default" beside tenancy vocabulary; C3 the fallback is unrelated
+    # to tenancy; C4 the file is the composition root; C5 the site is registered.
+    # Effects: E1 reject; E2 admit.
+    #
+    # | Rule | named | literal+vocab | unrelated | root | registered | Effect |
+    # | A1   | T     | F             | F         | F    | F          | E1     |
+    # | A2   | F     | T             | F         | F    | F          | E1     |
+    # | A3   | F     | F             | T         | F    | F          | E2     |
+    # | A4   | T     | F             | F         | T    | F          | E2     |
+    # | A5   | T     | F             | F         | F    | T          | E2     |
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        crates = root / "crates"
+        source = crates / "server/example/src/handlers.rs"
+        source.parent.mkdir(parents=True)
+
+        source.write_text(
+            "fn owner(s: Option<String>) -> String {\n"
+            "    s.unwrap_or_else(|| DEFAULT_SCOPE.to_string())\n}\n",
+            encoding="utf-8",
+        )
+        assert check_no_ambient_tenant_default(root, crates)  # A1
+        source.write_text(
+            "fn owner(workspace_id: Option<&str>) -> &str {\n"
+            '    workspace_id.unwrap_or("default")\n}\n',
+            encoding="utf-8",
+        )
+        assert check_no_ambient_tenant_default(root, crates)  # A2
+        source.write_text(
+            "fn retries(limit: Option<u32>) -> u32 { limit.unwrap_or(3) }\n",
+            encoding="utf-8",
+        )
+        assert not check_no_ambient_tenant_default(root, crates)  # A3
+        source.unlink()
+        composition_root = root / TENANCY_COMPOSITION_ROOT
+        composition_root.parent.mkdir(parents=True)
+        composition_root.write_text(
+            "fn stamp(s: Option<String>) -> String {\n"
+            "    s.unwrap_or_else(|| DEFAULT_WORKSPACE_ID.to_string())\n}\n",
+            encoding="utf-8",
+        )
+        assert not check_no_ambient_tenant_default(root, crates)  # A4
+        source.write_text(
+            "fn owner(s: Option<String>) -> String {\n"
+            "    s.unwrap_or_else(|| DEFAULT_SCOPE.to_string())\n}\n",
+            encoding="utf-8",
+        )
+        key = f"{source.relative_to(root)}::owner"
+        AMBIENT_TENANT_DEFAULT_EXEMPTIONS[key] = "selftest"
+        try:
+            assert not check_no_ambient_tenant_default(root, crates)  # A5
+        finally:
+            del AMBIENT_TENANT_DEFAULT_EXEMPTIONS[key]
+
+
 def check_cloud_placement_boundary(
     repo_root: Path = REPO_ROOT, crates: Path = CRATES
 ) -> list[str]:
@@ -970,6 +1235,8 @@ def main() -> int:
     _provider_env_fitness.selftest()
     selftest_builtin_tool_ownership()
     selftest_no_direct_transport_dependency()
+    selftest_tenancy_is_required()
+    selftest_no_ambient_tenant_default()
     errors = (
         check_no_direct_transport_dependency()
         +
@@ -981,6 +1248,8 @@ def main() -> int:
         + check_cloud_placement_boundary()
         + check_generation_witnesses_are_complete()
         + check_mcp_tool_identity_is_owned()
+        + check_tenancy_is_not_optional()
+        + check_no_ambient_tenant_default()
         + _resource_plane_fitness.check_all(REPO_ROOT, CRATES)
         + _runtime_secret_boundary.check_all(REPO_ROOT, CRATES)
         + _provider_env_fitness.check_all(REPO_ROOT, CRATES)

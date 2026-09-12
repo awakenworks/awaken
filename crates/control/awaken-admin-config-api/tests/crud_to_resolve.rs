@@ -44,7 +44,11 @@ fn harness() -> Harness {
         model_discovery: None,
         brokered_catalog: None,
         availability: Default::default(),
-    });
+    })
+    // Mounted the way a deployment mounts it: the trusted edge resolves the
+    // Workspace. Admin handlers are fail-closed on an absent stamp, and a
+    // body/query `workspace_id` is only a claim the handler fences against it.
+    .layer(axum::Extension(awaken_tenancy::WorkspaceScope("ws".into())));
     Harness {
         app,
         catalog,

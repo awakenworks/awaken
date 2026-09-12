@@ -4,11 +4,13 @@
 //! only one canonical network fact. No coarse boolean becomes a second policy
 //! authority.
 
+mod support;
+
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_protocol_managed::{
-    ManagedState, environment_authoring_router, environment_work_router, router,
+    ManagedState, environment_authoring_router, environment_work_router,
 };
 use awaken_session_contract::{
     OutcomeDrive, RunError, SessionRuntime, StepOutcome, ToolPermissionDecision,
@@ -146,9 +148,13 @@ async fn session_carries_the_exact_frozen_environment_network() {
         })
         .with_environments(environment_execution.clone()),
     );
-    let app = router(managed)
-        .merge(environment_authoring_router(environment_authoring))
-        .merge(environment_work_router(environment_execution));
+    // Mounted the way the composition root does: one trusted edge stamp in
+    // front of every merged surface, never a per-handler default.
+    let app = support::edge_stamped(
+        awaken_protocol_managed::router(managed)
+            .merge(environment_authoring_router(environment_authoring))
+            .merge(environment_work_router(environment_execution)),
+    );
 
     // A limited-networking environment.
     let (_, limited) = call(
@@ -226,9 +232,13 @@ async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
         })
         .with_environments(environment_execution.clone()),
     );
-    let app = router(managed)
-        .merge(environment_authoring_router(environment_authoring))
-        .merge(environment_work_router(environment_execution));
+    // Mounted the way the composition root does: one trusted edge stamp in
+    // front of every merged surface, never a per-handler default.
+    let app = support::edge_stamped(
+        awaken_protocol_managed::router(managed)
+            .merge(environment_authoring_router(environment_authoring))
+            .merge(environment_work_router(environment_execution)),
+    );
 
     async fn environment(app: &Router, networking: Value) -> String {
         let (status, value) = call(

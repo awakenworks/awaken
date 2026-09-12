@@ -193,7 +193,7 @@ mod tests {
                     "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
                 }))
                 .unwrap(),
-                None,
+                awaken_tenancy::DEFAULT_WORKSPACE_ID,
             )
             .await
             .expect("L1 create Session");

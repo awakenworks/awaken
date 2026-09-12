@@ -147,7 +147,10 @@ async fn cold_projection_uses_the_session_pinned_agent_revision() {
         "agent":"coordinator", "environment_id":"env_local"
     }))
     .unwrap();
-    let created = state.create_session(request, None).await.unwrap();
+    let created = state
+        .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
+        .await
+        .unwrap();
     assert_eq!(
         refresh.calls.load(std::sync::atomic::Ordering::SeqCst),
         2,
@@ -190,7 +193,13 @@ async fn cold_projection_uses_the_session_pinned_agent_revision() {
         "agent":"coordinator", "environment_id":"env_local"
     }))
     .unwrap();
-    assert!(state.create_session(rejected, None).await.is_err(), "D4");
+    assert!(
+        state
+            .create_session(rejected, awaken_tenancy::DEFAULT_WORKSPACE_ID)
+            .await
+            .is_err(),
+        "D4"
+    );
     assert_eq!(
         state.session_seq.load(std::sync::atomic::Ordering::SeqCst),
         sequence,
@@ -1264,7 +1273,7 @@ async fn session_id_mint_namespaces_restart_away_from_repository_truth() {
     create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, sample_persisted("sesn_0")).await;
     let restarted = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo);
     let created = restarted
-        .create_session(bare_create_params(), None)
+        .create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
         .expect("mint after restart");
     assert_ne!(created.id, "sesn_0");
@@ -1285,8 +1294,8 @@ async fn active_active_session_id_mint_is_collision_free() {
     let left = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
     let right = ManagedState::new(EndSessionRecorder::default()).with_session_repo(repo.clone());
     let (left_result, right_result) = tokio::join!(
-        left.create_session(bare_create_params(), None),
-        right.create_session(bare_create_params(), None),
+        left.create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID),
+        right.create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID),
     );
     let left_session = left_result.expect("S1 left Session");
     let right_session = right_result.expect("S1 right Session");
@@ -1295,7 +1304,7 @@ async fn active_active_session_id_mint_is_collision_free() {
     assert!(repo.get(&right_session.id).await.is_ok(), "S1");
 
     let next = left
-        .create_session(bare_create_params(), None)
+        .create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
         .expect("S2 next Session");
     assert_ne!(next.id, left_session.id, "S2");
@@ -1619,7 +1628,7 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
             .with_session_repo(repo.clone())
             .with_resource_registry(catalog.clone());
         let id = state
-            .create_session(bare_create_params(), None)
+            .create_session(bare_create_params(), awaken_tenancy::DEFAULT_WORKSPACE_ID)
             .await
             .expect("create")
             .id;

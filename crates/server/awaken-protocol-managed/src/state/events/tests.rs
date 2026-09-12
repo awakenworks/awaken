@@ -38,7 +38,7 @@ async fn indeterminate_root_projects_one_standard_error_across_warm_and_cold_rea
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -121,7 +121,7 @@ async fn shared_history_page_preserves_filtered_cursor_contract_with_large_paylo
                 "agent": "coder", "environment_id": "env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -382,7 +382,7 @@ async fn interrupt_freezes_a_committed_child_before_the_managed_projection_catch
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .expect("IC1 Session");
@@ -549,7 +549,7 @@ async fn pending_tail_does_not_hide_processed_interrupt_history() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -813,7 +813,7 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
                 }
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -1507,7 +1507,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .expect("IR1 Session");
@@ -1629,7 +1629,7 @@ async fn exact_event_batch_replay_precedes_cold_projection_recovery() {
                     "agent":"coder", "environment_id":"env_local"
                 }))
                 .unwrap(),
-                None,
+                awaken_tenancy::DEFAULT_WORKSPACE_ID,
             )
             .await
             .unwrap();
@@ -2168,7 +2168,7 @@ async fn pure_interrupt_bypasses_only_damaged_reply_authority() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .expect("DI fixture Session");
@@ -2191,7 +2191,12 @@ async fn pure_interrupt_bypasses_only_damaged_reply_authority() {
         ManagedState::pending_from_recovery_snapshot(&no_target).is_err(),
         "DI0/E0 no authority makes committed projection unhealthy"
     );
-    let app = crate::router(state.clone());
+    // The ownership guard is fail-closed: an unstamped request is refused
+    // before the handler, so this fixture supplies the edge stamp the
+    // composition root would have installed.
+    let app = crate::router(state.clone()).layer(axum::Extension(awaken_tenancy::WorkspaceScope(
+        awaken_tenancy::DEFAULT_WORKSPACE_ID.to_string(),
+    )));
     let response = app
         .clone()
         .oneshot(
@@ -2392,7 +2397,7 @@ async fn pending_without_transcript_uses_awaiting_lifecycle_anchor() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -2517,7 +2522,7 @@ async fn root_projection_and_reply_admission_share_one_recovery_prefix() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -2969,7 +2974,7 @@ async fn pending_child_reply_fixture(
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -3067,7 +3072,7 @@ async fn client_result_index_is_occurrence_exact_when_runtime_call_ids_repeat() 
                 "agent": "coder", "environment_id": "env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -3825,7 +3830,7 @@ async fn aggregate_running_edge_is_decided_from_the_locked_event_tail() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -3920,7 +3925,7 @@ async fn running_dto_and_aggregate_event_publish_as_one_candidate() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -4021,7 +4026,7 @@ async fn concurrent_stable_projection_readers_are_all_no_ops() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -4074,7 +4079,7 @@ async fn projection_read_budget_handles_commit_bursts_and_bounds_nonconvergence(
                     "agent":"coder", "environment_id":"env_local"
                 }))
                 .unwrap(),
-                None,
+                awaken_tenancy::DEFAULT_WORKSPACE_ID,
             )
             .await
             .unwrap();
@@ -4221,7 +4226,7 @@ async fn read_only_observation_serves_the_last_complete_prefix_during_continuous
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -4293,7 +4298,7 @@ async fn stale_session_root_cannot_roll_back_the_managed_cache() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -4415,7 +4420,7 @@ async fn failed_committed_projection_does_not_poison_warm_recovery() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -4594,7 +4599,7 @@ async fn root_terminal_defers_idle_until_the_session_activity_cas_settles() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -4684,7 +4689,7 @@ async fn newer_same_run_terminal_replaces_deferred_scheduled_awaiting_reason() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -4854,7 +4859,7 @@ async fn recovered_terminal_brackets_output_in_warm_and_cold_projections() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -5039,7 +5044,7 @@ async fn terminal_only_recovery_brackets_primary_output_with_one_aggregate_runni
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -5137,7 +5142,7 @@ async fn first_interval_lineage_preserves_the_issued_legacy_lifecycle_prefix() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -5300,7 +5305,7 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
                         "agent":"coder", "environment_id":"env_local"
                     }))
                     .unwrap(),
-                    None,
+                    awaken_tenancy::DEFAULT_WORKSPACE_ID,
                 )
                 .await
                 .unwrap();
@@ -5625,7 +5630,7 @@ async fn late_compaction_uses_its_state_commit_and_preserves_an_issued_prefix() 
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -5820,7 +5825,7 @@ async fn late_outcome_terminal_uses_its_state_commit_and_preserves_an_issued_pre
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -5980,7 +5985,7 @@ async fn running_user_input_exposes_committed_output_before_completion_on_warm_a
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -6133,7 +6138,7 @@ async fn local_session_update_waits_for_its_accepted_input_predecessor() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -6265,7 +6270,7 @@ async fn primary_reschedule_projects_one_complete_sequence_warm_and_after_restar
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -6417,7 +6422,7 @@ async fn ordinary_root_failure_keeps_its_event_id_and_cursor_across_restart() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -6538,7 +6543,7 @@ async fn child_reschedule_projects_running_rescheduled_running_idle_live_warm_an
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .expect("R1 Session");
@@ -6762,7 +6767,7 @@ async fn shared_budget_child_boundaries_project_with_terminal_priority_live_warm
                 }
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .expect("B1 Session");
@@ -7051,7 +7056,7 @@ async fn ordinary_child_failure_is_error_then_terminated_live_warm_and_cold() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .expect("F1 Session");
@@ -7303,7 +7308,7 @@ async fn child_pending_tool_projects_and_replies_through_the_parent_partition() 
                     "agent":"coder", "environment_id":"env_local"
                 }))
                 .unwrap(),
-                None,
+                awaken_tenancy::DEFAULT_WORKSPACE_ID,
             )
             .await
             .unwrap();
@@ -7616,7 +7621,7 @@ async fn completed_tool_only_child_revisits_withheld_occurrences_before_results(
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -7920,7 +7925,7 @@ async fn batch_local_tool_ids_are_thread_qualified_stable_and_reply_reversible()
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -8316,7 +8321,7 @@ async fn accepted_agent_cross_post_is_anchored_to_the_late_tool_result() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -8549,7 +8554,7 @@ async fn child_message_projection_is_independent_of_refresh_batch_grouping() {
                 }
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -8949,7 +8954,7 @@ async fn child_assistant_identity_rebuilds_from_committed_coordinates() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -9065,7 +9070,7 @@ async fn root_assistant_identity_is_equal_warm_cold_and_active_active() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -9262,7 +9267,7 @@ async fn advisor_link_projects_the_closed_union_and_self_terminal_lifecycle_warm
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -9607,7 +9612,7 @@ async fn advisor_failed_or_cancelled_terminal_never_delivers_partial_advice() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -9826,7 +9831,7 @@ async fn lifecycle_scope_uses_the_root_fence_and_later_relationship_snapshot() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -10016,7 +10021,7 @@ async fn terminal_read_cannot_overtake_the_child_transcript_snapshot() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -10294,7 +10299,7 @@ async fn cold_historical_awaiting_never_fabricates_empty_requires_action() {
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -10432,7 +10437,7 @@ async fn synthetic_pending_tool_uses_the_awaiting_commit_as_its_projection_ancho
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -10526,7 +10531,7 @@ async fn closed_permission_wait_retains_aliased_call_on_warm_and_cold_reads() {
                             "agent":"coder", "environment_id":"env_local"
                         }))
                         .unwrap(),
-                        None,
+                        awaken_tenancy::DEFAULT_WORKSPACE_ID,
                     )
                     .await
                     .unwrap();
@@ -10697,7 +10702,7 @@ async fn closed_remote_wait_projects_its_answerable_event_before_terminal_histor
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -10853,7 +10858,10 @@ async fn committed_lifecycle_closes_cross_protocol_managed_projection_once() {
         "agent":"coder", "environment_id":"env_local"
     }))
     .unwrap();
-    let session = state.create_session(request, None).await.unwrap();
+    let session = state
+        .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
+        .await
+        .unwrap();
     let thread = session.id;
     let first = Message::text(MessageId("cross-user".into()), Role::User, "build");
     runtime.push_committed_message(10, first);
@@ -11149,7 +11157,7 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -11443,7 +11451,7 @@ async fn committed_tool_occurrences_project_only_after_exact_disposition_evidenc
                 "agent":"coder", "environment_id":"env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -11558,7 +11566,7 @@ async fn model_request_spans_are_paired_and_keep_required_zero_usage_on_error() 
                 "environment_id": "env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -12133,7 +12141,7 @@ async fn recovered_running_interval_refresh_preserves_unique_events_and_terminat
                             "agent":"coder", "environment_id":"env_local"
                         }))
                         .unwrap(),
-                        None,
+                        awaken_tenancy::DEFAULT_WORKSPACE_ID,
                     )
                     .await
                     .unwrap();

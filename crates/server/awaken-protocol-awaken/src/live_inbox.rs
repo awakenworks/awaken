@@ -11,7 +11,7 @@ use awaken_tenancy::WorkspaceScope;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, put};
-use axum::{Extension, Json, Router};
+use axum::{Json, Router};
 
 #[derive(serde::Serialize)]
 struct WireLiveInboxEntry {
@@ -68,16 +68,33 @@ fn extension_error(error: LiveInboxApplicationError) -> ExtensionRejection {
     )
 }
 
-fn required_workspace_scope(
-    scope: Option<Extension<WorkspaceScope>>,
-) -> Result<String, ExtensionRejection> {
-    scope
-        .as_ref()
-        .and_then(|Extension(scope)| scope.non_empty())
-        .map(str::to_owned)
-        // Missing/empty and foreign scopes are deliberately indistinguishable
-        // from an unknown Session at this extension boundary.
-        .ok_or_else(|| extension_error(LiveInboxApplicationError::NotFound))
+/// The Workspace the trusted ingress edge already selected. Refusing absence in
+/// the extractor leaves the handlers below with no absent case at all — missing,
+/// empty and foreign scopes stay deliberately indistinguishable from an unknown
+/// Session at this extension boundary.
+struct RequiredWorkspaceScope(String);
+
+impl<S> axum::extract::FromRequestParts<S> for RequiredWorkspaceScope
+where
+    S: Send + Sync,
+{
+    type Rejection = axum::response::Response;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        match parts
+            .extensions
+            .get::<WorkspaceScope>()
+            .and_then(WorkspaceScope::non_empty)
+        {
+            Some(scope) => Ok(Self(scope.to_owned())),
+            None => Err(axum::response::IntoResponse::into_response(
+                extension_error(LiveInboxApplicationError::NotFound),
+            )),
+        }
+    }
 }
 
 fn project_snapshot(snapshot: LiveInboxSnapshot) -> WireLiveInboxSnapshot {
@@ -129,10 +146,9 @@ struct LiveInboxQueuedResponse {
 
 async fn live_inbox_snapshot(
     State(state): State<Arc<dyn LiveInboxApplication>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> Result<Json<WireLiveInboxSnapshot>, ExtensionRejection> {
-    let workspace_id = required_workspace_scope(scope)?;
     state
         .snapshot(&workspace_id, &id)
         .await
@@ -142,11 +158,10 @@ async fn live_inbox_snapshot(
 
 async fn live_inbox_queue(
     State(state): State<Arc<dyn LiveInboxApplication>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
     Path(id): Path<String>,
     Json(body): Json<LiveInboxMessageBody>,
 ) -> Result<Json<LiveInboxQueuedResponse>, ExtensionRejection> {
-    let workspace_id = required_workspace_scope(scope)?;
     state
         .queue(&workspace_id, &id, body.content)
         .await
@@ -156,10 +171,9 @@ async fn live_inbox_queue(
 
 async fn live_inbox_remove(
     State(state): State<Arc<dyn LiveInboxApplication>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
     Path((id, msg)): Path<(String, u64)>,
 ) -> Result<StatusCode, ExtensionRejection> {
-    let workspace_id = required_workspace_scope(scope)?;
     state
         .remove(&workspace_id, &id, msg)
         .await
@@ -169,11 +183,10 @@ async fn live_inbox_remove(
 
 async fn live_inbox_replace(
     State(state): State<Arc<dyn LiveInboxApplication>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
     Path((id, msg)): Path<(String, u64)>,
     Json(body): Json<LiveInboxMessageBody>,
 ) -> Result<StatusCode, ExtensionRejection> {
-    let workspace_id = required_workspace_scope(scope)?;
     state
         .replace(&workspace_id, &id, msg, body.content)
         .await
@@ -183,11 +196,10 @@ async fn live_inbox_replace(
 
 async fn live_inbox_reorder(
     State(state): State<Arc<dyn LiveInboxApplication>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
     Path(id): Path<String>,
     Json(body): Json<LiveInboxOrderBody>,
 ) -> Result<StatusCode, ExtensionRejection> {
-    let workspace_id = required_workspace_scope(scope)?;
     state
         .reorder(&workspace_id, &id, body.order)
         .await
@@ -223,27 +235,41 @@ mod tests {
         );
     }
 
-    #[test]
-    fn workspace_scope_decision_table_fails_closed() {
+    #[tokio::test]
+    async fn workspace_scope_decision_table_fails_closed() {
         // FMECA C/E graph and decision table:
         // C1 edge scope missing; C2 edge scope empty; C3 edge scope valid.
         // E1 no application call and 404; E2 exact scope reaches the application.
         // R1 !C1,!C2,C3 -> E2; R2 C1 -> E1; R3 C2 -> E1. This prevents an
         // unscoped route mount from exposing another Workspace's live attempt.
         assert_eq!(
-            required_workspace_scope(None).unwrap_err().0,
+            extract_scope(None).await.unwrap_err(),
             StatusCode::NOT_FOUND
         );
         assert_eq!(
-            required_workspace_scope(Some(Extension(WorkspaceScope(" ".into()))))
-                .unwrap_err()
-                .0,
+            extract_scope(Some(" ")).await.unwrap_err(),
             StatusCode::NOT_FOUND
         );
         assert_eq!(
-            required_workspace_scope(Some(Extension(WorkspaceScope("workspace-a".into()))))
-                .unwrap(),
+            extract_scope(Some("workspace-a")).await.unwrap(),
             "workspace-a"
         );
+    }
+
+    /// Exercise the extractor the way axum does, so absence is tested where it
+    /// is actually decided rather than through a deleted helper function.
+    async fn extract_scope(stamp: Option<&str>) -> Result<String, StatusCode> {
+        use axum::extract::FromRequestParts;
+        let mut parts = axum::http::Request::new(()).into_parts().0;
+        if let Some(stamp) = stamp {
+            parts.extensions.insert(WorkspaceScope(stamp.to_string()));
+        }
+        RequiredWorkspaceScope::from_request_parts(&mut parts, &())
+            .await
+            .map(|RequiredWorkspaceScope(scope)| scope)
+            .map_err(|rejection| {
+                use axum::response::IntoResponse;
+                rejection.into_response().status()
+            })
     }
 }

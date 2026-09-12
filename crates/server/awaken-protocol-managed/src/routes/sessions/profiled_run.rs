@@ -1,8 +1,8 @@
 //! Private profiled-Session Run lowering over canonical Session admission.
 
+use crate::common::scope::RequiredWorkspaceScope;
 use std::sync::Arc;
 
-use awaken_tenancy::WorkspaceScope;
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
@@ -33,7 +33,7 @@ fn exact_receipt(
 pub async fn submit_profiled_session_run(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-    workspace: Option<axum::Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
     body: Result<Json<awaken_protocol_awaken::ProfiledSessionRunSubmit>, JsonRejection>,
 ) -> Result<Json<awaken_protocol_awaken::ProfiledSessionRunReceipt>, WireErr> {
     let Json(body) = body.map_err(|rejection| {
@@ -41,13 +41,6 @@ pub async fn submit_profiled_session_run(
             crate::routes::extractors::managed_json_message(rejection.body_text()),
         )))
     })?;
-    let owner_scope = workspace
-        .and_then(|scope| scope.0.non_empty().map(str::to_owned))
-        .ok_or_else(|| {
-            error_response(StateError::Run(RunError::bad_request(
-                "profiled Session Run submission requires a Workspace scope",
-            )))
-        })?;
     let application = state.session_application();
     let projection = application
         .read_session_projection(&id, Some(&owner_scope))

@@ -9,7 +9,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, post};
-use axum::{Extension, Json, Router};
+use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::application_access_store::{
@@ -74,32 +74,55 @@ pub enum ApplicationAccessIssuanceError {
 struct ApplicationTokenState {
     store: Arc<ApplicationAccessStore>,
     sessions: Arc<dyn ManagedSessionRepository>,
-    default_workspace: String,
 }
 
+/// The application-token surface. It carries no Workspace of its own: the
+/// mount already installs `with_local_workspace_scope`, the one place the
+/// anonymous single-machine composition resolves its Workspace, so these
+/// handlers read a stamped scope and refuse an unstamped request.
 pub fn router(
     store: Arc<ApplicationAccessStore>,
     sessions: Arc<dyn ManagedSessionRepository>,
-    default_workspace: String,
 ) -> Router {
     Router::new()
         .route("/v1/application-access-tokens", post(create))
         .route("/v1/application-access-tokens/{id}", delete(revoke))
-        .with_state(ApplicationTokenState {
-            store,
-            sessions,
-            default_workspace,
-        })
+        .with_state(ApplicationTokenState { store, sessions })
+}
+
+/// The Workspace the trusted edge (IAM, workspace path, or the single
+/// composition-root stamp) already resolved.
+struct RequiredWorkspaceScope(String);
+
+impl<S> axum::extract::FromRequestParts<S> for RequiredWorkspaceScope
+where
+    S: Send + Sync,
+{
+    type Rejection = Response;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        match parts
+            .extensions
+            .get::<awaken_tenancy::WorkspaceScope>()
+            .and_then(awaken_tenancy::WorkspaceScope::non_empty)
+        {
+            Some(workspace) => Ok(Self(workspace.to_owned())),
+            None => Err(problem(
+                StatusCode::NOT_FOUND,
+                "no Workspace was resolved for this request",
+            )),
+        }
+    }
 }
 
 async fn create(
     State(state): State<ApplicationTokenState>,
-    workspace: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
     Json(request): Json<CreateApplicationToken>,
 ) -> Response {
-    let workspace_id = workspace
-        .map(|Extension(scope)| scope.0)
-        .unwrap_or(state.default_workspace);
     match issue_application_access(
         state.store.as_ref(),
         state.sessions.as_ref(),
@@ -231,12 +254,9 @@ fn issuance_problem(error: ApplicationAccessIssuanceError) -> Response {
 
 async fn revoke(
     State(state): State<ApplicationTokenState>,
-    workspace: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
     Path(id): Path<String>,
 ) -> Response {
-    let workspace_id = workspace
-        .map(|Extension(scope)| scope.0)
-        .unwrap_or(state.default_workspace);
     match state
         .store
         .revoke(&workspace_id, &id, now_unix_millis())
@@ -320,6 +340,24 @@ const fn default_ttl() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    /// Mount the token router the way the Coordinator does: behind the one
+    /// `with_local_workspace_scope` stamp. Handlers refuse an unstamped
+    /// request, so a bare router is not a representative fixture.
+    fn stamped(router: Router, workspace: impl Into<String>) -> Router {
+        let workspace = workspace.into();
+        router.layer(axum::middleware::from_fn(
+            move |mut request: axum::extract::Request, next: axum::middleware::Next| {
+                let workspace = workspace.clone();
+                async move {
+                    request
+                        .extensions_mut()
+                        .insert(awaken_tenancy::WorkspaceScope(workspace));
+                    next.run(request).await
+                }
+            },
+        ))
+    }
+
     use std::collections::BTreeMap;
 
     use async_trait::async_trait;
@@ -771,7 +809,7 @@ mod tests {
         sessions: Arc<dyn ManagedSessionRepository>,
         body: Value,
     ) -> axum::response::Response {
-        router(store, sessions, "workspace-a".to_string())
+        stamped(router(store, sessions), "workspace-a".to_string())
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -1092,7 +1130,7 @@ mod tests {
         let body: IssuedApplicationToken =
             serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
                 .unwrap();
-        let foreign = router(store.clone(), repository.clone(), "workspace-b".into());
+        let foreign = stamped(router(store.clone(), repository.clone()), "workspace-b");
         let response = foreign
             .oneshot(
                 Request::builder()
@@ -1106,7 +1144,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NO_CONTENT, "R3");
         assert!(store.authenticate(&body.access_token).await.is_ok(), "R3");
 
-        let app = router(store.clone(), repository, "workspace-a".into());
+        let app = stamped(router(store.clone(), repository), "workspace-a");
         for id in [body.id, format!("aat_{}", uuid::Uuid::now_v7())] {
             for attempt in 0..2 {
                 let response = app
@@ -1170,7 +1208,7 @@ mod tests {
                 expected_create = Some(create_body);
             }
 
-            let revoke = router(store, repository.clone(), "workspace-a".into())
+            let revoke = stamped(router(store, repository.clone()), "workspace-a")
                 .oneshot(
                     Request::builder()
                         .method("DELETE")
@@ -1197,7 +1235,7 @@ mod tests {
             }
         }
 
-        let malformed = router(application_access(), repository, "workspace-a".into())
+        let malformed = stamped(router(application_access(), repository), "workspace-a")
             .oneshot(
                 Request::builder()
                     .method("DELETE")

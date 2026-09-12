@@ -15,7 +15,7 @@ use awaken_agent_contract::{
     RunLifecycleCursor, RunLifecycleEvent, RunLifecycleEventKind, RunLifecyclePage,
     encode_run_lifecycle_cursor,
 };
-use awaken_protocol_managed::{ManagedState, managed_session_id_from_idempotency, router};
+use awaken_protocol_managed::{ManagedState, managed_session_id_from_idempotency};
 use awaken_session_contract::{
     AdmitSessionRun, AgentCapabilities, BuiltinTool, CommittedOutcomeProjection, CustomTool,
     ManagedSessionRepository, OutcomeDrive, OutcomeIteration, OutcomeReport, Pending, RunError,
@@ -28,6 +28,13 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
+
+/// The Managed router as a real deployment mounts it — behind the trusted edge
+/// stamp. Tests that need the unstamped surface call
+/// [`awaken_protocol_managed::router`] directly.
+fn router(state: Arc<ManagedState>) -> Router {
+    support::edge_stamped(awaken_protocol_managed::router(state))
+}
 
 async fn json_call(
     app: &Router,
@@ -158,11 +165,15 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
     // mounted: no fields or paths are added to the standard Anthropic surface.
     let runtime = EchoFake::default();
     let state = Arc::new(ManagedState::new(runtime.clone()));
-    let app = router(state.clone()).merge(
-        awaken_protocol_awaken::session_event_admission_router(
-            awaken_protocol_managed::close_event_admission,
-        )
-        .with_state(state.clone()),
+    // The native admission route is merged before the edge stamp so BOTH
+    // surfaces sit behind the one composition-root tenancy layer.
+    let app = support::edge_stamped(
+        awaken_protocol_managed::router(state.clone()).merge(
+            awaken_protocol_awaken::session_event_admission_router(
+                awaken_protocol_managed::close_event_admission,
+            )
+            .with_state(state.clone()),
+        ),
     );
     let (_, created) =
         post_session_with_idempotency(&app, Some("admission-http"), "Admission").await;
@@ -272,11 +283,13 @@ async fn native_event_admission_close_preserves_standard_events_and_owner_isolat
         Err(awaken_session_contract::SessionRepositoryError::NotFound)
     ));
     let restarted = Arc::new(ManagedState::new(EchoFake::default()).with_session_repo(repo));
-    let cold = router(restarted.clone()).merge(
-        awaken_protocol_awaken::session_event_admission_router(
-            awaken_protocol_managed::close_event_admission,
-        )
-        .with_state(restarted),
+    let cold = support::edge_stamped(
+        awaken_protocol_managed::router(restarted.clone()).merge(
+            awaken_protocol_awaken::session_event_admission_router(
+                awaken_protocol_managed::close_event_admission,
+            )
+            .with_state(restarted),
+        ),
     );
     for (key, expected) in [("closed-key", receipt), ("accepted-key", resolved)] {
         let (status, retained) = post_events_with_idempotency(&cold, &close, key, &body).await;
@@ -418,11 +431,11 @@ async fn session_create_idempotency_replays_one_canonical_session() {
         serde_json::from_value(session_request(serde_json::json!({ "agent": "coder" }))).unwrap()
     };
     let owner_a = state
-        .create_session_idempotent(request(), Some("owner-a".into()), "shared-key")
+        .create_session_idempotent(request(), "owner-a", "shared-key")
         .await
         .unwrap();
     let owner_b = state
-        .create_session_idempotent(request(), Some("owner-b".into()), "shared-key")
+        .create_session_idempotent(request(), "owner-b", "shared-key")
         .await
         .unwrap();
     assert_eq!(

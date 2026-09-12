@@ -555,6 +555,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+ "tower",
 ]
 
 [[package]]

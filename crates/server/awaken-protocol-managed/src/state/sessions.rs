@@ -313,20 +313,22 @@ impl ManagedState {
         req: SessionCreateParams,
         // The edge-resolved owning workspace (aspect): handed to the lifecycle
         // sink for webhook/usage stamping, but NEVER stored on the core session.
-        workspace_id: Option<String>,
+        // It is required — an unstamped request is refused at the edge extractor,
+        // so this owner is never invented here.
+        owner_scope: &str,
     ) -> Result<Session, StateError> {
-        self.create_session_with_identity(req, workspace_id, None, None)
+        self.create_session_with_identity(req, owner_scope, None, None)
             .await
     }
 
     pub(super) async fn create_session_with_identity(
         &self,
         req: SessionCreateParams,
-        workspace_id: Option<String>,
+        owner_scope: &str,
         explicit_id: Option<String>,
         idempotency: Option<awaken_session_contract::IdempotencyRecord>,
     ) -> Result<Session, StateError> {
-        self.create_session_with_identity_from(req, workspace_id, explicit_id, idempotency, None)
+        self.create_session_with_identity_from(req, owner_scope, explicit_id, idempotency, None)
             .await
     }
 
@@ -336,7 +338,7 @@ impl ManagedState {
     pub(super) async fn create_session_with_identity_from(
         &self,
         mut req: SessionCreateParams,
-        workspace_id: Option<String>,
+        owner_scope: &str,
         explicit_id: Option<String>,
         idempotency: Option<awaken_session_contract::IdempotencyRecord>,
         deployment_initial_events: Option<Vec<InboundEvent>>,
@@ -360,9 +362,7 @@ impl ManagedState {
                 .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
             req.initial_events.clone()
         };
-        let owner_scope = workspace_id
-            .clone()
-            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
+        let owner_scope = owner_scope.to_owned();
         // Resource-path admission is the first domain operation after the edge
         // authorization check. Parse and validate the complete explicit
         // Repository set before refreshing catalogs or invoking model,
@@ -1296,9 +1296,11 @@ impl ManagedState {
     }
 
     /// Sessions owned by `scope` — the tenancy-fenced list (ADR-0051), so a
-    /// workspace's `GET /v1/sessions` never sees another's. A session with no
-    /// recorded owner belongs to the seeded default scope. Mirrors the per-id
-    /// ownership guard, which the collection route does not pass through.
+    /// workspace's `GET /v1/sessions` never sees another's. Creation records an
+    /// owner for every session, so a cached session with no owner index entry is
+    /// an internal inconsistency and belongs to no scope's list rather than to
+    /// the seeded one. Mirrors the per-id ownership guard, which the collection
+    /// route does not pass through.
     pub fn list_sessions_scoped(&self, scope: &str) -> Vec<Session> {
         // Snapshot owners first (lock, clone, drop) so we never hold two locks at
         // once — create_session takes `owners` on its own path.
@@ -1309,7 +1311,7 @@ impl ManagedState {
             .filter(|r| {
                 owners
                     .get(&r.session.id)
-                    .map_or(scope == DEFAULT_SCOPE, |owner| owner == scope)
+                    .is_some_and(|owner| owner == scope)
             })
             .map(SessionRecord::session_projection)
             .collect();

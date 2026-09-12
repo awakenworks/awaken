@@ -44,12 +44,16 @@ use serde_json::{Value, json};
 use support::ScheduledConflictRepository;
 use tower::ServiceExt;
 
+/// Both surfaces behind the one trusted edge stamp the composition root
+/// installs; handlers are fail-closed on an absent Workspace.
 fn router(state: std::sync::Arc<ManagedState>) -> Router {
-    managed_router(state.clone()).merge(
-        awaken_protocol_awaken::session_resource_manifest_router(
-            awaken_protocol_managed::replace_resource_manifest,
-        )
-        .with_state(state),
+    support::edge_stamped(
+        managed_router(state.clone()).merge(
+            awaken_protocol_awaken::session_resource_manifest_router(
+                awaken_protocol_managed::replace_resource_manifest,
+            )
+            .with_state(state),
+        ),
     )
 }
 
@@ -963,7 +967,7 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
     let equal_created = equal_state
         .create_session(
             session_with_model("gpt-5;provider=openai;api=open_ai_responses;endpoint=edge"),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .expect("R1");
@@ -1036,7 +1040,7 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
                 effort: Some(ModelEffortInput::Level(ModelEffortLevel::High)),
                 inference_geo: Some(ModelInferenceGeo::Us),
             })),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .expect("R2");
@@ -1106,7 +1110,10 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
     let unavailable_state = ManagedState::new(unavailable_runtime.clone())
         .with_config_source(std::sync::Arc::new(AgentWithPublishedModel));
     let error = unavailable_state
-        .create_session(session_with_model(requested), None)
+        .create_session(
+            session_with_model(requested),
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        )
         .await
         .expect_err("R3");
     assert!(error.to_string().contains("not configured"), "R3: {error}");
@@ -1127,7 +1134,10 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
             calls: Default::default(),
         }));
     let error = invalid_state
-        .create_session(session_with_model(requested), None)
+        .create_session(
+            session_with_model(requested),
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
+        )
         .await
         .expect_err("R4");
     assert!(
@@ -1438,7 +1448,9 @@ async fn budgeted_session_backends_follow_the_exact_publication_decision_table()
             );
         }
         let request = serde_json::from_value(request).expect("valid Session request");
-        let result = state.create_session(request, None).await;
+        let result = state
+            .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
+            .await;
 
         if let Some(expected_models) = rule.expected_models {
             let created = result.unwrap_or_else(|error| panic!("{}: {error}", rule.id));
@@ -1621,7 +1633,11 @@ async fn publication_backend_is_the_only_session_backend_authority() {
             "metadata": {"awaken.runtime": metadata}
         })))
         .unwrap();
-        let id = state.create_session(request, None).await.unwrap().id;
+        let id = state
+            .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
+            .await
+            .unwrap()
+            .id;
         let durable = repo.get(&id).await.unwrap();
         let baseline = durable.frozen_baseline().expect("frozen baseline");
         assert_eq!(baseline.runtime.as_deref(), expected_runtime, "{rule}");
@@ -1682,7 +1698,10 @@ async fn agent_default_environment_requires_the_exact_revision() {
         "environment_id": environment_id
     }))
     .unwrap();
-    state.create_session(request, None).await.unwrap();
+    state
+        .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
+        .await
+        .unwrap();
     assert_eq!(
         runtime.prepared.lock().unwrap()[0]
             .environment
@@ -1701,7 +1720,10 @@ async fn agent_default_environment_requires_the_exact_revision() {
         "environment_id": environment_id
     }))
     .unwrap();
-    let error = stale.create_session(request, None).await.unwrap_err();
+    let error = stale
+        .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
+        .await
+        .unwrap_err();
     assert!(error.to_string().contains("unavailable"));
 }
 
@@ -3146,7 +3168,11 @@ async fn terminal_session_retires_only_its_compatibility_repository_definition()
         }]
     })))
     .unwrap();
-    let id = state.create_session(request, None).await.unwrap().id;
+    let id = state
+        .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
+        .await
+        .unwrap()
+        .id;
     let persisted = repo.get(&id).await.unwrap();
     let awaken_session_contract::ResolvedInputSource::Repository { repository_id, .. } =
         &persisted.resources.active.inputs()[0].source
@@ -3399,7 +3425,11 @@ async fn platform_repository_default_is_shared_and_replaceable_without_a_false_p
         "agent": "repo-agent"
     })))
     .unwrap();
-    let id = state.create_session(request, None).await.unwrap().id;
+    let id = state
+        .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
+        .await
+        .unwrap()
+        .id;
     state.archive_session(&id).await.unwrap();
 
     assert_eq!(
@@ -3421,7 +3451,7 @@ async fn platform_repository_default_is_shared_and_replaceable_without_a_false_p
     })))
     .unwrap();
     let replacement = state
-        .create_session(replacement, None)
+        .create_session(replacement, awaken_tenancy::DEFAULT_WORKSPACE_ID)
         .await
         .expect("P2 same-mount Repository replaces the published default");
     let replacement = state
@@ -3573,7 +3603,11 @@ async fn failed_live_activation_rolls_back_before_reporting_failure() {
         .with_resource_registry(resource_registry());
     let request =
         serde_json::from_value(with_session_environment(json!({ "agent": "a" }))).unwrap();
-    let id = state.create_session(request, None).await.unwrap().id;
+    let id = state
+        .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
+        .await
+        .unwrap()
+        .id;
 
     fail_next.store(true, std::sync::atomic::Ordering::SeqCst);
     let error = state
@@ -3636,7 +3670,7 @@ async fn failed_activation_and_failed_compensation_remain_durably_retryable() {
     let id = state
         .create_session(
             serde_json::from_value(with_session_environment(json!({"agent": "a"}))).unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap()
@@ -3763,7 +3797,11 @@ async fn assert_resource_root_cas_rule(index: usize, rule: ResourceCasRule) {
         .with_resource_registry(resource_registry());
     let request =
         serde_json::from_value(with_session_environment(json!({ "agent": "a" }))).unwrap();
-    let id = state.create_session(request, None).await.unwrap().id;
+    let id = state
+        .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
+        .await
+        .unwrap()
+        .id;
 
     match rule {
         ResourceCasRule::NoConflict => {}
@@ -4336,7 +4374,11 @@ async fn whole_manifest_resource_loser_compensates_its_applied_repository() {
         .with_resource_registry(catalog.clone());
     let request =
         serde_json::from_value(with_session_environment(json!({ "agent": "a" }))).unwrap();
-    let id = state.create_session(request, None).await.unwrap().id;
+    let id = state
+        .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
+        .await
+        .unwrap()
+        .id;
     let read_revision = repo.get(&id).await.unwrap().resources.revision;
     let remote_url = "https://github.com/awaken/manifest-race.git";
     let normalized_mount = "workspace/manifest-race";
@@ -4412,7 +4454,11 @@ async fn whole_manifest_rebases_over_unrelated_root_revision_changes() {
         .with_resource_registry(resource_registry());
     let request =
         serde_json::from_value(with_session_environment(json!({ "agent": "a" }))).unwrap();
-    let id = state.create_session(request, None).await.unwrap().id;
+    let id = state
+        .create_session(request, awaken_tenancy::DEFAULT_WORKSPACE_ID)
+        .await
+        .unwrap()
+        .id;
     let resource_revision = repo.get(&id).await.unwrap().resources.revision;
     repo.metadata_change_on_next(1, "realization-lease", "renewed");
 
@@ -6122,7 +6168,10 @@ async fn profiled_run_submission_fails_closed_by_target_and_error_class() {
         Some(request.clone()),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "R7 missing Workspace");
+    // The Workspace is now refused by the extractor, before the handler body,
+    // with the same non-disclosing 404 every other tenant-fenced route uses —
+    // not a 400 describing the deployment's missing tenancy wiring.
+    assert_eq!(status, StatusCode::NOT_FOUND, "R7 missing Workspace");
 
     runtime
         .fail_next_activation_internal

@@ -100,7 +100,7 @@ async fn exhausted_projection_cache_revision_preserves_complete_warm_frame() {
                 "agent": "coder", "environment_id": "env_local"
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .unwrap();
@@ -171,7 +171,7 @@ async fn read_cut_fixture(with_child: bool) -> (RehydrateFake, Arc<ManagedState>
                     "agent": "coder", "environment_id": "env_local"
                 }))
                 .unwrap(),
-                None,
+                awaken_tenancy::DEFAULT_WORKSPACE_ID,
             )
             .await
             .unwrap();

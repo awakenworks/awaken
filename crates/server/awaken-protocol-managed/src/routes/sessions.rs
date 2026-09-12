@@ -23,6 +23,7 @@ use crate::common::headers::{
     ANTHROPIC_API_VERSION, DREAMING_BETA, MANAGED_BETA, MEMORY_BETA, ManagedCapability,
     USER_PROFILES_BETA_LATEST, has_capability,
 };
+use crate::common::scope::RequiredWorkspaceScope;
 use crate::preview::ThreadPreviewProjector;
 use crate::routes::{ManagedJson, ManagedQuery};
 use crate::state::{
@@ -128,8 +129,10 @@ pub fn router(state: Arc<ManagedState>) -> Router {
 /// answer **404** (not 403 — never disclose that the id exists in another tenant).
 /// The collection routes (`POST`/`GET /v1/sessions`, no id) pass through, as do
 /// ids unknown to this process (rehydration path); the request scope comes from
-/// the edge-stamped [`WorkspaceScope`], defaulting to the seeded scope when the
-/// deployment resolved none, so a single-tenant surface never 404s itself.
+/// the edge-stamped [`WorkspaceScope`] and an unstamped request is refused with
+/// the same 404, because an ownership comparison against a compiled-in tenant is
+/// not an ownership check. The single-tenant surface is stamped by the
+/// composition root, never by this guard.
 pub async fn session_scope_guard(
     State(state): State<Arc<ManagedState>>,
     request: Request,
@@ -153,20 +156,26 @@ async fn ensure_session_scope(
     id: &str,
     workspace: Option<&WorkspaceScope>,
 ) -> Result<(), WireErr> {
-    let request_scope = workspace
-        .map(|workspace| workspace.0.clone())
-        .unwrap_or_else(|| crate::state::DEFAULT_SCOPE.to_string());
+    let Some(request_scope) = workspace.and_then(WorkspaceScope::non_empty) else {
+        return Err(session_not_found(id));
+    };
     match state.resolve_owner(id).await {
-        Ok(Some(owner)) if owner != request_scope => Err((
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse::new(
-                "not_found_error",
-                format!("session `{id}` not found"),
-            )),
-        )),
+        Ok(Some(owner)) if owner != request_scope => Err(session_not_found(id)),
         Err(error) => Err(error_response(error)),
         Ok(Some(_)) | Ok(None) => Ok(()),
     }
+}
+
+/// One envelope for a genuine miss, a cross-tenant address, and an unstamped
+/// request, so neither existence nor the tenancy wiring is disclosed.
+fn session_not_found(id: &str) -> WireErr {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse::new(
+            "not_found_error",
+            format!("session `{id}` not found"),
+        )),
+    )
 }
 
 /// The `{id}` from a `/v1/sessions/{id}[/...]` path, or `None` for the collection
@@ -390,7 +399,7 @@ pub async fn enforce_managed_beta(
 
 async fn create_session(
     State(state): State<Arc<ManagedState>>,
-    workspace: Option<axum::Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
     headers: HeaderMap,
     ManagedJson(req): ManagedJson<SessionCreateParams>,
 ) -> Result<(StatusCode, HeaderMap, Json<Session>), (StatusCode, Json<ErrorResponse>)> {
@@ -399,11 +408,10 @@ async fn create_session(
     // Session preparation (MCP provisioning, ADR-0043 Phase 3) can fail; map the
     // RunError to the envelope exactly like a Run failure, so a failed create
     // is loud rather than a half-provisioned session.
-    let workspace_id = workspace.map(|w| w.0.0.clone());
     let idempotency_key = parse_idempotency_key(&headers)?;
     let session = match idempotency_key.as_deref() {
-        Some(key) => Box::pin(state.create_session_idempotent(req, workspace_id, key)).await,
-        None => Box::pin(state.create_session(req, workspace_id)).await,
+        Some(key) => Box::pin(state.create_session_idempotent(req, &workspace_id, key)).await,
+        None => Box::pin(state.create_session(req, &workspace_id)).await,
     }
     .map_err(error_response)?;
     let (response_headers, body) = versioned_session_response(&state, &session.id)?;
@@ -502,12 +510,9 @@ fn session_projection_error(
 /// tenancy-fenced, so a workspace never lists another's).
 async fn list_sessions(
     State(state): State<Arc<ManagedState>>,
-    workspace: Option<axum::Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
     RawQuery(raw): RawQuery,
 ) -> Result<Json<SessionListPage>, WireErr> {
-    let scope = workspace
-        .map(|w| w.0.0)
-        .unwrap_or_else(|| crate::state::DEFAULT_SCOPE.to_string());
     let data = state
         .list_sessions_scoped_durable(&scope)
         .await
@@ -1129,7 +1134,7 @@ async fn stream_thread_events(
 pub async fn replace_resource_manifest(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-    workspace: Option<axum::Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     headers: HeaderMap,
     Json(body): Json<crate::types::resource::ResourceManifestReplaceParams>,
 ) -> Result<
@@ -1139,12 +1144,7 @@ pub async fn replace_resource_manifest(
     ),
     (StatusCode, Json<ErrorResponse>),
 > {
-    ensure_session_scope(
-        state.as_ref(),
-        &id,
-        workspace.as_ref().map(|scope| &scope.0),
-    )
-    .await?;
+    ensure_session_scope(state.as_ref(), &id, Some(&WorkspaceScope(workspace))).await?;
     let idempotency_key = parse_idempotency_key(&headers)?;
     let if_match = parse_if_match(&headers, "Resource manifest")?;
     let fingerprints = body
@@ -1190,7 +1190,7 @@ fn historical_profiled_repository_binding_id(
 /// Session composer. The handler owns no Session state or realization path.
 pub async fn create_profiled_session(
     State(state): State<Arc<ManagedState>>,
-    workspace: Option<axum::Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
     Json(body): Json<awaken_protocol_awaken::ProfiledSessionCreate>,
 ) -> Result<
     (
@@ -1199,13 +1199,6 @@ pub async fn create_profiled_session(
     ),
     (StatusCode, Json<ErrorResponse>),
 > {
-    let owner_scope = workspace
-        .and_then(|scope| scope.0.non_empty().map(str::to_owned))
-        .ok_or_else(|| {
-            error_response(StateError::Run(RunError::bad_request(
-                "profiled Session creation requires a Workspace scope",
-            )))
-        })?;
     if body.session_id.trim().is_empty()
         || body.agent_id.trim().is_empty()
         || body.source_revision == Some(0)
@@ -1338,16 +1331,9 @@ fn profiled_release_error_response(
 pub async fn release_profiled_session(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-    workspace: Option<axum::Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
     Json(body): Json<awaken_protocol_awaken::ProfiledSessionRelease>,
 ) -> Result<Json<awaken_protocol_awaken::ProfiledSessionReleased>, WireErr> {
-    let owner_scope = workspace
-        .and_then(|scope| scope.0.non_empty().map(str::to_owned))
-        .ok_or_else(|| {
-            error_response(StateError::Run(RunError::bad_request(
-                "profiled Session release requires a Workspace scope",
-            )))
-        })?;
     let request_scope = WorkspaceScope(owner_scope.clone());
     ensure_session_scope(state.as_ref(), &id, Some(&request_scope)).await?;
 

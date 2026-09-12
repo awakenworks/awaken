@@ -41,6 +41,9 @@ awaken-config-resolver = { workspace = true, features = ["test-support"] }
 awaken-config-store = { workspace = true, features = ["test-support"] }
 awaken-executable-agent-catalog.workspace = true
 proptest.workspace = true
+# Drive the mounted router in tests, so an absent tenancy stamp is exercised at
+# the extractor seam rather than by calling a handler with a synthetic `None`.
+tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true

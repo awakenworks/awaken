@@ -17,8 +17,15 @@ use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent, RunLifecyclePage};
+use awaken_protocol_managed::ManagedState;
 use awaken_protocol_managed::test_support::CoordinatedRuntimeFake;
-use awaken_protocol_managed::{ManagedState, router};
+
+/// The Managed router as a real deployment mounts it — behind the trusted edge
+/// stamp that the composition root installs. Handlers are fail-closed on an
+/// absent Workspace, so an unstamped router is not a representative fixture.
+fn router(state: std::sync::Arc<ManagedState>) -> axum::Router {
+    support::edge_stamped(awaken_protocol_managed::router(state))
+}
 use awaken_session_contract::{
     OutcomeDrive, RunError, SessionRuntime, SessionUsage, StepOutcome, ToolPermissionDecision,
 };

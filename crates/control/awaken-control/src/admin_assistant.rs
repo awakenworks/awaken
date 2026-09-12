@@ -26,7 +26,7 @@ use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::current_tool_operation_context;
 use awaken_tenancy::ScopeId;
-use axum::{Extension, Json, Router, extract::State, http::StatusCode, routing::post};
+use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
 use serde_json::{Value, json};
 
 /// One Workspace selector for every Assistant adapter. Hosted tools consume the
@@ -65,8 +65,68 @@ impl AssistantWorkspace {
 #[derive(Clone)]
 struct AdminAssistantLifecycleState {
     plane: ConfigPlane,
-    fixed_execution_workspace: Option<String>,
     model_selection: Option<ModelSelection>,
+}
+
+/// The execution Workspace the trusted edge already resolved. Absence is
+/// refused here so the handler below owns no `None` arm; an explicit
+/// local/no-login composition supplies its Workspace through the one
+/// [`with_composed_workspace`] layer on this router instead.
+struct RequiredExecutionWorkspace(String);
+
+impl<S> axum::extract::FromRequestParts<S> for RequiredExecutionWorkspace
+where
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, Json<Value>);
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        match parts
+            .extensions
+            .get::<awaken_tenancy::WorkspaceScope>()
+            .and_then(awaken_tenancy::WorkspaceScope::non_empty)
+        {
+            Some(workspace) => Ok(Self(workspace.to_owned())),
+            None => Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "code": "assistant_workspace_unavailable",
+                    "title": "Assistant Workspace unavailable",
+                    "detail": "no trusted execution Workspace was resolved",
+                    "message": "no trusted execution Workspace was resolved",
+                })),
+            )),
+        }
+    }
+}
+
+/// Stamp the composition-supplied Workspace on any request the ingress edge did
+/// not already scope. This is the single place an explicit local/no-login
+/// composition resolves its tenant for this router; no handler defaults.
+pub(crate) fn with_composed_workspace(router: Router, workspace: Option<String>) -> Router {
+    let Some(workspace) = workspace.filter(|value| !value.trim().is_empty()) else {
+        return router;
+    };
+    router.layer(axum::middleware::from_fn(
+        move |mut request: axum::extract::Request, next: axum::middleware::Next| {
+            let workspace = workspace.clone();
+            async move {
+                if request
+                    .extensions()
+                    .get::<awaken_tenancy::WorkspaceScope>()
+                    .is_none()
+                {
+                    request
+                        .extensions_mut()
+                        .insert(awaken_tenancy::WorkspaceScope(workspace));
+                }
+                next.run(request).await
+            }
+        },
+    ))
 }
 
 /// Idempotent operator-facing recovery for the reserved Assistant publication.
@@ -77,40 +137,27 @@ pub fn admin_assistant_lifecycle_router(
     fixed_execution_workspace: Option<String>,
     model_selection: Option<ModelSelection>,
 ) -> Router {
-    Router::new()
-        .route(
-            "/v1/config/agents/__admin_assistant/ensure",
-            post(ensure_admin_assistant),
-        )
-        .with_state(AdminAssistantLifecycleState {
-            plane,
-            fixed_execution_workspace,
-            model_selection,
-        })
+    with_composed_workspace(
+        Router::new()
+            .route(
+                "/v1/config/agents/__admin_assistant/ensure",
+                post(ensure_admin_assistant),
+            )
+            .with_state(AdminAssistantLifecycleState {
+                plane,
+                model_selection,
+            }),
+        fixed_execution_workspace,
+    )
 }
 
 async fn ensure_admin_assistant(
     State(state): State<AdminAssistantLifecycleState>,
-    workspace: Option<Extension<awaken_tenancy::WorkspaceScope>>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     // Cloud IAM/workspace-path middleware owns tenant selection. A hosted
-    // request must use that trusted scope; the process-local workspace is only
-    // a fallback for explicit local/no-login composition.
-    let execution_workspace = workspace
-        .map(|Extension(workspace)| workspace.0)
-        .or(state.fixed_execution_workspace)
-        .filter(|workspace| !workspace.trim().is_empty())
-        .ok_or_else(|| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "code": "assistant_workspace_unavailable",
-                    "title": "Assistant Workspace unavailable",
-                    "detail": "no trusted execution Workspace was resolved",
-                    "message": "no trusted execution Workspace was resolved",
-                })),
-            )
-        })?;
+    // request must use that trusted scope; an explicit local/no-login
+    // composition supplies its own through `with_composed_workspace`.
+    RequiredExecutionWorkspace(execution_workspace): RequiredExecutionWorkspace,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     let had_startup_selection = state.model_selection.is_some();
     let selection = state.model_selection.unwrap_or_default();
     let first = seed_admin_assistant(&state.plane, &execution_workspace, selection.clone()).await;
@@ -1346,13 +1393,15 @@ mod tests {
         let plane = ConfigPlane::new(Arc::new(service), store, tools);
         let state = AdminAssistantLifecycleState {
             plane,
-            fixed_execution_workspace: Some("workspace-live".into()),
             model_selection: Some(ModelSelection::Auto),
         };
 
-        let Json(result) = ensure_admin_assistant(State(state), None)
-            .await
-            .expect("ensure");
+        let Json(result) = ensure_admin_assistant(
+            State(state),
+            RequiredExecutionWorkspace("workspace-live".into()),
+        )
+        .await
+        .expect("ensure");
         assert_eq!(result["status"], "ready");
         assert!(
             executable
@@ -1384,7 +1433,6 @@ mod tests {
             (
                 AdminAssistantLifecycleState {
                     plane: ConfigPlane::new(Arc::new(service), store, tools),
-                    fixed_execution_workspace: Some("workspace-local".into()),
                     model_selection: Some(ModelSelection::Auto),
                 },
                 executable,
@@ -1394,9 +1442,7 @@ mod tests {
         let (state, executable) = make_state();
         let Json(result) = ensure_admin_assistant(
             State(state),
-            Some(Extension(awaken_tenancy::WorkspaceScope(
-                "workspace-tenant".into(),
-            ))),
+            RequiredExecutionWorkspace("workspace-tenant".into()),
         )
         .await
         .expect("H1 tenant publication");
@@ -1414,10 +1460,14 @@ mod tests {
             "H1"
         );
 
+        // H2: the composition's own Workspace, supplied by the router layer.
         let (state, executable) = make_state();
-        let Json(result) = ensure_admin_assistant(State(state), None)
-            .await
-            .expect("H2 local publication");
+        let Json(result) = ensure_admin_assistant(
+            State(state),
+            RequiredExecutionWorkspace("workspace-local".into()),
+        )
+        .await
+        .expect("H2 local publication");
         assert_eq!(result["status"], "ready", "H2");
         assert!(
             executable
@@ -1426,11 +1476,33 @@ mod tests {
             "H2"
         );
 
-        let (mut state, executable) = make_state();
-        state.fixed_execution_workspace = None;
-        let (status, Json(problem)) = ensure_admin_assistant(State(state), None)
-            .await
-            .expect_err("H3 fail closed");
+        // H3: no edge stamp AND no composed Workspace. The router — not the
+        // handler — is the only place a composition may supply one, so this
+        // drives the real mount with `None` and expects the extractor's refusal.
+        let (state, executable) = make_state();
+        let response = tower::ServiceExt::oneshot(
+            with_composed_workspace(
+                Router::new()
+                    .route(
+                        "/v1/config/agents/__admin_assistant/ensure",
+                        post(ensure_admin_assistant),
+                    )
+                    .with_state(state),
+                None,
+            ),
+            axum::http::Request::post("/v1/config/agents/__admin_assistant/ensure")
+                .body(axum::body::Body::empty())
+                .expect("H3 request"),
+        )
+        .await
+        .expect("H3 response");
+        let status = response.status();
+        let problem: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("H3 body"),
+        )
+        .expect("H3 envelope");
         assert_eq!(status, StatusCode::BAD_REQUEST, "H3");
         assert_eq!(problem["code"], "assistant_workspace_unavailable", "H3");
         assert!(
@@ -1450,13 +1522,15 @@ mod tests {
         );
         let state = AdminAssistantLifecycleState {
             plane,
-            fixed_execution_workspace: Some(DEFAULT_SCOPE.into()),
             model_selection: None,
         };
 
-        let (status, Json(problem)) = ensure_admin_assistant(State(state), None)
-            .await
-            .expect_err("an empty live catalog must fail closed");
+        let (status, Json(problem)) = ensure_admin_assistant(
+            State(state),
+            RequiredExecutionWorkspace(DEFAULT_SCOPE.into()),
+        )
+        .await
+        .expect_err("an empty live catalog must fail closed");
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(problem["code"], "assistant_model_unavailable");
         assert!(
@@ -1479,16 +1553,18 @@ mod tests {
         let plane = ConfigPlane::new(Arc::new(service), store, tools);
         let state = AdminAssistantLifecycleState {
             plane,
-            fixed_execution_workspace: Some("workspace-recovered".into()),
             model_selection: Some(
                 ModelSelection::try_backend_default("acp:stale", Default::default())
                     .expect("exact ACP backend"),
             ),
         };
 
-        let Json(result) = ensure_admin_assistant(State(state), None)
-            .await
-            .expect("auto fallback");
+        let Json(result) = ensure_admin_assistant(
+            State(state),
+            RequiredExecutionWorkspace("workspace-recovered".into()),
+        )
+        .await
+        .expect("auto fallback");
         assert_eq!(result["status"], "ready");
         assert_eq!(
             executable

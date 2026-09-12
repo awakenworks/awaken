@@ -19,7 +19,7 @@ use crate::plugin_validation::PluginPublicationResolver;
 #[cfg(test)]
 use crate::ConfigPlane;
 #[cfg(test)]
-use crate::config_routes::{get_config, publish, put_config, request_scope, validate};
+use crate::config_routes::{get_config, publish, put_config, validate};
 #[cfg(test)]
 use crate::tool_catalog::{RESERVED_ADMIN_SCOPE, ToolCatalogSource};
 #[cfg(test)]
@@ -27,11 +27,11 @@ use awaken_agent_config::DEFAULT_SCOPE;
 #[cfg(test)]
 use awaken_agent_config::ScopedConfigRegistry;
 #[cfg(test)]
+use axum::Json;
+#[cfg(test)]
 use axum::extract::{Path, State};
 #[cfg(test)]
 use axum::http::StatusCode;
-#[cfg(test)]
-use axum::{Extension, Json};
 #[cfg(test)]
 use serde_json::json;
 

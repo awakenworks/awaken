@@ -2,12 +2,13 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
-use crate::routes::{ManagedJson, ManagedQuery, WorkspaceScope};
+use crate::common::scope::RequiredWorkspaceScope;
+use crate::routes::{ManagedJson, ManagedQuery};
 use crate::types::tunnel::{
     CertificateCreateParams, TunnelCreateParams, TunnelListQuery, TunnelRotateTokenParams,
 };
@@ -16,11 +17,15 @@ use crate::{ManagedTunnelApplication, ManagedTunnelApplicationError, ManagedTunn
 
 type WireError = (StatusCode, Json<ErrorResponse>);
 
-fn scope(workspace: Option<Extension<WorkspaceScope>>, headers: &HeaderMap) -> ManagedTunnelScope {
+/// Project the Workspace the trusted edge already resolved. There is no
+/// absent case to default: [`RequiredWorkspaceScope`] refuses an unstamped
+/// request with `404` before this Tunnel handler body runs.
+fn scope(
+    RequiredWorkspaceScope(workspace_id): RequiredWorkspaceScope,
+    headers: &HeaderMap,
+) -> ManagedTunnelScope {
     ManagedTunnelScope {
-        workspace_id: workspace
-            .map(|scope| scope.0.0)
-            .unwrap_or_else(|| crate::state::DEFAULT_SCOPE.to_owned()),
+        workspace_id,
         operation_id: headers
             .get("x-request-id")
             .or_else(|| headers.get("idempotency-key"))
@@ -112,7 +117,7 @@ pub fn tunnels_router(application: Arc<dyn ManagedTunnelApplication>) -> Router 
 
 async fn create(
     State(app): State<Arc<dyn ManagedTunnelApplication>>,
-    workspace: Option<Extension<WorkspaceScope>>,
+    workspace: RequiredWorkspaceScope,
     headers: HeaderMap,
     ManagedJson(params): ManagedJson<TunnelCreateParams>,
 ) -> Result<Json<crate::types::tunnel::Tunnel>, WireError> {
@@ -134,7 +139,7 @@ async fn create(
 async fn retrieve(
     State(app): State<Arc<dyn ManagedTunnelApplication>>,
     Path(tunnel_id): Path<String>,
-    workspace: Option<Extension<WorkspaceScope>>,
+    workspace: RequiredWorkspaceScope,
     headers: HeaderMap,
 ) -> Result<Json<crate::types::tunnel::Tunnel>, WireError> {
     app.retrieve_tunnel(scope(workspace, &headers), &tunnel_id)
@@ -145,7 +150,7 @@ async fn retrieve(
 
 async fn list(
     State(app): State<Arc<dyn ManagedTunnelApplication>>,
-    workspace: Option<Extension<WorkspaceScope>>,
+    workspace: RequiredWorkspaceScope,
     headers: HeaderMap,
     ManagedQuery(query): ManagedQuery<TunnelListQuery>,
 ) -> Result<Json<PageCursor<crate::types::tunnel::Tunnel>>, WireError> {
@@ -159,7 +164,7 @@ async fn list(
 async fn archive(
     State(app): State<Arc<dyn ManagedTunnelApplication>>,
     Path(tunnel_id): Path<String>,
-    workspace: Option<Extension<WorkspaceScope>>,
+    workspace: RequiredWorkspaceScope,
     headers: HeaderMap,
 ) -> Result<Json<crate::types::tunnel::Tunnel>, WireError> {
     app.archive_tunnel(scope(workspace, &headers), &tunnel_id)
@@ -171,7 +176,7 @@ async fn archive(
 async fn reveal_token(
     State(app): State<Arc<dyn ManagedTunnelApplication>>,
     Path(tunnel_id): Path<String>,
-    workspace: Option<Extension<WorkspaceScope>>,
+    workspace: RequiredWorkspaceScope,
     headers: HeaderMap,
 ) -> Result<(HeaderMap, Json<crate::types::tunnel::TunnelToken>), WireError> {
     let token = app
@@ -186,7 +191,7 @@ async fn reveal_token(
 async fn rotate_token(
     State(app): State<Arc<dyn ManagedTunnelApplication>>,
     Path(tunnel_id): Path<String>,
-    workspace: Option<Extension<WorkspaceScope>>,
+    workspace: RequiredWorkspaceScope,
     headers: HeaderMap,
     ManagedJson(params): ManagedJson<TunnelRotateTokenParams>,
 ) -> Result<(HeaderMap, Json<crate::types::tunnel::TunnelToken>), WireError> {
@@ -202,7 +207,7 @@ async fn rotate_token(
 async fn create_certificate(
     State(app): State<Arc<dyn ManagedTunnelApplication>>,
     Path(tunnel_id): Path<String>,
-    workspace: Option<Extension<WorkspaceScope>>,
+    workspace: RequiredWorkspaceScope,
     headers: HeaderMap,
     ManagedJson(params): ManagedJson<CertificateCreateParams>,
 ) -> Result<Json<crate::types::tunnel::TunnelCertificate>, WireError> {
@@ -224,7 +229,7 @@ async fn create_certificate(
 async fn retrieve_certificate(
     State(app): State<Arc<dyn ManagedTunnelApplication>>,
     Path((tunnel_id, certificate_id)): Path<(String, String)>,
-    workspace: Option<Extension<WorkspaceScope>>,
+    workspace: RequiredWorkspaceScope,
     headers: HeaderMap,
 ) -> Result<Json<crate::types::tunnel::TunnelCertificate>, WireError> {
     app.retrieve_certificate(scope(workspace, &headers), &tunnel_id, &certificate_id)
@@ -236,7 +241,7 @@ async fn retrieve_certificate(
 async fn list_certificates(
     State(app): State<Arc<dyn ManagedTunnelApplication>>,
     Path(tunnel_id): Path<String>,
-    workspace: Option<Extension<WorkspaceScope>>,
+    workspace: RequiredWorkspaceScope,
     headers: HeaderMap,
     ManagedQuery(query): ManagedQuery<TunnelListQuery>,
 ) -> Result<Json<PageCursor<crate::types::tunnel::TunnelCertificate>>, WireError> {
@@ -254,7 +259,7 @@ async fn list_certificates(
 async fn archive_certificate(
     State(app): State<Arc<dyn ManagedTunnelApplication>>,
     Path((tunnel_id, certificate_id)): Path<(String, String)>,
-    workspace: Option<Extension<WorkspaceScope>>,
+    workspace: RequiredWorkspaceScope,
     headers: HeaderMap,
 ) -> Result<Json<crate::types::tunnel::TunnelCertificate>, WireError> {
     app.archive_certificate(scope(workspace, &headers), &tunnel_id, &certificate_id)
@@ -266,6 +271,9 @@ async fn archive_certificate(
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
+
+    use awaken_tenancy::WorkspaceScope;
+    use axum::extract::Extension;
 
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
