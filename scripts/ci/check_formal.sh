@@ -361,6 +361,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness only_unsettled_relationships_occupy_a_parallel_slot \
     --harness every_relationship_effect_has_one_documented_precondition \
     --harness delegation_admission_requires_every_budget_and_lineage_guard \
+    --harness recovered_registry_requires_every_scalar_invariant \
     --harness child_invocation_requires_one_exact_open_relationship \
     --harness cancellation_delivery_is_enabled_only_by_durable_intent \
     --harness operation_identity_replays_only_the_same_run_and_payload \
@@ -689,7 +690,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness named_material_shape_is_exact_and_non_widening \
     --harness mcp_delivery_selection_has_only_the_explicit_pair_classes \
     --harness mcp_delivery_receipt_requires_exact_binding_holder_and_mechanism \
-    --harness credential_effect_repository_git_delivery_never_admits_worker_or_mixes_route_authority \
+    --harness credential_effect_delivery_policy_is_total_and_never_mixes_route_authority \
     --harness worker_reference_revalidation_accepts_only_exact_available_state \
     --harness worker_plaintext_holder_projection_is_exact_and_non_widening
   run_kani awaken-run-executor-acp \
@@ -903,7 +904,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness plugin_activation_never_widens_the_capability_bound \
     --harness plugin_activation_never_admits_a_duplicate_identity
   run_kani awaken-ext-permission \
-    --harness unmatched_permission_mode_is_exact_and_plan_fails_closed \
+    --harness retired_mode_compiles_into_one_exact_unmatched_default \
+    --harness a_compiled_ruleset_can_never_short_circuit_a_deny_rule \
     --harness matched_deny_is_absolute_and_only_stricter_non_deny_replaces_authority
   run_kani awaken-ext-state-machine \
     --harness tool_and_event_transitions_never_cross_trigger_kinds \
