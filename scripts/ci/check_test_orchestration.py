@@ -10,9 +10,12 @@ scenario lists, execute a scenario twice, or turn a failure into success.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
+import tempfile
 import tomllib
+from collections.abc import Iterator
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -133,13 +136,21 @@ RELEASE_WORKFLOW = ".github/workflows/release.yml"
 K8S_CONTAINER_GATE = "scripts/e2e/k8s_container_e2e.sh"
 
 
+def e2e_sources(root: Path, suffixes: set[str]) -> Iterator[Path]:
+    """Only repository E2E sources; installed packages are never test owners."""
+    for directory, children, files in os.walk(root / "e2e"):
+        children[:] = [child for child in children if child != "node_modules"]
+        for name in files:
+            path = Path(directory) / name
+            if path.suffix in suffixes:
+                yield path
+
+
 def e2e_files(root: Path) -> set[str]:
     return {
         path.relative_to(root / "e2e").as_posix()
-        for path in (root / "e2e").rglob("*")
-        if path.is_file()
-        and "e2e" in path.stem
-        and path.suffix in {".js", ".mjs", ".ts"}
+        for path in e2e_sources(root, {".js", ".mjs", ".ts"})
+        if "e2e" in path.stem
     }
 
 
@@ -165,7 +176,7 @@ def coverage_runner_texts(root: Path) -> dict[str, str]:
         relative: (root / relative).read_text(encoding="utf-8")
         for relative in SECONDARY_RUNNERS
     }
-    for path in (root / "e2e").rglob("*.sh"):
+    for path in e2e_sources(root, {".sh"}):
         text = path.read_text(encoding="utf-8")
         if PARALLEL_COVERAGE_MARKER.search(text):
             runners[path.relative_to(root).as_posix()] = text
@@ -776,8 +787,7 @@ def validate(root: Path) -> list[str]:
         scenario_port_errors(
             {
                 path.relative_to(root).as_posix(): path.read_text(encoding="utf-8")
-                for path in (root / "e2e").rglob("*")
-                if path.is_file() and path.suffix in {".js", ".mjs", ".ts"}
+                for path in e2e_sources(root, {".js", ".mjs", ".ts"})
             }
         )
     )
@@ -958,13 +968,26 @@ def self_test() -> None:
     stage_text = STAGE_GRAPH.read_text(encoding="utf-8")
     files = e2e_files(ROOT)
     runners = coverage_runner_texts(ROOT)
+    # P3 source-boundary table: C1 project files and C2 nested project scripts
+    # remain visible; C3 installed node_modules churns during npm ci. P3a
+    # C1+C2 => enumerate both owners. P3b C3 => enumerate none of its files,
+    # even when an installed script looks like an E2E test or coverage runner.
+    with tempfile.TemporaryDirectory() as fixture_root:
+        fixture_e2e = Path(fixture_root) / "e2e"
+        (fixture_e2e / "k3d").mkdir(parents=True)
+        (fixture_e2e / "node_modules" / "package").mkdir(parents=True)
+        (fixture_e2e / "own_e2e.ts").write_text("", encoding="utf-8")
+        (fixture_e2e / "k3d" / "own.sh").write_text("", encoding="utf-8")
+        (fixture_e2e / "node_modules" / "package" / "foreign_e2e.ts").write_text("", encoding="utf-8")
+        (fixture_e2e / "node_modules" / "package" / "foreign.sh").write_text("", encoding="utf-8")
+        assert e2e_files(Path(fixture_root)) == {"own_e2e.ts"}, "P3a/P3b test source"
+        assert [path.relative_to(fixture_e2e).as_posix() for path in e2e_sources(Path(fixture_root), {".sh"})] == ["k3d/own.sh"], "P3a/P3b runner source"
     errors = orchestration_errors(scripts, deterministic_suites, stage_text, files, runners)
     if errors:
         raise AssertionError("R1 repository fixture must be valid: " + "; ".join(errors))
     scenario_sources = {
         path.relative_to(ROOT).as_posix(): path.read_text(encoding="utf-8")
-        for path in (ROOT / "e2e").rglob("*")
-        if path.is_file() and path.suffix in {".js", ".mjs", ".ts"}
+        for path in e2e_sources(ROOT, {".js", ".mjs", ".ts"})
     }
     assert not scenario_port_errors(scenario_sources), "P1 harness port authority"
     assert scenario_port_errors(
