@@ -79,6 +79,10 @@ fn uses_trusted_local_identity(deployment: &crate::config::ResolvedDeployment) -
 
 fn uses_host_acp_discovery(deployment: &crate::config::ResolvedDeployment) -> bool {
     uses_trusted_local_identity(deployment)
+        && deployment
+            .configured_acp_clis
+            .as_ref()
+            .is_none_or(|cli_ids| !cli_ids.is_empty())
         && matches!(
             deployment.runtime.sandbox_tier,
             awaken_session_executor::SandboxTier::Local | awaken_session_executor::SandboxTier::Namespace
@@ -1183,6 +1187,11 @@ mod tests {
 }
 #[test]
 fn host_discovery_is_limited_to_host_backed_sandbox_tiers() {
+    // Cause/effect table: D1 Local/Namespace + default or nonempty ACP list
+    // -> discover; D2 explicit empty list -> no CLI process, acquisition, or
+    // credential probing; D3 container tier -> no host discovery regardless of
+    // list. An empty selection must not invoke discover_all before filtering:
+    // some installed CLI launchers bootstrap packages even for --version.
     let directory = tempfile::tempdir().unwrap();
     let mut deployment = crate::config::local_test_deployment(directory.path().into());
     for tier in [
@@ -1190,7 +1199,12 @@ fn host_discovery_is_limited_to_host_backed_sandbox_tiers() {
         awaken_session_executor::SandboxTier::Namespace,
     ] {
         deployment.runtime.sandbox_tier = tier;
+        deployment.configured_acp_clis = None;
         assert!(uses_host_acp_discovery(&deployment));
+        deployment.configured_acp_clis = Some(vec!["codex".to_owned()]);
+        assert!(uses_host_acp_discovery(&deployment));
+        deployment.configured_acp_clis = Some(Vec::new());
+        assert!(!uses_host_acp_discovery(&deployment));
     }
     for tier in [
         awaken_session_executor::SandboxTier::Docker,
@@ -1198,6 +1212,9 @@ fn host_discovery_is_limited_to_host_backed_sandbox_tiers() {
         awaken_session_executor::SandboxTier::K8s,
     ] {
         deployment.runtime.sandbox_tier = tier;
-        assert!(!uses_host_acp_discovery(&deployment));
+        for selection in [None, Some(Vec::new()), Some(vec!["codex".to_owned()])] {
+            deployment.configured_acp_clis = selection;
+            assert!(!uses_host_acp_discovery(&deployment));
+        }
     }
 }
