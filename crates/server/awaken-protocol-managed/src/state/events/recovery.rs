@@ -518,6 +518,28 @@ impl ManagedState {
         let client_settled_occurrences = tool_index.client_settled_occurrences;
         let mut qualified = Vec::with_capacity(events.len());
         for mut event in std::mem::take(events) {
+            // The recorded gate decision replaces whatever the transcript-only
+            // fold inferred. A refused call and an executed call that errored
+            // look identical in the transcript, so only this record can tell
+            // them apart — and reporting a refusal as `allow` tells a client the
+            // call it blocked went through.
+            if let Some(recorded) = event
+                .id
+                .as_deref()
+                .and_then(|call_id| record.permission_decisions.get(call_id))
+            {
+                match &mut event.kind {
+                    OutboundKind::AgentToolUse {
+                        evaluated_permission,
+                        ..
+                    }
+                    | OutboundKind::AgentMcpToolUse {
+                        evaluated_permission,
+                        ..
+                    } => *evaluated_permission = Some(*recorded),
+                    _ => {}
+                }
+            }
             // Runtime's neutral pending state says only that the client must
             // supply the result. Managed distinguishes authored custom tools
             // from self-hosted Agent-toolset execution at this sole projection

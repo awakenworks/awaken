@@ -391,6 +391,12 @@ impl ManagedState {
             .map(|event| event.id.clone())
             .collect::<std::collections::HashSet<_>>();
         let record = &mut staged_record;
+        // Harvest what the gate decided before the transcript is projected. The
+        // decision is committed audit truth about a call; the transcript alone
+        // cannot distinguish a refused call from an executed one whose tool
+        // returned an error.
+        record.permission_decisions =
+            harvest_permission_decisions(root_snapshot.iter().chain(child_snapshots.values()));
         merge_durable_inbound_projections(record, durable_inbound_projections);
         record.primary_thread_usage = primary_thread_usage;
         // Cause C1: an Awaiting interval and its answerable target committed;
@@ -1134,4 +1140,37 @@ impl ManagedState {
         let build = self.build_committed_projection_candidate(session_id).await;
         self.finish_projection_refresh(session_id, build)
     }
+}
+
+/// Collect the gate's recorded decision for every call named in these runs'
+/// committed audit trails.
+///
+/// The audit kind is the one place a permission decision is written down, so
+/// reading it here keeps the projection reporting a recorded answer rather than
+/// inferring one. An unrecognized decision label is skipped: a value this
+/// version does not understand must not be flattened into `allow`.
+fn harvest_permission_decisions<'a>(
+    snapshots: impl Iterator<
+        Item = &'a awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+    >,
+) -> std::collections::HashMap<String, EvaluatedPermission> {
+    let mut decisions = std::collections::HashMap::new();
+    for snapshot in snapshots {
+        for event in &snapshot.events {
+            if event.kind != awaken_agent_contract::audit::kind::Kind::PermissionDecided {
+                continue;
+            }
+            let Some(call_id) = event.payload.get("call_id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let decision = match event.payload.get("decision").and_then(|v| v.as_str()) {
+                Some("allow") => EvaluatedPermission::Allow,
+                Some("ask") => EvaluatedPermission::Ask,
+                Some("deny") => EvaluatedPermission::Deny,
+                _ => continue,
+            };
+            decisions.insert(call_id.to_string(), decision);
+        }
+    }
+    decisions
 }
