@@ -1,10 +1,12 @@
 pub mod awaken_ext_permission
+pub enum awaken_ext_permission::AutoDecision
+pub awaken_ext_permission::AutoDecision::Allow
+pub awaken_ext_permission::AutoDecision::Deny
+pub awaken_ext_permission::AutoDecision::Indeterminate
 pub enum awaken_ext_permission::ToolPermissionBehavior
 pub awaken_ext_permission::ToolPermissionBehavior::Allow
 pub awaken_ext_permission::ToolPermissionBehavior::Deny
 pub awaken_ext_permission::ToolPermissionBehavior::RequireConfirmation
-impl core::convert::From<awaken_agent_contract::toolset::ToolExecutionPolicy> for awaken_ext_permission::ToolPermissionBehavior
-pub fn awaken_ext_permission::ToolPermissionBehavior::from(awaken_agent_contract::toolset::ToolExecutionPolicy) -> Self
 pub struct awaken_ext_permission::PermissionRule
 pub awaken_ext_permission::PermissionRule::behavior: awaken_ext_permission::ToolPermissionBehavior
 pub awaken_ext_permission::PermissionRule::pattern: awaken_ext_permission::ToolCallPattern
@@ -17,9 +19,16 @@ impl awaken_ext_permission::PermissionRuleset
 pub fn awaken_ext_permission::PermissionRuleset::decide(&self, &str, &serde_json::value::Value) -> awaken_ext_permission::ToolPermissionBehavior
 impl core::default::Default for awaken_ext_permission::PermissionRuleset
 pub fn awaken_ext_permission::PermissionRuleset::default() -> Self
+pub struct awaken_ext_permission::ReversibilityEvaluator
+impl awaken_ext_permission::ReversibilityEvaluator
+pub fn awaken_ext_permission::ReversibilityEvaluator::new(impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
+impl awaken_ext_permission::AutoPermissionEvaluator for awaken_ext_permission::ReversibilityEvaluator
+pub fn awaken_ext_permission::ReversibilityEvaluator::evaluate(&self, &awaken_runtime_contract::llm::ToolCall) -> awaken_ext_permission::AutoDecision
 pub struct awaken_ext_permission::RuleBasedToolPermissionPolicy
 impl awaken_ext_permission::RuleBasedToolPermissionPolicy
 pub fn awaken_ext_permission::RuleBasedToolPermissionPolicy::new(awaken_ext_permission::PermissionRuleset) -> Self
+pub fn awaken_ext_permission::RuleBasedToolPermissionPolicy::with_auto_evaluator(self, alloc::sync::Arc<dyn awaken_ext_permission::AutoPermissionEvaluator>) -> Self
+pub fn awaken_ext_permission::RuleBasedToolPermissionPolicy::with_auto_tools(self, impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>) -> Self
 pub fn awaken_ext_permission::RuleBasedToolPermissionPolicy::with_mcp_toolsets(self, &[awaken_agent_contract::toolset::ToolsetPolicy]) -> Self
 impl awaken_runtime_contract::permission::ToolPermissionPolicy for awaken_ext_permission::RuleBasedToolPermissionPolicy
 pub fn awaken_ext_permission::RuleBasedToolPermissionPolicy::evaluate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::permission::ToolPermissionVerdict> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -33,4 +42,8 @@ pub struct awaken_ext_permission::ToolCallPattern(_)
 impl awaken_ext_permission::ToolCallPattern
 pub fn awaken_ext_permission::ToolCallPattern::matches(&self, &str, &serde_json::value::Value) -> core::option::Option<awaken_tool_pattern::types::Specificity>
 pub fn awaken_ext_permission::ToolCallPattern::parse(&str) -> core::result::Result<Self, alloc::string::String>
+pub trait awaken_ext_permission::AutoPermissionEvaluator: core::marker::Send + core::marker::Sync + core::fmt::Debug
+pub fn awaken_ext_permission::AutoPermissionEvaluator::evaluate(&self, &awaken_runtime_contract::llm::ToolCall) -> awaken_ext_permission::AutoDecision
+impl awaken_ext_permission::AutoPermissionEvaluator for awaken_ext_permission::ReversibilityEvaluator
+pub fn awaken_ext_permission::ReversibilityEvaluator::evaluate(&self, &awaken_runtime_contract::llm::ToolCall) -> awaken_ext_permission::AutoDecision
 pub fn awaken_ext_permission::parse_ruleset(&serde_json::value::Value) -> core::result::Result<awaken_ext_permission::PermissionRuleset, alloc::string::String>
