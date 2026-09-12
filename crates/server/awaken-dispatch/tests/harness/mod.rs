@@ -104,7 +104,7 @@ pub fn assert_completed_model_invocations(commit: &dyn CommittedThreadView, coun
                 (
                     ordinal,
                     ModelOperationPhase::Returned,
-                    ModelExecutionEvidence::Terminated(awaken_runtime_contract::model_operation::TerminalReceipt::from_wire_status(Some("completed")).unwrap())
+                    ModelExecutionEvidence::Terminated(returned_response_receipt())
                 ),
             ])
             .collect::<Vec<_>>()
@@ -115,6 +115,23 @@ pub fn assert_completed_model_invocations(commit: &dyn CommittedThreadView, coun
 /// settlement in a direct Worker drive.
 pub fn clock(now_ms: u64) -> Arc<dyn awaken_dispatch::Clock> {
     Arc::new(awaken_dispatch::ManualClock::new(now_ms))
+}
+
+/// The receipt a returned `ChatResponse` carries, read from the port that owns
+/// that rule rather than restated here.
+///
+/// Every executor in this harness answers `Ok(ChatResponse)`, which the port
+/// documents as "an adapter decoded the provider's complete response". Asking
+/// `ChatResponse::terminal_receipt` for the expectation keeps this assertion
+/// bound to that one authority: if the port ever changes what a returned
+/// response proves, this test follows instead of drifting into a stale copy.
+fn returned_response_receipt() -> awaken_runtime_contract::model_operation::TerminalReceipt {
+    ChatResponse {
+        output: AssistantOutput::text(String::new()),
+        usage: None,
+        stop_reason: None,
+    }
+    .terminal_receipt()
 }
 
 /// Always answers with fixed text — a fresh run ends naturally in one step.
