@@ -21,6 +21,7 @@ import _session_effect_fitness
 import _session_state_ownership_fitness
 import _service_data_ownership_fitness
 import _sqlite_scheduler_fitness
+import _wire_closure_fitness
 import _crate_boundary_workspace
 from _crate_boundary_workspace import architecture_fitness_specs, dependency_fitness_specs, text_files
 
@@ -1326,6 +1327,7 @@ def main() -> int:
     _execution_ownership_fitness.selftest()
     _managed_protocol_boundary.selftest()
     _provider_env_fitness.selftest()
+    _wire_closure_fitness.selftest()
     selftest_builtin_tool_ownership()
     selftest_no_direct_transport_dependency()
     selftest_tenancy_is_required()
@@ -1347,6 +1349,7 @@ def main() -> int:
         + check_no_ambient_tenant_default()
         + _resource_plane_fitness.check_all(REPO_ROOT, CRATES)
         + _runtime_secret_boundary.check_all(REPO_ROOT, CRATES)
+        + _wire_closure_fitness.check_all(REPO_ROOT, CRATES)
         + _provider_env_fitness.check_all(REPO_ROOT, CRATES)
         + _arch_fitness.check_all(architecture_fitness_specs())
         + _coordinator_authority_fitness.check_all(REPO_ROOT, CRATES)
