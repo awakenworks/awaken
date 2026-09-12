@@ -20,12 +20,12 @@ CONSTANTS Calls = {call1} PendingCommits = {commit1} Operations = {op1}
  MaxRejected = 1 MaxConflicts = 1
 INVARIANTS EveryBatchKeyAppendsAtMostOnce
 """
-    append = source[source.index("AppendBatch(key, fingerprint) =="):source.index("\\* One retry decision")]
+    append = source[source.index("AppendBatch(key, fingerprint, reply) =="):source.index("\\* One retry decision")]
     replay = source[source.index("ReplayBatch(key, fingerprint) =="):source.index("\\* Final non-admission")]
     conflict = source[source.index("ConflictBatch(key, fingerprint) =="):source.index("End ==")]
     variables = [name.strip() for name in source.split("vars == <<", 1)[1].split(">>", 1)[0].replace("\n", "").split(",")]
     rewritten = replay.replace("    /\\ UNCHANGED vars", "    /\\ batchFingerprint' = [batchFingerprint EXCEPT ![key] = None]\n    /\\ UNCHANGED <<" + ", ".join(name for name in variables if name != "batchFingerprint") + ">>")
-    appended = conflict.replace("    /\\ batchConflicts'", "    /\\ batchAppends' = [batchAppends EXCEPT ![key] = @ + 1]\n    /\\ batchConflicts'", 1).replace("batchFingerprint, batchAppends>>", "batchFingerprint>>", 1)
+    appended = conflict.replace("    /\\ batchConflicts'", "    /\\ batchAppends' = [batchAppends EXCEPT ![key] = @ + 1]\n    /\\ batchConflicts'", 1).replace("batchFingerprint, batchAppends, batchReply>>", "batchFingerprint, batchReply>>", 1)
     mutants = [
         (source.replace(append, append.replace("    /\\ batchFingerprint[key] = None", "    /\\ TRUE", 1), 1), config, "EveryBatchKeyAppendsAtMostOnce"),
         (source.replace(replay, rewritten, 1), config + "PROPERTIES BatchFingerprintNeverChanges\n", "action:BatchFingerprintNeverChanges"),
@@ -42,6 +42,20 @@ INVARIANTS EveryBatchKeyAppendsAtMostOnce
         witnesses.append((witness, config.replace("EveryBatchKeyAppendsAtMostOnce", name), name))
     check_tlc_model_mutations(tlc_jar, "ToolResultProtocol", source, config, witnesses)
     print("Event batch: 3 model mutants and 2 retained-outcome witnesses qualified")
+    # Admission/consumption are separate boundaries. Two distinct HTTP keys
+    # may validate the same ticket before either CAS. Removing the root-owned
+    # occupancy guard must create two accepted replies, even before Deliver.
+    reply_config = config.replace("Keys = {key1}", "Keys = {key1, key2}").replace(
+        "INVARIANTS EveryBatchKeyAppendsAtMostOnce", "INVARIANTS EveryPendingCallHasAtMostOneAdmittedReply")
+    guard = "    /\\ reply = None \\/ (\\A retained \\in Keys: batchReply[retained] # reply)"
+    assert source.count(guard) == 1
+    duplicate = source.replace(guard, "    /\\ TRUE", 1)
+    check_tlc_model_mutations(tlc_jar, "ToolResultProtocol", source, reply_config,
+                             [(duplicate, reply_config, "EveryPendingCallHasAtMostOneAdmittedReply")])
+    witness = source.replace("Spec == Init", "NoAdmittedToolReply == \\A key \\in Keys: batchReply[key] = None\n\nSpec == Init", 1)
+    check_tlc_model_mutations(tlc_jar, "ToolResultProtocol", source, reply_config,
+                             [(witness, reply_config.replace("EveryPendingCallHasAtMostOneAdmittedReply", "NoAdmittedToolReply"), "NoAdmittedToolReply")])
+    print("Tool result: 1 root occupancy mutant and 1 pre-delivery admission witness qualified")
     # Call/commit decision table: both coordinates exact enables acceptance;
     # either coordinate foreign disables it. Two values per coordinate expose
     # each removed guard independently. Observe the PRE-state awaiting call,

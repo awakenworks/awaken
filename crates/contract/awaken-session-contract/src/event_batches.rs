@@ -215,6 +215,24 @@ pub enum SessionEventToolReplyKind {
 }
 
 impl SessionEventToolReply {
+    /// The pending occurrence is independent of HTTP key, payload, public id
+    /// spelling and later Thread versions. A legacy missing commit cannot
+    /// establish a different occurrence of the same Run/correlation/call.
+    #[must_use]
+    pub fn answers_same_pending_call(&self, other: &Self) -> bool {
+        self.target == other.target
+            && self.expected_run_id == other.expected_run_id
+            && self.expected_correlation_id == other.expected_correlation_id
+            && self.runtime_tool_use_id == other.runtime_tool_use_id
+            && match (
+                self.answered_pending_commit_cursor,
+                other.answered_pending_commit_cursor,
+            ) {
+                (Some(left), Some(right)) => left == right,
+                _ => true,
+            }
+    }
+
     /// Lower retained provenance into the one existing Session/dispatch resume
     /// command. Adjacent System input is frozen by the batch reconciler so the
     /// System Message and tool result commit in the same resumed Run.
@@ -700,6 +718,32 @@ impl SessionEventBatch {
         resolved
     }
 
+    /// Check occupancy in the root snapshot that will be CASed. Resolve exact
+    /// key replay first. Processed replies still occupy their original call.
+    pub fn validate_tool_reply_occupancy(
+        &self,
+        retained: &[Self],
+    ) -> Result<(), SessionEventBatchError> {
+        for (ordinal, entry) in self.events.iter().enumerate() {
+            let SessionEventCommand::ToolReply { reply, .. } = &entry.event else {
+                continue;
+            };
+            if retained
+                .iter()
+                .flat_map(|batch| &batch.events)
+                .chain(self.events[..ordinal].iter())
+                .any(|previous| {
+                    matches!(&previous.event,
+                    SessionEventCommand::ToolReply { reply: earlier, .. }
+                        if reply.answers_same_pending_call(earlier))
+                })
+            {
+                return Err(SessionEventBatchError::DuplicateToolReply);
+            }
+        }
+        Ok(())
+    }
+
     pub fn compile(
         session_id: &str,
         batch_id: impl Into<String>,
@@ -944,6 +988,8 @@ pub enum SessionEventBatchError {
     SystemMessagePlacement,
     #[error("Session Event tool reply coordinate is incomplete")]
     InvalidToolReplyCoordinate,
+    #[error("tool result already retained for this pending tool event")]
+    DuplicateToolReply,
     #[error("Session Event interrupt target set is empty or inconsistent")]
     InvalidInterruptTargets,
     #[error("Session initial Event batch contains an Event allowed only by events.send")]
@@ -1033,6 +1079,94 @@ mod tests {
         SessionEventInput::SystemMessage {
             content: vec![ContentBlock::text(text)],
         }
+    }
+
+    #[test]
+    fn tool_reply_occupancy_uses_pending_occurrence_not_delivery_metadata() {
+        // Cause/effect decision table: R1 exact occurrence rejects whether the
+        // previous entry is pending or processed; R2 payload/public spelling/
+        // Thread version changes do not free it; R3 each different owner, Run,
+        // correlation, call or known pending commit is a distinct occurrence;
+        // R4 missing legacy commit on either side fails closed for the same
+        // neutral coordinates; R5 duplicate inside one batch rejects atomically;
+        // R6 empty and unrelated batches do not occupy a call.
+        let SessionEventInput::ToolReply(mut base) = tool_reply() else {
+            unreachable!()
+        };
+        base.answered_pending_commit_cursor = Some(7);
+        let compile = |id: &str, replies: Vec<SessionEventToolReply>| {
+            SessionEventBatch::compile(
+                "s",
+                id,
+                replies
+                    .into_iter()
+                    .map(SessionEventInput::ToolReply)
+                    .collect(),
+            )
+            .unwrap()
+        };
+        let mut retained = compile("old", vec![base.clone()]);
+        for processed in [false, true] {
+            retained.events[0].processed = processed;
+            for variant in 0..11 {
+                let mut next = base.clone();
+                match variant {
+                    0 => {}
+                    1 => next.tool_request_event_id = "new-public-spelling".into(),
+                    2 => next.expected_thread_version = Some(900),
+                    3 => {
+                        next.reply = SessionEventToolReplyKind::Confirmation {
+                            allow: false,
+                            deny_message: None,
+                        }
+                    }
+                    4 => {
+                        next.target = SessionThreadTarget::Child(
+                            awaken_agent_contract::agent::thread::Id("other".into()),
+                        )
+                    }
+                    5 => next.expected_run_id = RunId("other".into()),
+                    6 => next.expected_correlation_id = "other".into(),
+                    7 => next.runtime_tool_use_id = "other".into(),
+                    8 => next.answered_pending_commit_cursor = Some(900),
+                    9 => next.answered_pending_commit_cursor = None,
+                    10 => {}
+                    _ => unreachable!(),
+                }
+                let mut old = retained.clone();
+                if variant == 10 {
+                    let SessionEventCommand::ToolReply { reply, .. } = &mut old.events[0].event
+                    else {
+                        unreachable!()
+                    };
+                    reply.answered_pending_commit_cursor = None;
+                }
+                let result = compile("new", vec![next]).validate_tool_reply_occupancy(&[old]);
+                assert_eq!(
+                    result.is_ok(),
+                    (4..=8).contains(&variant),
+                    "R1-R4 variant {variant}, processed {processed}"
+                );
+            }
+        }
+        assert!(
+            compile("pair", vec![base.clone(), base.clone()])
+                .validate_tool_reply_occupancy(&[])
+                .is_err(),
+            "R5"
+        );
+        assert!(
+            compile("one", vec![base])
+                .validate_tool_reply_occupancy(&[])
+                .is_ok(),
+            "R6"
+        );
+        let mut empty = retained.clone();
+        empty.events.clear();
+        assert!(
+            empty.validate_tool_reply_occupancy(&[retained]).is_ok(),
+            "R6"
+        );
     }
 
     fn tool_reply() -> SessionEventInput {
