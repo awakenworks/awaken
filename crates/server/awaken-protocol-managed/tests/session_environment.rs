@@ -7,8 +7,10 @@
 //! Scope note: this locks the WIRE/record association + immutability. It does not
 //! assert Sandbox realization, which is covered by Runtime Host provisioning tests.
 
+mod support;
+
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_protocol_managed::{ManagedState, router};
+use awaken_protocol_managed::ManagedState;
 use awaken_session_contract::{
     OutcomeDrive, RunError, SessionRuntime, StepOutcome, ToolPermissionDecision,
 };
@@ -133,9 +135,9 @@ async fn app() -> (Router, String) {
         .await
         .expect("publish Environment through the Control application");
     (
-        router(std::sync::Arc::new(
+        support::edge_stamped(awaken_protocol_managed::router(std::sync::Arc::new(
             ManagedState::new(AcceptingFake).with_environments(environment_execution),
-        )),
+        ))),
         environment.id,
     )
 }

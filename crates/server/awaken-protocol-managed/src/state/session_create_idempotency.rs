@@ -4,7 +4,7 @@
 //! only lowers an external owner-scoped idempotency key into the stable opaque
 //! Session identity needed to address that existing receipt.
 
-use super::{DEFAULT_SCOPE, ManagedState, StateError};
+use super::{ManagedState, StateError};
 use crate::types::resource::ResourceInput;
 use crate::types::{AgentRef, AgentRefObject, ModelEffortInput, Session, SessionCreateParams};
 
@@ -102,10 +102,10 @@ impl ManagedState {
     pub async fn create_session_idempotent(
         &self,
         req: SessionCreateParams,
-        workspace_id: Option<String>,
+        owner_scope: &str,
         idempotency_key: &str,
     ) -> Result<Session, StateError> {
-        let owner_scope = workspace_id.as_deref().unwrap_or(DEFAULT_SCOPE).to_owned();
+        let owner_scope = owner_scope.to_owned();
         let session_id = managed_session_id_from_idempotency(&owner_scope, idempotency_key);
         let request_fingerprint = request_fingerprint(&req, &session_id)?;
         let idempotency = awaken_session_contract::IdempotencyRecord {
@@ -122,7 +122,7 @@ impl ManagedState {
         }
         Box::pin(self.create_session_with_identity(
             req,
-            workspace_id,
+            &owner_scope,
             Some(session_id),
             Some(idempotency),
         ))
@@ -164,7 +164,7 @@ mod tests {
         let original =
             Arc::new(ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone()));
         let created = original
-            .create_session_idempotent(request("Project A"), Some("workspace-a".into()), "issue-a")
+            .create_session_idempotent(request("Project A"), "workspace-a", "issue-a")
             .await
             .expect("R1 creates the canonical Session");
         assert!(
@@ -177,14 +177,14 @@ mod tests {
             Arc::new(ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone()));
         assert!(restarted.list_sessions().is_empty(), "R2 starts cold");
         let replayed = restarted
-            .create_session_idempotent(request("Project A"), Some("workspace-a".into()), "issue-a")
+            .create_session_idempotent(request("Project A"), "workspace-a", "issue-a")
             .await
             .expect("R2 rehydrates durable truth");
         assert_eq!(replayed.id, created.id, "R2 preserves identity");
         assert_eq!(restarted.list_sessions().len(), 1, "R2 projects once");
 
         let mismatch = restarted
-            .create_session_idempotent(request("Changed"), Some("workspace-a".into()), "issue-a")
+            .create_session_idempotent(request("Changed"), "workspace-a", "issue-a")
             .await;
         assert!(
             matches!(mismatch, Err(StateError::IdempotencyMismatch)),
@@ -210,11 +210,7 @@ mod tests {
         assert!(
             matches!(
                 restarted
-                    .create_session_idempotent(
-                        changed_initial_events,
-                        Some("workspace-a".into()),
-                        "issue-a",
-                    )
+                    .create_session_idempotent(changed_initial_events, "workspace-a", "issue-a",)
                     .await,
                 Err(StateError::IdempotencyMismatch)
             ),

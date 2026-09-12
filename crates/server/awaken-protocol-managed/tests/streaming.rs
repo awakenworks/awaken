@@ -21,9 +21,16 @@ mod support;
 
 use std::sync::Arc;
 
+use awaken_protocol_managed::ManagedState;
 use awaken_protocol_managed::test_support::CoordinatedRuntimeFake;
 use awaken_protocol_managed::types::Event;
-use awaken_protocol_managed::{ManagedState, router};
+
+/// The Managed router as a real deployment mounts it — behind the trusted edge
+/// stamp the composition root installs. Handlers fail closed on an absent
+/// Workspace, so an unstamped router is not a representative fixture.
+fn router(state: Arc<ManagedState>) -> axum::Router {
+    support::edge_stamped(awaken_protocol_managed::router(state))
+}
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -41,7 +48,7 @@ async fn state_create(state: &ManagedState) -> String {
                 "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
             }))
             .unwrap(),
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         ),
     )
     .await

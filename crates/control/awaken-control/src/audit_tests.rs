@@ -54,13 +54,21 @@ fn audit_plane() -> ManagementAuditPlane {
     .management_audit_plane()
 }
 
+/// A management mutation as it reaches the audit layer in a real deployment:
+/// the trusted edge (IAM, workspace path, or the composition-root stamp) has
+/// already resolved a Workspace, because the audit record is filed against one
+/// and the layer refuses an unstamped request rather than inventing a tenant.
 fn mutation(call_id: &str, body: impl Into<Body>) -> Request<Body> {
-    Request::builder()
+    let mut request = Request::builder()
         .method(Method::POST)
         .uri("/v1/mutate")
         .header("x-request-id", call_id)
         .body(body.into())
-        .unwrap()
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("ws_edge".into()));
+    request
 }
 
 async fn stamp_workspace(mut request: Request<Body>, next: Next) -> Response {
@@ -293,7 +301,7 @@ async fn management_audit_completion_failure_keeps_successful_write_pending() {
 
     let entry = durable
         .get(
-            &ScopeId::from(DEFAULT_SCOPE),
+            &ScopeId::from("ws_edge"),
             "http:POST:/v1/mutate",
             "completion-fails-1",
         )
@@ -410,12 +418,17 @@ async fn domain_idempotency_key_is_not_reinterpreted_as_an_audit_call_identity()
             durable_management_audit,
         ));
     let domain_attempt = || {
-        Request::builder()
+        let mut request = Request::builder()
             .method(Method::POST)
             .uri("/v1/mutate")
             .header("idempotency-key", "domain-command-1")
             .body(Body::from("one"))
-            .unwrap()
+            .unwrap();
+        // The edge resolves the Workspace; the audit layer never invents one.
+        request
+            .extensions_mut()
+            .insert(WorkspaceScope("ws_edge".into()));
+        request
     };
 
     let first = app.clone().oneshot(domain_attempt()).await.unwrap();

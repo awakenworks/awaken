@@ -324,7 +324,6 @@ pub async fn build_coordinator_component(
             .merge(crate::application_access::router(
                 application_access,
                 sessions,
-                default_workspace.clone(),
             )),
         default_workspace,
     );

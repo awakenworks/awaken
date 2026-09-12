@@ -83,14 +83,11 @@ fn preview_conflict_preserves_the_structured_root_cause() {
 
 async fn create_preview(
     State(plane): State<ConfigPlane>,
-    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+    RequiredScope(scope): RequiredScope,
     execution: Option<Extension<ExecutionWorkspace>>,
     Path(preview_id): Path<String>,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
-    let Ok(scope) = request_scope(scope) else {
-        return workspace_not_found();
-    };
     if !valid_preview_id(&preview_id) {
         return (
             StatusCode::BAD_REQUEST,
@@ -164,13 +161,10 @@ async fn create_preview(
 
 async fn delete_preview(
     State(plane): State<ConfigPlane>,
-    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+    RequiredScope(scope): RequiredScope,
     execution: Option<Extension<ExecutionWorkspace>>,
     Path(preview_id): Path<String>,
 ) -> (StatusCode, Json<Value>) {
-    let Ok(scope) = request_scope(scope) else {
-        return workspace_not_found();
-    };
     if !valid_preview_id(&preview_id) {
         return (
             StatusCode::BAD_REQUEST,
@@ -199,20 +193,43 @@ fn workspace_not_found() -> (StatusCode, Json<Value>) {
     )
 }
 
-pub(crate) fn request_scope(ext: Option<Extension<WorkspaceScope>>) -> Result<ScopeId, ()> {
-    ext.and_then(|Extension(workspace)| workspace.non_empty().map(ScopeId::from))
-        .ok_or(())
+/// The tenant scope the trusted ingress edge already selected.
+///
+/// Absence is refused here, in the extractor, so no handler below has a `None`
+/// arm that could be given a compiled-in meaning. A single-machine deployment
+/// receives its scope from the one composition-root stamp
+/// (`awaken_coordinator::workspace_path::with_platform_workspace`).
+pub(crate) struct RequiredScope(pub(crate) ScopeId);
+
+impl<S> axum::extract::FromRequestParts<S> for RequiredScope
+where
+    S: Send + Sync,
+{
+    type Rejection = axum::response::Response;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        match parts
+            .extensions
+            .get::<WorkspaceScope>()
+            .and_then(WorkspaceScope::non_empty)
+        {
+            Some(scope) => Ok(Self(ScopeId::from(scope))),
+            None => Err(axum::response::IntoResponse::into_response(
+                workspace_not_found(),
+            )),
+        }
+    }
 }
 
 /// Absence is scoped, so another Workspace's fingerprint is never disclosed.
 async fn get_publication(
     State(plane): State<ConfigPlane>,
     Path(fingerprint): Path<String>,
-    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+    RequiredScope(scope): RequiredScope,
 ) -> (StatusCode, Json<Value>) {
-    let Ok(scope) = request_scope(scope) else {
-        return workspace_not_found();
-    };
     if fingerprint.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -240,11 +257,8 @@ async fn get_publication(
 async fn export_publication(
     State(plane): State<ConfigPlane>,
     Path(fingerprint): Path<String>,
-    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+    RequiredScope(scope): RequiredScope,
 ) -> (StatusCode, Json<Value>) {
-    let Ok(scope) = request_scope(scope) else {
-        return workspace_not_found();
-    };
     if fingerprint.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -278,12 +292,9 @@ async fn export_publication(
 
 pub(crate) async fn list_configs(
     State(plane): State<ConfigPlane>,
-    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+    RequiredScope(scope): RequiredScope,
     execution: Option<Extension<ExecutionWorkspace>>,
 ) -> (StatusCode, Json<Value>) {
-    let Ok(scope) = request_scope(scope) else {
-        return workspace_not_found();
-    };
     let execution = publication_workspace(&scope, execution.as_ref());
     match plane.list(&scope).await {
         Ok(configs) => {
@@ -324,12 +335,9 @@ pub(crate) async fn list_configs(
 pub(crate) async fn get_config(
     State(plane): State<ConfigPlane>,
     Path(id): Path<String>,
-    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+    RequiredScope(scope): RequiredScope,
     execution: Option<Extension<ExecutionWorkspace>>,
 ) -> (StatusCode, Json<Value>) {
-    let Ok(scope) = request_scope(scope) else {
-        return workspace_not_found();
-    };
     match plane.get_versioned(&scope, &id).await {
         Ok(Some(versioned)) => {
             let _execution_workspace = publication_workspace(&scope, execution.as_ref());
@@ -395,14 +403,11 @@ fn apply_authoring_permission_preset(
 
 pub(crate) async fn validate(
     State(plane): State<ConfigPlane>,
-    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+    RequiredScope(scope): RequiredScope,
     execution: Option<Extension<ExecutionWorkspace>>,
     Path(id): Path<String>,
     Json(mut body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
-    let Ok(scope) = request_scope(scope) else {
-        return workspace_not_found();
-    };
     let permission_preset = match take_agent_permission_preset(&mut body) {
         Ok(preset) => preset,
         Err(error) => {
@@ -466,13 +471,10 @@ pub(crate) async fn validate(
 
 pub(crate) async fn put_config(
     State(plane): State<ConfigPlane>,
-    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+    RequiredScope(scope): RequiredScope,
     Path(id): Path<String>,
     Json(mut body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
-    let Ok(scope) = request_scope(scope) else {
-        return workspace_not_found();
-    };
     let permission_preset = match take_agent_permission_preset(&mut body) {
         Ok(preset) => preset,
         Err(error) => {
@@ -560,14 +562,11 @@ pub(crate) async fn put_config(
 
 pub(crate) async fn publish(
     State(plane): State<ConfigPlane>,
-    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+    RequiredScope(scope): RequiredScope,
     execution: Option<Extension<ExecutionWorkspace>>,
     Path(id): Path<String>,
     request: Option<Json<Value>>,
 ) -> (StatusCode, Json<Value>) {
-    let Ok(scope) = request_scope(scope) else {
-        return workspace_not_found();
-    };
     let request = match request
         .map(|Json(request)| PublishRequest::try_from(request))
         .transpose()
@@ -810,7 +809,7 @@ mod publication_projection_tests {
         let (status, Json(mut wire)) = get_config(
             State(plane.clone()),
             Path(seeded.id.clone()),
-            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            RequiredScope(ScopeId::from(scope.as_str())),
             None,
         )
         .await;
@@ -842,7 +841,7 @@ mod publication_projection_tests {
         ]);
         let (status, Json(saved)) = put_config(
             State(plane.clone()),
-            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            RequiredScope(ScopeId::from(scope.as_str())),
             Path(seeded.id.clone()),
             Json(wire.clone()),
         )
@@ -899,7 +898,7 @@ mod publication_projection_tests {
         wire["generation"] = json!(1);
         let (status, _) = put_config(
             State(plane.clone()),
-            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            RequiredScope(ScopeId::from(scope.as_str())),
             Path(seeded.id.clone()),
             Json(wire.clone()),
         )
@@ -926,7 +925,7 @@ mod publication_projection_tests {
             fenced["generation"] = unreadable.clone();
             let (status, body) = put_config(
                 State(plane.clone()),
-                Some(Extension(WorkspaceScope(scope.as_str().into()))),
+                RequiredScope(ScopeId::from(scope.as_str())),
                 Path(seeded.id.clone()),
                 Json(fenced),
             )
@@ -974,7 +973,7 @@ mod publication_projection_tests {
         let (status, Json(mut wire)) = get_config(
             State(plane.clone()),
             Path(seeded.id.clone()),
-            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            RequiredScope(ScopeId::from(scope.as_str())),
             None,
         )
         .await;
@@ -983,7 +982,7 @@ mod publication_projection_tests {
         wire["permission_preset"] = json!("controlled_modifications");
         let (status, Json(result)) = put_config(
             State(plane.clone()),
-            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            RequiredScope(ScopeId::from(scope.as_str())),
             Path(seeded.id.clone()),
             Json(wire),
         )
@@ -1022,7 +1021,7 @@ mod publication_projection_tests {
         let (status, Json(mut invalid)) = get_config(
             State(plane.clone()),
             Path(seeded.id.clone()),
-            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            RequiredScope(ScopeId::from(scope.as_str())),
             None,
         )
         .await;
@@ -1030,7 +1029,7 @@ mod publication_projection_tests {
         invalid["permission_preset"] = json!("read_only");
         let (status, Json(error)) = put_config(
             State(plane.clone()),
-            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            RequiredScope(ScopeId::from(scope.as_str())),
             Path(seeded.id.clone()),
             Json(invalid),
         )
@@ -1077,13 +1076,8 @@ mod publication_projection_tests {
         plane.put(&scope, &seeded).await.unwrap();
 
         let wire_now = |plane: ConfigPlane, scope: ScopeId, id: String| async move {
-            let (status, Json(wire)) = get_config(
-                State(plane),
-                Path(id),
-                Some(Extension(WorkspaceScope(scope.as_str().into()))),
-                None,
-            )
-            .await;
+            let (status, Json(wire)) =
+                get_config(State(plane), Path(id), RequiredScope(scope), None).await;
             assert_eq!(status, StatusCode::OK);
             wire
         };
@@ -1096,7 +1090,7 @@ mod publication_projection_tests {
         renamed["instructions"] = json!("an edit the author expects to land");
         let (status, Json(error)) = put_config(
             State(plane.clone()),
-            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            RequiredScope(scope.clone()),
             Path(seeded.id.clone()),
             Json(renamed),
         )
@@ -1134,7 +1128,7 @@ mod publication_projection_tests {
         }
         let (status, Json(saved)) = put_config(
             State(plane.clone()),
-            Some(Extension(WorkspaceScope(scope.as_str().into()))),
+            RequiredScope(scope.clone()),
             Path(seeded.id.clone()),
             Json(edited),
         )
@@ -1169,9 +1163,7 @@ mod publication_projection_tests {
         let (status, body) = get_publication(
             State(plane.clone()),
             Path(published.fingerprint.clone()),
-            Some(Extension(awaken_tenancy::WorkspaceScope(
-                owner.as_str().to_owned(),
-            ))),
+            RequiredScope(ScopeId::from(owner.as_str().to_owned())),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -1180,7 +1172,7 @@ mod publication_projection_tests {
         let (status, _) = get_publication(
             State(plane),
             Path(published.fingerprint),
-            Some(Extension(awaken_tenancy::WorkspaceScope("intruder".into()))),
+            RequiredScope(ScopeId::from("intruder")),
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
@@ -1188,7 +1180,7 @@ mod publication_projection_tests {
             get_publication(
                 State(failing_scoped_plane()),
                 Path("fp".into()),
-                Some(Extension(WorkspaceScope("workspace-owner".into()))),
+                RequiredScope(ScopeId::from("workspace-owner")),
             )
             .await
             .0,
@@ -1214,9 +1206,7 @@ mod publication_projection_tests {
         let (status, body) = export_publication(
             State(plane.clone()),
             Path(published.fingerprint.clone()),
-            Some(Extension(awaken_tenancy::WorkspaceScope(
-                owner.as_str().to_owned(),
-            ))),
+            RequiredScope(ScopeId::from(owner.as_str().to_owned())),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -1228,7 +1218,7 @@ mod publication_projection_tests {
             export_publication(
                 State(plane.clone()),
                 Path(published.fingerprint),
-                Some(Extension(awaken_tenancy::WorkspaceScope("intruder".into()))),
+                RequiredScope(ScopeId::from("intruder")),
             )
             .await
             .0,
@@ -1238,7 +1228,7 @@ mod publication_projection_tests {
             export_publication(
                 State(failing_scoped_plane()),
                 Path("fp".into()),
-                Some(Extension(WorkspaceScope("workspace-owner".into()))),
+                RequiredScope(ScopeId::from("workspace-owner")),
             )
             .await
             .0,
@@ -1248,7 +1238,7 @@ mod publication_projection_tests {
             export_publication(
                 State(plane.clone()),
                 Path("   ".into()),
-                Some(Extension(WorkspaceScope("workspace-owner".into()))),
+                RequiredScope(ScopeId::from("workspace-owner")),
             )
             .await
             .0,
@@ -1265,9 +1255,7 @@ mod publication_projection_tests {
             export_publication(
                 State(plane),
                 Path(non_native.fingerprint),
-                Some(Extension(awaken_tenancy::WorkspaceScope(
-                    owner.as_str().to_owned(),
-                ))),
+                RequiredScope(ScopeId::from(owner.as_str().to_owned())),
             )
             .await
             .0,

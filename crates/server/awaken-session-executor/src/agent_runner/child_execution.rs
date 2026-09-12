@@ -720,9 +720,31 @@ pub(crate) fn child_dispatch_request(
     session_resources: Option<awaken_session_contract::SessionResourceManifest>,
     publication_source: Option<&dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
 ) -> Result<RunDispatch, AgentRunError> {
-    let workspace = session_resources
-        .as_ref()
-        .map_or("default", |resources| resources.workspace_id.as_str());
+    // Delegated publications are frozen FROM a Workspace, so this coordinate
+    // selects whose published Agent a child may inherit. A compiled-in default
+    // would let a child freeze another tenant's publication, so an unknown
+    // Workspace is refused rather than guessed. A parent that delegates to
+    // nothing never consults it, and keeps working without a resource manifest.
+    let workspace = match session_resources.as_ref() {
+        Some(resources) => resources.workspace_id.as_str(),
+        None if activation
+            .snapshot
+            .resolved_spec
+            .plugin_config
+            .agent
+            .delegates
+            .is_empty() =>
+        {
+            ""
+        }
+        None => {
+            return Err(AgentRunError::Configuration(
+                "child dispatch cannot freeze delegated publications without the \
+                 session's Workspace"
+                    .to_string(),
+            ));
+        }
+    };
     let child_publications = crate::agent_catalog::freeze_run_publications(
         &activation.snapshot,
         publication_source,

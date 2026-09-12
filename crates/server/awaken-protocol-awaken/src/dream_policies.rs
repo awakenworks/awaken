@@ -10,7 +10,7 @@ use awaken_tenancy::WorkspaceScope;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::get;
-use axum::{Extension, Json, Router};
+use axum::{Json, Router};
 use serde::Serialize;
 
 pub fn dream_policy_router(application: Arc<dyn DreamPolicyApplication>) -> Router {
@@ -29,39 +29,54 @@ struct DreamPolicyErrorBody {
 
 type DreamPolicyRejection = (StatusCode, Json<DreamPolicyErrorBody>);
 
-fn request_scope(scope: Option<Extension<WorkspaceScope>>) -> Result<String, DreamPolicyRejection> {
-    match scope
-        .as_ref()
-        .and_then(|Extension(scope)| scope.non_empty())
-    {
-        Some(scope) => Ok(scope.to_owned()),
-        _ => Err((
-            StatusCode::NOT_FOUND,
-            Json(DreamPolicyErrorBody {
-                error: "workspace not found".into(),
-            }),
-        )),
+/// The Workspace the trusted ingress edge already selected. Absence is refused
+/// here, as an extractor, so no handler body below has an absent case to give a
+/// default meaning to.
+struct RequiredWorkspaceScope(String);
+
+impl<S> axum::extract::FromRequestParts<S> for RequiredWorkspaceScope
+where
+    S: Send + Sync,
+{
+    type Rejection = axum::response::Response;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        match parts
+            .extensions
+            .get::<WorkspaceScope>()
+            .and_then(WorkspaceScope::non_empty)
+        {
+            Some(scope) => Ok(Self(scope.to_owned())),
+            None => Err(axum::response::IntoResponse::into_response((
+                StatusCode::NOT_FOUND,
+                Json(DreamPolicyErrorBody {
+                    error: "workspace not found".into(),
+                }),
+            ))),
+        }
     }
 }
 
 async fn get_policy(
     State(application): State<Arc<dyn DreamPolicyApplication>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(memory_store_id): Path<String>,
 ) -> Result<Json<DreamPolicy>, DreamPolicyRejection> {
     application
-        .policy(&request_scope(scope)?, &memory_store_id)
+        .policy(&workspace, &memory_store_id)
         .map(Json)
         .map_err(map_error)
 }
 
 async fn put_policy(
     State(application): State<Arc<dyn DreamPolicyApplication>>,
-    scope: Option<Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(memory_store_id): Path<String>,
     Json(config): Json<DreamPolicyConfig>,
 ) -> Result<Json<DreamPolicy>, DreamPolicyRejection> {
-    let workspace = request_scope(scope)?;
     application
         .set_policy(&workspace, &memory_store_id, config)
         .and_then(|()| application.policy(&workspace, &memory_store_id))
@@ -88,17 +103,35 @@ fn map_error(error: DreamPolicyApplicationError) -> DreamPolicyRejection {
 mod tests {
     use super::*;
 
-    #[test]
-    fn workspace_scope_is_required_and_error_mapping_is_explicit() {
-        assert_eq!(request_scope(None).unwrap_err().0, StatusCode::NOT_FOUND);
+    /// Exercise the extractor the way axum does, so absence is tested where it
+    /// is actually decided rather than through a deleted helper function.
+    async fn extract_scope(stamp: Option<&str>) -> Result<String, StatusCode> {
+        use axum::extract::FromRequestParts;
+        let mut parts = axum::http::Request::new(()).into_parts().0;
+        if let Some(stamp) = stamp {
+            parts.extensions.insert(WorkspaceScope(stamp.to_string()));
+        }
+        RequiredWorkspaceScope::from_request_parts(&mut parts, &())
+            .await
+            .map(|RequiredWorkspaceScope(scope)| scope)
+            .map_err(|rejection| {
+                use axum::response::IntoResponse;
+                rejection.into_response().status()
+            })
+    }
+
+    #[tokio::test]
+    async fn workspace_scope_is_required_and_error_mapping_is_explicit() {
         assert_eq!(
-            request_scope(Some(Extension(WorkspaceScope(String::new()))))
-                .unwrap_err()
-                .0,
+            extract_scope(None).await.unwrap_err(),
             StatusCode::NOT_FOUND
         );
         assert_eq!(
-            request_scope(Some(Extension(WorkspaceScope("workspace-a".into())))).unwrap(),
+            extract_scope(Some("")).await.unwrap_err(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            extract_scope(Some("workspace-a")).await.unwrap(),
             "workspace-a"
         );
 

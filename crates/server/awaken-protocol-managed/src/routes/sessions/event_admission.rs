@@ -1,3 +1,4 @@
+use crate::common::scope::RequiredWorkspaceScope;
 use std::sync::Arc;
 
 use super::{WireErr, error_response, event_data_subject, parse_idempotency_key};
@@ -5,7 +6,6 @@ use crate::{
     state::{ManagedState, RunError, StateError},
     types::SendEventsRequest,
 };
-use awaken_tenancy::WorkspaceScope;
 use axum::{
     Json,
     extract::{Path, State},
@@ -17,7 +17,7 @@ use axum::{
 pub async fn close_event_admission(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-    workspace: Option<axum::Extension<WorkspaceScope>>,
+    RequiredWorkspaceScope(owner_scope): RequiredWorkspaceScope,
     headers: HeaderMap,
     body: Result<Json<SendEventsRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<awaken_protocol_awaken::EventAdmissionReceipt>, WireErr> {
@@ -37,15 +37,7 @@ pub async fn close_event_admission(
         awaken_session_contract::stable_fingerprint(&(&req, &event_data_subject(&headers)?));
     let admission = state
         .session_application()
-        .close_session_event_admission(
-            workspace
-                .as_ref()
-                .map(|scope| scope.0.0.as_str())
-                .unwrap_or(crate::state::DEFAULT_SCOPE),
-            &id,
-            key.clone(),
-            fingerprint,
-        )
+        .close_session_event_admission(&owner_scope, &id, key.clone(), fingerprint)
         .await
         .map_err(|error| {
             error_response(if error.code == "idempotency_conflict" {

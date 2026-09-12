@@ -2614,7 +2614,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
                 vault_ids: Vec::new(),
                 resources: Vec::new(),
             },
-            None,
+            awaken_tenancy::DEFAULT_WORKSPACE_ID,
         )
         .await
         .expect("create skips haunted ids");
@@ -2644,7 +2644,7 @@ async fn create_session_commits_the_owned_fact_then_notifies_once() {
                 vault_ids: Vec::new(),
                 resources: Vec::new(),
             },
-            Some("wrkspc_acme".to_string()),
+            "wrkspc_acme",
         )
         .await
         .expect("create session");
@@ -2686,7 +2686,7 @@ async fn archive_session_commits_the_terminated_fact_once() {
                 vault_ids: Vec::new(),
                 resources: Vec::new(),
             },
-            Some("wrkspc_acme".to_string()),
+            "wrkspc_acme",
         )
         .await
         .expect("create session");
@@ -2743,7 +2743,7 @@ async fn delete_session_commits_the_deleted_fact_with_the_owner() {
                 vault_ids: Vec::new(),
                 resources: Vec::new(),
             },
-            Some("wrkspc_acme".to_string()),
+            "wrkspc_acme",
         )
         .await
         .expect("create session");

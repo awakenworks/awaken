@@ -193,7 +193,7 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
                 "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
             }))
             .unwrap(),
-            Some("wrkspc_local".into()),
+            "wrkspc_local",
         )
         .await
         .expect("W1 create Session and commit lifecycle fact");

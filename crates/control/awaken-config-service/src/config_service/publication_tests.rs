@@ -1029,7 +1029,7 @@ async fn durable_publication_survives_unavailable_registration_and_retry() {
 
     let (status, _) = publish(
         State(unavailable),
-        Some(Extension(WorkspaceScope(scope.as_str().into()))),
+        crate::config_routes::RequiredScope(scope.clone()),
         None,
         Path("retry-agent".into()),
         None,

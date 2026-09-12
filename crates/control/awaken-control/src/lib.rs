@@ -229,11 +229,24 @@ async fn durable_management_audit(
                 .unwrap_or_default();
             format!("generated-{}-{timestamp}-{seq}", std::process::id())
         });
-    let scope = parts
+    // The audit record is filed AGAINST a tenant, so an unstamped request has
+    // no record to file. Filing it under a compiled-in Workspace would attach a
+    // real principal's write to a tenant that never made it, and would let the
+    // durable idempotency key of one tenant fence another's retry. Refuse
+    // instead; the composition root stamps every anonymous single-machine
+    // request before this layer runs.
+    let Some(scope) = parts
         .extensions
         .get::<awaken_tenancy::WorkspaceScope>()
-        .map(|workspace| ScopeId::from(workspace.0.clone()))
-        .unwrap_or_else(|| ScopeId::from(DEFAULT_SCOPE));
+        .and_then(awaken_tenancy::WorkspaceScope::non_empty)
+        .map(ScopeId::from)
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            "no Workspace was resolved for this management request",
+        )
+            .into_response();
+    };
     let body_hash = format!("{:x}", Sha256::digest(&bytes));
     let audit = ManagementAuditRecord::new(
         format!("http:{}:{}", parts.method, parts.uri.path()),
@@ -511,37 +524,40 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         awaken_config_service::capabilities_router_with_source(global_tools, plugins, runtimes);
     let fallback_workspace = platform_workspace.clone();
     let presentation_identity_mode = identity_mode;
-    let workspace_context = Router::new().route(
-        "/v1/config/workspace-context",
-        get(
-            move |scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
-                  principal: Option<Extension<crate::authz::AuthedPrincipal>>| {
-                let fallback_workspace = fallback_workspace.clone();
-                let organization_id = presentation_org.clone();
-                async move {
-                    let workspace_id = scope
-                        .map(|Extension(scope)| scope.0)
-                        .unwrap_or(fallback_workspace);
-                    let user_display_name = principal_display_name(
-                        principal.as_ref().map(|Extension(principal)| &principal.0),
-                        presentation_identity_mode,
-                    );
-                    let workspace_name = workspace_display_name(&workspace_id);
-                    let organization_name = if presentation_identity_mode == "no-login" {
-                        "Local Organization".into()
-                    } else {
-                        organization_display_name(&organization_id)
-                    };
-                    Json(serde_json::json!({
-                        "workspace_id": workspace_id,
-                        "workspace_display_name": workspace_name,
-                        "organization_id": organization_id,
-                        "organization_display_name": organization_name,
-                        "user_display_name": user_display_name,
-                    }))
-                }
-            },
+    // The presentation route reads the Workspace the edge resolved. The
+    // installation's own Workspace is filled in by ONE layer below, never by
+    // the handler, so this projection can never invent a tenant name.
+    let workspace_context = crate::admin_assistant::with_composed_workspace(
+        Router::new().route(
+            "/v1/config/workspace-context",
+            get(
+                move |Extension(scope): Extension<awaken_tenancy::WorkspaceScope>,
+                      principal: Option<Extension<crate::authz::AuthedPrincipal>>| {
+                    let organization_id = presentation_org.clone();
+                    async move {
+                        let workspace_id = scope.0;
+                        let user_display_name = principal_display_name(
+                            principal.as_ref().map(|Extension(principal)| &principal.0),
+                            presentation_identity_mode,
+                        );
+                        let workspace_name = workspace_display_name(&workspace_id);
+                        let organization_name = if presentation_identity_mode == "no-login" {
+                            "Local Organization".into()
+                        } else {
+                            organization_display_name(&organization_id)
+                        };
+                        Json(serde_json::json!({
+                            "workspace_id": workspace_id,
+                            "workspace_display_name": workspace_name,
+                            "organization_id": organization_id,
+                            "organization_display_name": organization_name,
+                            "user_display_name": user_display_name,
+                        }))
+                    }
+                },
+            ),
         ),
+        Some(fallback_workspace),
     );
 
     // The IAM guard (when enabled) wraps the admin + vault routers only. An

@@ -4,15 +4,15 @@
 //! the only status/readiness projections consumed by setup and selection UIs,
 //! avoiding frontend-derived connection and executable-model state.
 
+use super::RequiredResourceWorkspace;
 #[cfg(test)]
 use awaken_config_resolver::ExecutableModelReadiness;
 use awaken_config_resolver::{ExecutableModelOption, project_executable_models};
 #[cfg(test)]
 use awaken_credential_vault::CredentialStatus;
 use awaken_model_catalog::{CatalogSyncResult, OfferingStatus, ProtocolEndpoint, Provider};
-use awaken_tenancy::WorkspaceScope as ResourceWorkspace;
 use axum::Json;
-use axum::extract::{Extension, Query, State};
+use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 
 use super::{
@@ -64,12 +64,14 @@ const PROVIDER_CATALOG_STALE_AFTER_MS: u64 = 24 * 60 * 60 * 1_000;
 
 pub(super) async fn list_provider_connections(
     State(state): State<AdminState>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     Query(query): Query<ListProviderConnectionsQuery>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<ProviderConnectionSummary>>, Problem> {
     let rid = req_id(&headers);
-    let workspace_id = scope.map_or(query.workspace_id, |Extension(scope)| scope.0);
+    if super::claims_another_workspace(&query.workspace_id, &workspace_id) {
+        return Err(super::resource_workspace_problem(&rid));
+    }
     let catalog = state
         .catalog
         .snapshot()
@@ -181,12 +183,14 @@ pub(super) async fn list_provider_connections(
 pub(super) async fn list_executable_models(
     State(state): State<AdminState>,
     State(capabilities): State<ConfigCapabilitiesView>,
-    scope: Option<Extension<ResourceWorkspace>>,
+    RequiredResourceWorkspace(workspace_id): RequiredResourceWorkspace,
     Query(query): Query<ListProviderConnectionsQuery>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<ExecutableModelOption>>, Problem> {
     let rid = req_id(&headers);
-    let workspace_id = scope.map_or(query.workspace_id, |Extension(scope)| scope.0);
+    if super::claims_another_workspace(&query.workspace_id, &workspace_id) {
+        return Err(super::resource_workspace_problem(&rid));
+    }
     let catalog = state
         .catalog
         .snapshot()
