@@ -44,7 +44,11 @@ fn multipart_file(filename: &str, content: &[u8]) -> Vec<u8> {
     body
 }
 
-async fn upload(router: &Router, filename: &str, content: &[u8]) -> (StatusCode, Value) {
+async fn upload(
+    router: &Router,
+    filename: &str,
+    content: &[u8],
+) -> support::Call<serde_json::Value> {
     upload_with_key(router, filename, content, None).await
 }
 
@@ -53,7 +57,7 @@ async fn upload_with_key(
     filename: &str,
     content: &[u8],
     idempotency_key: Option<&str>,
-) -> (StatusCode, Value) {
+) -> support::Call<serde_json::Value> {
     let mut request = Request::builder().method("POST").uri("/v1/files").header(
         "content-type",
         format!("multipart/form-data; boundary={BOUNDARY}"),
@@ -71,13 +75,13 @@ async fn upload_with_key(
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
-    (
+    support::Call::new(
         status,
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
 }
 
-async fn get(router: &Router, uri: &str) -> (StatusCode, Vec<u8>) {
+async fn get(router: &Router, uri: &str) -> support::Call<Vec<u8>> {
     let resp = router
         .clone()
         .oneshot(in_test_workspace(
@@ -89,10 +93,10 @@ async fn get(router: &Router, uri: &str) -> (StatusCode, Vec<u8>) {
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
-    (status, bytes.to_vec())
+    support::Call::new(status, bytes.to_vec())
 }
 
-async fn delete(router: &Router, uri: &str) -> (StatusCode, Value) {
+async fn delete(router: &Router, uri: &str) -> support::Call<serde_json::Value> {
     let resp = router
         .clone()
         .oneshot(in_test_workspace(
@@ -108,7 +112,7 @@ async fn delete(router: &Router, uri: &str) -> (StatusCode, Value) {
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
-    (
+    support::Call::new(
         status,
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
@@ -124,8 +128,9 @@ async fn delete(router: &Router, uri: &str) -> (StatusCode, Value) {
 async fn upload_download_metadata_and_delete_roundtrip() {
     let router = router();
 
-    let (status, meta) = upload(&router, "hello.txt", b"hello world").await;
-    assert_eq!(status, StatusCode::OK, "{meta}");
+    let meta = upload(&router, "hello.txt", b"hello world")
+        .await
+        .expect_for(StatusCode::OK, "expected status");
     let id = meta["id"].as_str().unwrap().to_string();
     assert_eq!(meta["type"], "file");
     assert_eq!(meta["filename"], "hello.txt");
@@ -140,22 +145,26 @@ async fn upload_download_metadata_and_delete_roundtrip() {
     assert_ne!(meta["created_at"], "1970-01-01T00:00:00Z");
 
     // Metadata by id.
-    let (status, body) = get(&router, &format!("/v1/files/{id}")).await;
-    assert_eq!(status, StatusCode::OK);
+    let body = get(&router, &format!("/v1/files/{id}"))
+        .await
+        .expect(StatusCode::OK);
     let meta: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(meta["size_bytes"], 11);
 
     // Anthropic upload Files are inputs, not downloadable Agent artifacts.
-    let (status, bytes) = get(&router, &format!("/v1/files/{id}/content")).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{:?}", bytes);
+    let _bytes = get(&router, &format!("/v1/files/{id}/content"))
+        .await
+        .expect_for(StatusCode::BAD_REQUEST, "expected status");
 
     // Delete -> receipt; replay completes any retained logical cleanup and
     // returns 404. Physical blob reclamation is independent of this HTTP reply.
-    let (status, receipt) = delete(&router, &format!("/v1/files/{id}")).await;
-    assert_eq!(status, StatusCode::OK);
+    let receipt = delete(&router, &format!("/v1/files/{id}"))
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(receipt["type"], "file_deleted");
-    let (status, _) = delete(&router, &format!("/v1/files/{id}")).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    let _ = delete(&router, &format!("/v1/files/{id}"))
+        .await
+        .expect(StatusCode::NOT_FOUND);
 }
 
 // Test design: multipart_stream_failure_is_atomic_and_sdk_decodable
@@ -205,8 +214,7 @@ async fn multipart_stream_failure_is_atomic_and_sdk_decodable() {
     assert_eq!(error["error"]["type"], "invalid_request_error");
     assert!(error["error"]["message"].is_string());
 
-    let (status, bytes) = get(&router, "/v1/files").await;
-    assert_eq!(status, StatusCode::OK);
+    let bytes = get(&router, "/v1/files").await.expect(StatusCode::OK);
     let page: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(page["data"], serde_json::json!([]));
 }
@@ -228,24 +236,27 @@ async fn equal_upload_bytes_deduplicate_privately_but_keep_distinct_public_files
     // Rule R3: equal bytes + two upload operations → two logical File ids and
     // metadata records (E6), while physical dedup remains an unexposed store fact.
     let router = router();
-    let (status, a) = upload(&router, "a.bin", b"same bytes").await;
-    assert_eq!(status, StatusCode::OK);
-    let (status, b) = upload(&router, "b.bin", b"same bytes").await;
-    assert_eq!(status, StatusCode::OK);
+    let a = upload(&router, "a.bin", b"same bytes")
+        .await
+        .expect(StatusCode::OK);
+    let b = upload(&router, "b.bin", b"same bytes")
+        .await
+        .expect(StatusCode::OK);
     assert_ne!(a["id"], b["id"], "each upload is a logical File");
-    let (status, c) = upload(&router, "c.bin", b"other bytes").await;
-    assert_eq!(status, StatusCode::OK);
+    let c = upload(&router, "c.bin", b"other bytes")
+        .await
+        .expect(StatusCode::OK);
     assert_ne!(a["id"], c["id"]);
     assert_eq!(
         delete(&router, &format!("/v1/files/{}", a["id"].as_str().unwrap()))
             .await
-            .0,
+            .status(),
         StatusCode::OK
     );
     assert_eq!(
         delete(&router, &format!("/v1/files/{}", b["id"].as_str().unwrap()))
             .await
-            .0,
+            .status(),
         StatusCode::OK,
         "two logical Files sharing one blob have independent delete intents"
     );
@@ -262,18 +273,21 @@ async fn idempotent_upload_replays_one_effect_and_rejects_key_drift() {
     let router = router();
     let key = "workspace-agents:resource-upload:command-1";
 
-    let (status, first) = upload_with_key(&router, "brief.txt", b"brief", Some(key)).await;
-    assert_eq!(status, StatusCode::OK, "C1 {first}");
-    let (status, replay) = upload_with_key(&router, "brief.txt", b"brief", Some(key)).await;
-    assert_eq!(status, StatusCode::OK, "C2 {replay}");
+    let first = upload_with_key(&router, "brief.txt", b"brief", Some(key))
+        .await
+        .expect_for(StatusCode::OK, "C1");
+    let replay = upload_with_key(&router, "brief.txt", b"brief", Some(key))
+        .await
+        .expect_for(StatusCode::OK, "C2");
     assert_eq!(replay["id"], first["id"], "C2");
 
     for (filename, bytes) in [
         ("brief.txt", b"changed".as_slice()),
         ("other.txt", b"brief"),
     ] {
-        let (status, conflict) = upload_with_key(&router, filename, bytes, Some(key)).await;
-        assert_eq!(status, StatusCode::CONFLICT, "C3 {conflict}");
+        let conflict = upload_with_key(&router, filename, bytes, Some(key))
+            .await
+            .expect_for(StatusCode::CONFLICT, "C3");
         assert_eq!(conflict["type"], "error", "C3");
         assert_eq!(
             conflict["error"]["message"],
@@ -282,8 +296,7 @@ async fn idempotent_upload_replays_one_effect_and_rejects_key_drift() {
         );
     }
 
-    let (status, page) = get(&router, "/v1/files").await;
-    assert_eq!(status, StatusCode::OK);
+    let page = get(&router, "/v1/files").await.expect(StatusCode::OK);
     let page: Value = serde_json::from_slice(&page).unwrap();
     assert_eq!(page["data"].as_array().unwrap().len(), 1, "C2/C3");
 }
@@ -298,7 +311,7 @@ async fn upload_idempotency_header_is_bounded_and_expiry_is_unambiguous() {
     assert_eq!(
         upload_with_key(&router, "bad.txt", b"bad", Some(&"x".repeat(256)))
             .await
-            .0,
+            .status(),
         StatusCode::BAD_REQUEST
     );
 
@@ -327,8 +340,7 @@ async fn upload_idempotency_header_is_bounded_and_expiry_is_unambiguous() {
         router.clone().oneshot(request).await.unwrap().status(),
         StatusCode::BAD_REQUEST
     );
-    let (status, page) = get(&router, "/v1/files").await;
-    assert_eq!(status, StatusCode::OK);
+    let page = get(&router, "/v1/files").await.expect(StatusCode::OK);
     let page: Value = serde_json::from_slice(&page).unwrap();
     assert!(page["data"].as_array().unwrap().is_empty());
 }
@@ -521,10 +533,12 @@ async fn error_arms_are_fail_closed() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
     // Unknown id: metadata 404, download 404.
-    let (status, _) = get(&router, "/v1/files/file_missing").await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _) = get(&router, "/v1/files/file_missing/content").await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    let _ = get(&router, "/v1/files/file_missing")
+        .await
+        .expect(StatusCode::NOT_FOUND);
+    let _ = get(&router, "/v1/files/file_missing/content")
+        .await
+        .expect(StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -535,10 +549,10 @@ async fn standard_global_and_scoped_lists_reject_private_filters() {
     // request; E4 the same catalog page (beta selection changes no File truth).
     // Decision table: C1 -> E1; C1+C2 -> E2; C1+C3 -> E3; C1+C4 -> E4.
     let router = router();
-    let (status, uploaded) = upload(&router, "listed.txt", b"listed").await;
-    assert_eq!(status, StatusCode::OK);
-    let (status, body) = get(&router, "/v1/files").await;
-    assert_eq!(status, StatusCode::OK);
+    let uploaded = upload(&router, "listed.txt", b"listed")
+        .await
+        .expect(StatusCode::OK);
+    let body = get(&router, "/v1/files").await.expect(StatusCode::OK);
     let list: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(list["data"].as_array().unwrap().len(), 1, "{list}");
     assert_eq!(list["data"][0]["id"], uploaded["id"]);
@@ -546,17 +560,19 @@ async fn standard_global_and_scoped_lists_reject_private_filters() {
     assert_eq!(list["first_id"], uploaded["id"]);
     assert_eq!(list["last_id"], uploaded["id"]);
 
-    let (status, body) = get(&router, "/v1/files?beta=true&limit=100").await;
-    assert_eq!(status, StatusCode::OK, "R4 official SDK query");
+    let body = get(&router, "/v1/files?beta=true&limit=100")
+        .await
+        .expect_for(StatusCode::OK, "R4 official SDK query");
     let sdk_list: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(sdk_list["data"][0]["id"], uploaded["id"], "R4");
 
-    let (status, body) = get(&router, "/v1/files?scope_id=no-such-session").await;
-    assert_eq!(status, StatusCode::OK, "R2");
+    let body = get(&router, "/v1/files?scope_id=no-such-session")
+        .await
+        .expect_for(StatusCode::OK, "R2");
     let scoped: Value = serde_json::from_slice(&body).unwrap();
     assert!(scoped["data"].as_array().unwrap().is_empty(), "R2");
     assert_eq!(
-        get(&router, "/v1/files?purpose=artifact").await.0,
+        get(&router, "/v1/files?purpose=artifact").await.status(),
         StatusCode::BAD_REQUEST,
         "R3"
     );
@@ -602,8 +618,9 @@ async fn harvested_output_is_scoped_downloadable_and_independent_of_live_session
         .unwrap();
     let router = files_router(resources.files());
 
-    let (status, body) = get(&router, "/v1/files?scope_id=deleted-session").await;
-    assert_eq!(status, StatusCode::OK);
+    let body = get(&router, "/v1/files?scope_id=deleted-session")
+        .await
+        .expect(StatusCode::OK);
     let list: Value = serde_json::from_slice(&body).unwrap();
     let file = &list["data"][0];
     assert_eq!(file["id"], "file_output");
@@ -615,8 +632,9 @@ async fn harvested_output_is_scoped_downloadable_and_independent_of_live_session
     assert!(file.get("purpose").is_none());
     assert!(file.get("session_id").is_none());
     assert!(file.get("logical_path").is_none());
-    let (status, bytes) = get(&router, "/v1/files/file_output/content").await;
-    assert_eq!(status, StatusCode::OK);
+    let bytes = get(&router, "/v1/files/file_output/content")
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(bytes, b"finished report");
 }
 
@@ -628,32 +646,38 @@ async fn list_pagination_validates_and_advances_cursors() {
     let router = router();
     for name in ["one.txt", "two.txt", "three.txt"] {
         assert_eq!(
-            upload(&router, name, name.as_bytes()).await.0,
+            upload(&router, name, name.as_bytes()).await.status(),
             StatusCode::OK
         );
     }
-    let (status, body) = get(&router, "/v1/files?limit=2").await;
-    assert_eq!(status, StatusCode::OK);
+    let body = get(&router, "/v1/files?limit=2")
+        .await
+        .expect(StatusCode::OK);
     let first: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(first["data"].as_array().unwrap().len(), 2);
     assert_eq!(first["has_more"], true);
     let cursor = first["last_id"].as_str().unwrap();
-    let (status, body) = get(&router, &format!("/v1/files?limit=2&after_id={cursor}")).await;
-    assert_eq!(status, StatusCode::OK);
+    let body = get(&router, &format!("/v1/files?limit=2&after_id={cursor}"))
+        .await
+        .expect(StatusCode::OK);
     let second: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(second["data"].as_array().unwrap().len(), 1);
     assert_eq!(second["has_more"], false);
 
     assert_eq!(
-        get(&router, "/v1/files?limit=0").await.0,
+        get(&router, "/v1/files?limit=0").await.status(),
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        get(&router, "/v1/files?before_id=x&after_id=y").await.0,
+        get(&router, "/v1/files?before_id=x&after_id=y")
+            .await
+            .status(),
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        get(&router, "/v1/files?after_id=file_missing").await.0,
+        get(&router, "/v1/files?after_id=file_missing")
+            .await
+            .status(),
         StatusCode::BAD_REQUEST
     );
 }
@@ -664,15 +688,15 @@ async fn filename_validation_rejects_unsafe_and_overlong_names() {
     // → 400 before blob/catalog creation. Boundary 255 remains accepted.
     let router = router();
     assert_eq!(
-        upload(&router, "../escape.txt", b"x").await.0,
+        upload(&router, "../escape.txt", b"x").await.status(),
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        upload(&router, &"a".repeat(256), b"x").await.0,
+        upload(&router, &"a".repeat(256), b"x").await.status(),
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        upload(&router, &"a".repeat(255), b"x").await.0,
+        upload(&router, &"a".repeat(255), b"x").await.status(),
         StatusCode::OK
     );
 }

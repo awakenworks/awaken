@@ -510,9 +510,15 @@ async fn check_bind_is_fail_closed_on_unknown_vault() {
     assert!(state.check_bind("default", &ok).await.is_ok());
 }
 
-async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
-    let (status, _, body) = call_with_headers(app, method, uri, body, &[]).await;
-    (status, body)
+async fn call(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> support::Call<serde_json::Value> {
+    call_with_headers(app, method, uri, body, &[])
+        .await
+        .map(|(_headers, body)| body)
 }
 
 /// Build the official `agent_with_overrides` MCP union once for these lifecycle
@@ -567,14 +573,14 @@ async fn session_mcp_overrides_validate_the_effective_pair_not_field_presence() 
             "tools": [toolset.clone(), toolset.clone()]
         }),
     ] {
-        let (status, body) = call(
+        let body = call(
             &h.app,
             "POST",
             "/v1/sessions",
             Some(json!({ "agent": agent })),
         )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        .await
+        .expect_for(StatusCode::BAD_REQUEST, "expected status");
         assert!(
             body.to_string().contains("exactly one mcp_toolset"),
             "{body}"
@@ -589,7 +595,7 @@ async fn call_with_headers(
     uri: &str,
     mut body: Option<Value>,
     headers: &[(&str, &str)],
-) -> (StatusCode, axum::http::HeaderMap, Value) {
+) -> support::Call<(axum::http::HeaderMap, Value)> {
     // These tests isolate MCP lifecycle decisions. Every Session fixture still
     // sends the SDK-required explicit Environment; this transport helper never
     // changes production behavior or grants a local fallback.
@@ -629,7 +635,7 @@ async fn call_with_headers(
     } else {
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
-    (status, headers, value)
+    support::Call::new(status, (headers, value))
 }
 
 const MCP_URL: &str = "https://mcp.example.com/sse";
@@ -637,16 +643,16 @@ const MCP_URL: &str = "https://mcp.example.com/sse";
 /// Create a vault holding an `mcp_oauth` credential for [`MCP_URL`]; returns
 /// `(vault_id, credential_id)`.
 async fn vault_with_mcp_oauth(h: &Harness) -> (String, String) {
-    let (s, vault) = call(
+    let vault = call(
         &h.app,
         "POST",
         "/v1/vaults",
         Some(json!({ "display_name": "mcp" })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let vault_id = vault["id"].as_str().unwrap().to_string();
-    let (s, cred) = call(
+    let cred = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
@@ -656,8 +662,8 @@ async fn vault_with_mcp_oauth(h: &Harness) -> (String, String) {
             "access_token": "at-secret-token" // awaken-allow: secret
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     (vault_id, cred["id"].as_str().unwrap().to_string())
 }
 
@@ -681,14 +687,14 @@ async fn create_mcp_credential(
         }),
         _ => panic!("unsupported test credential kind: {kind}"),
     };
-    let (status, credential) = call(
+    let credential = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
         Some(auth),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     credential["id"].as_str().unwrap().to_string()
 }
 
@@ -697,7 +703,7 @@ async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape()
     let h = harness(None);
     let (vault_id, cred_id) = vault_with_mcp_oauth(&h).await;
 
-    let (s, session) = call(
+    let session = call(
         &h.app,
         "POST",
         "/v1/sessions",
@@ -707,8 +713,8 @@ async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape()
             vec![vault_id.clone()],
         )),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     // The agent object echoes the accepted server in the SDK response shape.
     assert_eq!(
         session["agent"]["mcp_servers"],
@@ -807,14 +813,14 @@ async fn session_binding_supports_static_bearer_and_normalized_mcp_urls() {
     // revision. Constraint: URL normalization selects identity only; plaintext
     // remains under Vault custody and never enters the Session aggregate.
     let h = harness(None);
-    let (status, vault) = call(
+    let vault = call(
         &h.app,
         "POST",
         "/v1/vaults",
         Some(json!({ "display_name": "bearer" })),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let vault_id = vault["id"].as_str().unwrap().to_string();
     let credential_id = create_mcp_credential(
         &h,
@@ -825,7 +831,7 @@ async fn session_binding_supports_static_bearer_and_normalized_mcp_urls() {
     )
     .await;
 
-    let (status, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         "/v1/sessions",
@@ -835,8 +841,8 @@ async fn session_binding_supports_static_bearer_and_normalized_mcp_urls() {
             vec![vault_id.clone()],
         )),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let expected = h
         .vaults
         .credential_source_id(&vault_id, &credential_id)
@@ -862,14 +868,14 @@ async fn session_binding_honors_vault_order_and_leaves_a_miss_unauthenticated() 
     let mut vaults = Vec::new();
     let mut sources = Vec::new();
     for name in ["first-created", "second-created"] {
-        let (status, vault) = call(
+        let vault = call(
             &h.app,
             "POST",
             "/v1/vaults",
             Some(json!({ "display_name": name })),
         )
-        .await;
-        assert_eq!(status, StatusCode::OK);
+        .await
+        .expect(StatusCode::OK);
         let vault_id = vault["id"].as_str().unwrap().to_string();
         let credential_id = create_mcp_credential(
             &h,
@@ -888,7 +894,7 @@ async fn session_binding_honors_vault_order_and_leaves_a_miss_unauthenticated() 
         vaults.push(vault_id);
     }
 
-    let (status, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         "/v1/sessions",
@@ -898,8 +904,8 @@ async fn session_binding_honors_vault_order_and_leaves_a_miss_unauthenticated() 
             vec![vaults[1].clone(), vaults[0].clone()],
         )),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(
         h.staged.lock().unwrap()[0]
             .credential
@@ -908,7 +914,7 @@ async fn session_binding_honors_vault_order_and_leaves_a_miss_unauthenticated() 
         Some(sources[1].0.as_str())
     );
 
-    let (status, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         "/v1/sessions",
@@ -918,8 +924,8 @@ async fn session_binding_honors_vault_order_and_leaves_a_miss_unauthenticated() 
             vec![vaults[0].clone()],
         )),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert!(
         h.staged.lock().unwrap()[1].credential.is_none(),
         "Anthropic-compatible optional MCP auth leaves a non-match unauthenticated"
@@ -933,16 +939,16 @@ async fn an_archived_vault_cannot_be_attached_to_a_new_session() {
     // checked before credential selection or any Session/Runtime side effect.
     let h = harness(None);
     let (vault_id, _) = vault_with_mcp_oauth(&h).await;
-    let (status, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/archive"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
 
-    let (status, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         "/v1/sessions",
@@ -952,8 +958,8 @@ async fn an_archived_vault_cannot_be_attached_to_a_new_session() {
             vec![vault_id],
         )),
     )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    .await
+    .expect(StatusCode::NOT_FOUND);
     assert!(h.captured.lock().unwrap().is_empty());
 }
 
@@ -964,16 +970,16 @@ async fn create_carries_the_refresh_binding_of_a_refreshable_credential() {
     // reference. Constraint: neither access nor refresh plaintext crosses the
     // Vault boundary; the reference remains bound to source revision one.
     let h = harness(None);
-    let (s, vault) = call(
+    let vault = call(
         &h.app,
         "POST",
         "/v1/vaults",
         Some(json!({ "display_name": "mcp" })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let vault_id = vault["id"].as_str().unwrap().to_string();
-    let (s, cred) = call(
+    let cred = call(
         &h.app,
         "POST",
         &format!("/v1/vaults/{vault_id}/credentials"),
@@ -990,11 +996,11 @@ async fn create_carries_the_refresh_binding_of_a_refreshable_credential() {
             }
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let cred_id = cred["id"].as_str().unwrap().to_string();
 
-    let (s, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         "/v1/sessions",
@@ -1004,8 +1010,8 @@ async fn create_carries_the_refresh_binding_of_a_refreshable_credential() {
             vec![vault_id.clone()],
         )),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
 
     // The binding carries the stored refresh configuration next to the source
     // id — the sealed refresh token's ref, never the token itself.
@@ -1043,14 +1049,14 @@ async fn session_without_mcp_servers_echoes_empty_and_prepares_an_empty_init() {
     // and E3 no MCP stage effect occurs. Constraint: absence is represented by
     // empty canonical state, not a second optional attachment authority.
     let h = harness(None);
-    let (s, session) = call(
+    let session = call(
         &h.app,
         "POST",
         "/v1/sessions",
         Some(json!({ "agent": "coder" })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(session["agent"]["mcp_servers"], json!([]));
     {
         let captured = h.captured.lock().unwrap();
@@ -1072,7 +1078,7 @@ async fn unknown_vault_id_fails_the_create_with_404_and_provisions_nothing() {
     // naming that id, E2 no Session row, and E3 no preparation. Constraint: the
     // complete Vault set is admitted before identity minting or Runtime I/O.
     let h = harness(None);
-    let (s, body) = call(
+    let body = call(
         &h.app,
         "POST",
         "/v1/sessions",
@@ -1082,8 +1088,8 @@ async fn unknown_vault_id_fails_the_create_with_404_and_provisions_nothing() {
             vec!["vlt_missing".into()],
         )),
     )
-    .await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    .await
+    .expect(StatusCode::NOT_FOUND);
     assert_eq!(body["type"], "error");
     assert_eq!(body["error"]["type"], "not_found_error");
     let message = body["error"]["message"].as_str().unwrap_or_default();
@@ -1095,8 +1101,9 @@ async fn unknown_vault_id_fails_the_create_with_404_and_provisions_nothing() {
         h.captured.lock().unwrap().is_empty(),
         "the complete projection port must never run for a refused create"
     );
-    let (s, _) = call(&h.app, "GET", "/v1/sessions/sesn_0", None).await;
-    assert_eq!(s, StatusCode::NOT_FOUND, "no session record was created");
+    let _ = call(&h.app, "GET", "/v1/sessions/sesn_0", None)
+        .await
+        .expect_for(StatusCode::NOT_FOUND, "no session record was created");
 }
 
 /// A create mixing one real vault with one bogus id fails closed too — every
@@ -1109,7 +1116,7 @@ async fn known_plus_unknown_vault_id_still_fails_the_create() {
     // an invalid member or authorize a partial MCP binding.
     let h = harness(None);
     let (vault_id, _) = vault_with_mcp_oauth(&h).await;
-    let (s, body) = call(
+    let body = call(
         &h.app,
         "POST",
         "/v1/sessions",
@@ -1119,8 +1126,8 @@ async fn known_plus_unknown_vault_id_still_fails_the_create() {
             vec![vault_id, "vlt_bogus".into()],
         )),
     )
-    .await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    .await
+    .expect(StatusCode::NOT_FOUND);
     assert!(
         body["error"]["message"]
             .as_str()
@@ -1167,7 +1174,7 @@ async fn failing_complete_projection_fails_the_create_with_the_mapped_envelope()
         ),
     ] {
         let h = harness(Some(kind));
-        let (s, body) = call(
+        let body = call(
             &h.app,
             "POST",
             "/v1/sessions",
@@ -1177,8 +1184,8 @@ async fn failing_complete_projection_fails_the_create_with_the_mapped_envelope()
                 Vec::new(),
             )),
         )
-        .await;
-        assert_eq!(s, status, "{kind:?}");
+        .await
+        .expect_for(status, "expected status");
         assert_eq!(body["type"], "error");
         assert_eq!(body["error"]["type"], error_type);
         // Fail closed: no failed durable intent is exposed as a live Session.
@@ -1192,15 +1199,15 @@ async fn failing_complete_projection_fails_the_create_with_the_mapped_envelope()
             .expect("durable intent observed before Runtime I/O")
             .session_id
             .clone();
-        let (read_status, read) =
-            call(&h.app, "GET", &format!("/v1/sessions/{failed_id}"), None).await;
+        let read = call(&h.app, "GET", &format!("/v1/sessions/{failed_id}"), None)
+            .await
+            .expect(StatusCode::OK);
         let failed = h
             .repo
             .get(&failed_id)
             .await
             .expect("recoverable failed intent");
         if kind == RunErrorKind::Unavailable {
-            assert_eq!(read_status, StatusCode::OK, "R3 queryable retry");
             assert_eq!(read["status"], "rescheduling", "R3");
             assert_eq!(failed.execution, SessionExecutionState::Preparing, "R3");
             assert_eq!(failed.realization_progress.attempts, 1, "R3");
@@ -1210,7 +1217,6 @@ async fn failing_complete_projection_fails_the_create_with_the_mapped_envelope()
                 "R3"
             );
         } else {
-            assert_eq!(read_status, StatusCode::OK, "R1/R2 durable failed root");
             assert_eq!(read["status"], "terminated", "R1/R2: {kind:?}");
             support::assert_current_sdk_session_shape(&read);
             assert_eq!(
@@ -1273,25 +1279,25 @@ async fn failing_complete_projection_fails_the_create_with_the_mapped_envelope()
 #[tokio::test]
 async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
     let h = hot_harness();
-    let (status, created) = call(
+    let created = call(
         &h.app,
         "POST",
         "/v1/sessions",
         Some(json!({"agent": "hot-agent"})),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let id = created["id"].as_str().unwrap();
 
     let server_a = json!({"name": "calc", "type": "url", "url": "https://a.example/mcp"});
-    let (status, added) = call(
+    let added = call(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"mcp_servers": [server_a.clone()]}})),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "H2");
+    .await
+    .expect_for(StatusCode::OK, "H2");
     assert_eq!(
         added["agent"]["mcp_servers"],
         json!([server_a.clone()]),
@@ -1317,14 +1323,14 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
             state.drained.len(),
         )
     };
-    let (status, replayed) = call(
+    let replayed = call(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"mcp_servers": [server_a.clone()]}})),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "H1");
+    .await
+    .expect_for(StatusCode::OK, "H1");
     assert_eq!(replayed["agent"]["mcp_servers"], json!([server_a]), "H1");
     {
         let state = h.state.lock().unwrap();
@@ -1340,14 +1346,14 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
     }
 
     let server_b = json!({"name": "calc", "type": "url", "url": "https://b.example/mcp"});
-    let (status, replaced) = call(
+    let replaced = call(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"mcp_servers": [server_b.clone()]}})),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "H3");
+    .await
+    .expect_for(StatusCode::OK, "H3");
     assert_eq!(replaced["agent"]["mcp_servers"], json!([server_b]), "H3");
     {
         let state = h.state.lock().unwrap();
@@ -1376,14 +1382,14 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
         "H3"
     );
 
-    let (status, removed) = call(
+    let removed = call(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"mcp_servers": []}})),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "H4");
+    .await
+    .expect_for(StatusCode::OK, "H4");
     assert_eq!(removed["agent"]["mcp_servers"], json!([]), "H4");
     assert_eq!(
         h.state
@@ -1399,7 +1405,7 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
     );
 
     let failed = hot_harness();
-    let (status, created) = call(
+    let created = call(
         &failed.app,
         "POST",
         "/v1/sessions",
@@ -1409,19 +1415,19 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
             Vec::new(),
         )),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let failed_id = created["id"].as_str().unwrap();
     failed.state.lock().unwrap().mode = HotStageMode::FailNext;
     let desired = json!({"name": "calc", "type": "url", "url": "https://new.example/mcp"});
-    let (status, _) = call(
+    let _ = call(
         &failed.app,
         "POST",
         &format!("/v1/sessions/{failed_id}"),
         Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
     )
-    .await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "H5");
+    .await
+    .expect_for(StatusCode::INTERNAL_SERVER_ERROR, "H5");
     let durable = failed.repo.get(failed_id).await.expect("H5 durable");
     assert_eq!(
         durable.mcp.attachments[0].state,
@@ -1439,14 +1445,14 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
         "H5"
     );
 
-    let (status, retried) = call(
+    let retried = call(
         &failed.app,
         "POST",
         &format!("/v1/sessions/{failed_id}"),
         Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "H6");
+    .await
+    .expect_for(StatusCode::OK, "H6");
     assert_eq!(retried["agent"]["mcp_servers"], json!([desired]), "H6");
     assert_eq!(
         failed
@@ -1464,17 +1470,17 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
     );
 
     let mismatch = hot_harness();
-    let (status, created) = call(
+    let created = call(
         &mismatch.app,
         "POST",
         "/v1/sessions",
         Some(json!({"agent": "hot-agent"})),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let mismatch_id = created["id"].as_str().unwrap();
     mismatch.state.lock().unwrap().mode = HotStageMode::MismatchNext;
-    let (status, _) = call(
+    let _ = call(
         &mismatch.app,
         "POST",
         &format!("/v1/sessions/{mismatch_id}"),
@@ -1482,8 +1488,7 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
             json!({"agent": {"mcp_servers": [{"type": "url", "name": "bad", "url": "https://bad.example/mcp"}]}}),
         ),
     )
-    .await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "H7");
+    .await.expect_for(StatusCode::INTERNAL_SERVER_ERROR, "H7");
     let durable = mismatch.repo.get(mismatch_id).await.expect("H7 durable");
     assert_eq!(
         durable.mcp.attachments[0].state,
@@ -1500,14 +1505,14 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
             state.drained.len(),
         )
     };
-    let (status, _) = call(
+    let _ = call(
         &mismatch.app,
         "POST",
         &format!("/v1/sessions/{mismatch_id}"),
         Some(json!({"agent": {"mcp_servers": [{"type": "url", "name": "missing-url"}]}})),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "H8");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "H8");
     let state = mismatch.state.lock().unwrap();
     assert_eq!(
         (
@@ -1560,14 +1565,14 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
 
 async fn mcp_recovery_lifecycle_decision_table_case() {
     let h = hot_harness();
-    let (status, created) = call(
+    let created = call(
         &h.app,
         "POST",
         "/v1/sessions",
         Some(json!({"agent": "recovery-agent"})),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let id = created["id"].as_str().unwrap();
     let mut requested = h.repo.get(id).await.unwrap();
     requested
@@ -1669,14 +1674,14 @@ async fn mcp_recovery_lifecycle_decision_table_case() {
 async fn mcp_recovery_retry_decision_table_case() {
     let h = hot_harness();
 
-    let (status, created) = call(
+    let created = call(
         &h.app,
         "POST",
         "/v1/sessions",
         Some(json!({"agent": "retry-agent"})),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let retry_id = created["id"].as_str().unwrap();
     let mut retry = h.repo.get(retry_id).await.unwrap();
     retry
@@ -1704,7 +1709,7 @@ async fn mcp_recovery_retry_decision_table_case() {
     );
     assert_eq!(failed_retry.execution, SessionExecutionState::Idle, "R5");
 
-    let (status, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/sessions/{retry_id}"),
@@ -1714,8 +1719,8 @@ async fn mcp_recovery_retry_decision_table_case() {
             "url": "https://retry.example/mcp"
         }]}})),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "R6");
+    .await
+    .expect_for(StatusCode::OK, "R6");
     let retried = h.repo.get(retry_id).await.unwrap();
     assert_eq!(retried.mcp.attachments.len(), 2, "R6");
     assert_eq!(
@@ -1747,26 +1752,26 @@ async fn mcp_recovery_retry_decision_table_case() {
 #[tokio::test]
 async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
     let h = hot_harness();
-    let (status, created) = call(
+    let created = call(
         &h.app,
         "POST",
         "/v1/sessions",
         Some(json!({"agent": "gap-agent"})),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let id = created["id"].as_str().unwrap();
     let desired = json!({"name": "gap", "type": "url", "url": "https://gap.example/mcp"});
 
     h.state.lock().unwrap().fail_publish_next = true;
-    let (status, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
     )
-    .await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "P1");
+    .await
+    .expect_for(StatusCode::INTERNAL_SERVER_ERROR, "P1");
     let unacknowledged = h.repo.get(id).await.unwrap();
     assert_eq!(
         unacknowledged.mcp.attachments[0].state,
@@ -1778,14 +1783,14 @@ async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
         "P1"
     );
 
-    let (status, recovered) = call(
+    let recovered = call(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "P2");
+    .await
+    .expect_for(StatusCode::OK, "P2");
     assert_eq!(recovered["agent"]["mcp_servers"], json!([desired]), "P2");
     let acknowledged = h.repo.get(id).await.unwrap();
     assert_eq!(acknowledged.mcp.attachments.len(), 1, "P2 same generation");
@@ -1795,28 +1800,28 @@ async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
     );
 
     h.state.lock().unwrap().fail_drain_next = true;
-    let (status, _) = call(
+    let _ = call(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"mcp_servers": []}})),
     )
-    .await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "P3");
+    .await
+    .expect_for(StatusCode::INTERNAL_SERVER_ERROR, "P3");
     assert_eq!(
         h.repo.get(id).await.unwrap().mcp.attachments[0].state,
         awaken_session_contract::McpAttachmentState::Draining,
         "P3"
     );
 
-    let (status, removed) = call(
+    let removed = call(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"mcp_servers": []}})),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "P4");
+    .await
+    .expect_for(StatusCode::OK, "P4");
     assert_eq!(removed["agent"]["mcp_servers"], json!([]), "P4");
     assert_eq!(
         h.repo.get(id).await.unwrap().mcp.attachments[0].state,
@@ -1849,40 +1854,40 @@ async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
 #[tokio::test]
 async fn update_precondition_and_idempotency_tests_are_generated_from_decision_table() {
     let h = hot_harness();
-    let (status, create_headers, created) = call_with_headers(
+    let (create_headers, created) = call_with_headers(
         &h.app,
         "POST",
         "/v1/sessions",
         Some(json!({"agent": "idempotent-agent"})),
         &[],
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let id = created["id"].as_str().unwrap();
     let etag = create_headers["etag"].to_str().unwrap().to_string();
     let desired = json!({"name": "idem", "type": "url", "url": "https://idem.example/mcp"});
 
     let before = h.state.lock().unwrap().staged.len();
-    let (status, _, _) = call_with_headers(
+    let _ = call_with_headers(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
         &[("if-match", "\"0\"")],
     )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT, "I4");
+    .await
+    .expect_for(StatusCode::CONFLICT, "I4");
     assert_eq!(h.state.lock().unwrap().staged.len(), before, "I4");
 
-    let (status, applied_headers, applied) = call_with_headers(
+    let (applied_headers, applied) = call_with_headers(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
         &[("idempotency-key", "command-1"), ("if-match", &etag)],
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "I1");
+    .await
+    .expect_for(StatusCode::OK, "I1");
     assert_eq!(
         applied["agent"]["mcp_servers"],
         json!([desired.clone()]),
@@ -1925,15 +1930,15 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
         )
     };
 
-    let (status, replay_headers, replayed) = call_with_headers(
+    let (replay_headers, replayed) = call_with_headers(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
         &[("idempotency-key", "command-1")],
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "I2");
+    .await
+    .expect_for(StatusCode::OK, "I2");
     assert_eq!(
         replayed["agent"]["mcp_servers"],
         json!([desired.clone()]),
@@ -1966,9 +1971,10 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
         format!("\"{}\"", durable_after_replay.revision.0),
         "I2b response ETag names the current durable root"
     );
-    let (status, current_headers, current) =
-        call_with_headers(&h.app, "GET", &format!("/v1/sessions/{id}"), None, &[]).await;
-    assert_eq!(status, StatusCode::OK, "I2b current root");
+    let (current_headers, current) =
+        call_with_headers(&h.app, "GET", &format!("/v1/sessions/{id}"), None, &[])
+            .await
+            .expect_for(StatusCode::OK, "I2b current root");
     assert_eq!(
         current_headers["etag"].to_str().unwrap(),
         format!("\"{}\"", durable_after_replay.revision.0),
@@ -1980,48 +1986,48 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
         "I2b current body"
     );
     let current_root_etag = current_headers["etag"].to_str().unwrap();
-    let (status, later_headers, later) = call_with_headers(
+    let (later_headers, later) = call_with_headers(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"title": "later root fact"})),
         &[("if-match", current_root_etag)],
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "I2b setup");
+    .await
+    .expect_for(StatusCode::OK, "I2b setup");
     assert_ne!(later_headers["etag"], applied_etag, "I2b setup");
     assert_eq!(later["title"], "later root fact", "I2b setup");
-    let (status, historical_headers, historical) = call_with_headers(
+    let (historical_headers, historical) = call_with_headers(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
         &[("idempotency-key", "command-1")],
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "I2b");
+    .await
+    .expect_for(StatusCode::OK, "I2b");
     assert_eq!(historical_headers["etag"], later_headers["etag"], "I2b");
     assert_eq!(historical["title"], "later root fact", "I2b current body");
 
-    let (status, _, _) = call_with_headers(
+    let _ = call_with_headers(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"mcp_servers": []}})),
         &[("idempotency-key", "command-1")],
     )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT, "I3");
+    .await
+    .expect_for(StatusCode::CONFLICT, "I3");
 
-    let (status, _, _) = call_with_headers(
+    let _ = call_with_headers(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"title": "invalid precondition"})),
         &[("if-match", "not-an-etag")],
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "I5");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "I5");
 
     let current_etag = later_headers["etag"].to_str().unwrap();
     // Cause graph: complete Session tool update -> durable exact projection ->
@@ -2061,15 +2067,15 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     ]);
     let mut expected_tools = tools.clone();
     expected_tools[0]["configs"][0]["type"] = json!("write");
-    let (status, _, updated) = call_with_headers(
+    let (_, updated) = call_with_headers(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"tools": tools.clone()}})),
         &[("if-match", current_etag)],
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "I6");
+    .await
+    .expect_for(StatusCode::OK, "I6");
     assert_eq!(updated["agent"]["tools"], expected_tools, "I6");
     assert_eq!(
         awaken_protocol_managed::project::managed_tools(&h.repo.get(id).await.unwrap().tools),
@@ -2114,15 +2120,15 @@ async fn create_conflict_after_root_commit_returns_one_recoverable_session() {
         let h = hot_harness_with_repo(conflicts.clone());
         conflicts.conflicts_on_next(&[1, 2, 3]);
         let headers = key.map_or_else(Vec::new, |key| vec![("idempotency-key", key)]);
-        let (status, response_headers, created) = call_with_headers(
+        let (response_headers, created) = call_with_headers(
             &h.app,
             "POST",
             "/v1/sessions",
             Some(json!({"agent": "create-conflict-agent", "title": "stable"})),
             &headers,
         )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{rule}/E1: {created}");
+        .await
+        .expect_for(StatusCode::OK, "/E1");
         let id = created["id"].as_str().expect("E1 Session id");
         let durable = h.repo.get(id).await.expect("E1 durable root");
         assert_eq!(
@@ -2137,27 +2143,27 @@ async fn create_conflict_after_root_commit_returns_one_recoverable_session() {
         );
 
         if let Some(key) = key {
-            let (replay_status, replay_headers, replayed) = call_with_headers(
+            let (replay_headers, replayed) = call_with_headers(
                 &h.app,
                 "POST",
                 "/v1/sessions",
                 Some(json!({"agent": "create-conflict-agent", "title": "stable"})),
                 &[("idempotency-key", key)],
             )
-            .await;
-            assert_eq!(replay_status, StatusCode::OK, "P2/E3");
+            .await
+            .expect_for(StatusCode::OK, "P2/E3");
             assert_eq!(replayed["id"], created["id"], "P2/E3");
             assert_eq!(replay_headers["etag"], response_headers["etag"], "P2/E3");
 
-            let (mismatch_status, _, _) = call_with_headers(
+            let _ = call_with_headers(
                 &h.app,
                 "POST",
                 "/v1/sessions",
                 Some(json!({"agent": "create-conflict-agent", "title": "changed"})),
                 &[("idempotency-key", key)],
             )
-            .await;
-            assert_eq!(mismatch_status, StatusCode::CONFLICT, "P3/E4");
+            .await
+            .expect_for(StatusCode::CONFLICT, "P3/E4");
             assert_eq!(h.repo.get(id).await.unwrap(), durable, "P3/E4");
         }
     }
@@ -2181,15 +2187,15 @@ async fn create_conflict_after_root_commit_returns_one_recoverable_session() {
 #[tokio::test]
 async fn idempotent_update_repairs_a_failed_post_commit_runtime_projection() {
     let h = hot_harness();
-    let (status, _, created) = call_with_headers(
+    let (_, created) = call_with_headers(
         &h.app,
         "POST",
         "/v1/sessions",
         Some(json!({"agent": "tool-repair-agent"})),
         &[],
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let id = created["id"].as_str().unwrap();
     let tools = json!([{
         "type": "agent_toolset_20260401",
@@ -2201,15 +2207,15 @@ async fn idempotent_update_repairs_a_failed_post_commit_runtime_projection() {
     }]);
     h.state.lock().unwrap().fail_replace_tools_next = true;
 
-    let (failed_status, _, _) = call_with_headers(
+    let _ = call_with_headers(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"tools": tools.clone()}})),
         &[("idempotency-key", "tool-repair")],
     )
-    .await;
-    assert_eq!(failed_status, StatusCode::INTERNAL_SERVER_ERROR, "T1");
+    .await
+    .expect_for(StatusCode::INTERNAL_SERVER_ERROR, "T1");
     assert_eq!(h.state.lock().unwrap().replaced_tools.len(), 1, "T1");
     assert_eq!(
         awaken_protocol_managed::project::managed_tools(&h.repo.get(id).await.unwrap().tools),
@@ -2217,21 +2223,21 @@ async fn idempotent_update_repairs_a_failed_post_commit_runtime_projection() {
         "T1 durable truth"
     );
 
-    let (retry_status, _, retry) = call_with_headers(
+    let (_, retry) = call_with_headers(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"tools": tools.clone()}})),
         &[("idempotency-key", "tool-repair")],
     )
-    .await;
-    assert_eq!(retry_status, StatusCode::OK, "T2");
+    .await
+    .expect_for(StatusCode::OK, "T2");
     assert_eq!(retry["agent"]["tools"], tools, "T2");
     assert_eq!(h.state.lock().unwrap().replaced_tools.len(), 2, "T2");
 
-    let (events_status, events) =
-        call(&h.app, "GET", &format!("/v1/sessions/{id}/events"), None).await;
-    assert_eq!(events_status, StatusCode::OK);
+    let events = call(&h.app, "GET", &format!("/v1/sessions/{id}/events"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(
         events["data"]
             .as_array()
@@ -2243,15 +2249,15 @@ async fn idempotent_update_repairs_a_failed_post_commit_runtime_projection() {
         "T1/T2 project exactly one committed fact"
     );
 
-    let (mismatch_status, _, _) = call_with_headers(
+    let _ = call_with_headers(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"title": "different-payload"})),
         &[("idempotency-key", "tool-repair")],
     )
-    .await;
-    assert_eq!(mismatch_status, StatusCode::CONFLICT, "T3");
+    .await
+    .expect_for(StatusCode::CONFLICT, "T3");
     assert_eq!(h.state.lock().unwrap().replaced_tools.len(), 2, "T3");
 }
 
@@ -2281,47 +2287,48 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
     );
     let conflicts = Arc::new(ScheduledConflictRepository::new(inner));
     let h = hot_harness_with_repo(conflicts.clone());
-    let (status, _, created) = call_with_headers(
+    let (_, created) = call_with_headers(
         &h.app,
         "POST",
         "/v1/sessions",
         Some(json!({"agent": "cas-agent"})),
         &[],
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     let id = created["id"].as_str().unwrap();
 
     conflicts.conflict_on_next(1);
     let desired = json!({"name": "cas", "type": "url", "url": "https://cas.example/mcp"});
-    let (status, _, updated) = call_with_headers(
+    let (_, updated) = call_with_headers(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"mcp_servers": [desired.clone()]}})),
         &[],
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "C1");
+    .await
+    .expect_for(StatusCode::OK, "C1");
     assert_eq!(updated["agent"]["mcp_servers"], json!([desired]), "C1");
     assert_eq!(h.state.lock().unwrap().staged.len(), 1, "C1");
     assert_eq!(h.repo.get(id).await.unwrap().mcp.attachments.len(), 1, "C1");
 
-    let (status, get_headers, _) =
-        call_with_headers(&h.app, "GET", &format!("/v1/sessions/{id}"), None, &[]).await;
-    assert_eq!(status, StatusCode::OK);
+    let (get_headers, _) =
+        call_with_headers(&h.app, "GET", &format!("/v1/sessions/{id}"), None, &[])
+            .await
+            .expect(StatusCode::OK);
     let etag = get_headers["etag"].to_str().unwrap();
     let effects = h.state.lock().unwrap().staged.len();
     conflicts.conflict_on_next(1);
-    let (status, _, _) = call_with_headers(
+    let _ = call_with_headers(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"title": "must-not-apply"})),
         &[("if-match", etag)],
     )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT, "C2");
+    .await
+    .expect_for(StatusCode::CONFLICT, "C2");
     assert_eq!(h.state.lock().unwrap().staged.len(), effects, "C2");
     assert_ne!(
         h.repo.get(id).await.unwrap().title.as_deref(),
@@ -2338,18 +2345,17 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
     let durable_before_c3 = h.repo.get(id).await.expect("C3 root before command");
     conflicts.conflict_on_next(4);
     let staged_before = h.state.lock().unwrap().staged.len();
-    let (status, failed_headers, failed) = call_with_headers(
+    let (failed_headers, failed) = call_with_headers(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"mcp_servers": [replacement.clone()]}})),
         &[("idempotency-key", c3_idempotency_key)],
     )
-    .await;
-    assert_eq!(
-        status,
+    .await
+    .expect_for(
         StatusCode::INTERNAL_SERVER_ERROR,
-        "C3 post-commit projection failure: {failed}"
+        "C3 post-commit projection failure",
     );
     assert!(!failed_headers.contains_key("etag"), "C3 error has no ETag");
     assert_eq!(failed["type"], "error", "C3 error envelope");
@@ -2395,15 +2401,15 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
         "C3 first attempt stages generation 2 once"
     );
 
-    let (status, replay_headers, updated) = call_with_headers(
+    let (replay_headers, updated) = call_with_headers(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"mcp_servers": [replacement.clone()]}})),
         &[("idempotency-key", c3_idempotency_key)],
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "C3 exact receipt replay repairs");
+    .await
+    .expect_for(StatusCode::OK, "C3 exact receipt replay repairs");
     assert_eq!(updated["agent"]["mcp_servers"], json!([replacement]), "C3");
     let durable = h.repo.get(id).await.unwrap();
     assert_eq!(
@@ -2423,9 +2429,10 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
         "C3 restages exact gen2"
     );
 
-    let (status, get_headers, _) =
-        call_with_headers(&h.app, "GET", &format!("/v1/sessions/{id}"), None, &[]).await;
-    assert_eq!(status, StatusCode::OK);
+    let (get_headers, _) =
+        call_with_headers(&h.app, "GET", &format!("/v1/sessions/{id}"), None, &[])
+            .await
+            .expect(StatusCode::OK);
     let etag = get_headers["etag"].to_str().unwrap();
     let durable_before_c4 = h.repo.get(id).await.expect("C4 root before command");
     assert_eq!(
@@ -2437,18 +2444,17 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
     let staged_before_c4 = h.state.lock().unwrap().staged.len();
     let drain_before = h.state.lock().unwrap().drained.len();
     let c4_replacement = json!({"type": "url", "name": "cas", "url": "https://cas-3.example/mcp"});
-    let (status, failed_headers, failed) = call_with_headers(
+    let (failed_headers, failed) = call_with_headers(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"mcp_servers": [c4_replacement.clone()]}})),
         &[("if-match", etag)],
     )
-    .await;
-    assert_eq!(
-        status,
+    .await
+    .expect_for(
         StatusCode::INTERNAL_SERVER_ERROR,
-        "C4 post-commit projection failure: {failed}"
+        "C4 post-commit projection failure",
     );
     assert!(!failed_headers.contains_key("etag"), "C4 error has no ETag");
     assert_eq!(failed["type"], "error", "C4 error envelope");
@@ -2492,9 +2498,10 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
         drain_before + 1,
         "C4 compensation"
     );
-    let (status, current_headers, current) =
-        call_with_headers(&h.app, "GET", &format!("/v1/sessions/{id}"), None, &[]).await;
-    assert_eq!(status, StatusCode::OK, "C4 GET current truth");
+    let (current_headers, current) =
+        call_with_headers(&h.app, "GET", &format!("/v1/sessions/{id}"), None, &[])
+            .await
+            .expect_for(StatusCode::OK, "C4 GET current truth");
     assert_eq!(
         current_headers["etag"].to_str().unwrap(),
         format!("\"{}\"", durable.revision.0),

@@ -1,5 +1,6 @@
 //! Deployments + deployment runs over HTTP: CRUD, the pause/unpause/run/archive
 //! lifecycle actions, agent-reference normalization, and run listing.
+mod support;
 
 use std::sync::Arc;
 
@@ -52,18 +53,25 @@ async fn deployment_routes_require_the_edge_selected_workspace() {
     assert_eq!(
         call(&missing, "POST", "/v1/deployments", Some(body.clone()))
             .await
-            .0,
+            .status(),
         StatusCode::NOT_FOUND,
         "S1"
     );
     assert_eq!(
-        call(&empty, "POST", "/v1/deployments", Some(body)).await.0,
+        call(&empty, "POST", "/v1/deployments", Some(body))
+            .await
+            .status(),
         StatusCode::NOT_FOUND,
         "S2"
     );
 }
 
-async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn call(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> support::Call<serde_json::Value> {
     let mut b = Request::builder().method(method).uri(uri);
     let body = match body {
         Some(v) => {
@@ -80,11 +88,11 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
     } else {
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
-    (status, value)
+    support::Call::new(status, value)
 }
 
 async fn make_deployment(app: &Router) -> String {
-    let (s, d) = call(
+    let d = call(
         app,
         "POST",
         "/v1/deployments",
@@ -95,8 +103,7 @@ async fn make_deployment(app: &Router) -> String {
             "initial_events": [{ "type": "user.message", "content": [{ "type": "text", "text": "go" }] }]
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await.expect(StatusCode::OK);
     d["id"].as_str().unwrap().to_string()
 }
 
@@ -142,7 +149,7 @@ async fn deployment_initial_events_match_the_managed_agents_wire_contract() {
     ];
 
     for (rule, initial_events, expected_types) in cases {
-        let (status, deployment) = call(
+        let deployment = call(
             &app,
             "POST",
             "/v1/deployments",
@@ -153,8 +160,8 @@ async fn deployment_initial_events_match_the_managed_agents_wire_contract() {
                 "initial_events":initial_events
             })),
         )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{rule}");
+        .await
+        .expect_for(StatusCode::OK, "expected status");
         assert_eq!(
             deployment["initial_events"]
                 .as_array()
@@ -167,7 +174,7 @@ async fn deployment_initial_events_match_the_managed_agents_wire_contract() {
         );
     }
 
-    let (status, _) = call(
+    let _ = call(
         &app,
         "POST",
         "/v1/deployments",
@@ -178,8 +185,8 @@ async fn deployment_initial_events_match_the_managed_agents_wire_contract() {
             "initial_events":[{"type":"user_message","content":[{"type":"text","text":"go"}]}]
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "A4");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "A4");
 }
 
 // Test design: deployment_lifecycle_and_runs
@@ -196,7 +203,7 @@ async fn deployment_lifecycle_and_runs() {
     let app = app();
 
     // Create — agent string normalizes to a reference; status defaults active.
-    let (s, d) = call(
+    let d = call(
         &app,
         "POST",
         "/v1/deployments",
@@ -208,8 +215,7 @@ async fn deployment_lifecycle_and_runs() {
             "vault_ids": ["vlt_1"]
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await.expect(StatusCode::OK);
     assert_eq!(d["type"], "deployment");
     assert_eq!(d["status"], "active");
     assert!(d["paused_reason"].is_null());
@@ -221,40 +227,45 @@ async fn deployment_lifecycle_and_runs() {
     assert!(id.starts_with("depl_"));
 
     // Update name.
-    let (s, up) = call(
+    let up = call(
         &app,
         "POST",
         &format!("/v1/deployments/{id}"),
         Some(json!({ "name": "hourly" })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(up["name"], "hourly");
 
     // Pause suppresses future schedule occurrences, but not an explicit manual
     // run. The Deployment remains paused after the manual run.
-    let (status, paused) = call(&app, "POST", &format!("/v1/deployments/{id}/pause"), None).await;
-    assert_eq!(status, StatusCode::OK);
+    let paused = call(&app, "POST", &format!("/v1/deployments/{id}/pause"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(paused["status"], "paused");
     assert_eq!(paused["paused_reason"]["type"], "manual");
-    let (s, paused_run) = call(&app, "POST", &format!("/v1/deployments/{id}/run"), None).await;
-    assert_eq!(s, StatusCode::OK, "L2/E2");
+    let paused_run = call(&app, "POST", &format!("/v1/deployments/{id}/run"), None)
+        .await
+        .expect_for(StatusCode::OK, "L2/E2");
     assert_eq!(paused_run["trigger_context"]["type"], "manual", "L2/E2");
     assert!(paused_run["session_id"].is_string(), "L2/E2");
-    let (status, still_paused) = call(&app, "GET", &format!("/v1/deployments/{id}"), None).await;
-    assert_eq!(status, StatusCode::OK);
+    let still_paused = call(&app, "GET", &format!("/v1/deployments/{id}"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(still_paused["status"], "paused", "L2/E2");
     assert_eq!(still_paused["paused_reason"]["type"], "manual", "L2/E2");
 
     // Unpause → active + null.
-    let (status, unp) = call(&app, "POST", &format!("/v1/deployments/{id}/unpause"), None).await;
-    assert_eq!(status, StatusCode::OK);
+    let unp = call(&app, "POST", &format!("/v1/deployments/{id}/unpause"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(unp["status"], "active");
     assert!(unp["paused_reason"].is_null());
 
     // Run → a deployment_run bound to the deployment + its agent.
-    let (s, run) = call(&app, "POST", &format!("/v1/deployments/{id}/run"), None).await;
-    assert_eq!(s, StatusCode::OK);
+    let run = call(&app, "POST", &format!("/v1/deployments/{id}/run"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(run["type"], "deployment_run");
     assert_eq!(run["deployment_id"], id);
     assert_eq!(run["trigger_context"]["type"], "manual");
@@ -264,40 +275,44 @@ async fn deployment_lifecycle_and_runs() {
     assert!(run_id.starts_with("drun_"));
 
     // Retrieve + list runs (filtered by deployment).
-    let (s, got_run) = call(&app, "GET", &format!("/v1/deployment_runs/{run_id}"), None).await;
-    assert_eq!(s, StatusCode::OK);
+    let got_run = call(&app, "GET", &format!("/v1/deployment_runs/{run_id}"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(got_run["id"], run_id);
-    let (status, runs) = call(
+    let runs = call(
         &app,
         "GET",
         &format!("/v1/deployment_runs?deployment_id={id}"),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(runs["data"].as_array().unwrap().len(), 2);
     // A filter that matches nothing yields an empty page.
-    let (status, none) = call(
+    let none = call(
         &app,
         "GET",
         "/v1/deployment_runs?deployment_id=deploy_other",
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(none["data"].as_array().unwrap().len(), 0);
 
     // Archive.
-    let (status, arch) = call(&app, "POST", &format!("/v1/deployments/{id}/archive"), None).await;
-    assert_eq!(status, StatusCode::OK);
+    let arch = call(&app, "POST", &format!("/v1/deployments/{id}/archive"), None)
+        .await
+        .expect(StatusCode::OK);
     assert!(arch["archived_at"].is_string());
 
     // Archived rows are hidden by default and opt-in through the SDK filter.
-    let (status, page) = call(&app, "GET", "/v1/deployments", None).await;
-    assert_eq!(status, StatusCode::OK);
+    let page = call(&app, "GET", "/v1/deployments", None)
+        .await
+        .expect(StatusCode::OK);
     assert!(page["data"].as_array().unwrap().is_empty());
-    let (status, page) = call(&app, "GET", "/v1/deployments?include_archived=true", None).await;
-    assert_eq!(status, StatusCode::OK);
+    let page = call(&app, "GET", "/v1/deployments?include_archived=true", None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(page["data"].as_array().unwrap()[0]["id"], id);
 }
 
@@ -325,13 +340,15 @@ async fn sdk_page_limit_deserializes_in_filtered_deployment_queries() {
             "/v1/deployment_runs?limit=100&deployment_id=does-not-match",
         ),
     ] {
-        let (status, page) = call(&app, "GET", uri, None).await;
-        assert_eq!(status, StatusCode::OK, "{rule}");
+        let page = call(&app, "GET", uri, None)
+            .await
+            .expect_for(StatusCode::OK, "expected status");
         assert!(page["data"].is_array(), "{rule}");
     }
 
-    let (status, _) = call(&app, "GET", "/v1/deployments?limit=invalid", None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "P3");
+    let _ = call(&app, "GET", "/v1/deployments?limit=invalid", None)
+        .await
+        .expect_for(StatusCode::BAD_REQUEST, "P3");
 }
 
 /// The cron-schedule wire path (`cron.rs` reached through the deployments router):
@@ -345,7 +362,7 @@ async fn schedule_cron_is_validated_and_echoed_at_the_wire() {
     let app = app();
 
     // A valid weekday-9am cron is accepted and echoed.
-    let (s, d) = call(
+    let d = call(
         &app,
         "POST",
         "/v1/deployments",
@@ -357,14 +374,14 @@ async fn schedule_cron_is_validated_and_echoed_at_the_wire() {
             "schedule": { "type": "cron", "expression": "0 9 * * 1-5", "timezone": "UTC" }
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(d["schedule"]["expression"], "0 9 * * 1-5");
     assert_eq!(d["schedule"]["timezone"], "UTC");
     let id = d["id"].as_str().unwrap().to_string();
 
     // A malformed cron is rejected at create time (fail-closed).
-    let (s, body) = call(
+    let body = call(
         &app,
         "POST",
         "/v1/deployments",
@@ -376,12 +393,12 @@ async fn schedule_cron_is_validated_and_echoed_at_the_wire() {
             "schedule": { "type": "cron", "expression": "0 99 * * *", "timezone": "UTC" }
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST, "hour out of range is rejected");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "hour out of range is rejected");
     assert_eq!(body["error"]["type"], "invalid_request_error");
 
     // A schedule object without an `expression` is rejected.
-    let (s, _) = call(
+    let _ = call(
         &app,
         "POST",
         "/v1/deployments",
@@ -393,21 +410,21 @@ async fn schedule_cron_is_validated_and_echoed_at_the_wire() {
             "schedule": { "type": "cron", "timezone": "UTC" }
         })),
     )
-    .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST, "a schedule needs an expression");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "a schedule needs an expression");
 
     // Updating the good deployment with a malformed cron is rejected, and its stored
     // schedule is unchanged.
-    let (s, _) = call(
+    let _ = call(
         &app,
         "POST",
         &format!("/v1/deployments/{id}"),
         Some(json!({ "schedule": { "type": "cron", "expression": "not a cron", "timezone": "UTC" } })),
     )
-    .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST);
-    let (status, still) = call(&app, "GET", &format!("/v1/deployments/{id}"), None).await;
-    assert_eq!(status, StatusCode::OK);
+    .await.expect(StatusCode::BAD_REQUEST);
+    let still = call(&app, "GET", &format!("/v1/deployments/{id}"), None)
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(
         still["schedule"]["expression"], "0 9 * * 1-5",
         "the rejected update did not corrupt the stored schedule"
@@ -417,22 +434,25 @@ async fn schedule_cron_is_validated_and_echoed_at_the_wire() {
 #[tokio::test]
 async fn missing_required_fields_and_unknown_ids() {
     let app = app();
-    let (s, _) = call(
+    let _ = call(
         &app,
         "POST",
         "/v1/deployments",
         Some(json!({ "agent": "agent_x", "name": "n" })),
     )
-    .await;
-    assert_eq!(s, StatusCode::BAD_REQUEST, "environment_id required");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "environment_id required");
 
     let _ = make_deployment(&app).await;
-    let (s, _) = call(&app, "GET", "/v1/deployments/deploy_missing", None).await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
-    let (s, _) = call(&app, "POST", "/v1/deployments/deploy_missing/run", None).await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
-    let (s, _) = call(&app, "GET", "/v1/deployment_runs/deprun_missing", None).await;
-    assert_eq!(s, StatusCode::NOT_FOUND);
+    let _ = call(&app, "GET", "/v1/deployments/deploy_missing", None)
+        .await
+        .expect(StatusCode::NOT_FOUND);
+    let _ = call(&app, "POST", "/v1/deployments/deploy_missing/run", None)
+        .await
+        .expect(StatusCode::NOT_FOUND);
+    let _ = call(&app, "GET", "/v1/deployment_runs/deprun_missing", None)
+        .await
+        .expect(StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -446,7 +466,7 @@ async fn deployment_repository_credentials_fail_closed_before_persistence() {
     // R2 C2 on create/update->E2 until a durable credential-reference provider
     // exists; vault_ids remains the supported durable credential path.
     let app = app();
-    let (status, body) = call(
+    let body = call(
         &app,
         "POST",
         "/v1/deployments",
@@ -462,16 +482,17 @@ async fn deployment_repository_credentials_fail_closed_before_persistence() {
             }]
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "R2");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "R2");
     assert!(
         body["error"]["message"]
             .as_str()
             .is_some_and(|message| message.contains("cannot be stored durably")),
         "R2 explicit remediation"
     );
-    let (status, page) = call(&app, "GET", "/v1/deployments", None).await;
-    assert_eq!(status, StatusCode::OK);
+    let page = call(&app, "GET", "/v1/deployments", None)
+        .await
+        .expect(StatusCode::OK);
     assert!(page["data"].as_array().unwrap().is_empty(), "R2 no state");
 }
 
@@ -498,26 +519,28 @@ async fn deployment_repository_paths_fail_closed_before_persistence() {
         })
     };
 
-    let (status, _) = call(&app, "POST", "/v1/deployments", Some(request("/repo"))).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "D2");
-    let (status, page) = call(&app, "GET", "/v1/deployments", None).await;
-    assert_eq!(status, StatusCode::OK);
+    let _ = call(&app, "POST", "/v1/deployments", Some(request("/repo")))
+        .await
+        .expect_for(StatusCode::BAD_REQUEST, "D2");
+    let page = call(&app, "GET", "/v1/deployments", None)
+        .await
+        .expect(StatusCode::OK);
     assert!(page["data"].as_array().unwrap().is_empty(), "D2 no state");
 
-    let (status, created) = call(
+    let created = call(
         &app,
         "POST",
         "/v1/deployments",
         Some(request("/workspace/repo")),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "D1");
+    .await
+    .expect_for(StatusCode::OK, "D1");
     assert_eq!(
         created["resources"][0]["mount_path"], "/workspace/repo",
         "D1 exact wire"
     );
     let id = created["id"].as_str().unwrap();
-    let (status, _) = call(
+    let _ = call(
         &app,
         "POST",
         &format!("/v1/deployments/{id}"),
@@ -529,10 +552,11 @@ async fn deployment_repository_paths_fail_closed_before_persistence() {
             }]
         })),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "D3");
-    let (status, retained) = call(&app, "GET", &format!("/v1/deployments/{id}"), None).await;
-    assert_eq!(status, StatusCode::OK, "D3");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "D3");
+    let retained = call(&app, "GET", &format!("/v1/deployments/{id}"), None)
+        .await
+        .expect_for(StatusCode::OK, "D3");
     assert_eq!(
         retained["resources"][0]["mount_path"], "/workspace/repo",
         "D3 prior aggregate"

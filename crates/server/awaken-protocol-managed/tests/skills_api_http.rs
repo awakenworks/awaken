@@ -83,7 +83,11 @@ fn multipart_skill(content: &str) -> Vec<u8> {
     multipart_files(&[("SKILL.md", content.as_bytes())])
 }
 
-async fn post_multipart(router: &Router, uri: &str, content: &str) -> (StatusCode, Value) {
+async fn post_multipart(
+    router: &Router,
+    uri: &str,
+    content: &str,
+) -> support::Call<serde_json::Value> {
     post_multipart_body(router, uri, multipart_skill(content), None).await
 }
 
@@ -92,7 +96,7 @@ async fn post_multipart_body(
     uri: &str,
     body: Vec<u8>,
     if_match: Option<&str>,
-) -> (StatusCode, Value) {
+) -> support::Call<serde_json::Value> {
     let mut builder = Request::builder().method("POST").uri(uri).header(
         "content-type",
         format!("multipart/form-data; boundary={BOUNDARY}"),
@@ -119,7 +123,7 @@ fn skill_zip(name: &str, files: &[(&str, &[u8], u32)]) -> Vec<u8> {
     writer.finish().unwrap().into_inner()
 }
 
-async fn post_json(router: &Router, uri: &str, body: Value) -> (StatusCode, Value) {
+async fn post_json(router: &Router, uri: &str, body: Value) -> support::Call<serde_json::Value> {
     let req = in_test_workspace(
         Request::builder()
             .method("POST")
@@ -131,7 +135,7 @@ async fn post_json(router: &Router, uri: &str, body: Value) -> (StatusCode, Valu
     read(router.clone().oneshot(req).await.unwrap()).await
 }
 
-async fn get(router: &Router, uri: &str) -> (StatusCode, String) {
+async fn get(router: &Router, uri: &str) -> support::Call<String> {
     let resp = router
         .clone()
         .oneshot(in_test_workspace(
@@ -143,10 +147,10 @@ async fn get(router: &Router, uri: &str) -> (StatusCode, String) {
     let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
         .await
         .unwrap();
-    (status, String::from_utf8_lossy(&bytes).to_string())
+    support::Call::new(status, String::from_utf8_lossy(&bytes).to_string())
 }
 
-async fn get_bytes(router: &Router, uri: &str) -> (StatusCode, Vec<u8>) {
+async fn get_bytes(router: &Router, uri: &str) -> support::Call<Vec<u8>> {
     let response = router
         .clone()
         .oneshot(in_test_workspace(
@@ -158,10 +162,10 @@ async fn get_bytes(router: &Router, uri: &str) -> (StatusCode, Vec<u8>) {
     let bytes = axum::body::to_bytes(response.into_body(), 8 << 20)
         .await
         .unwrap();
-    (status, bytes.to_vec())
+    support::Call::new(status, bytes.to_vec())
 }
 
-async fn delete(router: &Router, uri: &str) -> (StatusCode, Value) {
+async fn delete(router: &Router, uri: &str) -> support::Call<serde_json::Value> {
     let req = in_test_workspace(
         Request::builder()
             .method("DELETE")
@@ -172,12 +176,12 @@ async fn delete(router: &Router, uri: &str) -> (StatusCode, Value) {
     read(router.clone().oneshot(req).await.unwrap()).await
 }
 
-async fn read(resp: axum::response::Response) -> (StatusCode, Value) {
+async fn read(resp: axum::response::Response) -> support::Call<serde_json::Value> {
     let status = resp.status();
     let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
         .await
         .unwrap();
-    (
+    support::Call::new(
         status,
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
@@ -201,8 +205,9 @@ async fn malformed_skill_multipart_is_atomic_and_sdk_decodable() {
     body.extend_from_slice(format!("\r\n--{BOUNDARY}\r\n").as_bytes());
     body.extend_from_slice(b"Content-Disposition: form-data; name=\"broken\"");
 
-    let (status, error) = post_multipart_body(&router, "/v1/skills", body, None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    let error = post_multipart_body(&router, "/v1/skills", body, None)
+        .await
+        .expect_for(StatusCode::BAD_REQUEST, "expected status");
     assert_eq!(error["type"], "error");
     assert_eq!(error["error"]["type"], "invalid_request_error");
     assert!(error["error"]["message"].is_string());
@@ -246,8 +251,9 @@ async fn ga_skill_projection_and_query_only_selector_match_official_sdk() {
     request
         .extensions_mut()
         .insert(WorkspaceScope("test".into()));
-    let (status, skill) = read(router.clone().oneshot(request).await.unwrap()).await;
-    assert_eq!(status, StatusCode::OK, "G1 {skill}");
+    let skill = read(router.clone().oneshot(request).await.unwrap())
+        .await
+        .expect_for(StatusCode::OK, "G1");
     assert_eq!(skill["display_name"], "GA Skill", "G1/E1");
     assert_eq!(skill["source"]["type"], "custom", "G1/E1");
     assert!(skill["latest_version_id"].is_string(), "G1/E1");
@@ -261,8 +267,9 @@ async fn ga_skill_projection_and_query_only_selector_match_official_sdk() {
     request
         .extensions_mut()
         .insert(WorkspaceScope("test".into()));
-    let (status, retrieved) = read(router.clone().oneshot(request).await.unwrap()).await;
-    assert_eq!(status, StatusCode::OK, "G1/retrieve {retrieved}");
+    let retrieved = read(router.clone().oneshot(request).await.unwrap())
+        .await
+        .expect_for(StatusCode::OK, "G1/retrieve");
     assert_eq!(retrieved["id"], id, "G1/retrieve");
 
     let mut request = Request::builder()
@@ -272,8 +279,9 @@ async fn ga_skill_projection_and_query_only_selector_match_official_sdk() {
     request
         .extensions_mut()
         .insert(WorkspaceScope("test".into()));
-    let (status, change_point) = read(router.clone().oneshot(request).await.unwrap()).await;
-    assert_eq!(status, StatusCode::OK, "G4 {change_point}");
+    let change_point = read(router.clone().oneshot(request).await.unwrap())
+        .await
+        .expect_for(StatusCode::OK, "G4");
     assert_eq!(change_point["display_name"], "GA Skill", "G4/E1");
     assert_eq!(change_point["source"]["type"], "custom", "G4/E1");
     assert!(change_point["latest_version_id"].is_string(), "G4/E1");
@@ -286,8 +294,9 @@ async fn ga_skill_projection_and_query_only_selector_match_official_sdk() {
     request
         .extensions_mut()
         .insert(WorkspaceScope("test".into()));
-    let (status, list) = read(router.clone().oneshot(request).await.unwrap()).await;
-    assert_eq!(status, StatusCode::OK, "G2");
+    let list = read(router.clone().oneshot(request).await.unwrap())
+        .await
+        .expect_for(StatusCode::OK, "G2");
     assert!(list["next_page"].is_null(), "G2/E2");
     assert!(
         list["data"]
@@ -306,8 +315,9 @@ async fn ga_skill_projection_and_query_only_selector_match_official_sdk() {
     request
         .extensions_mut()
         .insert(WorkspaceScope("test".into()));
-    let (status, version) = read(router.clone().oneshot(request).await.unwrap()).await;
-    assert_eq!(status, StatusCode::OK, "G3 {version}");
+    let version = read(router.clone().oneshot(request).await.unwrap())
+        .await
+        .expect_for(StatusCode::OK, "G3");
     assert!(version.get("directory").is_none(), "G3/E3");
     assert!(version.get("version").is_none(), "G3/E3");
     assert_eq!(version["name"], "ga-skill", "G3/E3");
@@ -357,8 +367,9 @@ async fn ga_skill_projection_and_query_only_selector_match_official_sdk() {
     request
         .extensions_mut()
         .insert(WorkspaceScope("test".into()));
-    let (status, versions) = read(router.clone().oneshot(request).await.unwrap()).await;
-    assert_eq!(status, StatusCode::OK, "G3/list {versions}");
+    let versions = read(router.clone().oneshot(request).await.unwrap())
+        .await
+        .expect_for(StatusCode::OK, "G3/list");
     assert_eq!(versions["data"].as_array().unwrap().len(), 1, "G3/list");
 
     let next_body = multipart_files(&[(
@@ -377,8 +388,9 @@ async fn ga_skill_projection_and_query_only_selector_match_official_sdk() {
     request
         .extensions_mut()
         .insert(WorkspaceScope("test".into()));
-    let (status, created_version) = read(router.clone().oneshot(request).await.unwrap()).await;
-    assert_eq!(status, StatusCode::OK, "G3/create {created_version}");
+    let created_version = read(router.clone().oneshot(request).await.unwrap())
+        .await
+        .expect_for(StatusCode::OK, "G3/create");
     let created_version_id = created_version["id"].as_str().unwrap();
 
     let mut request = Request::builder()
@@ -391,8 +403,9 @@ async fn ga_skill_projection_and_query_only_selector_match_official_sdk() {
     request
         .extensions_mut()
         .insert(WorkspaceScope("test".into()));
-    let (status, deleted_version) = read(router.clone().oneshot(request).await.unwrap()).await;
-    assert_eq!(status, StatusCode::OK, "G3/delete {deleted_version}");
+    let deleted_version = read(router.clone().oneshot(request).await.unwrap())
+        .await
+        .expect_for(StatusCode::OK, "G3/delete");
     assert_eq!(deleted_version["id"], created_version_id, "G3/delete");
 
     let mut request = Request::builder()
@@ -403,8 +416,9 @@ async fn ga_skill_projection_and_query_only_selector_match_official_sdk() {
     request
         .extensions_mut()
         .insert(WorkspaceScope("test".into()));
-    let (status, deleted_skill) = read(router.clone().oneshot(request).await.unwrap()).await;
-    assert_eq!(status, StatusCode::OK, "G1/delete {deleted_skill}");
+    let deleted_skill = read(router.clone().oneshot(request).await.unwrap())
+        .await
+        .expect_for(StatusCode::OK, "G1/delete");
     assert_eq!(deleted_skill["id"], id, "G1/delete");
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -435,16 +449,16 @@ async fn zip_and_directory_import_converge_on_one_canonical_bundle() {
             ("assets/data.bin", &[0, 159, 255], 0o644),
         ],
     );
-    let (status, created) = post_multipart_body(
+    let created = post_multipart_body(
         &router,
         "/v1/skills",
         multipart_files(&[("zip-skill.zip", &zip)]),
         None,
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{created}");
+    .await
+    .expect_for(StatusCode::OK, "expected status");
     let zip_id = created["id"].as_str().unwrap();
-    let (status, version) = read(
+    let version = read(
         router
             .clone()
             .oneshot(in_test_workspace(
@@ -456,8 +470,8 @@ async fn zip_and_directory_import_converge_on_one_canonical_bundle() {
             .await
             .unwrap(),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{version}");
+    .await
+    .expect_for(StatusCode::OK, "expected status");
     assert_eq!(version["directory"], "zip-skill");
     assert!(
         version.get("files").is_none(),
@@ -479,12 +493,12 @@ async fn zip_and_directory_import_converge_on_one_canonical_bundle() {
             .find(|file| file.path == "scripts/run.sh")
             .is_some_and(|file| file.executable)
     );
-    let (status, bytes) = get_bytes(
+    let bytes = get_bytes(
         &router,
         &format!("/v1/skills/{zip_id}/versions/latest/files/assets/data.bin"),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(bytes, vec![0, 159, 255]);
 
     let edited = multipart_files_with_fields(
@@ -494,14 +508,14 @@ async fn zip_and_directory_import_converge_on_one_canonical_bundle() {
         ],
         &[("executable_paths", r#"["tools/helper"]"#)],
     );
-    let (status, edited_version) = post_multipart_body(
+    let edited_version = post_multipart_body(
         &router,
         &format!("/v1/skills/{zip_id}/versions"),
         edited,
         Some("1"),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{edited_version}");
+    .await
+    .expect_for(StatusCode::OK, "expected status");
     assert!(edited_version.get("file_entries").is_none());
     let stored_versions = store.list_versions("test", zip_id).await.unwrap();
     assert!(
@@ -520,15 +534,16 @@ async fn zip_and_directory_import_converge_on_one_canonical_bundle() {
         ("directory-skill/SKILL.md", directory_skill),
         ("directory-skill/references/api.md", b"directory reference"),
     ]);
-    let (status, created) = post_multipart_body(&router, "/v1/skills", body, None).await;
-    assert_eq!(status, StatusCode::OK, "{created}");
+    let created = post_multipart_body(&router, "/v1/skills", body, None)
+        .await
+        .expect_for(StatusCode::OK, "expected status");
     let id = created["id"].as_str().unwrap();
-    let (status, content) = get(
+    let content = get(
         &router,
         &format!("/v1/skills/{id}/versions/latest/files/references/api.md"),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(content, "directory reference");
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -570,11 +585,11 @@ async fn invalid_import_shapes_fail_before_the_skill_store_write() {
         ),
     ];
     for body in cases {
-        let (status, _) = post_multipart_body(&router, "/v1/skills", body, None).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let _ = post_multipart_body(&router, "/v1/skills", body, None)
+            .await
+            .expect(StatusCode::BAD_REQUEST);
     }
-    let (status, listing) = get(&router, "/v1/skills").await;
-    assert_eq!(status, StatusCode::OK);
+    let listing = get(&router, "/v1/skills").await.expect(StatusCode::OK);
     assert_eq!(
         serde_json::from_str::<Value>(&listing).unwrap()["data"],
         json!([])
@@ -589,17 +604,18 @@ async fn invalid_import_shapes_fail_before_the_skill_store_write() {
 #[tokio::test]
 async fn browser_publish_rejects_a_stale_base_version_without_appending() {
     let (router, _store, dir) = router_with_store();
-    let (status, created) = post_multipart(&router, "/v1/skills", SKILL_V1).await;
-    assert_eq!(status, StatusCode::OK, "{created}");
+    let created = post_multipart(&router, "/v1/skills", SKILL_V1)
+        .await
+        .expect_for(StatusCode::OK, "expected status");
     let id = created["id"].as_str().unwrap();
     let route = format!("/v1/skills/{id}/versions");
-    let (status, _) =
-        post_multipart_body(&router, &route, multipart_skill(SKILL_V2), Some("1")).await;
-    assert_eq!(status, StatusCode::OK);
-    let (status, conflict) =
-        post_multipart_body(&router, &route, multipart_skill(SKILL_V1), Some("1")).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
-    let (status, versions) = read(
+    let _ = post_multipart_body(&router, &route, multipart_skill(SKILL_V2), Some("1"))
+        .await
+        .expect(StatusCode::OK);
+    let _conflict = post_multipart_body(&router, &route, multipart_skill(SKILL_V1), Some("1"))
+        .await
+        .expect_for(StatusCode::CONFLICT, "expected status");
+    let versions = read(
         router
             .clone()
             .oneshot(in_test_workspace(
@@ -608,8 +624,8 @@ async fn browser_publish_rejects_a_stale_base_version_without_appending() {
             .await
             .unwrap(),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(versions["data"].as_array().unwrap().len(), 2);
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -647,15 +663,16 @@ async fn multipart_bundle_preserves_binary_support_files() {
         ))
         .await
         .unwrap();
-    let (status, created) = read(response).await;
-    assert_eq!(status, StatusCode::OK, "{created}");
+    let created = read(response)
+        .await
+        .expect_for(StatusCode::OK, "expected status");
     let id = created["id"].as_str().unwrap();
-    let (status, got) = get_bytes(
+    let got = get_bytes(
         &router,
         &format!("/v1/skills/{id}/versions/1/files/assets/data.bin"),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(got, binary);
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -668,23 +685,23 @@ async fn sdk_multipart_create_list_retrieve_and_version_lifecycle() {
     let (router, _store, dir) = router_with_store();
 
     // Multipart create (SDK path) registers a v1 and returns the tagged catalog id.
-    let (status, created) = post_multipart(&router, "/v1/skills", SKILL_V1).await;
-    assert_eq!(status, StatusCode::OK, "{created}");
+    let created = post_multipart(&router, "/v1/skills", SKILL_V1)
+        .await
+        .expect_for(StatusCode::OK, "expected status");
     let id = created["id"].as_str().unwrap().to_string();
     assert_eq!(created["type"], "skill");
     assert_eq!(created["latest_version"], "1");
     assert_eq!(created["source"], "custom");
 
     // List surfaces it.
-    let (status, list) = get(&router, "/v1/skills").await;
-    assert_eq!(status, StatusCode::OK);
+    let list = get(&router, "/v1/skills").await.expect(StatusCode::OK);
     assert!(
         list.contains(&id),
         "list surfaces the created skill: {list}"
     );
 
     // Retrieve by id.
-    let (status, got) = read(
+    let got = read(
         router
             .clone()
             .oneshot(in_test_workspace(
@@ -696,19 +713,19 @@ async fn sdk_multipart_create_list_retrieve_and_version_lifecycle() {
             .await
             .unwrap(),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(got["id"], id.as_str());
 
     // Add a version (SDK multipart).
-    let (status, v2) =
-        post_multipart(&router, &format!("/v1/skills/{id}/versions"), SKILL_V2).await;
-    assert_eq!(status, StatusCode::OK, "{v2}");
+    let v2 = post_multipart(&router, &format!("/v1/skills/{id}/versions"), SKILL_V2)
+        .await
+        .expect_for(StatusCode::OK, "expected status");
     assert_eq!(v2["type"], "skill_version");
     let vid = v2["id"].as_str().unwrap().to_string();
 
     // List versions → two rows.
-    let (status, versions) = read(
+    let versions = read(
         router
             .clone()
             .oneshot(in_test_workspace(
@@ -720,34 +737,38 @@ async fn sdk_multipart_create_list_retrieve_and_version_lifecycle() {
             .await
             .unwrap(),
     )
-    .await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect(StatusCode::OK);
     assert_eq!(versions["data"].as_array().unwrap().len(), 2, "{versions}");
 
     // `latest` content downloads the newest version's SKILL.md.
-    let (status, content) = get(&router, &format!("/v1/skills/{id}/versions/latest/content")).await;
-    assert_eq!(status, StatusCode::OK);
+    let content = get(&router, &format!("/v1/skills/{id}/versions/latest/content"))
+        .await
+        .expect(StatusCode::OK);
     assert!(content.contains("LOUDER"), "latest content: {content}");
 
     // Retrieve a specific version by its id.
-    let (status, one) = get(&router, &format!("/v1/skills/{id}/versions/{vid}")).await;
-    assert_eq!(status, StatusCode::OK);
+    let one = get(&router, &format!("/v1/skills/{id}/versions/{vid}"))
+        .await
+        .expect(StatusCode::OK);
     assert!(one.contains(&vid));
 
     // Delete the newer version → receipt; the skill survives.
-    let (status, receipt) = delete(&router, &format!("/v1/skills/{id}/versions/{vid}")).await;
-    assert_eq!(status, StatusCode::OK);
+    let receipt = delete(&router, &format!("/v1/skills/{id}/versions/{vid}"))
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(receipt["type"], "skill_version_deleted");
 
     // Delete the skill → receipt.
-    let (status, receipt) = delete(&router, &format!("/v1/skills/{id}")).await;
-    assert_eq!(status, StatusCode::OK);
+    let receipt = delete(&router, &format!("/v1/skills/{id}"))
+        .await
+        .expect(StatusCode::OK);
     assert_eq!(receipt["type"], "skill_deleted");
 
-    let (status, _) = get(&router, &format!("/v1/skills/{id}")).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, list) = get(&router, "/v1/skills").await;
-    assert_eq!(status, StatusCode::OK);
+    let _ = get(&router, &format!("/v1/skills/{id}"))
+        .await
+        .expect(StatusCode::NOT_FOUND);
+    let list = get(&router, "/v1/skills").await.expect(StatusCode::OK);
     assert!(
         !list.contains(&id),
         "deleted skill must not be re-projected"
@@ -763,13 +784,13 @@ async fn non_sdk_json_create_is_rejected_before_store_selection() {
     // availability must not revive a removed parallel create path.
     let resources = support::resources::ephemeral_resources();
     let router = skills_router(None, resources.purge_scheduler());
-    let (status, v) = post_json(
+    let _v = post_json(
         &router,
         "/v1/skills",
         json!({ "id": "greeter", "content": SKILL_V1 }),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "expected status");
 }
 
 #[tokio::test]
@@ -778,15 +799,14 @@ async fn non_sdk_json_create_cannot_mutate_the_durable_store() {
     // empty official list. This proves deletion of the duplicate ingress rather
     // than merely hiding its response fields.
     let (router, _store, dir) = router_with_store();
-    let (status, v) = post_json(
+    let _v = post_json(
         &router,
         "/v1/skills",
         json!({ "id": "greeter", "content": SKILL_V1 }),
     )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
-    let (status, list) = get(&router, "/v1/skills").await;
-    assert_eq!(status, StatusCode::OK);
+    .await
+    .expect_for(StatusCode::BAD_REQUEST, "expected status");
+    let list = get(&router, "/v1/skills").await.expect(StatusCode::OK);
     assert!(!list.contains("greeter"));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -797,12 +817,12 @@ async fn sdk_multipart_create_fails_closed_without_a_durable_store() {
     let resources = support::resources::ephemeral_resources();
     let router = skills_router(None, resources.purge_scheduler());
     // Multipart fails closed (409) when nothing durable backs it.
-    let (status, created) = post_multipart(&router, "/v1/skills", SKILL_V1).await;
-    assert_eq!(
-        status,
-        StatusCode::CONFLICT,
-        "SDK create must fail closed with no durable store: {created}"
-    );
+    let _created = post_multipart(&router, "/v1/skills", SKILL_V1)
+        .await
+        .expect_for(
+            StatusCode::CONFLICT,
+            "SDK create must fail closed with no durable store",
+        );
 }
 
 #[tokio::test]
@@ -810,14 +830,17 @@ async fn error_arms_are_fail_closed() {
     let (router, _store, dir) = router_with_store();
 
     // Retrieve / delete an unknown skill → 404.
-    let (status, _) = get(&router, "/v1/skills/skill_missing").await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _) = delete(&router, "/v1/skills/skill_missing").await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    let _ = get(&router, "/v1/skills/skill_missing")
+        .await
+        .expect(StatusCode::NOT_FOUND);
+    let _ = delete(&router, "/v1/skills/skill_missing")
+        .await
+        .expect(StatusCode::NOT_FOUND);
 
     // A version create against an unknown skill → 404.
-    let (status, _) = post_multipart(&router, "/v1/skills/skill_missing/versions", SKILL_V1).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    let _ = post_multipart(&router, "/v1/skills/skill_missing/versions", SKILL_V1)
+        .await
+        .expect(StatusCode::NOT_FOUND);
 
     // A multipart create with no file part → 400 (no SKILL.md).
     let body = format!(
@@ -834,17 +857,21 @@ async fn error_arms_are_fail_closed() {
             .body(Body::from(body))
             .unwrap(),
     );
-    let (status, _) = read(router.clone().oneshot(req).await.unwrap()).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let _ = read(router.clone().oneshot(req).await.unwrap())
+        .await
+        .expect(StatusCode::BAD_REQUEST);
 
     // A version retrieve/content on an unknown version → 404.
-    let (status, created) = post_multipart(&router, "/v1/skills", SKILL_V1).await;
-    assert_eq!(status, StatusCode::OK);
+    let created = post_multipart(&router, "/v1/skills", SKILL_V1)
+        .await
+        .expect(StatusCode::OK);
     let id = created["id"].as_str().unwrap().to_string();
-    let (status, _) = get(&router, &format!("/v1/skills/{id}/versions/999")).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _) = get(&router, &format!("/v1/skills/{id}/versions/999/content")).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    let _ = get(&router, &format!("/v1/skills/{id}/versions/999"))
+        .await
+        .expect(StatusCode::NOT_FOUND);
+    let _ = get(&router, &format!("/v1/skills/{id}/versions/999/content"))
+        .await
+        .expect(StatusCode::NOT_FOUND);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -870,8 +897,7 @@ async fn skill_routes_require_a_preselected_workspace() {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
-    let (status, listing) = get(&router, "/v1/skills").await;
-    assert_eq!(status, StatusCode::OK);
+    let listing = get(&router, "/v1/skills").await.expect(StatusCode::OK);
     assert!(!listing.contains("hidden"));
     let _ = std::fs::remove_dir_all(dir);
 }
