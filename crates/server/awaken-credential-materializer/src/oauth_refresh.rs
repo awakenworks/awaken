@@ -107,6 +107,9 @@ impl VaultRefresher {
     }
 }
 
+/// A token endpoint that never answers must not pin a refresh attempt open.
+const OAUTH_REFRESH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn basic_client_auth(client_id: &str, client_secret: &str) -> String {
     let encode =
         |value: &str| form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>();
@@ -118,17 +121,10 @@ fn basic_client_auth(client_id: &str, client_secret: &str) -> String {
 }
 
 fn http_client_for(url: &str) -> reqwest::Client {
-    let mut builder = reqwest::Client::builder();
-    if reqwest::Url::parse(url)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(str::to_owned))
-        .is_some_and(|host| {
-            host.eq_ignore_ascii_case("localhost")
-                || host
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|address| address.is_loopback())
-        })
-    {
+    let mut builder = awaken_outbound_http::rustls_client_builder(
+        awaken_outbound_http::TransportDeadline::total(OAUTH_REFRESH_TIMEOUT),
+    );
+    if awaken_outbound_http::target_is_loopback(url) {
         builder = builder.no_proxy();
     }
     builder.build().expect("build OAuth HTTP client")

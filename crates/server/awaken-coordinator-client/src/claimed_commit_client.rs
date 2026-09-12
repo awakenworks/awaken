@@ -46,12 +46,12 @@ impl RemoteClaimedRunCommit {
     pub fn new(base_url: impl Into<String>, identity: WorkerIdentity) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
-            client: reqwest::Client::builder()
-                .no_proxy()
-                .connect_timeout(std::time::Duration::from_secs(5))
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .expect("the default claimed-commit HTTP client should build"),
+            client: awaken_outbound_http::rustls_client_builder(
+                awaken_outbound_http::TransportDeadline::total(std::time::Duration::from_secs(30)),
+            )
+            .no_proxy()
+            .build()
+            .expect("the default claimed-commit HTTP client should build"),
             identity,
             request_authorizer: None,
         }

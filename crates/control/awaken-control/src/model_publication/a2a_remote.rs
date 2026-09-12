@@ -34,7 +34,7 @@ impl A2aCardDiscovery for HttpA2aCardDiscovery {
 
 impl CatalogModelPublicationResolver {
     pub(super) fn remote_origin(endpoint: &str) -> Result<String, String> {
-        let url = reqwest::Url::parse(endpoint)
+        let url = url::Url::parse(endpoint)
             .map_err(|error| format!("invalid A2A endpoint URL: {error}"))?;
         if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
             return Err("A2A endpoint must be an absolute HTTP(S) URL".into());

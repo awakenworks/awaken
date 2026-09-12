@@ -162,10 +162,10 @@ impl FileContentSource<ResourceOperationFence> for HttpFileContentSource {
             .send()
             .await
             .map_err(|error| FileContentSourceError::new(error.to_string()))?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
+        if response.status() == http::StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        if response.status() != reqwest::StatusCode::OK {
+        if response.status() != http::StatusCode::OK {
             return Err(FileContentSourceError::new(format!(
                 "File content authority returned HTTP {}",
                 response.status()

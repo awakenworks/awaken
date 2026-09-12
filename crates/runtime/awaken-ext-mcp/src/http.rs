@@ -455,18 +455,19 @@ impl HttpTransportBuilder {
     }
 }
 
+const MCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const MCP_READ_TIMEOUT: Duration = Duration::from_secs(120);
+
 fn http_client_for(url: &str) -> reqwest::Client {
-    let mut builder = reqwest::Client::builder();
-    if reqwest::Url::parse(url)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(str::to_owned))
-        .is_some_and(|host| {
-            host.eq_ignore_ascii_case("localhost")
-                || host
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|address| address.is_loopback())
-        })
-    {
+    // Tool calls carry their own per-request deadline; the transport bound here
+    // is on connecting and on upstream silence, so a long SSE stream survives.
+    let mut builder = awaken_outbound_http::rustls_client_builder(
+        awaken_outbound_http::TransportDeadline::Streaming {
+            connect: MCP_CONNECT_TIMEOUT,
+            read: MCP_READ_TIMEOUT,
+        },
+    );
+    if awaken_outbound_http::target_is_loopback(url) {
         builder = builder.no_proxy();
     }
     builder.build().expect("build MCP HTTP client")

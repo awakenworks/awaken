@@ -123,6 +123,24 @@ pub trait BrokeredModelCatalogClient: Send + Sync {
     async fn list_models(&self) -> Result<Vec<BrokeredModel>, BrokeredInferenceError>;
 }
 
+/// A Platform endpoint that never answers must not pin a brokered call open.
+const BROKERED_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The Platform inference plane is Awaken's own control traffic, and its
+/// `http://127.0.0.1` emulator form is not reachable through an ambient egress
+/// proxy; a routable Platform endpoint keeps a deliberately configured one.
+fn brokered_http_client(base_url: &str) -> reqwest::Client {
+    let mut builder = awaken_outbound_http::rustls_client_builder(
+        awaken_outbound_http::TransportDeadline::total(BROKERED_REQUEST_TIMEOUT),
+    );
+    if awaken_outbound_http::target_is_loopback(base_url) {
+        builder = builder.no_proxy();
+    }
+    builder
+        .build()
+        .expect("static brokered inference client configuration is valid")
+}
+
 const BROKERED_CATALOG_MAX_ATTEMPTS: usize = 3;
 const BROKERED_CATALOG_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
@@ -203,7 +221,7 @@ impl HttpBrokeredInferenceClient {
         }
         resolve_access_token(access_token_source.as_ref())?;
         Ok(Self {
-            http: reqwest::Client::new(),
+            http: brokered_http_client(&base_url),
             base_url,
             access_token_source,
             workspace_id,

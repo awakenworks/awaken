@@ -53,10 +53,18 @@ type Routes = Arc<Mutex<HashMap<RouteKey, Route>>>;
 type GenerationAuthority =
     Arc<dyn Fn(&awaken_session_contract::McpGenerationRef, u64) -> bool + Send + Sync>;
 
+/// A relayed MCP call may stream a long SSE response, so the bound is on
+/// connecting and on upstream silence, never on total elapsed time.
+const RELAY_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const RELAY_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 #[derive(Clone)]
 struct RelayState {
     routes: Routes,
     authority: GenerationAuthority,
+    /// One upstream client for the life of the relay. Building one inside the
+    /// handler discarded the connection pool on every forwarded call.
+    client: reqwest::Client,
 }
 
 impl RelayState {
@@ -167,6 +175,14 @@ impl McpRelay {
         let state = RelayState {
             routes: routes.clone(),
             authority,
+            client: awaken_outbound_http::rustls_client_builder(
+                awaken_outbound_http::TransportDeadline::Streaming {
+                    connect: RELAY_CONNECT_TIMEOUT,
+                    read: RELAY_READ_TIMEOUT,
+                },
+            )
+            .build()
+            .map_err(std::io::Error::other)?,
         };
         let app = axum::Router::new()
             .route(
@@ -378,9 +394,9 @@ async fn forward(
     // different `http` versions, so headers/method/status don't share types.
     let method = reqwest::Method::from_bytes(parts.method.as_str().as_bytes())
         .unwrap_or(reqwest::Method::POST);
-    let client = reqwest::Client::new();
     let send = |route: &Route| {
-        let mut request = client
+        let mut request = state
+            .client
             .request(method.clone(), &route.url)
             .body(bytes.to_vec());
         // Pass every header EXCEPT workload-supplied Authorization and the loopback Host.
