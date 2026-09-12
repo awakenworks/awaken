@@ -22,7 +22,6 @@ async fn direct_runtime_example_runs_to_completion() {
     // Allow everything (default behavior) — the example uses a more selective set.
     let policy = RuleBasedToolPermissionPolicy::new(PermissionRuleset {
         default_behavior: ToolPermissionBehavior::Allow,
-        mode: Mode::Default,
         rules: Vec::new(),
     });
     let runtime = Runtime::new()

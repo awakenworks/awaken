@@ -205,7 +205,6 @@ fn allow_all() -> PermissionGate {
     PermissionGate::new(Arc::new(RuleBasedToolPermissionPolicy::new(
         PermissionRuleset {
             default_behavior: ToolPermissionBehavior::Allow,
-            mode: Mode::Default,
             rules: Vec::new(),
         },
     )))

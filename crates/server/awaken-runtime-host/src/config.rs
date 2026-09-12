@@ -15,7 +15,7 @@ use awaken_ext_builtin_tools::{
     builtin_tools,
 };
 use awaken_ext_permission::{
-    Mode, PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
+    PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
     ToolPermissionBehavior,
 };
 use awaken_ext_state_machine::{STATE_MACHINE_PLUGIN_ID, StateMachinePlugin};
@@ -87,7 +87,6 @@ fn base_allow_rules(extra_allowed: &[String]) -> Vec<PermissionRule> {
 fn server_policy(extra_allowed: &[String]) -> RuleBasedToolPermissionPolicy {
     RuleBasedToolPermissionPolicy::new(PermissionRuleset {
         default_behavior: ToolPermissionBehavior::RequireConfirmation,
-        mode: Mode::Default,
         rules: base_allow_rules(extra_allowed),
     })
 }
@@ -107,7 +106,7 @@ pub(crate) fn config_permission_ruleset(
 
 /// The ruleset a thread actually enforces: the built-in Agent-tool baseline
 /// plus pre-authorized dynamic ids, with an authored policy's rules
-/// layered on top and its `default_behavior`/`mode` governing unmatched calls
+/// layered on top and its `default_behavior` governing unmatched calls
 /// (`deny` in any rule still wins, absolutely). With no authored policy this is
 /// the fail-closed default: perception is allowed, controlled modifications and
 /// unmatched tools ask.
@@ -116,16 +115,16 @@ pub(crate) fn effective_ruleset(
     extra_allowed: &[String],
 ) -> PermissionRuleset {
     let mut rules = base_allow_rules(extra_allowed);
-    let (default_behavior, mode) = authored
+    let default_behavior = authored
         .as_ref()
-        .map(|rs| (rs.default_behavior, rs.mode))
-        .unwrap_or((ToolPermissionBehavior::RequireConfirmation, Mode::Default));
+        .map_or(ToolPermissionBehavior::RequireConfirmation, |rs| {
+            rs.default_behavior
+        });
     if let Some(rs) = authored {
         rules.extend(rs.rules);
     }
     PermissionRuleset {
         default_behavior,
-        mode,
         rules,
     }
 }
