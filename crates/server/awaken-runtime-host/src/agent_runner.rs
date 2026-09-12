@@ -726,7 +726,9 @@ mod tests {
         // exist/one is absent in the inherited attempt source. Effects: E1 one
         // child dispatch freezes both exact non-root targets; E2 an incomplete
         // source fails before queue admission. Rules P1=C1+C2+complete=>E1 and
-        // P2=C1+C2+missing=>E2. No child execution consumer may reopen Control.
+        // P2=C1+C2+missing=>E2. C4 the Session Workspace is known: P1/P2
+        // include its frozen manifest; P3 missing Workspace rejects admission
+        // even with a complete publication source. No consumer may guess it.
         use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
 
         let nested = agent("nested-child", "nested");
@@ -773,6 +775,14 @@ mod tests {
             awaken_session_contract::ResolvedSessionResources::try_new(Vec::new(), Vec::new())
                 .expect("P1 empty owned resources"),
         );
+        let error = child_dispatch_request(
+            activation.clone(),
+            ThreadId("parent-thread".into()),
+            None,
+            Some(&complete),
+        )
+        .expect_err("P3 Workspace must not be inferred from publications");
+        assert!(error.to_string().contains("Workspace"), "P3: {error}");
         let request = child_dispatch_request(
             activation.clone(),
             ThreadId("parent-thread".into()),

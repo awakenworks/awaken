@@ -9,6 +9,7 @@ pub(super) struct SessionResumeReq {
     session_id: String,
     session_work_authority:
         Option<awaken_session_contract::work_queue::SessionWorkAuthorityReceipt>,
+    continuation: Option<awaken_session_contract::SessionRealizationLease>,
 }
 
 #[derive(Deserialize)]
@@ -321,6 +322,36 @@ pub(super) async fn session_resume(
             .now_ms
             .saturating_add(authority.lease_ms)
             .min(registry_expiry);
+        if let Some(asserted) = request.continuation.as_ref() {
+            if asserted.owner != request.identity.worker_id
+                || asserted.runtime_incarnation != request.identity.lease_owner()
+                || asserted.expires_at_unix_ms > registry_expiry
+            {
+                return Err(RealizationHttpError::from(HostError::bad_request(
+                    "Session continuation exceeds authenticated Worker authority",
+                )));
+            }
+            // Reuse the existing exact-fence renewal CAS. Stale continuation is
+            // never converted into a reassignment; a cold/retired Worker must
+            // explicitly take the ordinary assignment path without this proof.
+            let renewed = control
+                .renew_session_realization(awaken_session_contract::RenewSessionRealization {
+                    session_id: request.session_id.clone(),
+                    asserted_lease: asserted.clone(),
+                    requested_expires_at_unix_ms: realization_expiry
+                        .max(asserted.expires_at_unix_ms),
+                })
+                .await
+                .map_err(RealizationHttpError::Control)?;
+            if !awaken_session_contract::realization_lease_generation_authorizes(
+                &renewed.lease,
+                asserted,
+            ) {
+                return Err(RealizationHttpError::Control(
+                    awaken_session_contract::SessionRealizationControlFailure::StaleOwnership,
+                ));
+            }
+        }
         let realization = match control
             .begin_session_realization(awaken_session_contract::BeginSessionRealization {
                 session_id: request.session_id.clone(),
@@ -333,9 +364,10 @@ pub(super) async fn session_resume(
                     // the sole executor for the Session thread. It may therefore
                     // fence a predecessor Worker's longer-lived projection lease
                     // without waiting for an unrelated timeout.
-                    // The same process also needs a successor: Work retirement
-                    // can close its predecessor while the root lease is live.
-                    reassign_existing_lease: true,
+                    // Without an exact live continuation, even the same process
+                    // needs a successor: Work retirement can close its local
+                    // predecessor while the durable root lease is still live.
+                    reassign_existing_lease: request.continuation.is_none(),
                 },
             })
             .await
@@ -355,6 +387,19 @@ pub(super) async fn session_resume(
             }
             Err(error) => return Err(RealizationHttpError::Control(error)),
         };
+        // Renewal and projection building are separate existing operations.
+        // Reassignment between them must not publish another generation as the
+        // requested continuation, even if owner and incarnation are unchanged.
+        if let (Some(asserted), Some(directive)) = (&request.continuation, &realization)
+            && !awaken_session_contract::realization_lease_generation_authorizes(
+                &directive.authority.lease,
+                asserted,
+            )
+        {
+            return Err(RealizationHttpError::Control(
+                awaken_session_contract::SessionRealizationControlFailure::StaleOwnership,
+            ));
+        }
         if !guard.is_live_at(service.clock.now_ms()) {
             return Err(RealizationHttpError::from(HostError::bad_request(
                 "Session resume claim expired before realization assignment",

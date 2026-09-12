@@ -312,6 +312,7 @@ impl WorkerControlClient {
         session_work_authority: Option<
             &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
         >,
+        continuation: Option<&awaken_session_contract::SessionRealizationLease>,
     ) -> Result<
         Option<awaken_session_contract::SessionRealizationDirective>,
         ClaimedSessionControlError,
@@ -324,18 +325,31 @@ impl WorkerControlClient {
                     "claim": claim,
                     "session_id": session_id,
                     "session_work_authority": session_work_authority,
+                    "continuation": continuation,
                 }),
             )
             .await
             .map_err(ClaimedSessionControlError::from)?;
-        body.get("realization")
+        let directive: Option<awaken_session_contract::SessionRealizationDirective> = body
+            .get("realization")
             .filter(|value| !value.is_null())
             .cloned()
             .map(serde_json::from_value)
             .transpose()
             .map_err(|error| {
                 ClaimedSessionControlError::new(format!("Session resume directive decode: {error}"))
-            })
+            })?;
+        if let (Some(asserted), Some(directive)) = (continuation, &directive)
+            && !awaken_session_contract::realization_lease_generation_authorizes(
+                &directive.authority.lease,
+                asserted,
+            )
+        {
+            return Err(
+                awaken_session_contract::SessionRealizationControlFailure::StaleOwnership.into(),
+            );
+        }
+        Ok(directive)
     }
 
     /// Claim one cold terminal projection through the same identity-bound

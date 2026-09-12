@@ -49,6 +49,10 @@ impl From<awaken_session_contract::SessionRealizationControlFailure>
 /// Worker-side outbound port over the authenticated Coordinator transport.
 #[async_trait::async_trait]
 pub trait ClaimedSessionControl: SessionRealizationControl + Send + Sync {
+    /// Resume committed projection state. `continuation` is an assertion of
+    /// this same Run's still-live local realization, never authority by itself.
+    /// The authenticated adapter must renew its exact fence and reject a
+    /// different returned generation; absence requests ordinary reassignment.
     async fn resume_frozen(
         &self,
         claim: &RunClaim,
@@ -56,6 +60,7 @@ pub trait ClaimedSessionControl: SessionRealizationControl + Send + Sync {
         session_work_authority: Option<
             &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
         >,
+        continuation: Option<&awaken_session_contract::SessionRealizationLease>,
     ) -> Result<Option<SessionRealizationDirective>, ClaimedSessionControlError>;
 
     async fn list_session_agents(

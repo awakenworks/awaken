@@ -39,7 +39,7 @@ from formal_memory_mutations import (
 )
 from formal_execution_replacement_mutations import (
     check_execution_replacement_model_mutants, check_k8s_process_observation_model_mutants,
-    check_remote_attempt_model_mutants,
+    check_remote_attempt_model_mutants, check_session_continuation_model_mutants,
 )
 from formal_credential_mutations import (
     check_mcp_credential_model_mutants, check_credential_effect_model_mutants,
@@ -933,6 +933,7 @@ def check_realization_renewal_model_mutant(tlc_jar: Path) -> None:
         mutations.append((source, config + "\nINVARIANT " + invariant + "\n", invariant))
     check_tlc_model_mutations(tlc_jar, "SessionRealizationAuthority", source, config, mutations)
     print("Session authority: 6/6 guard mutants killed; grant/cleanup reachability witnessed")
+    check_session_continuation_model_mutants(tlc_jar)
     # H1/H2 ordinary and panicking heartbeat completion must use the SAME
     # cohort fence. H3 the wrapper cannot finish ahead of revocation. Exact
     # semantic oracles, plus panic/completion reachability, exclude inert proofs.
@@ -1107,7 +1108,13 @@ def check_session_execution_binding_model_mutants(tlc_jar: Path) -> None:
                               # Seven phase classes retain the same complete
                               # two-effect state space; raise tool resources,
                               # never truncate exploration to fit the old budget.
-                              heap_mb=4096, timeout_seconds=600)
+                              # The unchanged full baseline exceeded 600s on
+                              # one TLC worker (not an observation timeout).
+                              # Use four workers and a bounded 1800s budget;
+                              # retain all states, invariants and mutants, and
+                              # report metrics so capacity is not a silent gate.
+                              heap_mb=4096, workers=4, timeout_seconds=1800,
+                              report_metrics=True)
     print("Session execution binding: 47/47 mutants killed; 22 witnesses cover execution, provider projection, Memory, preparation, physical/restored disposal, cold reconstruction, live adoption, local creation and checkpoint upload/replay; fresh provider admission cannot be suppressed by a second clock")
 
 
