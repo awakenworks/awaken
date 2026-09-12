@@ -35,6 +35,7 @@ use awaken_store_inmem::{MemoryCommitCoordinator, replay_latest_state};
 /// Calls `echo` once, then ends with text on the next inference.
 struct ToolThenText {
     calls: AtomicUsize,
+    second_tool: bool,
 }
 
 #[async_trait::async_trait]
@@ -45,11 +46,19 @@ impl LlmExecutor for ToolThenText {
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         let output = if n == 0 {
-            AssistantOutput::from_tool_calls(vec![ToolCall {
+            let mut calls = vec![ToolCall {
                 call_id: "call-1".to_string(),
                 tool_id: "echo".to_string(),
                 arguments: serde_json::json!({"text": "ping"}),
-            }])
+            }];
+            if self.second_tool {
+                calls.push(ToolCall {
+                    call_id: "call-2".into(),
+                    tool_id: "lookup".into(),
+                    arguments: serde_json::json!({"text":"second"}),
+                });
+            }
+            AssistantOutput::from_tool_calls(calls)
         } else {
             AssistantOutput::text("all done".to_string())
         };
@@ -142,6 +151,7 @@ fn runtime(ran: Arc<AtomicUsize>) -> Runtime {
     let runtime = Runtime::new()
         .with_llm(Arc::new(ToolThenText {
             calls: AtomicUsize::new(0),
+            second_tool: false,
         }))
         .with_tool(Arc::new(EchoTool { ran }))
         .with_gate(Arc::new(SuspendGate));
@@ -586,4 +596,117 @@ async fn permission_wait_rejects_free_form_input() {
         replay_latest_state(&commit.committed(), &RunId("run-1".to_string())),
         Some(RunState::Awaiting)
     );
+}
+
+#[tokio::test]
+async fn resumed_requested_client_calls_keep_their_frozen_execution_owner() {
+    // Cause/effect decision table: C1 first client call leaves a Requested sibling;
+    // C2 sibling is client/regular; C3 runtime is warm/reconstructed. R1 C2 client
+    // => second ExternalEvent ticket, zero Host invocation, one inference until both
+    // results arrive. R2 C2 regular => existing Host permission gate. C3 cannot change
+    // either decision. Completed first results stay behind the batch publication barrier.
+    for cold in [false, true] {
+        for second_client in [false, true] {
+            let ran = Arc::new(AtomicUsize::new(0));
+            let model = Arc::new(ToolThenText {
+                calls: AtomicUsize::new(0),
+                second_tool: true,
+            });
+            let mut act = activation();
+            act.snapshot.resolved_spec.tool_descriptors[0].kind = ToolKind::ClientExecuted;
+            let mut second = act.snapshot.resolved_spec.tool_descriptors[0].clone();
+            second.id = "lookup".into();
+            second.kind = if second_client {
+                ToolKind::ClientExecuted
+            } else {
+                ToolKind::Regular
+            };
+            act.snapshot.resolved_spec.tool_descriptors.push(second);
+            let frozen = act.snapshot.clone();
+            let make_runtime = || {
+                let runtime = Runtime::new()
+                    .with_llm(model.clone())
+                    .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+                    .with_gate(Arc::new(SuspendGate));
+                runtime.register_snapshot(frozen.clone());
+                runtime
+            };
+            let mut runtime = make_runtime();
+            let commit = Arc::new(MemoryCommitCoordinator::new());
+            assert_eq!(
+                runtime
+                    .execute(act, RuntimeRunContext::new().with_commit(commit.clone()))
+                    .await
+                    .unwrap(),
+                RunState::Awaiting
+            );
+            if cold {
+                runtime = make_runtime();
+            }
+            for index in 1..=2 {
+                let ticket = commit.resume_ticket_for(&RunId("run-1".into())).unwrap();
+                assert_eq!(ticket.reason(), AwaitReason::ExternalEvent);
+                assert_eq!(ticket.call_id(), Some(format!("call-{index}").as_str()));
+                let command = ResumeCommand {
+                    operation_id: Some(format!("reply-{index}")),
+                    correlation_id: ticket.correlation_id,
+                    run_id: RunId("run-1".into()),
+                    thread_id: ThreadId("thread-1".into()),
+                    snapshot_id: ExecutableAgentSnapshotId(SNAPSHOT_ID.into()),
+                    catalog_fingerprint: CatalogFingerprint(FINGERPRINT.into()),
+                    result: ResumeResult::ToolResult(ToolOutput::ok(
+                        format!("call-{index}"),
+                        format!("result-{index}"),
+                    )),
+                    context_messages: Vec::new(),
+                    now_ms: 0,
+                };
+                let state = runtime
+                    .resume_tool_batch(
+                        command,
+                        commit.as_ref(),
+                        RuntimeRunContext::new().with_commit(commit.clone()),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(ran.load(Ordering::SeqCst), 0);
+                assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+                if index == 1 {
+                    assert_eq!(state, RunState::Awaiting);
+                    let next = commit.resume_ticket_for(&RunId("run-1".into())).unwrap();
+                    assert_eq!(next.call_id(), Some("call-2"));
+                    assert_eq!(
+                        next.reason(),
+                        if second_client {
+                            AwaitReason::ExternalEvent
+                        } else {
+                            AwaitReason::ToolPermission
+                        }
+                    );
+                    assert_eq!(
+                        commit
+                            .committed_messages(&ThreadId("thread-1".into()))
+                            .iter()
+                            .filter(|m| m.role == Role::Tool)
+                            .count(),
+                        0
+                    );
+                    if !second_client {
+                        break;
+                    }
+                } else {
+                    assert_eq!(state, RunState::Running);
+                    assert!(commit.resume_ticket_for(&RunId("run-1".into())).is_none());
+                    let results: Vec<_> = commit
+                        .committed_messages(&ThreadId("thread-1".into()))
+                        .into_iter()
+                        .filter(|m| m.role == Role::Tool)
+                        .collect();
+                    assert_eq!(results.len(), 2);
+                    assert!(results[0].text_content().contains("result-1"));
+                    assert!(results[1].text_content().contains("result-2"));
+                }
+            }
+        }
+    }
 }
