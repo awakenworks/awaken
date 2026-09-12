@@ -5,11 +5,11 @@ pub awaken_config_service::ManagedModelIdError::Invalid(alloc::string::String)
 pub awaken_config_service::ManagedModelIdError::UnsupportedSelection
 pub enum awaken_config_service::PublicationResolutionError
 pub awaken_config_service::PublicationResolutionError::CandidateUnavailable
-pub awaken_config_service::PublicationResolutionError::CandidateUnavailable::binding: awaken_runtime_contract::resolved::ModelBinding
+pub awaken_config_service::PublicationResolutionError::CandidateUnavailable::binding: awaken_runtime_contract::resolved::model_binding::ModelBinding
 pub awaken_config_service::PublicationResolutionError::CandidateUnavailable::reason: alloc::string::String
 pub awaken_config_service::PublicationResolutionError::CatalogUnavailable(alloc::string::String)
 pub awaken_config_service::PublicationResolutionError::CredentialInventoryUnavailable(alloc::string::String)
-pub awaken_config_service::PublicationResolutionError::DuplicateBinding(awaken_runtime_contract::resolved::ModelBinding)
+pub awaken_config_service::PublicationResolutionError::DuplicateBinding(awaken_runtime_contract::resolved::model_binding::ModelBinding)
 pub awaken_config_service::PublicationResolutionError::Invalid(alloc::string::String)
 pub awaken_config_service::PublicationResolutionError::MissingPrimary
 impl core::convert::From<&str> for awaken_config_service::PublicationResolutionError
@@ -131,7 +131,7 @@ pub awaken_config_service::ResolvedPublicationModels::context_window: core::opti
 pub awaken_config_service::ResolvedPublicationModels::max_output_tokens: core::option::Option<u32>
 pub awaken_config_service::ResolvedPublicationModels::primary: awaken_runtime_contract::resolved::ResolvedModelCandidate
 impl awaken_config_service::ResolvedPublicationModels
-pub fn awaken_config_service::ResolvedPublicationModels::host(awaken_runtime_contract::resolved::ModelBinding, alloc::vec::Vec<awaken_runtime_contract::resolved::ModelBinding>, core::option::Option<u32>, core::option::Option<u32>) -> Self
+pub fn awaken_config_service::ResolvedPublicationModels::host(awaken_runtime_contract::resolved::model_binding::ModelBinding, alloc::vec::Vec<awaken_runtime_contract::resolved::model_binding::ModelBinding>, core::option::Option<u32>, core::option::Option<u32>) -> Self
 pub struct awaken_config_service::RuntimeCapability
 pub awaken_config_service::RuntimeCapability::backend_refs: alloc::vec::Vec<alloc::string::String>
 pub awaken_config_service::RuntimeCapability::cli: core::option::Option<alloc::string::String>
@@ -168,7 +168,7 @@ pub fn awaken_config_service::ManagementAuditPlane::get<'life0, 'life1, 'life2, 
 pub fn awaken_config_service::ManagementAuditPlane::mark_committed<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_config_service::ManagementAuditPlane::record<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_agent_config::store::ManagementAuditRecord) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_config::store::AuditedConfigWrite, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_config_service::ModelPublicationResolver: core::marker::Send + core::marker::Sync
-pub fn awaken_config_service::ModelPublicationResolver::resolve_models<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_agent_config::config::ModelSelection, &'life3 [awaken_runtime_contract::resolved::ModelBinding]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_config_service::ResolvedPublicationModels, awaken_config_service::PublicationResolutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_config_service::ModelPublicationResolver::resolve_models<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_agent_config::config::ModelSelection, &'life3 [awaken_runtime_contract::resolved::model_binding::ModelBinding]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_config_service::ResolvedPublicationModels, awaken_config_service::PublicationResolutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub trait awaken_config_service::PluginPublicationResolver: core::marker::Send + core::marker::Sync
 pub fn awaken_config_service::PluginPublicationResolver::plugin_id(&self) -> &str
 pub fn awaken_config_service::PluginPublicationResolver::resolve<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 [awaken_agent_contract::toolset::ToolsetPolicy], core::option::Option<&'life3 serde_json::value::Value>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait

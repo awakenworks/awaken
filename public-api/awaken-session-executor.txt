@@ -223,6 +223,7 @@ impl awaken_session_executor::ManagedHost
 pub fn awaken_session_executor::ManagedHost::with_credential_materializer(self, awaken_credential_materializer::PinnedCredentialMaterializer) -> Self
 pub fn awaken_session_executor::ManagedHost::with_credential_refresh_factory(self, alloc::sync::Arc<dyn awaken_credential_materializer::refresh::CredentialRefreshFactory>) -> Self
 pub fn awaken_session_executor::ManagedHost::with_mcp_attachment_realizer(self, alloc::sync::Arc<dyn awaken_session_contract::session::McpAttachmentRealizer>) -> Self
+pub fn awaken_session_executor::ManagedHost::with_platform_mcp_egress_provisioner(self, alloc::sync::Arc<dyn awaken_credential_materializer::platform_egress::PlatformMcpEgressProvisioner>) -> Self
 pub fn awaken_session_executor::ManagedHost::with_repository_binding_verifier(self, alloc::sync::Arc<dyn awaken_resource_contract::execution::RepositoryBindingVerifier<awaken_dispatch_contract::ResourceOperationFence>>) -> Self
 pub fn awaken_session_executor::ManagedHost::with_resource_validator(self, alloc::sync::Arc<dyn awaken_resource_contract::registry::LiveResourceBindingVerifier>) -> Self
 impl awaken_session_contract::session::McpAttachmentRealizer for awaken_session_executor::ManagedHost

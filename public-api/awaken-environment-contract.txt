@@ -32,6 +32,8 @@ pub awaken_environment_contract::EnvironmentNetworking::Limited::allow_mcp_serve
 pub awaken_environment_contract::EnvironmentNetworking::Limited::allow_package_managers: bool
 pub awaken_environment_contract::EnvironmentNetworking::Limited::allowed_hosts: alloc::vec::Vec<alloc::string::String>
 pub awaken_environment_contract::EnvironmentNetworking::Unrestricted
+impl core::default::Default for awaken_environment_contract::EnvironmentNetworking
+pub fn awaken_environment_contract::EnvironmentNetworking::default() -> Self
 pub enum awaken_environment_contract::EnvironmentNetworkingMutation
 pub awaken_environment_contract::EnvironmentNetworkingMutation::Limited
 pub awaken_environment_contract::EnvironmentNetworkingMutation::Limited::allow_mcp_servers: core::option::Option<awaken_environment_contract::EnvironmentFieldUpdate<bool>>

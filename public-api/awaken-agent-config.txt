@@ -83,8 +83,8 @@ pub awaken_agent_config::ModelSelection::BackendDefault::configuration: awaken_a
 pub awaken_agent_config::ModelSelection::BackendExact
 pub awaken_agent_config::ModelSelection::BackendExact::backend_ref: awaken_runtime_contract::resolved::AcpBackend
 pub awaken_agent_config::ModelSelection::BackendExact::configuration: awaken_agent_contract::acp::AcpSessionConfiguration
-pub awaken_agent_config::ModelSelection::BackendExact::model_ref: awaken_runtime_contract::resolved::ExactModelRef
-pub awaken_agent_config::ModelSelection::Pinned(awaken_runtime_contract::resolved::ModelBinding)
+pub awaken_agent_config::ModelSelection::BackendExact::model_ref: awaken_runtime_contract::resolved::model_binding::ExactModelRef
+pub awaken_agent_config::ModelSelection::Pinned(awaken_runtime_contract::resolved::model_binding::ModelBinding)
 pub awaken_agent_config::ModelSelection::Profile
 pub awaken_agent_config::ModelSelection::Profile::profile_id: alloc::string::String
 pub awaken_agent_config::ModelSelection::Target
@@ -100,13 +100,13 @@ pub fn awaken_agent_config::ModelSelection::is_auto(&self) -> bool
 pub fn awaken_agent_config::ModelSelection::pinned(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_agent_config::ModelSelection::profile_ref(&self) -> core::option::Option<&str>
 pub fn awaken_agent_config::ModelSelection::requires_reconciliation(&self) -> bool
-pub fn awaken_agent_config::ModelSelection::resolved(&self) -> core::option::Option<&awaken_runtime_contract::resolved::ModelBinding>
+pub fn awaken_agent_config::ModelSelection::resolved(&self) -> core::option::Option<&awaken_runtime_contract::resolved::model_binding::ModelBinding>
 pub fn awaken_agent_config::ModelSelection::set_acp_configuration(&mut self, awaken_agent_contract::acp::AcpSessionConfiguration) -> core::result::Result<(), &'static str>
 pub fn awaken_agent_config::ModelSelection::target(&self) -> core::option::Option<(&awaken_agent_contract::model_target::ModelTarget, &str)>
 pub fn awaken_agent_config::ModelSelection::try_backend_default(impl core::convert::Into<alloc::string::String>, awaken_agent_contract::acp::AcpSessionConfiguration) -> core::result::Result<Self, alloc::string::String>
 pub fn awaken_agent_config::ModelSelection::try_backend_exact(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, awaken_agent_contract::acp::AcpSessionConfiguration) -> core::result::Result<Self, alloc::string::String>
-impl core::convert::From<awaken_runtime_contract::resolved::ModelBinding> for awaken_agent_config::ModelSelection
-pub fn awaken_agent_config::ModelSelection::from(awaken_runtime_contract::resolved::ModelBinding) -> Self
+impl core::convert::From<awaken_runtime_contract::resolved::model_binding::ModelBinding> for awaken_agent_config::ModelSelection
+pub fn awaken_agent_config::ModelSelection::from(awaken_runtime_contract::resolved::model_binding::ModelBinding) -> Self
 impl serde_core::ser::Serialize for awaken_agent_config::ModelSelection
 pub fn awaken_agent_config::ModelSelection::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_config::ModelSelection
@@ -158,7 +158,7 @@ pub awaken_agent_config::AgentConfig::max_steps: usize
 pub awaken_agent_config::AgentConfig::mcp_servers: alloc::vec::Vec<awaken_runtime_contract::agent_bindings::AgentMcpServerBinding>
 pub awaken_agent_config::AgentConfig::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_agent_config::AgentConfig::model_binding: awaken_agent_config::ModelSelection
-pub awaken_agent_config::AgentConfig::model_fallbacks: alloc::vec::Vec<awaken_runtime_contract::resolved::ModelBinding>
+pub awaken_agent_config::AgentConfig::model_fallbacks: alloc::vec::Vec<awaken_runtime_contract::resolved::model_binding::ModelBinding>
 pub awaken_agent_config::AgentConfig::multiagent: core::option::Option<awaken_agent_config::MultiagentConfig>
 pub awaken_agent_config::AgentConfig::name: core::option::Option<alloc::string::String>
 pub awaken_agent_config::AgentConfig::plugin_config: alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>
