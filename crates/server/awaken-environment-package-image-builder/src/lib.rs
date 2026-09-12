@@ -31,7 +31,7 @@ fn build_network_policy(config: &awaken_environment_contract::EnvironmentConfig)
     match config {
         awaken_environment_contract::EnvironmentConfig::SelfHosted
         | awaken_environment_contract::EnvironmentConfig::Cloud {
-            networking: EnvironmentNetworking::Unrestricted,
+            networking: EnvironmentNetworking::Unrestricted {},
             ..
         } => NetworkPolicy::Unrestricted,
         awaken_environment_contract::EnvironmentConfig::Cloud {

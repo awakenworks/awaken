@@ -1028,7 +1028,7 @@ mod tests {
                 "open",
                 1,
                 EnvironmentConfig::Cloud {
-                    networking: EnvironmentNetworking::Unrestricted,
+                    networking: EnvironmentNetworking::Unrestricted {},
                     packages: EnvironmentPackages::default(),
                 },
             ))

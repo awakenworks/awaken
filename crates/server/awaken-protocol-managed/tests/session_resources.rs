@@ -1671,7 +1671,7 @@ async fn agent_default_environment_requires_the_exact_revision() {
             metadata: Default::default(),
             scope: None,
             config: awaken_environment_contract::EnvironmentConfig::Cloud {
-                networking: awaken_environment_contract::EnvironmentNetworking::Unrestricted,
+                networking: awaken_environment_contract::EnvironmentNetworking::Unrestricted {},
                 packages: Default::default(),
             },
             sandbox_policy: None,
