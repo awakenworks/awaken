@@ -139,7 +139,10 @@ async fn progress_streams_through_the_sse_post_response() {
     assert!(!result.is_error.unwrap_or(false));
 
     let mut updates = Vec::new();
-    while let Some(update) = rx.recv().await {
+    while let Some(update) = tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
+        .await
+        .expect("timed out waiting for rx.recv()")
+    {
         updates.push(update);
     }
     assert_eq!(updates.len(), 3, "{updates:?}");

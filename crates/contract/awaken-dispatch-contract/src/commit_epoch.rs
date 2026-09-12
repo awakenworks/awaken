@@ -277,7 +277,9 @@ mod commit_epoch_tests {
                 let release = release.clone();
                 async move {
                     entered.notify_one();
-                    release.notified().await;
+                    tokio::time::timeout(std::time::Duration::from_secs(30), release.notified())
+                        .await
+                        .expect("timed out waiting for release.notified()");
                     Ok(())
                 }
             },
@@ -287,7 +289,9 @@ mod commit_epoch_tests {
             crate::PhysicalAttemptSlot::Empty,
         );
         let returning = tokio::spawn(releasing.release_after(Ok::<_, &'static str>(7_u8)));
-        entered.notified().await;
+        tokio::time::timeout(std::time::Duration::from_secs(30), entered.notified())
+            .await
+            .expect("timed out waiting for entered.notified()");
         tokio::task::yield_now().await;
         assert!(!returning.is_finished(), "R1/E1");
         release.notify_one();

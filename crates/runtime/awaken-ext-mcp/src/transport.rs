@@ -487,7 +487,9 @@ mod tests {
             let call = call();
             async move { tool.invoke(call).await }
         });
-        entered.notified().await;
+        tokio::time::timeout(std::time::Duration::from_secs(30), entered.notified())
+            .await
+            .expect("timed out waiting for entered.notified()");
         fence.close_and_wait().await;
         assert!(
             matches!(pending.await.unwrap(), Err(ToolError::Indeterminate(_))),

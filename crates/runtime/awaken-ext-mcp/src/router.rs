@@ -238,7 +238,10 @@ mod tests {
         )
         .await;
 
-        let update = rx.recv().await.expect("routed");
+        let update = tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
+            .await
+            .expect("timed out waiting for rx.recv()")
+            .expect("routed");
         assert_eq!(update.progress, 0.5);
     }
 
@@ -266,14 +269,26 @@ mod tests {
             &sinks,
         )
         .await;
-        assert_eq!(rx.recv().await.unwrap(), ListChangedKind::Tools);
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
+                .await
+                .expect("timed out waiting for rx.recv()")
+                .unwrap(),
+            ListChangedKind::Tools
+        );
 
         route(
             notification("notifications/resources/list_changed", Value::Null),
             &sinks,
         )
         .await;
-        assert_eq!(rx.recv().await.unwrap(), ListChangedKind::Resources);
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
+                .await
+                .expect("timed out waiting for rx.recv()")
+                .unwrap(),
+            ListChangedKind::Resources
+        );
     }
 
     #[tokio::test]
@@ -288,7 +303,13 @@ mod tests {
             &sinks,
         )
         .await;
-        assert_eq!(rx.recv().await.unwrap(), "file:///x");
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
+                .await
+                .expect("timed out waiting for rx.recv()")
+                .unwrap(),
+            "file:///x"
+        );
     }
 
     #[tokio::test]

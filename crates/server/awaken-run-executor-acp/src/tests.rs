@@ -3475,7 +3475,9 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
             ticket.pending_tool().map(|tool| tool.tool_id.as_str()),
             Some("bash")
         );
-        events.notified().await;
+        tokio::time::timeout(std::time::Duration::from_secs(30), events.notified())
+            .await
+            .expect("timed out waiting for events.notified()");
         assert!(
             replies.lock().unwrap()[0].contains("cancelled"),
             "the first process is released before durable HITL"
@@ -3497,7 +3499,9 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
             )
             .await
             .expect("replacement consumes the durable decision");
-        events.notified().await;
+        tokio::time::timeout(std::time::Duration::from_secs(30), events.notified())
+            .await
+            .expect("timed out waiting for events.notified()");
         if changed {
             assert_eq!(
                 resumed,

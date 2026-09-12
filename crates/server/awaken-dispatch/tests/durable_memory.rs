@@ -1260,7 +1260,10 @@ async fn durable_worker_opens_one_fresh_live_inbox_per_physical_attempt() {
             .submit_background(activation("live-first"))
             .await
     });
-    let first_inbox = entered_rx.recv().await.expect("L2 executor entered");
+    let first_inbox = tokio::time::timeout(std::time::Duration::from_secs(30), entered_rx.recv())
+        .await
+        .expect("timed out waiting for entered_rx.recv()")
+        .expect("L2 executor entered");
     let discovered = runtime
         .active_attempt_live_inbox(&ThreadId(THREAD.into()))
         .await
@@ -1304,7 +1307,10 @@ async fn durable_worker_opens_one_fresh_live_inbox_per_physical_attempt() {
             .submit_background(activation("live-second"))
             .await
     });
-    let second_inbox = entered_rx.recv().await.expect("L4 executor entered");
+    let second_inbox = tokio::time::timeout(std::time::Duration::from_secs(30), entered_rx.recv())
+        .await
+        .expect("timed out waiting for entered_rx.recv()")
+        .expect("L4 executor entered");
     assert!(second_inbox.list().is_empty(), "L4/E5 no carry-over");
     assert!(
         matches!(

@@ -597,7 +597,12 @@ mod tests {
                             }
                         })
                     };
-                    discovery.started.notified().await;
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(30),
+                        discovery.started.notified(),
+                    )
+                    .await
+                    .expect("timed out waiting for discovery.started.notified()");
                     match change {
                         "disable" => write(&path, &[row("codex", 1, false)]),
                         "delete" => std::fs::remove_file(&path).unwrap(),
@@ -660,7 +665,12 @@ mod tests {
                     .await
             })
         };
-        discovery.started.notified().await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            discovery.started.notified(),
+        )
+        .await
+        .expect("timed out waiting for discovery.started.notified()");
         write(&path, &[row("codex", 2, false)]);
         let mut refresh = std::pin::pin!(projected.refresh());
         std::future::poll_fn(|cx| {
