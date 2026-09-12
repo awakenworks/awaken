@@ -99,15 +99,87 @@ pub enum ToolPermissionBehavior {
     Deny,
 }
 
-impl From<ToolExecutionPolicy> for ToolPermissionBehavior {
-    fn from(policy: ToolExecutionPolicy) -> Self {
-        if !policy.enabled {
-            Self::Deny
+/// Decide one call against an already-resolved [`ToolExecutionPolicy`].
+///
+/// This is deliberately not a `From` conversion. `Auto` delegates the decision
+/// to an evaluator that must see the call, so a policy alone cannot determine a
+/// behavior; a `From` impl would have to invent one. Taking the call and the
+/// evaluator as parameters keeps the real inputs in the signature.
+fn behavior_for(
+    policy: ToolExecutionPolicy,
+    call: &ToolCall,
+    evaluator: &dyn AutoPermissionEvaluator,
+) -> ToolPermissionBehavior {
+    if !policy.enabled {
+        return ToolPermissionBehavior::Deny;
+    }
+    match policy.permission {
+        ToolPermissionRequirement::AlwaysAllow => ToolPermissionBehavior::Allow,
+        ToolPermissionRequirement::AlwaysAsk => ToolPermissionBehavior::RequireConfirmation,
+        ToolPermissionRequirement::Auto => match evaluator.evaluate(call) {
+            AutoDecision::Allow => ToolPermissionBehavior::Allow,
+            AutoDecision::Deny => ToolPermissionBehavior::Deny,
+            AutoDecision::Indeterminate => ToolPermissionBehavior::RequireConfirmation,
+        },
+    }
+}
+
+/// What an [`AutoPermissionEvaluator`] concluded about one call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoDecision {
+    /// Judged safe for this agent to run unattended.
+    Allow,
+    /// Judged too risky to run at all. The call does not reach the tool.
+    Deny,
+    /// No conclusion reached, so the decision falls to a person.
+    Indeterminate,
+}
+
+/// Decides one call under the `auto` policy.
+///
+/// Implementations are supplied at construction, which is what keeps this crate
+/// linkable on its own: an embedded runtime gets [`ReversibilityEvaluator`]
+/// without depending on anything that knows about sessions or servers, while a
+/// richer deployment injects its own. It is synchronous on purpose — an
+/// evaluator that needs to await external judgement belongs behind the policy
+/// port itself, not inside a per-call rule fold.
+pub trait AutoPermissionEvaluator: Send + Sync + std::fmt::Debug {
+    /// Judge one normalized call.
+    fn evaluate(&self, call: &ToolCall) -> AutoDecision;
+}
+
+/// The evaluator an embedded runtime gets by default: a call is allowed when
+/// the tool it names only observes, and falls to a person otherwise.
+///
+/// It never denies. Denial under `auto` claims "this is too risky for anyone to
+/// approve", and a name-based classifier cannot support that claim; leaving the
+/// call to a person is the honest outcome. A deployment that can assess risk
+/// injects an evaluator that does.
+///
+/// The observing set is supplied at construction rather than hard-coded, so the
+/// host that owns the tool catalogue states it once and this crate keeps no
+/// second copy of anyone's tool names.
+#[derive(Debug, Default)]
+pub struct ReversibilityEvaluator {
+    observing: std::collections::BTreeSet<String>,
+}
+
+impl ReversibilityEvaluator {
+    /// Build from the tool ids whose calls only observe.
+    #[must_use]
+    pub fn new(observing: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            observing: observing.into_iter().collect(),
+        }
+    }
+}
+
+impl AutoPermissionEvaluator for ReversibilityEvaluator {
+    fn evaluate(&self, call: &ToolCall) -> AutoDecision {
+        if self.observing.contains(&call.tool_id) {
+            AutoDecision::Allow
         } else {
-            match policy.permission {
-                ToolPermissionRequirement::AlwaysAllow => Self::Allow,
-                ToolPermissionRequirement::AlwaysAsk => Self::RequireConfirmation,
-            }
+            AutoDecision::Indeterminate
         }
     }
 }
@@ -219,27 +291,39 @@ impl PermissionRuleset {
         self.decide_with_rule(tool_id, args, None)
     }
 
-    fn decide_with_rule(
+    /// The behavior a rule decided for this call, or `None` when none matched.
+    ///
+    /// Separating "a rule decided" from "nothing matched" is what lets `auto`
+    /// sit exactly where it belongs: after every fixed decision the author
+    /// stated, and before the ambient default. Folding the default in here
+    /// would hide that seam and let an evaluator overrule an authored rule.
+    fn matched_behavior(
         &self,
         tool_id: &str,
         args: &Value,
         exact: Option<&PermissionRule>,
-    ) -> ToolPermissionBehavior {
+    ) -> Option<ToolPermissionBehavior> {
         let mut best: Option<(Specificity, ToolPermissionBehavior)> = None;
         for rule in exact.into_iter().chain(&self.rules) {
             let Some(spec) = rule.pattern.matches(tool_id, args) else {
                 continue;
             };
             match select_matched_rule(best, spec, rule.behavior) {
-                MatchedRuleSelection::Deny => return ToolPermissionBehavior::Deny,
+                MatchedRuleSelection::Deny => return Some(ToolPermissionBehavior::Deny),
                 MatchedRuleSelection::Continue(selected) => best = selected,
             }
         }
-        if let Some((_, behavior)) = best {
-            return behavior;
-        }
+        best.map(|(_, behavior)| behavior)
+    }
 
-        self.default_behavior
+    fn decide_with_rule(
+        &self,
+        tool_id: &str,
+        args: &Value,
+        exact: Option<&PermissionRule>,
+    ) -> ToolPermissionBehavior {
+        self.matched_behavior(tool_id, args, exact)
+            .unwrap_or(self.default_behavior)
     }
 }
 
@@ -346,6 +430,8 @@ mod kani_proofs {
 pub struct RuleBasedToolPermissionPolicy {
     ruleset: PermissionRuleset,
     mcp_bindings: AgentBindings,
+    auto: std::sync::Arc<dyn AutoPermissionEvaluator>,
+    auto_tools: std::collections::BTreeSet<String>,
 }
 
 impl RuleBasedToolPermissionPolicy {
@@ -353,7 +439,47 @@ impl RuleBasedToolPermissionPolicy {
         Self {
             ruleset,
             mcp_bindings: AgentBindings::default(),
+            // No observing tools are known until a caller names them, so an
+            // unconfigured `auto` sends every call to a person rather than
+            // guessing which ids are safe.
+            auto: std::sync::Arc::new(ReversibilityEvaluator::default()),
+            auto_tools: std::collections::BTreeSet::new(),
         }
+    }
+
+    /// Whether this call's authored policy delegates the decision to the
+    /// evaluator, either through its own resolved toolset entry or through the
+    /// ids the host named as `auto`.
+    fn is_auto(&self, resolved: &Option<ToolExecutionPolicy>, tool_id: &str) -> bool {
+        resolved.is_some_and(|policy| {
+            policy.enabled && policy.permission == ToolPermissionRequirement::Auto
+        }) || self.auto_tools.contains(tool_id)
+    }
+
+    /// Name the tools whose authored policy is `auto`.
+    ///
+    /// The host compiles fixed requirements into rules and passes the rest
+    /// here, because a deferral cannot be a rule behavior: a rule states a
+    /// decision, and `auto` is precisely the absence of one until the call is
+    /// known.
+    #[must_use]
+    pub fn with_auto_tools(mut self, tools: impl IntoIterator<Item = String>) -> Self {
+        self.auto_tools = tools.into_iter().collect();
+        self
+    }
+
+    /// Supply the evaluator that decides calls under the `auto` policy.
+    ///
+    /// Configured at construction, like the MCP toolsets: the policy object owns
+    /// its own configuration, so the per-call input stays the normalized
+    /// [`ToolCall`] alone (ADR-0030).
+    #[must_use]
+    pub fn with_auto_evaluator(
+        mut self,
+        evaluator: std::sync::Arc<dyn AutoPermissionEvaluator>,
+    ) -> Self {
+        self.auto = evaluator;
+        self
     }
 
     /// Keep open MCP toolsets typed until a concrete invocation is known.
@@ -375,16 +501,38 @@ impl RuleBasedToolPermissionPolicy {
 #[async_trait]
 impl ToolPermissionPolicy for RuleBasedToolPermissionPolicy {
     async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict {
-        let exact = self.mcp_bindings.tool_policy(&call.tool_id).map(|policy| {
-            PermissionRule::new(
-                ToolCallPattern(awaken_tool_pattern::ToolCallPattern::tool(&call.tool_id)),
-                policy.into(),
-            )
-        });
-        match self
+        // Resolution order, outermost first: a matching `deny` rule is absolute;
+        // otherwise the most specific rule the author wrote decides; only where
+        // the author stated no fixed answer does `auto` evaluate; and a call
+        // nobody spoke for falls to the ambient default. An evaluator therefore
+        // never overrules an instruction — it only fills a silence.
+        let resolved = self.mcp_bindings.tool_policy(&call.tool_id);
+        // A fixed requirement becomes an exact rule and joins the scan. `auto`
+        // is a deferral rather than a decision, so it stays out of the rule
+        // vocabulary and is consulted below instead.
+        let exact = resolved
+            .filter(|policy| {
+                !policy.enabled || policy.permission != ToolPermissionRequirement::Auto
+            })
+            .map(|policy| {
+                PermissionRule::new(
+                    ToolCallPattern(awaken_tool_pattern::ToolCallPattern::tool(&call.tool_id)),
+                    behavior_for(policy, call, self.auto.as_ref()),
+                )
+            });
+        let decided = self
             .ruleset
-            .decide_with_rule(&call.tool_id, &call.arguments, exact.as_ref())
-        {
+            .matched_behavior(&call.tool_id, &call.arguments, exact.as_ref());
+        let behavior = match decided {
+            Some(behavior) => behavior,
+            None if self.is_auto(&resolved, &call.tool_id) => match self.auto.evaluate(call) {
+                AutoDecision::Allow => ToolPermissionBehavior::Allow,
+                AutoDecision::Deny => ToolPermissionBehavior::Deny,
+                AutoDecision::Indeterminate => ToolPermissionBehavior::RequireConfirmation,
+            },
+            None => self.ruleset.default_behavior,
+        };
+        match behavior {
             ToolPermissionBehavior::Allow => ToolPermissionVerdict::Allow,
             ToolPermissionBehavior::Deny => ToolPermissionVerdict::Deny {
                 reason: format!("tool {} denied by policy", call.tool_id),
@@ -656,7 +804,7 @@ mod tests {
                     let expected = if legacy == ToolPermissionBehavior::Deny {
                         ToolPermissionBehavior::Deny
                     } else {
-                        typed.into()
+                        behavior_for(typed, &call, &ReversibilityEvaluator::default())
                     };
                     let actual = policy.evaluate(&call).await;
                     match (expected, actual) {

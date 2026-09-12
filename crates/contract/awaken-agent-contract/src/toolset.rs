@@ -47,12 +47,48 @@ impl Default for ToolExecutionPolicy {
 pub enum ToolPermissionRequirement {
     AlwaysAllow,
     AlwaysAsk,
+    /// The platform evaluates each call and decides: it runs, it is refused, or
+    /// it falls through to a person. An author picks this to delegate judgement
+    /// for a tool rather than state one fixed answer for every call.
+    Auto,
 }
 
-/// Admit an execution request against the published tool policy. The returned
-/// requirement is never stronger than the authored one: asking when automatic
-/// execution was allowed is a safe narrowing, while skipping a required ask is
-/// rejected.
+/// How much authority to act *without a person in the loop* a policy delegates.
+///
+/// This is the one axis admission compares on, and naming it is what keeps that
+/// comparison meaningful as the policy vocabulary grows: the question a session
+/// override must answer is not "is this stricter?" but "does this let more run
+/// unattended than the author allowed?".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GrantedAutonomy {
+    /// Nothing runs until a person decides.
+    None,
+    /// Some calls run on their own; the platform decides which, and may refuse
+    /// one outright or hand it to a person.
+    Evaluated,
+    /// Everything the author enabled runs on its own.
+    Full,
+}
+
+impl ToolPermissionRequirement {
+    /// The unattended authority this requirement delegates.
+    #[must_use]
+    pub const fn granted_autonomy(self) -> GrantedAutonomy {
+        match self {
+            Self::AlwaysAsk => GrantedAutonomy::None,
+            Self::Auto => GrantedAutonomy::Evaluated,
+            Self::AlwaysAllow => GrantedAutonomy::Full,
+        }
+    }
+}
+
+/// Admit an execution request against the published tool policy.
+///
+/// A session-local request may narrow the authored authority but never widen
+/// it, compared on [`GrantedAutonomy`]: asking when automatic execution was
+/// allowed is a safe narrowing, while claiming unattended authority the author
+/// withheld is rejected. Comparing the named axis rather than matching specific
+/// pairs is what lets a new requirement join without reopening this decision.
 #[must_use]
 pub const fn select_tool_policy(
     registered: bool,
@@ -63,9 +99,7 @@ pub const fn select_tool_policy(
     if !registered || !exact_tool_match || !authored.enabled {
         return None;
     }
-    if matches!(authored.permission, ToolPermissionRequirement::AlwaysAsk)
-        && matches!(requested, ToolPermissionRequirement::AlwaysAllow)
-    {
+    if (requested.granted_autonomy() as u8) > (authored.permission.granted_autonomy() as u8) {
         return None;
     }
     Some(ToolExecutionPolicy {

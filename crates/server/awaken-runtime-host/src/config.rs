@@ -84,6 +84,18 @@ fn base_allow_rules(extra_allowed: &[String]) -> Vec<PermissionRule> {
     rules
 }
 
+/// The tools whose calls only observe, for the `auto` evaluator.
+///
+/// Derived from the closed Agent toolset contract rather than a literal list:
+/// the same membership that decides which tools are controlled modifications
+/// decides which are safe to run unattended, so the two can never disagree.
+fn observing_tool_ids() -> Vec<String> {
+    awaken_session_contract::agent_toolset_members()
+        .filter(|name| !awaken_session_contract::is_controlled_modification_member(name))
+        .map(str::to_string)
+        .collect()
+}
+
 fn server_policy(extra_allowed: &[String]) -> RuleBasedToolPermissionPolicy {
     RuleBasedToolPermissionPolicy::new(PermissionRuleset {
         default_behavior: ToolPermissionBehavior::RequireConfirmation,
@@ -129,17 +141,40 @@ pub(crate) fn effective_ruleset(
     }
 }
 
+/// The Agent toolset split into what the rule scan can decide up front and what
+/// must wait for a call.
+///
+/// A rule states a decision, so only the fixed requirements become rules.
+/// `auto` is a deferral: its tools are named instead, and the policy consults
+/// the evaluator for them after every authored rule has had its say.
+struct AgentToolsetProjection {
+    rules: Vec<PermissionRule>,
+    auto_tools: Vec<String>,
+}
+
 fn agent_toolset_permission_rules(
     toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
-) -> Vec<PermissionRule> {
+) -> AgentToolsetProjection {
     use awaken_runtime_contract::agent_bindings::{ToolPermissionRequirement, ToolsetSource};
-    let rule =
-        |pattern: String, policy: awaken_runtime_contract::agent_bindings::ToolExecutionPolicy| {
-            PermissionRule::new(
-                ToolCallPattern::parse(&pattern).expect("typed toolset produces a valid pattern"),
-                policy.into(),
-            )
-        };
+    let mut auto_tools = Vec::new();
+    let fixed_behavior = |policy: awaken_runtime_contract::agent_bindings::ToolExecutionPolicy| {
+        if !policy.enabled {
+            return Some(ToolPermissionBehavior::Deny);
+        }
+        match policy.permission {
+            ToolPermissionRequirement::AlwaysAllow => Some(ToolPermissionBehavior::Allow),
+            ToolPermissionRequirement::AlwaysAsk => {
+                Some(ToolPermissionBehavior::RequireConfirmation)
+            }
+            ToolPermissionRequirement::Auto => None,
+        }
+    };
+    let rule = |pattern: String, behavior: ToolPermissionBehavior| {
+        PermissionRule::new(
+            ToolCallPattern::parse(&pattern).expect("typed toolset produces a valid pattern"),
+            behavior,
+        )
+    };
     let mut rules = Vec::new();
     for toolset in toolsets {
         match &toolset.source {
@@ -148,33 +183,35 @@ fn agent_toolset_permission_rules(
                 // executable policy for every omitted member rather than mere
                 // authoring metadata. Project the complete canonical roster;
                 // retain explicit Runtime-only Agent overrides separately.
-                rules.extend(
-                    awaken_session_contract::agent_toolset_members().map(|name| {
-                        let mut policy = toolset.policy_for(name);
-                        if awaken_session_contract::is_controlled_modification_member(name)
-                            && !toolset.overrides.iter().any(|entry| entry.name == name)
-                        {
-                            policy.permission = ToolPermissionRequirement::AlwaysAsk;
-                        }
-                        rule(name.to_string(), policy)
-                    }),
-                );
-                rules.extend(
-                    toolset
-                        .overrides
-                        .iter()
-                        .filter(|entry| {
-                            !awaken_session_contract::is_agent_toolset_member(&entry.name)
-                        })
-                        .map(|entry| rule(entry.name.clone(), entry.policy)),
-                );
+                for name in awaken_session_contract::agent_toolset_members() {
+                    let mut policy = toolset.policy_for(name);
+                    if awaken_session_contract::is_controlled_modification_member(name)
+                        && !toolset.overrides.iter().any(|entry| entry.name == name)
+                    {
+                        policy.permission = ToolPermissionRequirement::AlwaysAsk;
+                    }
+                    match fixed_behavior(policy) {
+                        Some(behavior) => rules.push(rule(name.to_string(), behavior)),
+                        None => auto_tools.push(name.to_string()),
+                    }
+                }
+                for entry in toolset
+                    .overrides
+                    .iter()
+                    .filter(|entry| !awaken_session_contract::is_agent_toolset_member(&entry.name))
+                {
+                    match fixed_behavior(entry.policy) {
+                        Some(behavior) => rules.push(rule(entry.name.clone(), behavior)),
+                        None => auto_tools.push(entry.name.clone()),
+                    }
+                }
             }
             // Open MCP membership is resolved by the canonical typed lookup
             // per invocation, not by overlapping wildcard/exact permission rules.
             ToolsetSource::Mcp { .. } => {}
         }
     }
-    rules
+    AgentToolsetProjection { rules, auto_tools }
 }
 
 pub(crate) fn effective_policy_with_toolsets(
@@ -186,10 +223,19 @@ pub(crate) fn effective_policy_with_toolsets(
     // Put exact toolset rules first so they are authoritative over the built-in
     // baseline on equal specificity. Compile rejects a second authored permission
     // section when toolsets exist.
-    let mut rules = agent_toolset_permission_rules(toolsets);
+    let projection = agent_toolset_permission_rules(toolsets);
+    let mut rules = projection.rules;
     rules.extend(resolved.rules);
     resolved.rules = rules;
-    RuleBasedToolPermissionPolicy::new(resolved).with_mcp_toolsets(toolsets)
+    RuleBasedToolPermissionPolicy::new(resolved)
+        .with_mcp_toolsets(toolsets)
+        .with_auto_tools(projection.auto_tools)
+        // The tools an `auto` call may run unattended: this host owns the tool
+        // catalogue, so it states the observing set once instead of the policy
+        // crate keeping a second copy of anyone's tool names.
+        .with_auto_evaluator(std::sync::Arc::new(
+            awaken_ext_permission::ReversibilityEvaluator::new(observing_tool_ids()),
+        ))
 }
 
 #[cfg(test)]
@@ -785,6 +831,76 @@ mod tests {
             serde_json::json!({ "rules": [{ "pattern": "Bash(command =~ \"x\")", "behavior": "deny" }] }),
         );
         assert!(config_permission_ruleset(&bad).is_none());
+    }
+
+    #[tokio::test]
+    async fn an_auto_agent_toolset_defers_only_where_the_author_stated_nothing() {
+        // Cause/effect graph: C1 the Agent toolset default is `auto`; C2 the tool
+        // only observes; C3 the tool is a controlled modification; C4 the author
+        // wrote an explicit per-tool override. E1 an observing call runs without a
+        // person, E2 a modifying call goes to a person (the shipped evaluator
+        // reaches no conclusion and never denies), E3 an explicit override decides
+        // instead of the evaluator.
+        //
+        // | Rule | C2 | C3 | C4 | Effect |
+        // |---|---|---|---|---|
+        // | T1 | T | F | F | E1 allow |
+        // | T2 | F | T | F | E2 ask |
+        // | T3 | F | T | always_allow | E3 allow — the author outranks the evaluator |
+        use awaken_runtime_contract::agent_bindings::{
+            ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+            ToolsetSource,
+        };
+        use awaken_runtime_contract::permission::{ToolPermissionPolicy, ToolPermissionVerdict};
+
+        let call = |tool: &str| awaken_runtime_contract::permission::ToolCall {
+            tool_id: tool.into(),
+            call_id: "auto-host".into(),
+            arguments: serde_json::json!({}),
+        };
+        let toolset = |overrides: Vec<ToolPolicyOverride>| ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy {
+                enabled: true,
+                permission: ToolPermissionRequirement::Auto,
+            },
+            overrides,
+        };
+
+        let plain = effective_policy_with_toolsets(None, &[], &[toolset(Vec::new())]);
+        assert!(
+            matches!(
+                plain.evaluate(&call("read")).await,
+                ToolPermissionVerdict::Allow
+            ),
+            "T1 an observing call runs unattended"
+        );
+        assert!(
+            matches!(
+                plain.evaluate(&call("bash")).await,
+                ToolPermissionVerdict::RequireConfirmation { .. }
+            ),
+            "T2 a modifying call reaches a person, never a refusal"
+        );
+
+        let overridden = effective_policy_with_toolsets(
+            None,
+            &[],
+            &[toolset(vec![ToolPolicyOverride::new(
+                "bash",
+                ToolExecutionPolicy {
+                    enabled: true,
+                    permission: ToolPermissionRequirement::AlwaysAllow,
+                },
+            )])],
+        );
+        assert!(
+            matches!(
+                overridden.evaluate(&call("bash")).await,
+                ToolPermissionVerdict::Allow
+            ),
+            "T3 an explicit authored policy outranks the evaluator"
+        );
     }
 
     #[test]
