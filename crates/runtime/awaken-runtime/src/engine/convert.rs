@@ -124,7 +124,7 @@ pub(crate) fn executable_tool_descriptors(
                 // but they cannot broaden a child Agent whose publication omitted
                 // that server. Empty toolsets retain legacy exact-id behavior.
                 None if !spec.plugin_config.agent.toolsets.is_empty()
-                    && tool.id.starts_with("mcp__") =>
+                    && awaken_agent_contract::McpToolId::claims_namespace(&tool.id) =>
                 {
                     false
                 }

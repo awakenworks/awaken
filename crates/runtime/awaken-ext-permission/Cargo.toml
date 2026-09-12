@@ -17,6 +17,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+awaken-agent-contract.workspace = true
 tokio.workspace = true
 
 [lints]

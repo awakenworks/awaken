@@ -582,6 +582,143 @@ def selftest_generation_witnesses() -> None:
         assert not check_generation_witnesses_are_complete(root, crates)  # G5
 
 
+# `mcp__<server>__<tool>` is one identity with one spelling. Its sole
+# constructor and sole decomposer live in the module below. Anywhere else, a
+# `format!` that builds the grammar or a `strip_prefix` that takes it apart is a
+# second translation of the same identity — and a second translation is exactly
+# how a sanitizing producer came to be compared against a raw configured server
+# name, so an operator's *disabled* MCP toolset silently governed nothing. Three
+# normalization layers were added on top of that bug before it was found; the
+# fix is to make the second spelling unwritable, not to add a fourth.
+#
+# Whole-repo scan on purpose: a file list only stops the known offenders from
+# regressing, while a scan governs code that does not exist yet. A file that
+# genuinely must own another spelling states why here.
+MCP_TOOL_IDENTITY_OWNER = Path("crates/contract/awaken-agent-contract/src/mcp_tool_id.rs")
+MCP_TOOL_IDENTITY_GRAMMAR = {
+    'format!("mcp__': "build it with awaken_agent_contract::McpToolId::new (or ::namespace)",
+    'format!("mcp.': "build it with awaken_agent_contract::McpToolId::dotted",
+    'strip_prefix("mcp__"': "take it apart with awaken_agent_contract::McpToolId::parse",
+    # Naming the prefix locally is how a second decomposer evades the three
+    # fragments above: bind it to a `const` and `strip_prefix` that instead.
+    # Reference awaken_agent_contract::MCP_TOOL_ID_PREFIX / MCP_DOTTED_TOOL_PREFIX.
+    '"mcp__"': "reference awaken_agent_contract::MCP_TOOL_ID_PREFIX",
+    '"mcp."': "reference awaken_agent_contract::MCP_DOTTED_TOOL_PREFIX",
+}
+MCP_TOOL_IDENTITY_EXEMPTIONS: dict[str, str] = {}
+
+
+def check_mcp_tool_identity_is_owned(
+    repo_root: Path = REPO_ROOT, crates: Path = CRATES
+) -> list[str]:
+    """Only one module may spell the `mcp__<server>__<tool>` identity grammar."""
+    errors: list[str] = []
+    for path in sorted(crates.glob("*/*/src/**/*.rs")):
+        relative = path.relative_to(repo_root)
+        if relative == MCP_TOOL_IDENTITY_OWNER:
+            continue
+        production = _crate_boundary_workspace.production_rust(
+            path.read_text(encoding="utf-8", errors="ignore")
+        )
+        for fragment, remedy in MCP_TOOL_IDENTITY_GRAMMAR.items():
+            if fragment not in production:
+                continue
+            if str(relative) in MCP_TOOL_IDENTITY_EXEMPTIONS:
+                continue
+            errors.append(
+                f"{relative}: {fragment!r} re-spells the MCP tool identity grammar "
+                f"owned by {MCP_TOOL_IDENTITY_OWNER}; {remedy}, or record in "
+                "MCP_TOOL_IDENTITY_EXEMPTIONS why this file must carry a second "
+                "spelling of the same identity"
+            )
+    return errors
+
+
+def selftest_mcp_tool_identity_ownership() -> None:
+    """Cause/effect: a second spelling rejects; the owner and a stated one admit."""
+    # C1 a file outside the owner builds the id with `format!("mcp__`;
+    # C2 it builds the dotted form with `format!("mcp.`; C3 it takes the id
+    # apart with `strip_prefix("mcp__"`; C4 the same fragment is in the owning
+    # module; C5 it is inside a `#[cfg(test)]` module; C6 it is only in a
+    # comment; C7 the file carries a recorded exemption; C8 the file uses the
+    # owning type instead. Effects: E1 reject; E2 admit.
+    #
+    # | Rule | fragment | in owner | test-only | comment | exempt | Effect |
+    # | P1   | ctor     | F        | F         | F       | F      | E1     |
+    # | P2   | dotted   | F        | F         | F       | F      | E1     |
+    # | P3   | strip    | F        | F         | F       | F      | E1     |
+    # | P4   | ctor     | T        | F         | F       | F      | E2     |
+    # | P5   | ctor     | F        | T         | F       | F      | E2     |
+    # | P6   | ctor     | F        | F         | T       | F      | E2     |
+    # | P7   | ctor     | F        | F         | F       | T      | E2     |
+    # | P8   | none     | F        | F         | F       | F      | E2     |
+    # | P9   | const    | F        | F         | F       | F      | E1     |
+    #
+    # The probes call the same helper the real scan calls, over the same
+    # production-Rust projection, so neither a commented copy nor a test-module
+    # copy can stand in for the check, and neither can satisfy it.
+    constructor = 'fn id(s: &str, t: &str) -> String { format!("mcp__{s}__{t}") }\n'
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        crates = root / "crates"
+        source = crates / "runtime/example/src/lib.rs"
+        source.parent.mkdir(parents=True)
+
+        source.write_text(constructor, encoding="utf-8")
+        assert check_mcp_tool_identity_is_owned(root, crates)  # P1
+        source.write_text(
+            'fn dotted(s: &str, t: &str) -> String { format!("mcp.{s}.{t}") }\n',
+            encoding="utf-8",
+        )
+        assert check_mcp_tool_identity_is_owned(root, crates)  # P2
+        source.write_text(
+            'fn server(id: &str) -> Option<&str> { id.strip_prefix("mcp__") }\n',
+            encoding="utf-8",
+        )
+        assert check_mcp_tool_identity_is_owned(root, crates)  # P3
+
+        source.unlink()
+        owner = root / MCP_TOOL_IDENTITY_OWNER
+        owner.parent.mkdir(parents=True)
+        owner.write_text(constructor, encoding="utf-8")
+        assert not check_mcp_tool_identity_is_owned(root, crates)  # P4
+
+        source.write_text(
+            '#[cfg(test)] mod t { fn id() -> String { format!("mcp__a__b") } }\n',
+            encoding="utf-8",
+        )
+        assert not check_mcp_tool_identity_is_owned(root, crates)  # P5
+        source.write_text(
+            '// the legacy shape was format!("mcp__{s}__{t}")\nfn id() {}\n',
+            encoding="utf-8",
+        )
+        assert not check_mcp_tool_identity_is_owned(root, crates)  # P6
+
+        source.write_text(constructor, encoding="utf-8")
+        MCP_TOOL_IDENTITY_EXEMPTIONS[str(source.relative_to(root))] = "probe"
+        try:
+            assert not check_mcp_tool_identity_is_owned(root, crates)  # P7
+        finally:
+            del MCP_TOOL_IDENTITY_EXEMPTIONS[str(source.relative_to(root))]
+
+        source.write_text(
+            "fn id(s: &str, t: &str) -> Option<String> {\n"
+            "    awaken_agent_contract::McpToolId::new(s, t)\n"
+            "        .ok()\n"
+            "        .map(|id| id.as_str().to_string())\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        assert not check_mcp_tool_identity_is_owned(root, crates)  # P8
+
+        source.write_text(
+            'const P: &str = "mcp__";\n'
+            "fn server(id: &str) -> Option<&str> { id.strip_prefix(P) }\n",
+            encoding="utf-8",
+        )
+        assert check_mcp_tool_identity_is_owned(root, crates)  # P9
+
+
 def check_cloud_placement_boundary(
     repo_root: Path = REPO_ROOT, crates: Path = CRATES
 ) -> list[str]:
@@ -647,6 +784,7 @@ def selftest_cloud_placement_boundary() -> None:
 def main() -> int:
     selftest_cloud_placement_boundary()
     selftest_generation_witnesses()
+    selftest_mcp_tool_identity_ownership()
     _crate_boundary_workspace.selftest()
     _crate_dependency_fitness.selftest()
     _arch_fitness.selftest()
@@ -668,6 +806,7 @@ def main() -> int:
         + check_tests_are_not_arch_owners()
         + check_cloud_placement_boundary()
         + check_generation_witnesses_are_complete()
+        + check_mcp_tool_identity_is_owned()
         + _resource_plane_fitness.check_all(REPO_ROOT, CRATES)
         + _runtime_secret_boundary.check_all(REPO_ROOT, CRATES)
         + _provider_env_fitness.check_all(REPO_ROOT, CRATES)

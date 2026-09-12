@@ -1326,6 +1326,7 @@ name = "awaken-ext-mcp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "awaken-agent-contract",
  "awaken-credential",
  "awaken-mcp-wire",
  "awaken-runtime-contract",
@@ -1356,6 +1357,7 @@ name = "awaken-ext-permission"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "awaken-agent-contract",
  "awaken-runtime-contract",
  "awaken-tool-pattern",
  "serde",
@@ -1679,6 +1681,7 @@ dependencies = [
  "async-trait",
  "awaken-acp-contract",
  "awaken-agent-channel",
+ "awaken-agent-contract",
  "awaken-provisioning-contract",
  "serde",
  "serde_json",
