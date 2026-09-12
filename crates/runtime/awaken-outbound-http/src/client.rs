@@ -35,14 +35,56 @@ impl std::error::Error for TransportError {}
 /// Default connect budget for a private control-plane hop.
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long a client may wait. Every client this crate hands out states one of
+/// these, because "no deadline" is the shape that pins a connection open until
+/// the process dies, and `reqwest::Client::new()` made it the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportDeadline {
+    /// Headers and the whole body must arrive within `total`.
+    Total { connect: Duration, total: Duration },
+    /// For a body that may legitimately stream for a long time (server-sent
+    /// events, a relayed upstream): bound connecting and upstream silence
+    /// instead of elapsed time, because a total deadline would cut the stream.
+    Streaming { connect: Duration, read: Duration },
+}
+
+impl TransportDeadline {
+    /// Bound the whole exchange, with the default connect budget.
+    #[must_use]
+    pub fn total(total: Duration) -> Self {
+        Self::Total {
+            connect: DEFAULT_CONNECT_TIMEOUT,
+            total,
+        }
+    }
+
+    /// Bound connecting and upstream silence, with the default connect budget.
+    #[must_use]
+    pub fn streaming(read: Duration) -> Self {
+        Self::Streaming {
+            connect: DEFAULT_CONNECT_TIMEOUT,
+            read,
+        }
+    }
+
+    fn apply(self, builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+        match self {
+            Self::Total { connect, total } => builder.connect_timeout(connect).timeout(total),
+            Self::Streaming { connect, read } => {
+                builder.connect_timeout(connect).read_timeout(read)
+            }
+        }
+    }
+}
+
 /// Start a rustls-backed client builder with the process-wide provider already
-/// selected. This is the escape hatch for the registered transport authorities
-/// that need a knob this crate does not model (a private CA bundle, a streaming
-/// body, a relayed method). Ordinary adapters use [`InternalHttpClient`] or
-/// [`ExternalHttpClient`] instead.
-pub fn rustls_client_builder() -> reqwest::ClientBuilder {
+/// selected and the stated deadline already applied. This is the escape hatch
+/// for the registered transport authorities that need a knob this crate does
+/// not model (a private CA bundle, a streamed body, a relayed method). Ordinary
+/// adapters use [`InternalHttpClient`] or [`ExternalHttpClient`] instead.
+pub fn rustls_client_builder(deadline: TransportDeadline) -> reqwest::ClientBuilder {
     crate::install_rustls_crypto_provider();
-    reqwest::Client::builder()
+    deadline.apply(reqwest::Client::builder())
 }
 
 /// Verbs used by the JSON control-plane and admin boundaries.
@@ -224,14 +266,15 @@ impl InternalHttpClient {
     }
 
     fn build(connect_timeout: Duration, timeout: Duration) -> Result<Self, TransportError> {
-        rustls_client_builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(connect_timeout)
-            .timeout(timeout)
-            .build()
-            .map(Self)
-            .map_err(|error| TransportError(error.to_string()))
+        rustls_client_builder(TransportDeadline::Total {
+            connect: connect_timeout,
+            total: timeout,
+        })
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map(Self)
+        .map_err(|error| TransportError(error.to_string()))
     }
 
     pub async fn send(&self, request: &JsonRequest) -> Result<HttpReply, TransportError> {
@@ -255,7 +298,7 @@ pub struct ExternalHttpClient(reqwest::Client);
 impl ExternalHttpClient {
     /// Build the client for one target URL, applying the loopback proxy rule.
     pub fn for_target(url: &str, timeout: Duration) -> Result<Self, TransportError> {
-        let mut builder = rustls_client_builder().timeout(timeout);
+        let mut builder = rustls_client_builder(TransportDeadline::total(timeout));
         if target_is_loopback(url) {
             builder = builder.no_proxy();
         }
@@ -334,6 +377,60 @@ pub fn normalize_http_base_url(base_url: &str) -> Result<String, BaseUrlRejected
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn both_deadline_shapes_bound_a_silent_upstream() {
+        // Cause/effect decision table: C1 the upstream accepts the connection
+        // and never answers; C2 the upstream answers headers and then falls
+        // silent mid-body; C3 the client states a `Total` deadline; C4 it states
+        // a `Streaming` deadline. Effects: E1 the call returns a transport error
+        // within the stated bound; E2 the call hangs for the life of the process.
+        //
+        // | Rule | C1 | C2 | C3 | C4 | Effect |
+        // | D1   | T  | F  | T  | F  | E1     |
+        // | D2   | F  | T  | F  | T  | E1     |
+        //
+        // A `Streaming` deadline deliberately does not bound elapsed time, so D2
+        // proves the read bound, not a total one. Without either bound both rules
+        // become E2, which is what `reqwest::Client::new()` shipped.
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let app = axum_probe_server(seen);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = app(listener).await;
+        });
+
+        let total = rustls_client_builder(TransportDeadline::Total {
+            connect: Duration::from_millis(200),
+            total: Duration::from_millis(40),
+        })
+        .build()
+        .unwrap();
+        let bounded = tokio::time::timeout(
+            Duration::from_secs(2),
+            total.get(format!("http://{address}/stall")).send(),
+        )
+        .await;
+        assert!(matches!(bounded, Ok(Err(_))), "D1");
+
+        let streaming = rustls_client_builder(TransportDeadline::Streaming {
+            connect: Duration::from_millis(200),
+            read: Duration::from_millis(40),
+        })
+        .build()
+        .unwrap();
+        let dribbled = tokio::time::timeout(Duration::from_secs(2), async {
+            streaming
+                .get(format!("http://{address}/dribble"))
+                .send()
+                .await?
+                .text()
+                .await
+        })
+        .await;
+        assert!(matches!(dribbled, Ok(Err(_))), "D2");
+    }
 
     #[test]
     fn every_owned_client_constructor_selects_the_process_provider() {
@@ -485,6 +582,15 @@ mod tests {
         };
         let request = String::from_utf8_lossy(&buffer[..read]).to_string();
         if request.starts_with("GET /stall") {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            return;
+        }
+        if request.starts_with("GET /dribble") {
+            // Headers arrive, then the upstream goes silent mid-body.
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 64\r\n\r\nx")
+                .await;
+            let _ = stream.flush().await;
             tokio::time::sleep(Duration::from_secs(5)).await;
             return;
         }

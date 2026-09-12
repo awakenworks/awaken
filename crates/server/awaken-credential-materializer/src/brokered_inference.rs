@@ -130,8 +130,9 @@ const BROKERED_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// `http://127.0.0.1` emulator form is not reachable through an ambient egress
 /// proxy; a routable Platform endpoint keeps a deliberately configured one.
 fn brokered_http_client(base_url: &str) -> reqwest::Client {
-    let mut builder =
-        awaken_outbound_http::rustls_client_builder().timeout(BROKERED_REQUEST_TIMEOUT);
+    let mut builder = awaken_outbound_http::rustls_client_builder(
+        awaken_outbound_http::TransportDeadline::total(BROKERED_REQUEST_TIMEOUT),
+    );
     if awaken_outbound_http::target_is_loopback(base_url) {
         builder = builder.no_proxy();
     }

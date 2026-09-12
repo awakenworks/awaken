@@ -15,7 +15,7 @@ mod client;
 
 pub use client::{
     BaseUrlRejected, DEFAULT_CONNECT_TIMEOUT, ExternalHttpClient, HttpMethod, HttpReply,
-    InternalHttpClient, JsonRequest, TransportError, normalize_http_base_url,
+    InternalHttpClient, JsonRequest, TransportDeadline, TransportError, normalize_http_base_url,
     rustls_client_builder, target_is_loopback,
 };
 

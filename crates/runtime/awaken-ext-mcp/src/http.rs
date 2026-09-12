@@ -455,8 +455,18 @@ impl HttpTransportBuilder {
     }
 }
 
+const MCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const MCP_READ_TIMEOUT: Duration = Duration::from_secs(120);
+
 fn http_client_for(url: &str) -> reqwest::Client {
-    let mut builder = awaken_outbound_http::rustls_client_builder();
+    // Tool calls carry their own per-request deadline; the transport bound here
+    // is on connecting and on upstream silence, so a long SSE stream survives.
+    let mut builder = awaken_outbound_http::rustls_client_builder(
+        awaken_outbound_http::TransportDeadline::Streaming {
+            connect: MCP_CONNECT_TIMEOUT,
+            read: MCP_READ_TIMEOUT,
+        },
+    );
     if awaken_outbound_http::target_is_loopback(url) {
         builder = builder.no_proxy();
     }

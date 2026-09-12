@@ -121,7 +121,9 @@ fn basic_client_auth(client_id: &str, client_secret: &str) -> String {
 }
 
 fn http_client_for(url: &str) -> reqwest::Client {
-    let mut builder = awaken_outbound_http::rustls_client_builder().timeout(OAUTH_REFRESH_TIMEOUT);
+    let mut builder = awaken_outbound_http::rustls_client_builder(
+        awaken_outbound_http::TransportDeadline::total(OAUTH_REFRESH_TIMEOUT),
+    );
     if awaken_outbound_http::target_is_loopback(url) {
         builder = builder.no_proxy();
     }

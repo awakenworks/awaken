@@ -240,7 +240,15 @@ parsing and the finite remote-security selector remain transport-owned.
 The existing shared outbound-HTTP adapter owns one process-level rustls
 provider selection used before constructing Worker upstream, callback, and
 Kubernetes clients; feature unification cannot create a competing implicit
-selector.
+selector. That selection, the ambient-proxy decision, and the request deadline
+are now carried by the adapter's client types rather than repeated at each call
+site: `InternalHttpClient` is the private control-plane channel that never
+inherits `HTTP(S)_PROXY`, `ExternalHttpClient` reaches third parties and honours
+a configured proxy except toward loopback, and `rustls_client_builder` takes a
+`TransportDeadline` so an unbounded client cannot be expressed. A crate outside
+the registered transport authorities may not declare `reqwest`/`rustls` or name
+a bare client constructor; `check_crate_boundaries.py` enforces both with a
+whole-repository scan against `DIRECT_TRANSPORT_EXEMPTIONS`.
 
 Static boundary: a canonical `k8s:namespace:pod-name:pod-uid` Worker ID is only a
 lookup coordinate. TokenReview against one configured API-server client,

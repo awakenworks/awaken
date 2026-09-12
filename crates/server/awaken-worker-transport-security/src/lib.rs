@@ -826,11 +826,11 @@ pub struct WorkerUpstream {
 
 impl WorkerUpstream {
     fn http_client_for_ca(ca: Option<&[u8]>) -> Result<reqwest::Client, String> {
-        let mut builder = awaken_outbound_http::rustls_client_builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(std::time::Duration::from_secs(5))
-            .timeout(std::time::Duration::from_secs(30));
+        let mut builder = awaken_outbound_http::rustls_client_builder(
+            awaken_outbound_http::TransportDeadline::total(std::time::Duration::from_secs(30)),
+        )
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none());
         if let Some(ca) = ca {
             // Rustls-backed `from_pem` merely stores the bytes; an empty PEM
             // iteration also succeeds when building the client. A configured
@@ -1457,10 +1457,14 @@ mod tests {
                 method,
                 signed_path,
                 "worker-signed",
-                awaken_outbound_http::rustls_client_builder()
-                    .build()
-                    .unwrap()
-                    .post("http://control.invalid"),
+                awaken_outbound_http::rustls_client_builder(
+                    awaken_outbound_http::TransportDeadline::total(std::time::Duration::from_secs(
+                        5,
+                    )),
+                )
+                .build()
+                .unwrap()
+                .post("http://control.invalid"),
             )
             .unwrap()
             .build()

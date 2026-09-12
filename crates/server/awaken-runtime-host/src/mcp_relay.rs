@@ -175,11 +175,14 @@ impl McpRelay {
         let state = RelayState {
             routes: routes.clone(),
             authority,
-            client: awaken_outbound_http::rustls_client_builder()
-                .connect_timeout(RELAY_CONNECT_TIMEOUT)
-                .read_timeout(RELAY_READ_TIMEOUT)
-                .build()
-                .map_err(std::io::Error::other)?,
+            client: awaken_outbound_http::rustls_client_builder(
+                awaken_outbound_http::TransportDeadline::Streaming {
+                    connect: RELAY_CONNECT_TIMEOUT,
+                    read: RELAY_READ_TIMEOUT,
+                },
+            )
+            .build()
+            .map_err(std::io::Error::other)?,
         };
         let app = axum::Router::new()
             .route(
