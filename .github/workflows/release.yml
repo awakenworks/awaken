@@ -80,7 +80,7 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          pnpm -C e2e install --frozen-lockfile
+          npm ci --prefix e2e
           scripts/ci/check-reliability.sh --session-observations
       - name: Retain native Session validation evidence
         if: always() && runner.os != 'Windows'

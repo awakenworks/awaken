@@ -9,7 +9,9 @@ import {assertContainerFixtureReachable, ensureCanonicalSandboxImage} from './sa
 
 test('canonical image admission verifies selected ACP runtimes on reuse and after build', async () => {
   // Causes: C1=image exists; C2=all base/role contract labels; C3=documented
-  // Ubuntu/amd64/user/workdir/default-runtime foundation; C4=complete
+  // Ubuntu/amd64/user/workdir/default-runtime foundation, including Ruby's
+  // literal major.minor separator (backticks execute a command and yield 3.);
+  // C4=complete
   // Hand/helper roles; C5=quality tools; C6=selected runtime negotiates;
   // C7=current inputs match; C8=build repairs C1-C7.
   // Rules: I1 all required checks pass => no build; I2 any required check
@@ -44,6 +46,8 @@ else console.log('{}');
 const fs=require('node:fs'),crypto=require('node:crypto'),args=process.argv.slice(2),mode=process.env.ADMISSION_MODE;
 fs.appendFileSync(process.env.ADMISSION_CALLS,JSON.stringify(args)+'\\n');
 const repaired=fs.existsSync(process.env.ADMISSION_STATE);
+const baseProbe=args.includes('/bin/sh')&&args.at(-1)?.includes('RUBY_VERSION');
+if(baseProbe&&!args.at(-1).includes('RUBY_VERSION.split(".")[0,2].join(".")'))process.exit(1);
 if(args[0]==='build'){fs.writeFileSync(process.env.ADMISSION_STATE,'built');process.exit(0);}
 if(args[0]==='image'){
  if(!repaired&&mode==='absent')process.exit(1);
