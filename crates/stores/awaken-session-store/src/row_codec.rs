@@ -255,7 +255,7 @@ pub(super) fn normalize_published_row(
     stored_session_id: &str,
     aggregate_json: Option<String>,
     revision: i64,
-) -> Result<Option<String>, serde_json::Error> {
+) -> Result<(PersistedSession, Option<String>), serde_json::Error> {
     let aggregate_json = aggregate_json
         .ok_or_else(|| invalid("published managed Session row has no canonical aggregate"))?;
     let session = decode(EncodedSessionRow {
@@ -268,7 +268,7 @@ pub(super) fn normalize_published_row(
         ));
     }
     let canonical = encode(&session)?;
-    Ok((canonical != aggregate_json).then_some(canonical))
+    Ok((session, (canonical != aggregate_json).then_some(canonical)))
 }
 
 pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_json::Error> {
@@ -589,6 +589,7 @@ mod tests {
             i64::try_from(session.revision.0).unwrap(),
         )
         .expect("N1 normalize")
+        .1
         .expect("N1/E2 replacement");
         let decoded = super::decode(super::EncodedSessionRow {
             aggregate_json: normalized.clone(),
@@ -604,6 +605,7 @@ mod tests {
                 i64::try_from(session.revision.0).unwrap(),
             )
             .expect("N1 renormalize")
+            .1
             .is_none(),
             "N1/E3"
         );
