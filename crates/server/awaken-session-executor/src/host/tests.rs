@@ -21951,6 +21951,7 @@ impl awaken_dispatch_contract::ClaimedSessionControl for RemoteTerminalCleanupCo
         _session_work_authority: Option<
             &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
         >,
+        _continuation: Option<&awaken_session_contract::SessionRealizationLease>,
     ) -> Result<
         Option<awaken_session_contract::SessionRealizationDirective>,
         awaken_dispatch_contract::ClaimedSessionControlError,
