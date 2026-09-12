@@ -257,7 +257,7 @@ impl SessionApplication {
     async fn prepare_session_thread_tool_reply(
         &self,
         command: SessionThreadToolReplyCommand,
-    ) -> Result<(String, u64, SessionThreadToolReplyDelivery), RunError> {
+    ) -> Result<(String, Option<u64>, SessionThreadToolReplyDelivery), RunError> {
         if command.session_id.trim().is_empty()
             || command.expected_run_id.0.trim().is_empty()
             || command.expected_correlation_id.trim().is_empty()
@@ -287,14 +287,26 @@ impl SessionApplication {
         }
         let operation_id = command.activity_operation_id();
         let session_id = command.session_id.clone();
-        let (_, session_activity_epoch) = self
-            .transfer_committed_activity_for_operation(
-                &session_id,
-                &operation_id,
-                fence.prior_session_activity_epoch,
-            )
-            .await
-            .map_err(crate::SessionActivityError::run_error)?;
+        let session_activity_epoch = if fence.already_applied {
+            None
+        } else {
+            match fence.activity {
+                awaken_session_contract::SessionThreadToolReplyActivity::ThreadExtension => None,
+                awaken_session_contract::SessionThreadToolReplyActivity::Session {
+                    prior_epoch,
+                } => {
+                    let (_, epoch) = self
+                        .transfer_committed_activity_for_operation(
+                            &session_id,
+                            &operation_id,
+                            prior_epoch,
+                        )
+                        .await
+                        .map_err(crate::SessionActivityError::run_error)?;
+                    Some(epoch)
+                }
+            }
+        };
         Ok((
             session_id,
             session_activity_epoch,
@@ -429,8 +441,10 @@ impl SessionApplication {
             .runtime()
             .reply_and_observe_session_thread_tool(delivery)
             .await;
-        self.settle_definitive_coordination_rejection(&session_id, session_activity_epoch, &result)
-            .await?;
+        if let Some(epoch) = session_activity_epoch {
+            self.settle_definitive_coordination_rejection(&session_id, epoch, &result)
+                .await?;
+        }
         result
     }
 }
@@ -910,8 +924,10 @@ impl SessionAgentCoordination for SessionApplication {
         let (session_id, session_activity_epoch, delivery) =
             self.prepare_session_thread_tool_reply(command).await?;
         let result = self.runtime().reply_session_thread_tool(delivery).await;
-        self.settle_definitive_coordination_rejection(&session_id, session_activity_epoch, &result)
-            .await?;
+        if let Some(epoch) = session_activity_epoch {
+            self.settle_definitive_coordination_rejection(&session_id, epoch, &result)
+                .await?;
+        }
         result
     }
 }

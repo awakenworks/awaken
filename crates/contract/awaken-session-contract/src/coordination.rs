@@ -505,37 +505,96 @@ impl SessionThreadToolReply {
     }
 }
 
-/// Activity coordinate read while validating the command's exact committed
-/// Awaiting ticket. Run/correlation identity lives only on the command so the
-/// delayed intent and delivery cannot drift between two copies of that fence.
+/// Existing dispatch ownership, derived while checking the committed Awaiting ticket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionThreadToolReplyActivity {
+    /// Session-owned continuation transfers the prior root activity, if any.
+    Session { prior_epoch: Option<u64> },
+    /// An extension owns this ordinary Run; transport through a Session does not
+    /// grant that Session a second activity or alter the dispatch identity.
+    ThreadExtension,
+}
+
+impl SessionThreadToolReplyActivity {
+    /// Classify routing only; callers still validate the exact committed ticket and owner.
+    #[must_use]
+    pub fn from_dispatch(
+        thread: &ThreadId,
+        affinity: Option<&ThreadId>,
+        epoch: Option<u64>,
+        parent: &ThreadId,
+    ) -> Option<Self> {
+        if epoch == Some(0) {
+            return None;
+        }
+        match affinity {
+            Some(bound) if bound == parent => Some(Self::Session { prior_epoch: epoch }),
+            None if thread == parent && epoch.is_none() => Some(Self::ThreadExtension),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn prior_epoch(&self) -> Option<u64> {
+        match self {
+            Self::Session { prior_epoch } => *prior_epoch,
+            Self::ThreadExtension => None,
+        }
+    }
+}
+
+/// Exact command coordinates remain on the command, not duplicated in this fence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionThreadToolReplyFence {
-    /// Current durable dispatch activity coordinate, when the Run was admitted
-    /// through the Session application. An epochless but exact Session-affine
-    /// foreground row is adopted by the first continuation transaction. The
-    /// Session root removes an existing coordinate while opening the new epoch
-    /// in the same CAS, so staging may safely race a finishing Worker lease.
-    pub prior_session_activity_epoch: Option<u64>,
-    /// The exact reply was already consumed in committed Runtime truth. The
-    /// Session may finish its retained EventBatch without requiring a now-gone
-    /// active ticket or restaging the durable input.
+    pub activity: SessionThreadToolReplyActivity,
+    /// The exact reply has already been consumed in committed Runtime truth.
     pub already_applied: bool,
 }
 
-/// Session-approved delivery handed to the Runtime owner after the root
-/// aggregate has durably opened the next activity. This wrapper is internal
+/// Session-approved delivery handed to Runtime. Session-owned Runs carry a newly
+/// opened root activity; extension-owned Runs carry none and retain their owner. This wrapper is internal
 /// coordination vocabulary, not a Managed wire shape or another command bus.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionThreadToolReplyDelivery {
     pub command: SessionThreadToolReplyCommand,
     pub fence: SessionThreadToolReplyFence,
-    pub session_activity_epoch: u64,
+    pub session_activity_epoch: Option<u64>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use awaken_agent_contract::agent::message::Id as MessageId;
+
+    #[test]
+    fn reply_activity_preserves_dispatch_ownership() {
+        // Cause/effect table: exact affinity -> Session; no affinity+primary+no epoch
+        // -> extension; foreign affinity, orphan child, zero epoch or orphan epoch -> reject.
+        let parent = ThreadId("parent".into());
+        let child = ThreadId("child".into());
+        for thread in [&parent, &child] {
+            for affinity in [None, Some(&parent), Some(&child)] {
+                for epoch in [None, Some(0), Some(7)] {
+                    let result = SessionThreadToolReplyActivity::from_dispatch(
+                        thread, affinity, epoch, &parent,
+                    );
+                    let expected = if epoch == Some(0) {
+                        None
+                    } else if affinity == Some(&parent) {
+                        Some(SessionThreadToolReplyActivity::Session { prior_epoch: epoch })
+                    } else if affinity.is_none() && thread == &parent && epoch.is_none() {
+                        Some(SessionThreadToolReplyActivity::ThreadExtension)
+                    } else {
+                        None
+                    };
+                    assert_eq!(
+                        result, expected,
+                        "thread={thread:?} affinity={affinity:?} epoch={epoch:?}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn coordinated_thread_identity_is_stable_and_scoped() {
@@ -776,7 +835,9 @@ mod tests {
             }),
         };
         let first = SessionThreadToolReplyFence {
-            prior_session_activity_epoch: Some(7),
+            activity: SessionThreadToolReplyActivity::Session {
+                prior_epoch: Some(7),
+            },
             already_applied: false,
         };
         let replay = first.clone();

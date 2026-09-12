@@ -1136,7 +1136,7 @@ impl SharedHost {
                 input,
                 &ThreadId(delivery.session_id),
                 delivery.prior_session_activity_epoch,
-                delivery.session_activity_epoch,
+                Some(delivery.session_activity_epoch),
             )
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;

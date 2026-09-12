@@ -2059,7 +2059,9 @@ impl SessionRuntime for ToolAwaitingFake {
             // Session creation owns epoch 1; the completed Awaiting boundary
             // settled it but the durable dispatch fence still identifies that
             // prior epoch when the reply transfers activity to the same Run.
-            prior_session_activity_epoch: Some(1),
+            activity: awaken_session_contract::SessionThreadToolReplyActivity::Session {
+                prior_epoch: Some(1),
+            },
             already_applied: false,
         })
     }
@@ -2083,7 +2085,9 @@ impl SessionRuntime for ToolAwaitingFake {
                     .thread_id(&delivery.command.session_id),
                 source_run_id: delivery.command.expected_run_id.clone(),
                 source_agent_id: String::new(),
-                session_activity_epoch: delivery.session_activity_epoch,
+                session_activity_epoch: delivery
+                    .session_activity_epoch
+                    .expect("adapter models a Session-owned Run"),
                 cancellation_requested: false,
             });
         let mut slot = self.run.lock().unwrap();

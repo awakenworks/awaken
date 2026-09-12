@@ -4167,7 +4167,9 @@ async fn foreground_resume_reuses_exact_ticket_coordination_path() {
             .await
             .expect("F3 state")
             .active_activity_epochs,
-        std::collections::BTreeSet::from([delivery.session_activity_epoch]),
+        std::collections::BTreeSet::from([delivery
+            .session_activity_epoch
+            .expect("Session reply owns an activity")]),
         "F3/E2"
     );
 
@@ -4251,6 +4253,44 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
         accompanying_system: None,
     };
 
+    // P7: extension-owned primary reply -> delivered without opening any root activity.
+    // Exact replay has the same effect; the Outcome's ordinary Run remains its sole owner.
+    create(repo.as_ref(), persisted("reply-extension", false, "idle")).await;
+    let mut extension_runtime = RecordingReplyRuntime::new(ReplyRuntimeOutcome::Accepted);
+    extension_runtime.activity =
+        awaken_session_contract::SessionThreadToolReplyActivity::ThreadExtension;
+    let extension_runtime = Arc::new(extension_runtime);
+    let extension = application_with_runtime(
+        extension_runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let mut extension_command = command("reply-extension");
+    extension_command.target = awaken_session_contract::SessionThreadTarget::Primary;
+    for _ in 0..2 {
+        awaken_session_contract::SessionAgentCoordination::reply_session_thread_tool(
+            &extension,
+            extension_command.clone(),
+        )
+        .await
+        .expect("extension reply");
+        assert!(
+            repo.get("reply-extension")
+                .await
+                .expect("extension state")
+                .active_activity_epochs
+                .is_empty()
+        );
+    }
+    assert!(
+        extension_runtime
+            .deliveries
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|delivery| delivery.session_activity_epoch.is_none())
+    );
+
     let accepted_runtime = Arc::new(RecordingReplyRuntime::new(ReplyRuntimeOutcome::Accepted));
     let accepted = application_with_runtime(
         accepted_runtime.clone(),
@@ -4267,7 +4307,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
     let active = repo.get("reply-accepted").await.expect("P1 state");
     assert_eq!(
         active.active_activity_epochs,
-        std::collections::BTreeSet::from([first_epoch]),
+        std::collections::BTreeSet::from([first_epoch.expect("Session reply owns an activity")]),
         "P1/E1"
     );
 
@@ -4294,7 +4334,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
             .await
             .expect("P2 state")
             .active_activity_epochs,
-        std::collections::BTreeSet::from([first_epoch]),
+        std::collections::BTreeSet::from([first_epoch.expect("Session reply owns an activity")]),
         "P2/E2 one active membership"
     );
 
@@ -4323,7 +4363,9 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
             .await
             .expect("P6 state")
             .active_activity_epochs,
-        std::collections::BTreeSet::from([primary_delivery.session_activity_epoch]),
+        std::collections::BTreeSet::from([primary_delivery
+            .session_activity_epoch
+            .expect("Session reply owns an activity")]),
         "P6/E6"
     );
 
@@ -4368,7 +4410,9 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
     let ambiguous_state = repo.get("reply-ambiguous").await.expect("P4 state");
     assert_eq!(
         ambiguous_state.active_activity_epochs,
-        std::collections::BTreeSet::from([ambiguous_epoch]),
+        std::collections::BTreeSet::from(
+            [ambiguous_epoch.expect("Session reply owns an activity")]
+        ),
         "P4/E4"
     );
     assert_eq!(
@@ -4398,7 +4442,9 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
             .await
             .expect("P4R state")
             .active_activity_epochs,
-        std::collections::BTreeSet::from([ambiguous_epoch]),
+        std::collections::BTreeSet::from(
+            [ambiguous_epoch.expect("Session reply owns an activity")]
+        ),
         "P4R/E4 one retained activity"
     );
 
@@ -4409,7 +4455,7 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
             source_thread_id: ThreadId("reply-child".into()),
             source_run_id: RunId("reply-run".into()),
             source_agent_id: "reply-agent".into(),
-            session_activity_epoch: first_epoch,
+            session_activity_epoch: first_epoch.expect("Session reply owns an activity"),
             cancellation_requested: false,
         },
     )

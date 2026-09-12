@@ -273,6 +273,36 @@ fn sandbox_spec_from_projection(
     spec
 }
 
+/// An inference-only execution can omit a physical Environment only when its complete immutable
+/// execution surface is environment-free. Inference-only Native/A2A routes do
+/// not need a Sandbox; ACP owns a CLI process and every executable integration
+/// keeps the ordinary Session Environment path.
+pub(crate) fn environment_free_inference(
+    snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
+) -> bool {
+    let agent = &snapshot.resolved_spec.plugin_config.agent;
+    snapshot.resolved_spec.tool_descriptors.is_empty()
+        && snapshot.resolved_spec.plugin_ids.is_empty()
+        && agent.mcp_servers.is_empty()
+        && agent.skills.is_empty()
+        && agent.delegates.is_empty()
+        && agent.advisor.is_none()
+        && agent.toolsets.is_empty()
+        && snapshot
+            .resolved_spec
+            .attempt_candidates(None)
+            .into_iter()
+            .all(|candidate| {
+                matches!(
+                    awaken_runtime_contract::resolved::Backend::from_ref(
+                        &candidate.binding().backend_ref,
+                    ),
+                    awaken_runtime_contract::resolved::Backend::Native
+                        | awaken_runtime_contract::resolved::Backend::Remote(_)
+                )
+            })
+}
+
 /// Canonical mount-less durable Session shape used by cold creation and the
 /// capacity planner. It is intentionally Retained; a concrete warm-pool owner
 /// will return zero because durable Session filesystems cannot be transferred

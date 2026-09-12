@@ -114,6 +114,7 @@ enum ReplyRuntimeOutcome {
 }
 
 struct RecordingReplyRuntime {
+    activity: awaken_session_contract::SessionThreadToolReplyActivity,
     outcome: ReplyRuntimeOutcome,
     deliveries: Mutex<Vec<awaken_session_contract::SessionThreadToolReplyDelivery>>,
     boundaries: RecordingBoundaries,
@@ -527,6 +528,9 @@ impl RecordingBoundaryBudgetRuntime {
 impl RecordingReplyRuntime {
     fn new(outcome: ReplyRuntimeOutcome) -> Self {
         Self {
+            activity: awaken_session_contract::SessionThreadToolReplyActivity::Session {
+                prior_epoch: Some(1),
+            },
             outcome,
             deliveries: Mutex::new(Vec::new()),
             boundaries: RecordingBoundaries::default(),
@@ -844,7 +848,7 @@ impl SessionRuntime for RecordingReplyRuntime {
             ));
         }
         Ok(awaken_session_contract::SessionThreadToolReplyFence {
-            prior_session_activity_epoch: Some(1),
+            activity: self.activity.clone(),
             already_applied: false,
         })
     }
