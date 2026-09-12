@@ -213,6 +213,7 @@ impl WorkerBootstrap {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WorkerFileConfig {
+    log_filter: Option<String>,
     data_dir: Option<PathBuf>,
     mode: Option<String>,
     role: Option<String>,
@@ -247,6 +248,7 @@ struct WorkerFileConfig {
 /// Fully validated inputs for the standalone Worker process.
 #[derive(Debug, Clone)]
 pub struct WorkerDaemonConfig {
+    pub observability: awaken_observability::ObservabilityConfig,
     server: String,
     server_ca_certificate_file: Option<PathBuf>,
     pub worker: WorkerBootstrap,
@@ -260,6 +262,13 @@ impl WorkerDaemonConfig {
             .map_err(|error| format!("read Worker config {}: {error}", path.display()))?;
         let file: WorkerFileConfig = toml::from_str(&source)
             .map_err(|error| format!("parse Worker config {}: {error}", path.display()))?;
+        let mut observability = awaken_observability::ObservabilityConfig::default();
+        if let Some(filter) = file.log_filter {
+            if filter.trim().is_empty() {
+                return Err("log_filter must not be empty".into());
+            }
+            observability.filter = filter;
+        }
         if file.role.as_deref().is_some_and(|role| role != "worker") {
             return Err("standalone Worker config requires role = \"worker\"".into());
         }
@@ -339,6 +348,7 @@ impl WorkerDaemonConfig {
             }
         }
         Ok(Self {
+            observability,
             server,
             server_ca_certificate_file: file.worker_server_ca_certificate_file,
             worker,
@@ -491,6 +501,47 @@ impl WorkerDaemonConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standalone_log_filter_uses_typed_observability_policy() {
+        // Decision table: L1 omitted filter keeps the shared defaults; L2 an
+        // explicit target directive is preserved exactly; L3 empty/whitespace
+        // rejects before Worker assembly or network IO. The formatter/exporter
+        // remain shared defaults, not a second standalone logging mechanism.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("worker.toml");
+        for (authored, expected) in [
+            ("", Some("info")),
+            (
+                "log_filter='info,awaken_dispatch::pool=debug'",
+                Some("info,awaken_dispatch::pool=debug"),
+            ),
+            ("log_filter='off'", Some("off")),
+            ("log_filter=''", None),
+            ("log_filter='  '", None),
+        ] {
+            std::fs::write(
+                &path,
+                format!("worker_server='http://coordinator'\n{authored}\n"),
+            )
+            .unwrap();
+            let result = WorkerDaemonConfig::load(&path, None);
+            match expected {
+                Some(filter) => assert_eq!(
+                    result.unwrap().observability,
+                    awaken_observability::ObservabilityConfig {
+                        filter: filter.into(),
+                        ..Default::default()
+                    },
+                    "L1/L2 {authored}",
+                ),
+                None => assert!(
+                    result.unwrap_err().contains("log_filter must not be empty"),
+                    "L3 {authored}"
+                ),
+            }
+        }
+    }
 
     /// Decision table: C1 envelope path, C2 explicit projected root, C3 explicit
     /// projected holder. !C1 keeps the original file resolver; C1+!C2+!C3 selects
