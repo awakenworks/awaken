@@ -598,52 +598,38 @@ impl SessionApplication {
             quarantined: candidates.quarantined.len(),
             ..Default::default()
         };
-        use futures_util::{StreamExt, stream};
-
-        // One bounded, structurally owned sweep of independent Session roots.
-        // The repository keyset supplies each identity once. A slow root cannot
-        // serialize every other root; within each future the existing selector
-        // still owns FIFO, root CAS, Runtime admission and interruption order.
-        // Dropping this sweep drops its in-flight futures, without detached tasks
-        // or a second recovery queue. Join every result before the next phase.
-        let mut pending = stream::iter(candidates.sessions.iter().cloned().enumerate())
-            .map(|(index, candidate)| async move {
-                let mut result = EventBatchReconciliation::default();
-                let session = match self.session_repository().get(&candidate.session_id).await {
-                    Ok(session) => session,
-                    Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
-                        return (index, result);
-                    }
-                    Err(error) => {
-                        result
-                            .failures
-                            .push((candidate.session_id.clone(), error.to_string()));
-                        return (index, result);
-                    }
-                };
-                if session.needs_event_reconciliation() {
-                    result.pending = 1;
-                    let session_id = session.session_id;
-                    match self
-                        .reconcile_session_event_batches(&session_id, None)
-                        .await
-                    {
-                        Ok(true) => result.settled = 1,
-                        Ok(false) => {}
-                        Err(error) => result.failures.push((session_id, error.to_string())),
-                    }
+        // Shared bounded iteration owns only scheduling; this selector retains
+        // per-Session FIFO, root CAS, Runtime admission and interruption order.
+        let completed = super::recovery_sweep::map_candidates(candidates, |candidate| async move {
+            let mut result = EventBatchReconciliation::default();
+            let session = match self.session_repository().get(&candidate.session_id).await {
+                Ok(session) => session,
+                Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
+                    return result;
                 }
-                (index, result)
-            })
-            .buffer_unordered(4);
-        let mut completed = Vec::with_capacity(candidates.sessions.len());
-        while let Some(result) = pending.next().await {
-            completed.push(result);
-        }
-        // Keep diagnostics stable in candidate order, independently of I/O
-        // completion order. A failed sibling does not discard later successes.
-        completed.sort_unstable_by_key(|(index, _)| *index);
-        for (_, result) in completed {
+                Err(error) => {
+                    result
+                        .failures
+                        .push((candidate.session_id.clone(), error.to_string()));
+                    return result;
+                }
+            };
+            if session.needs_event_reconciliation() {
+                result.pending = 1;
+                let session_id = session.session_id;
+                match self
+                    .reconcile_session_event_batches(&session_id, None)
+                    .await
+                {
+                    Ok(true) => result.settled = 1,
+                    Ok(false) => {}
+                    Err(error) => result.failures.push((session_id, error.to_string())),
+                }
+            }
+            result
+        })
+        .await;
+        for result in completed {
             report.pending += result.pending;
             report.settled += result.settled;
             report.failures.extend(result.failures);
