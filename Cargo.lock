@@ -2380,6 +2380,7 @@ dependencies = [
  "awaken-session-contract",
  "awaken-session-store",
  "awaken-worker-contract",
+ "futures-util",
  "serde",
  "serde_json",
  "tempfile",

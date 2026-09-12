@@ -4,6 +4,11 @@ use awaken_session_contract::SessionRealizationControl;
 #[test]
 fn lifecycle_cancellation_interrupts_a_held_recovery_scan() {
     run_composed_async_test(|| async {
+        // Timing diagnostics add no await, timer, or recovery decision. Causes:
+        // cancellation at initial dispatch / candidate scan / final validation
+        // => prompt shutdown, no later phase or fabricated successful cycle.
+        // These three boundary rows retain the behavioral gate; wall-clock log
+        // values are diagnostic data and deliberately have no duration assertion.
         // Cover initial dispatch, recovery candidates and the final audit.
         // No held read may prevent process shutdown; cancellation does not release any
         // physical predecessor or commit a synthetic successful recovery.
