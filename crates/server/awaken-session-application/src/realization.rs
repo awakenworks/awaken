@@ -232,6 +232,7 @@ impl SessionApplication {
     pub(crate) async fn reconcile_pending_session_state(
         self: std::sync::Arc<Self>,
     ) -> SessionRecoveryCycle {
+        let cycle_started = std::time::Instant::now();
         let candidates =
             match super::scan_all_reconcilable_sessions(self.session_repository()).await {
                 Ok(scan) => super::SessionRecoveryCandidates::from(scan),
@@ -242,7 +243,9 @@ impl SessionApplication {
                     };
                 }
             };
+        let scan_elapsed = cycle_started.elapsed();
         let resources = self.reconcile_resource_activations_from(&candidates).await;
+        let resources_elapsed = cycle_started.elapsed();
         let resource_failure_count = resources.failures.len();
         let pending = resources.pending;
         let quarantined = resources.quarantined.len();
@@ -269,7 +272,9 @@ impl SessionApplication {
         let continuation_failure_count = self
             .reconcile_environment_continuations_from(&candidates, now_unix_ms())
             .await;
+        let continuations_elapsed = cycle_started.elapsed();
         let realizations = self.reconcile_session_realizations_from(&candidates).await;
+        let realizations_elapsed = cycle_started.elapsed();
         let realization_failure_count = realizations.failures.len();
         for failure in realizations.failures {
             tracing::warn!(
@@ -316,6 +321,7 @@ impl SessionApplication {
                 report
             }
         };
+        let event_batches_elapsed = cycle_started.elapsed();
         let event_batch_failure_count = event_batches.failures.len();
         for (session_id, error) in event_batches.failures {
             tracing::warn!(
@@ -331,6 +337,7 @@ impl SessionApplication {
             );
         }
         let outcomes = self.reconcile_outcome_continuations_from(&candidates).await;
+        let outcomes_elapsed = cycle_started.elapsed();
         let outcome_failure_count = outcomes.failures.len();
         for (session_id, error) in outcomes.failures {
             tracing::warn!(
@@ -384,6 +391,14 @@ impl SessionApplication {
                 .max(event_batches.quarantined)
                 .max(outcomes.quarantined),
             retryable_failures,
+            scan_ms = scan_elapsed.as_millis(),
+            resources_ms = (resources_elapsed - scan_elapsed).as_millis(),
+            continuations_ms = (continuations_elapsed - resources_elapsed).as_millis(),
+            realizations_ms = (realizations_elapsed - continuations_elapsed).as_millis(),
+            event_batches_ms = (event_batches_elapsed - realizations_elapsed).as_millis(),
+            outcomes_ms = (outcomes_elapsed - event_batches_elapsed).as_millis(),
+            validation_ms = (cycle_started.elapsed() - outcomes_elapsed).as_millis(),
+            elapsed_ms = cycle_started.elapsed().as_millis(),
             "Session recovery scan completed"
         );
         SessionRecoveryCycle { retryable_failures }

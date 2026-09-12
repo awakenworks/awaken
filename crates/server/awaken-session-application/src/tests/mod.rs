@@ -1611,6 +1611,11 @@ struct FaultingSessionRepository {
     inner: Arc<dyn ManagedSessionRepository>,
     applied_create_roots: Mutex<Vec<PersistedSession>>,
     get_override_once: Mutex<Option<PersistedSession>>,
+    paused_gets: Mutex<HashMap<String, Arc<tokio::sync::Semaphore>>>,
+    failed_gets: Mutex<BTreeSet<String>>,
+    observed_gets: Mutex<Vec<String>>,
+    completed_gets: Mutex<Vec<String>>,
+    get_entered: tokio::sync::Notify,
     fail_operation_once: Mutex<Option<String>>,
     conflict_operation_once: Mutex<Option<String>>,
     running_conflict_operation_once: Mutex<Option<String>>,
@@ -1663,6 +1668,11 @@ impl FaultingSessionRepository {
             create_crash_boundary: Mutex::new(None),
             applied_create_roots: Mutex::new(Vec::new()),
             get_override_once: Mutex::new(None),
+            paused_gets: Mutex::new(HashMap::new()),
+            failed_gets: Mutex::new(BTreeSet::new()),
+            observed_gets: Mutex::new(Vec::new()),
+            completed_gets: Mutex::new(Vec::new()),
+            get_entered: tokio::sync::Notify::new(),
             fail_operation_once: Mutex::new(None),
             conflict_operation_once: Mutex::new(None),
             running_conflict_operation_once: Mutex::new(None),
@@ -2023,13 +2033,38 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         &self,
         session_id: &str,
     ) -> Result<PersistedSession, awaken_session_contract::SessionRepositoryError> {
+        self.observed_gets
+            .lock()
+            .unwrap()
+            .push(session_id.to_owned());
+        self.get_entered.notify_one();
+        let gate = self.paused_gets.lock().unwrap().get(session_id).cloned();
+        if let Some(gate) = gate {
+            gate.acquire()
+                .await
+                .expect("test read gate remains open")
+                .forget();
+        }
+        if self.failed_gets.lock().unwrap().contains(session_id) {
+            return Err(
+                awaken_session_contract::SessionRepositoryError::Unavailable(
+                    "injected Session read failure".into(),
+                ),
+            );
+        }
         if let Some(session) = self.get_override_once.lock().unwrap().take() {
             return Ok(session);
         }
         if self.get_not_found_once.swap(false, Ordering::SeqCst) {
             return Err(awaken_session_contract::SessionRepositoryError::NotFound);
         }
-        self.inner.get(session_id).await
+        let result = self.inner.get(session_id).await;
+        self.completed_gets
+            .lock()
+            .unwrap()
+            .push(session_id.to_owned());
+        self.get_entered.notify_one();
+        result
     }
 
     async fn reconcilable_sessions_page(
