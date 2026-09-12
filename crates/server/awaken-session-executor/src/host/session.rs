@@ -869,11 +869,7 @@ impl SharedHost {
                     awaken_ext_builtin_tools::SEND_MESSAGE.to_string(),
                 ]);
             }
-            let has_explicit_tool_policy =
-                config_permission_ruleset(published_configuration.plugins()).is_some()
-                    || !toolsets.is_empty();
-            let pre_authorized =
-                pre_authorized_tool_ids(&mcp.tool_ids, &admin_ids, has_explicit_tool_policy);
+            let pre_authorized = pre_authorized_tool_ids(&admin_ids);
             // `plugin_config.skills_dir` is the direct/non-Managed authored-workspace
             // compatibility setting. Managed repository discovery always uses the
             // provider-fixed `.claude/skills` path under each realized mount, while

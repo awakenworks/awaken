@@ -36,7 +36,6 @@ async fn main() {
     //    else. The gate is the single authorization path.
     let ruleset = PermissionRuleset {
         default_behavior: ToolPermissionBehavior::RequireConfirmation,
-        mode: Mode::Default,
         rules: vec![PermissionRule::new(
             ToolCallPattern::parse("echo").unwrap(),
             ToolPermissionBehavior::Allow,

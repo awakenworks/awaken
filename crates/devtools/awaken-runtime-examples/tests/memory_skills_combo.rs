@@ -137,7 +137,6 @@ fn allow_all_gate() -> std::sync::Arc<PermissionGate> {
     std::sync::Arc::new(PermissionGate::new(std::sync::Arc::new(
         RuleBasedToolPermissionPolicy::new(PermissionRuleset {
             default_behavior: ToolPermissionBehavior::Allow,
-            mode: Mode::Default,
             rules: Vec::new(),
         }),
     )))
