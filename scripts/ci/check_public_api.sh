@@ -91,10 +91,16 @@ compare_fail=0  # a baseline whose comparison could not be observed
 # authored API (structs, fns, real trait impls). The remaining rustdoc spelling
 # and ordering is made reproducible by PUBLIC_API_NIGHTLY above.
 omit_flags="--omit blanket-impls,auto-trait-impls,auto-derived-impls"
+compute_stderr="$(mktemp)"
+trap 'rm -f "$compute_stderr"' EXIT
 for c in $crates; do
   snap="public-api/$c.txt"
-  if ! cur=$(cargo +"$PUBLIC_API_NIGHTLY" public-api -p "$c" --simplified $omit_flags 2>/dev/null); then
-    echo "✗ failed to compute public API for $c"; fail=1; compute_fail=1; continue
+  if ! cur=$(cargo +"$PUBLIC_API_NIGHTLY" public-api -p "$c" --simplified $omit_flags 2>"$compute_stderr"); then
+    echo "✗ failed to compute public API for $c"
+    # The reason is the actionable part (a missing build tool, a rustdoc error);
+    # hiding it turned an environment fault into an unexplained gate failure.
+    tail -n 20 "$compute_stderr" | sed 's/^/    /'
+    fail=1; compute_fail=1; continue
   fi
   if [ "$bless" = 1 ]; then
     printf '%s\n' "$cur" > "$snap"

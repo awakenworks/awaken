@@ -203,16 +203,6 @@ export type CredentialUsage =
   | {
       type: "client_certificate";
       [k: string]: unknown;
-    }
-  | {
-      name: string;
-      type: "environment_variable";
-      [k: string]: unknown;
-    }
-  | {
-      path: string;
-      type: "file";
-      [k: string]: unknown;
     };
 /**
  * One exact destination at which a hosted HTTP effect may render a material
@@ -585,7 +575,6 @@ export interface CredentialMaterialInput {
    * Namespaced, versioned type owned by the installed consumer extension.
    */
   type_id: string;
-  [k: string]: unknown;
 }
 /**
  * Stable authoring identity used to select one catalog Offering.
@@ -939,7 +928,6 @@ export interface ApiError {
  */
 export interface ArchiveCredentialRequest {
   expected_version: number;
-  [k: string]: unknown;
 }
 /**
  * Secret-free state of the one product-coordinated Cloud login operation.
@@ -1066,7 +1054,6 @@ export interface EnterCredentialRequest {
    */
   secret?: string | null;
   workspace_id: string;
-  [k: string]: unknown;
 }
 /**
  * This interface was referenced by the generated JSON Schema
@@ -1250,7 +1237,6 @@ export interface RotateCredentialRequest {
   expected_version: number;
   material?: CredentialMaterialInput | null;
   secret?: string | null;
-  [k: string]: unknown;
 }
 /**
  * This interface was referenced by the generated JSON Schema
