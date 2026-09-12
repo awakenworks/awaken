@@ -21,6 +21,7 @@ use super::*;
 
 #[derive(Default)]
 struct EventBatchRuntime {
+    admission_barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
     reserved: Mutex<BTreeMap<String, AdmitSessionRun>>,
     projected_resources: Mutex<Option<(u64, awaken_session_contract::ResolvedSessionResources)>>,
     reserved_resource_generations:
@@ -251,6 +252,10 @@ impl SessionRuntime for EventBatchRuntime {
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
+        let barrier = self.admission_barrier.lock().unwrap().take();
+        if let Some(barrier) = barrier {
+            barrier.wait().await;
+        }
         let staged_run_id = self
             .staged_tool_replies
             .lock()
@@ -1567,6 +1572,143 @@ async fn final_event_admission_close_competes_atomically_with_acceptance() {
         vec![resolved],
         "F5 one root receipt"
     );
+}
+
+#[tokio::test]
+async fn competing_tool_replies_recheck_occupancy_after_root_cas_conflict() {
+    competing_tool_reply_admission_table(Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+    ))
+    .await;
+}
+
+#[tokio::test]
+async fn postgres_competing_tool_replies_recheck_occupancy_after_root_cas_conflict() {
+    // Same R1-R4 rules through the production PostgreSQL root CAS. An explicit
+    // unavailable database is fatal; an unconfigured run claims no PG coverage.
+    let Ok(url) = std::env::var("AWAKEN_TEST_DATABASE_URL") else {
+        return;
+    };
+    let repository = awaken_session_store::PostgresManagedSessionRepository::connect(&url)
+        .await
+        .expect("configured tool-reply admission PostgreSQL");
+    competing_tool_reply_admission_table(Arc::new(repository)).await;
+}
+
+async fn competing_tool_reply_admission_table(repository: Arc<dyn ManagedSessionRepository>) {
+    // Cause/effect graph: two replicas read the SAME old root; different HTTP
+    // keys answer one pending occurrence. A barrier at the real pre-CAS Runtime
+    // read forces this window; no scheduler-luck assumption. R1 equal payload,
+    // R2 changed payload: exactly one receipt + one rejection + one root batch.
+    // R3 exact winning-key replay returns that receipt despite occupied call.
+    // R4 a new key after admission rejects without changing root/outbox. The
+    // rejected caller must not reach Runtime delivery in any row.
+    for changed in [false, true] {
+        let session_id = format!("reply-cas-race-{}-{changed}", std::process::id());
+        let session = session_id.as_str();
+        create(repository.as_ref(), persisted(session, false, "idle")).await;
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        let runtime_a = Arc::new(EventBatchRuntime::default());
+        let runtime_b = Arc::new(EventBatchRuntime::default());
+        *runtime_a.admission_barrier.lock().unwrap() = Some(barrier.clone());
+        *runtime_b.admission_barrier.lock().unwrap() = Some(barrier);
+        let a = application_with_runtime(
+            runtime_a.clone(),
+            repository.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let b = application_with_runtime(
+            runtime_b.clone(),
+            repository.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let left = tool_reply_input("one-call");
+        let mut right = left.clone();
+        if changed {
+            let SessionEventInput::ToolReply(reply) = &mut right else {
+                unreachable!()
+            };
+            reply.reply = SessionEventToolReplyKind::ToolResult {
+                content: Some(vec![ContentBlock::text("other")]),
+                is_error: true,
+            };
+        }
+        let (ra, rb) = tokio::join!(
+            a.append_session_event_batch_idempotent(
+                session,
+                vec![left.clone()],
+                None,
+                None,
+                Some(("a".into(), "fa".into()))
+            ),
+            b.append_session_event_batch_idempotent(
+                session,
+                vec![right.clone()],
+                None,
+                None,
+                Some(("b".into(), "fb".into()))
+            )
+        );
+        let outcomes = [ra, rb];
+        assert_eq!(
+            outcomes.iter().filter(|v| v.is_ok()).count(),
+            1,
+            "R1/R2 one winner"
+        );
+        assert_eq!(
+            outcomes.iter().find_map(|v| v.as_ref().err()).unwrap().kind,
+            awaken_session_contract::RunErrorKind::BadRequest
+        );
+        let winner = outcomes.iter().find_map(|v| v.as_ref().ok()).unwrap();
+        let (input, key, fp) = if outcomes[0].is_ok() {
+            (left.clone(), "a", "fa")
+        } else {
+            (right, "b", "fb")
+        };
+        let before = repository.get(session).await.unwrap();
+        let outbox = repository.pending_lifecycle().await.unwrap();
+        assert_eq!(before.event_batches.len(), 1);
+        assert_eq!(
+            &a.append_session_event_batch_idempotent(
+                session,
+                vec![input],
+                None,
+                None,
+                Some((key.into(), fp.into()))
+            )
+            .await
+            .unwrap(),
+            winner,
+            "R3 exact receipt"
+        );
+        assert!(
+            b.append_session_event_batch_idempotent(
+                session,
+                vec![left],
+                None,
+                None,
+                Some(("late".into(), "fl".into()))
+            )
+            .await
+            .is_err(),
+            "R4 occupied"
+        );
+        assert_eq!(
+            repository.get(session).await.unwrap(),
+            before,
+            "R3/R4 root frame"
+        );
+        assert_eq!(
+            repository.pending_lifecycle().await.unwrap(),
+            outbox,
+            "R3/R4 outbox frame"
+        );
+        assert_eq!(
+            runtime_a.tool_reply_calls.load(Ordering::SeqCst)
+                + runtime_b.tool_reply_calls.load(Ordering::SeqCst),
+            0
+        );
+    }
 }
 
 #[tokio::test]

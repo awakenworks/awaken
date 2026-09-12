@@ -12,12 +12,12 @@ ASSUME /\ Calls # {} /\ PendingCommits # {} /\ Operations # {}
 VARIABLE awaiting, awaitingCommit, completed, receiptCall, receiptCommit,
          accepted, rejected, lastAccepted, lastExpected, lastAcceptedCall, lastExpectedCall,
          lastAcceptedCommit, lastExpectedCommit, terminal,
-         batchFingerprint, batchAppends, batchConflicts
+         batchFingerprint, batchAppends, batchConflicts, batchReply
 
 vars == <<awaiting, awaitingCommit, completed, receiptCall, receiptCommit,
           accepted, rejected, lastAccepted, lastExpected, lastAcceptedCall, lastExpectedCall,
           lastAcceptedCommit, lastExpectedCommit, terminal,
-          batchFingerprint, batchAppends, batchConflicts>>
+          batchFingerprint, batchAppends, batchConflicts, batchReply>>
 
 Init == /\ awaiting = None
         /\ awaitingCommit = None
@@ -36,6 +36,7 @@ Init == /\ awaiting = None
         /\ batchFingerprint = [key \in Keys |-> None]
         /\ batchAppends = [key \in Keys |-> 0]
         /\ batchConflicts = 0
+        /\ batchReply = [key \in Keys |-> None]
 
 ConsumedPairs == {<<receiptCall[op], receiptCommit[op]>> : op \in completed}
 
@@ -50,7 +51,7 @@ Await(call, pendingCommit) ==
     /\ UNCHANGED <<completed, receiptCall, receiptCommit, accepted, rejected,
                     lastAccepted, lastExpected, lastAcceptedCall, lastExpectedCall, lastAcceptedCommit,
                     lastExpectedCommit, terminal,
-                    batchFingerprint, batchAppends, batchConflicts>>
+                    batchFingerprint, batchAppends, batchConflicts, batchReply>>
 
 \* Ticket consumption and the durable operation receipt are one transition.
 \* The retained pending commit is part of the identity: a later Awaiting
@@ -76,7 +77,7 @@ Deliver(call, pendingCommit, op) ==
     /\ lastAcceptedCommit' = pendingCommit
     /\ lastExpectedCommit' = awaitingCommit
     /\ UNCHANGED <<rejected, terminal, batchFingerprint,
-                    batchAppends, batchConflicts>>
+                    batchAppends, batchConflicts, batchReply>>
 
 \* A response-loss retry observes the exact durable receipt and stutters. It
 \* neither needs nor recreates the consumed Awaiting ticket.
@@ -104,22 +105,29 @@ Reject(call, pendingCommit, op) ==
     /\ UNCHANGED <<awaiting, awaitingCommit, completed, receiptCall,
                     receiptCommit, accepted, lastAccepted, lastExpected, lastAcceptedCall, lastExpectedCall,
                     lastAcceptedCommit, lastExpectedCommit, terminal,
-                    batchFingerprint, batchAppends, batchConflicts>>
+                    batchFingerprint, batchAppends, batchConflicts, batchReply>>
 
 \* Session Event ingress uses the same root-CAS principle as ToolReply. A new
 \* key durably binds one request fingerprint in the same transition that
 \* appends its batch. Exact transport retries stutter; changed retries only
 \* record a bounded rejected observation and can never append another batch.
-AppendBatch(key, fingerprint) ==
+\* A tool batch occupies its pending occurrence BEFORE Runtime delivery.
+\* None denotes an ordinary non-tool batch. Both variants use this SAME root
+\* append action; each CAS retry checks the latest retained reply inventory.
+AppendBatch(key, fingerprint, reply) ==
     /\ key \in Keys
     /\ fingerprint \in Fingerprints
+    /\ reply \in (Calls \X PendingCommits) \cup {None}
+    /\ reply = None \/ ~terminal
     /\ batchFingerprint[key] = None
+    /\ reply = None \/ (\A retained \in Keys: batchReply[retained] # reply)
     /\ batchFingerprint' = [batchFingerprint EXCEPT ![key] = fingerprint]
     /\ batchAppends' = [batchAppends EXCEPT ![key] = @ + 1]
+    /\ batchReply' = [batchReply EXCEPT ![key] = reply]
     /\ UNCHANGED <<awaiting, awaitingCommit, completed, receiptCall,
                     receiptCommit, accepted, rejected, lastAccepted,
-                    lastExpected, lastAcceptedCall, lastExpectedCall, lastAcceptedCommit, lastExpectedCommit,
-                    terminal, batchConflicts>>
+                    lastExpected, lastAcceptedCall, lastExpectedCall,
+                    lastAcceptedCommit, lastExpectedCommit, terminal, batchConflicts>>
 
 \* One retry decision is consumed by the original batch actions and the
 \* production observation relation. Closed is retained non-admission, never
@@ -156,7 +164,7 @@ CloseBatch(key, fingerprint) ==
     /\ UNCHANGED <<awaiting, awaitingCommit, completed, receiptCall,
                     receiptCommit, accepted, rejected, lastAccepted,
                     lastExpected, lastAcceptedCall, lastExpectedCall, lastAcceptedCommit, lastExpectedCommit,
-                    terminal, batchAppends, batchConflicts>>
+                    terminal, batchAppends, batchConflicts, batchReply>>
 
 ConflictBatch(key, fingerprint) ==
     /\ key \in Keys
@@ -167,7 +175,7 @@ ConflictBatch(key, fingerprint) ==
     /\ UNCHANGED <<awaiting, awaitingCommit, completed, receiptCall,
                     receiptCommit, accepted, rejected, lastAccepted,
                     lastExpected, lastAcceptedCall, lastExpectedCall, lastAcceptedCommit, lastExpectedCommit, terminal,
-                    batchFingerprint, batchAppends>>
+                    batchFingerprint, batchAppends, batchReply>>
 
 End == /\ ~terminal
        /\ terminal' = TRUE
@@ -176,7 +184,7 @@ End == /\ ~terminal
        /\ UNCHANGED <<completed, receiptCall, receiptCommit, accepted, rejected,
                        lastAccepted, lastExpected, lastAcceptedCall, lastExpectedCall, lastAcceptedCommit,
                        lastExpectedCommit, batchFingerprint,
-                       batchAppends, batchConflicts>>
+                       batchAppends, batchConflicts, batchReply>>
 
 Next ==
     (\E call \in Calls, pendingCommit \in PendingCommits, op \in Operations:
@@ -185,8 +193,10 @@ Next ==
     \/ (\E call \in Calls, pendingCommit \in PendingCommits:
         Await(call, pendingCommit))
     \/ (\E key \in Keys, fingerprint \in Fingerprints:
-        AppendBatch(key, fingerprint) \/ ReplayBatch(key, fingerprint)
+        AppendBatch(key, fingerprint, None) \/ ReplayBatch(key, fingerprint)
         \/ ConflictBatch(key, fingerprint) \/ CloseBatch(key, fingerprint))
+    \/ (\E key \in Keys, fingerprint \in Fingerprints, call \in Calls, pendingCommit \in PendingCommits:
+        AppendBatch(key, fingerprint, <<call, pendingCommit>>))
     \/ End
 
 TypeOK ==
@@ -207,6 +217,7 @@ TypeOK ==
     /\ batchFingerprint \in [Keys -> Fingerprints \cup {None}]
     /\ batchAppends \in [Keys -> 0..1]
     /\ batchConflicts \in 0..MaxConflicts
+    /\ batchReply \in [Keys -> (Calls \X PendingCommits) \cup {None}]
 
 \* Observe the delivered call and PRE-transition awaiting call independently.
 \* Equating operation ids assigned from the same input cannot detect a removed
@@ -216,6 +227,10 @@ OnlyMatchingResultIsAccepted ==
         /\ lastAccepted = lastExpected
         /\ lastAcceptedCall = lastExpectedCall
         /\ lastAcceptedCommit = lastExpectedCommit
+
+EveryPendingCallHasAtMostOneAdmittedReply ==
+    \A left, right \in Keys:
+        (batchReply[left] # None /\ batchReply[left] = batchReply[right]) => left = right
 
 EveryOperationIsConsumedAtMostOnce ==
     \A op \in Operations: accepted[op] <= 1
@@ -242,7 +257,7 @@ TerminalRejectsLateResults == terminal => /\ awaiting = None /\ awaitingCommit =
 \* retries. This action frame observes effects beyond ticket absence alone.
 TerminalConsumptionNeverChanges ==
     [][terminal => /\ terminal'
-                   /\ UNCHANGED <<completed, receiptCall, receiptCommit, accepted>>]_vars
+                   /\ UNCHANGED <<completed, receiptCall, receiptCommit, accepted, batchReply>>]_vars
 
 ExactResultReceiptReplayRemainsEnabled ==
     \A op \in completed: ENABLED Replay(receiptCall[op], receiptCommit[op], op)

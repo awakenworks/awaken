@@ -545,6 +545,12 @@ impl SessionApplication {
                     .bind_idempotency(key.to_owned(), request_fingerprint.to_owned())
                     .map_err(|error| RunError::bad_request(error.to_string()))?;
             }
+            // Protocol validation can race another key before either root CAS.
+            // Recheck on EVERY retry; the durable batch owns occupancy even
+            // after Runtime delivery, without a second registry or local lock.
+            batch
+                .validate_tool_reply_occupancy(&session.event_batches)
+                .map_err(|error| RunError::bad_request(error.to_string()))?;
             session.event_batches.push(batch.clone());
             match self
                 .commit_session_snapshot(&owner, session, "append-event-batch", Vec::new())

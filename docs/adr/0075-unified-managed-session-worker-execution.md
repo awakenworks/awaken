@@ -960,6 +960,26 @@ The durable codec rejects closed receipts containing executable events,
 activity or trace state; omitted flags on historical accepted batches mean
 accepted, not closed.
 
+Tool replies have an additional root-owned admission invariant: one pending
+occurrence can retain only one result, even when two clients use different HTTP
+keys. Managed still validates the public call family and resolves its exact
+ResumeTicket; Runtime still owns result consumption. `SessionEventBatch` checks
+reply occupancy against the retained root and earlier entries in the new batch.
+`SessionApplication` invokes that check inside every root-CAS iteration, after
+exact-key replay and before append. A CAS loser reloads and rejects the occupied
+call instead of compiling another successful receipt. No table, local lock or
+recovery registry is added.
+
+The occurrence uses target, Run, correlation, Runtime call and the known pending
+commit. A changed public spelling, payload, Thread version or processed marker
+cannot free it. A legacy missing pending commit cannot prove a new occurrence
+with otherwise identical neutral coordinates, so admission fails closed. Exact
+key/body retry still returns its original receipt. This adds no serialized field
+or migration and does not rewrite historical duplicate receipts. Bounded model
+checks and barrier-controlled two-replica SQLite/PostgreSQL races cover admission before
+delivery; they do not establish arbitrary SQL/async refinement. Their cause/effect
+tables remain beside the domain, application and model-mutation tests.
+
 Deletion extends the existing tombstone, not a second receipt registry. Both
 stores derive the minimal key/fingerprint/batch/outcome inventory from the root
 locked by the successful delete CAS. Message content, tool inputs, and trace
