@@ -235,7 +235,10 @@ enum MemoryOperation {
     PreserveCopyConflict {
         candidate: awaken_resource_contract::MemoryCopyConflict,
     },
-    Snapshot,
+    /// `{}` and not a bare unit: a unit variant of an internally tagged enum
+    /// escapes the container's `deny_unknown_fields`, so a mis-tagged write
+    /// would decode as a read and silently perform nothing.
+    Snapshot {},
     Create {
         path: String,
         content: String,
@@ -255,7 +258,7 @@ enum MemoryOperation {
 
 impl MemoryOperation {
     fn writes(&self) -> bool {
-        !matches!(self, Self::Snapshot)
+        !matches!(self, Self::Snapshot {})
     }
 }
 
@@ -271,7 +274,7 @@ struct MemoryOperationRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum MemoryOperationResponse {
-    CopyConflictPreserved,
+    CopyConflictPreserved {},
     Snapshot { heads: Vec<WireMemory> },
     Memory { memory: WireMemory },
     Deleted { deleted: bool },
@@ -285,8 +288,8 @@ enum MemoryWireError {
     Conflict { current: WireMemory },
     PathConflict { path: String },
     InvalidPath { path: String },
-    TooLarge,
-    AtCapacity,
+    TooLarge {},
+    AtCapacity {},
     Storage { message: String },
 }
 
@@ -348,8 +351,8 @@ impl From<MemErr> for MemoryWireError {
             },
             MemErr::PathConflict(path) => Self::PathConflict { path },
             MemErr::InvalidPath(path) => Self::InvalidPath { path },
-            MemErr::TooLarge => Self::TooLarge,
-            MemErr::AtCapacity => Self::AtCapacity,
+            MemErr::TooLarge => Self::TooLarge {},
+            MemErr::AtCapacity => Self::AtCapacity {},
             MemErr::Storage(message) => Self::Storage { message },
         }
     }
@@ -367,8 +370,8 @@ impl From<MemoryWireError> for MemErr {
             },
             MemoryWireError::PathConflict { path } => Self::PathConflict(path),
             MemoryWireError::InvalidPath { path } => Self::InvalidPath(path),
-            MemoryWireError::TooLarge => Self::TooLarge,
-            MemoryWireError::AtCapacity => Self::AtCapacity,
+            MemoryWireError::TooLarge {} => Self::TooLarge,
+            MemoryWireError::AtCapacity {} => Self::AtCapacity,
             MemoryWireError::Storage { message } => Self::Storage(message),
         }
     }
@@ -487,7 +490,7 @@ fn terminal_operation_allowed(
                 candidate.content.is_some() && !heads.iter().any(|head| head.path == candidate.path)
             }
         },
-        MemoryOperation::Snapshot => true,
+        MemoryOperation::Snapshot {} => true,
         MemoryOperation::Create { path, .. } => !heads.iter().any(|head| head.path == *path),
         MemoryOperation::UpdateHead {
             base,
@@ -698,8 +701,8 @@ async fn memory_operation(
             .repository
             .preserve_copy_conflict(&memory_store_id, &candidate)
             .await
-            .map(|()| MemoryOperationResponse::CopyConflictPreserved),
-        MemoryOperation::Snapshot => service
+            .map(|()| MemoryOperationResponse::CopyConflictPreserved {}),
+        MemoryOperation::Snapshot {} => service
             .repository
             .snapshot_heads(&memory_store_id)
             .await
@@ -845,7 +848,7 @@ async fn send_operation(
 
 impl HttpMemorySnapshotSource {
     async fn snapshot(&self, reference: &str) -> Result<Vec<Memory>, MemErr> {
-        match send_operation(&self.upstream, reference, MemoryOperation::Snapshot).await? {
+        match send_operation(&self.upstream, reference, MemoryOperation::Snapshot {}).await? {
             MemoryOperationResponse::Snapshot { heads } => {
                 heads.into_iter().map(TryInto::try_into).collect()
             }
@@ -896,7 +899,7 @@ impl MemoryRepository for HttpMemoryRepository {
             )
             .await?
         {
-            MemoryOperationResponse::CopyConflictPreserved => Ok(()),
+            MemoryOperationResponse::CopyConflictPreserved {} => Ok(()),
             _ => Err(MemErr::Storage(
                 "Memory copy retention response kind mismatch".into(),
             )),
@@ -1067,6 +1070,76 @@ impl MemoryRepository for HttpMemoryRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn payload_free_memory_operations_refuse_the_keys_they_do_not_model() {
+        // Every enum here carries `deny_unknown_fields`, and until this test the
+        // attribute governed only the struct variants: serde reads an internally
+        // tagged *unit* variant's tag and discards the rest of the object. The
+        // three payload-free discriminants were therefore the only shapes on this
+        // transport that accepted arbitrary keys, which is the opposite of what
+        // the attribute beside them says.
+        //
+        // Causes over one tagged object: C1 tag alone; C2 tag plus a key a
+        // sibling variant models; C3 tag plus a key no variant models.
+        // Effects: E1 decode, E2 refuse.
+        // | Rule | tagged object                               | Effect |
+        // | M1   | snapshot, C1                                | E1     |
+        // | M2   | snapshot, C2 (`content`: a Create field)    | E2     |
+        // | M3   | snapshot, C3                                | E2     |
+        // | M4   | copy_conflict_preserved, C1                 | E1     |
+        // | M5   | copy_conflict_preserved, C2 (`heads`)       | E2     |
+        // | M6   | too_large / at_capacity, C1                 | E1     |
+        // | M7   | too_large / at_capacity, C2 (`message`)     | E2     |
+        let operation =
+            |value: serde_json::Value| serde_json::from_value::<MemoryOperation>(value).is_ok();
+        assert!(operation(serde_json::json!({"kind": "snapshot"})), "M1");
+        assert!(
+            !operation(serde_json::json!({"kind": "snapshot", "content": "write me"})),
+            "M2: a write that reaches the read discriminant must fail, not silently no-op"
+        );
+        assert!(
+            !operation(serde_json::json!({"kind": "snapshot", "future": true})),
+            "M3"
+        );
+
+        let response = |value: serde_json::Value| {
+            serde_json::from_value::<MemoryOperationResponse>(value).is_ok()
+        };
+        assert!(
+            response(serde_json::json!({"kind": "copy_conflict_preserved"})),
+            "M4"
+        );
+        assert!(
+            !response(serde_json::json!({"kind": "copy_conflict_preserved", "heads": []})),
+            "M5"
+        );
+
+        let wire_error =
+            |value: serde_json::Value| serde_json::from_value::<MemoryWireError>(value).is_ok();
+        for kind in ["too_large", "at_capacity"] {
+            assert!(wire_error(serde_json::json!({"kind": kind})), "M6 {kind}");
+            assert!(
+                !wire_error(serde_json::json!({"kind": kind, "message": "detail"})),
+                "M7 {kind}"
+            );
+        }
+
+        // The closed form must not move the wire: each still encodes as the tag
+        // alone, so an already-deployed peer keeps round-tripping.
+        assert_eq!(
+            serde_json::to_value(MemoryOperation::Snapshot {}).unwrap(),
+            serde_json::json!({"kind": "snapshot"})
+        );
+        assert_eq!(
+            serde_json::to_value(MemoryOperationResponse::CopyConflictPreserved {}).unwrap(),
+            serde_json::json!({"kind": "copy_conflict_preserved"})
+        );
+        assert_eq!(
+            serde_json::to_value(MemoryWireError::AtCapacity {}).unwrap(),
+            serde_json::json!({"kind": "at_capacity"})
+        );
+    }
 
     #[test]
     fn memory_update_wire_preserves_optional_location_without_weakening_strictness() {
@@ -1245,7 +1318,7 @@ mod tests {
             }
         }
         assert!(
-            terminal_operation_allowed(&target, &MemoryOperation::Snapshot),
+            terminal_operation_allowed(&target, &MemoryOperation::Snapshot {}),
             "O1"
         );
         assert!(
