@@ -7,8 +7,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 source "$REPO_ROOT/e2e/k3d/harness.sh"
-CLUSTER="awaken-adr71"
-IMAGE="awaken-roles:latest"
+CLUSTER="${AWAKEN_K3D_CLUSTER:-awaken-adr71}"
+k3d_validate_name "$CLUSTER" || exit 2
+IMAGE="awaken-roles:$CLUSTER"
 SANDBOX_BUILD_IMAGE="${ADR71_SANDBOX_BUILD_IMAGE:-awaken-sandbox:local}"
 NS="awaken-adr71"
 API_PORT="${ADR71_API_PORT:-38801}"
@@ -17,7 +18,11 @@ DRIVER="$REPO_ROOT/e2e/k3d/distributed_control_driver.ts"
 API_PF_LOG="${TMPDIR:-/tmp}/adr71_api_pf.log"
 API_PF=""
 STOPPED_NODE=""
+STOPPED_CONTAINER=""
+PARTITIONED_NODE=""
+PARTITIONED_NODE_RECEIPT=""
 WORKER_TLS_DIR=""
+ROLE_OVERLAY=""
 CONTINUATION_VOLUME=""
 CLUSTER_CREATED=0
 NATIVE_CRASH_OLD="native-crash-old"
@@ -28,6 +33,38 @@ export CARGO_CACHE_AUTOCLEAN=0
 log() { echo -e "\n\033[1;36m== $* ==\033[0m"; }
 ok() { echo -e "\033[1;32m$*\033[0m"; }
 err() { echo -e "\033[1;31m$*\033[0m"; }
+
+wait_roles() {
+  local resource
+  for resource in deploy/control deploy/coordinator deploy/provider deploy/awaken-api statefulset/worker; do
+    # Callers use an OR-list, which disables Bash errexit inside this function.
+    # Every role must succeed; a later Ready Worker cannot erase an API timeout.
+    kubectl -n "$NS" rollout status "$resource" --timeout=240s || return "$?"
+  done
+}
+
+if [[ "${1:-}" = "--self-test" ]]; then
+  # Cause/effect decision table: R0 all five roles Ready => success and five
+  # observations; R1..R5 failure at each respective role => that exact status,
+  # no later observation. Execute in the caller's real OR-list context, so this
+  # regression catches the original false green even with `set -e` enabled.
+  for failed_role in 0 1 2 3 4 5; do
+    calls=0
+    kubectl() {
+      calls=$((calls + 1))
+      [[ "$calls" != "$failed_role" ]] || return 37
+    }
+    result=0
+    wait_roles || result=$?
+    if [[ "$failed_role" = 0 ]]; then
+      [[ "$result" = 0 && "$calls" = 5 ]]
+    else
+      [[ "$result" = 37 && "$calls" = "$failed_role" ]]
+    fi
+  done
+  ok "role rollout failures propagate at every position"
+  exit 0
+fi
 
 coordinator_worker_log_count() {
   local pattern="$1"
@@ -43,11 +80,14 @@ coordinator_worker_log_count() {
 cleanup() {
   local status="$1"
   [ -z "$WORKER_TLS_DIR" ] || rm -rf -- "$WORKER_TLS_DIR"
+  [ -z "$ROLE_OVERLAY" ] || rm -rf -- "$ROLE_OVERLAY"
   if [ "$status" -ne 0 ] && [ "${ADR71_KEEP_FAILED_CLUSTER:-0}" = "1" ]; then
     err "retaining failed k3d cluster $CLUSTER for diagnostics"
     return
   fi
-  [ -z "$STOPPED_NODE" ] || docker start "$STOPPED_NODE" >/dev/null 2>&1 || true
+  [ -z "$PARTITIONED_NODE" ] || k3d_set_node_network_partition \
+    "$CLUSTER" "$PARTITIONED_NODE" "$PARTITIONED_NODE_RECEIPT" open >/dev/null 2>&1 || true
+  [ -z "$STOPPED_CONTAINER" ] || docker start "$STOPPED_CONTAINER" >/dev/null 2>&1 || true
   [ -z "$API_PF" ] || kill "$API_PF" 2>/dev/null || true
   log "teardown: deleting k3d cluster $CLUSTER"
   k3d_delete_cluster_and_remove \
@@ -111,14 +151,6 @@ diagnostics() {
   return 0
 }
 trap diagnostics ERR
-
-wait_roles() {
-  kubectl -n "$NS" rollout status deploy/control --timeout=240s
-  kubectl -n "$NS" rollout status deploy/coordinator --timeout=240s
-  kubectl -n "$NS" rollout status deploy/provider --timeout=240s
-  kubectl -n "$NS" rollout status deploy/awaken-api --timeout=240s
-  kubectl -n "$NS" rollout status statefulset/worker --timeout=240s
-}
 
 initialize_role_installation() {
   local role="$1"
@@ -380,7 +412,18 @@ log "3/11 deploy replicated authorities, real Workers, and PostgreSQL standby"
 # creates an isolated Session Pod, and resolves exact Credential/File/Memory/
 # Skill projections there; Worker egress cannot bypass TLS on port 3001;
 # K5 one Ingress -> public paths route by owner and every private path stays absent.
-k3d_render_sandbox_image "$DEPLOY_DIR/distributed-control" "$SANDBOX_IMAGE" \
+# Reuse the canonical topology through Kustomize's image transform. Concurrent
+# clusters need distinct role tags; the default tag must not import another
+# worktree's build between artifact verification and cluster startup.
+ROLE_OVERLAY=$(mktemp -d "$DEPLOY_DIR/.adr71-overlay-XXXXXX")
+cat >"$ROLE_OVERLAY/kustomization.yaml" <<YAML
+resources: [../distributed-control]
+images:
+  - name: awaken-roles
+    newName: awaken-roles
+    newTag: $CLUSTER
+YAML
+k3d_render_sandbox_image "$ROLE_OVERLAY" "$SANDBOX_IMAGE" \
   | kubectl -n "$NS" apply -f - >/dev/null
 # Live RBAC decision table: C1 the Worker identity may create the retained claim;
 # C2 it may get the exact UID during adoption/rebuild; C3 it may delete only at
@@ -547,9 +590,13 @@ node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AF
 wait_roles || { diagnostics; exit 1; }
 ok "Pod loss and concurrent traffic preserved exactly-once terminal responses"
 
-log "8/11 stop one K3D agent node and verify public continuity"
+log "8/11 partition, then stop one K3D agent node and verify public continuity"
 # Cause/effect decision table:
-# N1 hard node stop + Ready still True -> no business write during the detection window;
+# N0 exact non-database node + observed underlay -> atomically drop that node
+# interface's incoming/outgoing packets, retaining its container/IP/MAC/ifindex
+# receipt before mutation; malformed, foreign and already-blocked targets fail;
+# N1 network partition or hard node stop + Ready still True -> no business write
+# during the detection window;
 # N2 Ready False/Unknown -> failed role endpoints are evicted; N2b a StatefulSet
 # Worker or Session-owned sandbox object can remain apparently Ready/Terminating
 # while its kubelet is unreachable, so after the physical node fence proves those
@@ -585,8 +632,51 @@ CONTINUITY_PV=$(kubectl -n "$NS" get pvc "$CLAIM_NAME" -o jsonpath='{.spec.volum
 CONTINUITY_MARKER="ADR71-MUTABLE-$POD_UID_BEFORE"
 kubectl -n "$NS" exec "$CONTINUITY_POD" -c agent -- /bin/sh -ec \
   'printf %s "$1" > /workspace/adr71-continuity; sync' awaken-continuity "$CONTINUITY_MARKER"
+
+# Network-partition rule N7: unlike the hard stop below, this fault leaves every
+# process and network interface running but blocks every underlay packet.
+# While its executor is unobservable, the driver performs reads only. Removing
+# the exact owned filter must recover the same Pod and PVC before the first new
+# business Event, which is then submitted once through the ordinary oracle.
+PARTITIONED_NODE="$CHAOS_NODE"
+PARTITIONED_NODE_RECEIPT=$(k3d_node_network_identity "$CLUSTER" "$PARTITIONED_NODE")
+ok "prepared node network identity receipt=$PARTITIONED_NODE_RECEIPT"
+PARTITIONED_INTERFACE=$(cut -d '|' -f 2 <<<"$PARTITIONED_NODE_RECEIPT")
+PARTITIONED_ROUTES=$(docker exec "$PARTITIONED_NODE" ip -4 route show dev "$PARTITIONED_INTERFACE" | sort)
+k3d_set_node_network_partition "$CLUSTER" "$PARTITIONED_NODE" "$PARTITIONED_NODE_RECEIPT" blocked
+for _ in $(seq 1 120); do
+  NODE_READY=$(kubectl get node "$PARTITIONED_NODE" \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+  [ "$NODE_READY" != "True" ] && break
+  sleep 1
+done
+[ "${NODE_READY:-True}" != "True" ] \
+  || { err "partitioned node remained Ready=True beyond its detection deadline"; exit 1; }
+start_public_endpoint
+node "$DRIVER" read-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-PROVIDER-LOSS
+k3d_set_node_network_partition "$CLUSTER" "$PARTITIONED_NODE" "$PARTITIONED_NODE_RECEIPT" open
+# N8 removing the fault must preserve the original underlay routes as well as
+# the receipt's container, interface, ifindex, IP and MAC. An interface reset
+# can preserve an address while silently losing its gateway.
+[ "$(docker exec "$PARTITIONED_NODE" ip -4 route show dev "$PARTITIONED_INTERFACE" | sort)" = "$PARTITIONED_ROUTES" ] \
+  || { err "network fault changed the node's underlay routes"; exit 1; }
+PARTITIONED_NODE=""
+PARTITIONED_NODE_RECEIPT=""
+kubectl wait --for=condition=Ready "node/$CHAOS_NODE" --timeout=180s
+wait_roles || { diagnostics; exit 1; }
+[ "$(kubectl -n "$NS" get pod "$CONTINUITY_POD" -o jsonpath='{.metadata.uid}')" = "$POD_UID_BEFORE" ] \
+  || { err "transient network partition replaced the retained Session Pod"; exit 1; }
+[ "$(kubectl -n "$NS" get pvc "$CLAIM_NAME" -o jsonpath='{.metadata.uid}')" = "$CLAIM_UID_BEFORE" ] \
+  || { err "transient network partition changed continuation volume identity"; exit 1; }
+node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-NETWORK-PARTITION
+ok "node network partition retained committed truth and recovered the same Session executor"
+
 STOPPED_NODE="$CHAOS_NODE"
-docker stop "$STOPPED_NODE" >/dev/null
+STOPPED_CONTAINER=$(docker inspect --format '{{.Id}}' -- "$STOPPED_NODE")
+# N9 abrupt namespace loss must have exact SIGKILL/137 evidence. Docker stop
+# permits a graceful K3S shutdown and cannot qualify this power-loss simulation.
+k3d_hard_stop_node "$CLUSTER" "$STOPPED_NODE" "$STOPPED_CONTAINER"
+ok "node SIGKILL receipt container=$STOPPED_CONTAINER running=false exit=137"
 # A hard node stop has a bounded detection window: Pods on that node may remain
 # Ready and therefore routable until the node controller changes Ready away
 # from True. An unreachable node reports Unknown, while a reachable unhealthy
@@ -639,7 +729,7 @@ done
   || { err "no Ready CoreDNS replica survived the stopped node"; exit 1; }
 wait_roles || { diagnostics; exit 1; }
 node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-NODE-LOSS
-# N7: public success alone cannot establish filesystem continuity. Verify all
+# N10: public success alone cannot establish filesystem continuity. Verify all
 # three independent effects before the stopped node (and its old bytes) returns.
 CONTINUITY_POD_AFTER=$(k3d_sandbox_pod_for_session "$NS" "$SESSION_ID")
 POD_UID_AFTER=$(kubectl -n "$NS" get pod "$CONTINUITY_POD_AFTER" -o jsonpath='{.metadata.uid}')
@@ -654,7 +744,8 @@ POD_UID_AFTER=$(kubectl -n "$NS" get pod "$CONTINUITY_POD_AFTER" -o jsonpath='{.
 kubectl -n "$NS" exec "$CONTINUITY_POD_AFTER" -c agent -- /bin/sh -ec \
   'test "$(wc -c < /workspace/adr71-continuity)" -eq "${#1}" && test "$(cat /workspace/adr71-continuity)" = "$1"' awaken-continuity "$CONTINUITY_MARKER"
 ok "node loss changed Pod UID/node, retained PVC UID and exact mutable workspace bytes"
-docker start "$STOPPED_NODE" >/dev/null
+docker start "$STOPPED_CONTAINER" >/dev/null
+STOPPED_CONTAINER=""
 RESTORED_NODE="$STOPPED_NODE"
 STOPPED_NODE=""
 kubectl wait --for=condition=Ready "node/$RESTORED_NODE" --timeout=180s
