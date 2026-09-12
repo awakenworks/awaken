@@ -353,6 +353,27 @@ impl ModelBinding {
         model_ref: impl Into<String>,
         backend_ref: impl Into<String>,
     ) -> Self {
+        // Under Kani the string admission (byte loops over the coordinates,
+        // heap-allocated `String`s) makes every proof that merely *holds* a
+        // binding intractable, and none of those proofs claims admission:
+        // the admission decision is proven separately as the pure kernel
+        // `admission`, and the executable table/property tests run the real
+        // string path. So proofs build the literal directly.
+        #[cfg(kani)]
+        {
+            let (provider_identity_ref, model_ref, backend_ref) = model_binding_identity(
+                provider_identity_ref.into(),
+                model_ref.into(),
+                backend_ref.into(),
+            );
+            Self {
+                provider_identity_ref,
+                model_ref,
+                backend_ref,
+                coherence: BindingCoherence,
+            }
+        }
+        #[cfg(not(kani))]
         match Self::parse(provider_identity_ref, model_ref, backend_ref) {
             Ok(binding) => binding,
             Err(refusal) => {
