@@ -361,8 +361,9 @@ ThreadCommit carries it together with the state transition and a small
 transcript compaction; it is neither a notification queue nor another task store.
 
 BackgroundTask owns a bounded presentation policy with per-event rules and exact
-tool overrides. Rules choose enabled/disabled, JSON or tagged rendering, selected
-public result fields, a bounded heading template, and a content budget. They
+tool overrides. Rules choose enabled/disabled, JSON, tagged or text rendering,
+selected public result fields, exact public-field predicates, a bounded heading
+template, and a content budget. They
 cannot alter source identity, destination, execution permission, recovery, or
 task status. Omitted policy delivers terminal results directly. Filtering model
 content does not disable the existing internal recovery wake or lifecycle fold.
@@ -370,6 +371,53 @@ Large bodies use an explicit truncation marker; the canonical result remains
 available through the existing get tool. This amendment supersedes the earlier
 result-free attention constraint only for this post-reconciliation projection.
 Remote task ids, invocation arguments and lease identities remain excluded.
+
+Resolution is exact tool/event rule, then event rule, then default rule. Each
+selected rule is a complete replacement with schema defaults, not a partial
+merge. Supported terminal events are `completed`, `failed`, `cancelled` and
+`indeterminate`. `when` is an all-match map of JSON pointers to expected values;
+a missing field does not match even an expected null. `fields` maps output labels
+to pointers in the same public task view; missing selected fields become null.
+An empty fields map selects that complete public view. Templates support only
+`{task_id}`, `{tool_id}` and `{event}`; no scripts or credential access are allowed.
+
+`completed` with `is_error: true` is a completed tool error result, not a task
+execution failure. Use a completed-event rule with a matching `when` predicate
+to select it; `failed` selects failures of task execution itself.
+
+For example, under `plugin_config.background_task`, deliver task failures generally
+and successful call connection results with a custom presentation:
+
+```json
+{
+  "tools": ["mcp__phone__StartCall"],
+  "notifications": {
+    "default": { "enabled": false },
+    "events": { "failed": { "enabled": true } },
+    "tools": {
+      "mcp__phone__StartCall": {
+        "completed": {
+          "enabled": true,
+          "format": "tagged",
+          "tag": "system-reminder",
+          "heading": "Call operation {task_id}: {event}",
+          "when": { "/lifecycle/is_error": false },
+          "fields": { "content": "/lifecycle/content" },
+          "max_body_chars": 4096
+        }
+      }
+    }
+  }
+}
+```
+
+The tag remains presentation only: even `system-reminder` is a User-role,
+source-labelled result, never System authority. The content budget bounds the
+serialized selected-body preview in Unicode characters, not the complete
+rendered envelope or its token count. The default is 16,384 characters, with an
+admitted range of 256–65,536. Oversized content has `truncated: true`; wrappers,
+escaping and the heading add overhead. Disabling a rule filters Agent content,
+not the Host's internal recovery/maintenance Run.
 
 Host baseline policy admits the extension-owned Thread-local management tools.
 The configured target remains independently authorized by PreparedToolExecutor
