@@ -41,4 +41,3 @@ impl awaken_ext_permission::ToolCallPattern
 pub fn awaken_ext_permission::ToolCallPattern::matches(&self, &str, &serde_json::value::Value) -> core::option::Option<awaken_tool_pattern::types::Specificity>
 pub fn awaken_ext_permission::ToolCallPattern::parse(&str) -> core::result::Result<Self, alloc::string::String>
 pub fn awaken_ext_permission::parse_ruleset(&serde_json::value::Value) -> core::result::Result<awaken_ext_permission::PermissionRuleset, alloc::string::String>
-pub fn awaken_ext_permission::permission_config_schema() -> serde_json::value::Value

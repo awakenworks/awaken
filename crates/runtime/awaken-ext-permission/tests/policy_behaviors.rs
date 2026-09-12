@@ -7,7 +7,7 @@
 
 use awaken_ext_permission::{
     Mode, PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
-    ToolPermissionBehavior, parse_ruleset, permission_config_schema,
+    ToolPermissionBehavior, parse_ruleset,
 };
 use awaken_runtime_contract::permission::{ToolCall, ToolPermissionPolicy, ToolPermissionVerdict};
 use serde_json::json;
@@ -528,50 +528,6 @@ fn an_unknown_default_behavior_tag_is_rejected_not_silently_defaulted() {
     assert!(
         err.contains("invalid permission config"),
         "unknown rule behavior is rejected: {err}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Config schema drift guard: the hand-authored `permission_config_schema` enum
-// arrays must stay in lock-step with the serde renames of `ToolPermissionBehavior`
-// and `Mode`. If a variant is added/renamed and the schema is not updated, a
-// console form would offer a value the parser rejects (or hide a valid one).
-// ---------------------------------------------------------------------------
-
-#[test]
-fn schema_behavior_enum_matches_the_serialized_behavior_variants() {
-    let schema = permission_config_schema();
-    let wire = |b: ToolPermissionBehavior| serde_json::to_value(b).unwrap();
-    let expected = vec![
-        wire(ToolPermissionBehavior::Allow),
-        wire(ToolPermissionBehavior::RequireConfirmation),
-        wire(ToolPermissionBehavior::Deny),
-    ];
-    assert_eq!(
-        schema["properties"]["default_behavior"]["enum"],
-        json!(expected),
-        "default_behavior enum drifted from the ToolPermissionBehavior variants"
-    );
-    // The rule-behavior enum uses the same closed set.
-    assert_eq!(
-        schema["properties"]["rules"]["items"]["properties"]["behavior"]["enum"],
-        json!(expected)
-    );
-}
-
-#[test]
-fn schema_mode_enum_matches_the_serialized_mode_variants() {
-    let schema = permission_config_schema();
-    let wire = |m: Mode| serde_json::to_value(m).unwrap();
-    let expected = json!([
-        wire(Mode::Default),
-        wire(Mode::AcceptEdits),
-        wire(Mode::Plan),
-        wire(Mode::BypassPermissions),
-    ]);
-    assert_eq!(
-        schema["properties"]["mode"]["enum"], expected,
-        "mode enum drifted from the Mode variants (camelCase serde renames)"
     );
 }
 
