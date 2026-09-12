@@ -1160,7 +1160,9 @@ async fn a_closed_sender_ends_the_subscription() {
 
     assert!(
         matches!(
-            rx.recv().await,
+            tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
+                .await
+                .expect("timed out waiting for rx.recv()"),
             Err(tokio::sync::broadcast::error::RecvError::Closed)
         ),
         "the receiver observes Closed once the session's sender is gone"

@@ -177,8 +177,14 @@ async fn postgres_physical_thread_constraint_survives_bypassed_admission() {
             .await
             .unwrap();
     }
-    let mut a = pool.acquire().await.unwrap();
-    let mut b = pool.acquire().await.unwrap();
+    let mut a = tokio::time::timeout(std::time::Duration::from_secs(30), pool.acquire())
+        .await
+        .expect("timed out waiting for pool.acquire()")
+        .unwrap();
+    let mut b = tokio::time::timeout(std::time::Duration::from_secs(30), pool.acquire())
+        .await
+        .expect("timed out waiting for pool.acquire()")
+        .unwrap();
     let write = "UPDATE runtime_dispatch SET active_attempt_owner = run_id, active_attempt_epoch = 1 WHERE run_id = $1";
     let (ra, rb) = tokio::join!(
         sqlx::query(write).bind("pa").execute(&mut *a),

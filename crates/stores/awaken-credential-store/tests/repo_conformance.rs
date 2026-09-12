@@ -3205,7 +3205,10 @@ mod postgres {
         .execute(&pool)
         .await
         .unwrap();
-        let mut blocker = pool.acquire().await.unwrap();
+        let mut blocker = tokio::time::timeout(std::time::Duration::from_secs(30), pool.acquire())
+            .await
+            .expect("timed out waiting for pool.acquire()")
+            .unwrap();
         sqlx::query("SELECT pg_advisory_lock($1)")
             .bind(ADVISORY_KEY)
             .execute(&mut *blocker)

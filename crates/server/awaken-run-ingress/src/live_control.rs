@@ -307,7 +307,9 @@ mod tests {
             let service = service.clone();
             tokio::spawn(async move { service.cancel("wall-clock-cancel").await })
         };
-        entered.notified().await;
+        tokio::time::timeout(std::time::Duration::from_secs(30), entered.notified())
+            .await
+            .expect("timed out waiting for entered.notified()");
         assert!(
             store
                 .claim(

@@ -96,7 +96,10 @@ async fn everything_server_echo_round_trips() {
         .expect("long op runs");
     assert!(!result.is_error.unwrap_or(false), "{:?}", result.content);
     let mut progress_count = 0usize;
-    while let Some(update) = rx.recv().await {
+    while let Some(update) = tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
+        .await
+        .expect("timed out waiting for rx.recv()")
+    {
         assert!(update.progress >= 0.0);
         progress_count += 1;
     }

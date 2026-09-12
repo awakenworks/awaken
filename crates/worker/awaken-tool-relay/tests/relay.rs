@@ -111,7 +111,9 @@ async fn a_reconnected_session_joins_the_live_operation_instead_of_replaying() {
     let mut first = HandSession::new([tool.clone()], ledger.clone());
     let first_request = request.clone();
     let first_task = tokio::spawn(async move { first.handle(first_request).await });
-    started.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(30), started.notified())
+        .await
+        .expect("timed out waiting for started.notified()");
 
     let mut second = HandSession::new([tool], ledger);
     let mut retry = request;
@@ -702,7 +704,9 @@ async fn an_in_flight_join_deadline_returns_indeterminate_without_replay() {
     let mut owner = HandSession::new([tool.clone()], ledger.clone());
     let owner_request = request.clone();
     let owner_task = tokio::spawn(async move { owner.handle(owner_request).await });
-    started.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(30), started.notified())
+        .await
+        .expect("timed out waiting for started.notified()");
 
     let mut waiter = HandSession::new([tool], ledger)
         .with_in_flight_wait_timeout(std::time::Duration::from_millis(10));

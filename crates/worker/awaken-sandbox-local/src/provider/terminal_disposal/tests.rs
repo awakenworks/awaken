@@ -92,7 +92,13 @@ async fn physical_disposal_rechecks_current_authority_after_every_retained_wait(
                     &authority,
                     async {
                         if boundary == "quiescence" {
-                            let _permit = gate.acquire().await.unwrap();
+                            let _permit = tokio::time::timeout(
+                                std::time::Duration::from_secs(30),
+                                gate.acquire(),
+                            )
+                            .await
+                            .expect("timed out waiting for gate.acquire()")
+                            .unwrap();
                         }
                     },
                 ),

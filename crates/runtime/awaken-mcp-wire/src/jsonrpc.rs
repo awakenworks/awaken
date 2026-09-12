@@ -420,7 +420,10 @@ mod tests {
                     "params": { "progress": 42 } })
         );
         server_w.write_all(line.as_bytes()).await.unwrap();
-        let notif = notif_rx.recv().await.expect("a notification");
+        let notif = tokio::time::timeout(std::time::Duration::from_secs(30), notif_rx.recv())
+            .await
+            .expect("timed out waiting for notif_rx.recv()")
+            .expect("a notification");
         assert_eq!(notif.method, "notifications/progress");
         assert_eq!(notif.params["progress"], 42);
     }
@@ -536,7 +539,10 @@ mod tests {
             json!({ "jsonrpc": "2.0", "method": "notifications/initialized", "params": {} })
         );
         server_w.write_all(notif.as_bytes()).await.unwrap();
-        let seen = notif_rx.recv().await.expect("notification while call runs");
+        let seen = tokio::time::timeout(std::time::Duration::from_secs(30), notif_rx.recv())
+            .await
+            .expect("timed out waiting for notif_rx.recv()")
+            .expect("notification while call runs");
         assert_eq!(seen.method, "notifications/initialized");
         // Release the handler; its reply arrives.
         release_tx.send(()).unwrap();
@@ -677,7 +683,10 @@ mod tests {
                     "id": null, "params": { "reason": "x" } })
         );
         server_w.write_all(line.as_bytes()).await.unwrap();
-        let notif = notif_rx.recv().await.expect("routed as notification");
+        let notif = tokio::time::timeout(std::time::Duration::from_secs(30), notif_rx.recv())
+            .await
+            .expect("timed out waiting for notif_rx.recv()")
+            .expect("routed as notification");
         assert_eq!(notif.method, "notifications/cancelled");
         assert_eq!(notif.params["reason"], "x");
     }

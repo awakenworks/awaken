@@ -726,7 +726,9 @@ mod tests {
             )),
             Request::builder().method("POST").body(body).unwrap(),
         ));
-        started.notified().await;
+        tokio::time::timeout(std::time::Duration::from_secs(30), started.notified())
+            .await
+            .expect("timed out waiting for started.notified()");
 
         let fence = relay.route_call_fence(&generation).unwrap();
         let close = tokio::spawn(async move { fence.close_and_wait().await });

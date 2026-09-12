@@ -105,7 +105,12 @@ mod tests {
             async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
                 if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
                     self.entered.notify_one();
-                    self.release.notified().await;
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(30),
+                        self.release.notified(),
+                    )
+                    .await
+                    .expect("timed out waiting for self.release.notified()");
                 }
                 Ok(ToolOutput::ok(call.call_id, "completed"))
             }
@@ -145,7 +150,9 @@ mod tests {
                     .await
                 })
             };
-            entered.notified().await;
+            tokio::time::timeout(std::time::Duration::from_secs(30), entered.notified())
+                .await
+                .expect("timed out waiting for entered.notified()");
             first.abort();
             let _ = first.await;
             let renamed = ToolCall {

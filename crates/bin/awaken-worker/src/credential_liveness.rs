@@ -618,7 +618,9 @@ mod tests {
             })
         };
 
-        entered.notified().await;
+        tokio::time::timeout(std::time::Duration::from_secs(30), entered.notified())
+            .await
+            .expect("timed out waiting for entered.notified()");
         let released_at_ms = crate::wall_clock_ms();
         release.notify_one();
         refresh.await.expect("refresh task").expect("refresh batch");

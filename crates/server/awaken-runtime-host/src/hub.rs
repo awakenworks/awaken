@@ -135,7 +135,11 @@ mod tests {
         let hub = ThreadEventHub::new();
         let mut observer = hub.subscribe("t1");
         hub.publish("t1", ThreadEvent::Committed(vec![msg("hi")]));
-        match observer.recv().await.unwrap() {
+        match tokio::time::timeout(std::time::Duration::from_secs(30), observer.recv())
+            .await
+            .expect("timed out waiting for observer.recv()")
+            .unwrap()
+        {
             ThreadEvent::Committed(m) => assert_eq!(m.len(), 1),
             other => panic!("unexpected {other:?}"),
         }

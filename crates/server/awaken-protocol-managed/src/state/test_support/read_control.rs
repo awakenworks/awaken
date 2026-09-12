@@ -138,7 +138,9 @@ async fn read_indices_are_port_scoped_and_captured_before_pause() {
         let reads = reads.clone();
         tokio::spawn(async move { reads.on_read("recovery").await })
     };
-    entered.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(30), entered.notified())
+        .await
+        .expect("timed out waiting for entered.notified()");
     assert_eq!(reads.on_read("recovery").await.unwrap(), 1);
     release.notify_one();
     assert_eq!(pending.await.unwrap().unwrap(), 0);

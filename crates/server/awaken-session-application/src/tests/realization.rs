@@ -4611,7 +4611,12 @@ async fn terminal_fence_quiesces_before_freezing_concurrent_child() {
                 .await
         })
     };
-    runtime.quiesce_entered.notified().await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        runtime.quiesce_entered.notified(),
+    )
+    .await
+    .expect("timed out waiting for runtime.quiesce_entered.notified()");
     let fenced = repo
         .get("cleanup-concurrent-child")
         .await

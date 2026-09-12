@@ -1377,7 +1377,9 @@ async fn managed_user_interrupt_reports_interrupted() {
 
     // Once the loop is blocked mid-run, send `user.interrupt` on a concurrent
     // request, then release the gate.
-    reached.notified().await;
+    tokio::time::timeout(std::time::Duration::from_secs(30), reached.notified())
+        .await
+        .expect("timed out waiting for reached.notified()");
     let interrupt_receipt = json_call(
         &app,
         "POST",

@@ -5028,7 +5028,9 @@ async fn control_disposal_and_publisher_cancellation_reap_initial_channel_setup(
                     .await
             }
         });
-        entered.notified().await;
+        tokio::time::timeout(std::time::Duration::from_secs(30), entered.notified())
+            .await
+            .expect("timed out waiting for entered.notified()");
         if cancel_publisher {
             publishing.abort();
         }

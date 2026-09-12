@@ -497,21 +497,25 @@ mod tests {
         let scheduler = SessionRealizationControlScheduler::new();
         let capacity = MAX_CONCURRENT_SESSION_REALIZATION_REQUESTS;
 
-        scheduler
-            .acquire()
+        tokio::time::timeout(std::time::Duration::from_secs(30), scheduler.acquire())
             .await
+            .expect("timed out waiting for scheduler.acquire()")
             .expect("R1 acquire")
             .settle(ControlPermitEvent::Returned);
         assert_eq!(scheduler.permits.available_permits(), capacity, "R1/E1");
 
-        scheduler
-            .acquire()
+        tokio::time::timeout(std::time::Duration::from_secs(30), scheduler.acquire())
             .await
+            .expect("timed out waiting for scheduler.acquire()")
             .expect("R2 acquire")
             .settle(ControlPermitEvent::DeadlineElapsed);
         assert_eq!(scheduler.permits.available_permits(), capacity, "R2/E1");
 
-        let cancelled = scheduler.acquire().await.expect("R3 acquire");
+        let cancelled =
+            tokio::time::timeout(std::time::Duration::from_secs(30), scheduler.acquire())
+                .await
+                .expect("timed out waiting for scheduler.acquire()")
+                .expect("R3 acquire");
         let cancelled_task = tokio::spawn(async move {
             let _permit = cancelled;
             std::future::pending::<()>().await;
@@ -520,7 +524,11 @@ mod tests {
         assert!(cancelled_task.await.unwrap_err().is_cancelled(), "R3");
         assert_eq!(scheduler.permits.available_permits(), capacity, "R3/E1");
 
-        let panicking = scheduler.acquire().await.expect("R4 acquire");
+        let panicking =
+            tokio::time::timeout(std::time::Duration::from_secs(30), scheduler.acquire())
+                .await
+                .expect("timed out waiting for scheduler.acquire()")
+                .expect("R4 acquire");
         let panicking_task = tokio::spawn(async move {
             let _permit = panicking;
             panic!("R4 injected permit-owner panic");
@@ -528,7 +536,10 @@ mod tests {
         assert!(panicking_task.await.unwrap_err().is_panic(), "R4");
         assert_eq!(scheduler.permits.available_permits(), capacity, "R4/E1");
 
-        let dropped = scheduler.acquire().await.expect("R5 acquire");
+        let dropped = tokio::time::timeout(std::time::Duration::from_secs(30), scheduler.acquire())
+            .await
+            .expect("timed out waiting for scheduler.acquire()")
+            .expect("R5 acquire");
         drop(dropped);
         assert_eq!(scheduler.permits.available_permits(), capacity, "R5/E1");
     }

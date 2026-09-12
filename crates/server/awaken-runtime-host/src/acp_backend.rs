@@ -1022,14 +1022,22 @@ mod tests {
 
         // The launch event (with detail) then the ready event arrive on the hub,
         // scoped to the thread — exactly what a per-session UI channel renders.
-        match sub.recv().await.unwrap() {
+        match tokio::time::timeout(std::time::Duration::from_secs(30), sub.recv())
+            .await
+            .expect("timed out waiting for sub.recv()")
+            .unwrap()
+        {
             crate::hub::ThreadEvent::AgentLaunch { stage, detail } => {
                 assert_eq!(stage, "launching");
                 assert_eq!(detail.as_deref(), Some("claude-agent-acp"));
             }
             other => panic!("expected AgentLaunch, got {other:?}"),
         }
-        match sub.recv().await.unwrap() {
+        match tokio::time::timeout(std::time::Duration::from_secs(30), sub.recv())
+            .await
+            .expect("timed out waiting for sub.recv()")
+            .unwrap()
+        {
             crate::hub::ThreadEvent::AgentLaunch { stage, .. } => assert_eq!(stage, "ready"),
             other => panic!("expected AgentLaunch ready, got {other:?}"),
         }

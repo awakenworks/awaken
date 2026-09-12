@@ -614,7 +614,12 @@ mod tests {
                         let release = release.clone();
                         async move {
                             entered.notify_one();
-                            release.notified().await;
+                            tokio::time::timeout(
+                                std::time::Duration::from_secs(30),
+                                release.notified(),
+                            )
+                            .await
+                            .expect("timed out waiting for release.notified()");
                             "completed"
                         }
                     }
@@ -637,7 +642,9 @@ mod tests {
                 .clone()
                 .oneshot(HttpRequest::get("/business").body(Body::empty()).unwrap()),
         );
-        entered.notified().await;
+        tokio::time::timeout(std::time::Duration::from_secs(30), entered.notified())
+            .await
+            .expect("timed out waiting for entered.notified()");
         assert_eq!(ctrl.active_streams(), 1, "D1/E1");
         ctrl.begin_drain();
 
