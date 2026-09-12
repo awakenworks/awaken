@@ -43,18 +43,26 @@ impl ManagedState {
     /// prefix, a racing append may make the new private candidate retry while
     /// the prior published prefix remains coherent and safe to return. Cold
     /// reads still use the strict bounded retry loop; source errors and stalled
-    /// reads remain failures rather than being hidden as stale success.
+    /// reads remain failures rather than being hidden as stale success. A page
+    /// cursor is also a minimum observation: a prior prefix that lacks it cannot
+    /// decide that the cursor is invalid, since another replica may have issued it.
     pub(crate) async fn refresh_committed_events_for_observation(
         &self,
         session_id: &str,
+        cursor: Option<&str>,
     ) -> Result<(), StateError> {
         self.ensure_session_record(session_id).await?;
+        let cursor = cursor.filter(|value| !value.trim().is_empty());
         let prior_complete = self
             .sessions
             .lock()
             .unwrap()
             .get(session_id)
-            .is_some_and(|record| record.committed_projection_ready);
+            .is_some_and(|record| {
+                record.committed_projection_ready
+                    && cursor
+                        .is_none_or(|cursor| record.events.iter().any(|event| event.id == cursor))
+            });
         if !prior_complete {
             return self.refresh_committed_projection(session_id).await;
         }

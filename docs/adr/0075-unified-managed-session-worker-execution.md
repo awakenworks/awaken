@@ -613,6 +613,19 @@ a later effect observation updates only that command's progress. No event store,
 child registry, usage authority, dispatch-derived lifecycle, fallback prefix, or
 parallel compatibility projector is introduced.
 
+Read-only Managed observations may serve a previously published complete
+prefix when a new candidate races a committed append. Session and Thread Event
+pagination add a minimum observation condition: that prefix must contain the
+requested Event cursor. A cursor issued by another replica cannot be declared
+invalid using an older cached prefix. The same refresh entrypoint therefore
+uses its existing bounded strict refresh when the cursor is absent; convergence
+permits ordinary pagination, persistent churn returns `503`, and only a complete
+refreshed projection can reject a genuinely unknown cursor with `400`. Known
+cursors and cursor-free reads retain the existing coherent-prefix availability.
+No cursor registry, new store, second reducer, or write retry is introduced.
+The actual two-replica HTTP decision table covers both Session and Thread routes;
+abstract projection-publication proofs alone do not establish this API condition.
+
 Event-batch cutover validation is a read-only projection of that same
 supervisor, not a general Session-health claim or Cloud-side scan. After
 Resource, continuation, realization, Event-batch, and Outcome repair, the
