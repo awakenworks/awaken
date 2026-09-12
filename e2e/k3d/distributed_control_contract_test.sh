@@ -2,6 +2,28 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# Cluster selection cause/effect table: C1 absent/empty override => original
+# identity; C2 valid explicit identity => isolated cluster and forwarder log;
+# C3 malformed identity => exit 2 before any infrastructure or cleanup call.
+# Evaluate the real initialization prefix, not a second selector implementation.
+selected_cluster() (
+  export AWAKEN_K3D_CLUSTER="$1"
+  docker() { return 99; }
+  k3d() { return 99; }
+  kubectl() { return 99; }
+  eval "$(sed '/^log() {/,$d' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh")"
+  printf '%s|%s\n' "$CLUSTER" "$API_PF_LOG"
+)
+[[ "$(selected_cluster "")" = "awaken-adr71|${TMPDIR:-/tmp}/awaken-adr71_api_pf.log" ]]
+[[ "$(selected_cluster awaken-adr71-retry)" = "awaken-adr71-retry|${TMPDIR:-/tmp}/awaken-adr71-retry_api_pf.log" ]]
+for invalid in --all '../other' 'awaken bad'; do
+  if selected_cluster "$invalid" >/dev/null 2>&1; then
+    echo "invalid cluster was admitted: $invalid" >&2
+    exit 1
+  else
+    [[ "$?" = 2 ]]
+  fi
+done
 # Q1 Cargo and the canonical sandbox builder see current sources on every run;
 # Q2 capacity admission includes every application image before cluster create.
 # A tag-existence bypass can pass against old binaries, so no diagnostic reuse
