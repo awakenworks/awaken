@@ -53,6 +53,9 @@ pub trait ClaimedSessionControl: SessionRealizationControl + Send + Sync {
         &self,
         claim: &RunClaim,
         session_id: &str,
+        session_work_authority: Option<
+            &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
+        >,
     ) -> Result<Option<SessionRealizationDirective>, ClaimedSessionControlError>;
 
     async fn list_session_agents(

@@ -8,6 +8,7 @@
 - Amended: 2026-08-29 — profiled products submit typed Runs through canonical Session admission
 - Amended: 2026-08-31 — registered Workers record terminal publication rejection
 - Amended: 2026-09-06 — committed terminal Dispatch settlement survives Work retirement
+- Amended: 2026-09-11 — recovery and realization bind the exact Session Work epoch
 - Supersedes: the late Worker-authored Session-input path in ADR-0063,
   ADR-0065, and ADR-0066
 - Preserves: ADR-0065 claim recovery and attempt execution; ADR-0066 Session
@@ -119,6 +120,24 @@ repair a stopped item when predecessor retirement wins a wake race, but
 Delegated children use the existing `RunDispatch::session_thread_id()` parent
 affinity and borrow that Work; child settlement retains it for the waiting
 parent, while a root Run owns its release.
+
+The claim response carries an opaque `SessionWorkAuthorityReceipt` minted only
+from that canonical Work acquisition. It binds the Session, registered Worker
+incarnation, Work id, Environment id, and lease epoch. The Worker must return
+the receipt on frozen-Session realization and committed recovery reads. Those
+endpoints hold the exact Dispatch claim guard, re-read the canonical Work row,
+compare every stable receipt coordinate, and reject before reading committed
+Thread truth or starting realization when the receipt is missing, foreign,
+stale, or unavailable. Reclaim by the same owner advances the Work epoch, so an
+old receipt cannot survive same-owner ABA. The receipt is transport evidence,
+not a second Work store: decoded bytes remain untrusted until this comparison,
+and ordinary non-Session dispatch never accepts one.
+
+This check does not make Work and Thread persistence one transaction. The
+renewed Work lease supplies the immediate admission window; database transaction
+correctness, asynchronous scheduling after admission, explicit revocation after
+the comparison, and the committed Thread snapshot remain their existing trust
+boundaries.
 After claim-fenced effects commit, private registered dispatch releases that
 Session Work immediately before settling the subordinate Run. Public custom
 Workers retain the official explicit `stop` operation. Graceful registered

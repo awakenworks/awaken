@@ -625,6 +625,9 @@ mod tests {
             &self,
             _claim: &awaken_run_ingress::RunClaim,
             _session_id: &str,
+            _session_work_authority: Option<
+                &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
+            >,
         ) -> Result<
             Option<awaken_session_contract::SessionRealizationDirective>,
             awaken_run_ingress_contract::ClaimedSessionControlError,

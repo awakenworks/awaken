@@ -352,6 +352,193 @@ pub struct SessionWorkLease {
     pub expires_at_unix_ms: u64,
 }
 
+/// Exact, secret-free proof of the Work authority observed when a registered
+/// Worker entered one Session attempt.
+///
+/// The fields are private so production callers cannot assemble authority from
+/// unrelated strings or silently replace a stale epoch with a later one. Wire
+/// input is still untrusted: the Coordinator always compares this receipt with
+/// a fresh observation from the canonical WorkQueue before exposing committed
+/// Thread truth or admitting a Session effect.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SessionWorkAuthorityReceipt {
+    session_id: String,
+    worker_owner: String,
+    authority: SessionWorkAuthorityCoordinate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum SessionWorkAuthorityCoordinate {
+    NotRequired,
+    Leased {
+        work_id: String,
+        environment_id: String,
+        epoch: u64,
+    },
+}
+
+const fn exact_session_work_coordinate(
+    session_matches: bool,
+    owner_matches: bool,
+    scope_matches: bool,
+    work_matches: bool,
+    environment_matches: bool,
+    epoch_matches: bool,
+) -> bool {
+    session_matches
+        && owner_matches
+        && scope_matches
+        && work_matches
+        && environment_matches
+        && epoch_matches
+}
+
+impl SessionWorkAuthorityReceipt {
+    /// Issue a receipt only from the complete result returned by the canonical
+    /// acquisition port. `Unowned` and a foreign owner cannot mint authority.
+    #[must_use]
+    fn from_acquired(
+        session_id: &str,
+        worker_owner: &str,
+        ownership: &SessionWorkOwnership,
+    ) -> Option<Self> {
+        let authority = match ownership {
+            SessionWorkOwnership::NotRequired => SessionWorkAuthorityCoordinate::NotRequired,
+            SessionWorkOwnership::Unowned => return None,
+            SessionWorkOwnership::Leased(lease)
+                if lease.session_id == session_id && lease.owner == worker_owner =>
+            {
+                SessionWorkAuthorityCoordinate::Leased {
+                    work_id: lease.work_id.clone(),
+                    environment_id: lease.environment_id.clone(),
+                    epoch: lease.epoch,
+                }
+            }
+            SessionWorkOwnership::Leased(_) => return None,
+        };
+        Some(Self {
+            session_id: session_id.to_string(),
+            worker_owner: worker_owner.to_string(),
+            authority,
+        })
+    }
+
+    #[must_use]
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    #[must_use]
+    pub fn worker_owner(&self) -> &str {
+        &self.worker_owner
+    }
+
+    /// Compare every stable coordinate with a new canonical observation. Lease
+    /// expiry is deliberately omitted: renewal may extend time, while Work id,
+    /// Environment, Session, owner, and epoch must remain identical.
+    #[must_use]
+    pub fn matches_observation(&self, ownership: &SessionWorkOwnership) -> bool {
+        match (&self.authority, ownership) {
+            (SessionWorkAuthorityCoordinate::NotRequired, SessionWorkOwnership::NotRequired) => {
+                exact_session_work_coordinate(true, true, true, true, true, true)
+            }
+            (
+                SessionWorkAuthorityCoordinate::Leased {
+                    work_id,
+                    environment_id,
+                    epoch,
+                },
+                SessionWorkOwnership::Leased(lease),
+            ) => exact_session_work_coordinate(
+                self.session_id == lease.session_id,
+                self.worker_owner == lease.owner,
+                true,
+                work_id == &lease.work_id,
+                environment_id == &lease.environment_id,
+                *epoch == lease.epoch,
+            ),
+            _ => false,
+        }
+    }
+
+    /// Bind this Work observation to the realized Session directive without
+    /// copying either authority. A leased receipt must name the directive's
+    /// self-hosted Environment and exact runtime incarnation; a NotRequired
+    /// receipt is valid only for a non-self-hosted projection.
+    #[must_use]
+    pub fn binds_realization(
+        &self,
+        session_id: &str,
+        directive: &crate::SessionRealizationDirective,
+    ) -> bool {
+        let environment = &directive.projection.baseline.environment;
+        let (scope_matches, environment_matches) = match &self.authority {
+            SessionWorkAuthorityCoordinate::NotRequired => (!environment.self_hosted, true),
+            SessionWorkAuthorityCoordinate::Leased { environment_id, .. } => (
+                environment.self_hosted,
+                environment_id == &environment.environment_id,
+            ),
+        };
+        exact_session_work_coordinate(
+            self.session_id == session_id,
+            self.worker_owner == directive.authority.lease.runtime_incarnation,
+            scope_matches,
+            true,
+            environment_matches,
+            true,
+        )
+    }
+}
+
+/// Acquire through the one Work authority and seal its complete stable
+/// coordinate into a receipt. Callers cannot construct or alter the typed
+/// receipt through Rust fields; a decoded wire value remains only an assertion
+/// until [`SessionWorkAuthorityReceipt::matches_observation`] succeeds.
+pub async fn acquire_session_work_receipt(
+    authority: &dyn SessionWorkLeaseAuthority,
+    session_id: &str,
+    worker_owner: &str,
+    now_ms: u64,
+    acquisition: SessionWorkAcquisition,
+) -> Result<Option<SessionWorkAuthorityReceipt>, WorkQueueError> {
+    let ownership = authority
+        .acquire_session_work(session_id, worker_owner, now_ms, acquisition)
+        .await?;
+    Ok(SessionWorkAuthorityReceipt::from_acquired(
+        session_id,
+        worker_owner,
+        &ownership,
+    ))
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn exact_session_work_receipt_rejects_every_changed_coordinate() {
+    let session_matches: bool = kani::any();
+    let owner_matches: bool = kani::any();
+    let scope_matches: bool = kani::any();
+    let work_matches: bool = kani::any();
+    let environment_matches: bool = kani::any();
+    let epoch_matches: bool = kani::any();
+    assert_eq!(
+        exact_session_work_coordinate(
+            session_matches,
+            owner_matches,
+            scope_matches,
+            work_matches,
+            environment_matches,
+            epoch_matches,
+        ),
+        session_matches
+            && owner_matches
+            && scope_matches
+            && work_matches
+            && environment_matches
+            && epoch_matches
+    );
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionWorkOwnership {
     NotRequired,

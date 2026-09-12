@@ -51,6 +51,12 @@ pub struct RecoveryRequest {
     pub claim: RunClaim,
     #[serde(default)]
     pub identity: Option<WorkerIdentity>,
+    /// Required for Session recovery. It is issued with the claim and must be
+    /// revalidated against the canonical WorkQueue before committed Thread
+    /// state is read.
+    #[serde(default)]
+    pub session_work_authority:
+        Option<awaken_session_contract::work_queue::SessionWorkAuthorityReceipt>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

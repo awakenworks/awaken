@@ -411,7 +411,7 @@ async fn two_control_processes_retry_recover_and_settle_without_sticky_routing()
         .expect("shared dispatch is claimable");
     let claim = RunClaim::from(&claimed.lease);
     let initial = queue_a
-        .load_recovery_snapshot(&claim)
+        .load_recovery_snapshot(&claim, None)
         .await
         .expect("initial recovery through Control A");
     assert_eq!(initial.thread_version, 0);
@@ -457,7 +457,7 @@ async fn two_control_processes_retry_recover_and_settle_without_sticky_routing()
         "Control B returned the durable receipt"
     );
     let recovered = queue_b
-        .load_recovery_snapshot(&claim)
+        .load_recovery_snapshot(&claim, None)
         .await
         .expect("authoritative recovery through Control B");
     assert_eq!(recovered.thread_version, 1);

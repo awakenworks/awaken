@@ -133,6 +133,12 @@ pub struct ClaimedCommitCommand {
 pub struct Claimed {
     pub request: RunDispatch,
     pub lease: Lease,
+    /// Exact subordinate Session Work authority issued by the Coordinator edge
+    /// for this claim. Registered remote Session attempts require it before any
+    /// committed Thread read; ordinary and colocated attempts omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_work_authority:
+        Option<awaken_session_contract::work_queue::SessionWorkAuthorityReceipt>,
     /// Exact credential decisions atomically committed with this lease epoch.
     /// Cancellation carries only the selected authenticated remote A2A
     /// transport binding; anonymous and non-remote cancellation remains empty.
@@ -1733,6 +1739,7 @@ mod tests {
                 expires_ms: 5_000,
                 epoch: 2,
             },
+            session_work_authority: None,
             credential_bindings: Vec::new(),
             cancellation_requested: true,
             pending: vec![pending()],

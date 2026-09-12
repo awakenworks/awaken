@@ -309,6 +309,9 @@ impl WorkerControlClient {
         identity: &WorkerIdentity,
         claim: &RunClaim,
         session_id: &str,
+        session_work_authority: Option<
+            &awaken_session_contract::work_queue::SessionWorkAuthorityReceipt,
+        >,
     ) -> Result<
         Option<awaken_session_contract::SessionRealizationDirective>,
         ClaimedSessionControlError,
@@ -320,6 +323,7 @@ impl WorkerControlClient {
                     "identity": identity,
                     "claim": claim,
                     "session_id": session_id,
+                    "session_work_authority": session_work_authority,
                 }),
             )
             .await

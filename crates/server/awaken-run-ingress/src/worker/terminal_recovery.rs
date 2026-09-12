@@ -135,8 +135,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         cause: awaken_agent_contract::agent::run::EndCause,
         clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
-        let claim = RunClaim::from(&claimed.lease);
-        self.install_claimed_recovery_projection(&claim, claimed.request.thread_id())
+        self.install_claimed_recovery_projection(claimed, claimed.request.thread_id())
             .await?;
         self.end_claimed_before_execution(claimed, cause, clock)
             .await
@@ -410,8 +409,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // the authoritative snapshot bound to this exact claim, never a stale
         // process projection. Keeping the refresh here makes claim + verify +
         // fenced settlement one indivisible protocol for every entry point.
-        let claim = RunClaim::from(&claimed.lease);
-        self.install_claimed_recovery_projection(&claim, claimed.request.thread_id())
+        self.install_claimed_recovery_projection(&claimed, claimed.request.thread_id())
             .await?;
         let Some(terminal) = self.committed_terminal_for_claim(&claimed)? else {
             let _ = self
