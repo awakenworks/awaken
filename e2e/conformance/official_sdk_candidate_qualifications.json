@@ -237,6 +237,111 @@
           ]
         }
       ]
+    },
+    {
+      "baseline_version": "0.124.0",
+      "candidate_version": "0.125.0",
+      "module": "@anthropic-ai/sdk-candidate",
+      "package_integrity": "sha512-Hq5wYlXupzJ9M1Fzqjqa3hObcuigEXVZJqSYDgeZGM3wF4qrNERM5Z1OOAeoT9rlod8awJ3uYyJjbQXp1ckIGg==",
+      "delta_fingerprint": "8aa692c61a9f5f7b0a76b3b778da6940937bce9e740a6ba437720e96409ce7d8",
+      "evidence_groups": [
+        {
+          "owner": "candidate.managed-type-change-points-v125",
+          "coordinates": [
+            "declarations:changed:beta/agents/agents.d.ts",
+            "declarations:changed:beta/agents/index.d.ts",
+            "declarations:changed:beta/environments/environments.d.ts",
+            "declarations:changed:beta/sessions/events.d.ts",
+            "declarations:changed:beta/sessions/index.d.ts",
+            "declarations:changed:beta/sessions/sessions.d.ts",
+            "declarations:changed:beta/user-profiles.d.ts"
+          ]
+        },
+        {
+          "owner": "candidate.environment-worker-secret-token",
+          "coordinates": [
+            "declarations:changed:managed/lib/environments/worker.d.ts",
+            "runtime:changed:lib/environments/worker.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.core-transport",
+          "coordinates": [
+            "runtime:changed:client.mjs",
+            "runtime:changed:internal/shims.mjs",
+            "runtime:changed:version.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.generated-module-loadability",
+          "coordinates": [
+            "runtime:changed:core/api-promise.mjs",
+            "runtime:changed:core/error.mjs",
+            "runtime:changed:core/pagination.mjs",
+            "runtime:changed:core/resource.mjs",
+            "runtime:changed:index.mjs",
+            "runtime:changed:internal/detect-platform.mjs",
+            "runtime:changed:internal/errors.mjs",
+            "runtime:changed:internal/headers.mjs",
+            "runtime:changed:internal/parse.mjs",
+            "runtime:changed:internal/request-options.mjs",
+            "runtime:changed:internal/utils.mjs",
+            "runtime:changed:internal/utils/base64.mjs",
+            "runtime:changed:internal/utils/env.mjs",
+            "runtime:changed:internal/utils/log.mjs",
+            "runtime:changed:internal/utils/query.mjs",
+            "runtime:changed:internal/utils/uuid.mjs",
+            "runtime:changed:internal/utils/values.mjs",
+            "runtime:changed:resources/beta/agents.mjs",
+            "runtime:changed:resources/beta/agents/agents.mjs",
+            "runtime:changed:resources/beta/agents/index.mjs",
+            "runtime:changed:resources/beta/agents/versions.mjs",
+            "runtime:changed:resources/beta/deployment-runs.mjs",
+            "runtime:changed:resources/beta/deployments.mjs",
+            "runtime:changed:resources/beta/dreams.mjs",
+            "runtime:changed:resources/beta/environments.mjs",
+            "runtime:changed:resources/beta/environments/environments.mjs",
+            "runtime:changed:resources/beta/environments/index.mjs",
+            "runtime:changed:resources/beta/environments/work.mjs",
+            "runtime:changed:resources/beta/files.mjs",
+            "runtime:changed:resources/beta/memory-stores.mjs",
+            "runtime:changed:resources/beta/memory-stores/index.mjs",
+            "runtime:changed:resources/beta/memory-stores/memories.mjs",
+            "runtime:changed:resources/beta/memory-stores/memory-stores.mjs",
+            "runtime:changed:resources/beta/memory-stores/memory-versions.mjs",
+            "runtime:changed:resources/beta/models.mjs",
+            "runtime:changed:resources/beta/sessions.mjs",
+            "runtime:changed:resources/beta/sessions/events.mjs",
+            "runtime:changed:resources/beta/sessions/index.mjs",
+            "runtime:changed:resources/beta/sessions/resources.mjs",
+            "runtime:changed:resources/beta/sessions/sessions.mjs",
+            "runtime:changed:resources/beta/sessions/threads.mjs",
+            "runtime:changed:resources/beta/sessions/threads/events.mjs",
+            "runtime:changed:resources/beta/sessions/threads/index.mjs",
+            "runtime:changed:resources/beta/sessions/threads/threads.mjs",
+            "runtime:changed:resources/beta/skills.mjs",
+            "runtime:changed:resources/beta/skills/index.mjs",
+            "runtime:changed:resources/beta/skills/skills.mjs",
+            "runtime:changed:resources/beta/skills/versions.mjs",
+            "runtime:changed:resources/beta/tunnels.mjs",
+            "runtime:changed:resources/beta/tunnels/certificates.mjs",
+            "runtime:changed:resources/beta/tunnels/index.mjs",
+            "runtime:changed:resources/beta/tunnels/tunnels.mjs",
+            "runtime:changed:resources/beta/user-profiles.mjs",
+            "runtime:changed:resources/beta/vaults.mjs",
+            "runtime:changed:resources/beta/vaults/credentials.mjs",
+            "runtime:changed:resources/beta/vaults/index.mjs",
+            "runtime:changed:resources/beta/vaults/vaults.mjs",
+            "runtime:changed:resources/beta/webhooks.mjs",
+            "runtime:changed:resources/files.mjs",
+            "runtime:changed:resources/models.mjs",
+            "runtime:changed:resources/skills.mjs",
+            "runtime:changed:resources/skills/index.mjs",
+            "runtime:changed:resources/skills/skills.mjs",
+            "runtime:changed:resources/skills/versions.mjs"
+          ]
+        }
+      ]
     }
   ]
 }

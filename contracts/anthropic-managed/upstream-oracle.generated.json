@@ -95,9 +95,9 @@
       "operation_fingerprint": "701ee5399eb5cdc42aaa4606904862d73bed85a39de5e1fa5f1e9feb28050f8c",
       "role": "current_oracle",
       "runtime_file_count": 113,
-      "runtime_fingerprint": "9e90cdd70c02f9123a1f884896d817d75beed16e5896812c4bae5684928c399e",
-      "type_fingerprint": "9d039bc2d72a42baabe8032391cc90cc682f4f9999342136cf6ae34141991525",
-      "version": "0.124.0"
+      "runtime_fingerprint": "736be5172fe3eebef2b1f011e8ca88113378663589b14a0de3ab2bc078187087",
+      "type_fingerprint": "00a54df575b29ad515bd5e0f56b6b4b634a5c442c4e3636dd1a185ae3860a152",
+      "version": "0.125.0"
     }
   ],
   "current": {
@@ -1339,9 +1339,9 @@
     ],
     "role": "current_oracle",
     "runtime_file_count": 113,
-    "runtime_fingerprint": "9e90cdd70c02f9123a1f884896d817d75beed16e5896812c4bae5684928c399e",
-    "type_fingerprint": "9d039bc2d72a42baabe8032391cc90cc682f4f9999342136cf6ae34141991525",
-    "version": "0.124.0",
+    "runtime_fingerprint": "736be5172fe3eebef2b1f011e8ca88113378663589b14a0de3ab2bc078187087",
+    "type_fingerprint": "00a54df575b29ad515bd5e0f56b6b4b634a5c442c4e3636dd1a185ae3860a152",
+    "version": "0.125.0",
     "wire_contract": {
       "events": {
         "inbound": [
@@ -1410,11 +1410,11 @@
         },
         "github_repository": {
           "optional": [
+            "authorization_token",
             "checkout",
             "mount_path"
           ],
           "required": [
-            "authorization_token",
             "type",
             "url"
           ]

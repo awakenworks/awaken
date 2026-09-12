@@ -59,7 +59,12 @@ export function managedRuntimeFingerprint(moduleName, scope) {
   return managedRuntimeFingerprintFromPackageRoot(resolveSdkPackage(moduleName).root, scope);
 }
 
-export function managedRuntimeFingerprintFromPackageRoot(packageRoot, scope) {
+export function managedRuntimeFingerprintFromPackageRoot(root, scope) {
+  // Imports resolve to absolute filenames; the entry roots must be absolute
+  // too, or one file is visited under two spellings and every module reached
+  // both ways is fingerprinted twice. A relative root then yields a different
+  // fingerprint from the same package's absolute root.
+  const packageRoot = path.resolve(root);
   sdkPackageFromRoot(packageRoot);
   const pending = runtimeRoots(packageRoot, scope);
   const visited = new Set();

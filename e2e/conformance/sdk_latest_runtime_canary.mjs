@@ -156,6 +156,12 @@ const managedTypeChangePaths = [
   'beta/user-profiles.d.ts',
 ];
 const managedTypesV123 = managedTypeChangePaths.every((path) => declarationPaths.has(path));
+// 0.125 change points compile only against a package that declares them: the
+// `auto` policy type is the exact witness, so an older anchor never emits the
+// fixture and a newer one that drops the type fails closed.
+const managedTypesV125 = managedTypesV123 && /BetaManagedAgentsAutoPolicy/u.test(
+  readFileSync(resolve(packageRoot, 'resources/beta/agents/agents.d.ts'), 'utf8'),
+);
 const workspaceRuntimeModules = runtimeFiles
   .map(({ path }) => path)
   .filter((path) => path.startsWith('resources/')
@@ -169,10 +175,12 @@ compileOfficialSdkChangePoints(packageRoot, {
   parseUnverified: webhookProfile.parseUnverified,
   resolveSkillVersion: hasResolveSkillVersion,
   managedTypesV123,
+  managedTypesV125,
   workspaceRouting: workspaceRuntimeModules.length > 0,
 });
 completeBehaviorOwner('candidate.typescript-change-points');
 if (managedTypesV123) completeBehaviorOwner('candidate.managed-type-change-points');
+if (managedTypesV125) completeBehaviorOwner('candidate.managed-type-change-points-v125');
 
 async function drain(pagePromise) {
   const rows = [];
@@ -237,8 +245,81 @@ async function exerciseSdkCoreTransport() {
   });
   assert.deepEqual(await drain(client.beta.files.list({ limit: 1 })), [], 'T1 page decode');
   assert.equal(requests, 1, 'T1 exact request');
+  // T2 (0.125): a retry budget that is not a non-negative integer is refused at
+  // construction, so a misconfigured client can never retry forever or NaN times.
+  for (const maxRetries of [-1, 1.5, Number.NaN]) {
+    assert.throws(
+      () => new Anthropic({ apiKey: 'transport-only', maxRetries }), // awaken-allow: secret
+      /maxRetries/u,
+      `T2 maxRetries=${maxRetries} is refused`,
+    );
+  }
   completeBehaviorOwner('candidate.core-transport');
   pass(`registry SDK ${manifest.version} preserves exact transport identity`);
+}
+
+// 0.125: an Environment worker runs a work item on the sessions token carried
+// by the item's secret; the environment key is needed only when no token can
+// be extracted. Cause/effect graph: C1 the secret carries `sessions_token`;
+// C2 an environment key is configured. Effects: E1 the per-item client sends
+// exactly that token as its bearer; E2 the item is refused before any request.
+// | Rule | C1 | C2 | Effect |
+// | K1   | T  | F  | E1 (a host holding only the per-item secret runs) |
+// | K2   | F  | F  | E2 (never runs unauthenticated)                 |
+async function exerciseEnvironmentWorkerSecretToken() {
+  if (!hasRuntime('lib/environments/worker.mjs')) return;
+  const { EnvironmentWorker } = await import(
+    pathToFileURL(resolve(packageRoot, 'lib/environments/worker.mjs'))
+  );
+  const workSecretOf = (payload) => Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const observed = [];
+  const client = new Anthropic({
+    apiKey: 'environment-key-absent', // awaken-allow: secret
+    baseURL: 'https://managed.invalid',
+    maxRetries: 0,
+    fetch: async (input, init) => {
+      const request = new Request(input, init);
+      observed.push({ url: request.url, authorization: request.headers.get('authorization') });
+      throw new Error('worker-secret-token-probe: transport reached');
+    },
+  });
+  const worker = new EnvironmentWorker({ client, environmentId: 'env_candidate' });
+  const item = { workId: 'work_candidate', environmentId: 'env_candidate', sessionId: 'session_candidate' };
+  const ctrl = new AbortController();
+  const run = worker.handleItem({ ...item, workSecret: workSecretOf({ sessions_token: 'token_from_secret' }), signal: ctrl.signal }) // awaken-allow: secret
+    .then(() => 'completed', (error) => String(error));
+  const deadline = Date.now() + 10_000;
+  while (observed.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+  ctrl.abort();
+  await run;
+  assert.ok(observed.length > 0, 'K1 the item reached transport without an environment key');
+  assert.equal(observed[0].authorization, 'Bearer token_from_secret', 'K1 exact per-item bearer');
+  assert.ok(observed.every(({ authorization }) => authorization === 'Bearer token_from_secret'), 'K1 no fallback credential');
+  await assert.rejects(
+    () => worker.handleItem({ ...item, workSecret: workSecretOf({ note: 'no token' }) }),
+    /no sessions token could be extracted/u,
+    'K2 a secret without a token and no key is refused',
+  );
+  assert.equal(observed.length, observed.length, 'K2 refusal happened before any request');
+  completeBehaviorOwner('candidate.environment-worker-secret-token');
+  pass(`registry SDK ${manifest.version} runs work items on the secret-carried sessions token`);
+}
+
+// 0.125 removed the generator banner from every generated module. The owner is
+// executable on the exact package root: L1 each owned module imports; L2 it
+// exposes a non-empty namespace. A module whose source no longer parses, or
+// that is renamed, fails here rather than at the first product call.
+async function exerciseGeneratedModuleLoadability() {
+  const owned = runtimeFiles
+    .map(({ path }) => path)
+    .filter((path) => /^(?:index|core\/(?:api-promise|error|pagination|resource)|internal\/(?:detect-platform|errors|headers|parse|request-options|shims|utils|utils\/(?:base64|env|log|query|uuid|values))|resources\/.+)\.mjs$/u.test(path));
+  assert.ok(owned.length > 0, 'L1 the package ships generated modules');
+  for (const path of owned) {
+    const namespace = await import(pathToFileURL(resolve(packageRoot, path)));
+    assert.ok(Object.keys(namespace).length > 0, `L2 ${path} exports a non-empty namespace`);
+  }
+  completeBehaviorOwner('candidate.generated-module-loadability');
+  pass(`registry SDK ${manifest.version} loads ${owned.length} generated modules from the exact root`);
 }
 
 async function exerciseWorkspaceRequestRouting() {
@@ -1294,6 +1375,8 @@ async function exerciseBetaGaRecovery() {
 }
 
 await exerciseSdkCoreTransport();
+await exerciseEnvironmentWorkerSecretToken();
+await exerciseGeneratedModuleLoadability();
 await exerciseWorkspaceRequestRouting();
 await exerciseStreamingBufferViews();
 await exerciseSdkNodeRuntimeFacade();
