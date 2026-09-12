@@ -12,7 +12,7 @@ capability, and health narrow what is possible but never grant
 `ToolPermissionVerdict`, and `ToolGateHook` — but nothing implemented them, so
 authorization was a test stub. This builds the axis: a policy-backed gate, the
 confirmation→resume loop, and committed audit. The concrete rule *policy*
-(patterns, modes) is an extension, not runtime core.
+(patterns and their unmatched default) is an extension, not runtime core.
 
 ## Decision
 
@@ -101,7 +101,7 @@ batch from being rehydrated into a later Run on the same thread.
   the existing `ThreadCommit` aggregate.
 - The policy-verdict enum is three-valued; richer needs map onto the gate's
   `SetResult` or confirmation ticket, not new variants.
-- The concrete rule policy (Claude-Code-style patterns and modes) lives in
+- The concrete rule policy (Claude-Code-style patterns) lives in
   `awaken-ext-permission`; the runtime owns only the gate, the ticket reuse, and
   the audit.
 
