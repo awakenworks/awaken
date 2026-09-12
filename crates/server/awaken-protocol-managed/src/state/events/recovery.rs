@@ -524,7 +524,7 @@ impl ManagedState {
             // them apart — and reporting a refusal as `allow` tells a client the
             // call it blocked went through.
             if let Some(recorded) = event
-                .id
+                .source_tool_call_id
                 .as_deref()
                 .and_then(|call_id| record.permission_decisions.get(call_id))
             {

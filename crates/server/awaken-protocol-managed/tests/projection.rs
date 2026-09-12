@@ -156,9 +156,12 @@ enum CommittedEvidence {
     Terminal,
     Compaction,
     Reschedule,
-    /// A terminal run whose committed audit also records that the permission
-    /// gate refused one call, keyed by that call's id.
-    PermissionDenied(&'static str),
+    /// A terminal run whose committed audit also records one permission
+    /// decision, as the exact label the gate wrote for that exact call id.
+    PermissionDecision {
+        call_id: &'static str,
+        decision: &'static str,
+    },
 }
 
 impl CommittedEvidence {
@@ -184,13 +187,13 @@ impl CommittedEvidence {
                 },
             ));
         }
-        if let Self::PermissionDenied(call_id) = self {
+        if let Self::PermissionDecision { call_id, decision } = self {
             events.push((
                 2,
                 awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided {
                     tool_id: "bash".into(),
                     call_id: call_id.into(),
-                    decision: "deny".into(),
+                    decision: decision.into(),
                 },
             ));
         }
@@ -1046,7 +1049,13 @@ async fn an_mcp_tool_call_projects_mcp_events() {
                 ),
             ])
         })
-        .with_committed_evidence(CommittedEvidence::Terminal),
+        // Production commits a gate decision for every governed call, so the
+        // fixture records the one this call received instead of leaving the
+        // wire to infer a permission from the presence of a result.
+        .with_committed_evidence(CommittedEvidence::PermissionDecision {
+            call_id: "mc1",
+            decision: "allow",
+        }),
     );
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
@@ -1547,7 +1556,10 @@ async fn a_call_the_gate_refused_is_reported_as_denied_not_allowed() {
                 ),
             ])
         })
-        .with_committed_evidence(CommittedEvidence::PermissionDenied("blocked-1")),
+        .with_committed_evidence(CommittedEvidence::PermissionDecision {
+            call_id: "blocked-1",
+            decision: "deny",
+        }),
     );
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
@@ -1563,4 +1575,109 @@ async fn a_call_the_gate_refused_is_reported_as_denied_not_allowed() {
         use_ev["evaluated_permission"], "deny",
         "a refused call must never be reported as permitted"
     );
+}
+
+#[tokio::test]
+async fn a_decision_label_this_version_does_not_know_is_never_read_as_permitted() {
+    // Cause/effect graph: C1 the committed audit names a decision label this
+    // build does not recognize (an older or newer gate vocabulary); C2 the call
+    // has a committed result. E1 report NO evaluated permission at all, so a
+    // client sees the field absent rather than a value we invented.
+    //
+    // The wire contract allows the field to be absent, and absence is the honest
+    // rendering of "we hold no decision we understand". Folding an unknown label
+    // into `allow` would be the exact fail-open this join exists to remove.
+    let (state, app, completions) = app_with_runtime(
+        ScriptFake::new(|| {
+            ended(vec![
+                Message::new(
+                    Id("a".into()),
+                    Role::Assistant,
+                    vec![ContentBlock::ToolUse {
+                        id: "future-1".into(),
+                        name: "bash".into(),
+                        input: serde_json::json!({ "command": "ls" }),
+                    }],
+                ),
+                Message::new(
+                    Id("t".into()),
+                    Role::Tool,
+                    vec![ContentBlock::ToolResult {
+                        tool_use_id: "future-1".into(),
+                        content: vec![ContentBlock::text("ok")],
+                        is_error: false,
+                    }],
+                ),
+            ])
+        })
+        .with_committed_evidence(CommittedEvidence::PermissionDecision {
+            call_id: "future-1",
+            decision: "escalate_to_owner",
+        }),
+    );
+    let id = create(&app).await;
+    send_user(&app, &id, "go").await;
+    support::drive_completed_user_dispatches(&state, &id, &completions).await;
+    let list = list_events(&app, &id).await;
+    let use_ev = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["type"] == "agent.tool_use")
+        .expect("the call is still visible");
+    assert!(
+        use_ev.get("evaluated_permission").is_none() || use_ev["evaluated_permission"].is_null(),
+        "an unrecognized decision label must not render as a permission: {use_ev}"
+    );
+}
+
+#[tokio::test]
+async fn a_recorded_ask_is_reported_even_though_the_transcript_shows_a_result() {
+    // The deny case proved the join replaces a wrong inference. This proves the
+    // join is not deny-specific: a call the gate put to a person, which then ran
+    // and returned, still reports `ask` — the transcript alone would say `allow`
+    // because it only sees a completed call.
+    //
+    // | Rule | recorded | transcript | Effect |
+    // |---|---|---|---|
+    // | K1 | ask | call + result | ask, not allow |
+    let (state, app, completions) = app_with_runtime(
+        ScriptFake::new(|| {
+            ended(vec![
+                Message::new(
+                    Id("a".into()),
+                    Role::Assistant,
+                    vec![ContentBlock::ToolUse {
+                        id: "asked-1".into(),
+                        name: "bash".into(),
+                        input: serde_json::json!({ "command": "ls" }),
+                    }],
+                ),
+                Message::new(
+                    Id("t".into()),
+                    Role::Tool,
+                    vec![ContentBlock::ToolResult {
+                        tool_use_id: "asked-1".into(),
+                        content: vec![ContentBlock::text("ok")],
+                        is_error: false,
+                    }],
+                ),
+            ])
+        })
+        .with_committed_evidence(CommittedEvidence::PermissionDecision {
+            call_id: "asked-1",
+            decision: "ask",
+        }),
+    );
+    let id = create(&app).await;
+    send_user(&app, &id, "go").await;
+    support::drive_completed_user_dispatches(&state, &id, &completions).await;
+    let list = list_events(&app, &id).await;
+    let use_ev = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["type"] == "agent.tool_use")
+        .expect("the call is visible");
+    assert_eq!(use_ev["evaluated_permission"], "ask", "K1");
 }

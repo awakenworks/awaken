@@ -59,7 +59,8 @@ pub enum ToolPermissionRequirement {
 /// comparison meaningful as the policy vocabulary grows: the question a session
 /// override must answer is not "is this stricter?" but "does this let more run
 /// unattended than the author allowed?".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(kani, derive(kani::Arbitrary))]
 pub enum GrantedAutonomy {
     /// Nothing runs until a person decides.
     None,
@@ -68,6 +69,30 @@ pub enum GrantedAutonomy {
     Evaluated,
     /// Everything the author enabled runs on its own.
     Full,
+}
+
+impl GrantedAutonomy {
+    /// This level's position on the autonomy axis, ascending.
+    ///
+    /// Stated rather than derived from declaration order. A derived `Ord` would
+    /// make admission silently depend on how the variants happen to be written
+    /// down, so reordering them would invert the safety comparison while every
+    /// existing two-ended test still passed. Here the order is a value a
+    /// reviewer reads and a proof pins.
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::Evaluated => 1,
+            Self::Full => 2,
+        }
+    }
+
+    /// Whether this level delegates no more unattended authority than `ceiling`.
+    #[must_use]
+    pub const fn within(self, ceiling: Self) -> bool {
+        self.rank() <= ceiling.rank()
+    }
 }
 
 impl ToolPermissionRequirement {
@@ -99,7 +124,10 @@ pub const fn select_tool_policy(
     if !registered || !exact_tool_match || !authored.enabled {
         return None;
     }
-    if (requested.granted_autonomy() as u8) > (authored.permission.granted_autonomy() as u8) {
+    if !requested
+        .granted_autonomy()
+        .within(authored.permission.granted_autonomy())
+    {
         return None;
     }
     Some(ToolExecutionPolicy {
@@ -181,18 +209,35 @@ impl ToolsetPolicy {
 mod verification {
     use super::*;
 
-    fn symbolic_permission(value: bool) -> ToolPermissionRequirement {
-        if value {
-            ToolPermissionRequirement::AlwaysAllow
-        } else {
-            ToolPermissionRequirement::AlwaysAsk
+    /// Range over the COMPLETE requirement vocabulary.
+    ///
+    /// A two-valued generator silently stops covering the domain the moment a
+    /// variant is added — the proof keeps passing while a third of its input
+    /// space goes unexplored. The exhaustiveness assertion below turns that
+    /// failure mode into a build error instead.
+    fn symbolic_permission() -> ToolPermissionRequirement {
+        match kani::any::<u8>() % 3 {
+            0 => ToolPermissionRequirement::AlwaysAllow,
+            1 => ToolPermissionRequirement::AlwaysAsk,
+            _ => ToolPermissionRequirement::Auto,
         }
     }
 
-    fn symbolic_policy(enabled: bool, ask: bool) -> ToolExecutionPolicy {
+    /// Fail the build when a requirement is added without extending the
+    /// generator above. The match is exhaustive, so a new variant cannot be
+    /// introduced without deciding how the proofs explore it.
+    const fn requirement_generator_is_exhaustive(value: ToolPermissionRequirement) -> u8 {
+        match value {
+            ToolPermissionRequirement::AlwaysAllow => 0,
+            ToolPermissionRequirement::AlwaysAsk => 1,
+            ToolPermissionRequirement::Auto => 2,
+        }
+    }
+
+    fn symbolic_policy(enabled: bool) -> ToolExecutionPolicy {
         ToolExecutionPolicy {
             enabled,
-            permission: symbolic_permission(!ask),
+            permission: symbolic_permission(),
         }
     }
 
@@ -204,8 +249,8 @@ mod verification {
         // foreign name returns the default. The fixed non-empty names prove the
         // production lookup's selection priority; arbitrary names and override
         // counts remain outside this scalar harness.
-        let default = symbolic_policy(kani::any(), kani::any());
-        let exact = symbolic_policy(kani::any(), kani::any());
+        let default = symbolic_policy(kani::any());
+        let exact = symbolic_policy(kani::any());
         let policy = ToolsetPolicy {
             source: ToolsetSource::Agent,
             default,
@@ -218,11 +263,25 @@ mod verification {
 
     #[kani::proof]
     fn tool_policy_selector_fails_closed_for_unregistered_widened_or_mismatched_calls() {
+        // Cause/effect graph over the COMPLETE requirement vocabulary.
+        // C1 the tool is registered; C2 the lookup matched exactly; C3 the
+        // authored policy is enabled; C4 the request delegates more unattended
+        // authority than the author did. E1 admit and carry the request
+        // verbatim; E2 refuse.
+        //
+        // | Rule | C1 | C2 | C3 | C4 | Effect |
+        // |---|---|---|---|---|---|
+        // | S1 | T | T | T | F | E1 |
+        // | S2 | F | * | * | * | E2 |
+        // | S3 | * | F | * | * | E2 |
+        // | S4 | * | * | F | * | E2 |
+        // | S5 | T | T | T | T | E2 |
         let registered: bool = kani::any();
         let exact_tool_match: bool = kani::any();
         let enabled: bool = kani::any();
-        let authored_permission = symbolic_permission(kani::any());
-        let requested = symbolic_permission(kani::any());
+        let authored_permission = symbolic_permission();
+        let requested = symbolic_permission();
+        let _ = requirement_generator_is_exhaustive(authored_permission);
         let selected = select_tool_policy(
             registered,
             exact_tool_match,
@@ -232,8 +291,10 @@ mod verification {
             },
             requested,
         );
-        let widened = authored_permission == ToolPermissionRequirement::AlwaysAsk
-            && requested == ToolPermissionRequirement::AlwaysAllow;
+        // Widening is stated once, on the named axis, instead of enumerating
+        // the pairs that happen to widen today.
+        let widened =
+            requested.granted_autonomy().rank() > authored_permission.granted_autonomy().rank();
         let expected = registered && exact_tool_match && enabled && !widened;
 
         assert_eq!(selected.is_some(), expected);
@@ -242,6 +303,47 @@ mod verification {
             assert_eq!(policy.permission, requested);
             assert!(!widened);
         }
+    }
+
+    #[kani::proof]
+    fn autonomy_is_a_total_order_whose_ceiling_test_is_exactly_rank_comparison() {
+        // The admission decision rests entirely on this order, so the order
+        // itself is proved rather than assumed: `within` must be exactly `<=`
+        // on `rank`, and `rank` must be a total order (reflexive, antisymmetric,
+        // transitive, and comparable in both directions).
+        let a: GrantedAutonomy = kani::any();
+        let b: GrantedAutonomy = kani::any();
+        let c: GrantedAutonomy = kani::any();
+
+        assert_eq!(a.within(b), a.rank() <= b.rank());
+        assert!(a.within(a), "reflexive");
+        if a.within(b) && b.within(a) {
+            assert_eq!(a.rank(), b.rank(), "antisymmetric");
+        }
+        if a.within(b) && b.within(c) {
+            assert!(a.within(c), "transitive");
+        }
+        assert!(a.within(b) || b.within(a), "total");
+    }
+
+    #[kani::proof]
+    fn every_requirement_sits_at_exactly_one_autonomy_level() {
+        // The projection from a policy value to the axis must be total and
+        // injective-by-intent: `auto` sits strictly between the two fixed
+        // answers, which is the whole reason a single comparison can admit it.
+        let requirement = symbolic_permission();
+        let level = requirement.granted_autonomy();
+        let expected = match requirement {
+            ToolPermissionRequirement::AlwaysAsk => GrantedAutonomy::None,
+            ToolPermissionRequirement::Auto => GrantedAutonomy::Evaluated,
+            ToolPermissionRequirement::AlwaysAllow => GrantedAutonomy::Full,
+        };
+        assert_eq!(level, expected);
+        assert!(
+            GrantedAutonomy::None.rank() < GrantedAutonomy::Evaluated.rank()
+                && GrantedAutonomy::Evaluated.rank() < GrantedAutonomy::Full.rank(),
+            "ask < auto < allow on the unattended-authority axis"
+        );
     }
 }
 
