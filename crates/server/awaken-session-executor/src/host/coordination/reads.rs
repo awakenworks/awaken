@@ -1,0 +1,519 @@
+//! Read-only coordination queries through the parent Session commit boundary.
+//!
+//! Full recovery still owns cross-region prefixes. State-only queries reuse the
+//! same authority's narrower read port; this module has no cache or write path.
+
+use super::*;
+
+impl SharedHost {
+    pub(crate) async fn coordinated_threads(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<CoordinatedThreadLink>, HostError> {
+        let delivered = self
+            .session_slots
+            .read(session_id, |slot| slot.published_snapshot.clone())
+            .flatten();
+        // Relationship recovery and terminal teardown must remain available
+        // after a publication is revoked. The committed advisor call supplies
+        // identity; current publication only enriches its model label. Managed
+        // can recover an empty label from the Session's already-frozen profile.
+        let advisor_model = self
+            .resolve_session_publication(session_id, None, delivered)
+            .ok()
+            .and_then(|(_, _, publication, _)| publication)
+            .and_then(|snapshot| {
+                snapshot
+                    .resolved_spec
+                    .plugin_config
+                    .agent
+                    .advisor
+                    .map(|advisor| advisor.model)
+            });
+        let commit = self.commit_for_read(session_id).await?;
+        let root_thread = ThreadId(session_id.to_string());
+        let Some(claimed_run) = commit
+            .authoritative_latest_run(&root_thread)
+            .await
+            .map_err(HostError::internal)?
+        else {
+            return Ok(Vec::new());
+        };
+        // The claim only selects the recovery port's required Run coordinate.
+        // Every relationship input below comes from the returned atomic prefix,
+        // including a newer root Run if it committed between selection and read.
+        let committed = commit
+            .recovery_snapshot(&root_thread, &claimed_run.id)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        let mut links =
+            project_committed_coordination_links(session_id, advisor_model.as_deref(), &committed)?;
+        if links.is_empty() {
+            return Ok(links);
+        }
+
+        // Child Run facts live in their logical Threads and are intentionally
+        // absent from the root snapshot. Enrich only from lifecycle facts at or
+        // before the snapshot's backend watermark, never from a later prefix.
+        let mut cursor = RunLifecycleCursor::default();
+        loop {
+            let page = commit
+                .events_after(cursor, MAX_LIFECYCLE_PAGE)
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
+            let reached_snapshot_fence =
+                apply_lifecycle_latest_runs(&mut links, &page.events, committed.store_cursor);
+            if reached_snapshot_fence || page.events.is_empty() || page.next_cursor == cursor {
+                break;
+            }
+            cursor = page.next_cursor;
+        }
+        Ok(links)
+    }
+
+    /// Read the complete logical child prefix from the parent Session's sole
+    /// physical commit authority. The existing recovery port owns consistency;
+    /// this method only selects its claimed Run from committed child truth.
+    pub(crate) async fn session_thread_recovery_snapshot(
+        &self,
+        session_id: &str,
+        thread_id: &ThreadId,
+    ) -> Result<Option<RunRecoverySnapshot>, HostError> {
+        let commit = self.commit_for_read(session_id).await?;
+        let Some(latest_run) = commit
+            .authoritative_latest_run(thread_id)
+            .await
+            .map_err(HostError::internal)?
+        else {
+            return Ok(None);
+        };
+        commit
+            .recovery_snapshot(thread_id, &latest_run.id)
+            .await
+            .map(Some)
+            .map_err(|error| {
+                HostError::internal(format!(
+                    "recover Session Thread {:?} from parent partition: {error}",
+                    thread_id.0
+                ))
+            })
+    }
+
+    /// Read the exact claim-selected logical Run through its parent Session's
+    /// physical commit partition. Registered-Worker recovery already holds the
+    /// guarded [`RunDispatch`](awaken_dispatch::RunDispatch), so it must not
+    /// reopen a logical child as a second physical Session.
+    pub(crate) async fn session_thread_run_recovery_snapshot(
+        &self,
+        session_id: &str,
+        thread_id: &ThreadId,
+        run_id: &RunId,
+    ) -> Result<RunRecoverySnapshot, HostError> {
+        self.commit_for_read(session_id)
+            .await?
+            .recovery_snapshot(thread_id, run_id)
+            .await
+            .map_err(|error| {
+                HostError::internal(format!(
+                    "recover Session Thread {:?} Run {:?} from parent partition: {error}",
+                    thread_id.0, run_id.0
+                ))
+            })
+    }
+
+    pub(crate) async fn session_thread_usage(
+        &self,
+        session_id: &str,
+        thread_id: &ThreadId,
+    ) -> Result<awaken_session_contract::SessionUsage, HostError> {
+        let commit = self.commit_for_read(session_id).await?;
+        if commit
+            .authoritative_latest_run(thread_id)
+            .await
+            .map_err(HostError::internal)?
+            .is_none()
+        {
+            return Ok(awaken_session_contract::SessionUsage::default());
+        }
+        // Usage depends only on committed State. Reuse its existing authority
+        // query instead of reading every Message, Event, Run and resume ticket
+        // again. The parent partition and absent-Run rule stay unchanged; shared
+        // stores still bypass their process-local compatibility projections.
+        let state = commit
+            .committed_state_view(thread_id)
+            .await
+            .map_err(HostError::internal)?;
+        Ok(awaken_runtime_contract::llm::ThreadUsage::from_committed_state(&state).into())
+    }
+
+    pub(crate) async fn session_thread_disposition(
+        &self,
+        session_id: &str,
+        thread_id: &ThreadId,
+    ) -> Result<awaken_agent_contract::ThreadDisposition, HostError> {
+        let commit = self.commit_for_read(session_id).await?;
+        let state = commit
+            .committed_state_view(thread_id)
+            .await
+            .map_err(HostError::internal)?;
+        awaken_agent_contract::thread_disposition_from_committed_state(&state).map_err(|error| {
+            HostError::internal(format!(
+                "recover disposition for Session Thread {:?}: {error}",
+                thread_id.0
+            ))
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy};
+    use awaken_agent_contract::thread::commit::RunDisposition;
+    use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
+    use awaken_session_contract::SessionRuntime as _;
+
+    #[tokio::test]
+    async fn thread_usage_reads_authoritative_state_without_rebuilding_history() {
+        // Cause/effect graph: C1 root/child identity selects the same parent
+        // partition; C2 an authoritative Run is absent/present; C3 State read
+        // succeeds/fails; C4 the compatibility history stays stale; C5 a later
+        // committed usage cell changes after a Host restart.
+        // Rules U1=C1+!C2+!C3 => zero without reading State;
+        // U2=C1+C2+!C3 => error, never fabricated zero;
+        // U3=C1+C2+C3+C4 => exact authoritative totals and model attribution;
+        // U4=U3+C5 => fresh totals without hydrating a transcript or child store.
+        // The adjacent recovery test owns consistent multi-region snapshots;
+        // usage needs only the existing authoritative State read and projector.
+        for child in [false, true] {
+            let session_id = "usage-state-parent";
+            let thread_id = ThreadId(
+                if child {
+                    "usage-state-child"
+                } else {
+                    session_id
+                }
+                .into(),
+            );
+            let store = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new());
+            let queries =
+                crate::authority::ScriptedStateQueries::new(Err("usage State unavailable".into()));
+            let authority = Arc::new(crate::EphemeralRuntimeAuthority::new().with_commit(
+                session_id,
+                Arc::new(crate::LocalCommitAdapter::with_queries(
+                    store.clone(),
+                    queries.clone(),
+                )),
+            ));
+            let make_host = || {
+                Arc::new(
+                    SharedHost::new(Arc::new(crate::host::MemoryHostModel), "stub")
+                        .with_runtime_authority(authority.clone()),
+                )
+            };
+            let host = make_host();
+            let managed = crate::ManagedHost::new(host.clone());
+            assert_eq!(
+                managed
+                    .session_thread_usage(session_id, &thread_id.0)
+                    .await
+                    .unwrap(),
+                awaken_session_contract::SessionUsage::default(),
+                "U1 absent Run does not read unavailable State"
+            );
+            store
+                .commit(awaken_agent_contract::ThreadCommit::assemble(
+                    thread_id.clone(),
+                    RunDisposition::ended(
+                        RunId("usage-state-run".into()),
+                        awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+                    ),
+                    true,
+                    Vec::new(),
+                    Vec::new(),
+                    Vec::new(),
+                ))
+                .await
+                .unwrap();
+            let error = managed
+                .session_thread_usage(session_id, &thread_id.0)
+                .await
+                .expect_err("U2 unavailable State must not become zero usage");
+            assert!(
+                error.to_string().contains("usage State unavailable"),
+                "U2 exact source error"
+            );
+            for tokens in [17, 29] {
+                let mut usage = awaken_runtime_contract::llm::ThreadUsage::default();
+                usage.record(
+                    "usage-state-model",
+                    awaken_runtime_contract::llm::TokenUsage {
+                        prompt_tokens: tokens,
+                        completion_tokens: 5,
+                        ..Default::default()
+                    },
+                );
+                queries.replace(Ok(vec![StateCommand::set(
+                    Scope::Thread,
+                    MergePolicy::Commutative,
+                    awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY,
+                    serde_json::to_value(usage).unwrap(),
+                )]));
+                let restarted = crate::ManagedHost::new(make_host());
+                let actual = restarted
+                    .session_thread_usage(session_id, &thread_id.0)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    actual.input_tokens, tokens,
+                    "U3/U4 current authoritative totals"
+                );
+                assert_eq!(actual.output_tokens, 5, "U3/U4 output totals");
+                assert_eq!(
+                    actual.by_model["usage-state-model"].input_tokens, tokens,
+                    "U3/U4 model attribution"
+                );
+                assert!(awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::committed_state(store.as_ref(), &thread_id).is_empty(),
+                    "U3/U4 compatibility State remains stale; no history hydration");
+            }
+            if child {
+                assert!(
+                    !crate::RuntimeAuthority::durable_thread_exists(
+                        authority.as_ref(),
+                        &thread_id.0
+                    )
+                    .await
+                    .unwrap(),
+                    "U4 child usage never opens a child-named partition"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn child_recovery_snapshot_reuses_the_parent_commit_consistency_boundary() {
+        // Constraint/Invariant: the authoritative inputs and ownership boundaries
+        // documented here remain the only decision source; no parallel path is admitted.
+        // Decision rule: execute every reachable cause partition documented here and
+        // require its stated effects, including each fail-closed outcome.
+        // Cause/effect graph: C1 the logical child has/has-not a committed Run;
+        // C2 child and unrelated logical commits share the parent physical
+        // partition; C3 the latest child Run is Awaiting with transcript, state,
+        // cumulative usage, and a resume ticket. Effects: E1 no Run returns None without creating
+        // child storage and projects zero usage; E2 one recovery read returns a mutually consistent child
+        // prefix; E3 the snapshot retains the backend-wide cursor while excluding
+        // unrelated logical facts; E4 ManagedHost delegates to this same read;
+        // E5 the registered-Worker recovery adapter preserves the guarded parent
+        // partition while retaining the child's logical identity; E6 usage is
+        // projected from the same committed State authority, never a process-local
+        // compatibility cache; C4 the caller supplies an exact present/absent
+        // Run id. E7 exact recovery reuses the same prefix for the present Run
+        // and fails closed for the absent Run.
+        //
+        // | Rule | C1 | C2 | C3 | Effects       |
+        // | R1   | N  | -  | -  | E1            |
+        // | R2   | Y  | Y  | Y  | E2,E3,E4,E5,E6,E7 |
+        let session_id = "snapshot-parent-session";
+        let child_id = ThreadId("snapshot-logical-child".into());
+        let child_run = RunId("snapshot-child-run".into());
+        let host = Arc::new(SharedHost::new(
+            Arc::new(crate::host::MemoryHostModel),
+            "stub",
+        ));
+
+        assert_eq!(
+            host.session_thread_recovery_snapshot(session_id, &child_id)
+                .await
+                .expect("R1 parent-partition read"),
+            None,
+            "R1/E1"
+        );
+        assert!(
+            !host
+                .authority
+                .as_ref()
+                .expect("test Runtime authority")
+                .durable_thread_exists(&child_id.0)
+                .await
+                .expect("R1 child partition probe"),
+            "R1/E1 does not open a child-named physical partition"
+        );
+        assert_eq!(
+            crate::ManagedHost::new(host.clone())
+                .session_thread_usage(session_id, &child_id.0)
+                .await
+                .expect("R1 absent usage read"),
+            awaken_session_contract::SessionUsage::default(),
+            "R1/E1 only a genuinely absent Run projects zero usage",
+        );
+
+        let parent_commit = host
+            .commit_for_read(session_id)
+            .await
+            .expect("parent physical commit authority");
+        parent_commit
+            .commit(awaken_agent_contract::ThreadCommit::assemble(
+                child_id.clone(),
+                RunDisposition::running(child_run.clone()),
+                true,
+                vec![Message::text(
+                    MessageId("snapshot-child-user".into()),
+                    Role::User,
+                    "child question",
+                )],
+                vec![StateCommand::set(
+                    Scope::Thread,
+                    MergePolicy::Disjoint,
+                    "snapshot-phase",
+                    serde_json::json!("running"),
+                )],
+                Vec::new(),
+            ))
+            .await
+            .expect("R2 first child commit");
+        parent_commit
+            .commit(awaken_agent_contract::ThreadCommit::assemble(
+                ThreadId("snapshot-unrelated-logical-thread".into()),
+                RunDisposition::running(RunId("snapshot-unrelated-run".into())),
+                true,
+                vec![Message::text(
+                    MessageId("snapshot-unrelated-message".into()),
+                    Role::User,
+                    "must stay outside the child snapshot",
+                )],
+                Vec::new(),
+                Vec::new(),
+            ))
+            .await
+            .expect("R2 unrelated logical commit");
+        let ticket = ResumeTicket::new(
+            "snapshot-correlation",
+            child_run.clone(),
+            child_id.clone(),
+            "snapshot-id",
+            "snapshot-catalog",
+            AwaitTarget::RemoteInput {
+                reason: awaken_agent_contract::agent::awaiting::RemoteInputReason::UserInput,
+                call_id: "snapshot-call".into(),
+            },
+        );
+        parent_commit
+            .commit(awaken_agent_contract::ThreadCommit::assemble(
+                child_id.clone(),
+                RunDisposition::awaiting(ticket.clone()),
+                true,
+                vec![Message::text(
+                    MessageId("snapshot-child-assistant".into()),
+                    Role::Assistant,
+                    "child needs input",
+                )],
+                vec![
+                    StateCommand::set(
+                        Scope::Thread,
+                        MergePolicy::Disjoint,
+                        "snapshot-phase",
+                        serde_json::json!("awaiting"),
+                    ),
+                    StateCommand::set(
+                        Scope::Thread,
+                        MergePolicy::Commutative,
+                        awaken_runtime_contract::llm::THREAD_USAGE_STATE_KEY,
+                        serde_json::to_value(awaken_runtime_contract::llm::ThreadUsage {
+                            by_model: std::collections::BTreeMap::from([(
+                                "snapshot-model".into(),
+                                awaken_runtime_contract::llm::TokenUsage {
+                                    prompt_tokens: 13,
+                                    completion_tokens: 5,
+                                    cache_read_tokens: 3,
+                                    cache_creation_tokens: 2,
+                                },
+                            )]),
+                        })
+                        .expect("serialize R2 usage"),
+                    ),
+                ],
+                Vec::new(),
+            ))
+            .await
+            .expect("R2 awaiting child commit");
+
+        let managed = crate::ManagedHost::new(host.clone());
+        let snapshot = managed
+            .session_thread_recovery_snapshot(session_id, &child_id.0)
+            .await
+            .expect("R2 ManagedHost read")
+            .expect("R2 committed child Run");
+        assert_eq!(snapshot.thread_id, child_id, "R2/E2 logical Thread");
+        assert_eq!(snapshot.claimed_run_id, child_run, "R2/E2 claimed Run");
+        assert_eq!(
+            snapshot.latest_run_id,
+            Some(child_run.clone()),
+            "R2/E2 latest"
+        );
+        assert_eq!(snapshot.runs.len(), 1, "R2/E2 one child Run");
+        assert_eq!(snapshot.runs[0].state, RunState::Awaiting, "R2/E2 state");
+        assert_eq!(
+            snapshot
+                .messages
+                .iter()
+                .map(Message::text_content)
+                .collect::<Vec<_>>(),
+            ["child question", "child needs input"],
+            "R2/E2 child transcript is one consistent prefix"
+        );
+        assert_eq!(snapshot.state.len(), 3, "R2/E2 all child state commands");
+        assert_eq!(snapshot.resume_tickets.len(), 1, "R2/E2 active ticket");
+        assert_eq!(
+            snapshot.resume_tickets[0].run_id, child_run,
+            "R2/E2 ticket owner"
+        );
+        assert_eq!(snapshot.resume_tickets[0].ticket, ticket, "R2/E2 ticket");
+        assert_eq!(snapshot.thread_version, 2, "R2/E3 child-only version");
+        assert_eq!(snapshot.store_cursor, 3, "R2/E3 parent-store cursor");
+        assert_eq!(snapshot.next_commit_ordinal, 2, "R2/E2 claimed ordinal");
+        let exact_snapshot = managed
+            .session_thread_run_recovery_snapshot(session_id, &child_id.0, &child_run)
+            .await
+            .expect("R2 ManagedHost exact read")
+            .expect("R2 exact committed child Run");
+        let usage = managed
+            .session_thread_usage(session_id, &child_id.0)
+            .await
+            .expect("R2 ManagedHost usage read");
+        assert_eq!(usage.input_tokens, 13, "R2/E6 authoritative usage");
+        assert_eq!(usage.output_tokens, 5, "R2/E6 authoritative usage");
+        assert_eq!(
+            usage.by_model["snapshot-model"].cache_read_tokens, 3,
+            "R2/E6 per-model attribution",
+        );
+        assert_eq!(exact_snapshot, snapshot, "R2/E7 exact recovery authority");
+        assert_eq!(
+            managed
+                .session_thread_run_recovery_snapshot(
+                    session_id,
+                    &child_id.0,
+                    &RunId("snapshot-absent-run".into()),
+                )
+                .await
+                .expect("R2 absent exact read"),
+            None,
+            "R2/E7 absent exact Run fails closed"
+        );
+        let worker_snapshot = host
+            .worker_recovery_source()
+            .recovery_snapshot_in_session(&ThreadId(session_id.into()), &child_id, &child_run)
+            .await
+            .expect("R2 registered-Worker parent-partition read");
+        assert_eq!(worker_snapshot, snapshot, "R2/E5 one recovery authority");
+        assert!(
+            !host
+                .authority
+                .as_ref()
+                .expect("test Runtime authority")
+                .durable_thread_exists(&child_id.0)
+                .await
+                .expect("R2 child partition probe"),
+            "R2/E4-E5 child truth remains physically in the parent partition"
+        );
+    }
+}
