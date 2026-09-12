@@ -1,7 +1,7 @@
 import { ArrowRight, Check, Circle, Info } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card } from "@awaken/ui";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
     type AgentConfig,
     type AgentToolsetCap,
@@ -11,82 +11,27 @@ import {
 } from "../../lib/api/types";
 import { api, BUILTIN_LOCAL_ENVIRONMENT_ID, ws } from "../../lib/api/client";
 import { selectedAgentToolIds, withSelectedAgentTools } from "../../lib/agent-toolsets";
+import {
+  STARTERS,
+  type StarterTemplate,
+  starterAgentId,
+  starterById,
+  starterOutcomeDraft,
+} from "../../lib/agent-starters";
+import {
+  type OutcomeDraft,
+  emptyOutcomeDraft,
+  outcomeDraftComplete,
+} from "../../lib/session-outcome";
 import { useApp } from "../../lib/app-state";
 import AgentModelSelectionEditor from "./AgentModelSelectionEditor";
+import OutcomeFields from "../session/OutcomeFields";
+import QuickstartProgress, { type QuickstartStep } from "./QuickstartProgress";
+import type { QuickRunIntent } from "./AgentPublicationModals";
 import { Pill, TextAreaField, TextField } from "../ui";
 import { entityDisplayName, identifierLabel } from "../../lib/presentation";
 
-interface StarterTemplate {
-  id: string;
-  title: string;
-  titleZh: string;
-  description: string;
-  descriptionZh: string;
-  name: string;
-  system: string;
-  maxSteps: number;
-  firstTask: string;
-  firstTaskZh: string;
-  requirement: string;
-  requirementZh: string;
-  suggestedTools: string[];
-  suggestedPlugins?: string[];
-}
-
-const STARTERS: StarterTemplate[] = [
-  {
-    id: "task-assistant",
-    title: "Task assistant",
-    titleZh: "任务助手",
-    description: "Turn one clearly-scoped request into a checked result.",
-    descriptionZh: "把一项边界清晰的请求转化为经过检查的结果。",
-    name: "Task Assistant",
-    system: "You are a focused task assistant. Clarify the intended outcome from available context, complete the work with the configured capabilities, verify the result, and report material limitations.",
-    maxSteps: 10,
-    firstTask: "Summarize your role, list the inputs you need, and complete one small representative task.",
-    firstTaskZh: "概括你的职责、列出所需输入，并完成一项小型代表任务。",
-    requirement: "No Sandbox unless a selected Tool or Skill needs one",
-    requirementZh: "仅在所选 Tool 或 Skill 需要时创建 Sandbox",
-    suggestedTools: [],
-  },
-  {
-    id: "repository-change",
-    title: "Repository change",
-    titleZh: "代码仓改动",
-    description: "Inspect a repository, make a focused change, and run its checks.",
-    descriptionZh: "检查代码仓、完成聚焦改动并运行验证。",
-    name: "Repository Change Agent",
-    system: "You are a careful coding agent. Inspect the repository, make focused changes, and verify behavior before reporting completion.",
-    maxSteps: 16,
-    firstTask: "Inspect the mounted repository, identify its verification commands, and report the smallest safe first change.",
-    firstTaskZh: "检查已挂载代码仓，找出验证命令，并说明最小且安全的首个改动。",
-    requirement: "Requires a filesystem-capable Environment / Sandbox",
-    requirementZh: "需要具备文件系统能力的 Environment / Sandbox",
-    suggestedTools: ["bash", "read", "write", "glob", "grep"],
-  },
-  {
-    id: "evidence-brief",
-    title: "Evidence brief",
-    titleZh: "证据简报",
-    description: "Answer a decision question with traceable sources and uncertainty.",
-    descriptionZh: "用可追溯来源与不确定性说明回答一个决策问题。",
-    name: "Evidence Brief Agent",
-    system: "You are a research agent. Gather evidence, separate observation from inference, and produce a concise sourced synthesis.",
-    maxSteps: 12,
-    firstTask: "Produce a short evidence brief on the supplied question, separating verified facts, inference, and open gaps.",
-    firstTaskZh: "围绕给定问题生成简短证据简报，区分已验证事实、推断与待补信息。",
-    requirement: "Requires a web/search Tool, MCP server, or supplied Files",
-    requirementZh: "需要 Web/Search Tool、MCP Server 或已提供 Files",
-    suggestedTools: ["web_search"],
-    suggestedPlugins: ["web_search"],
-  },
-];
-
-/** A Starter may remove the machine-id chore from a blank draft, but it must
- * never overwrite an id the operator already chose. */
-export function starterAgentId(currentId: string, starterId: string): string {
-  return currentId.trim() ? currentId : starterId;
-}
+export { starterAgentId } from "../../lib/agent-starters";
 
 export default function AgentQuickstart({
   config,
@@ -100,6 +45,7 @@ export default function AgentQuickstart({
   idEditable,
   published,
   runPending,
+  initialTemplateId,
   onPatch,
   onManageModels,
   onRefreshRuntimes,
@@ -117,11 +63,14 @@ export default function AgentQuickstart({
   idEditable: boolean;
   published: boolean;
   runPending: boolean;
+  /** The Starter the landing surface handed over, if any. Applied once so the
+   * step opens already seeded; every field stays editable afterwards. */
+  initialTemplateId?: string;
   onPatch: (patch: Partial<AgentConfig>) => void;
   onManageModels: () => void;
   onRefreshRuntimes?: () => void;
   runtimeUpdatedAt?: number;
-  onReviewRun: (environmentId: string, task: string) => void;
+  onReviewRun: (intent: QuickRunIntent) => void;
 }) {
   const app = useApp();
   const agentToolsetMembers = agentToolset?.members ?? [];
@@ -131,6 +80,11 @@ export default function AgentQuickstart({
     "Introduce yourself in one sentence and explain how you would approach your configured role.",
     "用一句话介绍自己，并说明你会如何完成当前配置的职责。",
   ));
+  // An Outcome is never implied. A Starter may propose one, which prefills the
+  // draft and says so; sending `user.define_outcome` still needs this opt-in.
+  const [outcomeEnabled, setOutcomeEnabled] = useState(false);
+  const [outcomeProposed, setOutcomeProposed] = useState(false);
+  const [outcomeDraft, setOutcomeDraft] = useState<OutcomeDraft>(emptyOutcomeDraft);
   const environments = useQuery({
     queryKey: ["environments", app.workspaceId],
     queryFn: () => api.get<Page<Environment>>(ws("/v1/environments")),
@@ -158,8 +112,23 @@ export default function AgentQuickstart({
       plugins: Array.from(new Set([...config.plugins, ...plugins])),
     });
     setTask(app.t(template.firstTask, template.firstTaskZh));
+    const proposal = starterOutcomeDraft(template, app.t);
+    setOutcomeProposed(proposal != null);
+    setOutcomeDraft(proposal ?? emptyOutcomeDraft());
+    if (!proposal) setOutcomeEnabled(false);
   };
 
+  // The landing surface hands over a Starter by route, not by shared state.
+  // Apply it exactly once so re-renders never overwrite later manual edits.
+  const seededTemplate = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const starter = starterById(initialTemplateId);
+    if (!starter || seededTemplate.current === starter.id) return;
+    seededTemplate.current = starter.id;
+    applyTemplate(starter);
+  }, [initialTemplateId]);
+
+  const outcomeReady = !outcomeEnabled || outcomeDraftComplete(outcomeDraft);
   const readiness = [
     {
       ready: Boolean(config.name?.trim()),
@@ -181,13 +150,33 @@ export default function AgentQuickstart({
       label: app.t("First task", "首次任务"),
       detail: task.trim() ? app.t("Ready", "就绪") : app.t("Required", "必填"),
     },
+    // Only an Outcome the operator opted into can block the run; an absent one
+    // is the ordinary case, not an unmet requirement.
+    ...(outcomeEnabled ? [{
+      ready: outcomeDraftComplete(outcomeDraft),
+      label: app.t("Outcome", "结果标准"),
+      detail: outcomeDraftComplete(outcomeDraft)
+        ? app.t(`At most ${outcomeDraft.maxIterations} revisions`, `最多 ${outcomeDraft.maxIterations} 轮修订`)
+        : app.t("Deliverable and rubric required", "需要填写交付物与评分标准"),
+    }] : []),
   ];
+  const allReady = readiness.every((item) => item.ready);
+
+  // The rail is derived, never stored: the operator is on the Session step once
+  // the Environment is chosen and a task exists, and on step 2 once the Agent
+  // identity and model are settled.
+  const currentStep: QuickstartStep = !(config.name?.trim() && config.id.trim() && canRun)
+    ? "agent"
+    : task.trim()
+      ? "session"
+      : "environment";
 
   return (
     <div className="quickstart-layout">
       <div className="stack">
+        <QuickstartProgress current={currentStep} />
         <div>
-          <h2 className="section-title">{app.t("1 · Choose a starting point", "1 · 选择起点")}</h2>
+          <h2 className="section-title">{app.t("1 · Create the Agent", "1 · 创建 Agent")}</h2>
           <p className="hint">{app.t(
             "Templates update this draft's prompt and suggested capabilities. Advanced configuration is preserved.",
             "模板会更新当前草稿的提示词和建议能力，高级配置保持不变。",
@@ -204,11 +193,13 @@ export default function AgentQuickstart({
               <strong>{app.t(template.title, template.titleZh)}</strong>
               <span>{app.t(template.description, template.descriptionZh)}</span>
               <small className="mut">{app.t(template.requirement, template.requirementZh)}</small>
+              {template.outcome && (
+                <Pill tone="info">{app.t("Outcome-checked", "结果自评")}</Pill>
+              )}
             </button>
           ))}
         </div>
         <Card className="quickstart-step">
-          <h2 className="section-title">{app.t("2 · Name and identify this Agent", "2 · 为 Agent 命名并设置标识")}</h2>
           <TextField
             label={app.t("Display name", "显示名称")}
             hint={app.t("The human-readable name shown throughout the Console.", "在 Console 各处显示的人类可读名称。")}
@@ -225,10 +216,6 @@ export default function AgentQuickstart({
             disabled={!idEditable}
             onChange={(event) => onPatch({ id: event.target.value })}
           />
-        </Card>
-
-        <Card className="quickstart-step">
-          <h2 className="section-title">{app.t("3 · Choose a runnable model", "3 · 选择可运行模型")}</h2>
           <AgentModelSelectionEditor
             model={config.model}
             readyModels={readyModels}
@@ -242,7 +229,7 @@ export default function AgentQuickstart({
         </Card>
 
         <Card className="quickstart-step">
-          <h2 className="section-title">{app.t("4 · Choose where the first run executes", "4 · 选择首次运行环境")}</h2>
+          <h2 className="section-title">{app.t("2 · Configure where the first run executes", "2 · 配置首次运行环境")}</h2>
           <label className="ui-field">
             <span>{app.t("Environment for this run", "本次运行的 Environment")}</span>
             <select
@@ -269,13 +256,32 @@ export default function AgentQuickstart({
         </Card>
 
         <Card className="quickstart-step">
-          <h2 className="section-title">{app.t("5 · Define the first real task", "5 · 定义首次真实任务")}</h2>
+          <h2 className="section-title">{app.t("3 · Start the Session", "3 · 启动会话")}</h2>
           <TextAreaField
             label={app.t("Task sent to the new Session", "发送到新 Session 的任务")}
             rows={4}
             value={task}
             onChange={(event) => setTask(event.target.value)}
           />
+          <label className="quickstart-outcome-toggle">
+            <input
+              type="checkbox"
+              checked={outcomeEnabled}
+              onChange={(event) => setOutcomeEnabled(event.target.checked)}
+            />
+            <span>
+              {app.t(
+                "Have the Agent self-evaluate against a rubric until it passes (optional)",
+                "让 Agent 对照评分标准自评并修订，直到达标（可选）",
+              )}
+              {outcomeProposed && !outcomeEnabled && (
+                <> · <span className="mut">{app.t("this template proposes one", "此模板已建议一份")}</span></>
+              )}
+            </span>
+          </label>
+          {outcomeEnabled && (
+            <OutcomeFields draft={outcomeDraft} onChange={setOutcomeDraft} />
+          )}
         </Card>
       </div>
 
@@ -283,7 +289,7 @@ export default function AgentQuickstart({
         <Card>
           <div className="row" style={{ justifyContent: "space-between" }}>
             <strong>{app.t("Ready to run", "运行就绪")}</strong>
-            <Pill tone={readiness.every((item) => item.ready) ? "ok" : "warn"}>
+            <Pill tone={allReady ? "ok" : "warn"}>
               {readiness.filter((item) => item.ready).length}/{readiness.length}
             </Pill>
           </div>
@@ -306,11 +312,19 @@ export default function AgentQuickstart({
           <Button
             variant="primary"
             style={{ width: "100%", marginTop: 12, justifyContent: "center" }}
-            disabled={!readiness.every((item) => item.ready) || runPending}
-            onClick={() => onReviewRun(environmentId, task.trim())}
+            disabled={!allReady || runPending}
+            onClick={() => onReviewRun({
+              environmentId,
+              task: task.trim(),
+              outcome: outcomeEnabled && outcomeReady ? outcomeDraft : undefined,
+            })}
           >
             {runPending ? app.t("Starting…", "正在启动…") : app.t("Review, publish & run", "审阅、发布并运行")} <ArrowRight />
           </Button>
+          <p className="hint" style={{ marginTop: 10 }}>{app.t(
+            "Step 4 opens on the Session that starts here: connect the same Agent from your own backend.",
+            "第 4 步会在这里启动的 Session 上继续：从你自己的后端接入同一个 Agent。",
+          )}</p>
         </Card>
       </aside>
     </div>

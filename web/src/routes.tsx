@@ -21,6 +21,7 @@ const AgentEditorSurface = lazy(() => import("./surfaces/agent-editor"));
 const AgentsSurface = lazy(() => import("./surfaces/agents"));
 const WorkspaceOverviewSurface = lazy(() => import("./surfaces/workspace-overview"));
 const ProtocolsSurface = lazy(() => import("./surfaces/protocols"));
+const QuickstartSurface = lazy(() => import("./surfaces/quickstart"));
 const SessionDetailSurface = lazy(() => import("./surfaces/session-detail"));
 const SessionsSurface = lazy(() => import("./surfaces/sessions"));
 const SettingsSurface = lazy(() => import("./surfaces/settings"));
@@ -39,6 +40,7 @@ export const router = createBrowserRouter([
       { path: "w/:ws/overview", element: <WorkspaceOverviewSurface /> },
       { path: "w/:ws/sessions", element: <SurfaceRoute surface="managed_runtime"><SessionsSurface /></SurfaceRoute> },
       { path: "w/:ws/sessions/:sid", element: <SurfaceRoute surface="managed_runtime"><SessionDetailSurface /></SurfaceRoute> },
+      { path: "w/:ws/quickstart", element: <QuickstartSurface /> },
       { path: "w/:ws/agents", element: <AgentsSurface /> },
       { path: "w/:ws/agents/:id", element: <AgentEditorSurface /> },
       { path: "w/:ws/assistant", element: <SurfaceRoute surface="managed_runtime"><AssistantSurface /></SurfaceRoute> },

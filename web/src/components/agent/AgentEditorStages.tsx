@@ -12,6 +12,7 @@ import type {
 import AgentAdvanced from "./AgentAdvanced";
 import AgentBuilder from "./AgentBuilder";
 import AgentQuickstart from "./AgentQuickstart";
+import type { QuickRunIntent } from "./AgentPublicationModals";
 import type { AdvancedSection, AuthorStage, BuilderSection } from "./agent-editor-navigation";
 
 interface Props {
@@ -43,7 +44,9 @@ interface Props {
   onManageModels: () => void;
   onRefreshRuntimes?: () => void;
   runtimeUpdatedAt?: number;
-  onReviewRun: (environmentId: string, task: string) => void;
+  onReviewRun: (intent: QuickRunIntent) => void;
+  /** Starter handed over by the Quickstart landing route, if any. */
+  initialTemplateId?: string;
   onBuilderSectionChange: (section: BuilderSection) => void;
   onAdvancedSectionChange: (section: AdvancedSection) => void;
   onResourcesChange: (inputs: InputBinding[]) => void;
@@ -71,6 +74,7 @@ export default function AgentEditorStages(props: Props) {
         idEditable={props.isNew}
         published={props.published}
         runPending={props.runPending}
+        initialTemplateId={props.initialTemplateId}
         onPatch={props.onPatch}
         onManageModels={props.onManageModels}
         onRefreshRuntimes={props.onRefreshRuntimes}

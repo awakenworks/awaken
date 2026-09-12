@@ -1,4 +1,4 @@
-import { ArrowRight, Check, Square, X } from "@awaken/ui/icons";
+import { ArrowRight, Square } from "@awaken/ui/icons";
 import { InlineNotice, Button, Card, TabNav, TabNavItem } from "@awaken/ui";
 // Session detail: header actions (rename/archive/interrupt) + an
 // agent/properties aside around the shared TranscriptView. This surface owns
@@ -17,10 +17,17 @@ import { api, ws } from "../lib/api/client";
 import type { Environment, Page, Session, SessionAgent } from "../lib/api/types";
 import { mcpToolsetPolicySummary, type McpToolsetPolicySummary } from "../lib/agent-toolsets";
 import { useApp } from "../lib/app-state";
-import { protocolHelpPath } from "../lib/navigation/paths";
 import { sessionDisplayTitle } from "../lib/presentation";
 import { sessionErrorText } from "../lib/session-log";
 import { useSessionLog } from "../lib/useSessionLog";
+import QuickstartIntegrateNotice from "../components/session/QuickstartIntegrateNotice";
+import SessionOutcomeDialog from "../components/session/SessionOutcomeDialog";
+import {
+  type OutcomeDraft,
+  activeOutcome,
+  defineOutcomeEvent,
+  outcomeDraftComplete,
+} from "../lib/session-outcome";
 
 /** The agent's model can arrive as a bare id or a `{ id }` object — coerce to text. */
 function modelText(m: unknown): string {
@@ -162,6 +169,8 @@ export default function SessionDetailSurface() {
   const [controlResult, setControlResult] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
+  const [definingOutcome, setDefiningOutcome] = useState(false);
+  const [outcomePending, setOutcomePending] = useState(false);
 
   const session = useQuery({
     queryKey: ["session", wsId, sid],
@@ -193,6 +202,7 @@ export default function SessionDetailSurface() {
     app.t("Default", "默认"),
   );
   const outcomes = session.data?.outcome_evaluations ?? [];
+  const ungradedOutcome = activeOutcome(session.data);
   const budgetLabel = managedMoneyLabel(session.data?.budget?.max_list_cost);
   const costLabel = managedMoneyLabel(session.data?.usage?.list_cost);
   const inputTokens = session.data?.usage?.input_tokens;
@@ -256,6 +266,27 @@ export default function SessionDetailSurface() {
     }
   };
 
+  /** Outcome definition is an ordinary inbound Session event, so it reuses the
+   * one send seam that already owns idempotency, receipts, and projection
+   * reconciliation. The read side needs no new wiring: the receipt lands in the
+   * log and `outcome_evaluations` takes over once grading starts. */
+  const submitOutcome = async (draft: OutcomeDraft) => {
+    if (!outcomeDraftComplete(draft)) return;
+    setOutcomePending(true);
+    setControlResult(null);
+    try {
+      const result = await sessionLog.send([defineOutcomeEvent(draft)]);
+      const receipt = result.data?.at(-1);
+      setControlResult(receipt ? `${receipt.type} accepted · ${receipt.id}` : null);
+      setDefiningOutcome(false);
+      void session.refetch();
+    } catch {
+      // The shared hook owns and presents the exact transport/projection error.
+    } finally {
+      setOutcomePending(false);
+    }
+  };
+
   return (
     <>
       <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -274,6 +305,19 @@ export default function SessionDetailSurface() {
           <TechnicalId value={sid} />
         </div>
         <span className="row">
+          {/* One Outcome is graded at a time: the aggregate back-pressures a
+              second definition into a pending batch instead of failing it, so
+              authoring is disabled rather than silently queued. */}
+          <Button
+            variant="ghost"
+            disabled={Boolean(session.data?.archived_at) || ungradedOutcome != null}
+            title={ungradedOutcome
+              ? app.t("An Outcome is still being graded.", "已有结果仍在评价中。")
+              : undefined}
+            onClick={() => setDefiningOutcome(true)}
+          >
+            ◇ {app.t("Define outcome", "定义结果")}
+          </Button>
           <Button
             variant="ghost"
             onClick={() => {
@@ -307,39 +351,22 @@ export default function SessionDetailSurface() {
         </Modal>
       )}
 
+      {definingOutcome && (
+        <SessionOutcomeDialog
+          pending={outcomePending}
+          onClose={() => setDefiningOutcome(false)}
+          onSubmit={(draft) => void submitOutcome(draft)}
+        />
+      )}
+
       {controlResult && <InlineNotice tone="info">{controlResult}</InlineNotice>}
       {fromQuickstart && (
-        <InlineNotice
-          tone="info"
-          icon={<Check />}
-          actions={
-            <>
-              <Button
-                variant="ghost"
-                aria-label={app.t("Dismiss Quickstart guidance", "关闭 Quickstart 引导")}
-                onClick={() => setSearchParams(withoutQuickstartProvenance(searchParams), { replace: true })}
-              >
-                <X />
-              </Button>
-            </>
-          }
-        >
-          <span style={{ flex: 1, minWidth: 0 }}>
-            {app.t(
-              "The Agent is published and its first task was submitted to this durable Session. Review the live result below, then connect the same Agent from your trusted backend with the Managed Agents SDK.",
-              "Agent 已发布，首次任务也已提交到这个持久 Session。先在下方检查实时结果，再通过可信后端使用 Managed Agents SDK 接入同一个 Agent。",
-            )}{" "}
-            <Link
-              className="protocol-help-link"
-              to={protocolHelpPath(wsId, "managed", {
-                agentId: session.data?.agent.id,
-                environmentId: session.data?.environment_id,
-              })}
-            >
-              {app.t("Open Managed Agents SDK setup", "打开 Managed Agents SDK 配置")} <ArrowRight />
-            </Link>
-          </span>
-        </InlineNotice>
+        <QuickstartIntegrateNotice
+          workspaceId={wsId}
+          agentId={session.data?.agent.id}
+          environmentId={session.data?.environment_id}
+          onDismiss={() => setSearchParams(withoutQuickstartProvenance(searchParams), { replace: true })}
+        />
       )}
       {sessionLog.sendError && <InlineNotice tone="danger">{sessionLog.sendError.message}</InlineNotice>}
       {view !== "chat" && sessionLog.projectionError && (
