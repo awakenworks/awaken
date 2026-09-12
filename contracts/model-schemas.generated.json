@@ -2254,7 +2254,8 @@
           "type": "string"
         },
         "ModelTarget": {
-          "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.",
+          "additionalProperties": false,
+          "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.\n\nEvery field of a target is a qualifier that narrows which Offering is\nselected, so a field the reader does not model is not decoration: it is\nauthored intent that would be dropped, resolving to a *different* model than\nthe author asked for. `deny_unknown_fields` reports it instead \u2014 `endpoint`\nwritten for `endpoint_name`, or `dialect` for `api_dialect`, is a rejected\ndocument, never a target that quietly ignores the qualifier.\n\nThis is the hazard the wrapping `ModelSelectionWire` already documents for\nits own variants. Serde's `deny_unknown_fields` does **not** recurse into a\nfield's type, so that wrapper never protected this struct; the guard has to\nbe stated on every wire type that models authored input, including this one.",
           "properties": {
             "api_dialect": {
               "description": "Public API-dialect qualifier (for example `anthropic_messages` or\n`open_ai_responses`). It narrows a provider's protocol surfaces without\nexposing the catalog's internal endpoint identity.",
@@ -2434,7 +2435,8 @@
           "type": "object"
         },
         "ModelTarget": {
-          "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.",
+          "additionalProperties": false,
+          "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.\n\nEvery field of a target is a qualifier that narrows which Offering is\nselected, so a field the reader does not model is not decoration: it is\nauthored intent that would be dropped, resolving to a *different* model than\nthe author asked for. `deny_unknown_fields` reports it instead \u2014 `endpoint`\nwritten for `endpoint_name`, or `dialect` for `api_dialect`, is a rejected\ndocument, never a target that quietly ignores the qualifier.\n\nThis is the hazard the wrapping `ModelSelectionWire` already documents for\nits own variants. Serde's `deny_unknown_fields` does **not** recurse into a\nfield's type, so that wrapper never protected this struct; the guard has to\nbe stated on every wire type that models authored input, including this one.",
           "properties": {
             "api_dialect": {
               "description": "Public API-dialect qualifier (for example `anthropic_messages` or\n`open_ai_responses`). It narrows a provider's protocol surfaces without\nexposing the catalog's internal endpoint identity.",
@@ -2604,7 +2606,8 @@
     },
     "ModelTarget": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.",
+      "additionalProperties": false,
+      "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.\n\nEvery field of a target is a qualifier that narrows which Offering is\nselected, so a field the reader does not model is not decoration: it is\nauthored intent that would be dropped, resolving to a *different* model than\nthe author asked for. `deny_unknown_fields` reports it instead \u2014 `endpoint`\nwritten for `endpoint_name`, or `dialect` for `api_dialect`, is a rejected\ndocument, never a target that quietly ignores the qualifier.\n\nThis is the hazard the wrapping `ModelSelectionWire` already documents for\nits own variants. Serde's `deny_unknown_fields` does **not** recurse into a\nfield's type, so that wrapper never protected this struct; the guard has to\nbe stated on every wire type that models authored input, including this one.",
       "properties": {
         "api_dialect": {
           "description": "Public API-dialect qualifier (for example `anthropic_messages` or\n`open_ai_responses`). It narrows a provider's protocol surfaces without\nexposing the catalog's internal endpoint identity.",
@@ -4381,7 +4384,8 @@
           "type": "string"
         },
         "ModelTarget": {
-          "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.",
+          "additionalProperties": false,
+          "description": "Stable authoring identity used to select one catalog Offering.\n\n`endpoint_name` is the human qualifier used by public model ids. Resolution\nmaps it to a concrete endpoint after dialect negotiation. Exact config and\nprofile authoring may instead use `protocol_endpoint_id`; admission rejects\na target containing both.\n\nEvery field of a target is a qualifier that narrows which Offering is\nselected, so a field the reader does not model is not decoration: it is\nauthored intent that would be dropped, resolving to a *different* model than\nthe author asked for. `deny_unknown_fields` reports it instead \u2014 `endpoint`\nwritten for `endpoint_name`, or `dialect` for `api_dialect`, is a rejected\ndocument, never a target that quietly ignores the qualifier.\n\nThis is the hazard the wrapping `ModelSelectionWire` already documents for\nits own variants. Serde's `deny_unknown_fields` does **not** recurse into a\nfield's type, so that wrapper never protected this struct; the guard has to\nbe stated on every wire type that models authored input, including this one.",
           "properties": {
             "api_dialect": {
               "description": "Public API-dialect qualifier (for example `anthropic_messages` or\n`open_ai_responses`). It narrows a provider's protocol surfaces without\nexposing the catalog's internal endpoint identity.",
