@@ -244,3 +244,67 @@ async fn predicates_filter_results_and_custom_tags_do_not_change_trust() {
         }
     }
 }
+
+#[tokio::test]
+async fn terminal_rules_preserve_execution_outcome_and_tool_error_semantics() {
+    // N14 decision table: all four accepted end variants select only their
+    // matching event rule. Completed+is_error remains completed, not a failed
+    // task execution. N15 Requested is nonterminal -> no message or receipt.
+    // These are projection partitions; transition legality belongs to the
+    // model's transition tests. Text rendering must preserve the public data.
+    for (end, expected) in [
+        (
+            BackgroundTaskEnd::Completed {
+                content: vec![],
+                is_error: false,
+            },
+            "completed",
+        ),
+        (
+            BackgroundTaskEnd::Completed {
+                content: vec![],
+                is_error: true,
+            },
+            "completed",
+        ),
+        (
+            BackgroundTaskEnd::Failed {
+                message: "provider unavailable".into(),
+            },
+            "failed",
+        ),
+        (BackgroundTaskEnd::Cancelled, "cancelled"),
+        (
+            BackgroundTaskEnd::Indeterminate {
+                message: "delivery unknown".into(),
+            },
+            "indeterminate",
+        ),
+    ] {
+        let mut task = ended();
+        task.lifecycle = BackgroundTaskLifecycle::Ended { end };
+        let mut state = Store::new();
+        state.apply(&task_state_cell(&task.id).write(&task).unwrap());
+        let config = json!({"tools":["x"],"notifications":{
+            "default":{"enabled":false},
+            "events":{(expected):{"format":"text","heading":"Outcome {event}"}}
+        }});
+        let result = project(config.clone(), &state).await;
+        assert_eq!(result.messages.len(), 1, "N14 {expected}");
+        let text = result.messages[0].text_content();
+        assert!(text.starts_with(&format!("Outcome {expected}\n")));
+        let body: Value = serde_json::from_str(text.split_once('\n').unwrap().1).unwrap();
+        assert_eq!(body["lifecycle"]["state"], expected);
+        if let BackgroundTaskLifecycle::Ended {
+            end: BackgroundTaskEnd::Completed { is_error, .. },
+        } = &task.lifecycle
+        {
+            assert_eq!(body["lifecycle"]["is_error"], *is_error);
+        }
+        task.lifecycle = BackgroundTaskLifecycle::Requested;
+        state.apply(&task_state_cell(&task.id).write(&task).unwrap());
+        let pending = project(config, &state).await;
+        assert!(pending.messages.is_empty(), "N15");
+        assert!(pending.state.is_empty(), "N15");
+    }
+}

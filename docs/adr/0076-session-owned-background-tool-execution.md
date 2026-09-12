@@ -381,7 +381,11 @@ to pointers in the same public task view; missing selected fields become null.
 An empty fields map selects that complete public view. Templates support only
 `{task_id}`, `{tool_id}` and `{event}`; no scripts or credential access are allowed.
 
-For example, under `plugin_config.background_task`, deliver failures generally
+`completed` with `is_error: true` is a completed tool error result, not a task
+execution failure. Use a completed-event rule with a matching `when` predicate
+to select it; `failed` selects failures of task execution itself.
+
+For example, under `plugin_config.background_task`, deliver task failures generally
 and successful call connection results with a custom presentation:
 
 ```json
