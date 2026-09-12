@@ -123,11 +123,7 @@ fn activation(plugin_ids: Vec<String>) -> RunActivation {
                 max_steps: 4,
                 delegation_limits: Default::default(),
                 model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                    ModelBinding {
-                        provider_identity_ref: "provider".into(),
-                        model_ref: "model".into(),
-                        backend_ref: "backend".into(),
-                    },
+                    ModelBinding::new("provider", "model", "backend"),
                 ),
                 tool_descriptors: vec![
                     ToolDescriptor::pinned(

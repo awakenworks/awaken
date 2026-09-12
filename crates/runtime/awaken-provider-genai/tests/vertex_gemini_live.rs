@@ -40,11 +40,7 @@ async fn gemini_on_vertex_with_oauth_bearer() {
     let model = std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".to_string());
     let executor = live_executor();
     let request = ChatRequest {
-        model_binding: ModelBinding {
-            provider_identity_ref: "vertex".into(),
-            model_ref: model,
-            backend_ref: "genai".into(),
-        },
+        model_binding: ModelBinding::new("vertex", model, "genai"),
         inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::User,
@@ -79,11 +75,7 @@ async fn gemini_on_vertex_accepts_generated_schema_and_completes_a_tool_round_tr
             "Call read_compatibility_fixture exactly once with marker `gcloud-gemini`, then report its result. Do not guess the result.",
         )],
     };
-    let binding = ModelBinding {
-        provider_identity_ref: "vertex".into(),
-        model_ref: model,
-        backend_ref: "genai".into(),
-    };
+    let binding = ModelBinding::new("vertex", model, "genai");
     let tool = compatibility_tool();
 
     let first = executor

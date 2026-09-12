@@ -382,11 +382,11 @@ impl DeltaSink for NullSink {
 
 fn request() -> ChatRequest {
     ChatRequest {
-        model_binding: ModelBinding {
-            provider_identity_ref: "p".to_string(),
-            model_ref: "claude-test".to_string(),
-            backend_ref: "b".to_string(),
-        },
+        model_binding: ModelBinding::new(
+            "p".to_string(),
+            "claude-test".to_string(),
+            "b".to_string(),
+        ),
         inference: Default::default(),
         messages: vec![ChatMessage {
             role: Role::User,

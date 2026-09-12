@@ -159,11 +159,11 @@ impl LlmExecutor for TruncateThenFailPrimary {
 }
 
 fn binding(model: &str) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
-    awaken_runtime_contract::resolved::ResolvedModelCandidate::host(ModelBinding {
-        provider_identity_ref: "p".to_string(),
-        model_ref: model.to_string(),
-        backend_ref: "b".to_string(),
-    })
+    awaken_runtime_contract::resolved::ResolvedModelCandidate::host(ModelBinding::new(
+        "p".to_string(),
+        model.to_string(),
+        "b".to_string(),
+    ))
 }
 
 /// An activation whose primary model is `primary` with ordered pool `fallbacks`.

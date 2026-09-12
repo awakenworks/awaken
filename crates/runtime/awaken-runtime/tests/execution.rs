@@ -1352,11 +1352,11 @@ fn activation(fingerprint: &str) -> RunActivation {
                 max_steps: 16,
                 delegation_limits: Default::default(),
                 model_binding: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                    ModelBinding {
-                        provider_identity_ref: "provider-1".to_string(),
-                        model_ref: "model-1".to_string(),
-                        backend_ref: "backend-1".to_string(),
-                    },
+                    ModelBinding::new(
+                        "provider-1".to_string(),
+                        "model-1".to_string(),
+                        "backend-1".to_string(),
+                    ),
                 ),
                 tool_descriptors: Vec::new(),
                 plugin_ids: Vec::new(),
@@ -1712,11 +1712,11 @@ async fn model_request_gate_fences_every_logical_request_but_not_provider_retrie
         .snapshot
         .resolved_spec
         .model_candidates
-        .push(ResolvedModelCandidate::host(ModelBinding {
-            provider_identity_ref: "provider-2".into(),
-            model_ref: "model-2".into(),
-            backend_ref: "backend-2".into(),
-        }));
+        .push(ResolvedModelCandidate::host(ModelBinding::new(
+            "provider-2",
+            "model-2",
+            "backend-2",
+        )));
     let no_retries = awaken_runtime::LlmRetryPolicy {
         max_retries: 0,
         ..Default::default()
