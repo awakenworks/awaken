@@ -29,6 +29,7 @@ default = []
 schema = []
 
 [dev-dependencies]
+proptest = { workspace = true }
 tokio.workspace = true
 
 [lints]

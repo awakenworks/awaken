@@ -230,6 +230,48 @@ def escaping_unit_variants(sources: dict[Path, str], repo_root: Path) -> list[tu
     return found
 
 
+# ---------------------------------------------------------------------------
+# A type that decodes through `#[serde(try_from = "…")]` has a strict door on
+# the wire. If it also offers an infallible `pub fn new(…) -> Self` that builds
+# the value directly, the two doors disagree: a value can exist in memory that
+# the wire refuses, which surfaces as a silent stall at the durable boundary
+# instead of a refusal where the coordinates were written (`ModelBinding::new`
+# beside `ModelBinding::parse`, 2026-09-12). The constructor must delegate to
+# the same admission the wire uses, or return the wire's error.
+TRY_FROM = re.compile(r"serde\s*\(\s*[^)]*\btry_from\s*=")
+INFALLIBLE_NEW = re.compile(r"pub\s+(?:const\s+)?fn\s+new\s*(?:<[^>]*>)?\s*\([^)]*\)\s*->\s*Self\s*\{")
+
+
+def _impl_blocks(production: str, name: str) -> list[str]:
+    blocks = []
+    for match in re.finditer(rf"\bimpl(?:<[^>]*>)?\s+{re.escape(name)}\b[^{{;]*\{{", production):
+        start = match.end() - 1
+        blocks.append(production[start : _bracket_end(production, start, "{", "}") + 1])
+    return blocks
+
+
+def constructor_wire_disagreements(sources: dict[Path, str], repo_root: Path) -> list[tuple[str, str]]:
+    found: list[tuple[str, str]] = []
+    for path, production in sources.items():
+        for item in deserialize_items(production):
+            if not TRY_FROM.search(item["attributes"]):
+                continue
+            for block in _impl_blocks(production, item["name"]):
+                for new in INFALLIBLE_NEW.finditer(block):
+                    body_start = new.end() - 1
+                    body = block[body_start : _bracket_end(block, body_start, "{", "}") + 1]
+                    if re.search(rf"\b(?:Self|{re.escape(item['name'])})::parse\s*\(", body):
+                        continue
+                    relative = path.relative_to(repo_root).as_posix()
+                    found.append((
+                        item["name"],
+                        f"{relative}: `{item['name']}` decodes through `try_from` but "
+                        "`new` builds it without that admission; delegate to `parse` "
+                        "or return its error",
+                    ))
+    return found
+
+
 def _ratcheted(
     found: list[tuple[str, str]],
     exemptions: dict[str, str],
@@ -272,7 +314,7 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
         ESCAPING_UNIT_VARIANT_BASELINE,
         "unit variants escaping their enum's deny_unknown_fields",
         "ESCAPING_UNIT_VARIANT_EXEMPTIONS",
-    )
+    ) + [message for _, message in constructor_wire_disagreements(sources, repo_root)]
 
 
 def selftest() -> None:
@@ -348,6 +390,29 @@ def selftest() -> None:
     # fails too (so ground gained is held), an exemption removes an instance,
     # and an exemption that names nothing live is stale.
     found = [("A", "a"), ("B", "b")]
+
+    # Constructor/wire agreement. Causes: N1 the type decodes through
+    # `try_from`; N2 it has an infallible `pub fn new(..) -> Self`; N3 that
+    # body delegates to `parse`; N4 `new` returns `Result`.
+    #
+    # | Rule | N1 | N2 | N3 | N4 | Effect |
+    # | K1   | T  | T  | F  | F  | E1     |
+    # | K2   | T  | T  | T  | F  | E2     |
+    # | K3   | T  | F  | -  | T  | E2     |
+    # | K4   | F  | T  | F  | F  | E2     |
+    strict = (
+        '#[derive(Deserialize)]\n#[serde(try_from = "Wire")]\npub struct Binding { a: String }\n'
+        "impl Binding {\n    pub fn parse(a: String) -> Result<Self, String> { Ok(Self { a }) }\n"
+        "    pub fn new(a: String) -> Self { Self { a } }\n}\n"
+    )
+    assert [key for key, _ in constructor_wire_disagreements(sources(strict), root)] == ["Binding"], "K1"
+    delegating = strict.replace("pub fn new(a: String) -> Self { Self { a } }",
+                                "pub fn new(a: String) -> Self { Self::parse(a).expect(\"complete\") }")
+    assert not constructor_wire_disagreements(sources(delegating), root), "K2"
+    fallible = strict.replace("pub fn new(a: String) -> Self { Self { a } }",
+                              "pub fn new(a: String) -> Result<Self, String> { Self::parse(a) }")
+    assert not constructor_wire_disagreements(sources(fallible), root), "K3"
+    assert not constructor_wire_disagreements(sources(strict.replace('#[serde(try_from = "Wire")]\n', "")), root), "K4"
     assert _ratcheted(found, {}, 1, "x", "REG"), "ratchet: above baseline rejects"
     assert not _ratcheted(found, {}, 2, "x", "REG"), "ratchet: at baseline admits"
     assert _ratcheted(found, {}, 3, "x", "REG"), "ratchet: below baseline demands a lower number"

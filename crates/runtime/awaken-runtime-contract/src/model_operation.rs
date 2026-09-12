@@ -590,7 +590,7 @@ fn model_execution_reentry_requires_positive_evidence() {
     let phase_selector: u8 = kani::any();
     let operation = ModelOperation {
         ordinal: NonZeroU64::MIN,
-        binding: ModelBinding::new("", "", ""),
+        binding: ModelBinding::new("", "", "scripted"),
         phase: match phase_selector % 3 {
             0 => ModelOperationPhase::Entered,
             1 => ModelOperationPhase::Returned,

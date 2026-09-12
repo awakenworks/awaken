@@ -1198,7 +1198,12 @@ async fn budgeted_session_backends_follow_the_exact_publication_decision_table()
     // | B8 | Native / absent    | absent          | Native / A2A / ACP   | absent   | E2,E3 |
     // | B9 | Native / absent    | Native / ACP     | absent               | absent   | E2,E3 |
     // | B10 | no profile (None) | absent          | absent               | absent   | E1    |
-    // | B11 | Invalid("") / absent | absent       | absent               | absent   | E2,E3 |
+    // | B11 | Invalid("") / absent | absent       | absent               | absent   | unrepresentable |
+    //
+    // B11 is refused one level down: `ModelBinding::new` applies the wire
+    // admission, so a snapshot can never carry an empty backend reference and
+    // the gate is never asked about one. The row is kept as the assertion
+    // below so the cause stays documented next to its neighbours.
     struct Rule {
         id: &'static str,
         agent_id: &'static str,
@@ -1364,22 +1369,18 @@ async fn budgeted_session_backends_follow_the_exact_publication_decision_table()
             override_fallback_backend: None,
             expected_models: Some(&["test-model"]),
         },
-        Rule {
-            id: "B11",
-            agent_id: "budget-root",
-            roster: BudgetBackendRoster {
-                root_backend: "",
-                root_fallback_backend: None,
-                exact_child_backend: None,
-                exact_child_fallback_backend: None,
-                current_child_backend: None,
-                advisor_backend: None,
-            },
-            override_backend: None,
-            override_fallback_backend: None,
-            expected_models: None,
-        },
     ];
+    assert!(
+        matches!(
+            awaken_runtime_contract::resolved::ModelBinding::parse(
+                "test-model-provider",
+                "test-model",
+                ""
+            ),
+            Err(awaken_runtime_contract::resolved::InvalidModelBinding::Backend(_))
+        ),
+        "B11: an empty backend reference never becomes a binding"
+    );
 
     for rule in rules {
         let runtime = AcceptingFake::default();

@@ -416,9 +416,11 @@ mod tests {
 
     #[tokio::test]
     async fn resolver_cannot_complete_an_incomplete_pinned_binding() {
-        // Causes: C1 Pinned claims to be complete; C2 its provider/backend axes
-        // are absent; C3 a resolver returns a completed binding. Effect: reject
-        // instead of creating a second public selection path beside Target.
+        // Causes: C1 Pinned names a host-installed executor (no provider or
+        // model axis; the half-stated shape is unrepresentable since
+        // `ModelBinding::new` applies the wire admission); C2 a resolver
+        // returns a differently completed binding. Effect: reject instead of
+        // creating a second public selection path beside Target.
         let resolved = ModelBinding::new("provider", "primary", "genai");
         let resolver = FixedResolver {
             expected_workspace: "workspace-a",
@@ -428,7 +430,7 @@ mod tests {
             &resolver,
             &awaken_tenancy::ScopeId::from("workspace-a"),
             revision(
-                ModelSelection::Pinned(ModelBinding::new("", "primary", "")),
+                ModelSelection::Pinned(ModelBinding::new("", "", "genai")),
                 vec![],
             ),
         )

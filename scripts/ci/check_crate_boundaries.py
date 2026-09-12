@@ -1568,7 +1568,7 @@ def selftest_composite_identity_is_stated() -> None:
 # the admission even while the old ones are still being moved. The durable
 # ingress is already closed: deserialization goes through `parse`.
 UNVALIDATED_MODEL_BINDING_PRODUCER = re.compile(r"\bModelBinding::new\s*\(")
-UNVALIDATED_MODEL_BINDING_BASELINE = 468
+UNVALIDATED_MODEL_BINDING_BASELINE = 467
 # The one place `ModelBinding::new` is the subject rather than a producer: the
 # round-trip property asserts that every binding `new` builds also decodes,
 # which is the invariant whose absence let a constructible binding stall a run
@@ -1576,10 +1576,14 @@ UNVALIDATED_MODEL_BINDING_BASELINE = 468
 # `<path>::<fn>`, so the exemption covers one function, not a file: a second
 # producer added elsewhere in the same file is still counted.
 UNVALIDATED_MODEL_BINDING_EXEMPTIONS: dict[str, str] = {
+    "crates/runtime/awaken-runtime-contract/src/resolved/model_binding.rs::constructible": (
+        "the round-trip property observes whether `new` admits what `parse` admits; "
+        "it must call the constructor under test"
+    ),
     "crates/runtime/awaken-runtime-contract/src/resolved/model_binding.rs"
-    "::every_constructible_binding_round_trips_through_the_wire": (
-        "the round-trip property must call the unvalidated constructor to "
-        "prove the wire accepts what it builds"
+    "::the_documented_shapes_are_admitted_or_refused_exactly": (
+        "the named rows of the admission table are built through `new` to prove "
+        "each admitted shape round-trips through the wire"
     ),
 }
 ENCLOSING_FN = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)")

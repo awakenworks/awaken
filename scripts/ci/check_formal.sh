@@ -856,6 +856,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness credential_realization_receipt_requires_every_exact_binding_coordinate \
     --harness model_operation_ordinal_never_wraps_or_reuses_a_coordinate \
     --harness model_execution_reentry_requires_positive_evidence \
+    --harness model_binding_admission_is_exactly_the_documented_rule_table \
     --harness claim_bound_external_effect_admits_only_current_ownership \
     --harness committed_terminal_projection_admits_only_exact_ended_identity \
     --harness max_token_continuation_requires_every_exact_guard \
