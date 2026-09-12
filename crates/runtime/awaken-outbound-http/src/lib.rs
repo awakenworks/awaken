@@ -11,6 +11,14 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
+mod client;
+
+pub use client::{
+    BaseUrlRejected, DEFAULT_CONNECT_TIMEOUT, ExternalHttpClient, HttpMethod, HttpReply,
+    InternalHttpClient, JsonRequest, TransportDeadline, TransportError, normalize_http_base_url,
+    rustls_client_builder, target_is_loopback,
+};
+
 /// Select the one process-wide provider before constructing a rustls-backed
 /// HTTP client. Full workspace feature unification may compile more than one
 /// provider, so transport adapters must not rely on implicit selection.

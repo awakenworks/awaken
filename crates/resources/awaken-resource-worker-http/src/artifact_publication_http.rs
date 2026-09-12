@@ -195,7 +195,7 @@ impl HttpArtifactPublisher {
             .send()
             .await
             .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
-        if response.status() != reqwest::StatusCode::OK {
+        if response.status() != http::StatusCode::OK {
             return Err(ArtifactPublicationError::new(format!(
                 "artifact capture authority returned HTTP {}",
                 response.status()
@@ -321,7 +321,7 @@ impl ArtifactPublisher<ArtifactPublicationFence> for HttpArtifactPublisher {
                 self.upstream.base_url()
             ))
             .header(ARTIFACT_METADATA_HEADER, encoded)
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .header(http::header::CONTENT_TYPE, "application/octet-stream")
             .body(publication.bytes.clone());
         let request = self
             .upstream
@@ -332,7 +332,7 @@ impl ArtifactPublisher<ArtifactPublicationFence> for HttpArtifactPublisher {
             .await
             .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
         let status = response.status();
-        if status != reqwest::StatusCode::OK {
+        if status != http::StatusCode::OK {
             return Err(ArtifactPublicationError::new(format!(
                 "artifact authority returned HTTP {status}"
             )));
@@ -384,7 +384,7 @@ impl ArtifactPublisher<ArtifactPublicationFence> for HttpArtifactPublisher {
             .await
             .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
         let status = response.status();
-        if status != reqwest::StatusCode::OK {
+        if status != http::StatusCode::OK {
             return Err(ArtifactPublicationError::new(format!(
                 "artifact recovery authority returned HTTP {status}"
             )));

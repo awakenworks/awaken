@@ -489,6 +489,177 @@ def check_tests_are_not_arch_owners() -> list[str]:
     return errors
 
 
+# L1 guard for outbound transport construction. Selecting the process-wide
+# rustls provider and deciding whether a channel may inherit an ambient
+# `HTTP(S)_PROXY` were once obligations remembered at each client construction
+# site, which is why they were honoured in two crates and forgotten in fifteen.
+# `awaken-outbound-http` now owns both as properties of `InternalHttpClient` /
+# `ExternalHttpClient`, so a crate that cannot name `reqwest` or `rustls` cannot
+# express an unguarded client at all. Declaring one of those crates as a normal
+# dependency therefore requires an entry here saying why this crate must own
+# transport construction itself. Test-only dependencies are out of scope: a
+# `[dev-dependencies]` client is a composition root exercising a real server,
+# not a production egress path.
+TRANSPORT_CRATES = ("reqwest", "rustls")
+DIRECT_TRANSPORT_EXEMPTIONS = {
+    "awaken-outbound-http": (
+        "the transport authority itself: the one crate that selects the rustls "
+        "provider and owns the internal/external proxy variants"
+    ),
+    "awaken-provider-genai": (
+        "pins reqwest 0.13 because the `genai` SDK takes a 0.13 `Client` through "
+        "`with_reqwest`; the authority's 0.12 client is a different type and "
+        "cannot cross that semver island"
+    ),
+    "awaken-ext-mcp": (
+        "streams MCP server-sent events off a live `Response` body and mirrors "
+        "arbitrary server headers; a JSON request/reply pair cannot express it"
+    ),
+    "awaken-credential-materializer": (
+        "re-signs and replays one prepared `RequestBuilder` after a credential "
+        "rotation, so the retry seam is the request builder itself"
+    ),
+    "awaken-session-executor": (
+        "the MCP relay is a reverse proxy: it forwards a caller-chosen method, "
+        "header set and raw body, none of which the JSON client models"
+    ),
+    "awaken-worker-transport-security": (
+        "second transport authority, for the Worker-to-Coordinator plane: owns "
+        "the signed `RequestBuilder` seam and the private-CA client; it still "
+        "takes its provider selection from awaken-outbound-http"
+    ),
+    "awaken-coordinator-client": (
+        "implements the Worker-to-Coordinator signing seam, whose port is "
+        "defined over `reqwest::RequestBuilder` by the transport authority above"
+    ),
+}
+
+# Even a registered transport owner starts from the authority's builder, which
+# has already installed the provider. Naming a bare `reqwest::Client`
+# constructor in production code is what these two crates alone may do.
+TRANSPORT_CONSTRUCTION_EXEMPTIONS = {
+    "awaken-outbound-http": "the authority; `rustls_client_builder` is defined here",
+    "awaken-provider-genai": (
+        "builds a reqwest 0.13 client for the `genai` SDK; the 0.12 builder this "
+        "authority hands out is a different type"
+    ),
+}
+TRANSPORT_CONSTRUCTION = re.compile(r"\breqwest::Client::(?:new|builder)\s*\(")
+
+
+def check_no_direct_transport_dependency(
+    repo_root: Path = REPO_ROOT, crates: Path = CRATES
+) -> list[str]:
+    """Transport construction lives in the authority crate or a stated exception."""
+    errors: list[str] = []
+    for manifest_path in sorted(crates.glob("*/*/Cargo.toml")):
+        manifest = _crate_boundary_workspace.load_manifest(manifest_path)
+        try:
+            name = _crate_boundary_workspace.package_name(manifest)
+        except KeyError:
+            continue
+        relative = manifest_path.relative_to(repo_root)
+        declared = sorted(
+            dependency
+            for dependency in _crate_boundary_workspace.normal_dependency_names(manifest)
+            if dependency in TRANSPORT_CRATES
+        )
+        justification = DIRECT_TRANSPORT_EXEMPTIONS.get(name)
+        if declared and justification is None:
+            errors.append(
+                f"{relative}: {name} declares transport dependency "
+                f"{', '.join(declared)} directly; depend on awaken-outbound-http and "
+                "build an InternalHttpClient/ExternalHttpClient, or record in "
+                "DIRECT_TRANSPORT_EXEMPTIONS why this crate must own transport "
+                "construction itself"
+            )
+        if not declared and justification is not None:
+            errors.append(
+                f"{relative}: {name} no longer declares {' or '.join(TRANSPORT_CRATES)}; "
+                "remove its stale DIRECT_TRANSPORT_EXEMPTIONS entry"
+            )
+        if name in TRANSPORT_CONSTRUCTION_EXEMPTIONS:
+            continue
+        for path in sorted(_crate_boundary_workspace.production_module_files([manifest_path])):
+            production = _crate_boundary_workspace.production_rust(
+                path.read_text(encoding="utf-8", errors="ignore")
+            )
+            if TRANSPORT_CONSTRUCTION.search(production):
+                errors.append(
+                    f"{path.relative_to(repo_root)}: constructs a reqwest client "
+                    "directly, so the rustls provider and proxy policy become call-site "
+                    "obligations again; use awaken_outbound_http::InternalHttpClient, "
+                    "ExternalHttpClient, or rustls_client_builder()"
+                )
+    return errors
+
+
+def selftest_no_direct_transport_dependency() -> None:
+    """Cause/effect: an unregistered transport edge or bare constructor rejects."""
+    # C1 the crate declares `reqwest`/`rustls` as a normal dependency;
+    # C2 the crate has a DIRECT_TRANSPORT_EXEMPTIONS entry;
+    # C3 production source names a bare `reqwest::Client` constructor;
+    # C4 that constructor sits in test-only code;
+    # C5 the crate has a TRANSPORT_CONSTRUCTION_EXEMPTIONS entry;
+    # C6 the dependency is declared under `[dev-dependencies]` only.
+    # Effects: E1 reject; E2 admit.
+    #
+    # | Rule | C1 | C2 | C3 | C4 | C5 | C6 | Effect |
+    # | T1   | T  | F  | F  | -  | -  | F  | E1 (unregistered transport edge) |
+    # | T2   | T  | T  | F  | -  | -  | F  | E2 |
+    # | T3   | F  | T  | F  | -  | -  | F  | E1 (stale registry entry)        |
+    # | T4   | F  | F  | T  | F  | F  | F  | E1 (bare constructor)            |
+    # | T5   | F  | F  | T  | T  | F  | F  | E2 |
+    # | T6   | F  | F  | T  | F  | T  | F  | E2 |
+    # | T7   | F  | F  | F  | -  | -  | T  | E2 (tests are composition roots) |
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        crates = root / "crates"
+        manifest = crates / "shared/example/Cargo.toml"
+        manifest.parent.mkdir(parents=True)
+        source = manifest.parent / "src/lib.rs"
+        source.parent.mkdir(parents=True)
+        source.write_text("pub fn nothing() {}\n", encoding="utf-8")
+
+        with_dependency = (
+            '[package]\nname = "example"\n\n[dependencies]\n'
+            'reqwest = { version = "0.12" }\n'
+        )
+        without_dependency = '[package]\nname = "example"\n'
+        dev_only = (
+            '[package]\nname = "example"\n\n[dev-dependencies]\n'
+            'reqwest = { version = "0.12" }\n'
+        )
+
+        manifest.write_text(with_dependency, encoding="utf-8")
+        assert check_no_direct_transport_dependency(root, crates)  # T1
+        DIRECT_TRANSPORT_EXEMPTIONS["example"] = "selftest"
+        try:
+            assert not check_no_direct_transport_dependency(root, crates)  # T2
+            manifest.write_text(without_dependency, encoding="utf-8")
+            assert check_no_direct_transport_dependency(root, crates)  # T3
+        finally:
+            del DIRECT_TRANSPORT_EXEMPTIONS["example"]
+
+        source.write_text("pub fn f() { let _ = reqwest::Client::new(); }\n", encoding="utf-8")
+        assert check_no_direct_transport_dependency(root, crates)  # T4
+        source.write_text(
+            "#[cfg(test)]\nmod tests { fn f() { let _ = reqwest::Client::builder(); } }\n",
+            encoding="utf-8",
+        )
+        assert not check_no_direct_transport_dependency(root, crates)  # T5
+        source.write_text("pub fn f() { let _ = reqwest::Client::new(); }\n", encoding="utf-8")
+        TRANSPORT_CONSTRUCTION_EXEMPTIONS["example"] = "selftest"
+        try:
+            assert not check_no_direct_transport_dependency(root, crates)  # T6
+        finally:
+            del TRANSPORT_CONSTRUCTION_EXEMPTIONS["example"]
+
+        source.write_text("pub fn nothing() {}\n", encoding="utf-8")
+        manifest.write_text(dev_only, encoding="utf-8")
+        assert not check_no_direct_transport_dependency(root, crates)  # T7
+
+
 # L2 guard for the optimistic-concurrency witness (see
 # `awaken_resource_contract::CompleteGeneration`). A type whose name ends in
 # `Generation` is, by the repository's own vocabulary, the thing a conditional
@@ -798,7 +969,10 @@ def main() -> int:
     _managed_protocol_boundary.selftest()
     _provider_env_fitness.selftest()
     selftest_builtin_tool_ownership()
+    selftest_no_direct_transport_dependency()
     errors = (
+        check_no_direct_transport_dependency()
+        +
         _crate_dependency_fitness.check_all(dependency_fitness_specs())
         + check_neutral_code_boundaries()
         + check_builtin_tool_ownership()
