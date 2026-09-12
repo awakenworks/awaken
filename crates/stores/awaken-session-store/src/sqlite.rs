@@ -346,14 +346,14 @@ impl SqliteManagedSessionRepository {
             runner
                 .run_bundle(&conn, pre_convergence)
                 .map_err(|error| error.to_string())?;
-            Self::normalize_session_aggregates(&mut conn).map_err(|error| error.to_string())?;
+            Self::normalize_session_aggregates(&mut conn, false)
+                .map_err(|error| error.to_string())?;
         }
         runner
             .run_bundle(&conn, &selected.complete)
             .and_then(|_| runner.run_bundle(&conn, &converged))
             .map_err(|error| error.to_string())?;
-        Self::normalize_session_aggregates(&mut conn).map_err(|error| error.to_string())?;
-        Self::rebuild_credential_source_index(&mut conn).map_err(|e| e.to_string())?;
+        Self::normalize_session_aggregates(&mut conn, true).map_err(|error| error.to_string())?;
         Ok(Self {
             conn: awaken_sqlite_pool::SharedSqliteConnection::new(conn),
         })
@@ -575,7 +575,13 @@ impl SqliteManagedSessionRepository {
             .collect()
     }
 
-    fn normalize_session_aggregates(conn: &mut Connection) -> Result<(), SessionRepositoryError> {
+    fn normalize_session_aggregates(
+        conn: &mut Connection,
+        sync_indexes: bool,
+    ) -> Result<(), SessionRepositoryError> {
+        // Historical pre-convergence DDL has not installed every index yet.
+        // The final pass decodes each root once and atomically repairs all its
+        // projections under the same writer fence as byte normalization.
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
@@ -598,15 +604,18 @@ impl SqliteManagedSessionRepository {
                 .map_err(storage)?
         };
         for (stored_session_id, aggregate_json, revision) in rows {
-            if let Some(canonical) =
+            let (session, canonical) =
                 normalize_published_row(&stored_session_id, aggregate_json, revision)
-                    .map_err(corrupt)?
-            {
+                    .map_err(corrupt)?;
+            if let Some(canonical) = canonical {
                 tx.execute(
                     "UPDATE managed_session SET aggregate_json=?2 WHERE session_id=?1",
                     params![stored_session_id, canonical],
                 )
                 .map_err(storage)?;
+            }
+            if sync_indexes {
+                Self::sync_session_indexes(&tx, &session)?;
             }
         }
         tx.commit().map_err(storage)
@@ -667,54 +676,6 @@ impl SqliteManagedSessionRepository {
             .map_err(storage)?;
         }
         Ok(())
-    }
-
-    fn rebuild_credential_source_index(
-        conn: &mut Connection,
-    ) -> Result<(), SessionRepositoryError> {
-        // Startup owns one full deterministic rebuild. BEGIN IMMEDIATE is both
-        // the SQLite writer fence and the crash boundary: a decode failure or
-        // process exit restores the preceding complete index, and the
-        // constructor never returns a repository with partial dependencies.
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(storage)?;
-        tx.execute(
-            "DELETE FROM managed_session_credential_source_reference",
-            [],
-        )
-        .map_err(storage)?;
-        let rows = {
-            let mut statement = tx
-                .prepare(
-                    "SELECT session_id, aggregate_json, revision FROM managed_session \
-                     ORDER BY session_id",
-                )
-                .map_err(storage)?;
-            statement
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        EncodedSessionRow {
-                            aggregate_json: row.get(1)?,
-                            revision: row.get(2)?,
-                        },
-                    ))
-                })
-                .map_err(storage)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(storage)?
-        };
-        for (stored_session_id, row) in rows {
-            let session = decode(row).map_err(corrupt)?;
-            if session.session_id != stored_session_id {
-                return Err(corrupt(
-                    "managed Session aggregate id does not match its index",
-                ));
-            }
-            Self::sync_credential_source_index(&tx, &session)?;
-        }
-        tx.commit().map_err(storage)
     }
 
     fn is_tombstoned(
