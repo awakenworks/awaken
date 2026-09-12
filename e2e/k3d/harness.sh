@@ -102,6 +102,7 @@ k3d_observed_eviction_threshold() {
     -- "k3d-$cluster-server-0") || return "$?"
 
   local command hard="" minimum="" threshold="" hard_count=0 minimum_count=0
+  local gc_high="" gc_high_count=0
   while IFS= read -r command; do
     case "$command" in
       --kubelet-arg=eviction-hard=*)
@@ -112,6 +113,8 @@ k3d_observed_eviction_threshold() {
         minimum_count=$((minimum_count + 1))
         minimum="$command"
         ;;
+      --kubelet-arg=image-gc-high-threshold=*)
+        gc_high_count=$((gc_high_count + 1)); gc_high="$command" ;;
     esac
   done <<<"$observed"
   [[ "$hard_count" = 1 && "$minimum_count" = 1 && "$hard" == "$hard_prefix"* ]] || return 2
@@ -121,7 +124,9 @@ k3d_observed_eviction_threshold() {
   local expected=()
   mapfile -t expected < <(k3d_eviction_policy "$threshold") || return "$?"
   [[ "$hard" = "--kubelet-arg=${expected[0]}" \
-    && "$minimum" = "--kubelet-arg=${expected[1]}" ]] || return 2
+    && "$minimum" = "--kubelet-arg=${expected[1]}" \
+    && "$gc_high_count" = 1 \
+    && "$gc_high" = "--kubelet-arg=${expected[2]}" ]] || return 2
   printf '%s\n' "$threshold"
 }
 
@@ -154,17 +159,28 @@ k3d_validate_node_target() {
 # A hard-stop receipt is physical evidence for this container namespace only.
 # Never replace a node's Pods merely because Kubernetes lost its heartbeat.
 k3d_hard_stop_node() {
-  local cluster="${1:-}" node="${2:-}" container="${3:-}" observed
+  local cluster="${1:-}" node="${2:-}" container="${3:-}" observed kill_status=0 attempt deadline remaining
   [[ "$container" =~ ^[0-9a-f]{64}$ ]] || return 2
   k3d_validate_node_target "$cluster" "$node" || return "$?"
   observed=$(docker inspect --format '{{.Id}}|{{.State.Running}}' -- "$node") || return "$?"
   [[ "$observed" = "$container|true" ]] || return 2
-  docker kill --signal KILL "$container" >/dev/null || return "$?"
-  observed=$(docker inspect --format '{{.State.Running}}|{{.State.ExitCode}}' -- "$container") || return "$?"
-  [[ "$observed" = 'false|137' ]] || {
-    echo "exact node SIGKILL termination was not observed" >&2
-    return 2
-  }
+  # The daemon may lose/delay its exit-event ACK after applying SIGKILL. Never
+  # issue a second kill: join the same immutable object's physical result once.
+  docker kill --signal KILL "$container" >/dev/null || kill_status=$?
+  # Engine exit state can lag both the signal and a lost ACK. Read the same
+  # immutable object within one ten-second budget; retries never resend KILL.
+  deadline=$((SECONDS + 10))
+  for attempt in {1..50}; do
+    remaining=$((deadline - SECONDS))
+    ((remaining > 0)) || break
+    observed=$(timeout "${remaining}s" docker inspect --format '{{.State.Running}}|{{.State.ExitCode}}' -- "$container") || return "$?"
+    [[ "$observed" != 'false|137' ]] || return 0
+    [[ "$observed" == 'true|'* ]] || break
+    [[ "$attempt" = 50 ]] || sleep 0.2
+  done
+  echo "exact node SIGKILL termination was not observed (kill status=$kill_status)" >&2
+  [[ "$kill_status" = 0 ]] || return "$kill_status"
+  return 2
 }
 
 # Capture the exact running node and underlay interface before the fault. Keep
@@ -204,18 +220,30 @@ print("|".join([container, link["ifname"], str(link["ifindex"]), ip, mac]))
 ' "$attachment" <<<"$addresses"
 }
 
+# One owned rule set for observation, installation and exact removal. Direction
+# is a packet property; ingress-only and egress-only must not silently become a
+# bidirectional fault. Interface identity is validated by the receipt owner.
+k3d_node_partition_rules() {
+  local interface="$1" direction="${2:-both}"
+  [[ "$direction" = both || "$direction" = ingress || "$direction" = egress ]] || return 2
+  if [[ "$direction" != egress ]]; then
+    printf '%s\n' "-A INPUT -i $interface -j AWAKEN-K3D-PARTITION" \
+      "-A FORWARD -i $interface -j AWAKEN-K3D-PARTITION"
+  fi
+  if [[ "$direction" != ingress ]]; then
+    printf '%s\n' "-A OUTPUT -o $interface -j AWAKEN-K3D-PARTITION" \
+      "-A FORWARD -o $interface -j AWAKEN-K3D-PARTITION"
+  fi
+}
+
 k3d_node_network_partition_state() {
-  local node="$1" interface="$2" rules expected
+  local node="$1" interface="$2" direction="${3:-both}" rules expected owned
+  owned=$(k3d_node_partition_rules "$interface" "$direction") || return "$?"
   rules=$(docker exec "$node" iptables-save -t filter) || return "$?"
   rules=$(printf '%s\n' "$rules" | { grep -F AWAKEN-K3D-PARTITION || true; } | sort)
   [[ -n "$rules" ]] || { printf 'open\n'; return 0; }
-  expected=$(printf '%s\n' \
-    ':AWAKEN-K3D-PARTITION - [0:0]' \
-    '-A AWAKEN-K3D-PARTITION -j DROP' \
-    "-A INPUT -i $interface -j AWAKEN-K3D-PARTITION" \
-    "-A OUTPUT -o $interface -j AWAKEN-K3D-PARTITION" \
-    "-A FORWARD -i $interface -j AWAKEN-K3D-PARTITION" \
-    "-A FORWARD -o $interface -j AWAKEN-K3D-PARTITION" | sort)
+  expected=$(printf '%s\n' ':AWAKEN-K3D-PARTITION - [0:0]' \
+    '-A AWAKEN-K3D-PARTITION -j DROP' "$owned" | sort)
   [[ "$rules" = "$expected" ]] || {
     echo "node partition rules differ from the exact owned fault" >&2
     return 2
@@ -229,7 +257,8 @@ k3d_node_network_partition_state() {
 # unexpected container/interface identity or changed fault rule fails closed.
 k3d_set_node_network_partition() {
   local cluster="${1:-}" node="${2:-}" receipt="${3:-}" desired="${4:-}"
-  local observed interface state payload receipt_container receipt_remainder
+  local observed interface state payload receipt_container receipt_remainder owned direction="${5:-both}"
+  [[ "$direction" = both || "$direction" = ingress || "$direction" = egress ]] || return 2
   [[ "$desired" = blocked || "$desired" = open ]] || return 2
   [[ -n "$receipt" ]] || return 2
   observed=$(k3d_node_network_identity "$cluster" "$node") || return "$?"
@@ -238,30 +267,25 @@ k3d_set_node_network_partition() {
     return 2
   }
   IFS='|' read -r receipt_container interface receipt_remainder <<<"$receipt"
-  state=$(k3d_node_network_partition_state "$receipt_container" "$interface") || return "$?"
+  state=$(k3d_node_network_partition_state "$receipt_container" "$interface" "$direction") || return "$?"
+  owned=$(k3d_node_partition_rules "$interface" "$direction") || return "$?"
   if [[ "$desired" = blocked ]]; then
     [[ "$state" = open ]] || return 2
     payload="*filter
 :AWAKEN-K3D-PARTITION - [0:0]
 -A AWAKEN-K3D-PARTITION -j DROP
--I INPUT 1 -i $interface -j AWAKEN-K3D-PARTITION
--I OUTPUT 1 -o $interface -j AWAKEN-K3D-PARTITION
--I FORWARD 1 -i $interface -j AWAKEN-K3D-PARTITION
--I FORWARD 1 -o $interface -j AWAKEN-K3D-PARTITION
+$(sed -E 's/^-A ([^ ]+) /-I \1 1 /' <<<"$owned")
 COMMIT"
   else
     [[ "$state" != open ]] || return 0
     payload="*filter
--D INPUT -i $interface -j AWAKEN-K3D-PARTITION
--D OUTPUT -o $interface -j AWAKEN-K3D-PARTITION
--D FORWARD -i $interface -j AWAKEN-K3D-PARTITION
--D FORWARD -o $interface -j AWAKEN-K3D-PARTITION
+$(sed 's/^-A /-D /' <<<"$owned")
 -F AWAKEN-K3D-PARTITION
 -X AWAKEN-K3D-PARTITION
 COMMIT"
   fi
   docker exec -i "$receipt_container" iptables-restore --noflush <<<"$payload" || return "$?"
-  state=$(k3d_node_network_partition_state "$receipt_container" "$interface") || return "$?"
+  state=$(k3d_node_network_partition_state "$receipt_container" "$interface" "$direction") || return "$?"
   [[ "$state" = "$desired" ]]
 }
 
@@ -933,16 +957,33 @@ print(json.dumps(value))
 
   k3d_validate_name "awaken-test-1"
   ! k3d_validate_name "--all"
-  # Hard-stop decision table: P1 exact running node + successful SIGKILL +
-  # false/137 observation => physical container termination; P2 malformed,
-  # foreign, replaced or already-stopped target => no signal; P3 kill/inspect
-  # error => preserve error; P4 still-running/wrong exit => no termination proof.
-  # A named kill or graceful stop is rejected by this fixture. The live suite
-  # may remove unreachable Pod objects only after P1, never after P2-P4.
+  # Hard-stop decision table: P1 exact running node + one SIGKILL request +
+  # false/137 observation => physical termination even if the daemon lost its
+  # exit-event ACK; P2 malformed/foreign/replaced/already-stopped => no signal;
+  # P3 inspect failure => no proof, preserve error; P4 still-running/wrong exit
+  # => no proof, preserve a failed command status when present. P1 x ACK 0/41
+  # and P4 x ACK 0/41 cover intent/result independence, with one signal per row.
+  # P5 running observations followed by false/137 within the read budget => P1;
+  # P6 delayed observer error => no proof. The clock/transport doubles below
+  # skip real sleeps but preserve the exact attempt and one-signal inventory.
+  # A named kill or graceful stop is rejected. Only P1 permits Pod replacement.
   (
     local container="$(printf 'c%.0s' {1..64})" owner=awaken-test
     local running=true identity="$container" stopped='false|137'
     local kill_error=0 observe_error=0 target_error=0 identity_error=0 kills=0 result
+    local waits=0 stopped_after=0 error_after=0
+    sleep() {
+      [[ "$1" = 0.2 ]] || return 98
+      waits=$((waits + 1))
+      [[ "$waits" != "$stopped_after" ]] || stopped='false|137'
+      [[ "$waits" != "$error_after" ]] || observe_error=42
+      return 0
+    }
+    timeout() {
+      [[ "$1" =~ ^[1-9][0-9]*s$ ]] || return 98
+      shift
+      "$@"
+    }
     docker() {
       case "$*" in
         'inspect --format '*'.Config.Labels'*' -- k3d-awaken-test-agent-0')
@@ -979,15 +1020,31 @@ print(json.dumps(value))
     k3d_hard_stop_node awaken-test k3d-awaken-test-agent-0 "$container" || result=$?
     [[ "$result" = 40 && "$kills" = 1 ]]
     identity_error=0; kill_error=41; result=0
+    local before_kills=$kills expected_failure
     k3d_hard_stop_node awaken-test k3d-awaken-test-agent-0 "$container" || result=$?
-    [[ "$result" = 41 ]]
+    [[ "$result" = 0 && "$kills" = $((before_kills + 1)) ]]
     kill_error=0; observe_error=42; result=0
     k3d_hard_stop_node awaken-test k3d-awaken-test-agent-0 "$container" || result=$?
     [[ "$result" = 42 ]]
     observe_error=0
-    for stopped in 'true|0' 'false|0' 'false|143'; do
-      ! k3d_hard_stop_node awaken-test k3d-awaken-test-agent-0 "$container" 2>/dev/null
+    for kill_error in 0 41; do
+      stopped_after=0
+      for stopped in 'true|0' 'false|0' 'false|143'; do
+        waits=0; result=0; before_kills=$kills; expected_failure=$kill_error
+        [[ "$kill_error" != 0 ]] || expected_failure=2
+        k3d_hard_stop_node awaken-test k3d-awaken-test-agent-0 "$container" 2>/dev/null || result=$?
+        [[ "$result" = "$expected_failure" && "$kills" = $((before_kills + 1)) ]]
+        [[ "$stopped" != 'true|0' || "$waits" = 49 ]]
+      done
+      for stopped_after in 1 49; do
+        waits=0; result=0; stopped='true|0'; before_kills=$kills
+        k3d_hard_stop_node awaken-test k3d-awaken-test-agent-0 "$container" || result=$?
+        [[ "$result" = 0 && "$waits" = "$stopped_after" && "$kills" = $((before_kills + 1)) ]]
+      done
     done
+    stopped_after=0; error_after=1; waits=0; stopped='true|0'; result=0; before_kills=$kills
+    k3d_hard_stop_node awaken-test k3d-awaken-test-agent-0 "$container" || result=$?
+    [[ "$result" = 42 && "$waits" = 1 && "$kills" = $((before_kills + 1)) ]]
   )
 
   # Node-network fault cause/effect decision table:
@@ -1023,16 +1080,15 @@ print(json.dumps(value))
           writes=$((writes + 1))
           [[ "$transaction_error" = 0 ]] || return "$transaction_error"
           [[ "$no_effect" = 0 ]] || return 0
-          if [[ "$input" = *'-I INPUT 1 -i eth0'* ]]; then
+          if [[ "$input" = *'-A AWAKEN-K3D-PARTITION -j DROP'* ]]; then
             # Derive the observed rules from the submitted transaction, ensuring
             # a missing ingress, egress or forwarded rule cannot pass F1.
             fault_rules=$(sed -e '/^\*filter$/d' -e '/^COMMIT$/d' \
               -e 's/^-I \([^ ]*\) 1 /-A \1 /' <<<"$input")
           else
-            [[ "$input" = *'-D INPUT -i eth0 -j AWAKEN-K3D-PARTITION'* \
-              && "$input" = *'-D OUTPUT -o eth0 -j AWAKEN-K3D-PARTITION'* \
-              && "$input" = *'-D FORWARD -i eth0 -j AWAKEN-K3D-PARTITION'* \
-              && "$input" = *'-D FORWARD -o eth0 -j AWAKEN-K3D-PARTITION'* \
+            local removals
+            removals=$(grep '^-A \(INPUT\|OUTPUT\|FORWARD\) ' <<<"$fault_rules" | sed 's/^-A /-D /' | sort)
+            [[ "$(grep '^-D ' <<<"$input" | sort)" = "$removals" \
               && "$input" = *'-X AWAKEN-K3D-PARTITION'* ]] || return 98
             fault_rules=''
           fi
@@ -1049,6 +1105,26 @@ print(json.dumps(value))
     k3d_set_node_network_partition awaken-test k3d-awaken-test-agent-0 "$receipt" open
     k3d_set_node_network_partition awaken-test k3d-awaken-test-agent-0 "$receipt" open
     [[ "$writes" = 2 && -z "$fault_rules" ]]
+    # F9 both/ingress/egress × install/remove: two directed jumps only for
+    # each one-way profile; incompatible profile and unknown profile perform
+    # zero writes. Independent expected text catches a shared-generator bug.
+    for direction in ingress egress; do
+      k3d_set_node_network_partition awaken-test k3d-awaken-test-agent-0 "$receipt" blocked "$direction"
+      [[ $(grep -c '^-A \(INPUT\|OUTPUT\|FORWARD\) ' <<<"$fault_rules") = 2 ]]
+      if [[ "$direction" = ingress ]]; then
+        [[ "$fault_rules" = *'-A INPUT -i eth0'* && "$fault_rules" = *'-A FORWARD -i eth0'* && "$fault_rules" != *' -o '* ]]
+      else
+        [[ "$fault_rules" = *'-A OUTPUT -o eth0'* && "$fault_rules" = *'-A FORWARD -o eth0'* && "$fault_rules" != *' -i '* ]]
+      fi
+      prior=$writes
+      ! k3d_set_node_network_partition awaken-test k3d-awaken-test-agent-0 "$receipt" open both 2>/dev/null
+      [[ "$writes" = "$prior" ]]
+      k3d_set_node_network_partition awaken-test k3d-awaken-test-agent-0 "$receipt" open "$direction"
+      [[ -z "$fault_rules" ]]
+    done
+    prior=$writes
+    ! k3d_set_node_network_partition awaken-test k3d-awaken-test-agent-0 "$receipt" blocked unknown
+    [[ "$writes" = "$prior" ]]
     prior=$writes
     for malformed in '' --all k3d-other-agent-0 k3d-awaken-test-serverlb k3d-awaken-test-agent-x; do
       ! k3d_set_node_network_partition awaken-test "$malformed" "$receipt" blocked 2>/dev/null
@@ -1339,6 +1415,12 @@ print(json.dumps(value))
       return 0
     elif [[ "$1" = inspect ]]; then
       case "$eviction_observation_fault" in
+        gc-missing) ;;
+        gc-wrong) printf '%s\n' '--kubelet-arg=image-gc-high-threshold=85' ;;
+        gc-duplicate) printf '%s\n' '--kubelet-arg=image-gc-high-threshold=100' '--kubelet-arg=image-gc-high-threshold=100' ;;
+        *) printf '%s\n' '--kubelet-arg=image-gc-high-threshold=100' ;;
+      esac
+      case "$eviction_observation_fault" in
         missing)
           printf '%s\n' \
             server \
@@ -1396,7 +1478,10 @@ print(json.dumps(value))
   # export or image import. The node command is the authority, so callers cannot
   # accidentally repeat a stale threshold.
   local prior_capacity=${#capacity_calls[@]} prior_saves=${#docker_saves[@]} prior_imports=${#k3d_calls[@]}
-  for eviction_observation_fault in missing mismatch duplicate; do
+  # G1 valid offline-image policy => import; G2 absent/wrong/duplicate GC
+  # settings => no capacity admission/export/import. These are independent of
+  # the existing missing/mismatched/duplicate absolute eviction rows.
+  for eviction_observation_fault in missing mismatch duplicate gc-missing gc-wrong gc-duplicate; do
     ! k3d_import_images "awaken-test" app:latest >/dev/null 2>&1
     (( ${#capacity_calls[@]} == prior_capacity ))
     (( ${#docker_saves[@]} == prior_saves ))

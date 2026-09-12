@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   auditLoadResults,
+  loadShape,
   disposeFixtureSessions,
   nativeCrashHistoryErrors,
 } from './distributed_control_driver.ts';
@@ -85,4 +86,23 @@ test('Native crash history separates terminal model evidence from final settleme
   assert.ok(nativeCrashHistoryErrors([response('one')], 'one', true).length, 'N3 final');
   assert.ok(nativeCrashHistoryErrors([idle, response('one')], 'one', true).length, 'N3 ordering');
   assert.deepEqual(nativeCrashHistoryErrors([response('one'), idle], 'one', true), [], 'N4');
+});
+
+test('load campaign bounds are checked before any Session admission', () => {
+  // L6 causes: default/custom count, concurrency and rounds; empty, fractional,
+  // nonfinite, zero, negative, concurrency>count or rounds>100. Effects: one
+  // canonical shape or rejection before any API call. R1 defaults; R2 bounded
+  // endpoints; R3 each invalid dimension independently. Live L6 keeps each
+  // window's original latency/history oracle, stopping at its first failure.
+  assert.deepEqual(loadShape({}),{count:48,concurrency:12,rounds:1});
+  for (const rounds of ['1','5','100']) assert.deepEqual(loadShape({
+    ADR71_LOAD_REQUESTS:'1',ADR71_LOAD_CONCURRENCY:'1',ADR71_LOAD_ROUNDS:rounds,
+  }),{count:1,concurrency:1,rounds:Number(rounds)});
+  for (const field of ['ADR71_LOAD_REQUESTS','ADR71_LOAD_CONCURRENCY','ADR71_LOAD_ROUNDS']) {
+    for (const value of ['','0','-1','0.5','NaN','Infinity']) {
+      assert.throws(()=>loadShape({[field]:value}),/invalid load shape/);
+    }
+  }
+  assert.throws(()=>loadShape({ADR71_LOAD_ROUNDS:'101'}),/invalid load shape/);
+  assert.throws(()=>loadShape({ADR71_LOAD_CONCURRENCY:'49'}),/invalid load shape/);
 });

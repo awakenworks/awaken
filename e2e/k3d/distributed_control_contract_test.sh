@@ -154,7 +154,13 @@ grep -q 'k8s_namespace = "awaken-adr71"' "$RENDERED"
 ! grep -q 'k8s_memoryd_image' "$RENDERED"
 [[ "$(grep -o '__AWAKEN_SANDBOX_IMAGE__' "$RENDERED" | wc -l)" -eq 1 ]]
 ! grep -q 'container_image = "awaken-sandbox:local"' "$RENDERED"
-grep -Fq 'k3d_render_sandbox_image "$DEPLOY_DIR/distributed-control" "$SANDBOX_IMAGE"' \
+# D5-R2 the runtime overlay imports the canonical deployment and substitutes
+# only this cluster's role tag before the SAME digest renderer. A direct-base
+# spelling check would reject valid isolated images and miss the new call path.
+# The live lane verifies rendered bytes/UID and the harness owns digest rejection.
+grep -Fq 'resources: [../distributed-control]' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq '    newTag: $CLUSTER' "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
+grep -Fq 'k3d_render_sandbox_image "$ROLE_OVERLAY" "$SANDBOX_IMAGE"' \
   "$REPO_ROOT/e2e/k3d/distributed_control_e2e.sh"
 grep -q 'serviceAccountName: worker-runtime' "$RENDERED"
 grep -q 'name: worker-runtime' "$RENDERED"
